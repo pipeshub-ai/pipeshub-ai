@@ -355,6 +355,7 @@ class TestPermissionScheme:
     async def test_fetch_permission_scheme_all_types(self):
         connector, *_ = _make_connector()
         connector._user_read_unfinished = True  # no user map: the grant's own email is only used after a cut-short user read
+        connector._licensed_account_ids = {"a1"}  # a licensed account the cut-short read did not show
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
@@ -454,6 +455,7 @@ class TestDeletionHandling:
         issue_record.id = "internal-1"
         issue_record.external_record_id = "ext-1"
         dep.get_record_by_issue_key = AsyncMock(return_value=issue_record)
+        dep.get_records_by_parent = AsyncMock(return_value=[])  # no restricted comment records
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await connector._handle_deleted_issue("PROJ-1")
@@ -587,6 +589,7 @@ class TestJiraFullSync:
                 full_name="Alice", is_active=True
             )]
             connector._fetch_users = AsyncMock(return_value=users)
+            connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)  # all licensed
             connector._sync_user_groups = AsyncMock(return_value={})
 
             rg = RecordGroup(

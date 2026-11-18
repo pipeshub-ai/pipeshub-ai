@@ -3,6 +3,7 @@ import { currentOrgContext } from '../../../../src/libs/context/orgContext'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { CrawlingWorkerService } from '../../../../src/modules/crawling_manager/services/crawling_worker'
+import { setOrgRepository } from '../../../../src/libs/repositories/org'
 
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 let orgFindOne: sinon.SinonStub
@@ -124,6 +125,24 @@ describe('CrawlingWorkerService', () => {
       )
       expect(processJobInContext.called).to.be.false
       expect(warn.calledOnce).to.be.true
+    })
+
+    it('checks the org inside its own context, as the PostgreSQL store reads it', async () => {
+      // PgOrgRepository.isActive reads in the bound org's unit of work and fails with no org bound
+      const isActive = sinon.stub().callsFake(async (orgId: string) => currentOrgContext().orgId === orgId)
+      setOrgRepository({ isActive } as any)
+      try {
+        const processJobInContext = sinon.stub().resolves()
+        const processJob = (CrawlingWorkerService.prototype as any).processJob
+        await processJob.call(
+          { processJobInContext, processJobForOrg: (CrawlingWorkerService.prototype as any).processJobForOrg, logger: { warn: sinon.stub() } },
+          { id: 'j', data: { orgId: ORG_1 } },
+        )
+        expect(isActive.calledOnceWith(ORG_1)).to.be.true
+        expect(processJobInContext.calledOnce).to.be.true
+      } finally {
+        setOrgRepository()
+      }
     })
 
     it('drops, never fails, a job whose org id is not an ObjectId (for example "system")', async () => {

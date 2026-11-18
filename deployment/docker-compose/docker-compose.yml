@@ -265,7 +265,7 @@ services:
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
-      # RFC 7591 DCR is off unless "true". RFC 8628 device grant and client ID metadata documents are on unless "false".
+      # RFC 7591 DCR, RFC 8628 device grant and client ID metadata documents are on unless "false".
       - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
       - PIPESHUB_ENABLE_CIMD=${PIPESHUB_ENABLE_CIMD:-}
       - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
@@ -322,6 +322,11 @@ services:
       - PIPESHUB_CPU_OVERSUB=${PIPESHUB_CPU_OVERSUB:-}
       - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
       - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
+      # The paid-result cache: stores nothing unless PAID_CACHE_WRITE is true (off by default for the release that
+      # ships it); the delayed re-purge hops are published only when PAID_RESULT_REPURGE_CHAIN is true. Empty keeps defaults.
+      - PAID_CACHE=${PAID_CACHE:-}
+      - PAID_CACHE_WRITE=${PAID_CACHE_WRITE:-}
+      - PAID_RESULT_REPURGE_CHAIN=${PAID_RESULT_REPURGE_CHAIN:-}
       - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
       # Query-service runtime tuning. Defaults reproduce current behaviour:
       # langchain transport, accessible-records cache on, signed-URL cache off.
@@ -871,6 +876,8 @@ services:
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
       - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
       - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_MAX:-2G}
+      # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
+      - NEO4J_dbms_cypher_min__replan__interval=${NEO4J_MIN_REPLAN_INTERVAL:-30m}
       - NEO4J_dbms_memory_pagecache_size=${NEO4J_PAGECACHE:-1G}
     volumes:
       - neo4j_data:/data

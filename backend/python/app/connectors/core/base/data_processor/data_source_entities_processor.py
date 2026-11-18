@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.services.reindex_force import user_forced_reindex
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
@@ -57,7 +58,7 @@ from app.connectors.core.sync.run_context import (
 )
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, RecordSchemaNarrowError, is_graph_memory_refusal
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -86,8 +87,10 @@ from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType, read_role
 from app.modules.code_graph import deleted_files
+from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_ATTEMPTS, WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
     notify_connector_sync_completed,
@@ -570,6 +573,9 @@ class DataSourceEntitiesProcessor:
         permanent error that would otherwise commit the block without its write."""
         if isinstance(error, SchemaValidationError):
             self._report_schema_rejection(error)
+            return True
+        if isinstance(error, RecordSchemaNarrowError):
+            # the provider aborted the transaction; its owner runs it again once the schema is wide
             return True
         provider = self.data_store_provider
         if (
@@ -2132,7 +2138,7 @@ class DataSourceEntitiesProcessor:
             )
 
     @staticmethod
-    def _stamp_queued_at(record: Record) -> None:
+    def _stamp_queued_at(record: Record, stored: Record | None = None, *, start: bool = False) -> None:
         """Mark a record put in line for indexing, before its event is published.
 
         The stranded-record sweep ages rows on this, not on updated_at, which
@@ -2141,12 +2147,21 @@ class DataSourceEntitiesProcessor:
         the publish, so a failed one still leaves an ageable marker; never on a
         write that publishes nothing, which would keep postponing the recovery of
         a record whose event was lost.
+
+        The record's run fields are stamped from the stored record it replaces (``stored``; None for a new one):
+        an open run is continued, otherwise a new one starts. ``start`` forces a start (a record brought back from
+        the trash).
         """
         if record.indexing_status in (
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         ):
-            record.queued_at = get_epoch_timestamp_in_ms()
+            now = get_epoch_timestamp_in_ms()
+            record.queued_at = now
+            stored_run = None if start or stored is None else getattr(stored, "_stored_run", None)
+            patch = run_reference(stored_run, WriteKind.QUEUE, now)
+            record.first_queued_at = patch.get(FIRST_QUEUED_AT)
+            record.indexing_attempts = patch.get(INDEXING_ATTEMPTS)
 
     @classmethod
     def _content_changed(cls, new_record: Record, old_record: Record) -> bool:
@@ -3027,7 +3042,7 @@ class DataSourceEntitiesProcessor:
             if existing_record.is_placeholder and not record.is_placeholder:
                 record.is_placeholder = False
             if publishes_event and not keeps_stored_indexing:
-                self._stamp_queued_at(record)
+                self._stamp_queued_at(record, existing_record, start=restored_from_trash)
             if (
                 record.external_revision_id == existing_record.external_revision_id
                 and record.is_placeholder
@@ -3040,7 +3055,7 @@ class DataSourceEntitiesProcessor:
                 record.access_rule = existing_record.access_rule
             if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
-                self._stamp_queued_at(record)
+                self._stamp_queued_at(record, existing_record, start=True)
 
         parent_in_other_group = False
         parent_outside_group = False
@@ -3484,7 +3499,7 @@ class DataSourceEntitiesProcessor:
                 # An identical re-push that stores a new document keeps the stored revision, so the
                 # upload branch of _process_record carried the stored status (FAILED) over and stamped nothing.
                 processed.indexing_status = ProgressStatus.NOT_STARTED.value
-                self._stamp_queued_at(processed)
+                self._stamp_queued_at(processed, Record.from_arango_base_record(existing) if existing is not None else None)
                 await tx_store.batch_upsert_records([processed])
             elif expected is not None and not content_changed and existing is not None:
                 # A rename or version bump: indexing owns its state, which the upsert must not reset.
@@ -3881,7 +3896,7 @@ class DataSourceEntitiesProcessor:
                     if needs_reindex:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
-                        self._stamp_queued_at(new_record)
+                        self._stamp_queued_at(new_record, old_record)
                         records_to_reindex.append(new_record)
                         if not _is_publishable(new_record):
                             # Content changed *and* the group moved, but the
@@ -4803,6 +4818,10 @@ class DataSourceEntitiesProcessor:
         selected: bool = False,
     ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
+        if user_forced_reindex():
+            # A user's Force reindex: every stored paid result is bypassed and paid for again. The platform's own
+            # reindexes of unchanged records (a policy change) keep reusing them.
+            payload["refreshPaidOutputs"] = True
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:
@@ -5977,6 +5996,64 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_groups_with_permission_to_node(
                 node_id, node_collection, raise_on_error=raise_on_error
             )
+
+    async def get_roles_on_record(self, record_id: str) -> tuple[dict[str, str], dict[str, str]]:
+        """The role of each permission edge into a record from a person (by lowercased email: a user, or a Person an
+        external collaborator is stored as; the higher role when both) and from a group (by its id at the source).
+        Read with the user, group, node and edge lookups every store has; a failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            users = await tx_store.get_users_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            groups = await tx_store.get_groups_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            edges = await tx_store.get_edges_to_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value, raise_on_error=True
+            )
+            ends = []
+            for edge in edges:
+                # ArangoDB answers `_from`; Neo4j and PostgreSQL answer from_collection and from_id.
+                collection, _, key = str(edge.get("_from") or "").partition("/")
+                if edge.get("from_collection"):
+                    collection, key = edge["from_collection"], edge.get("from_id")
+                ends.append((collection, key, read_role(edge.get("role")) or PermissionType.READ.value))
+            person_keys = sorted({k for c, k, _ in ends if c == CollectionNames.PEOPLE.value and k})
+            people = await tx_store.get_nodes_by_field_in(
+                CollectionNames.PEOPLE.value, "_key", person_keys, ["_key", "email"], raise_on_error=True
+            ) if person_keys else []
+        names = {
+            CollectionNames.USERS.value: {u.id: u.email.lower() for u in users if u.email},
+            CollectionNames.PEOPLE.value: {p["_key"]: p["email"].lower() for p in people if p.get("_key") and p.get("email")},
+            CollectionNames.GROUPS.value: {g.id: g.source_user_group_id for g in groups if g.source_user_group_id},
+        }
+        persons: dict[str, str] = {}
+        group_roles: dict[str, str] = {}
+        for collection, key, role in ends:
+            name = names.get(collection, {}).get(key)
+            if name is None:
+                continue
+            if collection == CollectionNames.GROUPS.value:
+                group_roles[name] = role
+            elif PERMISSION_HIERARCHY.get(role, 0) > PERMISSION_HIERARCHY.get(persons.get(name, ""), 0):
+                persons[name] = role
+        return persons, group_roles
+
+    async def delete_principal_permission_from_record(self, record_id: str, email: str, connector_id: str) -> None:
+        """Delete the permission edges into a record of the user and of the Person (an external collaborator) with an
+        email. A failed read raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
+            person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
+            edges = [
+                {"from_id": principal.id, "from_collection": collection, "to_id": record_id,
+                 "to_collection": CollectionNames.RECORDS.value}
+                for principal, collection in ((user, CollectionNames.USERS.value), (person, CollectionNames.PEOPLE.value))
+                if principal is not None
+            ]
+            deleted = await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value) if edges else 0
+        if deleted:
+            await self._access_changed([connector_id])
 
     # Same reach as the user lookups (get_users_with_permission_to_node walks 8 inherit hops).
     GROUP_ACCESS_MAX_HOPS = 8

@@ -122,15 +122,6 @@ describe('OAuthDcrService', () => {
     expect(error).to.be.instanceOf(BadRequestError)
   })
 
-  it('should refuse when DCR is unset', async () => {
-    try {
-      await service.register({ client_name: 'Cursor' })
-      expect.fail('should have thrown')
-    } catch (err) {
-      expect(err).to.be.instanceOf(ForbiddenError)
-    }
-  })
-
   it('should register a public client without returning a secret', async () => {
     process.env.PIPESHUB_ENABLE_DCR = 'true'
     const result = await service.register({
@@ -238,17 +229,20 @@ describe('OAuthDcrService', () => {
     }
   })
 
-  it('should refuse when DCR is a truthy string other than true', async () => {
-    for (const value of ['TRUE', '1', 'yes']) {
-      process.env.PIPESHUB_ENABLE_DCR = value
-      try {
-        await service.register({ client_name: 'Cursor' })
-        expect.fail(`should have thrown for ${value}`)
-      } catch (err) {
-        expect(err).to.be.instanceOf(ForbiddenError)
-      }
+  it('registers when PIPESHUB_ENABLE_DCR is unset or anything but false', async () => {
+    for (const value of [undefined, '', 'true', 'FALSE', '0']) {
+      if (value === undefined) delete process.env.PIPESHUB_ENABLE_DCR
+      else process.env.PIPESHUB_ENABLE_DCR = value
+      mockOAuthAppService.createDynamicClient.resetHistory()
+      const result = await service.register({
+        client_name: 'Cursor',
+        redirect_uris: ['http://127.0.0.1/cb'],
+        token_endpoint_auth_method: 'none',
+        scope: 'user:read',
+      })
+      expect(result.client_id, String(value)).to.equal('cid')
+      expect(mockOAuthAppService.createDynamicClient.calledOnce, String(value)).to.be.true
     }
-    expect(mockOAuthAppService.createDynamicClient.called).to.be.false
   })
 
   describe('resolveAuthorizeClient (client ID metadata documents)', () => {

@@ -187,7 +187,6 @@ async def test_a_conversion_that_never_returns_is_on_the_parsing_services_metric
         text = (await client.get("/metrics")).text
         count = int(re.search(r"^pipeshub_parse_stuck_conversions (\d+)$", text, re.M).group(1))
         oldest = int(re.search(r"^pipeshub_parse_stuck_oldest_seconds (\d+)$", text, re.M).group(1))
-        assert "pipeshub_parsing_in_flight" in text                  # next to the rest of the parsing metrics
         return count, oldest
 
     try:

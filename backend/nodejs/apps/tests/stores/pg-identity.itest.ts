@@ -67,6 +67,11 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         newOrg: () => world.newOrg(),
         newId,
         clearOrgAuth: () => world.clearOrgs(),
+        storeRemovedSignInMethods: async (orgId, methods) => {
+          await world.stack.admin((c) =>
+            c.query('UPDATE identity.org_auth_config SET removed_sign_in_methods = $2 WHERE org_id = $1', [orgId, methods]),
+          );
+        },
       });
     });
 

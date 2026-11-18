@@ -194,6 +194,7 @@ class TestRunSync:
             from app.connectors.core.registry.filters import FilterCollection
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             connector._fetch_users = AsyncMock(return_value=[user])
+            connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)  # all licensed
             connector._sync_user_groups = AsyncMock(return_value={"g1": [user]})
             rg = _project_rg()
             connector._fetch_projects = AsyncMock(return_value=(
@@ -1189,10 +1190,12 @@ class TestProcessNewRecords:
         connector = _make_connector()
 
         epic = MagicMock(spec=TicketRecord)
+        epic.external_record_id = "epic-1"
         epic.parent_external_record_id = None
         epic.version = 0
 
         task = MagicMock(spec=TicketRecord)
+        task.external_record_id = "task-1"
         task.parent_external_record_id = "epic-1"
         task.version = 0
 
@@ -1201,8 +1204,8 @@ class TestProcessNewRecords:
 
         await connector._process_new_records(records, "PROJ", stats)
 
-        # Should have called on_new_records
-        connector.data_entities_processor.on_new_records.assert_awaited()
+        written = [r for r, _ in connector.data_entities_processor.on_new_records.await_args.args[0]]
+        assert written == [epic, task]
         assert stats["new_count"] == 2
 
     @pytest.mark.asyncio
@@ -1210,10 +1213,12 @@ class TestProcessNewRecords:
         connector = _make_connector()
 
         new_rec = MagicMock(spec=TicketRecord)
+        new_rec.external_record_id = "new-1"
         new_rec.parent_external_record_id = None
         new_rec.version = 0
 
         updated_rec = MagicMock(spec=TicketRecord)
+        updated_rec.external_record_id = "updated-1"
         updated_rec.parent_external_record_id = None
         updated_rec.version = 3
 
@@ -2128,14 +2133,14 @@ class TestInlineResolverEdges:
 class TestFetchIssueAttachmentsEdges:
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self):
+    async def test_exception_is_raised_for_the_caller_to_retry_the_issue(self):
         connector = _make_connector()
         connector._resolve_inline_image_attachment_ids = MagicMock(side_effect=RuntimeError("x"))
-        result = await connector._fetch_issue_attachments(
-            "1", "PROJ-1", {"attachment": [{"id": "1"}]}, [], "p-1",
-            RecordGroupType.PROJECT, AsyncMock(),
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await connector._fetch_issue_attachments(
+                "1", "PROJ-1", {"attachment": [{"id": "1"}]}, [], "p-1",
+                RecordGroupType.PROJECT, AsyncMock(),
+            )
 
     @pytest.mark.asyncio
     async def test_no_attachments_returns_empty(self):
@@ -2430,10 +2435,12 @@ class TestEdgeRebuildRecordsAreNotRepublished:
         connector = _make_connector()
 
         changed = MagicMock(spec=TicketRecord)
+        changed.external_record_id = "changed-1"
         changed.parent_external_record_id = None
         changed.version = 3
 
         unchanged = MagicMock(spec=TicketRecord)
+        unchanged.external_record_id = "unchanged-1"
         unchanged.parent_external_record_id = None
         unchanged.version = 7
 

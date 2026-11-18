@@ -556,9 +556,26 @@ export class Application {
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
-        exposedHeaders: ['x-session-token', 'content-disposition'],
+        exposedHeaders: [
+          'x-session-token',
+          'content-disposition',
+          'etag',
+          'accept-ranges',
+          'content-range',
+          'content-length',
+        ],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
+        allowedHeaders: [
+          'Content-Type',
+          'Authorization',
+          'x-session-token',
+          'x-request-id',
+          'client-name',
+          'x-record-content-open',
+          'if-none-match',
+          'range',
+          'if-range',
+        ]
       }),
     );
 
@@ -934,11 +951,22 @@ export class Application {
 
   async start(): Promise<void> {
     try {
-      await new Promise<void>((resolve) => {
-        this.server.listen(this.port, () => {
+      await new Promise<void>((resolve, reject) => {
+        // listen reports a bind failure (port in use, address not available) as an 'error' event, not a throw.
+        const onError = (error: Error): void => {
+          this.server.off('error', onError);
+          reject(error);
+        };
+        const onListening = (): void => {
+          this.server.off('error', onError);
           this.logger.info(`Server started on port ${this.port}`);
           resolve();
-        });
+        };
+        this.server.once('error', onError);
+        // Every interface unless told otherwise (right inside a container); a process outside one sets loopback.
+        const host = process.env.PIPESHUB_BIND_HOST?.trim();
+        if (host) this.server.listen(this.port, host, onListening);
+        else this.server.listen(this.port, onListening);
       });
       await editionBoot.afterListen(this.logger, this.editionContainers());
     } catch (error) {

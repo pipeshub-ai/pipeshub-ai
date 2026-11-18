@@ -83,7 +83,7 @@ export class OAuthDcrService {
   ) {}
 
   async register(body: DcrRequestBody): Promise<DcrResponse> {
-    if (process.env.PIPESHUB_ENABLE_DCR !== 'true') {
+    if (process.env.PIPESHUB_ENABLE_DCR === 'false') {
       throw new ForbiddenError('dynamic client registration is disabled')
     }
 

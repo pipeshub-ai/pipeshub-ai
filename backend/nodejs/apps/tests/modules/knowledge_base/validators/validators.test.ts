@@ -94,6 +94,18 @@ describe('knowledge_base/validators/validators', () => {
       expect(result.success).to.be.true;
     });
 
+    it('keeps a user\'s force flag, which tells a Force reindex from a plain one', () => {
+      const result = reindexRecordSchema.safeParse({ params: { recordId: 'rec-123' }, body: { depth: 0, force: true } });
+      expect(result.success).to.be.true;
+      if (result.success) expect(result.data.body?.force).to.equal(true);
+    });
+
+    it('refuses a force flag that is not a boolean', () => {
+      for (const bad of ['true', 1, 'yes']) {
+        expect(reindexRecordSchema.safeParse({ params: { recordId: 'rec-123' }, body: { force: bad } }).success, String(bad)).to.be.false;
+      }
+    });
+
     it('should accept optional depth', () => {
       const data = { params: { recordId: 'rec-123' }, body: { depth: 5 } };
       const result = reindexRecordSchema.safeParse(data);
