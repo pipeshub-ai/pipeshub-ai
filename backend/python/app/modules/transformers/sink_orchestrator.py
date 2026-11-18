@@ -1212,15 +1212,24 @@ class SinkOrchestrator(Transformer):
         """A vector-only reindex (no blob write, no diff) writes every point of the record again, so the set of blocks that have a point
         is whatever it wrote: the stored reconciliation metadata goes through the same path as any other index (the vector store
         records ``pointedBlocks`` in it and ``_save_reconciliation_metadata`` saves it), with every block to be embedded. A record with
-        no stored metadata has nothing to update."""
+        no stored metadata has nothing to update; one that cannot be read fails the record."""
         record = ctx.record
         if ctx.reconciliation_context is not None or not record.org_id or not record.virtual_record_id:
             return
         try:
-            stored = await self.blob_storage.get_reconciliation_metadata(record.virtual_record_id, record.org_id)
-        except Exception as e:  # the set stays as it was; the next index of the record rewrites it
-            self.logger.warning("Record %s: the stored reconciliation metadata could not be read, its recorded points are not rewritten: %s", record.id, e)
-            return
+            stored = await self.blob_storage.get_reconciliation_metadata(
+                record.virtual_record_id, record.org_id, raise_on_error=True
+            )
+        except Exception as e:
+            # Not an absent document: leaving the recorded set as it was could keep naming a block this run gives no point (an image
+            # on a model that does not embed it), and every later run would carry it. The record fails and is retried.
+            self.logger.warning(
+                "Record %s: the stored reconciliation metadata could not be read (%s); the reindex is retried",
+                record.id, type(e).__name__,
+            )
+            raise IndexingError(
+                message=f"The stored reconciliation metadata of record {record.id} could not be read", record_id=record.id
+            ) from e
         if isinstance(stored, dict) and stored:
             ctx.reconciliation_context = ReconciliationContext(new_metadata=dict(stored))
 
@@ -1233,6 +1242,8 @@ class SinkOrchestrator(Transformer):
                 record.virtual_record_id,
                 ctx.reconciliation_context.new_metadata,
                 document_path=ctx.settings.get("storage_path"),
+                # A vector-only reindex has no storage path: it updates the document in place and never creates one at a guessed path.
+                create_if_missing=not ctx.settings.get("skip_blob"),
                 connector_id=getattr(record, "connector_id", None),
                 record_group_id=getattr(record, "record_group_id", None),
             )
