@@ -3657,17 +3657,10 @@
         }
       },
       "userAccess": {
-        "title": "使用你自己帳戶的團隊連接器",
-        "subtitle": "管理員已將這些連接器設定為每個人只能看到自己帳戶可以開啟的內容。連接你的帳戶即可查看其中的結果。",
         "connect": "連接",
         "reconnect": "重新連接",
-        "disconnect": "中斷連接",
         "connected": "已連接",
         "connectedAs": "已以 {{account}} 連接",
-        "lastSynced": "上次同步 {{time}}",
-        "notSyncedYet": "尚未同步",
-        "notConnected": "未連接。連接之前，你看不到此連接器中的任何內容。",
-        "needsReconnect": "需要重新連接",
         "connectDialog": {
           "title": "將你的帳戶連接到 {{name}}",
           "description": "貼上你自己的 {{source}} 帳戶中的個人存取權杖。PipesHub 只會向你顯示你的帳戶可以開啟的頁面。",
@@ -3675,25 +3668,10 @@
           "tokenLabel": "個人存取權杖",
           "submitting": "正在連接…",
           "errorFallback": "無法連接你的帳戶，請重試。",
-          "descriptionSignIn": "使用你自己的 {{source}} 帳戶登入，並選擇要分享的頁面。PipesHub 只會向你顯示這些頁面。",
-          "signIn": "使用 {{source}} 登入",
           "signInHint": "{{source}} 只列出你擁有完整存取權限的頁面。所選頁面的子頁面（包括新建立的）都會包含在內。之後如需新增更多頁面，請重新登入。",
           "signingIn": "正在等待 {{source}}…",
           "signInFailed": "登入未完成。請重試。",
-          "popupBlocked": "瀏覽器封鎖了登入視窗。請允許此網站的彈出視窗後重試。",
-          "useToken": "改用個人存取權杖"
-        },
-        "disconnectDialog": {
-          "title": "中斷你的帳戶連接？",
-          "message": "在重新連接之前，你將看不到來自 {{name}} 的結果。",
-          "confirming": "正在中斷…"
-        },
-        "toasts": {
-          "connected": "帳戶已連接",
-          "connectedDescription": "你的頁面會在下次同步後顯示。",
-          "disconnected": "帳戶已中斷連接",
-          "remindersOff": "已關閉提醒",
-          "remindersOn": "已重新開啟提醒"
+          "popupBlocked": "瀏覽器封鎖了登入視窗。請允許此網站的彈出視窗後重試。"
         },
         "admin": {
           "title": "已連接的使用者",
@@ -3703,7 +3681,6 @@
           "removeMessage": "在重新連接之前，對方將看不到此連接器的結果。",
           "removing": "正在移除…",
           "removed": "連接已移除",
-          "countItem": "{{label}}：{{count}}",
           "status": {
             "connected": "已連接",
             "needs_reconnect": "需要重新連接",
@@ -3713,7 +3690,6 @@
             "no_account": "沒有 PipesHub 帳戶"
           },
           "noAccountHint": "請先邀請他們加入 PipesHub",
-          "inviteAll_other": "邀請 {{count}} 人",
           "invite": "邀請",
           "remind": "提醒",
           "sent_other": "已傳送給 {{count}} 人",
@@ -3733,9 +3709,16 @@
           },
           "inviteWho": "邀請 {{name}}",
           "remindWho": "提醒 {{name}}",
-          "removeWho": "移除 {{name}} 的連接"
+          "removeWho": "移除 {{name}} 的連接",
+          "yourAccount": "你的帳號",
+          "connectedOf": "{{total}} 人中已有 {{connected}} 人連線",
+          "needReconnect_other": "{{count}} 人需要重新連線",
+          "search": "依姓名或電子郵件搜尋",
+          "inviteEveryoneHint": "所有尚未連線的人",
+          "inviteEveryone": "全部邀請（{{count}}）",
+          "noMatches": "沒有符合「{{q}}」的人",
+          "nobody": "目前沒有人。下次同步後會顯示。"
         },
-        "dontRemind": "不再提醒我",
         "link": {
           "title": "連接你的 {{source}} 帳戶",
           "forEmail": "適用於 {{email}}",
@@ -3746,7 +3729,7 @@
           "expired": "此連結已過期或已被使用。請向管理員索取新連結，或在 PipesHub 的「您的個人連接器」中連接。",
           "optedOut": "你將不會再收到此連接器的提醒。",
           "error": "發生問題。請一分鐘後重試。",
-          "noSignIn": "此連接器使用個人存取權杖。請登入 PipesHub 貼上你的權杖。",
+          "noSignIn": "此連接器使用個人存取權杖。開啟 PipesHub，在通知中選擇「連線」來貼上你的權杖。",
           "done": "{{name}} 已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
           "doneUnnamed": "你的帳戶已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
           "failedTitle": "無法連接",
@@ -3756,8 +3739,7 @@
           "rateLimited": "嘗試次數過多，請一分鐘後重試。",
           "cancelled": "你取消了登入。",
           "signInFailed": "登入未完成。請重試。"
-        },
-        "remindAgain": "重新提醒我"
+        }
       }
     },
     "mcpServers": {

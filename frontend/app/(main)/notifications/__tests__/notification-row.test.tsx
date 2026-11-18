@@ -20,6 +20,14 @@ vi.mock('@/lib/navigation', () => ({
   ),
 }));
 
+const connect = vi.hoisted(() => ({ onConnected: null as null | (() => void) }));
+vi.mock('@/app/(main)/workspace/connectors/components/user-access/connect-account', () => ({
+  ConnectAccountAction: ({ connectorId, onConnected }: { connectorId: string; onConnected?: () => void }) => {
+    connect.onConnected = onConnected ?? null;
+    return <button type="button">connect {connectorId}</button>;
+  },
+}));
+
 import { NotificationRow, chatConversationIdFromHref, isExternalNotificationHref } from '../notification-row';
 import type { NotificationListItem } from '../api';
 
@@ -120,5 +128,41 @@ describe('chatConversationIdFromHref', () => {
     '/\\demo.example.com/chat/?conversationId=abc',
   ])('finds no conversation in %s', (href) => {
     expect(chatConversationIdFromHref(href)).toBeNull();
+  });
+});
+
+describe('NotificationRow connect request', () => {
+  const base: NotificationListItem = { _id: 'n2', type: 'CONNECTOR_INFO', title: 'Connect your Notion account', status: 'unread' };
+  const renderNotice = (n: NotificationListItem, onMarkRead = vi.fn()) => {
+    render(
+      <Theme>
+        <NotificationRow
+          notification={n}
+          onMarkRead={onMarkRead}
+          onMarkUnread={vi.fn()}
+          onArchive={vi.fn()}
+          onUnarchive={vi.fn()}
+          onDismiss={vi.fn()}
+          markReadLabel="read"
+          markUnreadLabel="unread"
+          archiveLabel="archive"
+          unarchiveLabel="unarchive"
+          dismissLabel="dismiss"
+        />
+      </Theme>,
+    );
+    return onMarkRead;
+  };
+
+  it('carries the Connect button, and connecting marks the notification read', () => {
+    const onMarkRead = renderNotice({ ...base, payload: { action: 'connect_account', connectorId: 'c-1' } });
+    expect(screen.getByRole('button', { name: 'connect c-1' })).toBeTruthy();
+    connect.onConnected?.();
+    expect(onMarkRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no Connect button on any other notification', () => {
+    renderNotice({ ...base, payload: { connectorId: 'c-1' } });
+    expect(screen.queryByRole('button', { name: /^connect / })).toBeNull();
   });
 });

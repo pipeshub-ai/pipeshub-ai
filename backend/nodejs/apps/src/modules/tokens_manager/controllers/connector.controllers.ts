@@ -1901,7 +1901,17 @@ export const getConnectorUserRoster = (
     appConfig,
     HttpMethod.GET,
     'list the connector roster',
-    () => '/roster',
+    (req) => {
+      const query = new URLSearchParams();
+      for (const key of ['q', 'offset', 'limit'] as const) {
+        const value: unknown = req.query[key];
+        if (typeof value === 'string' || typeof value === 'number') {
+          query.set(key, String(value));
+        }
+      }
+      const qs = query.toString();
+      return qs !== '' ? `/roster?${qs}` : '/roster';
+    },
   );
 
 /** Admin only: notify people (by id, or everyone not yet connected) to connect their account. */

@@ -146,8 +146,6 @@ export function ConnectAccountClient() {
     case 'ready': {
       const { info } = view;
       const source = info.sourceType || info.connectorName;
-      // Tokens are `<connectorId>.<secret>`; link/info does not return the id.
-      const connectorId = token.split('.')[0];
       body = (
         <Flex direction="column" align="center" gap="4">
           <Heading as="h1" size="5" weight="medium">
@@ -173,7 +171,7 @@ export function ConnectAccountClient() {
           ) : (
             <>
               <Text size="3">{t('workspace.connectors.userAccess.link.noSignIn')}</Text>
-              <OpenAppButton href={`/workspace/connectors/personal/?connect=${encodeURIComponent(connectorId)}`} />
+              <OpenAppButton href="/" />
             </>
           )}
         </Flex>
@@ -209,7 +207,7 @@ export function ConnectAccountClient() {
         <Flex direction="column" align="center" gap="4">
           <MaterialIcon name="link_off" size={24} color="var(--gray-11)" />
           <Text size="3">{t('workspace.connectors.userAccess.link.expired')}</Text>
-          <OpenAppButton href="/workspace/connectors/personal/" />
+          <OpenAppButton href="/" />
         </Flex>
       );
       break;

@@ -3657,17 +3657,10 @@
         }
       },
       "userAccess": {
-        "title": "내 계정을 사용하는 팀 커넥터",
-        "subtitle": "관리자가 이 커넥터를 각 사용자가 자신의 계정으로 열 수 있는 항목만 보도록 설정했습니다. 결과를 보려면 계정을 연결하세요.",
         "connect": "연결",
         "reconnect": "다시 연결",
-        "disconnect": "연결 해제",
         "connected": "연결됨",
         "connectedAs": "{{account}}(으)로 연결됨",
-        "lastSynced": "마지막 동기화 {{time}}",
-        "notSyncedYet": "아직 동기화되지 않음",
-        "notConnected": "연결되지 않음. 연결하기 전까지 이 커넥터의 항목이 보이지 않습니다.",
-        "needsReconnect": "다시 연결해야 함",
         "connectDialog": {
           "title": "{{name}}에 계정 연결",
           "description": "내 {{source}} 계정의 개인 액세스 토큰을 붙여넣으세요. PipesHub는 내 계정으로 열 수 있는 페이지만 보여 줍니다.",
@@ -3675,25 +3668,10 @@
           "tokenLabel": "개인 액세스 토큰",
           "submitting": "연결 중…",
           "errorFallback": "계정을 연결하지 못했습니다. 다시 시도하세요.",
-          "descriptionSignIn": "본인의 {{source}} 계정으로 로그인하고 공유할 페이지를 선택하세요. PipesHub는 해당 페이지만 보여 줍니다.",
-          "signIn": "{{source}}(으)로 로그인",
           "signInHint": "{{source}}에는 전체 액세스 권한이 있는 페이지만 표시됩니다. 선택한 페이지의 하위 페이지는 새로 만든 것까지 포함됩니다. 나중에 페이지를 더 추가하려면 다시 로그인하세요.",
           "signingIn": "{{source}} 응답을 기다리는 중…",
           "signInFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요.",
-          "popupBlocked": "브라우저가 로그인 창을 차단했습니다. 이 사이트의 팝업을 허용한 후 다시 시도하세요.",
-          "useToken": "대신 개인 액세스 토큰 사용"
-        },
-        "disconnectDialog": {
-          "title": "계정 연결을 해제할까요?",
-          "message": "다시 연결할 때까지 {{name}}의 결과가 보이지 않습니다.",
-          "confirming": "연결 해제 중…"
-        },
-        "toasts": {
-          "connected": "계정이 연결되었습니다",
-          "connectedDescription": "다음 동기화 후 페이지가 표시됩니다.",
-          "disconnected": "계정 연결이 해제되었습니다",
-          "remindersOff": "알림이 꺼졌습니다",
-          "remindersOn": "알림이 다시 켜졌습니다"
+          "popupBlocked": "브라우저가 로그인 창을 차단했습니다. 이 사이트의 팝업을 허용한 후 다시 시도하세요."
         },
         "admin": {
           "title": "연결된 사용자",
@@ -3703,7 +3681,6 @@
           "removeMessage": "다시 연결할 때까지 이 커넥터의 결과가 보이지 않습니다.",
           "removing": "제거 중…",
           "removed": "연결이 제거되었습니다",
-          "countItem": "{{label}}: {{count}}",
           "status": {
             "connected": "연결됨",
             "needs_reconnect": "다시 연결 필요",
@@ -3713,7 +3690,6 @@
             "no_account": "PipesHub 계정 없음"
           },
           "noAccountHint": "먼저 PipesHub에 초대하세요",
-          "inviteAll_other": "{{count}}명 초대",
           "invite": "초대",
           "remind": "알림 보내기",
           "sent_other": "{{count}}명에게 보냈습니다",
@@ -3733,9 +3709,16 @@
           },
           "inviteWho": "{{name}} 초대",
           "remindWho": "{{name}}에게 알림 보내기",
-          "removeWho": "{{name}}의 연결 제거"
+          "removeWho": "{{name}}의 연결 제거",
+          "yourAccount": "내 계정",
+          "connectedOf": "{{total}}명 중 {{connected}}명 연결됨",
+          "needReconnect_other": "{{count}}명 다시 연결 필요",
+          "search": "이름이나 이메일로 사람 검색",
+          "inviteEveryoneHint": "아직 연결하지 않은 모든 사람",
+          "inviteEveryone": "모두 초대 ({{count}})",
+          "noMatches": "“{{q}}”와 일치하는 사람이 없습니다",
+          "nobody": "아직 표시할 사람이 없습니다. 다음 동기화 후에 표시됩니다."
         },
-        "dontRemind": "알림 받지 않기",
         "link": {
           "title": "{{source}} 계정 연결",
           "forEmail": "{{email}}용",
@@ -3746,7 +3729,7 @@
           "expired": "이 링크는 만료되었거나 이미 사용되었습니다. 관리자에게 새 링크를 요청하거나 PipesHub의 내 개인 커넥터에서 연결하세요.",
           "optedOut": "이 커넥터에 대한 알림을 더 이상 받지 않습니다.",
           "error": "문제가 발생했습니다. 1분 후에 다시 시도하세요.",
-          "noSignIn": "이 커넥터는 개인 액세스 토큰을 사용합니다. PipesHub에 로그인해 토큰을 붙여넣으세요.",
+          "noSignIn": "이 커넥터는 개인 액세스 토큰을 사용합니다. PipesHub를 열고 알림에서 연결을 선택해 토큰을 붙여 넣으세요.",
           "done": "{{name}}이(가) 연결되었습니다. 몇 분 안에 PipesHub 검색에 페이지가 표시됩니다.",
           "doneUnnamed": "계정이 연결되었습니다. 몇 분 안에 PipesHub 검색에 페이지가 표시됩니다.",
           "failedTitle": "연결하지 못했습니다",
@@ -3756,8 +3739,7 @@
           "rateLimited": "시도 횟수가 너무 많습니다. 1분 후에 다시 시도하세요.",
           "cancelled": "로그인을 취소했습니다.",
           "signInFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요."
-        },
-        "remindAgain": "다시 알림 받기"
+        }
       }
     },
     "mcpServers": {

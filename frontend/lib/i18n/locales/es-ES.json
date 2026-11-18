@@ -3551,17 +3551,10 @@
         }
       },
       "userAccess": {
-        "title": "Conectores del equipo que usan tu propia cuenta",
-        "subtitle": "Tu administrador configuró estos conectores para que cada persona vea solo lo que su propia cuenta puede abrir. Conecta tu cuenta para ver sus resultados.",
         "connect": "Conectar",
         "reconnect": "Volver a conectar",
-        "disconnect": "Desconectar",
         "connected": "Conectada",
         "connectedAs": "Conectada como {{account}}",
-        "lastSynced": "Última sincronización {{time}}",
-        "notSyncedYet": "Aún no sincronizada",
-        "notConnected": "No conectada. No verás nada de este conector hasta que te conectes.",
-        "needsReconnect": "Hay que volver a conectarla",
         "connectDialog": {
           "title": "Conecta tu cuenta a {{name}}",
           "description": "Pega un token de acceso personal de tu propia cuenta de {{source}}. PipesHub te mostrará solo las páginas que tu cuenta puede abrir.",
@@ -3569,25 +3562,10 @@
           "tokenLabel": "Token de acceso personal",
           "submitting": "Conectando…",
           "errorFallback": "No se pudo conectar tu cuenta. Inténtalo de nuevo.",
-          "descriptionSignIn": "Inicia sesión con tu propia cuenta de {{source}} y elige las páginas que quieres compartir. PipesHub solo te mostrará esas páginas.",
-          "signIn": "Iniciar sesión con {{source}}",
           "signInHint": "{{source}} solo muestra las páginas a las que tienes acceso completo. Las subpáginas de una página que elijas se incluyen, también las nuevas. Para añadir más páginas después, vuelve a iniciar sesión.",
           "signingIn": "Esperando a {{source}}…",
           "signInFailed": "El inicio de sesión no se completó. Inténtalo de nuevo.",
-          "popupBlocked": "Tu navegador bloqueó la ventana de inicio de sesión. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.",
-          "useToken": "Usar un token de acceso personal en su lugar"
-        },
-        "disconnectDialog": {
-          "title": "¿Desconectar tu cuenta?",
-          "message": "Dejarás de ver resultados de {{name}} hasta que te vuelvas a conectar.",
-          "confirming": "Desconectando…"
-        },
-        "toasts": {
-          "connected": "Cuenta conectada",
-          "connectedDescription": "Tus páginas aparecerán tras la próxima sincronización.",
-          "disconnected": "Cuenta desconectada",
-          "remindersOff": "Recordatorios desactivados",
-          "remindersOn": "Recordatorios activados de nuevo"
+          "popupBlocked": "Tu navegador bloqueó la ventana de inicio de sesión. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."
         },
         "admin": {
           "title": "Usuarios conectados",
@@ -3597,7 +3575,6 @@
           "removeMessage": "Dejará de ver resultados de este conector hasta que se vuelva a conectar.",
           "removing": "Quitando…",
           "removed": "Conexión quitada",
-          "countItem": "{{label}}: {{count}}",
           "status": {
             "connected": "Conectado",
             "needs_reconnect": "Debe volver a conectar",
@@ -3607,9 +3584,6 @@
             "no_account": "Sin cuenta de PipesHub"
           },
           "noAccountHint": "Invítalo primero a PipesHub",
-          "inviteAll_one": "Invitar a {{count}} persona",
-          "inviteAll_many": "Invitar a {{count}} de personas",
-          "inviteAll_other": "Invitar a {{count}} personas",
           "invite": "Invitar",
           "remind": "Recordar",
           "sent_one": "Enviado a {{count}} persona",
@@ -3635,9 +3609,18 @@
           },
           "inviteWho": "Invitar a {{name}}",
           "remindWho": "Recordar a {{name}}",
-          "removeWho": "Quitar la conexión de {{name}}"
+          "removeWho": "Quitar la conexión de {{name}}",
+          "yourAccount": "Tu cuenta",
+          "connectedOf": "{{connected}} de {{total}} personas conectadas",
+          "needReconnect_one": "{{count}} tiene que volver a conectarse",
+          "needReconnect_many": "{{count}} tienen que volver a conectarse",
+          "needReconnect_other": "{{count}} tienen que volver a conectarse",
+          "search": "Buscar personas por nombre o correo",
+          "inviteEveryoneHint": "Todas las personas que aún no se han conectado",
+          "inviteEveryone": "Invitar a todos ({{count}})",
+          "noMatches": "Nadie coincide con «{{q}}»",
+          "nobody": "Aún no hay nadie. Las personas aparecen tras la próxima sincronización."
         },
-        "dontRemind": "No recordarme",
         "link": {
           "title": "Conecta tu cuenta de {{source}}",
           "forEmail": "para {{email}}",
@@ -3648,7 +3631,7 @@
           "expired": "Este enlace ha caducado o ya se usó. Pide uno nuevo a tu administrador o conéctate desde Tus conectores personales en PipesHub.",
           "optedOut": "No recibirás más recordatorios para este conector.",
           "error": "Algo salió mal. Inténtalo de nuevo en un minuto.",
-          "noSignIn": "Este conector usa tokens de acceso personal. Inicia sesión en PipesHub para pegar el tuyo.",
+          "noSignIn": "Este conector usa tokens de acceso personal. Abre PipesHub y selecciona Conectar en la notificación para pegar el tuyo.",
           "done": "{{name}} está conectado. Tus páginas aparecerán en la búsqueda de PipesHub en unos minutos.",
           "doneUnnamed": "Tu cuenta está conectada. Tus páginas aparecerán en la búsqueda de PipesHub en unos minutos.",
           "failedTitle": "No se pudo conectar",
@@ -3658,8 +3641,7 @@
           "rateLimited": "Demasiados intentos, inténtalo de nuevo en un minuto.",
           "cancelled": "Cancelaste el inicio de sesión.",
           "signInFailed": "El inicio de sesión no terminó. Inténtalo de nuevo."
-        },
-        "remindAgain": "Volver a recordarme"
+        }
       }
     },
     "mcpServers": {

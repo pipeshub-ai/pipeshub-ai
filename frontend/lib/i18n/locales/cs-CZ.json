@@ -3781,17 +3781,10 @@
         }
       },
       "userAccess": {
-        "title": "Týmové konektory, které používají váš vlastní účet",
-        "subtitle": "Správce nastavil tyto konektory tak, aby každý viděl jen to, co může otevřít jeho vlastní účet. Připojte svůj účet, abyste z nich viděli výsledky.",
         "connect": "Připojit",
         "reconnect": "Znovu připojit",
-        "disconnect": "Odpojit",
         "connected": "Připojeno",
         "connectedAs": "Připojeno jako {{account}}",
-        "lastSynced": "Naposledy synchronizováno {{time}}",
-        "notSyncedYet": "Zatím nesynchronizováno",
-        "notConnected": "Nepřipojeno. Dokud se nepřipojíte, z tohoto konektoru nic neuvidíte.",
-        "needsReconnect": "Je třeba znovu připojit",
         "connectDialog": {
           "title": "Připojit váš účet k {{name}}",
           "description": "Vložte osobní přístupový token ze svého vlastního účtu {{source}}. PipesHub vám zobrazí jen stránky, které může otevřít váš účet.",
@@ -3799,25 +3792,10 @@
           "tokenLabel": "Osobní přístupový token",
           "submitting": "Připojování…",
           "errorFallback": "Váš účet se nepodařilo připojit. Zkuste to znovu.",
-          "descriptionSignIn": "Přihlaste se vlastním účtem {{source}} a vyberte stránky, které chcete sdílet. PipesHub vám zobrazí jen tyto stránky.",
-          "signIn": "Přihlásit se přes {{source}}",
           "signInHint": "{{source}} nabízí jen stránky, ke kterým máte plný přístup. Podstránky vybrané stránky jsou zahrnuty, i nové. Chcete-li později přidat další stránky, přihlaste se znovu.",
           "signingIn": "Čeká se na {{source}}…",
           "signInFailed": "Přihlášení nebylo dokončeno. Zkuste to znovu.",
-          "popupBlocked": "Prohlížeč zablokoval přihlašovací okno. Povolte pro tento web vyskakovací okna a zkuste to znovu.",
-          "useToken": "Použít místo toho osobní přístupový token"
-        },
-        "disconnectDialog": {
-          "title": "Odpojit váš účet?",
-          "message": "Dokud se znovu nepřipojíte, přestanete vidět výsledky z {{name}}.",
-          "confirming": "Odpojování…"
-        },
-        "toasts": {
-          "connected": "Účet připojen",
-          "connectedDescription": "Vaše stránky se zobrazí po příští synchronizaci.",
-          "disconnected": "Účet odpojen",
-          "remindersOff": "Připomínky vypnuty",
-          "remindersOn": "Připomínky znovu zapnuty"
+          "popupBlocked": "Prohlížeč zablokoval přihlašovací okno. Povolte pro tento web vyskakovací okna a zkuste to znovu."
         },
         "admin": {
           "title": "Připojení uživatelé",
@@ -3827,7 +3805,6 @@
           "removeMessage": "Dokud se znovu nepřipojí, přestane vidět výsledky z tohoto konektoru.",
           "removing": "Odebírání…",
           "removed": "Připojení odebráno",
-          "countItem": "{{label}}: {{count}}",
           "status": {
             "connected": "Připojeno",
             "needs_reconnect": "Musí se znovu připojit",
@@ -3837,10 +3814,6 @@
             "no_account": "Bez účtu PipesHub"
           },
           "noAccountHint": "Nejprve je pozvěte do PipesHub",
-          "inviteAll_one": "Pozvat {{count}} osobu",
-          "inviteAll_few": "Pozvat {{count}} osoby",
-          "inviteAll_many": "Pozvat {{count}} osoby",
-          "inviteAll_other": "Pozvat {{count}} osob",
           "invite": "Pozvat",
           "remind": "Připomenout",
           "sent_one": "Odesláno {{count}} osobě",
@@ -3869,9 +3842,19 @@
           },
           "inviteWho": "Pozvat {{name}}",
           "remindWho": "Připomenout {{name}}",
-          "removeWho": "Odebrat připojení {{name}}"
+          "removeWho": "Odebrat připojení {{name}}",
+          "yourAccount": "Váš účet",
+          "connectedOf": "Připojeno {{connected}} z {{total}} lidí",
+          "needReconnect_one": "{{count}} se musí znovu připojit",
+          "needReconnect_few": "{{count}} se musí znovu připojit",
+          "needReconnect_many": "{{count}} se musí znovu připojit",
+          "needReconnect_other": "{{count}} se musí znovu připojit",
+          "search": "Hledat lidi podle jména nebo e-mailu",
+          "inviteEveryoneHint": "Všichni, kdo se ještě nepřipojili",
+          "inviteEveryone": "Pozvat všechny ({{count}})",
+          "noMatches": "Nikdo neodpovídá „{{q}}“",
+          "nobody": "Zatím tu nikdo není. Lidé se zobrazí po další synchronizaci."
         },
-        "dontRemind": "Nepřipomínat",
         "link": {
           "title": "Připojte svůj účet {{source}}",
           "forEmail": "pro {{email}}",
@@ -3882,7 +3865,7 @@
           "expired": "Platnost tohoto odkazu vypršela nebo už byl použit. Požádejte administrátora o nový, nebo se připojte v PipesHub v části Vaše osobní konektory.",
           "optedOut": "Další připomínky k tomuto konektoru už nedostanete.",
           "error": "Něco se pokazilo. Zkuste to znovu za minutu.",
-          "noSignIn": "Tento konektor používá osobní přístupové tokeny. Přihlaste se do PipesHub a vložte svůj.",
+          "noSignIn": "Tento konektor používá osobní přístupové tokeny. Otevřete PipesHub a v oznámení vyberte Připojit, kam vložíte svůj token.",
           "done": "{{name}} je připojen. Vaše stránky se ve vyhledávání PipesHub objeví během několika minut.",
           "doneUnnamed": "Váš účet je připojen. Vaše stránky se ve vyhledávání PipesHub objeví během několika minut.",
           "failedTitle": "Připojení se nezdařilo",
@@ -3892,8 +3875,7 @@
           "rateLimited": "Příliš mnoho pokusů, zkuste to znovu za minutu.",
           "cancelled": "Přihlášení jste zrušili.",
           "signInFailed": "Přihlášení nebylo dokončeno. Zkuste to znovu."
-        },
-        "remindAgain": "Znovu připomínat"
+        }
       }
     },
     "mcpServers": {

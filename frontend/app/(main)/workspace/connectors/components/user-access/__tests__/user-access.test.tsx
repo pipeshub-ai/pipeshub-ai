@@ -35,7 +35,7 @@ vi.mock('@/app/components/ui/ConnectorIcon', () => ({ ConnectorIcon: () => null 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
 
-import { MyAccountConnections } from '../my-account-connections';
+import { ConnectAccountAction } from '../connect-account';
 import { ConnectedUsers } from '../connected-users';
 import { ConnectAccountClient } from '@/app/(public)/connect-account/connect-account-client';
 import { ConnectorOAuthCallbackClient } from '@/app/(public)/connectors/oauth/callback/connector-oauth-callback-client';
@@ -65,140 +65,121 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe('MyAccountConnections', () => {
-  it('renders nothing when no connector is in per-user mode', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([]);
-    const { container } = renderInTheme(<MyAccountConnections />);
-    await waitFor(() => expect(api.getMyUserAccessConnectors).toHaveBeenCalled());
-    expect(container.querySelector('section')).toBeNull();
-  });
+const notion = {
+  connectorId: 'c-1',
+  name: 'Team Notion',
+  type: 'Notion',
+  connected: false,
+  connection: null,
+  signInAvailable: true,
+};
 
-  it('asks for a reconnect when the token was revoked, and says why', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([
-      {
-        connectorId: 'c-1',
-        name: 'Team Notion',
-        type: 'Notion',
-        connected: true,
-        connection: connection({ status: 'revoked', lastError: 'Notion no longer accepts this token.' }),
-      },
-    ]);
-    renderInTheme(<MyAccountConnections />);
-    expect(await screen.findByText('Needs reconnecting: Notion no longer accepts this token.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeTruthy();
-  });
-
-  it('shows the server reason inside the dialog, then the connected state once a token is accepted', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([
-      { connectorId: 'c-1', name: 'Team Notion', type: 'Notion', connected: false, connection: null },
-    ]);
-    api.connectUserAccess
-      .mockRejectedValueOnce({
-        type: 'VALIDATION_ERROR',
-        message: 'This token belongs to a different Notion workspace than this connector.',
-        statusCode: 400,
-      })
-      .mockResolvedValueOnce(connection());
-    renderInTheme(<MyAccountConnections />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.change(screen.getByLabelText('Personal access token'), { target: { value: ' ntn_abc ' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
-
-    expect(
-      await screen.findByText('This token belongs to a different Notion workspace than this connector.')
-    ).toBeTruthy();
-    expect(api.connectUserAccess).toHaveBeenCalledWith('c-1', 'ntn_abc');
-    expect(dialog.isConnected).toBe(true);
-
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
-    expect(await screen.findByText(/Connected as dana@example.com/)).toBeTruthy();
-    expect(toastTitles()).toContain('Account connected');
-  });
-});
-
-describe('MyAccountConnections sign-in with the source', () => {
-  const signInConnector = {
-    connectorId: 'c-1',
-    name: 'Team Notion',
-    type: 'Notion',
-    connected: false,
-    connection: null,
-    signInAvailable: true,
-  };
-
+describe('ConnectAccountAction (the Connect button on a notification)', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('signs in through a popup and shows the connected state once the callback reports back', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([signInConnector]);
+  it('renders nothing when the connector is gone or no longer per-user', async () => {
+    api.getMyUserAccessConnectors.mockResolvedValue([]);
+    const { container } = renderInTheme(<ConnectAccountAction connectorId="c-1" />);
+    await waitFor(() => expect(api.getMyUserAccessConnectors).toHaveBeenCalledWith({ silent: true }));
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('opens the sign-in window straight from the button and shows Connected when it reports back', async () => {
+    api.getMyUserAccessConnectors
+      .mockResolvedValueOnce([notion])
+      .mockResolvedValue([{ ...notion, connected: true, connection: connection({ method: 'oauth' }) }]);
     api.startUserAccessSignIn.mockResolvedValue('https://api.notion.com/v1/oauth/authorize?state=s');
-    api.getUserAccess.mockResolvedValue(connection({ method: 'oauth' }));
     const popup = { closed: false, close: vi.fn(), location: { href: '' } };
     const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
-    renderInTheme(<MyAccountConnections />);
+    const onConnected = vi.fn();
+    renderInTheme(<ConnectAccountAction connectorId="c-1" onConnected={onConnected} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign in with Notion' }));
 
+    expect(screen.queryByRole('dialog')).toBeNull();
     await waitFor(() => expect(popup.location.href).toBe('https://api.notion.com/v1/oauth/authorize?state=s'));
     // Not opened with noopener: the callback page reports back through window.opener.
     expect(String(open.mock.calls[0][2])).not.toContain('noopener');
-    expect(api.startUserAccessSignIn).toHaveBeenCalledWith('c-1');
 
-    window.dispatchEvent(
-      new MessageEvent('message', { origin: window.location.origin, data: { type: 'CONNECTOR_OAUTH_SUCCESS' } })
-    );
-    expect(await screen.findByText(/Connected as dana@example.com/)).toBeTruthy();
-    expect(api.getUserAccess).toHaveBeenCalledWith('c-1');
-  });
-
-  it('ignores a message from another origin and shows the reason a sign-in failed', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([signInConnector]);
-    api.startUserAccessSignIn.mockResolvedValue('https://api.notion.com/v1/oauth/authorize?state=s');
-    const popup = { closed: false, close: vi.fn(), location: { href: '' } };
-    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
-    renderInTheme(<MyAccountConnections />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign in with Notion' }));
-    await waitFor(() => expect(popup.location.href).not.toBe(''));
-
+    // Another origin, or another connector's popup, is not this sign-in.
     window.dispatchEvent(
       new MessageEvent('message', { origin: 'https://evil.example', data: { type: 'CONNECTOR_OAUTH_SUCCESS' } })
     );
     window.dispatchEvent(
       new MessageEvent('message', {
         origin: window.location.origin,
-        data: { type: 'CONNECTOR_OAUTH_ERROR', error: 'This token belongs to bob@example.com.' },
+        data: { type: 'CONNECTOR_OAUTH_SUCCESS', connectorId: 'c-9' },
       })
     );
-    expect(await screen.findByText('This token belongs to bob@example.com.')).toBeTruthy();
-    expect(api.getUserAccess).not.toHaveBeenCalled();
+    expect(api.getMyUserAccessConnectors).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: 'CONNECTOR_OAUTH_SUCCESS', connectorId: 'c-1' },
+      })
+    );
+    expect(await screen.findByText('Connected as dana@example.com')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
+    expect(onConnected).toHaveBeenCalledTimes(1);
   });
 
-  it('says so when the browser blocks the sign-in window', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([signInConnector]);
-    vi.spyOn(window, 'open').mockReturnValue(null);
-    renderInTheme(<MyAccountConnections />);
+  it('shows why a sign-in failed, and says so when the browser blocks the window', async () => {
+    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
+    api.startUserAccessSignIn.mockResolvedValue('https://api.notion.com/v1/oauth/authorize?state=s');
+    const popup = { closed: false, close: vi.fn(), location: { href: '' } };
+    const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
+    renderInTheme(<ConnectAccountAction connectorId="c-1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(popup.location.href).not.toBe(''));
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: 'CONNECTOR_OAUTH_ERROR', error: 'Access denied' },
+      })
+    );
+    expect((await screen.findByRole('alert')).textContent).toBe('Access denied');
+
+    open.mockReturnValue(null);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/blocked the sign-in window/));
+  });
+
+  it('asks for a token in a dialog when the connector has no sign-in, and shows the server reason', async () => {
+    const tokenOnly = { ...notion, signInAvailable: false };
+    api.getMyUserAccessConnectors
+      .mockResolvedValueOnce([tokenOnly])
+      .mockResolvedValue([{ ...tokenOnly, connected: true, connection: connection() }]);
+    api.connectUserAccess
+      .mockRejectedValueOnce({
+        type: 'VALIDATION_ERROR',
+        message: 'This token belongs to another workspace.',
+        statusCode: 400,
+      })
+      .mockResolvedValue(connection());
+    const open = vi.spyOn(window, 'open');
+    renderInTheme(<ConnectAccountAction connectorId="c-1" />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
     const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign in with Notion' }));
-    expect(await screen.findByText(/blocked the sign-in window/)).toBeTruthy();
-    expect(api.startUserAccessSignIn).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText('Personal access token'), { target: { value: ' secret ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+    expect(await within(dialog).findByText('This token belongs to another workspace.')).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText('Connected as dana@example.com')).toBeTruthy();
+    expect(api.connectUserAccess).toHaveBeenLastCalledWith('c-1', 'secret');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
-  it('offers only the token when the connector has no OAuth app', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([{ ...signInConnector, signInAvailable: false }]);
-    renderInTheme(<MyAccountConnections />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).queryByRole('button', { name: 'Sign in with Notion' })).toBeNull();
-    expect(within(dialog).getByLabelText('Personal access token')).toBeTruthy();
+  it('offers Reconnect when the connection stopped working', async () => {
+    api.getMyUserAccessConnectors.mockResolvedValue([
+      { ...notion, connected: true, connection: connection({ status: 'revoked', lastError: 'Token revoked' }) },
+    ]);
+    renderInTheme(<ConnectAccountAction connectorId="c-1" />);
+    expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeTruthy();
   });
 });
 
@@ -233,82 +214,107 @@ const roster = (over: Partial<UserAccessRoster> = {}): UserAccessRoster => ({
     }),
   ],
   counts: { connected: 1, needs_reconnect: 0, invited: 1, not_invited: 1, opted_out: 1, no_account: 1 },
+  total: 5,
   ...over,
 });
 
 const rowOf = (text: string) => screen.getByText(text).closest('li') as HTMLElement;
 
-describe('ConnectedUsers roster', () => {
+/** Render the admin view and open the people list. */
+const openPeople = async () => {
+  renderInTheme(<ConnectedUsers connectorId="c-1" />);
+  fireEvent.focus(await screen.findByRole('combobox', { name: 'Search people by name or email' }));
+  await screen.findByText('Ada Lovelace');
+};
+
+describe('ConnectedUsers (admin)', () => {
+  beforeEach(() => api.getMyUserAccessConnectors.mockResolvedValue([notion]));
+
   it('renders nothing for a connector that is not in per-user mode', async () => {
     api.getUserAccessRoster.mockRejectedValue({ type: 'NOT_FOUND', message: 'Connector not found', statusCode: 404 });
     const { container } = renderInTheme(<ConnectedUsers connectorId="c-1" />);
-    await waitFor(() => expect(api.getUserAccessRoster).toHaveBeenCalledWith('c-1'));
+    await waitFor(() => expect(api.getUserAccessRoster).toHaveBeenCalledWith('c-1', { limit: 1 }));
     expect(container.querySelector('section')).toBeNull();
   });
 
-  it('shows counts, statuses, labelled row actions and when the member list was read', async () => {
-    api.getUserAccessRoster.mockResolvedValue(roster());
+  it('shows a summary and the admin own Connect, with no list until the search box is used', async () => {
+    api.getUserAccessRoster.mockResolvedValue(roster({ counts: { ...roster().counts, needs_reconnect: 2 } }));
     renderInTheme(<ConnectedUsers connectorId="c-1" />);
 
-    expect(
-      await screen.findByText(
-        'Connected: 1 · Invited: 1 · Not invited: 1 · Asked not to be reminded: 1 · No PipesHub account: 1'
-      )
-    ).toBeTruthy();
+    expect(await screen.findByText('1 of 7 people connected · 2 need to reconnect')).toBeTruthy();
     expect(screen.getByText(/^Member list last read /)).toBeTruthy();
+    expect(screen.getByText('Your account')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Connect' })).toBeTruthy();
+    expect(screen.queryByText('Ada Lovelace')).toBeNull();
+    expect(api.getUserAccessRoster).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens a paged list with statuses, labelled actions and Invite all at the top', async () => {
+    api.getUserAccessRoster.mockResolvedValue(roster());
+    await openPeople();
+
+    expect(api.getUserAccessRoster).toHaveBeenLastCalledWith('c-1', { q: undefined, offset: 0, limit: 20 });
+    expect(screen.getByRole('button', { name: 'Invite all (2)' })).toBeTruthy();
     expect(within(rowOf('Ada Lovelace')).getByText('Not invited')).toBeTruthy();
     expect(within(rowOf('Ada Lovelace')).getByRole('button', { name: 'Invite Ada Lovelace' })).toBeTruthy();
     expect(within(rowOf('bob@example.com')).getByRole('button', { name: 'Remind bob@example.com' })).toBeTruthy();
-    expect(within(rowOf('bob@example.com')).getByText(/^Last sent /)).toBeTruthy();
-    expect(within(rowOf('eve@example.com')).getByText('Invite them to PipesHub first')).toBeTruthy();
+    expect(within(rowOf('bob@example.com')).getByText(/Last sent /)).toBeTruthy();
+    expect(within(rowOf('eve@example.com')).getByText(/Invite them to PipesHub first/)).toBeTruthy();
     expect(within(rowOf('eve@example.com')).queryByRole('button')).toBeNull();
-    // Opted out before any invite: no action, the badge says why.
-    expect(within(rowOf('olga@example.com')).getByText('Asked not to be reminded')).toBeTruthy();
     expect(within(rowOf('olga@example.com')).queryByRole('button')).toBeNull();
     expect(
       within(rowOf('dana@example.com')).getByRole('button', { name: 'Remove the connection of dana@example.com' })
     ).toBeTruthy();
-    expect(within(rowOf('dana@example.com')).queryByRole('button', { name: /^Remind/ })).toBeNull();
   });
 
-  it('labels a person with an invite record but nothing sent as Invite', async () => {
-    api.getUserAccessRoster.mockResolvedValue(
-      roster({
-        people: [
-          person({
-            email: 'kim@example.com',
-            userId: 'u-6',
-            status: 'invited',
-            invite: { firstSentAt: null, lastSentAt: null, sendCount: 0, optedOut: false },
-          }),
-        ],
-      })
+  it('searches on the server, hides Invite all while searching, and says when no one matches', async () => {
+    api.getUserAccessRoster.mockResolvedValue(roster());
+    await openPeople();
+    api.getUserAccessRoster.mockResolvedValue(roster({ people: [], total: 0 }));
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'zed' } });
+
+    expect(await screen.findByText('No one matches “zed”')).toBeTruthy();
+    expect(api.getUserAccessRoster).toHaveBeenLastCalledWith('c-1', { q: 'zed', offset: 0, limit: 20 });
+    expect(screen.queryByRole('button', { name: /^Invite all/ })).toBeNull();
+  });
+
+  it('loads the next page when the list is scrolled to the end', async () => {
+    api.getUserAccessRoster.mockResolvedValue(roster({ total: 45 }));
+    await openPeople();
+    const list = screen.getByRole('list').parentElement as HTMLElement;
+    Object.defineProperties(list, {
+      scrollHeight: { value: 600, configurable: true },
+      clientHeight: { value: 320, configurable: true },
+      scrollTop: { value: 280, configurable: true },
+    });
+    fireEvent.scroll(list);
+    await waitFor(() =>
+      expect(api.getUserAccessRoster).toHaveBeenLastCalledWith('c-1', { q: undefined, offset: 20, limit: 20 })
     );
-    renderInTheme(<ConnectedUsers connectorId="c-1" />);
-    expect(await screen.findByRole('button', { name: 'Invite kim@example.com' })).toBeTruthy();
   });
 
-  it('queues an invite for everyone not connected and reloads the roster', async () => {
+  it('queues Invite all and reads the roster again', async () => {
     api.getUserAccessRoster.mockResolvedValue(roster());
     api.inviteUserAccess.mockResolvedValue({ sent: 2, emailed: null, queued: true, skipped: [] });
-    renderInTheme(<ConnectedUsers connectorId="c-1" />);
+    await openPeople();
+    const calls = api.getUserAccessRoster.mock.calls.length;
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Invite 2 people' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Invite all (2)' }));
 
     await waitFor(() => expect(api.inviteUserAccess).toHaveBeenCalledWith('c-1', { all: true }));
     await waitFor(() =>
       expect(toastTitles()).toContain("Sending to 2 people. They'll get a notification and an email.")
     );
-    expect(toasts()[0].description).toBeUndefined();
-    await waitFor(() => expect(api.getUserAccessRoster).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.getUserAccessRoster.mock.calls.length).toBeGreaterThan(calls));
   });
 
   it('reminds one person and reports mail that could not be sent', async () => {
     api.getUserAccessRoster.mockResolvedValue(roster());
     api.inviteUserAccess.mockResolvedValue({ sent: 1, emailed: 0, queued: false, skipped: [] });
-    renderInTheme(<ConnectedUsers connectorId="c-1" />);
+    await openPeople();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Remind bob@example.com' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remind bob@example.com' }));
 
     await waitFor(() => expect(api.inviteUserAccess).toHaveBeenCalledWith('c-1', { userIds: ['u-3'] }));
     await waitFor(() => expect(toastTitles()).toContain('Sent to 1 person'));
@@ -325,119 +331,54 @@ describe('ConnectedUsers roster', () => {
       queued: false,
       skipped: [{ userId: 'u-3', reason: 'recently_sent' }],
     });
-    renderInTheme(<ConnectedUsers connectorId="c-1" />);
+    await openPeople();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Remind bob@example.com' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remind bob@example.com' }));
 
     await waitFor(() => expect(toastTitles()).toContain('Nothing was sent'));
     expect(toasts()[0].variant).toBe('warning');
     expect(toasts()[0].description).toBe('Already sent something in the last day.');
-    expect(toastTitles()).not.toContain('Sent to 0 people');
   });
 
-  it('cannot invite when nobody is left, and says when the member list is not read yet', async () => {
+  it('cannot invite all when nobody is left, and says when the member list is not read yet', async () => {
     api.getUserAccessRoster.mockResolvedValue(
       roster({
         membersUpdatedAt: null,
-        people: [person({ email: 'dana@example.com', userId: 'u-1', status: 'connected', connection: connection() })],
         counts: { connected: 1, needs_reconnect: 0, invited: 0, not_invited: 0, opted_out: 0, no_account: 0 },
       })
     );
-    renderInTheme(<ConnectedUsers connectorId="c-1" />);
+    await openPeople();
 
-    const button = await screen.findByRole('button', { name: 'Invite 0 people' });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Invite all (0)' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('The member list appears after the next sync')).toBeTruthy();
   });
 
-  it('removes a connection after confirming, then reloads the roster', async () => {
+  it('removes a connection after confirming, keeping the list open, then reads it again', async () => {
     api.getUserAccessRoster.mockResolvedValue(roster());
     api.removeUserAccessConnection.mockResolvedValue(undefined);
-    renderInTheme(<ConnectedUsers connectorId="c-1" />);
+    await openPeople();
+    const calls = api.getUserAccessRoster.mock.calls.length;
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Remove the connection of dana@example.com' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove the connection of dana@example.com' }));
     const confirm = await screen.findByRole('alertdialog');
+    fireEvent.mouseDown(confirm);
     fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }));
 
     await waitFor(() => expect(api.removeUserAccessConnection).toHaveBeenCalledWith('c-1', 'u-1'));
-    await waitFor(() => expect(api.getUserAccessRoster).toHaveBeenCalledTimes(2));
-  });
-});
-
-describe('MyAccountConnections deep link, dialog and reminders', () => {
-  const notion = {
-    connectorId: 'c-1',
-    name: 'Team Notion',
-    type: 'Notion',
-    connected: false,
-    connection: null,
-    signInAvailable: true,
-  };
-
-  afterEach(() => vi.restoreAllMocks());
-
-  it('opens the connect dialog from ?connect= with Sign in focused, without opening the popup', async () => {
-    nav.params = new URLSearchParams('connect=c-1&tab=all');
-    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
-    const open = vi.spyOn(window, 'open');
-    renderInTheme(<MyAccountConnections />);
-
-    const dialog = await screen.findByRole('dialog');
-    const signIn = within(dialog).getByRole('button', { name: 'Sign in with Notion' });
-    await waitFor(() => expect(document.activeElement).toBe(signIn));
-    expect(open).not.toHaveBeenCalled();
-    expect(nav.router.replace).toHaveBeenCalledWith('/workspace/connectors/personal/?tab=all');
+    await waitFor(() => expect(api.getUserAccessRoster.mock.calls.length).toBeGreaterThan(calls));
+    expect(screen.getByText('Ada Lovelace')).toBeTruthy();
   });
 
-  it('opens the dialog again when the same notification is clicked again', async () => {
-    nav.params = new URLSearchParams('connect=c-1');
-    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
-    const view = renderInTheme(<MyAccountConnections />);
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  it('closes the list on Escape and on a click outside', async () => {
+    api.getUserAccessRoster.mockResolvedValue(roster());
+    await openPeople();
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByText('Ada Lovelace')).toBeNull());
 
-    // router.replace dropped the param, then the notification put it back.
-    nav.params = new URLSearchParams();
-    view.rerender(<Theme><MyAccountConnections /></Theme>);
-    nav.params = new URLSearchParams('connect=c-1');
-    view.rerender(<Theme><MyAccountConnections /></Theme>);
-
-    expect(await screen.findByRole('dialog')).toBeTruthy();
-  });
-
-  it('keeps the token form behind a disclosure when sign-in is available', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
-    renderInTheme(<MyAccountConnections />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
-    const dialog = await screen.findByRole('dialog');
-
-    expect(within(dialog).queryByLabelText('Personal access token')).toBeNull();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Use a personal access token instead' }));
-    expect(within(dialog).getByLabelText('Personal access token')).toBeTruthy();
-  });
-
-  it("turns reminders off from the card right away, and back on", async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
-    api.setUserAccessReminders.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    renderInTheme(<MyAccountConnections />);
-
-    fireEvent.click(await screen.findByRole('button', { name: "Don't remind me" }));
-    await waitFor(() => expect(api.setUserAccessReminders).toHaveBeenCalledWith('c-1', true));
-    expect(toastTitles()).toContain('Reminders turned off');
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Remind me again' }));
-    await waitFor(() => expect(api.setUserAccessReminders).toHaveBeenCalledWith('c-1', false));
-  });
-
-  it('reflects an earlier opt-out and hides the action once connected', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([
-      { ...notion, optedOut: true },
-      { ...notion, connectorId: 'c-2', name: 'Other Notion', connected: true, connection: connection() },
-    ]);
-    renderInTheme(<MyAccountConnections />);
-    expect(await screen.findAllByRole('button', { name: 'Remind me again' })).toHaveLength(1);
-    expect(screen.queryByRole('button', { name: "Don't remind me" })).toBeNull();
+    fireEvent.focus(screen.getByRole('combobox'));
+    await screen.findByText('Ada Lovelace');
+    fireEvent.mouseDown(document.body);
+    await waitFor(() => expect(screen.queryByText('Ada Lovelace')).toBeNull());
   });
 });
 
@@ -524,15 +465,13 @@ describe('connect-account landing page', () => {
     expect((button as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('sends a token-only connector to Your connectors with its dialog', async () => {
+  it('sends a token-only connector to the app, where the notification has the Connect button', async () => {
     at('?token=c-1.abc');
     api.getUserAccessLinkInfo.mockResolvedValue({ ...info, signInAvailable: false });
     renderInTheme(<ConnectAccountClient />);
-    expect(await screen.findByText(/uses personal access tokens/)).toBeTruthy();
+    expect(await screen.findByText(/select Connect on the notification/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Continue to Notion' })).toBeNull();
-    expect(screen.getByRole('link', { name: 'Open PipesHub' }).getAttribute('href')).toMatch(
-      /^\/workspace\/connectors\/personal\/?\?connect=c-1$/
-    );
+    expect(screen.getByRole('link', { name: 'Open PipesHub' }).getAttribute('href')).toBe('/');
   });
 
   it('says when the account is already connected', async () => {

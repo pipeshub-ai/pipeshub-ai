@@ -618,11 +618,17 @@ export const ConnectorsApi = {
     );
   },
 
-  /** Admin only: everyone who could connect, with their status. 404 when not in per-user mode. */
-  async getUserAccessRoster(connectorId: string): Promise<UserAccessRoster> {
+  /**
+   * Admin only: one page of everyone who could connect (not the caller), optionally only those whose
+   * name or email contains `q`. 404 when not in per-user mode.
+   */
+  async getUserAccessRoster(
+    connectorId: string,
+    page: { q?: string; offset?: number; limit?: number } = {}
+  ): Promise<UserAccessRoster> {
     const { data } = await apiClient.get<UserAccessRoster>(
       `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access/roster`,
-      { suppressErrorToast: (e) => e.statusCode === 404 }
+      { params: page, suppressErrorToast: (e) => e.statusCode === 404 }
     );
     return data;
   },

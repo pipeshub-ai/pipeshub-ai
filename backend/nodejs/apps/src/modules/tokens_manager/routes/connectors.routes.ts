@@ -214,6 +214,22 @@ const inviteConnectorUsersSchema = connectorIdParamSchema.extend({
   ]),
 });
 
+const toNumber = (arg: unknown): unknown =>
+  arg === '' || arg === undefined ? undefined : Number(arg);
+
+/** One page of the roster, optionally only people whose name or email contains `q`. */
+const connectorRosterSchema = connectorIdParamSchema.extend({
+  query: z.object({
+    q: z.string().max(200).optional(),
+    offset: z
+      .preprocess(toNumber, z.number().check(integerCheck()).min(0))
+      .optional(),
+    limit: z
+      .preprocess(toNumber, z.number().check(integerCheck()).min(1).max(100))
+      .optional(),
+  }),
+});
+
 const connectorRemindersSchema = connectorIdParamSchema.extend({
   body: z.object({ optedOut: z.boolean() }),
 });
@@ -1005,7 +1021,7 @@ export function createConnectorRouter(
     authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     adminOrNotFound,
-    ValidationMiddleware.validate(connectorIdParamSchema),
+    ValidationMiddleware.validate(connectorRosterSchema),
     getConnectorUserRoster(config),
   );
 

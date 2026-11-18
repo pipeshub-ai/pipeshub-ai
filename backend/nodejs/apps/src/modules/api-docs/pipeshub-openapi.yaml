@@ -56576,9 +56576,10 @@ paths:
       description: |
         Org admins only; anyone else gets `404`. Each person in the source's member list (read at
         the last sync), plus anyone who connected or was invited, with their connection and
-        invitation state. A PipesHub account that is in none of those is not listed. Sorted by status
-        (`needs_reconnect`, `not_invited`, `invited`, `opted_out`, `connected`, `no_account`),
-        then by name or email. Credentials are never returned.
+        invitation state. A PipesHub account that is in none of those is not listed, and neither is
+        the caller. Sorted by status (`needs_reconnect`, `not_invited`, `invited`, `opted_out`,
+        `connected`, `no_account`), then by name or email. Returns one page; `counts` covers everyone
+        and `total` is how many match `q`. Credentials are never returned.
       operationId: getConnectorUserRoster
       security:
         - bearerAuth: []
@@ -56590,6 +56591,28 @@ paths:
           schema:
             type: string
             pattern: '^[A-Za-z0-9_-]{1,64}$'
+        - name: q
+          in: query
+          required: false
+          description: Only people whose name or email contains this (case-insensitive)
+          schema:
+            type: string
+            maxLength: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
       responses:
         '200':
           description: The roster
@@ -56597,7 +56620,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [membersUpdatedAt, people, counts]
+                required: [membersUpdatedAt, people, counts, total]
                 properties:
                   membersUpdatedAt:
                     type: integer
@@ -56610,9 +56633,12 @@ paths:
                       $ref: '#/components/schemas/ConnectorUserRosterPerson'
                   counts:
                     type: object
-                    description: People per status
+                    description: People per status, over everyone (not only this page or `q`)
                     additionalProperties:
                       type: integer
+                  total:
+                    type: integer
+                    description: How many people match `q` (everyone without it)
         '404':
           description: Not an admin, or no per-user connector with this ID in the caller's organization
           content:

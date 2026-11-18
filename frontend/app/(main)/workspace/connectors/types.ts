@@ -785,7 +785,10 @@ export interface UserAccessRoster {
     /** `sendCount` 0 and null dates: opted out before any invite. */
     invite: { firstSentAt: number | null; lastSentAt: number | null; sendCount: number; optedOut: boolean } | null;
   }>;
+  /** Over everyone, not only this page or search. */
   counts: Record<UserAccessRosterStatus, number>;
+  /** How many match the search (everyone without one). */
+  total: number;
 }
 
 export type UserAccessRosterPerson = UserAccessRoster['people'][number];

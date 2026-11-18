@@ -343,12 +343,13 @@ class TestSendConnectRequest:
             )
         return result, notifications.publish_notification, send_email, store
 
-    async def test_the_user_gets_a_notification_that_opens_the_dialog_and_an_email_with_a_working_link(self) -> None:
+    async def test_the_user_gets_a_notification_with_a_connect_action_and_an_email_with_a_working_link(self) -> None:
         (notified, emailed), publish, send_email, store = await self._send()
         assert notified and emailed
         sent = publish.await_args.kwargs
         assert sent["recipient_user_ids"] == ["u1"]
-        assert sent["redirect_link"] == "workspace/connectors/personal/?connect=c1"
+        assert "redirect_link" not in sent
+        assert sent["payload"] == {"connectorId": "c1", "action": "connect_account"}
         assert sent["title"] == "Connect your Notion account"
         data = send_email.await_args.kwargs["template_data"]
         link = data["link"]
@@ -384,7 +385,7 @@ def _admin_request(user_id: str = "admin") -> MagicMock:
 
 
 class TestRoster:
-    async def _roster(self, *, members, connections=(), invites=None, users=(), lookup_fails=False) -> dict:
+    async def _roster(self, *, members, connections=(), invites=None, users=(), lookup_fails=False, **query) -> dict:
         from app.models.entities import User
 
         routes = _routes()
@@ -408,7 +409,7 @@ class TestRoster:
                 patch.object(routes, "get_members", new=AsyncMock(return_value=(members, 123))), \
                 patch.object(routes, "list_connections", new=AsyncMock(return_value=list(connections))), \
                 patch.object(routes, "list_invites", new=AsyncMock(return_value=invites or {})):
-            return await routes.get_roster("c1", _admin_request(), graph_provider=graph)
+            return await routes.get_roster("c1", _admin_request(), graph_provider=graph, **query)
 
     async def test_everyone_listed_is_matched_by_email_with_a_status(self) -> None:
         members = [
@@ -434,6 +435,25 @@ class TestRoster:
     async def test_a_connected_user_the_member_list_does_not_show_is_still_listed(self) -> None:
         result = await self._roster(members=[], connections=[_connection("u1")], users=[_user("u1")])
         assert [(p["userId"], p["status"]) for p in result["people"]] == [("u1", "connected")]
+
+    async def test_the_admin_viewing_it_is_left_out_they_connect_themselves(self) -> None:
+        members = [{"email": "admin@acme.com"}, {"email": "u1@acme.com"}]
+        result = await self._roster(members=members, connections=[_connection("admin")],
+                                    users=[_user("admin"), _user("u1")])
+        assert [p["userId"] for p in result["people"]] == ["u1"]
+        assert result["counts"]["connected"] == 0 and result["total"] == 1
+
+    async def test_search_and_paging_cover_name_and_email_and_counts_stay_whole(self) -> None:
+        members = [{"name": f"Person {i:02}", "email": f"p{i:02}@acme.com"} for i in range(30)]
+        members.append({"name": "Zed", "email": "zed@other.org"})
+        users = [_user(f"p{i:02}") for i in range(30)]
+        page = await self._roster(members=members, users=users, offset=10, limit=5)
+        assert [p["email"] for p in page["people"]] == [f"p{i:02}@acme.com" for i in range(10, 15)]
+        assert page["total"] == 31 and page["counts"]["not_invited"] == 30
+        found = await self._roster(members=members, users=users, q=" OTHER.org ")
+        assert [p["name"] for p in found["people"]] == ["Zed"] and found["total"] == 1
+        by_name = await self._roster(members=members, users=users, q="person 2")
+        assert by_name["total"] == 10 and by_name["counts"]["no_account"] == 1
 
     async def test_a_failed_user_read_is_a_503_not_everyone_without_an_account(self) -> None:
         with pytest.raises(HTTPException) as e:

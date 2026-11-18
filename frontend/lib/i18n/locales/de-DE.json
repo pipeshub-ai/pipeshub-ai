@@ -3516,17 +3516,10 @@
         }
       },
       "userAccess": {
-        "title": "Team-Connectors mit Ihrem eigenen Konto",
-        "subtitle": "Ihr Administrator hat diese Connectors so eingestellt, dass jede Person nur sieht, was ihr eigenes Konto öffnen kann. Verbinden Sie Ihr Konto, um Ergebnisse daraus zu sehen.",
         "connect": "Verbinden",
         "reconnect": "Erneut verbinden",
-        "disconnect": "Trennen",
         "connected": "Verbunden",
         "connectedAs": "Verbunden als {{account}}",
-        "lastSynced": "Zuletzt synchronisiert {{time}}",
-        "notSyncedYet": "Noch nicht synchronisiert",
-        "notConnected": "Nicht verbunden. Sie sehen nichts aus diesem Connector, bis Sie sich verbinden.",
-        "needsReconnect": "Muss erneut verbunden werden",
         "connectDialog": {
           "title": "Ihr Konto mit {{name}} verbinden",
           "description": "Fügen Sie ein persönliches Zugriffstoken aus Ihrem eigenen {{source}}-Konto ein. PipesHub zeigt Ihnen nur die Seiten, die Ihr Konto öffnen kann.",
@@ -3534,25 +3527,10 @@
           "tokenLabel": "Persönliches Zugriffstoken",
           "submitting": "Wird verbunden…",
           "errorFallback": "Ihr Konto konnte nicht verbunden werden. Versuchen Sie es erneut.",
-          "descriptionSignIn": "Melden Sie sich mit Ihrem eigenen {{source}}-Konto an und wählen Sie die Seiten, die Sie freigeben möchten. PipesHub zeigt Ihnen nur diese Seiten.",
-          "signIn": "Mit {{source}} anmelden",
           "signInHint": "{{source}} listet nur Seiten auf, auf die Sie vollen Zugriff haben. Unterseiten einer ausgewählten Seite sind enthalten, auch neue. Um später weitere Seiten hinzuzufügen, melden Sie sich erneut an.",
           "signingIn": "Warten auf {{source}}…",
           "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut.",
-          "popupBlocked": "Ihr Browser hat das Anmeldefenster blockiert. Erlauben Sie Pop-ups für diese Website und versuchen Sie es erneut.",
-          "useToken": "Stattdessen ein persönliches Zugriffstoken verwenden"
-        },
-        "disconnectDialog": {
-          "title": "Ihr Konto trennen?",
-          "message": "Sie sehen keine Ergebnisse mehr aus {{name}}, bis Sie sich erneut verbinden.",
-          "confirming": "Wird getrennt…"
-        },
-        "toasts": {
-          "connected": "Konto verbunden",
-          "connectedDescription": "Ihre Seiten erscheinen nach der nächsten Synchronisierung.",
-          "disconnected": "Konto getrennt",
-          "remindersOff": "Erinnerungen deaktiviert",
-          "remindersOn": "Erinnerungen wieder aktiviert"
+          "popupBlocked": "Ihr Browser hat das Anmeldefenster blockiert. Erlauben Sie Pop-ups für diese Website und versuchen Sie es erneut."
         },
         "admin": {
           "title": "Verbundene Benutzer",
@@ -3562,7 +3540,6 @@
           "removeMessage": "Die Person sieht keine Ergebnisse mehr aus diesem Connector, bis sie sich erneut verbindet.",
           "removing": "Wird entfernt…",
           "removed": "Verbindung entfernt",
-          "countItem": "{{label}}: {{count}}",
           "status": {
             "connected": "Verbunden",
             "needs_reconnect": "Muss neu verbinden",
@@ -3572,8 +3549,6 @@
             "no_account": "Kein PipesHub-Konto"
           },
           "noAccountHint": "Laden Sie die Person zuerst zu PipesHub ein",
-          "inviteAll_one": "{{count}} Person einladen",
-          "inviteAll_other": "{{count}} Personen einladen",
           "invite": "Einladen",
           "remind": "Erinnern",
           "sent_one": "An {{count}} Person gesendet",
@@ -3596,9 +3571,17 @@
           },
           "inviteWho": "{{name}} einladen",
           "remindWho": "{{name}} erinnern",
-          "removeWho": "Verbindung von {{name}} entfernen"
+          "removeWho": "Verbindung von {{name}} entfernen",
+          "yourAccount": "Ihr Konto",
+          "connectedOf": "{{connected}} von {{total}} Personen verbunden",
+          "needReconnect_one": "{{count}} muss sich neu verbinden",
+          "needReconnect_other": "{{count}} müssen sich neu verbinden",
+          "search": "Personen nach Name oder E-Mail suchen",
+          "inviteEveryoneHint": "Alle, die sich noch nicht verbunden haben",
+          "inviteEveryone": "Alle einladen ({{count}})",
+          "noMatches": "Niemand passt zu „{{q}}“",
+          "nobody": "Noch niemand zu sehen. Personen erscheinen nach der nächsten Synchronisierung."
         },
-        "dontRemind": "Nicht mehr erinnern",
         "link": {
           "title": "Verbinden Sie Ihr {{source}}-Konto",
           "forEmail": "für {{email}}",
@@ -3609,7 +3592,7 @@
           "expired": "Dieser Link ist abgelaufen oder wurde bereits verwendet. Bitten Sie Ihren Admin um einen neuen oder verbinden Sie sich in PipesHub unter „Ihre persönlichen Konnektoren“.",
           "optedOut": "Sie erhalten keine weiteren Erinnerungen für diesen Connector.",
           "error": "Etwas ist schiefgelaufen. Versuchen Sie es in einer Minute erneut.",
-          "noSignIn": "Dieser Connector verwendet persönliche Zugriffstoken. Melden Sie sich bei PipesHub an, um Ihres einzufügen.",
+          "noSignIn": "Dieser Connector verwendet persönliche Zugriffstoken. Öffnen Sie PipesHub und wählen Sie in der Benachrichtigung „Verbinden“, um Ihres einzufügen.",
           "done": "{{name}} ist verbunden. Ihre Seiten erscheinen in wenigen Minuten in der PipesHub-Suche.",
           "doneUnnamed": "Ihr Konto ist verbunden. Ihre Seiten erscheinen in wenigen Minuten in der PipesHub-Suche.",
           "failedTitle": "Verbindung fehlgeschlagen",
@@ -3619,8 +3602,7 @@
           "rateLimited": "Zu viele Versuche. Versuchen Sie es in einer Minute erneut.",
           "cancelled": "Sie haben die Anmeldung abgebrochen.",
           "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut."
-        },
-        "remindAgain": "Wieder erinnern"
+        }
       }
     },
     "mcpServers": {

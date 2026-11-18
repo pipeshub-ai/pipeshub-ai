@@ -50,11 +50,6 @@ class ConnectRequest:
     org_name: str | None = None
 
 
-def connect_page_link(connector_id: str) -> str:
-    """The in-app page that opens the connect dialog (relative, like other connector notices)."""
-    return f"workspace/connectors/personal/?connect={quote(connector_id)}"
-
-
 async def send_connect_request(
     request: ConnectRequest,
     *,
@@ -80,8 +75,8 @@ async def send_connect_request(
             severity=NotificationSeverity.WARNING if request.reconnect else NotificationSeverity.INFO,
             title=title,
             message=message,
+            # No link: the notification carries its own Connect button (keyed by this payload).
             payload={"connectorId": request.connector_id, "action": "connect_account"},
-            redirect_link=connect_page_link(request.connector_id),
             recipient_user_ids=[request.user_id],
         )
     emailed = False

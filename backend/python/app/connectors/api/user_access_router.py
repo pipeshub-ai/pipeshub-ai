@@ -23,10 +23,10 @@ import hmac
 import json
 import logging
 from contextlib import contextmanager, nullcontext
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.configuration_service import delete_config_confirmed
@@ -97,6 +97,7 @@ _LINK_USER_STATE_KEY = "linkUser"
 _LINK_ORG_STATE_KEY = "linkOrg"
 _MAX_LINK_TOKEN_LENGTH = 300
 _MAX_INVITES = 500
+_ROSTER_PAGE_MAX = 100
 _LINK_GONE = "This link has expired or was already used."
 _SOURCE_NAMES = {NOTION_CONNECTOR_TYPE: "Notion"}
 # Roster order: who needs attention first.
@@ -552,8 +553,9 @@ def _person_status(user_id: str | None, connection: UserConnection | None, invit
 
 async def _roster(request: Request, graph_provider: IGraphDBProvider, connector_id: str) -> dict[str, Any]:
     """Everyone the source lists (by the last sync) and everyone connected, each with their PipesHub
-    account (matched by email), connection and invite."""
+    account (matched by email), connection and invite. The caller is left out: they connect themselves."""
     org_id = str(current_org_id())
+    me = str(request.state.user.get("userId") or "")
     config_service = _config_service(request)
     members, updated_at = await get_members(config_service, connector_id)
     connections = {c.user_id: c for c in await list_connections(config_service, connector_id)}
@@ -579,6 +581,8 @@ async def _roster(request: Request, graph_provider: IGraphDBProvider, connector_
 
     def add(name: str | None, email: str, source_user_id: str | None, user: dict[str, Any] | None) -> None:
         user_id = str(user["userId"]) if user else None
+        if user_id and user_id == me:
+            return
         connection = connections.get(user_id) if user_id else None
         invite = invites.get(user_id) if user_id else None
         people.append({
@@ -598,7 +602,7 @@ async def _roster(request: Request, graph_provider: IGraphDBProvider, connector_
         add(member.get("name"), email, member.get("sourceUserId"), users.get(email.lower()))
     # Connected or invited people the member list does not show (yet).
     for user_id in dict.fromkeys([*connections, *invites]):
-        if user_id in seen:
+        if user_id in seen or user_id == me:
             continue
         user = await get_user_or_503(graph_provider, user_id)
         if not _is_member(user, org_id):
@@ -618,12 +622,25 @@ async def _roster(request: Request, graph_provider: IGraphDBProvider, connector_
     dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
 )
 async def get_roster(
-    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+    connector_id: str,
+    request: Request,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=_ROSTER_PAGE_MAX)] = 50,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> dict[str, Any]:
+    """One page of the roster, optionally only people whose name or email contains ``q``.
+    ``counts`` always covers everyone; ``total`` is how many match ``q``."""
     if not is_request_admin(request):
         raise _not_found()
     await _per_user_connector(request, connector_id, graph_provider)
-    return await _roster(request, graph_provider, connector_id)
+    # shortcut: builds the whole roster per page (one bulk user read); store it per sync if rosters reach 10k+.
+    roster = await _roster(request, graph_provider, connector_id)
+    people = roster["people"]
+    needle = (q or "").strip().lower()
+    if needle:
+        people = [p for p in people if needle in (p["name"] or "").lower() or needle in p["email"].lower()]
+    return {**roster, "people": people[offset:offset + limit], "total": len(people)}
 
 
 @user_access_router.post(
