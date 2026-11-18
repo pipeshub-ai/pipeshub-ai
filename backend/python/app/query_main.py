@@ -361,6 +361,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # serves search never reaches the indexing write path that would
         # otherwise do it, so it has to happen here too.
         async def _reconcile_lexical_scoring() -> None:
+            # Same reason: the payload indexes of a collection from an older release are added here, not by a first write.
+            await retrieval_service.collection_registry.reconcile_payload_indexes()
             try:
                 changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
                 if changed:
