@@ -417,6 +417,7 @@ const oauthApps: CollectionMapping = {
       readAbsentAs: true,
     },
     { col: 'is_dynamic', path: 'isDynamic', type: 'bool', readAbsentAs: false },
+    { col: 'owner_format', path: 'ownerFormat', type: 'int' },
     {
       col: 'access_token_lifetime',
       path: 'accessTokenLifetime',
