@@ -64,6 +64,7 @@ const api = vi.hoisted(() => ({
     deleteNode: vi.fn(),
     streamUpload: vi.fn(),
     getRecordDetails: vi.fn(),
+    getRecordDetailsForOpen: vi.fn(),
     streamRecord: vi.fn(),
     streamDownloadRecord: vi.fn(),
     reindexItem: vi.fn(),
@@ -77,6 +78,19 @@ const api = vi.hoisted(() => ({
   },
 }));
 
+// Content opens go through the record-content cache; its transport is the faked `streamRecord`.
+vi.mock('@/lib/record-content', () => ({
+  openRecordContent: (id: string, variant: string) => ({
+    promise: api.kb
+      .streamRecord(id, variant === 'pdf' ? { convertTo: 'application/pdf' } : undefined)
+      .then((blob: Blob) => {
+        const url = URL.createObjectURL(blob);
+        return { url, blob, mime: blob.type, etag: null, release: () => URL.revokeObjectURL(url) };
+      }),
+    leave: () => {},
+  }),
+}));
+
 vi.mock('../api', async () => {
   const { pagedByCursor } = await import('./kb-page-harness');
   return {
@@ -85,7 +99,13 @@ vi.mock('../api', async () => {
       getNavigationNodes: pagedByCursor(api.hub.getNavigationNodes, 0),
       getNodeChildren: pagedByCursor(api.hub.getNodeChildren, 2),
     },
-    KnowledgeBaseApi: api.kb,
+    KnowledgeBaseApi: {
+      ...api.kb,
+      getRecordDetailsForOpen: async (...args: unknown[]) => ({
+        details: await (api.kb.getRecordDetails as (...a: unknown[]) => Promise<unknown>)(...args),
+        grant: null,
+      }),
+    },
     forgetPendingNodeChildrenRequests: () => {},
   };
 });

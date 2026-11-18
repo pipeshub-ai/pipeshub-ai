@@ -16,9 +16,14 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.connector.connector_service import connector_sync_lock
 from app.connectors.core.sync.sync_runner import _run_sync_alone
+from app.core.org_context import for_org
 from app.exceptions.non_retryable import NonRetryableError
+from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.logger import log_record_fields
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -510,7 +515,7 @@ class TestUserUpdated:
         both providers do, rather than against the call arguments."""
         store = {"user-key-1": {"id": "user-key-1", "isActive": True}}
 
-        async def read_then_delete(user_id: str) -> dict:
+        async def read_then_delete(user_id: str, **_: object) -> dict:
             seen = dict(store["user-key-1"])
             # `_handle_user_deleted` on the other replica, in the window.
             store["user-key-1"]["isActive"] = False
@@ -578,20 +583,28 @@ class TestUserUpdated:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_db_error_raises(self):
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(
-            side_effect=Exception("DB fail")
-        )
+    @pytest.mark.parametrize("provider", ["arango", "neo4j", "postgres"])
+    async def test_a_failed_user_lookup_raises_instead_of_not_found(self, provider: str) -> None:
+        """The providers' own failure path: each answers None to a failed read unless asked to raise."""
+        down = RuntimeError("graph down")
+        if provider == "arango":
+            graph_provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
+            graph_provider.logger = MagicMock()
+            graph_provider.http_client = MagicMock(execute_aql=AsyncMock(side_effect=down))
+        elif provider == "neo4j":
+            graph_provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+            graph_provider.client = MagicMock(execute_query=AsyncMock(side_effect=down))
+        else:
+            graph_provider = object.__new__(IdentityMixin)
+            graph_provider.logger = MagicMock()
+            graph_provider._one = AsyncMock(side_effect=down)
+        graph_provider.batch_upsert_nodes = AsyncMock()
         svc = _make_entity_service(graph_provider=graph_provider)
 
-        payload = {
-            "userId": "u-1",
-            "orgId": "org-1",
-            "email": "alice@test.com",
-        }
-        with pytest.raises(Exception, match="DB fail"):
+        payload = {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"}
+        with for_org("org-1", job="t"), pytest.raises(RuntimeError, match="graph down"):
             await svc.process_event("userUpdated", payload)
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
 
 
 # ===================================================================
@@ -604,7 +617,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_success(self):
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1"))
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1", user_id=None))
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -620,6 +633,26 @@ class TestUserDeleted:
         user_data = call_args[0][0][0]
         assert user_data["isActive"] is False
         assert user_data["id"] == "user-key-1"
+
+    @pytest.mark.asyncio
+    async def test_a_late_delete_finds_its_user_by_user_id_not_the_new_holder_of_the_address(self) -> None:
+        """u-old was deleted after u-new took the address. Its late userDeleted deactivates u-old, never u-new."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "key-old", "orgId": "org-1", "email": "old@test.com"})
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is True
+        written = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert (written["id"], written["email"], written["isActive"]) == ("key-old", "old@test.com", False)
+
+    @pytest.mark.asyncio
+    async def test_a_delete_never_deactivates_a_user_of_another_user_id_found_by_address(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is False
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
@@ -771,6 +804,7 @@ class TestAppDisabled:
             }
         )
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -804,6 +838,7 @@ class TestAppDisabled:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"_key": "conn-1", "name": "Legacy"})
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
         svc = _make_entity_service(graph_provider=graph_provider)
 
         with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc:
@@ -1594,6 +1629,8 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
         assert kb_data["vectorMembershipBackfilled"] is True
         failed = [r for r in caplog.records if r.getMessage() == "entity_event.step_failed"]
         assert [log_record_fields(r)["step"] for r in failed] == ["register_kb_connector"]
+        # Since F27 this is the only line for a KB connector that fails to start: it names the instance.
+        assert log_record_fields(failed[0])["connector_id"] == result["kb_id"]
 
 
 # ===================================================================

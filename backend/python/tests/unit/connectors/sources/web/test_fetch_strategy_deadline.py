@@ -357,8 +357,10 @@ async def test_a_cloudscraper_tls_handshake_that_trickles_ends_at_requests_timeo
     )
 
     assert result is None
-    # Held for the whole timeout, not refused at once: the handshake really waited on the trickle.
-    assert 0.9 < time.monotonic() - started < 3
+    # Held for the whole timeout, not refused at once: the handshake really waited on the trickle. The hop deadline is
+    # 30 s here and the wait_for above 10 s, so a handshake that ignored the requests timeout fails there; no upper
+    # wall-clock bound is needed (a real network wait, which a busy runner stretches).
+    assert time.monotonic() - started > 0.9
     assert slow_handshake.requests == 1
     assert slow_handshake.hung_up.wait(3)
 
@@ -624,7 +626,9 @@ async def test_a_page_goes_to_aiohttp_once_no_fetch_thread_comes_free(
 
     assert result is not None
     assert (result.status_code, result.content_bytes, result.strategy) == (200, BODY, "aiohttp")
-    assert cap < elapsed < 3 * cap
+    # It waited the queue cap once: the single "gave up" line below proves "once", where an upper wall-clock bound
+    # (it was "< 3 * cap") also measured how busy the runner was.
+    assert elapsed > cap
     assert len(trickle.agents) == 1 and "aiohttp" in trickle.agents[0]
     assert caplog.text.count("Gave up waiting for a thread to fetch") == 1
 

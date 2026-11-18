@@ -146,7 +146,7 @@ describe('Personal Access Token Routes', () => {
       })
     }
 
-    const createBody = { name: 'ci', expiryDays: 'never' }
+    const createBody = { name: 'ci', expiryDays: 30 }
 
     it('lets a session-authenticated member mint a token', async () => {
       principal = { userId: 'u1', orgId: 'o1', role: 'member' }
