@@ -28,12 +28,28 @@ done
 # shellcheck source-path=SCRIPTDIR source=docstore-migrate.sh
 . "$(dirname "${BASH_SOURCE[0]}")/docstore-migrate.sh"
 
-trap import_login_close EXIT
+# An online rollback that does not complete leaves PostgreSQL the store, with the reverse follower still writing as the import
+# login: it keeps that login and its password then. Every other ending closes it.
+DONE=0
+trap '[ "$FLAG" = --online ] && [ "$DONE" = 0 ] || import_login_close' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 import_login_open
 [ "$FLAG" = --online ] || "${DC[@]}" stop pipeshub-ai
-docstore rollback ${FLAG:+"$FLAG"}
+if ! docstore rollback ${FLAG:+"$FLAG"}; then
+  [ "$FLAG" = --online ] && echo "The online rollback did not complete; PostgreSQL is still the store. The import login stays open for the reverse follower; close it when the move is over: scripts/migrate-to-postgres.sh --close-login" >&2
+  exit 1
+fi
+DONE=1
 echo "MongoDB is the store again. Remove docker-compose.postgres-docstore.yml from PIPESHUB_COMPOSE_OVERRIDES in the env file and start the application:" >&2
-dc="${DC[*]}"
-echo "  ${dc/ -f docker-compose.postgres-docstore.yml/} up -d pipeshub-ai" >&2
+# the command without the PostgreSQL override, however it was written
+cmd=(); skip=0
+for a in "${DC[@]}"; do
+  if [ "$skip" = 1 ]; then
+    skip=0
+    [ "$(override_name "$a")" = docker-compose.postgres-docstore.yml ] && { unset 'cmd[${#cmd[@]}-1]'; continue; }
+  fi
+  [ "$a" = -f ] && skip=1
+  cmd+=("$a")
+done
+printf ' ' >&2; printf ' %q' "${cmd[@]}" up -d pipeshub-ai >&2; echo >&2

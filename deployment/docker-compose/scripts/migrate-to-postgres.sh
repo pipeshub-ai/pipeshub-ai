@@ -39,7 +39,7 @@ if [ "$MODE" = --close-login ]; then import_login_close; exit; fi
 if [ "$MODE" = --online ]; then
   missing=""
   for f in docker-compose.mongo-replica-set.yml docker-compose.docstore-shadow.yml; do
-    case ":$_ov:" in *":$f:"*) ;; *) missing="${missing:+$missing:}$f" ;; esac
+    has_override "$f" || missing="${missing:+$missing:}$f"
   done
   if [ -n "$missing" ]; then
     {

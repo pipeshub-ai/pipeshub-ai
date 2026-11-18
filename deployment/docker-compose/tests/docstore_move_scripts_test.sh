@@ -129,6 +129,8 @@ run_script() {
          "$BASH_UNDER_TEST" "$@" 2>&1)"; RC=$?
 }
 steps() { paste -sd' ' "$CALLS"; }
+# a file's permission bits: GNU stat takes -c, BSD/macOS stat takes -f
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null; }
 import_pw() { sed -n 's/^PG_IMPORT_PASSWORD=//p' "$ENVF"; }
 # every place a password could show up: the output, the docker command lines, the SQL sent to psql
 no_secret_shown() { # no_secret_shown "desc" password
@@ -179,7 +181,7 @@ no_secret_shown "the migrate password is never shown" "$MIGRATE_PW"
 no_secret_shown "the node password is never shown" "$NODE_PW"
 check_eq "the import password is gone from the env file afterwards" "$(import_pw)" ""
 check "the other env lines are kept" "$(cat "$ENVF")" "PG_MIGRATE_PASSWORD=$MIGRATE_PW"
-check_eq "the env file stays private" "$(stat -c %a "$ENVF")" 600
+check_eq "the env file stays private" "$(mode_of "$ENVF")" 600
 check "it says how to start the app on PostgreSQL" "$OUT" "docker-compose.postgres-docstore.yml"
 
 echo
@@ -315,14 +317,14 @@ check_eq "offline with BSD sed exits 0" "$RC" 0
 check_eq "and opens and closes the login" "$(steps)" \
   "verifier login-open stop:pipeshub-ai tool:preflight tool:migrate --offline login-close"
 check_eq "the password is removed with BSD sed" "$(import_pw)" ""
-check_eq "the env file stays 0600" "$(stat -c %a "$ENVF")" 600
+check_eq "the env file stays 0600" "$(mode_of "$ENVF")" 600
 new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
 mv "$ENVF" "$INST/real.env"; ln -s real.env "$ENVF"
 OUT="$(PATH="$BSD_BIN:$BIN:$PATH" PIPESHUB_ENV_FILE="$ENVF" EXPECT_MIGRATE_PW="$MIGRATE_PW" EXPECT_NODE_PW="$NODE_PW" "$BASH_UNDER_TEST" "$MIGRATE" --online 2>&1)"; RC=$?
 check_eq "online with BSD sed exits 0" "$RC" 0
 check "and stores the password through the symlink" "$(cat "$INST/real.env")" "PG_IMPORT_PASSWORD="
 if [[ -L "$ENVF" ]]; then pass "a symlinked env file stays a symlink"; else fail "a symlinked env file stays a symlink"; fi
-check_eq "the real file stays 0600" "$(stat -c %a "$INST/real.env")" 600
+check_eq "the real file stays 0600" "$(mode_of "$INST/real.env")" 600
 left="$(shopt -s nullglob; f=("$INST"/*.env.* "$INST"/.env.*); echo ${f[@]+"${f[*]}"})"
 if [[ -z "$left" ]]; then pass "no temporary or backup file is left beside the env file"; else fail "no temporary or backup file is left beside the env file: $left"; fi
 
@@ -347,7 +349,7 @@ echo "== online: the replica-set key file is private to mongod and never shown =
 new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:docker-compose.docstore-shadow.yml"
 run_script "$MIGRATE" --online
 check_eq "exits 0" "$RC" 0
-check_eq "the key file is mode 0400" "$(stat -c %a "$MONGO_DATA/rs.key" 2>/dev/null)" 400
+check_eq "the key file is mode 0400" "$(mode_of "$MONGO_DATA/rs.key")" 400
 key="$(cat "$MONGO_DATA/rs.key" 2>/dev/null)"
 check_not "the key is long enough to mean something" "x${key:0:40}x" "xx"
 no_secret_shown "the key never appears in the output or a command line" "${key:0:40}"
@@ -363,6 +365,75 @@ new_install "COMPOSE_PROJECT_NAME=proj"
 run_script "$TOOL" preflight
 check_eq "without the volume: the tool still runs" "$RC" 0
 check_not "and no volume is named, so docker creates none" "$(grep docstore-migrate.js "$ARGV")" "postgres_data"
+
+echo
+echo "== the mode check works with BSD stat too (macOS) =="
+BSD_STAT="$TMP_ROOT/bsdstat"; mkdir -p "$BSD_STAT"
+REAL_STAT="$(command -v stat)"
+cat >"$BSD_STAT/stat" <<STUB
+#!/usr/bin/env bash
+case "\$1" in -c) echo "stat: illegal option -- c" >&2; exit 1 ;; -f) [ "\$2" = %Lp ] && exec "$REAL_STAT" -c %a "\$3"; exit 1 ;; esac
+exec "$REAL_STAT" "\$@"
+STUB
+chmod +x "$BSD_STAT/stat"
+touch "$TMP_ROOT/m640"; chmod 640 "$TMP_ROOT/m640"
+mode_with_bsd_stat() { local PATH="$BSD_STAT:$PATH"; mode_of "$1"; }
+check_eq "mode_of with this host's stat" "$(mode_of "$TMP_ROOT/m640")" 640
+# the stand-in answers -f from a GNU stat; on a BSD host the checks above already take the -f branch
+if "$REAL_STAT" -c %a / >/dev/null 2>&1; then
+  check_eq "mode_of with BSD stat" "$(mode_with_bsd_stat "$TMP_ROOT/m640")" 640
+else
+  pass "mode_of with BSD stat (this host's stat is BSD)"
+fi
+
+echo
+echo "== env-file values are read the way Compose reads them =="
+saved_m="$MIGRATE_PW"; saved_n="$NODE_PW"
+new_install "COMPOSE_PROJECT_NAME='production'" "PG_MIGRATE_PASSWORD='mig\"pw#1'" "PG_NODE_PASSWORD=\"node\\\"pw'2\""
+MIGRATE_PW='mig"pw#1'; NODE_PW="node\"pw'2"
+run_script "$TOOL" status
+check "a single-quoted project name loses its quotes" "$(cat "$ARGV")" "-p production -f"
+check_eq "single- and double-quoted passwords reach the tool as Compose reads them" "$(steps)" "tool:status"
+no_secret_shown "and are not shown" 'mig"pw#1'
+new_install "PG_MIGRATE_PASSWORD=plain'pw   # rotated in May" "PG_NODE_PASSWORD=has#hash"
+MIGRATE_PW="plain'pw"; NODE_PW='has#hash'
+run_script "$TOOL" status
+check_eq "unquoted: an inline comment and trailing spaces are dropped, a quote and a # inside the value are kept" "$(steps)" "tool:status"
+MIGRATE_PW="$saved_m"; NODE_PW="$saved_n"
+
+echo
+echo "== the online overrides count in any spelling of their path =="
+new_install "PIPESHUB_COMPOSE_OVERRIDES=./docker-compose.mongo-replica-set.yml:$COMPOSE_DIR/docker-compose.docstore-shadow.yml"
+run_script "$MIGRATE" --online
+check_eq "./ and absolute forms: proceeds" "$RC" 0
+check "and runs the move" "$(steps)" "tool:migrate --online"
+new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.mongo-replica-set.yml:$TMP_ROOT/elsewhere/docker-compose.docstore-shadow.yml"
+run_script "$MIGRATE" --online
+check_eq "a file of that name in another directory does not count" "$RC" 1
+check "and is named as missing" "$OUT" "docker-compose.docstore-shadow.yml     DOC_STORE=shadow"
+
+echo
+echo "== a failed online rollback keeps the import login the reverse follower uses =="
+new_install "PG_IMPORT_PASSWORD=kept_for_reverse_5"
+STUB_FAIL="rollback --online" run_script "$ROLLBACK" --online
+check_eq "exits 1" "$RC" 1
+check_not "does not close the login" "$(steps)" "login-close"
+check_eq "and keeps its password" "$(import_pw)" "kept_for_reverse_5"
+check "says it stays open and how to close it" "$OUT" "--close-login"
+new_install "PG_IMPORT_PASSWORD=kept_for_reverse_5"
+run_script "$ROLLBACK" --online
+check "a successful online rollback closes it" "$(steps)" "login-close"
+check_eq "and removes the password" "$(import_pw)" ""
+
+echo
+echo "== the restart command after a rollback drops the PostgreSQL override in any spelling =="
+for form in "./docker-compose.postgres-docstore.yml" "$COMPOSE_DIR/docker-compose.postgres-docstore.yml" "docker-compose.postgres-docstore.yml"; do
+  new_install "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.parsing.yml:$form"
+  run_script "$ROLLBACK"
+  line="$(printf '%s\n' "$OUT" | grep 'up -d pipeshub-ai')"
+  check_not "no PostgreSQL override ($form)" "$line" "postgres-docstore"
+  check "other overrides kept ($form)" "$line" "-f docker-compose.parsing.yml"
+done
 
 echo
 echo "== which install: project name and override files =="

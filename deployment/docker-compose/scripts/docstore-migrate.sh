@@ -22,7 +22,26 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 die() { echo "$*" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || die "no env file at $ENV_FILE: run from a PipesHub Docker Compose install, or set PIPESHUB_ENV_FILE"
 
-env_get() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -1 | tr -d '\r"'; }
+# A value as Compose reads it, without running the file as shell: 'single quotes' are literal, "double quotes" take \" and \\,
+# and an unquoted value ends at a ` #` comment, with trailing blanks dropped.
+env_get() {
+  local v out="" c i=1
+  v="$(sed -n "s/^$1=//p" "$ENV_FILE" | tail -1)"
+  v="${v%$'\r'}"
+  case "$v" in
+    \'*) v="${v#\'}"; out="${v%%\'*}" ;;
+    \"*)
+      while [ "$i" -lt "${#v}" ]; do
+        c="${v:$i:1}"
+        if [ "$c" = "\\" ] && [ $((i + 1)) -lt "${#v}" ]; then i=$((i + 1)); out="$out${v:$i:1}"
+        elif [ "$c" = '"' ]; then break
+        else out="$out$c"; fi
+        i=$((i + 1))
+      done ;;
+    *) out="${v%%[[:blank:]]#*}"; out="${out%"${out##*[![:blank:]]}"}" ;;
+  esac
+  printf '%s' "$out"
+}
 # Rewritten in place (cat into the same file): keeps its mode, owner and a symlink, and needs no GNU-only `sed -i`. The private
 # temporary file sits beside it, and a failed sed leaves the env file as it was.
 env_del() {
@@ -44,6 +63,24 @@ if [ -n "$_ov" ]; then
   for _o in "${_overrides[@]}"; do [ -n "$_o" ] && DC+=(-f "$_o"); done
 fi
 PSQL=("${DC[@]}" exec -T postgres psql -q -v ON_ERROR_STOP=1 -U postgres -d pipeshub)
+
+# An override as the bare name of a file in this directory, however it was written (./x.yml, /abs/path/x.yml, x.yml); a file of
+# the same name elsewhere keeps its path, so it never passes for this directory's file.
+override_name() {
+  local d
+  case "$1" in
+    */*) d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || d=""
+         if [ "$d" = "$(pwd -P)" ]; then basename "$1"; else printf '%s' "$1"; fi ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+has_override() {
+  local o
+  [ -n "$_ov" ] || return 1
+  IFS=':' read -r -a _overrides <<<"$_ov"
+  for o in "${_overrides[@]}"; do [ "$(override_name "$o")" = "$1" ] && return 0; done
+  return 1
+}
 
 # The tool, as the guide runs it: MongoDB's address comes from the application service's own environment, the schema job already
 # built the tables. An empty import password reads as "login closed" to the tool. The service's own entrypoint starts the
