@@ -19,7 +19,7 @@ import time
 import traceback
 import unicodedata
 import uuid
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Collection, Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -20878,6 +20878,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
         try:
             return await self._kh_run(query, parameters, txn_id)
+        except KnowledgeHubListingBusy:
+            raise
         except Exception as e:
             # Transaction memory is one pool: any listing statement can be the one that finds it spent.
             if self._kh_out_of_memory(e):
@@ -20912,7 +20914,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Inside a transaction the statement shares that transaction's session and limit.
             return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
         planning, planned = self._kh_plans()
-        key = hashlib.sha1(query.encode()).hexdigest()
+        # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
+        types = sorted((k, type(v).__name__) for k, v in parameters.items())
+        key = hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
+        # One wait budget per request, even when a failed planner hands the planning on.
+        deadline = time.monotonic() + self._KH_PLAN_WAIT_S
         # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
         # by every request at once (bounded by the query timeout). Track evictions if that shows up again.
         while key not in planned:
@@ -20925,15 +20931,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 planning[key] = task
                 task.add_done_callback(lambda t, key=key: self._kh_planned(key, t))
                 # The planner's own request waits for it: giving up would free nothing, since the planning runs on.
-                return await asyncio.shield(task)
+                return await self._kh_timed(asyncio.shield(task))
             try:
-                await asyncio.wait_for(asyncio.shield(task), self._KH_PLAN_WAIT_S)
+                await asyncio.wait_for(asyncio.shield(task), max(deadline - time.monotonic(), 0))
             except TimeoutError:
                 raise KnowledgeHubListingBusy() from None
             except Exception:
                 # The planner's own request reports its failure; this one plans the statement itself.
                 continue
-        return await self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
+        return await self._kh_timed(
+            self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
+        )
+
+    async def _kh_timed(self, run: Awaitable[list[dict]]) -> list[dict]:
+        """``run``, with an out-of-memory failure timed from here: a wait for the plan before it says nothing about
+        the statement's size (``_kh_walk_refusal``)."""
+        started = time.monotonic()
+        try:
+            return await run
+        except Exception as e:
+            if self._kh_out_of_memory(e):
+                raise KnowledgeHubListingBusy(out_of_memory=True, ran_s=time.monotonic() - started) from e
+            raise
 
     # The global flatten lets each connector's page read its own grants.
     kh_grants_per_connector = True
@@ -22877,6 +22896,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 rows = await self._kh_query(scope_query, parameters=scope_params, txn_id=transaction)
             except Exception as e:
+                if isinstance(e, KnowledgeHubListingBusy) and not e.out_of_memory:
+                    # Waiting on a cold plan or past its limit: the full query is heavier still to plan.
+                    raise
                 # The enrichment is the full query's own tail; should it fail on the scope page, answer from the
                 # full query rather than failing the request.
                 self.logger.warning(f"kh scope page enrichment failed for {app_id}, using the full query: {e}")
@@ -22888,7 +22910,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             except KnowledgeHubListingBusy as busy:
                 if not (flatten and busy.out_of_memory):
                     raise
-                elapsed = time.monotonic() - walk_started
+                elapsed = busy.ran_s if busy.ran_s is not None else time.monotonic() - walk_started
                 self.logger.warning(f"kh listing for {app_id} ran out of transaction memory after {elapsed:.1f}s")
                 raise self._kh_walk_refusal(elapsed) from busy
             except Exception as e:

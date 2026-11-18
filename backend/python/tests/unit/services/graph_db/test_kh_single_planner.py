@@ -24,7 +24,7 @@ class FakeClient:
         self.max_running = 0
         self.fail_first = fail_first
 
-    async def execute_query(self, query, parameters=None, txn_id=None, **kw):  # noqa: ANN001, ANN003, ANN201
+    async def execute_query(self, query, parameters=None, txn_id=None, **kw):
         self.calls.append({"query": query, "txn_id": txn_id, **kw})
         self.running += 1
         self.max_running = max(self.max_running, self.running)
@@ -87,11 +87,17 @@ async def test_a_wait_past_its_budget_is_busy_and_the_planner_runs_on() -> None:
     with pytest.raises(KnowledgeHubListingBusy):
         await p._kh_query("MATCH (a:App) RETURN a")
     assert len(client.calls) == 1  # the waiter planned nothing of its own
+    await asyncio.sleep(0.01)
+    assert client.running == 1  # the waiter giving up did not stop the planning
     assert not planner.done()  # the planner's own request is not cut off by the waiters' budget
-    planner.cancel()  # its client gives up: the planning runs on
+    planner.cancel()  # its client gives up
+    await asyncio.sleep(0.01)
+    assert client.running == 1  # and the planning still runs on
     client.release.set()
     await asyncio.sleep(0.01)
-    assert await p._kh_query("MATCH (a:App) RETURN a")  # the plan the abandoned request paid for is used
+    planning, planned = p._kh_plans()
+    assert not planning and len(planned) == 1  # the abandoned request's plan counts as made
+    assert await p._kh_query("MATCH (a:App) RETURN a")  # and is used: this one runs at once
     assert len(client.calls) == 2
 
 
@@ -135,3 +141,65 @@ def _coded(code: str) -> Exception:
     error = RuntimeError(code)
     error.code = code  # type: ignore[attr-defined]
     return error
+
+
+class StepClient:
+    """Each statement takes the next step: (seconds, error or None)."""
+
+    def __init__(self, steps: list[tuple[float, Exception | None]]) -> None:
+        self.steps = steps
+        self.calls = 0
+
+    async def execute_query(self, query, parameters=None, txn_id=None, **kw):
+        seconds, error = self.steps[min(self.calls, len(self.steps) - 1)]
+        self.calls += 1
+        await asyncio.sleep(seconds)
+        if error is not None:
+            raise error
+        return [{"ok": True}]
+
+
+@pytest.mark.asyncio
+async def test_a_waiter_keeps_one_budget_across_a_failed_planner() -> None:
+    # The planner fails at 0.15 s; one waiter takes over (and runs long), the other waits on it with what is left.
+    p = provider(StepClient([(0.15, RuntimeError("planner failed")), (5.0, None)]), wait_s=0.25)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    planner = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a"))
+    await asyncio.sleep(0.01)
+    waiters = [asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a")) for _ in range(2)]
+    done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_EXCEPTION)
+    busy = [t for t in done if isinstance(t.exception(), KnowledgeHubListingBusy)]
+    assert busy, "the waiter left behind is answered as busy"
+    assert loop.time() - started < 0.35  # within its first budget (0.25 s), not a fresh one after the failure (0.4 s)
+    for t in [planner, *pending]:
+        t.cancel()
+    await asyncio.gather(planner, *pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_waiters_out_of_memory_is_timed_from_its_own_run() -> None:
+    # The waiter waits 0.2 s for the plan, then its own statement finds the memory pool spent at once.
+    oom = _coded("Neo.TransientError.General.MemoryPoolOutOfMemoryError")
+    p = provider(StepClient([(0.2, None), (0.0, oom)]))
+    planner = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a"))
+    await asyncio.sleep(0.01)
+    with pytest.raises(KnowledgeHubListingBusy) as busy:
+        await p._kh_query("MATCH (a:App) RETURN a")
+    assert busy.value.out_of_memory is True
+    assert busy.value.ran_s is not None and busy.value.ran_s < 0.1  # a 503 to retry, not a 422 "too large"
+    await planner
+
+
+@pytest.mark.asyncio
+async def test_a_parameter_of_another_type_is_another_plan() -> None:
+    # Neo4j plans a null sort key apart from a string one: the second is not held behind the first.
+    client = FakeClient()
+    p = provider(client)
+    none_key = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a", {"sortKey": None}))
+    str_key = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a", {"sortKey": "b"}))
+    same_type = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a", {"sortKey": "c"}))
+    await asyncio.sleep(0.05)
+    assert client.max_running == 2  # one planner per type; the second string waits for the first
+    client.release.set()
+    await asyncio.gather(none_key, str_key, same_type)
