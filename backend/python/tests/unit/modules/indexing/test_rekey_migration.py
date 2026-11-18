@@ -127,7 +127,7 @@ async def test_a_partial_read_embeds_the_blocks_and_keeps_the_old_points_until_t
     first_embed_saw: list[int] = []
     embed = store._embed_documents_with_retry.side_effect
 
-    async def spying_embed(texts: list[str], rid: str) -> list[list[float]]:
+    async def spying_embed(texts: list[str], rid: str, witness_out: list | None = None) -> list[list[float]]:
         first_embed_saw.append(len(db.collections[COLL]))
         return embed(texts, rid)
 

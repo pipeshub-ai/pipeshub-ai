@@ -587,3 +587,29 @@ async def test_a_record_that_predates_the_recording_follows_the_counting_rule(db
     store = make_store(db)
     await run(store, blob, _image_record(True))
     assert any("bar chart" in t for c in store._embed_documents_with_retry.await_args_list for t in c.args[0])
+
+
+async def test_moved_points_keep_the_epoch_salt_of_their_id_and_their_tags(db) -> None:
+    """A point written after a reset is salted by its own epoch: moved to a content id it keeps that salt, so a batch of another
+    epoch that writes the same content cannot replace it. Its epoch token and precision tag are carried over unchanged."""
+    from app.modules.transformers.vectorstore import deterministic_point_id
+    from app.services.vector_db.collection_epoch import POINT_EPOCH, RESET_TOKEN_PREFIX, Fence
+
+    token = RESET_TOKEN_PREFIX + "cd" * 15
+    paras = _paragraphs(6)
+    _, blob = await legacy_record(db, _text_container(paras))
+    for point_id, point in list(db.collections[COLL].items()):  # as written under a later epoch, at int8
+        meta = point.payload["metadata"]
+        meta[POINT_EPOCH], meta["embedPrecision"] = token, "int8-w"
+        del db.collections[COLL][point_id]
+        point.id = deterministic_point_id(meta, point.payload["page_content"], Fence(COLL, token))
+        db.collections[COLL][point.id] = point
+    store = make_store(db)
+    await run(store, blob, _text_container(paras))
+    assert store._embed_documents_with_retry.await_count == 0, "nothing was embedded: every block moved"
+    assert len(db.collections[COLL]) == len(paras)
+    for point_id, point in db.collections[COLL].items():
+        meta = point.payload["metadata"]
+        base = deterministic_point_id(meta, point.payload["page_content"])
+        assert point_id == deterministic_point_id(meta, point.payload["page_content"], Fence(COLL, token)) != base
+        assert meta[POINT_EPOCH] == token and meta["embedPrecision"] == "int8-w"

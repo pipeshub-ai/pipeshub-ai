@@ -253,3 +253,14 @@ async def test_a_stale_entity_batch_does_not_replace_a_point_another_writer_wrot
     survivors = [p for p in world.vdb.points[ENTITIES] if p["embedEpoch"] == other["fence"].token]
     assert bool(survivors) is fenced
     assert FP32  # (the other precision is not involved)
+
+
+def test_the_same_content_under_two_epochs_has_two_ids_and_the_first_epoch_keeps_the_plain_one() -> None:
+    """Block ids follow content, so the base id of a chunk is the same on every run; the epoch is what tells two batches apart."""
+    meta = {"virtualRecordId": "v1", "blockId": "content-derived-id", "isBlock": True}
+    plain = deterministic_point_id(meta, "text")
+    first = deterministic_point_id(meta, "text", Fence("records", "t0"))
+    second = deterministic_point_id(meta, "text", Fence("records", RESET_TOKEN_PREFIX + "ab" * 15))
+    third = deterministic_point_id(meta, "text", Fence("records", RESET_TOKEN_PREFIX + "cd" * 15))
+    assert first == plain
+    assert len({plain, second, third}) == 3

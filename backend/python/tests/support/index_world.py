@@ -36,7 +36,7 @@ def make_store(db: IVectorDBService, dim: int = 2, collection: str = COLL) -> Ve
     store._ensure_collection = AsyncMock(return_value=collection)
     store._cleanup_orphaned_embeddings_if_needed = AsyncMock()
     store._resync_membership_after_write = AsyncMock()
-    store._embed_documents_with_retry = AsyncMock(side_effect=lambda texts, _rid: [vector_of(t, dim) for t in texts])
+    store._embed_documents_with_retry = AsyncMock(side_effect=lambda texts, _rid, witness_out=None: [vector_of(t, dim) for t in texts])
     store._compute_sparse_embeddings = AsyncMock(side_effect=lambda texts: [None for _ in texts])
     return store
 

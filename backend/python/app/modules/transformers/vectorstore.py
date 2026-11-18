@@ -1639,8 +1639,14 @@ class VectorStore(Transformer):
                         meta["blockIndex"] = index_of[new_block]
                     if meta.get("rowBlockIds"):
                         meta["rowBlockIds"] = [new_by_old[r] for r in meta["rowBlockIds"]]
+                    # The id keeps the epoch of the point being moved: a point written after a reset is salted by its own token, so
+                    # a stale batch of another epoch cannot replace it, and the first token keeps the plain id. The payload (epoch
+                    # token, precision tag) is carried over unchanged.
+                    own_epoch = meta.get(POINT_EPOCH)
                     writes.append(VectorPoint(
-                        id=deterministic_point_id(meta, payload.get("page_content", "")),
+                        id=deterministic_point_id(
+                            meta, payload.get("page_content", ""), Fence(collection_name, own_epoch) if own_epoch else None,
+                        ),
                         dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload={**payload, "metadata": meta},
                     ))
                 for start in range(0, len(writes), _REKEY_PAGE):
