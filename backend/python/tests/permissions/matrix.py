@@ -103,7 +103,7 @@ CONNECTORS: tuple[Connector, ...] = (
               "same writer shape as Cloud"),
     Connector("atlassian/confluence_datacenter_personal", "container", CONTAINER, "atlassian/confluence_datacenter_personal/connector.py::ConfluenceDataCenterPersonalConnector"),
     Connector("atlassian/jira_cloud", "jira", INTERSECTION, "atlassian/jira_cloud/connector.py::JiraConnector._build_records_for_issue",
-              "project OPEN + Browse grants; an issue inherits where it is filed, a top-level one also has its Browse reporter or assignee as grants; a leveled one keeps a copy of the holders"),
+              "project OPEN + Browse grants; an issue inherits where it is filed, a top-level one also has its Browse reporter or assignee as grants; a leveled one keeps a copy of the holders; a restricted comment is RESTRICTED under its issue, granted to its role or group, and a file shown only in it is filed under it"),
     Connector("atlassian/jira_data_center", "jira", INTERSECTION, "atlassian/jira_data_center/connector.py::JiraDataCenterConnector._build_issue_records",
               "same writer shape as Cloud: project OPEN + Browse grants; an issue inherits where it is filed, a top-level one also has its Browse reporter or assignee as grants; a leveled one keeps a copy of the holders"),
     Connector("atlassian/jira_cloud_personal", "container", CONTAINER, "atlassian/jira_cloud_personal/connector.py::JiraCloudPersonalConnector"),

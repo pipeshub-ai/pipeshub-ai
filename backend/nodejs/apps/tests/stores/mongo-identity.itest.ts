@@ -89,6 +89,9 @@ describe('Identity repositories against a real MongoDB', function () {
     clearOrgAuth: async () => {
       await OrgAuthConfig.deleteMany({});
     },
+    storeRemovedSignInMethods: async (orgId, methods) => {
+      await OrgAuthConfig.updateOne({ orgId }, { $set: { removedSignInMethods: methods } });
+    },
   });
 
   it('oldestOrgId reads one organisation, not all of them', async () => {
