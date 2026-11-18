@@ -454,7 +454,7 @@ class JiraDataCenterConnector(BaseConnector):
     user_link_steps = ("_link_users_and_groups",)
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
-        "_dc_name_to_source_id",
+        "_dc_name_to_source_id", "_people_generation",
     )
 
     def __init__(
@@ -516,6 +516,8 @@ class JiraDataCenterConnector(BaseConnector):
         # Every account the user list showed, active or not.
         self._seen_user_keys: set[str] = set()
         self._newly_listed_user_keys: set[str] = set()
+        # Bumped each time accounts are owed a re-read; a project saves the one its last clean walk covered.
+        self._people_generation: str = "0"
         # True when this sync kept stored groups, roles, a lead, a project or its issues after
         # a read that may pass on a later run (408, 429, 5xx, a transport error);
         # full_sync_coverage() then reports the read as incomplete.
@@ -1080,7 +1082,8 @@ class JiraDataCenterConnector(BaseConnector):
             if self._newly_listed_user_keys and not sync_stats.get("failed_project_keys") and placeholders_backfilled is not None:
                 # Every project re-read their leveled issues (the retry marker, saved before its walk), and the
                 # sweep re-secured those projects' stubs. A skipped sweep keeps the accounts for the next sync.
-                await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": "[]"})
+                await self.issues_sync_point.update_sync_point(
+                    PEOPLE_REREAD_KEY, {"accounts": "[]", "generation": self._people_generation})
 
             failed_keys = sync_stats.get("failed_project_keys") or []
             failed_statuses = sync_stats.get("failed_project_statuses") or {}
@@ -1253,6 +1256,7 @@ class JiraDataCenterConnector(BaseConnector):
         security_levels: str | None = None,
         child_parents: str | None = None,
         no_level_read: str | None = None,
+        people_read: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1266,6 +1270,7 @@ class JiraDataCenterConnector(BaseConnector):
             security_levels: JSON map of level id -> digest of its holders (``"*"`` marks a read to repeat)
             child_parents: JSON map of parent issue id -> epic key whose children are still to be read again
             no_level_read: ``NO_LEVEL_READ`` once every stored issue was read with ``level IS EMPTY``
+            people_read: the people re-read generation the last clean walk of the project covered
         """
         sync_point_key = f"project_{project_key}"
 
@@ -1284,6 +1289,7 @@ class JiraDataCenterConnector(BaseConnector):
         # Kept as JSON text: a sync point holds primitives only.
         for field, text in (
             ("security_levels", security_levels), ("child_parents", child_parents), ("no_level_read", no_level_read),
+            ("people_read", people_read),
         ):
             stored_text = text if text is not None else existing.get(field)
             if stored_text is not None:
@@ -3434,10 +3440,13 @@ class JiraDataCenterConnector(BaseConnector):
             stored_levels = None  # synced before level tracking existed
         if not isinstance(stored_levels, dict):
             stored_levels = None
-        if self._newly_listed_user_keys and stored_levels and "*" not in stored_levels and not is_new_project:
+        people_read = (project_sync_data or {}).get("people_read") or "0"
+        owed = self._newly_listed_user_keys or people_read != self._people_generation
+        if owed and stored_levels and "*" not in stored_levels and not is_new_project:
             # An issue's level grants name only listed accounts, and a withdrawn one lost them: an account
             # listed again (or for the first time) gets them back when the leveled issues are read again.
-            # Saved first, so a walk that fails repeats it.
+            # Saved first, so a walk that fails repeats it. A project missing from the project list when the
+            # accounts were handed on is owed them by its older generation.
             stored_levels = {**stored_levels, "*": "retry"}
             await self._record_security_levels(project_key, stored_levels, force=True)
         reread, changed_levels, levels_to_save = plan_level_reread(
@@ -3579,6 +3588,8 @@ class JiraDataCenterConnector(BaseConnector):
             levels_to_save = pre_walk_marker(levels_to_save)  # the marker saved during the walk stays
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(project_key, levels_to_save, force=security.defer_checkpoint)
+        if not self._issue_build_failures and people_read != self._people_generation:
+            await self._update_project_sync_checkpoint(project_key, people_read=self._people_generation)
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -4911,13 +4922,17 @@ class JiraDataCenterConnector(BaseConnector):
         """The accounts whose leveled issues need reading again: these, and those an earlier sync saved but did
         not hand to every project. Saved before the accounts are linked, since once linked they are no longer new."""
         try:
-            saved = set(json.loads(
-                ((await self.issues_sync_point.read_sync_point(PEOPLE_REREAD_KEY)) or {}).get("accounts") or "[]"))
+            point = (await self.issues_sync_point.read_sync_point(PEOPLE_REREAD_KEY)) or {}
+            saved = set(json.loads(point.get("accounts") or "[]"))
+            generation = int(point.get("generation") or 0)
         except (TypeError, ValueError):
-            saved = set()
+            saved, generation = set(), 0
         pending = saved | newly_listed
         if pending != saved:
-            await self.issues_sync_point.update_sync_point(PEOPLE_REREAD_KEY, {"accounts": json.dumps(sorted(pending))})
+            generation += 1
+            await self.issues_sync_point.update_sync_point(
+                PEOPLE_REREAD_KEY, {"accounts": json.dumps(sorted(pending)), "generation": str(generation)})
+        self._people_generation = str(generation)
         return pending
 
     async def _withdraw_unlisted_app_users(self, jira_users: list[AppUser]) -> None:

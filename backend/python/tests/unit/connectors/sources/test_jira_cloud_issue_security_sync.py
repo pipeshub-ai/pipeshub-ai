@@ -1950,7 +1950,8 @@ class TestIssueGrantsNameListedAccountsOnly:
     def _pass(c: JiraConnector, stored: str | None = None) -> tuple[list, list]:
         saved: list = []
         naming: list = []
-        c._update_project_sync_checkpoint = AsyncMock(side_effect=lambda _k, **kw: saved.append(kw["people_reread"]))
+        c._update_project_sync_checkpoint = AsyncMock(
+            side_effect=lambda _k, **kw: saved.append(kw["people_reread"]) if "people_reread" in kw else None)
 
         async def fetch(*_a: object, naming: str | None = None, **_kw: object) -> AsyncIterator:
             naming_seen.append(naming)
@@ -1973,6 +1974,24 @@ class TestIssueGrantsNameListedAccountsOnly:
         await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, ctx, {"people_reread": '["acc-0"]'}, covered=False)
         assert saved == ['["acc-0", "acc-1"]', "[]"]  # saved before the pass, cleared after it
         assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") OR level in (10102)']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failed", [False, True], ids=["read", "an_issue_failed"])
+    async def test_a_project_missing_when_the_accounts_were_handed_on_reads_every_stored_issue_again(self, failed: bool) -> None:
+        """Its generation is older than the connector's and the accounts it missed are no longer kept, so every stored
+        issue is read again; the generation is saved only after a pass in which no issue failed."""
+        c = _connector()
+        self._pass(c)
+        c._people_generation = "2"
+
+        async def reread(*_a: object, **_kw: object) -> None:
+            c._issue_build_failures += int(failed)
+
+        c._reread_leveled_issues = AsyncMock(side_effect=reread)
+        assert await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), {"people_read": "1"}, covered=False)
+        assert c._reread_leveled_issues.await_args.kwargs == {"every_issue": True}
+        saved = [kw.get("people_read") for _a, kw in c._update_project_sync_checkpoint.await_args_list]
+        assert saved == ([] if failed else ["2"])
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("why", ["user_field", "unquotable_id", "query_refused"])

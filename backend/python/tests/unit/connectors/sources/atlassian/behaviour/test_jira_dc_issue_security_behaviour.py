@@ -1070,6 +1070,32 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert jql_search.plain_calls == 0, "read again once, not every sync"
 
+    async def test_a_project_the_sync_did_not_read_while_an_account_was_admitted_reads_its_levels_again_when_back(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """frank is linked while ENG is missing from the project list (the sync account lost Browse, or it was
+        archived). The re-read he is owed is handed on by the projects that were read; ENG keeps its checkpoint, so
+        when it is listed again its leveled issues are read again for him."""
+        stub_site(jira, jql_search)
+        everyone = [user("alice-key", "alice", "alice@example.com"), user("frank-key", "frank", None)]
+        jira.on("GET", f"{API}/user/list", json_response({"values": everyone, "isLast": True}))
+        serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "frank-key") not in readers(db, "2")
+
+        projects = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/project"))
+        jira.on("GET", f"{API}/project", json_response([]))
+        db.cached_app_users.append(AppUser(app_name="JIRA DATA CENTER", connector_id="jira-dc-1", source_user_id="frank-key",
+                                           org_id="org-1", email="", full_name="Frank", is_active=True))
+        await sync(connector, jql_search, recent=[])
+        assert json.loads(store.values_for("people_reread")["accounts"]) == []
+
+        jira.on("GET", f"{API}/project", projects)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "frank-key") in readers(db, "2")
+
     async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
         self, jira, db, store, jql_search,
     ) -> None:

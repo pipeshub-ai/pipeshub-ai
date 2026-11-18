@@ -544,8 +544,9 @@ class TestWithdrawnAccounts:
         c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
         c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
         assert await c._note_people_to_reread({"carol-key"}) == {"carol-key"}
-        assert store["people_reread"] == {"accounts": '["carol-key"]'}
+        assert store["people_reread"] == {"accounts": '["carol-key"]', "generation": "1"}
         assert await c._note_people_to_reread(set()) == {"carol-key"}
+        assert c._people_generation == "1", "bumped only when accounts are added"
 
     async def test_a_failed_read_of_the_synced_users_skips_the_stub_sweep(self) -> None:
         c = _connector()
