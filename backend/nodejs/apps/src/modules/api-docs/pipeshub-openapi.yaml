@@ -24968,7 +24968,9 @@ components:
           example: success
         message:
           type: string
-          description: Set when nothing matched.
+          description: >-
+            Set when nothing matched; when `otherTypeMatches` is set, says that only the requested
+            `entityTypes` came up empty.
         incomplete:
           type: boolean
           description: >-
@@ -24998,7 +25000,9 @@ components:
             type: string
         entityTypesNote:
           type: string
-          description: Set with `ignoredEntityTypes`; names the entity type that holds each one.
+          description: >-
+            Set with `ignoredEntityTypes`: says they were not searched and, where known, which
+            entity type holds each.
         results:
           type: array
           items:

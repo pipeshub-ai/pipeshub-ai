@@ -29,7 +29,9 @@ from app.modules.named_entities.domain.kinds import (
     kind_family,
 )
 from app.modules.retrieval.entity_permissions import (
+    NAMED_ENTITY_TYPE,
     RECORD_ENTITY_TYPE,
+    SEARCH_DEADLINE_SECONDS,
     SEARCHABLE_ENTITY_TYPES,
     EntityAccessContext,
     EntityAccessError,
@@ -55,7 +57,9 @@ NAMED_ENTITIES_DISABLED_MSG = "Named-entity lookup is not enabled."
 
 
 async def _named_entities_enabled(state: "ChatState") -> bool:
-    from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+    from app.services.featureflag.platform_settings import (
+        is_named_entity_extraction_enabled,
+    )
 
     return await is_named_entity_extraction_enabled(state.get("config_service"))
 
@@ -84,9 +88,15 @@ def _mark_incomplete(payload: dict[str, Any], hits: list[EntityHit], *, others_i
         payload["incompleteNote"] = INCOMPLETE_NOTE
 
 
-def _other_types_failed_note(query: str, types: list[str]) -> str:
+def _other_types_failed_note(query: str, types: list[str], *, compared: bool) -> str:
+    if not compared:
+        return (
+            f"The names returned could not be compared with {query!r}, so entities of other types "
+            "were not searched; the entity meant may be of another type. Search again without "
+            "entity_types."
+        )
     return (
-        f"Nothing named like {query!r} among the entity types asked for ({', '.join(types)}), "
+        f"No returned name matched {query!r} among the entity types asked for ({', '.join(types)}), "
         "and entities of other types could not be searched, so the entity meant may be of "
         "another type. Search again without entity_types."
     )
@@ -94,7 +104,7 @@ def _other_types_failed_note(query: str, types: list[str]) -> str:
 
 def _other_types_note(query: str, types: list[str]) -> str:
     return (
-        f"Nothing named like {query!r} among the entity types asked for ({', '.join(types)}). "
+        f"No returned name matched {query!r} among the entity types asked for ({', '.join(types)}). "
         "These matches are of other types and may be what was meant. Omit entity_types "
         "unless the user named the kind of thing they want."
     )
@@ -129,12 +139,14 @@ def _entity_types_note(ignored: list[str]) -> str:
 
 @dataclass(frozen=True)
 class _OtherTypes:
-    """What the search of every type found, when a type filter matched no name.
-    ``incomplete``: its deadline left matches unchecked. ``failed``: it could not run."""
+    """What the search of other types found, when a type filter matched no name.
+    ``incomplete``: its deadline left matches unchecked. ``failed``: it could not run;
+    ``compared``: whether the filtered names were compared before it failed."""
 
     hits: list[EntityHit] = field(default_factory=list)
     incomplete: bool = False
     failed: bool = False
+    compared: bool = True
 
 
 async def _other_type_matches(
@@ -148,7 +160,7 @@ async def _other_type_matches(
     top_k: int,
     include_named: bool,
 ) -> _OtherTypes:
-    """Entities of any type whose names match ``query``, when none of ``hits``
+    """Entities of other types whose names match ``query``, when none of ``hits``
     (a search narrowed to some types) does. A model guesses the type of a name
     it has never seen ("SAAS Launch" as a project when it is an epic), and the
     narrowed search then returns its nearest, unrelated entities as if they
@@ -156,31 +168,63 @@ async def _other_type_matches(
     query says whether it matches. Every entity returned passed the access
     check.
 
-    The search reads ``TITLE_SEARCH_TOP_K`` candidates before names are
-    compared, as the record-title lookup does, so a match ranked just past the
-    few results shown is still found. A deadline or a failure is reported, not
-    read as "nothing else matched": the narrowed answer is exactly the one the
-    model would otherwise take as complete."""
+    The search is of the types not asked for, so requested types cannot take its
+    candidate slots, and reads ``TITLE_SEARCH_TOP_K`` candidates before names are
+    compared, as the record-title lookup does, so a match ranked just past the few
+    results shown is still found. It gets the entity search's own budget
+    (``SEARCH_DEADLINE_SECONDS``), so it cannot hold the filtered answer back for
+    longer than one more search. A deadline or a failure is reported, not read as
+    "nothing else matched": the narrowed answer is exactly the one the model would
+    otherwise take as complete."""
     try:
-        if hits and any(c >= MIN_TITLE_COSINE for c in await store.dense_similarities(query, [h.name for h in hits])):
-            return _OtherTypes()
+        return await asyncio.wait_for(
+            _search_other_types(
+                store, graph, context, query, hits,
+                requested_types=requested_types, top_k=top_k, include_named=include_named,
+            ),
+            timeout=SEARCH_DEADLINE_SECONDS,
+        )
+    except TimeoutError:
+        return _OtherTypes(incomplete=True)
+
+
+async def _search_other_types(
+    store: "EntityVectorStore",
+    graph: "IGraphDBProvider",
+    context: EntityAccessContext,
+    query: str,
+    hits: list[EntityHit],
+    *,
+    requested_types: list[str],
+    top_k: int,
+    include_named: bool,
+) -> _OtherTypes:
+    try:
+        cosines = await store.dense_similarities(query, [h.name for h in hits]) if hits else []
+    except Exception:
+        logger.warning("search_entities: the names returned could not be compared", exc_info=True)
+        return _OtherTypes(failed=True, compared=False)
+    if any(c >= MIN_TITLE_COSINE for c in cosines):
+        return _OtherTypes()
+    other_types = sorted(
+        SEARCHABLE_ENTITY_TYPES - set(requested_types) - (set() if include_named else {NAMED_ENTITY_TYPE})
+    )
+    if not other_types:
+        return _OtherTypes()
+    try:
         wider = await search_entities_for_user(
-            store, graph, context, query, top_k=max(top_k, TITLE_SEARCH_TOP_K), include_named=include_named,
+            store, graph, context, query, entity_types=other_types,
+            top_k=max(top_k, TITLE_SEARCH_TOP_K), include_named=include_named,
         )
         shown = {(h.entity_type, h.entity_id) for h in hits}
-        # Only other types: an entity of a requested type that ranks past the filtered results
-        # is not "a match of another type", and the note would say it is.
-        candidates = [
-            h for h in wider
-            if (h.entity_type, h.entity_id) not in shown and h.entity_type not in requested_types
-        ]
-        cosines = await store.dense_similarities(query, [h.name for h in candidates])
+        candidates = [h for h in wider if (h.entity_type, h.entity_id) not in shown]
+        names_cosines = await store.dense_similarities(query, [h.name for h in candidates])
     except EntitySearchTimedOut:
         return _OtherTypes(incomplete=True)
     except Exception:
         logger.warning("search_entities: the search of other entity types failed", exc_info=True)
         return _OtherTypes(failed=True)
-    matched = [h for h, c in zip(candidates, cosines) if c >= MIN_TITLE_COSINE][:top_k]
+    matched = [h for h, c in zip(candidates, names_cosines) if c >= MIN_TITLE_COSINE][:top_k]
     return _OtherTypes(matched, incomplete=isinstance(wider, EntitySearchHits) and wider.incomplete)
 
 
@@ -321,21 +365,26 @@ async def execute_search_entities(
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
     others = await _other_type_matches(
         entity_vector_store, graph_provider, context, query, hits,
-        requested_types=valid_types, top_k=bounded_top_k, include_named=enabled,
+        requested_types=valid_types, top_k=bounded_top_k,
+        # Named entities were asked for only by kinds this search cannot serve: searching every
+        # kind now would answer the request the kind note just declined.
+        include_named=enabled and not (asked_kinds and not kinds),
     ) if valid_types else _OtherTypes()
 
     payload: dict[str, Any] = {"status": "success"}
     if hits:
         payload["results"] = _show(state, context, hits, with_kind=entity_search_offered)
     else:
-        payload.update(message="No accessible entities matched", results=[])
+        # With matches of other types, only the types asked for came up empty.
+        message = "No accessible entities of the types asked for matched" if others.hits else "No accessible entities matched"
+        payload.update(message=message, results=[])
         if note := limited_scope_note(context):
             payload["scopeNote"] = note
     if others.hits:
         payload["otherTypeMatches"] = _show(state, context, others.hits, with_kind=entity_search_offered)
         payload["otherTypeNote"] = _other_types_note(query, valid_types)
     elif others.failed:
-        payload["otherTypeNote"] = _other_types_failed_note(query, valid_types)
+        payload["otherTypeNote"] = _other_types_failed_note(query, valid_types, compared=others.compared)
     if ignored:
         payload["ignoredEntityTypes"] = ignored
         payload["entityTypesNote"] = _entity_types_note(ignored)
@@ -470,8 +519,10 @@ def _preview_row(
     preview: dict[str, Any] = {
         "recordId": _short(row["_key"], shortener),
         "name": _trunc(row.get("recordName") or row["_key"]),
-        "type": row.get("recordType"),
     }
+    # The schema's `type` is a string; a row stored without one leaves it out rather than null.
+    if isinstance(row.get("recordType"), str) and row["recordType"]:
+        preview["type"] = row["recordType"]
     app = context.app_names.get(row.get("connectorId"))
     if app:
         preview["app"] = app
