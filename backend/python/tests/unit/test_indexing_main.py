@@ -1310,7 +1310,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, priority_consumer, stage_consumer]) as create_consumer,
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),

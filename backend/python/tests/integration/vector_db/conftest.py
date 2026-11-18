@@ -21,10 +21,12 @@ Environment variables used:
 """
 
 import os
+
 import pytest
 
 from app.services.vector_db.models import HealthStatus
-
+# The writers read the epoch of their collection; a test that stands in a mock for the configuration service gets a fixed token.
+from tests.unit.conftest import _epoch_of_a_collection_whose_config_is_a_mock  # noqa: F401  (autouse)
 
 # ---------------------------------------------------------------------------
 # Helper: unique collection names per test run
