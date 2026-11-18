@@ -86,7 +86,9 @@ export function EnterprisePlaceholderPage({ title, subtitle, heading, message, c
           paddingBottom: 'var(--space-9)',
         }}
       >
+        {/* Decorative; the icon is a text ligature that screen readers would otherwise read out. */}
         <Flex
+          aria-hidden="true"
           align="center"
           justify="center"
           style={{

@@ -17,6 +17,7 @@ let user = { isAdmin: true as boolean | null, isProfileInitialized: true };
 vi.mock('@/lib/store/user-store', () => ({
   useUserStore: (selector: (s: typeof user) => unknown) => selector(user),
   selectIsAdmin: (s: typeof user) => s.isAdmin,
+  selectRefreshedIsAdmin: (s: typeof user) => (s.isProfileInitialized ? s.isAdmin : null),
   selectIsProfileInitialized: (s: typeof user) => s.isProfileInitialized,
 }));
 
@@ -58,6 +59,13 @@ describe('EnterprisePlaceholderPage', () => {
     expect(contact.className).toContain('rt-Button');
     expect(screen.getAllByRole('link')).toHaveLength(1);
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('keeps the decorative premium icon away from screen readers', () => {
+    renderPage();
+
+    const icon = screen.getByText('workspace_premium');
+    expect(icon.closest('[aria-hidden="true"]')).not.toBeNull();
   });
 
   it('sends a member who opens the URL to General settings, showing nothing', () => {
