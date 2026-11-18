@@ -252,6 +252,28 @@ async def test_a_suspended_users_grants_leave_the_typed_graph_once_drained_and_a
             await _admin(f"DELETE FROM kg.{t} WHERE org_id = $1", w.org)
 
 
+async def test_the_grants_of_unlinked_users_leave_the_typed_graph_once_drained(w: World, pg_db) -> None:
+    """The org gate's cleanup reaches the typed graph through the change capture (the statement trigger on graph.edges logs the deleted
+    rows): until the drain the walk answers, and after it kg itself denies what the unlinked user held alone and still admits what a team grants.
+    If the delete were not captured, kg would keep admitting the removed grant after the drain."""
+    await suspended_world(w)
+    try:
+        assert await flip(pg_db, w.org) == (2, 2)
+        access = await w.p.get_knowledge_hub_access_v3("u", w.org)
+        assert {"direct", "both"} <= set((await _decide(pg_db, w.org, ["direct", "both"], access)).admit)
+        assert await w.p.remove_unlinked_user_access_to_connector(APP) >= 4
+        access = await w.p.get_knowledge_hub_access_v3("u", w.org)
+        waiting = await _decide(pg_db, w.org, ["direct", "both"], access)
+        assert not waiting.admit and set(waiting.walk) == {"direct", "both"}            # behind the log: the walk answers
+        await drain_org(pg_db, w.org)
+        drained = await _decide(pg_db, w.org, ["direct", "both"], access)
+        assert set(drained.admit) == {"both"} and not drained.walk and drained.denied == 1
+        assert await w.allowed("u", "direct", "both") == {"both"}
+    finally:
+        for t in KG_TABLES:
+            await _admin(f"DELETE FROM kg.{t} WHERE org_id = $1", w.org)
+
+
 async def test_a_record_inherits_its_groups_grants_only_once_the_inherit_edge_is_written(w: World) -> None:
     await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
     await w.nodes("records", rec("r"))
