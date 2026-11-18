@@ -386,7 +386,8 @@ jobs:
             echo "Discovered: $TESTS"
           fi
           # shellcheck disable=SC2086
-          pytest $TESTS -m integration -k "$SELECT" -v -rs --timeout=300 --junitxml="$REPORT"
+          # redis_restart tests restart their own AOF container; they are run by hand (see the marker in pytest.ini).
+          pytest $TESTS -m "integration and not redis_restart" -k "$SELECT" -v -rs --timeout=300 --junitxml="$REPORT"
 
       - name: Fail if anything skipped
         if: env.SUITE_RUNS == 'true'
