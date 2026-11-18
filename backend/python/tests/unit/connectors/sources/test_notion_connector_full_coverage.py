@@ -2695,6 +2695,24 @@ class TestCreateWorkspaceRecordGroup:
         assert filters == {"connectorId": "notion-conn-1", "groupType": "NOTION_WORKSPACE"}
 
     @pytest.mark.asyncio
+    async def test_a_stored_workspace_is_closed_when_the_current_one_is_unknown(self) -> None:
+        """After a restart the bot lookup can fail, leaving no workspace id; a workspace an
+        earlier version opened to the app must still be closed, and no new one is made."""
+        conn = _make_connector()
+        conn.workspace_id = None
+        conn._mock_tx.get_nodes_by_filters = AsyncMock(return_value=[
+            {"id": "rg-old", "orgId": "org-1", "groupName": "Old", "externalGroupId": "ws-old",
+             "connectorId": "notion-conn-1", "connectorName": "NOTION", "groupType": "NOTION_WORKSPACE",
+             "permissionModel": "RECORD_GROUP_LEVEL"},
+        ])
+        await conn._create_workspace_record_group()
+        conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        [(group, permissions)] = conn.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert group.id == "rg-old"
+        assert group.inherit_permissions is False and group.permission_model is None and permissions == []
+        conn._mock_tx.get_record_group_by_external_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_user_sync_never_opens_the_workspace(self):
         """Listing members links them to the app, which must not reach any page."""
         conn = _make_connector()
