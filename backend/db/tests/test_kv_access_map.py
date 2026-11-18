@@ -76,7 +76,7 @@ READS = {
         "/services/namedEntities": ("app/modules/named_entities/domain/config.py:70", "NAMED_ENTITIES"),
         "/services/metricsCollection": ("app/telemetry/pusher.py:29", "/services/metricsCollection"),
         "/services/platform/settings": ("app/services/featureflag/platform_settings.py:21", "/services/platform/settings"),  # pipeline stages
-        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:276", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
+        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py:299", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py:46", "/migrations/kh_listing_state_v1"),
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py:271", "/migrations/etcd_to_redis"),
         _META: ("app/modules/record_metadata/schemas.py:92", "metadataSchemas"),  # sink_orchestrator.py:38 (indexing)
@@ -124,7 +124,7 @@ NOT_READ = {
            "/services/arangodb": "BaseAppContainer's ArangoDB client is resolved only by services with a graph connection; " + _ENVFB,
            "/services/kafka": _ENVFB, "/services/qdrant": _ENVFB, "/services/opensearch": _ENVFB,
            "/services/redis-vector": _ENVFB, "/services/pgvector": "the pgvector store: indexing and query",
-           "/services/file_types/config": "file-type settings: read by indexing's record event handler only (record.py:276)",
+           "/services/file_types/config": "file-type settings: read by indexing's record event handler only (record.py:299)",
            "/services/indexing/spendGuard": "the pause caps of stage jobs: read by the indexing pipeline's pause judge only (modules/pipeline/runtime.py:186)",
            "/services/indexing/parseAdmission": "the class admission's numbers: only indexing_main.py:2900 attaches the store; elsewhere "
                                                 "the wiring's LiveAdmissionConfig(None) reads no key (parse_engine/wiring.py:287)"},
