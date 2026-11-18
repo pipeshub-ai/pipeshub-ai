@@ -245,6 +245,32 @@ class TestSharedAcrossWorkers:
         assert str(caught.value).startswith("this organisation's share of code sandboxes is in use (2/2)")
         await a.acquire(org_id="other")
 
+    async def test_an_org_at_its_own_cap_waits_for_its_share_when_all_slots_are_taken(
+        self, tmp_path: Path, opened,
+    ) -> None:
+        rec = _Recorder()
+        a = _gov(tmp_path, opened, limit=4, per_org=2, observers=[rec], provider=_Provider)
+        b = _gov(tmp_path, opened, limit=4, per_org=2)
+        for _ in range(2):
+            await a.acquire(org_id="a")
+            await b.acquire(org_id="b")
+        with pytest.raises(SandboxLimitExceeded) as caught:
+            await a.acquire(org_id="a", wait_s=0.3)
+        # A slot "b" frees would not serve "a": its wait is its own share.
+        assert caught.value.reason is HoldReason.ORG_SHARE
+        assert a.limit_provider.waits  # type: ignore[attr-defined]
+        assert set(a.limit_provider.waits) == {HoldReason.ORG_SHARE}  # type: ignore[attr-defined]
+        assert ("outcome", "refused", HoldReason.ORG_SHARE) in rec.events
+        assert ("wait_reason", HoldReason.SLOTS_FULL) not in rec.events
+
+    async def test_an_org_cap_equal_to_the_limit_is_still_slots_full(self, tmp_path: Path, opened) -> None:
+        a = _gov(tmp_path, opened, limit=2, per_org=2)
+        await a.acquire(org_id="a")
+        await a.acquire(org_id="a")
+        with pytest.raises(SandboxLimitExceeded) as caught:
+            await a.acquire(org_id="a")
+        assert caught.value.reason is HoldReason.SLOTS_FULL
+
     async def test_a_waiter_sees_another_workers_release_within_the_poll(
         self, tmp_path: Path, opened,
     ) -> None:

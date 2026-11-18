@@ -362,9 +362,17 @@ class SandboxResourceGovernor:
                     reason = None
                 else:
                     self._busy_since = None
-                    me.denied = result.reason
                     held, tag_held, held_known = result.held, result.tag_held, True
-                    reason = hold_reason(view, denied=result.reason, floor=None)
+                    denied = result.reason
+                    if (
+                        denied == "full" and org_limit is not None and org_limit < limit
+                        and tag_held is not None and tag_held >= org_limit
+                    ):
+                        # Its org's own cap binds too: no slot another org
+                        # frees would serve it, so it waits for its share.
+                        denied = "tag_full"
+                    me.denied = denied
+                    reason = hold_reason(view, denied=denied, floor=None)
                 busy_tries = 0
                 now = self._clock()
                 if reason is not None:
@@ -506,7 +514,10 @@ class SandboxResourceGovernor:
                 planned[waiter.tag] += 1
                 future.set_result(None)
                 continue
-            reason = hold_reason(view, denied="full" if free <= 0 else "tag_full", floor=None)
+            # An org at its own cap waits for its share even when every slot
+            # is taken too, unless that cap is the whole limit.
+            share_binds = org_full and org_limit is not None and org_limit < limit
+            reason = hold_reason(view, denied="full" if free <= 0 and not share_binds else "tag_full", floor=None)
             self._set_reason(waiter, reason)
             longest[reason] = max(longest.get(reason, 0.0), now - waiter.start)
         for reason, waited_s in longest.items():
