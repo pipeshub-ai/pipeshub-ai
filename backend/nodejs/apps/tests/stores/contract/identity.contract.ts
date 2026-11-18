@@ -36,6 +36,8 @@ export interface IdentityFixture {
   newId(): string;
   /** Removes every org auth config row (the "first live config" lookups are store-wide). */
   clearOrgAuth(): Promise<void>;
+  /** Stores the sign-in methods a release removed from the organisation's config, as the upgrade migration does. */
+  storeRemovedSignInMethods(orgId: string, methods: string[]): Promise<void>;
 }
 
 const MAX = 5;
@@ -1220,6 +1222,25 @@ export function describeIdentityContract(fx: IdentityFixture): void {
         expect(err, JSON.stringify(steps)).to.be.instanceOf(Error);
       }
       expect(await orgAuth.replaceSteps(await fx.newOrg(), [{ order: 1, allowedMethods: [] }])).to.equal(null);
+    });
+
+    it('get, getLive and replaceSteps return the same fields whatever removedSignInMethods holds', async () => {
+      const org = await fx.newOrg();
+      await orgAuth.createDefault(org, undefined);
+      const fields = ['__v', '_id', 'authSteps', 'createdAt', 'isDeleted', 'orgId', 'updatedAt'];
+      const sameShape = async (): Promise<void> => {
+        const steps = [{ order: 1, allowedMethods: [{ type: 'password' }] }];
+        for (const c of [await orgAuth.get(org), await orgAuth.getLive(org), await orgAuth.replaceSteps(org, steps)]) {
+          expect(Object.keys(c!).sort()).to.deep.equal(fields);
+        }
+      };
+      await sameShape();
+      expect(await orgAuth.removedSignInMethods(org)).to.deep.equal([]);
+      for (const removed of [['samlSso', 'oauth'], []]) {
+        await fx.storeRemovedSignInMethods(org, removed);
+        await sameShape();
+        expect(await orgAuth.removedSignInMethods(org)).to.deep.equal(removed);
+      }
     });
   });
 

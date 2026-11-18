@@ -459,7 +459,7 @@ async def test_the_scope_tags_are_created_case_sensitive_and_the_others_are_not(
     for name, kind in (("pathIds", "keyword"), ("aclScope", "keyword"), ("scopeStamp", "keyword"), ("connectorIds", "keyword"),
                        ("scopeFieldsVersion", "integer"), ("metadata.orgId", "keyword")):
         await svc.create_index("col", name, {"type": kind})
-    altered = {c.args[4]: c.args[5:] for c in svc.client.execute_command.await_args_list}
+    altered = {c.args[4]: c.args[5:] for c in svc.client.execute_command.await_args_list if c.args[0] == "FT.ALTER"}
     assert altered == {"pathIds": ("TAG", "CASESENSITIVE"), "aclScope": ("TAG", "CASESENSITIVE"), "scopeStamp": ("TAG", "CASESENSITIVE"),
                        "connectorIds": ("TAG",), "scopeFieldsVersion": ("NUMERIC",), "metadata_orgId": ("TAG",)}
 

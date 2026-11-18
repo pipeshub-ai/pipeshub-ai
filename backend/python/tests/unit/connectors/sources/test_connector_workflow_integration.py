@@ -494,7 +494,7 @@ class MockTransactionStore:
             return existing.id
         return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
-    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> List[User]:
         results = []
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("orgId") == org_id and (not active or doc.get("isActive", True)):
