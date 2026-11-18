@@ -204,9 +204,8 @@ affinity: {}
 spreadAcrossNodes: false
 
 # Prometheus metrics of the indexing service's admission governor: one /metrics per pod on `port`,
-# bounded and without pid, pod, org or record labels. Scraped through a PodMonitor (needs the
-# Prometheus Operator CRDs, so it is off until you ask for it). With networkPolicy.enabled, add an ingress
-# rule that lets your Prometheus reach this port.
+# bounded and without pid, pod, org or record labels. Point your Prometheus at it. With
+# networkPolicy.enabled, add an ingress rule that lets your Prometheus reach this port.
 # `bind` is the address the port listens on: `podIP` (the default) binds the pod's own address, so only
 # traffic to the pod reaches it; `0.0.0.0` listens on every interface; any other IP address is used as is.
 # The port is unauthenticated and served over plain HTTP: reach it only from your Prometheus.
@@ -214,11 +213,6 @@ metrics:
   enabled: true
   port: 9091
   bind: podIP
-  podMonitor:
-    enabled: false
-    interval: 30s
-    scrapeTimeout: 10s
-    labels: {}          # for example {release: kube-prometheus-stack}, to match your Prometheus' selector
 
 # Pod Disruption Budget for High Availability
 podDisruptionBudget:
@@ -1086,6 +1080,8 @@ neo4j:
     NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
     NEO4J_dbms_memory_heap_initial__size: 512m
     NEO4J_dbms_memory_heap_max__size: 2g
+    # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
+    NEO4J_dbms_cypher_min__replan__interval: "30m"
     NEO4J_dbms_memory_pagecache_size: 1g
 
 # Parsing in its own pods (off by default; the chart then renders exactly as

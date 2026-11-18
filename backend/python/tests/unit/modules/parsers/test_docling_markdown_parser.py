@@ -9,7 +9,13 @@ import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import Block, BlockType, BlocksContainer, ImageMetadata
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.markdown.docling_markdown_parser import (
+    DoclingMarkdownParser,
+    _extract_and_replace_images,
+)
 from app.services.parsing.interface import ParseResult
+from app.utils.converters.caption_map import apply_caption_map as _apply_caption_map
 
 _DOCLING_MOCKS = {
     "docling": MagicMock(),
@@ -17,14 +23,6 @@ _DOCLING_MOCKS = {
     "docling.datamodel.document": MagicMock(),
     "docling.document_converter": MagicMock(),
 }
-
-with patch.dict("sys.modules", _DOCLING_MOCKS):
-    from app.modules.parsers.image_parser.image_parser import ImageParser
-    from app.modules.parsers.markdown.docling_markdown_parser import (
-        DoclingMarkdownParser,
-        _extract_and_replace_images,
-    )
-    from app.utils.converters.caption_map import apply_caption_map as _apply_caption_map
 
 _MD_MODULE = DoclingMarkdownParser.parse_string.__globals__["markdown_lib"]
 

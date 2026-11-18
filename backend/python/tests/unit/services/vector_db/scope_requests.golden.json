@@ -967,6 +967,8 @@
    "FT.SEARCH",
    "col_idx",
    "(only | words) @metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa}",
+   "DIALECT",
+   "2",
    "LIMIT",
    "0",
    "4"

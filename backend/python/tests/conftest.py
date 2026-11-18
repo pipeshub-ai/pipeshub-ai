@@ -15,7 +15,10 @@ import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 from app.utils.process_hardening import disable_vendor_telemetry
+from tests.support.sys_modules_guard import install as install_sys_modules_guard
 
+# Before any test module is collected, so a module-level patch.dict(sys.modules) is checked too.
+install_sys_modules_guard()
 # Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
 disable_vendor_telemetry()
 # The suite exercises the real metrics backend whatever the edition default.

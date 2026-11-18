@@ -434,8 +434,9 @@ class TestProcessDriveItemComprehensive:
             return_value=existing
         )
         meta = _make_file_metadata(parents=["new-parent"])
+        # A My Drive item's list always names its owner; an empty one is no answer, and fails the item.
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
-            "permissions": []
+            "permissions": [{"id": "p-owner", "type": "user", "role": "owner", "emailAddress": "u@test.com"}]
         })
         result = await connector._process_drive_item(
             meta, user_id="uid1", user_email="u@test.com",

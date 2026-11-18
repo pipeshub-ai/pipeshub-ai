@@ -462,6 +462,8 @@ services:
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
       - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
       - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_MAX:-2G}
+      # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
+      - NEO4J_dbms_cypher_min__replan__interval=${NEO4J_MIN_REPLAN_INTERVAL:-30m}
       - NEO4J_dbms_memory_pagecache_size=${NEO4J_PAGECACHE:-1G}
     volumes:
       - neo4j_data:/data
