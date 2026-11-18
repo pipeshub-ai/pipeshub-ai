@@ -915,6 +915,9 @@ class NotionConnector(BaseConnector):
             self._sync_incomplete = False
             self._failed_pages = set()
             self._readers, self._listed_rows, self._withheld = {}, None, None
+            # Before anything that reaches Notion and can fail (a lapsed token), so the
+            # workspaces an earlier version opened to the app are closed even then.
+            await self._create_workspace_record_group()
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
@@ -922,7 +925,8 @@ class NotionConnector(BaseConnector):
             # The token's own workspace, every run: a token swapped for one from another
             # workspace must not keep writing under the old workspace group.
             await self._ensure_workspace_from_bot(refresh=True)
-            await self._create_workspace_record_group()
+            if self.workspace_id:
+                await self._create_workspace_record_group()
 
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(

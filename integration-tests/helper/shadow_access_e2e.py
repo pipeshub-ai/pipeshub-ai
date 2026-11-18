@@ -75,9 +75,13 @@ WITH u, r,
             <-[:INHERIT_PERMISSIONS*1..5]-(r)
       WHERE (g:Group OR g:Role) AND p.type IN ['GROUP', 'ROLE']
     } THEN 'group-record-group'
-    // A user linked to the app, directly or through a team, reaches whatever inherits from it.
+    // A user linked to the app, directly or through a team, reaches whatever inherits from it,
+    // unless a node on the way needs its own grant, which such a user lacks.
     // 50 is ACCESS_WALK_MAX_DEPTH, how far the product walks.
-    WHEN EXISTS { (r)-[:INHERIT_PERMISSIONS*1..50]->(:App {id: $connector_id}) }
+    WHEN EXISTS {
+      MATCH chain = (r)-[:INHERIT_PERMISSIONS*1..50]->(:App {id: $connector_id})
+      WHERE none(n IN nodes(chain) WHERE coalesce(n.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT'])
+    }
       AND (EXISTS { (u)-[:USER_APP_RELATION]->(:App {id: $connector_id}) }
            OR EXISTS { (u)-[:PERMISSION {type: 'USER'}]->(:Teams)-[:USER_APP_RELATION]->(:App {id: $connector_id}) })
     THEN 'app'
@@ -92,7 +96,6 @@ RETURN r.id AS id,
     WHEN path ENDS WITH 'record-group' AND NOT EXISTS { (r)-[:INHERIT_PERMISSIONS]->(:RecordGroup) }
     THEN ' via parent record' ELSE ''
   END AS path
-LIMIT $limit
 """
 
 # The same paths in AQL, for an ArangoDB run.
@@ -114,7 +117,12 @@ LET user_teams = (FOR t IN own FILTER IS_SAME_COLLECTION(@teams, t) RETURN t)
 LET app_linked = LENGTH(
   FOR e IN @@user_app FILTER (e._from == u OR e._from IN user_teams) AND e._to == app_id LIMIT 1 RETURN 1
 ) > 0
-LET via_app = app_linked ? (FOR v IN 1..50 INBOUND app_id @@inherit RETURN v._id) : []
+LET via_app = app_linked ? (
+  FOR v IN 1..50 INBOUND app_id @@inherit
+    PRUNE v.accessRule IN ['RESTRICTED', 'PARENT_AND_GRANT']
+    FILTER v.accessRule NOT IN ['RESTRICTED', 'PARENT_AND_GRANT']
+    RETURN v._id
+) : []
 LET orgs = @with_org ? (
   FOR b IN @@belongs_to FILTER b._from == u AND IS_SAME_COLLECTION(@orgs, b._to) RETURN b._to
 ) : []
@@ -137,7 +145,6 @@ FOR r IN @@records
   LET in_record_group = LENGTH(
     FOR e IN @@inherit FILTER e._from == r._id AND IS_SAME_COLLECTION(@record_groups, e._to) LIMIT 1 RETURN 1
   ) > 0
-  LIMIT @limit
   RETURN {
     id: r._key,
     path: CONCAT(path, LIKE(path, '%record-group') AND NOT in_record_group ? ' via parent record' : ''),
@@ -361,7 +368,7 @@ async def _live_records(
 async def _access_paths(
     graph_provider: GraphProviderProtocol, user_key: str, connector_id: str, *, with_org: bool,
 ) -> dict[str, str]:
-    params = {"user_key": user_key, "connector_id": connector_id, "with_org": with_org, "limit": 5000}
+    params = {"user_key": user_key, "connector_id": connector_id, "with_org": with_org}
     if os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower() == "arango":
         rows = await graph_provider.execute_query(_ACCESS_PATHS_AQL, bind_vars={
             **params,
