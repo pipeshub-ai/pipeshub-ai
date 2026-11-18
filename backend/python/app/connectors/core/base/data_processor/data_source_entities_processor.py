@@ -7490,12 +7490,15 @@ class DataSourceEntitiesProcessor:
         for start in range(0, len(live), 500):
             chunk = live[start:start + 500]
             async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.batch_update_nodes(
+                now = get_epoch_timestamp_in_ms()
+                updates = []
+                for r in chunk:
+                    stored = await tx_store.get_record_by_key(r.id, raise_on_error=True)
                     # A stored parse-now copy is served by id too: it waits for the new copy like search does.
-                    [{"id": r.id, "indexingStatus": ProgressStatus.QUEUED.value, HAS_INDEXED_COPY: False,
-                      PARSE_NOW_STATUS: ProgressStatus.QUEUED.value} for r in chunk],
-                    CollectionNames.RECORDS.value,
-                )
+                    fields = {"indexingStatus": ProgressStatus.QUEUED.value, "queuedAtTimestamp": now,
+                              HAS_INDEXED_COPY: False, PARSE_NOW_STATUS: ProgressStatus.QUEUED.value}
+                    updates.append({"id": r.id, **fields, **run_reference(stored, WriteKind.QUEUE, now)})
+                await tx_store.batch_update_nodes(updates, CollectionNames.RECORDS.value)
         if live:
             await self._access_changed([connector_id])
             await self.reindex_existing_records(live)

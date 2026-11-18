@@ -798,6 +798,8 @@ class TestDropIndexedCopies:
         processor = DataSourceEntitiesProcessor.__new__(DataSourceEntitiesProcessor)
         tx = MagicMock()
         tx.batch_update_nodes = AsyncMock()
+        # Indexed long ago: queuing it starts a new indexing run.
+        tx.get_record_by_key = AsyncMock(return_value={"indexingStatus": "COMPLETED", "lastIndexTimestamp": 1})
         tx.__aenter__ = AsyncMock(return_value=tx)
         tx.__aexit__ = AsyncMock(return_value=None)
         processor.data_store_provider = MagicMock()
@@ -809,6 +811,7 @@ class TestDropIndexedCopies:
         updates, collection = tx.batch_update_nodes.await_args.args
         assert collection == "records" and [u["id"] for u in updates] == ["r-d1", "r-p1"]
         assert not any(is_searchable_record(u) for u in updates)
+        assert all(u["indexingAttempts"] == 0 and u["firstQueuedAt"] > 1 for u in updates)
         # Nor readable by id from a parse-now copy stored for the current revision.
         stored = {"parseNowStatus": "STORED", "parseNowRev": "v1", "contentRev": "v1"}
         assert is_readable_record(stored)
