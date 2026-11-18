@@ -72,7 +72,7 @@ class Blob:
 
     def __init__(self) -> None:
         self.saved: dict | None = None
-        self.get_reconciliation_metadata = AsyncMock(side_effect=lambda *_: self.saved)
+        self.get_reconciliation_metadata = AsyncMock(side_effect=lambda *_, **__: self.saved)
 
 
 async def index(store: VectorStore, blob: Blob, text: str, *, event: str = EventTypes.UPDATE_RECORD.value) -> None:
