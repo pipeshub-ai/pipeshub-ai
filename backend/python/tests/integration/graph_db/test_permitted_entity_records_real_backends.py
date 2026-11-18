@@ -487,8 +487,7 @@ class TestNeo4jRoleWalkLeftOut:
     @staticmethod
     async def _both(
         provider: Neo4jProvider, org_id: str, ref: dict[str, Any], *, offset: int, window: int, limit: int,
-    ) -> dict[bool, list[str]]:
-        import json
+    ) -> dict[bool, list[dict[str, Any]]]:
 
         from app.services.graph_db.common.utils import (
             ENTITY_CANDIDATE_SCAN_CAP,
@@ -504,43 +503,56 @@ class TestNeo4jRoleWalkLeftOut:
             "scan_cap": ENTITY_CANDIDATE_SCAN_CAP, "completed": ProgressStatus.COMPLETED.value,
             "within": within_param(None),
         }
-        out: dict[bool, list[str]] = {}
+        out: dict[bool, list[dict[str, Any]]] = {}
         for role_test in (True, False):
-            rows = await provider.client.execute_query(
-                provider._permitted_entity_records_cypher(entity_type, role_test=role_test), parameters=params,
-            )
-            out[role_test] = sorted(json.dumps(dict(row), sort_keys=True, default=str) for row in rows or [])
+            statement = provider._permitted_entity_records_cypher(entity_type, role_test=role_test)
+            # Both forms must really run: a generator that ignored role_test would pass parity.
+            assert ("permission_role" in statement) is role_test
+            rows = await provider.client.execute_query(statement, parameters=params)
+            out[role_test] = [dict(row) for row in rows or []]
         return out
 
+    @staticmethod
+    def _same(both: dict[bool, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        """The hits both forms returned, after checking they are the same rows."""
+        import json
+
+        def canonical(rows: list[dict[str, Any]]) -> list[str]:
+            return sorted(json.dumps(row, sort_keys=True, default=str) for row in rows)
+
+        assert canonical(both[False]) == canonical(both[True])
+        return [hit for row in both[True] for hit in row.get("hits") or []]
+
     @pytest.mark.parametrize(
-        ("connectors", "offset", "window", "limit"),
+        ("connectors", "offset", "window", "limit", "expected_hits"),
         [
-            ("both", 0, 200, 200),     # every candidate, in one window
-            ("both", 0, 20, 5),        # the walk stops at the limit
-            ("both", 60, 60, 60),      # a later window
-            ("both", 500, 60, 60),     # a window past the last candidate: empty
-            ("app", 0, 200, 200),      # one connector
-            ("none", 0, 200, 200),     # a ref with no connectors: no candidates
+            ("both", 0, 200, 200, NOISE + len(READABLE) + len(HIDDEN)),  # every candidate, in one window
+            ("both", 0, 20, 5, 5),                                       # the walk stops at the limit
+            ("both", 60, 60, 60, NOISE + len(READABLE) + len(HIDDEN) - 60),  # a later window
+            ("both", 500, 60, 60, 0),                                    # past the last candidate: empty
+            ("app", 0, 200, 200, 1),                                     # one connector: its one record
+            ("none", 0, 200, 200, 0),                                    # no connectors: no candidates
         ],
     )
     async def test_a_topic_reads_the_same_with_and_without_the_walk(
-        self, backend, connectors: str, offset: int, window: int, limit: int,
+        self, backend, connectors: str, offset: int, window: int, limit: int, expected_hits: int,
     ) -> None:
         provider, org_id = backend
         connector_ids = {"both": [APP_LEVEL, RECORD_LEVEL], "app": [APP_LEVEL], "none": []}[connectors]
         ref = {"id": _keys(org_id)["topic"], "type": "topic", "connectorIds": connector_ids}
 
-        both = await self._both(provider, org_id, ref, offset=offset, window=window, limit=limit)
+        hits = self._same(await self._both(provider, org_id, ref, offset=offset, window=window, limit=limit))
 
-        assert both[False] == both[True]
+        # Every candidate is admitted here, so the walk keeps the first window rows, in order.
+        assert [hit["pos"] for hit in hits] == list(range(expected_hits))
 
     async def test_a_record_ref_reads_the_same_with_and_without_the_walk(self, backend) -> None:
         provider, org_id = backend
         ref = {"id": _keys(org_id)["records"]["direct"], "type": "record", "connectorIds": [RECORD_LEVEL]}
 
-        both = await self._both(provider, org_id, ref, offset=0, window=200, limit=200)
+        hits = self._same(await self._both(provider, org_id, ref, offset=0, window=200, limit=200))
 
-        assert both[False] == both[True] and both[True]
+        assert [(hit["pos"], hit["row"]["_key"]) for hit in hits] == [(0, ref["id"])]
 
     async def test_the_provider_leaves_the_walk_out_and_returns_every_candidate(self, backend) -> None:
         """The decision itself, through the method: with both connectors app-level every
@@ -567,6 +579,8 @@ class TestNeo4jRoleWalkLeftOut:
         rows = out[("topic", keys["topic"])]
         assert sent and all("permission_role" not in query for query in sent)
         assert len(rows) == rows.window_size == rows.examined == NOISE + len(READABLE) + len(HIDDEN)
+        stamps = _timestamps(keys)
+        assert [row["_key"] for row in rows] == sorted(stamps, key=stamps.__getitem__, reverse=True)
 
 
 class TestThroughThePermissionLayer:
