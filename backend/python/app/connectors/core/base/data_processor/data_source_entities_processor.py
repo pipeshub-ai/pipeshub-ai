@@ -88,7 +88,7 @@ from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType, read_role
 from app.modules.code_graph import deleted_files
 from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_ATTEMPTS, WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
@@ -6119,9 +6119,10 @@ class DataSourceEntitiesProcessor:
 
 
 
-    async def get_all_active_users(self) -> list[User]:
+    async def get_all_active_users(self, *, raise_on_error: bool = False) -> list[User]:
+        """``raise_on_error`` raises a failed read instead of answering ``[]``."""
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_users(self.org_id, active=True)
+            return await tx_store.get_users(self.org_id, active=True, raise_on_error=raise_on_error)
 
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> User | None:
         async with self.data_store_provider.transaction() as tx_store:
@@ -6145,6 +6146,64 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_groups_with_permission_to_node(
                 node_id, node_collection, raise_on_error=raise_on_error
             )
+
+    async def get_roles_on_record(self, record_id: str) -> tuple[dict[str, str], dict[str, str]]:
+        """The role of each permission edge into a record from a person (by lowercased email: a user, or a Person an
+        external collaborator is stored as; the higher role when both) and from a group (by its id at the source).
+        Read with the user, group, node and edge lookups every store has; a failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            users = await tx_store.get_users_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            groups = await tx_store.get_groups_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            edges = await tx_store.get_edges_to_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value, raise_on_error=True
+            )
+            ends = []
+            for edge in edges:
+                # ArangoDB answers `_from`; Neo4j and PostgreSQL answer from_collection and from_id.
+                collection, _, key = str(edge.get("_from") or "").partition("/")
+                if edge.get("from_collection"):
+                    collection, key = edge["from_collection"], edge.get("from_id")
+                ends.append((collection, key, read_role(edge.get("role")) or PermissionType.READ.value))
+            person_keys = sorted({k for c, k, _ in ends if c == CollectionNames.PEOPLE.value and k})
+            people = await tx_store.get_nodes_by_field_in(
+                CollectionNames.PEOPLE.value, "_key", person_keys, ["_key", "email"], raise_on_error=True
+            ) if person_keys else []
+        names = {
+            CollectionNames.USERS.value: {u.id: u.email.lower() for u in users if u.email},
+            CollectionNames.PEOPLE.value: {p["_key"]: p["email"].lower() for p in people if p.get("_key") and p.get("email")},
+            CollectionNames.GROUPS.value: {g.id: g.source_user_group_id for g in groups if g.source_user_group_id},
+        }
+        persons: dict[str, str] = {}
+        group_roles: dict[str, str] = {}
+        for collection, key, role in ends:
+            name = names.get(collection, {}).get(key)
+            if name is None:
+                continue
+            if collection == CollectionNames.GROUPS.value:
+                group_roles[name] = role
+            elif PERMISSION_HIERARCHY.get(role, 0) > PERMISSION_HIERARCHY.get(persons.get(name, ""), 0):
+                persons[name] = role
+        return persons, group_roles
+
+    async def delete_principal_permission_from_record(self, record_id: str, email: str, connector_id: str) -> None:
+        """Delete the permission edges into a record of the user and of the Person (an external collaborator) with an
+        email. A failed read raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
+            person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
+            edges = [
+                {"from_id": principal.id, "from_collection": collection, "to_id": record_id,
+                 "to_collection": CollectionNames.RECORDS.value}
+                for principal, collection in ((user, CollectionNames.USERS.value), (person, CollectionNames.PEOPLE.value))
+                if principal is not None
+            ]
+            deleted = await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value) if edges else 0
+        if deleted:
+            await self._access_changed([connector_id])
 
     # Same reach as the user lookups (get_users_with_permission_to_node walks 8 inherit hops).
     GROUP_ACCESS_MAX_HOPS = 8
@@ -7415,6 +7474,36 @@ class DataSourceEntitiesProcessor:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
+
+    @retry_on_deadlock()
+    async def open_app_to_org_team(self, connector_id: str) -> bool:
+        """Let the org's All team through the connector gate, for content the source opens to everyone, and say whether
+        the edge is there afterwards (an org without its All team gets none). Until then the gate alone kept every
+        user the connector does not link away from grants still naming them (left from before withdrawals took them),
+        so those grants go first, in one statement that checks the link (``remove_unlinked_user_access_to_connector``):
+        deactivated users and guests are included, and a user linked meanwhile keeps theirs. Every call removes them
+        again, gate open or not, so a pass that missed some is made good."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.remove_unlinked_user_access_to_connector(connector_id)
+            await tx_store.ensure_team_app_edge(connector_id, self.org_id)
+        return await self.org_team_app_edge_exists(connector_id)
+
+    async def org_team_app_edge_exists(self, connector_id: str) -> bool:
+        """Whether the org's All team passes the connector gate now. A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return bool(await tx_store.get_edge(
+                f"all_{self.org_id}", CollectionNames.TEAMS.value, connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value, raise_on_error=True,
+            ))
+
+    async def withdraw_team_app_edge(self, connector_id: str) -> None:
+        """Undo ``open_app_to_org_team``: the org's members pass the gate again only through their own links."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_edge(
+                f"all_{self.org_id}", CollectionNames.TEAMS.value,
+                connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            )
 
     async def get_nodes_by_filters(
         self,
