@@ -6141,7 +6141,7 @@
       },
       "restricted": {
         "title": "Kdo co vidí",
-        "description": "Kdo ukázku zapnul, může číst většinu z ní, a Alice s Bobem mohou číst to, co jejich týmy. Ostatní lidé ve vaší organizaci z ní nemohou číst nic. Níže uvedené záznamy jsou omezené vždy na jednu skupinu, do které ten, kdo ukázku zapnul, nepatří, takže stejná otázka dostane jinou odpověď podle toho, kdo se ptá.",
+        "description": "Kdo přidal konektor Demo, může číst většinu z ní, a Alice s Bobem mohou číst to, co jejich týmy. Nikdo další ve vaší organizaci z ní nemůže číst nic; zobrazení ukázky ve vašich odpovědích přístup nedává. Každý záznam níže mohou číst jen členové jeho skupiny, takže stejná otázka dostane jinou odpověď podle toho, kdo se ptá.",
         "readers": "Mohou je otevřít: {{names}}",
         "noReaders": "Žádný ukázkový účet je nemůže otevřít."
       },

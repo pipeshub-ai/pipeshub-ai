@@ -6066,7 +6066,7 @@
       },
       "restricted": {
         "title": "Quién ve qué",
-        "description": "Quien activó la demo puede leer casi todo, y Alice y Bob pueden leer lo que sus equipos pueden leer. Las demás personas de tu organización no pueden leer nada. Los registros siguientes están limitados a un grupo cada uno, que no incluye a quien activó la demo, así que la misma pregunta recibe otra respuesta según quién la haga.",
+        "description": "Quien añadió el conector Demo puede leer casi todo, y Alice y Bob pueden leer lo que sus equipos pueden leer. Nadie más en tu organización puede leer nada; mostrar la demo en tus respuestas no da acceso. Cada registro siguiente solo lo pueden leer los miembros de su grupo, así que la misma pregunta recibe otra respuesta según quién la haga.",
         "readers": "Pueden abrirlos: {{names}}",
         "noReaders": "Ninguna cuenta de ejemplo puede abrirlos."
       },

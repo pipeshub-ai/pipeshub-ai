@@ -5770,7 +5770,7 @@
       },
       "restricted": {
         "title": "Who can see what",
-        "description": "Whoever turned on the demo can read most of it, and Alice and Bob can read what their teams can. Other people in your organization can't read any of it. The records below are limited to one group each, which doesn't include whoever turned on the demo, so the same question gets a different answer depending on who asks.",
+        "description": "The person who added the Demo connector can read most of it, and Alice and Bob can read what their teams can. Nobody else in your organization can read any of it; showing the demo in your answers doesn't give access. Each record below is readable only by members of its group, so the same question gets a different answer depending on who asks.",
         "readers": "Can open these: {{names}}",
         "noReaders": "Neither sample account can open these."
       },
