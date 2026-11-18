@@ -56,6 +56,7 @@ from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import (
+    RecordSchemaNarrowError,
     GraphLockUnavailableError,
     GraphQueryError,
     PermissionVerificationUnavailableError,
@@ -96,8 +97,11 @@ from app.models.source_dates import (
     upload_times_undated,
 )
 from app.modules.code_graph.edge_build_trigger import is_code_record
+from app.modules.indexing.record_diagnostics import WriteKind, aql_parts
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.schema.arango.documents import (
+    RECORD_SCHEMA_GENERATION,
     agent_schema,
     agent_skill_candidates_schema,
     agent_skill_versions_schema,
@@ -178,6 +182,7 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoQueryError,
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
+from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
 from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
 from app.services.graph_db.common.cascade_retry import (
     CASCADE_ATTEMPTS,
@@ -525,8 +530,9 @@ def _aql_open_hop(c: str, p: str, tag: str) -> str:
 def _aql_read_by_app(v: str) -> str:
     """Whether ``v`` is read by this App's rules (``@app_id``). A record or group of another connector that a
     group edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's
-    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once."""
-    return f"({v}.connectorId == @app_id)"
+    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once. A group that carries
+    access only (``accessOnly``) is never a row: what hangs under it is listed under its other parents."""
+    return f"({v}.connectorId == @app_id AND {v}.accessOnly != true)"
 
 
 def _aql_in_scope(c: str, p: str) -> str:
@@ -664,7 +670,7 @@ def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -
         FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
             FILTER kh_ue.relationshipType IN {_HIERARCHY_AQL}
             FILTER IS_SAME_COLLECTION("{records}", kh_uc) OR IS_SAME_COLLECTION("{groups}", kh_uc)
-            FILTER kh_uc.orgId == @org_id AND kh_uc.connectorId == @app_id AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
+            FILTER kh_uc.orgId == @org_id AND {_aql_read_by_app("kh_uc")} AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
             {f"FILTER kh_uc._id NOT IN {decided}" if decided else ""}
             FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}
             // a child a browse of it would refuse takes no place under the cap
@@ -1223,6 +1229,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not all([arango_url, arango_user, arango_password, arango_db]):
                 raise ValueError("Missing required ArangoDB configuration values")
 
+            await self._stop_record_guard()  # a second connect() replaces the client; its guard's poller would otherwise run on
             # Create HTTP client
             self.http_client = ArangoHTTPClient(
                 base_url=arango_url,
@@ -1235,6 +1242,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Connect to ArangoDB
             if not await self.http_client.connect():
                 raise Exception("Failed to connect to ArangoDB")
+            self.http_client.record_guard = RecordSchemaGuard(
+                self.http_client, self.logger, schema=record_schema, generation=RECORD_SCHEMA_GENERATION,
+            )
 
             # Ensure database exists
             if not await self.http_client.database_exists(arango_db):
@@ -1254,8 +1264,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to connect to ArangoDB via HTTP: {str(e)}")
+            await self._stop_record_guard()
             self.http_client = None
             return False
+
+    async def _stop_record_guard(self) -> None:
+        """Cancel the poll of the current client's records-schema guard (it holds the client, so it would keep polling after a disconnect)."""
+        guard = self.http_client.record_guard if self.http_client else None
+        if guard is not None:
+            await guard.stop()
 
     async def disconnect(self) -> bool:
         """
@@ -1266,6 +1283,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB via HTTP API")
+            await self._stop_record_guard()
             if self.http_client:
                 await self.http_client.disconnect()
             self.http_client = None
@@ -1274,6 +1292,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to disconnect: {str(e)}")
             return False
+
+    async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
+        """Apply ``schema`` to a collection. The records schema is applied only while the live generation is
+        lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
+        older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
+        repairs it, eventually (see ``record_schema_guard``)."""
+        client = self.http_client
+        if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
+            guard = client.record_guard
+            # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
+            # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
+            # later checks and writes repair it. An unreadable live schema is not written over (this attempt of the start fails).
+            try:
+                await guard.ensure_wide("startup")
+            except Exception as error:
+                self.logger.warning("could not apply the records schema: %s", error)
+                return False
+            return await guard.is_wide()
+        return await client.update_collection_schema(name, schema)
+
+    async def ensure_wide_record_schema(self, trigger: str = "manual") -> bool:
+        """Widen the live records schema now (outside any transaction). Test and operator entry point."""
+        guard = self.http_client.record_guard if self.http_client else None
+        return bool(guard and await guard.ensure_wide(trigger))
+
+    def start_record_schema_poll(self, interval: float = 10.0) -> None:
+        """Check the live records schema every ``interval`` seconds on the running loop and widen it when it is
+        narrower than this process's."""
+        if self.http_client and self.http_client.record_guard:
+            self.http_client.record_guard.start(interval)
 
     async def ensure_schema(self) -> bool:
         """
@@ -1310,7 +1358,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # Ensure schema is applied to pre-existing collections too. Not fatal here: the
                     # indexing service, which writes the fields a newer schema adds, does not start
                     # until the records schema is applied (ensure_pipeline_schema).
-                    if col_schema and not await self.http_client.update_collection_schema(name, col_schema):
+                    if col_schema and not await self._apply_schema(name, col_schema):
                         self.logger.error(
                             "The schema of collection '%s' was not updated; documents carrying fields "
                             "the previous schema does not list will be refused until it is", name,
@@ -1342,6 +1390,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
 
+            self.start_record_schema_poll()
             self.logger.info("✅ ArangoDB schema ensured successfully")
             return True
 
@@ -1360,8 +1409,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             _ = await client.create_collection(stages, schema=stage_state_schema)
         # The connector service creates records; until it has, this fails and the caller retries.
         for name, schema in ((stages, stage_state_schema), (CollectionNames.RECORDS.value, record_schema)):
-            if not await client.update_collection_schema(name, schema):
+            if not await self._apply_schema(name, schema):
                 raise RuntimeError(f"could not apply the schema of collection '{name}'")
+        self.start_record_schema_poll()
         for fields in _STAGE_STATE_INDEXES:
             if not await client.ensure_persistent_index(stages, list(fields)):
                 raise RuntimeError(f"could not ensure the index {list(fields)} on '{stages}'")
@@ -1977,7 +2027,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """A write-write conflict (errorNum 1200) with another writer, such as
         indexing updating the same record. A stream transaction rolls back
         whole, so the block can be re-run."""
-        return isinstance(error, Exception) and _is_write_conflict(error)
+        return isinstance(error, Exception) and (isinstance(error, RecordSchemaNarrowError) or _is_write_conflict(error))
 
     def is_write_conflict(self, error: BaseException) -> bool:
         return self.is_transient_error(error)
@@ -3063,32 +3113,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return
         coll = CollectionNames.RECORDS.value
         try:
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key IN @keys
-                RETURN doc
-            """
-            bind_vars = {"@collection": coll, "keys": unique_ids}
-            raw_docs = await self.execute_query(query, bind_vars=bind_vars)
-            if not raw_docs:
-                return
-
-            to_upsert: list[dict] = []
-            for arango_doc in raw_docs:
-                record = self._translate_node_from_arango(arango_doc)
-                rid = record.get("id") or record.get("_key")
-                if not rid:
-                    continue
-                if record.get("isInternal"):
-                    continue
-                if record.get("isPlaceholder"):
-                    continue
-                to_upsert.append({"_key": rid, "indexingStatus": status})
-
-            if to_upsert:
-                await self.batch_upsert_nodes(to_upsert, coll)
-                self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(to_upsert), status)
+            # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
+            lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status")
+            written = "{ indexingStatus: @status }" if patch == "{}" else f"MERGE({{ indexingStatus: @status }}, {patch})"
+            bind_vars = {"@collection": coll, "keys": unique_ids, "status": status}
+            if patch != "{}":
+                bind_vars["now"] = get_epoch_timestamp_in_ms()
+            updated = await self.http_client.execute_aql(
+                f"""
+                FOR doc IN @@collection
+                    FILTER doc._key IN @keys AND doc.isInternal != true AND doc.isPlaceholder != true
+                    {lets}
+                    UPDATE doc WITH {written} IN @@collection
+                    RETURN 1
+                """,
+                bind_vars,
+            )
+            if updated:
+                self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(updated), status)
         except Exception as e:
+            if isinstance(e, RecordSchemaNarrowError):
+                raise
             self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
 
     async def reset_indexing_status_for_connector(
@@ -3125,19 +3170,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             # AQL rejects a declared-but-unused bind var, so only bind it here.
             reason_field = ", reason: @reason" if reason is not None else ""
+            lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status")
+            written = f"{{ indexingStatus: @status{reason_field} }}"
+            if patch != "{}":
+                written = f"MERGE({written}, {patch})"
             query = f"""
             FOR doc IN @@collection
                 FILTER doc.connectorId == @connector_id
                 {exclude_clause}
                 {include_clause}
                 {visibility_clause}
-                UPDATE doc WITH {{ indexingStatus: @status{reason_field} }} IN @@collection
+                {lets}
+                UPDATE doc WITH {written} IN @@collection
             """
             bind_vars: dict = {
                 "@collection": coll,
                 "connector_id": connector_id,
                 "status": status,
             }
+            if patch != "{}":
+                bind_vars["now"] = get_epoch_timestamp_in_ms()
             if excluded:
                 bind_vars["exclude_statuses"] = excluded
             if included:
@@ -3257,12 +3309,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if new_status == ProgressStatus.QUEUED.value:
                 # AQL rejects a declared-but-unused bind var, so only bind it here.
                 update_fields = "{ indexingStatus: @new_status, queuedAtTimestamp: @now }"
+            # The run rule reads the stored record in this statement, not the status the caller expected.
+            lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@new_status")
+            if patch != "{}":
                 bind_vars["now"] = get_epoch_timestamp_in_ms()
+                update_fields = f"MERGE({update_fields}, {patch})"
             # FILTER + UPDATE in one statement; a read-then-write would let the
             # indexing service advance a record in between and get clobbered.
             query = f"""
             FOR doc IN @@collection
                 FILTER doc._key IN @keys AND doc.indexingStatus == @expected
+                {lets}
                 UPDATE doc WITH {update_fields} IN @@collection
                 RETURN NEW._key
             """
@@ -3324,12 +3381,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         fields = "{ indexingStatus: @to, reason: null }"
         if to_status == ProgressStatus.QUEUED.value:
             fields = "{ indexingStatus: @to, reason: null, queuedAtTimestamp: @now }"
+        lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@to")
+        if patch != "{}":
             bind_vars["now"] = get_epoch_timestamp_in_ms()
+            fields = f"MERGE({fields}, {patch})"
         # One statement: the status is read where it is written, so a record the indexer moved on is not taken back.
         updated = await self.http_client.execute_aql(
             f"""
             FOR doc IN @@records
                 FILTER doc._key IN @keys AND doc.indexingStatus == @expected AND doc.isDeleted != true
+                {lets}
                 UPDATE doc WITH {fields} IN @@records
                 RETURN NEW._key
             """,
@@ -3664,14 +3725,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
         # A write-write conflict here is usually an unrelated field update on the same
         # record (a connector sync), so it propagates for the caller to retry.
+        status = fields.get("indexingStatus")
+        lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status") if status is not None else ("", "{}")
+        binds: dict[str, Any] = {"@collection": CollectionNames.RECORDS.value, "keys": keys, "rev": content_rev, "fields": fields}
+        written = "@fields"
+        if patch != "{}":
+            binds.update(status=status, now=get_epoch_timestamp_in_ms())
+            written = f"MERGE(@fields, {patch})"
         rows = await self.http_client.execute_aql(
-            """
+            f"""
             FOR doc IN @@collection
                 FILTER doc._key IN @keys AND doc.contentRev == @rev
-                UPDATE doc WITH @fields IN @@collection
+                {lets}
+                UPDATE doc WITH {written} IN @@collection
                 RETURN NEW._key
             """,
-            {"@collection": CollectionNames.RECORDS.value, "keys": keys, "rev": content_rev, "fields": fields},
+            binds,
         )
         return [key for key in rows if isinstance(key, str)]
 
@@ -4063,6 +4132,52 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
+
+    async def write_attempt_start(
+        self,
+        record_id: str,
+        fields: dict[str, Any],
+        now: int | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.write_attempt_start`."""
+        rev = fields.get("contentRev")
+        lets, patch = aql_parts("doc", WriteKind.ATTEMPT_START, rev="@rev" if rev is not None else None)
+        bind_vars: dict[str, Any] = {
+            "@collection": CollectionNames.RECORDS.value, "key": record_id, "fields": fields,
+            "now": now if now is not None else get_epoch_timestamp_in_ms(),
+        }
+        if rev is not None:
+            bind_vars["rev"] = rev
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@collection
+                FILTER doc._key == @key
+                {lets}
+                UPDATE doc WITH MERGE({patch}, @fields) IN @@collection
+                RETURN 1
+            """,
+            bind_vars, transaction,
+        )
+        return bool(rows)
+
+    async def update_node_if_unchanged(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        snapshot: dict[str, Any],
+        expected: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """The snapshot's revision is the guard: a document update with ``If-Match``, no AQL. Refused (False) when the snapshot
+        does not hold ``expected`` or the document changed since it was read; without a revision, the field-checked statement."""
+        revision = snapshot.get("_rev")
+        if not isinstance(revision, str):
+            return await self.update_node_fields_if_match(key, collection, updates, expected, transaction)
+        if any(snapshot.get(name) != value for name, value in expected.items()):
+            return False
+        return await self.http_client.patch_document_if_match(collection, key, updates, revision, txn_id=transaction)
 
     async def update_node_if_match(
         self,
@@ -8657,6 +8772,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch all active users from the database who belong to the organization.
@@ -8664,6 +8780,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             org_id (str): Organization ID
             active (bool): Filter for active users only if True
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of user documents with their details
@@ -8675,6 +8792,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR edge IN {CollectionNames.BELONGS_TO.value}
                     FILTER edge._to == CONCAT('organizations/', @org_id)
                     AND edge.entityType == 'ORGANIZATION'
+                    AND IS_SAME_COLLECTION('{CollectionNames.USERS.value}', edge._from)
                     LET user = DOCUMENT(edge._from)
                     FILTER @active == false OR user.isActive == true
                     RETURN user
@@ -8691,6 +8809,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch users: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(
@@ -10651,6 +10771,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
+                    **run_reference({}, WriteKind.STATUS_VAR, current_timestamp, status=new_indexing_status),
                 }
                 if reason:
                     dup_update["reason"] = reason
@@ -11983,6 +12104,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         result = await self.http_client.execute_aql(
             query=query,
             bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
+                                   CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
+            txn_id=transaction,
+        )
+        return len(result or [])
+
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when the user has no USER_APP_RELATION edge to the connector, checked in the same query."""
+        query = """
+        FOR perm IN permission
+            FILTER IS_SAME_COLLECTION(@users, perm._from)
+            FILTER PARSE_IDENTIFIER(perm._to).collection IN @targets
+            LET target = DOCUMENT(perm._to)
+            FILTER target != null AND target.connectorId == @connector_id
+            FILTER LENGTH(FOR rel IN @@relation FILTER rel._from == perm._from AND rel._to == @app LIMIT 1 RETURN 1) == 0
+            REMOVE perm IN permission
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"users": CollectionNames.USERS.value, "connector_id": connector_id,
+                       "app": f"{CollectionNames.APPS.value}/{connector_id}",
+                       "@relation": CollectionNames.USER_APP_RELATION.value,
                        "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
                                    CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
             txn_id=transaction,
@@ -17830,7 +17979,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR row IN found
                     RETURN {{
                         key: row.r._key,
-                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now }}, row.fields),
+                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now, firstQueuedAt: (IS_NUMBER(row.fields.restoredAtTimestamp) ? MAX([@now, row.fields.restoredAtTimestamp + 1]) : @now), indexingAttempts: 0 }}, row.fields),
                         restored: true
                     }}
             ) : []
@@ -21573,6 +21722,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER kh_pe.relationshipType IN {hierarchy}
                             FILTER IS_SAME_COLLECTION("{apps}", kh_p) OR IS_SAME_COLLECTION("{groups}", kh_p)
                                 OR IS_SAME_COLLECTION("{records}", kh_p)
+                            FILTER kh_p.accessOnly != true
                             RETURN kh_p._key
                     ),
                     ownGroups: (FOR kh_g IN {owns("kh_c")} RETURN {{id: kh_g._key, deleted: kh_g.isDeleted == true}})

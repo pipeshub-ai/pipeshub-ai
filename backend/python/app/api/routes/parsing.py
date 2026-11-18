@@ -37,12 +37,18 @@ from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
     PasswordProtectedError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.pipeline.fingerprint import content_revision
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.services.paid_cache import locks as lock_limits
-from app.services.paid_cache.access import abandon_run, complete_run, start_run
+from app.services.paid_cache.access import (
+    abandon_run,
+    claim_refresh,
+    complete_run,
+    start_run,
+)
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -194,7 +200,14 @@ def _warn_if_budget_differs(sent: float | None, extension: str, mime_type: str |
     """One warning per pair when the caller's record budget is not this service's own (the settings drifted)."""
     from app.services.messaging.config import messaging_env
 
-    if sent is None:
+    raw = sent
+    sent = lock_limits.valid_record_budget(sent)
+    if sent is None:                       # absent or unusable: the service's own settings apply, nothing to compare
+        if isinstance(raw, int | float) and not isinstance(raw, bool) and raw == raw and raw > lock_limits.MAX_RECORD_BUDGET_S:
+            logger.warning(
+                "The caller's record budget (%.0f s) is above the %.0f s this service accepts (the open-manifest "
+                "protection window less a margin); this service's own settings apply.", raw, lock_limits.MAX_RECORD_BUDGET_S,
+            )
         return
     own = messaging_env.record_processing_timeout_for(extension, mime_type)
     if abs(own - sent) > 1.0 and (round(sent), round(own)) not in _budget_mismatch_logged:
@@ -261,6 +274,7 @@ async def parse_file(
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
+    refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -270,7 +284,7 @@ async def parse_file(
     try:
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
-            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s,
+            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token,
         )
     finally:
         load.leave()
@@ -293,6 +307,7 @@ async def _parse_file(
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
+    refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -455,8 +470,13 @@ async def _parse_file(
                 # and the service's own settings apply. A budget that differs from this service's is logged.
                 stage_limit = lock_limits.stage_deadline_for(record_budget_s)
                 _warn_if_budget_differs(record_budget_s, extension, mime_type)
+                # A refresh is claimed once: the client's own retry of the request reuses what the first paid for.
+                first_request = not refresh_paid_outputs or await claim_refresh(
+                    _config_service(request), (refresh_token or "")[:128], logger,
+                )
                 paid_run = start_run(
                     content_revision(content), "parse", refresh=refresh_paid_outputs, stage_deadline_s=stage_limit,
+                    reuse_prior_attempt=refresh_paid_outputs and not first_request,
                 )
                 # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
                 # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget
@@ -523,6 +543,24 @@ async def _parse_file(
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
+            )
+        except NonRetryableError as exc:
+            # A deliberate stop (a model call refused for good, say): sending the file again gets the same answer.
+            # As a 500 the client retried it and counted it against the parsing circuit breaker.
+            logger.warning(
+                "Parse stopped: record='%s' provider=%s by %s, which a retry would repeat",
+                record_name, provider_enum.value, type(exc).__name__,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_FAILED.value,
+                        "message": "Parsing was stopped by an error that a retry would repeat",
+                        "details": {"requestId": message_id, "error_type": type(exc).__name__},
+                    },
+                },
             )
         except LaneWaitTimeout:
             # A local conversion found no CPU lane in time: retryable, like a full gate.

@@ -210,3 +210,108 @@ class TestAnyoneSharesGrantNothing:
         await arango.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **KWARGS)
         assert "(a:Anyone)" not in neo4j.client.execute_query.call_args.args[0]
         assert all("FOR a IN anyone" not in c.args[0] for c in arango.execute_query.await_args_list)
+
+
+class TestNeo4jRoleTestOnlyWhereItCanDropARow:
+    """The role walk is ~80% of the statement and nearly all of its planning
+    time (~0.6-0.9s cold against ~5ms to run). Candidates are already limited
+    to their ref's connectors, so when all of those are app-level the walk
+    cannot drop a row and is left out of the statement."""
+
+    APP_LEVEL = {**KWARGS, "app_level_connector_ids": ["kb", "c1"]}
+
+    async def test_all_connectors_app_level_sends_no_role_walk(self) -> None:
+        p = _neo4j([])
+        await p.get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **self.APP_LEVEL)
+        query = p.client.execute_query.call_args.args[0]
+        assert "permission_role" not in query
+        assert "$app_level_connector_ids" not in query
+        # Still pages the same window, still needs the user to exist, still stops at the limit.
+        assert "MATCH (u:User {id: $user_key})" in query
+        assert query.index("SKIP $offset LIMIT $window") < query.index("UNWIND range(0, size(win) - 1) AS pos")
+        assert query.index("UNWIND range(0, size(win) - 1) AS pos") < query.index("LIMIT $limit")
+
+    async def test_one_connector_outside_app_level_keeps_the_role_walk(self) -> None:
+        p = _neo4j([])
+        mixed = {**TOPIC_REF, "connectorIds": ["c1", "c2"]}
+        await p.get_permitted_entity_records([mixed], "org1", "ukey", **self.APP_LEVEL)
+        assert "permission_role IS NOT NULL" in p.client.execute_query.call_args.args[0]
+
+    async def test_one_ref_outside_app_level_keeps_the_role_walk_for_its_type(self) -> None:
+        p = _neo4j([])
+        other = {"id": "t2", "type": "topic", "connectorIds": ["c9"]}
+        await p.get_permitted_entity_records([TOPIC_REF, other], "org1", "ukey", **self.APP_LEVEL)
+        assert "permission_role IS NOT NULL" in p.client.execute_query.call_args.args[0]
+
+    async def test_decided_per_entity_type(self) -> None:
+        p = _neo4j([])
+        private_record = {**RECORD_REF, "connectorIds": ["c9"]}
+        await p.get_permitted_entity_records([TOPIC_REF, private_record], "org1", "ukey", **self.APP_LEVEL)
+        by_type = {
+            "record" if "WHERE $offset = 0 AND" in c.args[0] else "topic": c.args[0]
+            for c in p.client.execute_query.await_args_list
+        }
+        assert "permission_role" not in by_type["topic"]
+        assert "permission_role IS NOT NULL" in by_type["record"]
+
+    async def test_the_omitted_walk_returns_what_the_full_walk_returns(self) -> None:
+        """Same rows, positions and paging for the same server answer: the
+        result handling does not depend on which statement ran."""
+        hits = [{"pos": 0, "row": {"_key": "a"}}, {"pos": 1, "row": {"_key": "b"}}]
+        answer = [{"id": "t1", "hits": hits, "window_size": 180, "capped": False}]
+        slim = await _neo4j(answer).get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **self.APP_LEVEL)
+        full = await _neo4j(answer).get_permitted_entity_records([TOPIC_REF], "org1", "ukey", **KWARGS)
+        rows_of = lambda out: [(list(r), r.examined, r.window_size, r.capped) for r in out.values()]  # noqa: E731
+        assert rows_of(slim) == rows_of(full)
+
+
+class TestNeo4jEntityTypesRunConcurrently:
+    """One statement per entity type; run in turn, a cold plan cache made the
+    call cost the sum of their planning times and the search ran out of time."""
+
+    async def test_every_type_is_in_flight_at_once(self) -> None:
+        import asyncio
+
+        refs = [TOPIC_REF, RECORD_REF, {"id": "s1", "type": "subcategory", "connectorIds": ["c1"]}]
+        started: list[str] = []
+        all_started = asyncio.Event()
+
+        async def _query(query: str, **kwargs: object) -> list:
+            started.append(query)
+            if len(started) == len(refs):
+                all_started.set()
+            # Sequential execution never gets here for the second statement.
+            await asyncio.wait_for(all_started.wait(), timeout=1)
+            return []
+
+        p = _neo4j([])
+        p.client.execute_query = AsyncMock(side_effect=_query)
+        await p.get_permitted_entity_records(refs, "org1", "ukey", **KWARGS)
+        assert len(started) == 3
+
+    async def test_each_answer_lands_under_its_own_type(self) -> None:
+        """A topic and a record may share an id; concurrent answers must not cross."""
+        shared_topic = {"id": "x", "type": "topic", "connectorIds": ["c1"]}
+        shared_record = {"id": "x", "type": "record", "connectorIds": ["c1"]}
+
+        async def _query(query: str, **kwargs: object) -> list:
+            key = "rec" if "WHERE $offset = 0 AND" in query else "top"
+            return [{"id": "x", "hits": [{"pos": 0, "row": {"_key": key}}], "window_size": 1, "capped": False}]
+
+        p = _neo4j([])
+        p.client.execute_query = AsyncMock(side_effect=_query)
+        out = await p.get_permitted_entity_records([shared_topic, shared_record], "org1", "ukey", **KWARGS)
+        assert [r["_key"] for r in out[("topic", "x")]] == ["top"]
+        assert [r["_key"] for r in out[("record", "x")]] == ["rec"]
+
+    async def test_one_failed_type_fails_the_call(self) -> None:
+        """A partial answer would read as "no readable records" for the failed type."""
+        async def _query(query: str, **kwargs: object) -> list:
+            if "WHERE $offset = 0 AND" in query:
+                raise RuntimeError("down")
+            return []
+
+        p = _neo4j([])
+        p.client.execute_query = AsyncMock(side_effect=_query)
+        with pytest.raises(RuntimeError):
+            await p.get_permitted_entity_records([TOPIC_REF, RECORD_REF], "org1", "ukey", **KWARGS)

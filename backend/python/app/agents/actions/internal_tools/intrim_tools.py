@@ -412,7 +412,10 @@ class InternalTools:
         ],
     )
     async def ask_user_question(
-        self, user_intent: str, questions: list[AskUserQuestionItemInput],
+        # Defaults, though the schema requires both: models send the call with no arguments at all,
+        # and that must reach the "nothing was asked" refusal below, not a TypeError. None, not "",
+        # so questions without a user_intent still fail validation.
+        self, user_intent: str | None = None, questions: list[AskUserQuestionItemInput] | None = None,
     ) -> str | ToolOutput:
         """Return structured interactive questions with a wrapper message.
 

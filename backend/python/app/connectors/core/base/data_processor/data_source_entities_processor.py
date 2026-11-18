@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import contextvars
+import functools
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.services.reindex_force import user_forced_reindex
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
@@ -57,7 +59,7 @@ from app.connectors.core.sync.run_context import (
 )
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, RecordSchemaNarrowError, is_graph_memory_refusal
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -86,8 +88,10 @@ from app.connectors.core.base.data_processor.record_links import (
     addresses_linking_to,
     link_target,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType, read_role
 from app.modules.code_graph import deleted_files
+from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_ATTEMPTS, WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
     notify_connector_sync_completed,
@@ -265,6 +269,26 @@ class _BatchLookups:
             return value
 
         return lookup
+
+#: Connectors whose records may take their access from a record group of their own (see `Record.access_group_external_id`): a write that
+#: names none keeps the stored one.
+ACCESS_GROUP_CONNECTORS = frozenset({Connectors.JIRA})
+
+
+class AccessGroupMissing(RuntimeError):
+    """A record names an access group that is not in the graph."""
+
+
+def _edge_group(edge: dict, end: str) -> str | None:
+    """The record group at one end (``"_to"`` / ``"_from"``) of an edge, in the shape ArangoDB gives
+    (``"recordGroups/<id>"``) or the generic one (``to_id`` with ``to_collection``); None for any other node."""
+    groups = CollectionNames.RECORD_GROUPS.value
+    ref = str(edge.get(end) or "")
+    if ref.startswith(f"{groups}/"):
+        return ref.split("/", 1)[1]
+    side = end.lstrip("_")
+    return str(edge[f"{side}_id"]) if edge.get(f"{side}_collection") == groups and edge.get(f"{side}_id") else None
+
 
 class ParentPlacement(NamedTuple):
     """Where a record takes its audience, and whether browse hangs off the group.
@@ -570,6 +594,9 @@ class DataSourceEntitiesProcessor:
         permanent error that would otherwise commit the block without its write."""
         if isinstance(error, SchemaValidationError):
             self._report_schema_rejection(error)
+            return True
+        if isinstance(error, RecordSchemaNarrowError):
+            # the provider aborted the transaction; its owner runs it again once the schema is wide
             return True
         provider = self.data_store_provider
         if (
@@ -1093,7 +1120,8 @@ class DataSourceEntitiesProcessor:
                 # A parent in this group is the permission parent. The flag is for a
                 # caller that must take the audience from the group anyway.
                 permissions_from_group = in_other_group or bool(record.inherit_permissions_from_group)
-                if record.inherit_permissions and not permissions_from_group:
+                # A record that takes its access from a group of its own is only listed under its parent.
+                if record.inherit_permissions and not permissions_from_group and not record.access_group_external_id:
                     await tx_store.create_inherit_permissions_relation_record(
                         record.id, parent_record.id
                     )
@@ -1927,7 +1955,7 @@ class DataSourceEntitiesProcessor:
             # inherits from the record above it, and _handle_parent_record owns
             # that edge. on_updated_record_permissions applies the same rule, or
             # the stored state would depend on which ran last.
-            if record.inherit_permissions and permissions_root:
+            if record.inherit_permissions and permissions_root and not record.access_group_external_id:
                 inherit = True
             elif existing_record is not None or stored_under_its_id:
                 inherit = False
@@ -2132,7 +2160,7 @@ class DataSourceEntitiesProcessor:
             )
 
     @staticmethod
-    def _stamp_queued_at(record: Record) -> None:
+    def _stamp_queued_at(record: Record, stored: Record | None = None, *, start: bool = False) -> None:
         """Mark a record put in line for indexing, before its event is published.
 
         The stranded-record sweep ages rows on this, not on updated_at, which
@@ -2141,12 +2169,21 @@ class DataSourceEntitiesProcessor:
         the publish, so a failed one still leaves an ageable marker; never on a
         write that publishes nothing, which would keep postponing the recovery of
         a record whose event was lost.
+
+        The record's run fields are stamped from the stored record it replaces (``stored``; None for a new one):
+        an open run is continued, otherwise a new one starts. ``start`` forces a start (a record brought back from
+        the trash).
         """
         if record.indexing_status in (
             ProgressStatus.NOT_STARTED.value,
             ProgressStatus.QUEUED.value,
         ):
-            record.queued_at = get_epoch_timestamp_in_ms()
+            now = get_epoch_timestamp_in_ms()
+            record.queued_at = now
+            stored_run = None if start or stored is None else getattr(stored, "_stored_run", None)
+            patch = run_reference(stored_run, WriteKind.QUEUE, now)
+            record.first_queued_at = patch.get(FIRST_QUEUED_AT)
+            record.indexing_attempts = patch.get(INDEXING_ATTEMPTS)
 
     @classmethod
     def _content_changed(cls, new_record: Record, old_record: Record) -> bool:
@@ -2742,6 +2779,133 @@ class DataSourceEntitiesProcessor:
         replace_permissions: bool = False,
         title_changes: dict[str, Record] | None = None,
     ) -> tuple[Record | None, list[PendingMove]]:
+        """Upsert a record and its edges (see ``_process_record_body``). A record that names an access
+        group (``Record.access_group_external_id``) takes its access from that group alone (see
+        ``_apply_access_group``), and no state between two statements is wider than the old one or
+        the new one."""
+        body = functools.partial(
+            self._process_record_body, record, permissions, tx_store, moved_virtual_record_ids,
+            publishes_event=publishes_event, pre_old_path=pre_old_path, narrowed_connectors=narrowed_connectors,
+            permissions_fetched=permissions_fetched, replace_permissions=replace_permissions, title_changes=title_changes,
+        )
+        if record.access_group_external_id is None and record.connector_name in ACCESS_GROUP_CONNECTORS \
+                and isinstance(record, TicketRecord):
+            await self._keep_access_group(record, tx_store)
+        group = record.access_group_external_id
+        if not isinstance(group, str):
+            return await body()
+        final_rule = record.access_rule
+        stored = (
+            await tx_store.get_record_by_external_id(connector_id=record.connector_id, external_id=record.external_record_id)
+            if group or final_rule == AccessRule.RESTRICTED else None
+        )
+        # A record stored RESTRICTED (a copy of its level's holders, inheriting what it is filed under) is
+        # written closed until its access edges are in place, and gets its final rule then. One that ends
+        # RESTRICTED is closed before its edges change: stored STRICT, it may inherit its group, and until the
+        # rule is written that group's readers would read it without a grant of their own.
+        held_closed = stored is not None and stored.access_rule == AccessRule.RESTRICTED and final_rule != AccessRule.RESTRICTED
+        if held_closed:
+            record.access_rule = AccessRule.RESTRICTED
+        elif (stored is not None and stored.access_rule != AccessRule.RESTRICTED and final_rule == AccessRule.RESTRICTED
+              and not record.is_placeholder):
+            await tx_store.batch_update_nodes(
+                [{"_key": stored.id, "accessRule": AccessRule.RESTRICTED.value}], CollectionNames.RECORDS.value
+            )
+        try:
+            processed, moves = await body()
+        finally:
+            record.access_rule = final_rule
+        # A stub takes its group too, unless it was written over the real record (which keeps its own).
+        if processed is not None and (not record.is_placeholder or stored is None or stored.is_placeholder):
+            await self._apply_access_group(record, tx_store)
+            if held_closed:
+                await tx_store.batch_update_nodes(
+                    [{"_key": record.id, "accessRule": final_rule.value}], CollectionNames.RECORDS.value
+                )
+        return processed, moves
+
+    async def _keep_access_group(self, record: Record, tx_store: TransactionStore) -> None:
+        """A write that names no access group (an issue whose level could not be read this time) keeps
+        the stored one, and its stored rule when it keeps its stored grants: handed back to what it is
+        filed under, it would be read by everyone who reads that. Filed in another record group now, it
+        names none, and the edges to the old one go."""
+        existing = await tx_store.get_record_by_external_id(connector_id=record.connector_id, external_id=record.external_record_id)
+        if existing is None or not existing.record_group_id:
+            return
+        held = sorted({
+            gid for edge in await tx_store.get_edges_from_node(
+                f"{CollectionNames.RECORDS.value}/{existing.id}", CollectionNames.INHERIT_PERMISSIONS.value, raise_on_error=True,
+            ) or []
+            if (gid := _edge_group(edge, "_to")) and gid != existing.record_group_id
+        })
+        if not held:
+            return
+        if record.external_record_group_id:
+            filed = await tx_store.get_record_group_by_external_id(
+                connector_id=record.connector_id, external_id=record.external_record_group_id)
+            if filed is None or filed.id != existing.record_group_id:
+                record.access_group_external_id = ""
+                return
+        group = await tx_store.get_record_group_by_id(held[0])
+        if group is None:
+            return
+        # Not written by a sync that could not read its level: unseen, a full sync's unlink would drop its grants.
+        self._note_full_sync_seen(record.connector_id, CollectionNames.RECORD_GROUPS.value, group.id)
+        record.access_group_external_id = group.external_group_id
+        if not record.rewrite_permissions:
+            record.access_rule = existing.access_rule
+
+    async def _apply_access_group(self, record: Record, tx_store: TransactionStore) -> None:
+        """Make the record inherit its access group and no other record group, and hang under it, beside
+        where it is filed (which it no longer inherits). Edges to any other group it took its access from
+        before are removed. A group that is not there is an error: the record stays as written."""
+        records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+        wanted: str | None = None
+        if record.access_group_external_id:
+            group = await tx_store.get_record_group_by_external_id(
+                connector_id=record.connector_id, external_id=record.access_group_external_id
+            )
+            if group is None:
+                raise AccessGroupMissing(
+                    f"record {record.id}: its access group {record.access_group_external_id!r} is not in the graph"
+                )
+            wanted = group.id
+        own = record.record_group_id
+        node = f"{records}/{record.id}"
+        # Its own group is inherited only when it names no access group (that edge is _link_record_to_group's).
+        inherits = [
+            gid for edge in await tx_store.get_edges_from_node(
+                node, CollectionNames.INHERIT_PERMISSIONS.value, raise_on_error=True) or []
+            if (gid := _edge_group(edge, "_to")) and gid != wanted and (gid != own or wanted)
+        ]
+        if wanted is None and not inherits:
+            return
+        # The hierarchy edges go first: the walk admits along them, so an inherit edge left alone admits nothing.
+        for edge in await tx_store.get_edges_to_node(node, CollectionNames.NODE_RELATIONS.value, raise_on_error=True) or []:
+            gid = _edge_group(edge, "_from")
+            if gid and gid != wanted and gid != own:
+                await tx_store.delete_edge(gid, groups, record.id, records, CollectionNames.NODE_RELATIONS.value)
+        for gid in inherits:
+            await tx_store.delete_inherit_permissions_relation_record_group(record.id, gid)
+        if wanted is None:
+            return
+        await tx_store.create_inherit_permissions_relation_record_group(record.id, wanted)
+        await self._create_hierarchy_edge(tx_store, wanted, groups, record.id, records)
+
+    async def _process_record_body(
+        self,
+        record: Record,
+        permissions: list[Permission],
+        tx_store: TransactionStore,
+        moved_virtual_record_ids: list[tuple[str, str | None]] | None = None,
+        *,
+        publishes_event: bool = True,
+        pre_old_path: object = _NO_OLD_PATH,
+        narrowed_connectors: set[str] | None = None,
+        permissions_fetched: bool = False,
+        replace_permissions: bool = False,
+        title_changes: dict[str, Record] | None = None,
+    ) -> tuple[Record | None, list[PendingMove]]:
         """Upsert a record and its edges.
 
         ``title_changes`` collects, by id, the records whose name or group this call
@@ -3027,7 +3191,7 @@ class DataSourceEntitiesProcessor:
             if existing_record.is_placeholder and not record.is_placeholder:
                 record.is_placeholder = False
             if publishes_event and not keeps_stored_indexing:
-                self._stamp_queued_at(record)
+                self._stamp_queued_at(record, existing_record, start=restored_from_trash)
             if (
                 record.external_revision_id == existing_record.external_revision_id
                 and record.is_placeholder
@@ -3040,7 +3204,7 @@ class DataSourceEntitiesProcessor:
                 record.access_rule = existing_record.access_rule
             if restored_from_trash and reindex_restored:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
-                self._stamp_queued_at(record)
+                self._stamp_queued_at(record, existing_record, start=True)
 
         parent_in_other_group = False
         parent_outside_group = False
@@ -3484,7 +3648,7 @@ class DataSourceEntitiesProcessor:
                 # An identical re-push that stores a new document keeps the stored revision, so the
                 # upload branch of _process_record carried the stored status (FAILED) over and stamped nothing.
                 processed.indexing_status = ProgressStatus.NOT_STARTED.value
-                self._stamp_queued_at(processed)
+                self._stamp_queued_at(processed, Record.from_arango_base_record(existing) if existing is not None else None)
                 await tx_store.batch_upsert_records([processed])
             elif expected is not None and not content_changed and existing is not None:
                 # A rename or version bump: indexing owns its state, which the upsert must not reset.
@@ -3881,7 +4045,7 @@ class DataSourceEntitiesProcessor:
                     if needs_reindex:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
                             new_record.indexing_status = ProgressStatus.QUEUED.value
-                        self._stamp_queued_at(new_record)
+                        self._stamp_queued_at(new_record, old_record)
                         records_to_reindex.append(new_record)
                         if not _is_publishable(new_record):
                             # Content changed *and* the group moved, but the
@@ -4803,6 +4967,10 @@ class DataSourceEntitiesProcessor:
         selected: bool = False,
     ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
+        if user_forced_reindex():
+            # A user's Force reindex: every stored paid result is bypassed and paid for again. The platform's own
+            # reindexes of unchanged records (a policy change) keep reusing them.
+            payload["refreshPaidOutputs"] = True
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:
@@ -5951,9 +6119,10 @@ class DataSourceEntitiesProcessor:
 
 
 
-    async def get_all_active_users(self) -> list[User]:
+    async def get_all_active_users(self, *, raise_on_error: bool = False) -> list[User]:
+        """``raise_on_error`` raises a failed read instead of answering ``[]``."""
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_users(self.org_id, active=True)
+            return await tx_store.get_users(self.org_id, active=True, raise_on_error=raise_on_error)
 
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> User | None:
         async with self.data_store_provider.transaction() as tx_store:
@@ -5977,6 +6146,64 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_groups_with_permission_to_node(
                 node_id, node_collection, raise_on_error=raise_on_error
             )
+
+    async def get_roles_on_record(self, record_id: str) -> tuple[dict[str, str], dict[str, str]]:
+        """The role of each permission edge into a record from a person (by lowercased email: a user, or a Person an
+        external collaborator is stored as; the higher role when both) and from a group (by its id at the source).
+        Read with the user, group, node and edge lookups every store has; a failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            users = await tx_store.get_users_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            groups = await tx_store.get_groups_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            edges = await tx_store.get_edges_to_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value, raise_on_error=True
+            )
+            ends = []
+            for edge in edges:
+                # ArangoDB answers `_from`; Neo4j and PostgreSQL answer from_collection and from_id.
+                collection, _, key = str(edge.get("_from") or "").partition("/")
+                if edge.get("from_collection"):
+                    collection, key = edge["from_collection"], edge.get("from_id")
+                ends.append((collection, key, read_role(edge.get("role")) or PermissionType.READ.value))
+            person_keys = sorted({k for c, k, _ in ends if c == CollectionNames.PEOPLE.value and k})
+            people = await tx_store.get_nodes_by_field_in(
+                CollectionNames.PEOPLE.value, "_key", person_keys, ["_key", "email"], raise_on_error=True
+            ) if person_keys else []
+        names = {
+            CollectionNames.USERS.value: {u.id: u.email.lower() for u in users if u.email},
+            CollectionNames.PEOPLE.value: {p["_key"]: p["email"].lower() for p in people if p.get("_key") and p.get("email")},
+            CollectionNames.GROUPS.value: {g.id: g.source_user_group_id for g in groups if g.source_user_group_id},
+        }
+        persons: dict[str, str] = {}
+        group_roles: dict[str, str] = {}
+        for collection, key, role in ends:
+            name = names.get(collection, {}).get(key)
+            if name is None:
+                continue
+            if collection == CollectionNames.GROUPS.value:
+                group_roles[name] = role
+            elif PERMISSION_HIERARCHY.get(role, 0) > PERMISSION_HIERARCHY.get(persons.get(name, ""), 0):
+                persons[name] = role
+        return persons, group_roles
+
+    async def delete_principal_permission_from_record(self, record_id: str, email: str, connector_id: str) -> None:
+        """Delete the permission edges into a record of the user and of the Person (an external collaborator) with an
+        email. A failed read raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
+            person = await tx_store.get_person_by_email(email, self.org_id, raise_on_error=True)
+            edges = [
+                {"from_id": principal.id, "from_collection": collection, "to_id": record_id,
+                 "to_collection": CollectionNames.RECORDS.value}
+                for principal, collection in ((user, CollectionNames.USERS.value), (person, CollectionNames.PEOPLE.value))
+                if principal is not None
+            ]
+            deleted = await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value) if edges else 0
+        if deleted:
+            await self._access_changed([connector_id])
 
     # Same reach as the user lookups (get_users_with_permission_to_node walks 8 inherit hops).
     GROUP_ACCESS_MAX_HOPS = 8
@@ -7236,6 +7463,47 @@ class DataSourceEntitiesProcessor:
         else:
             self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
 
+    async def remove_user_grants_from_records(
+        self, record_ids: list[str], user_emails: set[str], connector_id: str, *, batch: int = 500
+    ) -> int:
+        """Delete the permission edges these users hold on these records themselves (not grants through groups or
+        anything a record inherits), a batch of records at a time: each record's incoming edges are read, and the
+        users' edges among them deleted in one write. Returns how many went. A failed read raises, so nothing is
+        left unremoved unreported."""
+        if not record_ids or not user_emails:
+            return 0
+        users = CollectionNames.USERS.value
+        removed = 0
+        # Dropped even when a later batch raises: on Neo4j without explicit transactions an earlier batch's deletes
+        # have already committed, and a retry finds nothing left to report.
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            user_ids: set[str] = set()
+            for email in sorted(user_emails):
+                user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
+                if user is not None and user.id:
+                    user_ids.add(user.id)
+            if not user_ids:
+                return 0
+            for start in range(0, len(record_ids), batch):
+                edges: list[dict] = []
+                for record_id in record_ids[start:start + batch]:
+                    for edge in await tx_store.get_edges_to_node(
+                        f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value,
+                        raise_on_error=True,
+                    ) or []:
+                        # Arango returns `_from`; Neo4j and PostgreSQL return from_collection and from_id.
+                        collection, _, key = (edge.get("_from") or "").partition("/")
+                        if edge.get("from_collection"):
+                            collection, key = edge["from_collection"], edge.get("from_id")
+                        if collection == users and key in user_ids:
+                            edges.append({
+                                "from_id": key, "from_collection": users,
+                                "to_id": record_id, "to_collection": CollectionNames.RECORDS.value,
+                            })
+                if edges:
+                    removed += await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value) or 0
+        return removed
+
     async def get_app_creator_user(self, connector_id: str) -> User | None:
         """
         Fetch the creator user for a connector/app by connectorId.
@@ -7247,6 +7515,36 @@ class DataSourceEntitiesProcessor:
     async def ensure_team_app_edge(self, connector_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
+
+    @retry_on_deadlock()
+    async def open_app_to_org_team(self, connector_id: str) -> bool:
+        """Let the org's All team through the connector gate, for content the source opens to everyone, and say whether
+        the edge is there afterwards (an org without its All team gets none). Until then the gate alone kept every
+        user the connector does not link away from grants still naming them (left from before withdrawals took them),
+        so those grants go first, in one statement that checks the link (``remove_unlinked_user_access_to_connector``):
+        deactivated users and guests are included, and a user linked meanwhile keeps theirs. Every call removes them
+        again, gate open or not, so a pass that missed some is made good."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.remove_unlinked_user_access_to_connector(connector_id)
+            await tx_store.ensure_team_app_edge(connector_id, self.org_id)
+        return await self.org_team_app_edge_exists(connector_id)
+
+    async def org_team_app_edge_exists(self, connector_id: str) -> bool:
+        """Whether the org's All team passes the connector gate now. A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return bool(await tx_store.get_edge(
+                f"all_{self.org_id}", CollectionNames.TEAMS.value, connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value, raise_on_error=True,
+            ))
+
+    async def withdraw_team_app_edge(self, connector_id: str) -> None:
+        """Undo ``open_app_to_org_team``: the org's members pass the gate again only through their own links."""
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_edge(
+                f"all_{self.org_id}", CollectionNames.TEAMS.value,
+                connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            )
 
     async def get_nodes_by_filters(
         self,

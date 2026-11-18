@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import multiprocessing as mp
 import os
 import signal
+import sys
 import threading
 import time
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,6 +23,7 @@ from tests.support import ledger_procs as lp
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from types import FrameType
 
 GIB = 1 << 30
 POLICY = AdmissionPolicy()
@@ -381,15 +386,79 @@ def _skip_on_small_hosts() -> None:
         pytest.skip(f"{_cpus()} CPUs cannot run 16 contending processes; set LEDGER_MIN_PAIRS_PER_S to run it on a smaller host")
 
 
-def test_ledger_throughput(ledger: Path) -> None:
-    """At least 20 000 reserve+release pairs/s across 16 processes, including the admission logic."""
-    floor = int(os.environ.get("LEDGER_MIN_PAIRS_PER_S", "5000"))
-    _skip_on_small_hosts()
-    seconds = 2.0
-    results = _run_hammer(ledger, 16, seconds)
-    rate = sum(r[0] for r in results) / seconds
-    assert sum(r[1] for r in results) == 0
-    assert rate >= floor, f"{rate:.0f} pairs/s < {floor}"
+def _pair_cost(budget: MemberBudget) -> tuple[int, int, int, Counter[str]]:
+    """The Python calls, builtin calls, bytecode instructions and system calls (by name) of one reserve+release pair."""
+
+    def pair() -> None:
+        permit = budget.try_reserve(Demand(Family.EMBED, 2, 0, "small"))
+        assert permit is not None
+        permit.release()
+
+    work: Counter[str] = Counter()
+    system: Counter[str] = Counter()
+
+    def profile(_frame: object, event: str, arg: object) -> None:
+        work[event] += 1
+        if event == "c_call":
+            name = f"{getattr(arg, '__module__', None) or ''}.{getattr(arg, '__name__', '?')}"
+            if name.startswith(("posix.", "os.", "_io.", "fcntl.", "time.", "select.")):
+                system[name] += 1
+
+    def trace(frame: FrameType, event: str, _arg: object) -> object:
+        if event == "call":
+            frame.f_trace_opcodes = True
+        elif event == "opcode":
+            work["opcode"] += 1  # a loop over the process table that makes no call still shows here
+        return trace
+
+    pair()
+    for _ in range(2):  # Python 3.12 counts a code object's instructions from the run after it was first traced
+        work.clear()
+        system.clear()
+        previous_profile, previous_trace, collecting = sys.getprofile(), sys.gettrace(), gc.isenabled()
+        gc.disable()  # a collection inside one measured pair would run weak-reference callbacks in that pair only
+        sys.setprofile(profile)
+        sys.settrace(trace)
+        try:
+            pair()
+        finally:
+            sys.settrace(previous_trace)
+            sys.setprofile(previous_profile)
+            if collecting:
+                gc.enable()
+    return work["call"], work["c_call"], work["opcode"], system
+
+
+def test_ledger_throughput(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reserve+release pair, admission logic included, is two short ledger transactions whose cost does not grow
+    with the processes attached: no scan of the process table, no extra lock round trip, no wait or sync.
+
+    Counted, not timed: a pairs-per-second floor across 16 processes failed on a busy runner (4668 < 5000) with
+    nothing slow in the ledger."""
+    with contextlib.ExitStack() as handles:
+        one = open_budget(ledger, service="one")
+        handles.callback(one.close)
+        alone = _pair_cost(one)
+        for i in range(128):  # 129 attached fill three occupancy words, so per-word work differs from one process
+            handles.callback(open_budget(ledger, service=f"p{i}").close)
+        assert one.snapshot()["processes"] == 129
+        crowded = _pair_cost(one)
+        print(f"pair alone {alone}\npair with 129 attached {crowded}")
+        assert crowded == alone, "a reserve+release pair costs more with more processes attached"
+        system = crowded[3]
+        assert system["fcntl.flock"] == 4, "one ledger lock and unlock per reserve and per release"
+        synced = ("posix.open", "_io.open", "posix.fsync", "posix.fdatasync", "time.sleep")
+        assert not any(system[name] for name in synced), system
+
+        # One read of the whole slot table costs the same at any size: the reads must stay off it.
+        reads: list[tuple[int, int]] = []
+        real_pread = os.pread
+        monkeypatch.setattr(os, "pread", lambda fd, n, at: reads.append((at, n)) or real_pread(fd, n, at))
+        permit = one.try_reserve(Demand(Family.EMBED, 2, 0, "small"))
+        assert permit is not None
+        permit.release()
+        monkeypatch.undo()
+        assert reads and all(at + n <= mb.TABLE_OFFSET or at >= mb.CHANGE_OFFSET for at, n in reads), reads
 
 
 def test_no_sample_shows_more_than_c_held(ledger: Path) -> None:

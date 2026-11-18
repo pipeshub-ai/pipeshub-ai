@@ -12,6 +12,7 @@ import {
 } from '../../../libs/repositories/oauth-token';
 import {
   getOAuthAppRepository,
+  NO_APP_CREATOR,
   type OAuthAppDto,
 } from '../../../libs/repositories/oauth-app';
 import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
@@ -29,6 +30,7 @@ import {
 import {
   APP_WORKSPACE_MISMATCH_MESSAGE,
   isAppUsableInOrg,
+  isInstanceApp,
 } from './oauth.app.service';
 import {
   OAuthTokenPayload,
@@ -119,6 +121,13 @@ export class OAuthTokenService {
 
     const jti = randomUUID();
     const now = Math.floor(Date.now() / 1000);
+    // An instance app, or one no person created, acts as nobody: its tokens name no creator
+    // (a dynamic client stored before NO_APP_CREATOR existed still holds a borrowed user).
+    const actsAs = app.tokenIdentityUserId ?? app.createdBy;
+    const creatorClaim =
+      isInstanceApp(app) || actsAs === NO_APP_CREATOR
+        ? {}
+        : { createdBy: actsAs };
     // A personal access token names its own limit, and a user grant carries
     // the one its user agreed to. Every other token takes its app's.
     const knowledgeLimit =
@@ -152,7 +161,7 @@ export class OAuthTokenService {
       //
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
-      createdBy: app.tokenIdentityUserId ?? app.createdBy,
+      ...creatorClaim,
       knowledgeLimit,
       ...(opts?.audience === undefined ? {} : { aud: opts.audience }),
       ...(opts?.agentRegistrationId
@@ -238,7 +247,7 @@ export class OAuthTokenService {
         fullName,
         accountType,
         // Same resolved identity as the access token above.
-        createdBy: app.tokenIdentityUserId ?? app.createdBy,
+        ...creatorClaim,
         // Kept in the signed token, so a refresh keeps the audience with nothing stored.
         ...(opts?.audience === undefined ? {} : { resource: opts.audience }),
       };

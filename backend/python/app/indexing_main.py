@@ -135,6 +135,7 @@ from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
+from app.services.messaging.membership import expect_groups
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
@@ -147,7 +148,7 @@ from app.telemetry.modules.record_storage_metrics import record_recovery_org_pas
 from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.indexing_workers import indexing_worker_count
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
@@ -2126,10 +2127,13 @@ async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
     config_service = app_container.config_service()
     broker_type = get_message_broker_type()
     if broker_type == MessageBrokerType.POSTGRES:
-        # Its consumers register no group, so there is nothing to check. Nothing is published, which
-        # is the "stale" result: artifact readers stay on the stored record and retention stays paused.
+        # The queue keeps no durable record of its members: a claim is gone once acked, and a consumer parked on LISTEN
+        # writes nothing, so an older pod between records leaves no trace for this leader or the next. Nothing in the
+        # database keeps an older build from connecting either. With no proof, nothing is published: the result stays
+        # stale, which holds artifact reads and pauses stored-record retention.
         logger.info(
-            "Indexing membership is not published for the %s broker: artifact reads stay on the stored record",
+            "Indexing membership is not published for the %s broker: artifact reads stay on the stored record "
+            "and stored-record retention stays paused",
             broker_type.value,
         )
         return
@@ -2474,6 +2478,22 @@ async def _start_record_title_consumer(
         )
 
 
+PRIORITY_GROUP = "records_priority_consumer_group"
+
+
+def _stage_group(stage_name: str) -> str:
+    return f"pipeline_{stage_name}_group"
+
+
+def _indexing_groups(record_config: Any, priority_topic: str, registry: Any) -> dict[str, list[str]]:  # noqa: ANN401
+    """Every indexing consumer group this process runs, whether its consumer has started yet or not."""
+    return {
+        record_config.group_id: list(record_config.topics),
+        PRIORITY_GROUP: [priority_topic],
+        **{_stage_group(name): [registry.topic_for(name)] for name in registry.names()},
+    }
+
+
 async def start_kafka_consumers(
     app_container: IndexingAppContainer,
     governor: ResourceGovernor | None = None,
@@ -2579,7 +2599,7 @@ async def start_kafka_consumers(
             priority_config = await MessagingUtils.create_consumer_config(
                 app_container,
                 "records_priority_consumer_client",
-                "records_priority_consumer_group",
+                PRIORITY_GROUP,
                 [priority_topic],
                 is_indexing=True,
             )
@@ -2641,11 +2661,17 @@ async def start_kafka_consumers(
         # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
         pipeline_runtime.record_leases.bind(concurrency_manager)
         record_event_handler.record_leases = pipeline_runtime.record_leases  # lets the abandon sink tell a dead holder from a live one
+        # Records that share a virtual record serialise their vector writes and stray sweep on one lease of that virtual record.
+        from app.modules.transformers.vectorstore import VectorStore
+
+        VectorStore.vrid_leases = pipeline_runtime.record_leases
         pipeline_runtime.queued_copies.bind_copies_promoted(
             record_event_handler.request_code_edge_builds_for_copies
         )
         registry = pipeline_runtime.registry
         stage_topics = [registry.topic_for(name) for name in registry.names()]
+        # Before any stage consumer starts (they may start much later): an indexing membership entry covers these groups.
+        expect_groups(_indexing_groups(record_consumer_config, priority_topic, registry))
         stage_producer = retry_producer
         main_loop = asyncio.get_running_loop()
         setattr(
@@ -2668,7 +2694,7 @@ async def start_kafka_consumers(
                     stage_config = await MessagingUtils.create_consumer_config(
                         app_container,
                         f"pipeline_{stage_name}_client",
-                        f"pipeline_{stage_name}_group",
+                        _stage_group(stage_name),
                         [topic],
                         is_indexing=True,
                     )
@@ -3419,8 +3445,10 @@ async def health_check(request: Request) -> JSONResponse:
         )
 
 
-def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8091)
     import warnings
     workers = workers or indexing_worker_count()
     if reload and workers > 1:

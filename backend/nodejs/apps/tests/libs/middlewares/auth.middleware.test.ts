@@ -13,6 +13,7 @@ import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.s
 import { ServiceAccountDelegation } from '../../../src/modules/oauth_provider/schema/service-account-delegation.schema'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { PAT_TOKEN_PREFIX } from '../../../src/modules/oauth_provider/constants/constants'
+import { NO_APP_CREATOR } from '../../../src/libs/repositories/oauth-app'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1085,6 +1086,29 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('db-owner-id')
+    })
+
+    it('refuses a client_credentials token of an app no person created, instead of acting as nobody', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+      })
+      sinon.stub(OAuthApp, 'findOne').returns(createMockQuery({ createdBy: NO_APP_CREATOR }))
+      const users = sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'o@example.com' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(users.called).to.equal(false)
     })
 
     it('should throw when OAuth app missing for client_credentials without createdBy', async () => {

@@ -21,6 +21,12 @@ function logo(ui: React.ReactElement): string | null {
   return render(ui).container.querySelector('img')?.getAttribute('alt') ?? null;
 }
 
+/** Path of the shown logo file, so a wrong asset mapping can't pass on alt text alone. */
+function logoPath(ui: React.ReactElement): string | null {
+  const src = render(ui).container.querySelector('img')?.src;
+  return src ? new URL(src, window.location.href).pathname : null;
+}
+
 describe('McpServerIcon', () => {
   it("shows a catalog server's own logo", () => {
     expect(logo(<McpServerIcon typeId="atlassian_rovo" name="Atlassian Rovo" />)).toBe('atlassian icon');
@@ -91,6 +97,35 @@ describe('McpServerIcon', () => {
   it("shows Egnyte's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="egnyte" name="Egnyte" />)).toBe('egnyte icon');
     expect(logo(<McpServerIcon typeId={null} name="Egnyte MCP" />)).toBe('egnyte icon');
+  });
+
+  it("shows Intercom's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="intercom" name="Intercom" />)).toBe('intercom icon');
+    expect(logo(<McpServerIcon typeId={null} name="Intercom MCP" />)).toBe('intercom icon');
+    expect(logoPath(<McpServerIcon typeId="intercom" name="Intercom" />)).toBe('/icons/connectors/intercom.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Intercom MCP" />)).toBe('/icons/connectors/intercom.svg');
+  });
+
+  it("shows Granola's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="granola" name="Granola" />)).toBe('granola icon');
+    expect(logo(<McpServerIcon typeId={null} name="Granola MCP" />)).toBe('granola icon');
+    expect(logoPath(<McpServerIcon typeId="granola" name="Granola" />)).toBe('/icons/connectors/granola.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Granola MCP" />)).toBe('/icons/connectors/granola.svg');
+  });
+
+  it("shows Fireflies's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="fireflies" name="Fireflies" />)).toBe('fireflies icon');
+    expect(logo(<McpServerIcon typeId={null} name="Fireflies MCP" />)).toBe('fireflies icon');
+    expect(logoPath(<McpServerIcon typeId="fireflies" name="Fireflies" />)).toBe('/icons/connectors/fireflies.png');
+    expect(logoPath(<McpServerIcon typeId={null} name="Fireflies MCP" />)).toBe('/icons/connectors/fireflies.png');
+  });
+
+  it("shows Fathom's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="fathom" name="Fathom" />)).toBe('fathom icon');
+    expect(logo(<McpServerIcon typeId={null} name="Fathom MCP" />)).toBe('fathom icon');
+    expect(logoPath(<McpServerIcon typeId="fathom" name="Fathom" />)).toBe('/icons/connectors/fathom.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Fathom MCP" />)).toBe('/icons/connectors/fathom.svg');
+    expect(logo(<McpServerIcon typeId={null} name="Unfathomable Drive" />)).toBe('google-drive icon');
   });
 
   it("shows Hugging Face's logo, also for a custom server named after it", () => {

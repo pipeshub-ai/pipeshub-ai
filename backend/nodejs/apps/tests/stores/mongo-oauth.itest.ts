@@ -6,6 +6,7 @@
  *   MONGO_IT_URI=mongodb://localhost:27017                 REPLICA_SET_AVAILABLE=false
  */
 import 'reflect-metadata';
+import { expect } from 'chai';
 import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import { MongoService } from '../../src/libs/services/mongo.service';
@@ -19,6 +20,8 @@ import { AuthorizationCode } from '../../src/modules/oauth_provider/schema/autho
 import { OAuthDeviceCode } from '../../src/modules/oauth_provider/schema/oauth.device_code.schema';
 import { Org } from '../../src/modules/user_management/schema/org.schema';
 import { describeOAuthAppContract } from './contract/oauth-app.contract';
+import { NO_APP_CREATOR, OAuthGrantType } from '../../src/libs/repositories/oauth-app';
+import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../src/modules/oauth_provider/constants/constants';
 import { describeOAuthTokenContract } from './contract/oauth-token.contract';
 
 function requireEnv(name: string): string {
@@ -70,6 +73,40 @@ describe('OAuth repositories against a real MongoDB', function () {
       setCreatedAt: async (id, at) => {
         await OAuthApp.collection.updateOne({ _id: oid(id) }, { $set: { createdAt: at } });
       },
+      clearOwnerFormat: async (id) => {
+        await OAuthApp.collection.updateOne({ _id: oid(id) }, { $unset: { ownerFormat: '' } });
+      },
+    });
+  });
+
+  describe('OAuthAppRepository on MongoDB only', () => {
+    it('moves the dynamic clients of an org to another one, and leaves the device app in place', async () => {
+      await OAuthApp.deleteMany({ clientId: FIRST_PARTY_DEVICE_CLIENT_ID });
+      const org = newId();
+      const shared = newId();
+      const base = {
+        clientSecretEncrypted: 'enc',
+        name: 'App',
+        orgId: org,
+        createdBy: newId(),
+        redirectUris: ['https://a.example/cb'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+        allowedScopes: ['org:read'],
+        isConfidential: false,
+      };
+      const dynamic = await apps.create({ ...base, clientId: `cid-${newId()}`, isDynamic: true });
+      const device = await apps.create({ ...base, clientId: FIRST_PARTY_DEVICE_CLIENT_ID });
+
+      for (const a of [dynamic, device]) {
+        await OAuthApp.collection.updateOne({ _id: oid(a._id) }, { $unset: { ownerFormat: '' } });
+      }
+      // Each app once, though the dynamic one needed both writes (as PostgreSQL counts).
+      expect(await apps.disownInstanceApps(org, shared)).to.equal(2);
+
+      expect(await apps.findByClientId(dynamic.clientId)).to.include({ orgId: shared, createdBy: NO_APP_CREATOR });
+      expect(await apps.findByClientId(device.clientId)).to.include({ orgId: org, createdBy: NO_APP_CREATOR });
+      expect(await apps.disownInstanceApps(org, shared)).to.equal(0);
+      await OAuthApp.deleteOne({ clientId: FIRST_PARTY_DEVICE_CLIENT_ID });
     });
   });
 

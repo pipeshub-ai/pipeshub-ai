@@ -57,8 +57,12 @@ def hold_and_wait(directory: str, family: str, cpu: int, ready: Connection) -> N
     signal.pause()
 
 
-def controller_loop(directory: str, tick_s: float, ready: Connection, counter_key: str = "n") -> None:
-    """Become the controller, write state ``{counter_key: n+1}`` each beat, and tell the parent the epoch."""
+def controller_loop(directory: str, tick_s: float, ready: Connection, counter_key: str = "n", *,
+                    stop_after_beat: bool = False) -> None:
+    """Become the controller, write state ``{counter_key: n+1}`` each beat, and tell the parent the epoch.
+
+    ``stop_after_beat`` SIGSTOPs this process after its first beat, between two ledger transactions: a stop from
+    outside could land while it holds the ledger lock, and then every other process waits for it to resume."""
     budget = open_budget(directory, "ctl")
     epoch = budget.elect_controller(tick_s)
     resumed = budget.controller()["state"]
@@ -68,6 +72,9 @@ def controller_loop(directory: str, tick_s: float, ready: Connection, counter_ke
         n += 1
         if not budget.controller_beat(epoch, {counter_key: n}):
             break
+        if stop_after_beat:
+            stop_after_beat = False
+            stop_self()
         time.sleep(tick_s / 4)
 
 

@@ -469,3 +469,25 @@ async def test_increment_node_field_is_atomic_stays_in_the_org_and_answers_none_
         assert await p.increment_node_field("missing", "things", "gen") is None
     with org_ctx(b):
         assert await p.increment_node_field("app", "things", "gen") is None  # another org's node is not found
+
+
+async def test_the_pending_reason_writes_are_conditional_on_the_revision_and_the_reason(pg_provider, orgs, org_ctx) -> None:
+    """The give-up repair marks a record with a pending reason and later puts the previous one back. Each write applies only
+    while the record still has the revision and the reason it read (``None`` expects the field absent)."""
+    a, _ = orgs
+    p = pg_provider
+    pending = "Access scope update pending"
+    with org_ctx(a):
+        await p.batch_upsert_nodes([{"_key": "r1", "contentRev": "rev-1", "reason": "had one"}, {"_key": "r2", "contentRev": "rev-1"}], "things")
+
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": pending}, {"contentRev": "rev-2", "reason": "had one"}) is False
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": pending}, {"contentRev": "rev-1", "reason": "other"}) is False
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": pending}, {"contentRev": "rev-1", "reason": "had one"}) is True
+        assert await p.update_node_fields_if_match("r2", "things", {"reason": pending}, {"contentRev": "rev-1", "reason": None}) is True
+
+        # A reason written since is not replaced by the restore; the pending one is, back to what it was (or to none).
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": "had one"}, {"contentRev": "rev-1", "reason": "newer"}) is False
+        assert await p.update_node_fields_if_match("r1", "things", {"reason": "had one"}, {"contentRev": "rev-1", "reason": pending}) is True
+        assert await p.update_node_fields_if_match("r2", "things", {"reason": None}, {"contentRev": "rev-1", "reason": pending}) is True
+        assert (await p.get_document("r1", "things"))["reason"] == "had one"
+        assert "reason" not in await p.get_document("r2", "things")

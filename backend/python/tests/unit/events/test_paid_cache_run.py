@@ -50,7 +50,7 @@ def _processor(sink: MagicMock) -> Any:  # noqa: ANN401 - an EventProcessor buil
         "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
     })
     graph.get_departments = AsyncMock(return_value=[])
-    for name in ("batch_upsert_nodes", "batch_update_nodes", "update_node"):
+    for name in ("batch_upsert_nodes", "batch_update_nodes", "update_node", "write_attempt_start"):
         setattr(graph, name, AsyncMock(return_value=True))
     graph.find_duplicate_records = AsyncMock(return_value=[])
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=[])
