@@ -10,7 +10,11 @@ import pytest
 from app.services.paid_cache import cache as cache_module
 from app.services.paid_cache.cache import PaidResultCache, RefreshPurgeInProgress
 from app.services.paid_cache.locks import InProcessLocks
-from app.services.paid_cache.run import RunScope, final_manifest_path, open_manifest_path
+from app.services.paid_cache.run import (
+    RunScope,
+    final_manifest_path,
+    open_manifest_path,
+)
 from tests.support.paid_cache import MemoryResultStore
 
 ORG, REC = "org-1", "rec-1"
