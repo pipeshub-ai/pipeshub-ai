@@ -23,14 +23,10 @@ import { getUserRepository } from '../../../libs/repositories/user'
 
 const CLIENT_SECRET_BYTES = 32
 const SECONDS_PER_DAY = 86400
-// Short-lived by default: a token minted without an explicit expiryDays
-// (e.g. a direct API call rather than the UI) should not silently get the
-// longest lifetime.
+// New tokens get 30 days unless the caller picks 7, 90 or 365; there is no
+// non-expiring option. Tokens minted earlier with no expiry keep their
+// stored expiresAt; verification never looks at these values.
 export const DEFAULT_EXPIRY_DAYS = 30
-// OAuthAccessToken.expiresAt is required and TTL-indexed, so there's no
-// real "never expires" value to store — a 100-year lifetime is the
-// practical stand-in for the UI's "never" expiry option.
-const NEVER_EXPIRES_DAYS = 365 * 100
 
 function patClientId(orgId: string): string {
   return `${PAT_APP_CLIENT_ID_PREFIX}${orgId}`
@@ -119,9 +115,8 @@ export class PatService {
     }
   }
 
-  private resolveLifetimeSeconds(expiryDays: 30 | 90 | 365 | 'never'): number {
-    const days = expiryDays === 'never' ? NEVER_EXPIRES_DAYS : expiryDays
-    return days * SECONDS_PER_DAY
+  private resolveLifetimeSeconds(expiryDays: 7 | 30 | 90 | 365): number {
+    return expiryDays * SECONDS_PER_DAY
   }
 
   /**
