@@ -42,6 +42,7 @@ from app.services.messaging.lease import DEADLINE_LOSS_REASON, LeaseRenewer
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
 from app.utils import indexing_timing as timing
+from tests.support.eventually import until
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 # ---------------------------------------------------------------------------
@@ -647,15 +648,8 @@ class TestStartProcessingTaskCallback:
             msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
-            # Wait for task completion
-            import time
-            time.sleep(1)
-
-            # Future should be cleaned up via callback
-            with consumer._futures_lock:
-                # All futures should have been cleaned up
-                remaining = len(consumer._active_futures)
-            assert remaining == 0
+            # The done callback runs on the worker thread, so wait for it without blocking this loop.
+            assert await until(lambda: consumer._get_active_task_count() == 0)
         finally:
             consumer.running = False
             consumer._IndexingKafkaConsumer__stop_worker_thread()
