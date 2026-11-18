@@ -823,6 +823,10 @@ def _add_custom_metadata_to_form(
             form_data.add_field(f"customMetadata[{i}][value]", str(value))
 
 
+class ReconciliationMetadataUnavailable(Exception):
+    """The reconciliation metadata of a record could not be read (as opposed to the record having none)."""
+
+
 class BlobStorage(Transformer):
     def __init__(self,logger,config_service, graph_provider: IGraphDBProvider = None) -> None:
         self.logger = logger
@@ -4089,7 +4093,9 @@ class BlobStorage(Transformer):
                 data = await response.json()
                 return data.get("versionHistory") or []
 
-    async def get_reconciliation_metadata(self, virtual_record_id: str, org_id: str) -> dict | None:
+    async def get_reconciliation_metadata(
+        self, virtual_record_id: str, org_id: str, *, raise_on_error: bool = False
+    ) -> dict | None:
         """
         Args:
             virtual_record_id: Virtual record ID
@@ -4097,10 +4103,16 @@ class BlobStorage(Transformer):
 
         Returns:
             dict | None: Metadata dict (hash_to_block_ids, block_id_to_index with block_id -> index int) if found, None otherwise
+
+        ``raise_on_error``: a record with no metadata still returns None, but a read that failed (no graph provider, the mapping
+        lookup, the download, the signed URL, an error) raises ``ReconciliationMetadataUnavailable`` instead of returning None, for a
+        caller that must not take a failure for an absent document.
         """
         try:
             if not self.graph_provider:
                 self.logger.error("❌ ArangoService not initialized")
+                if raise_on_error:
+                    raise ReconciliationMetadataUnavailable("no graph provider")
                 return None
 
             try:
@@ -4113,7 +4125,9 @@ class BlobStorage(Transformer):
                     return None
                 metadata_document_id = doc["record_metadata_doc_id"]
             except Exception as e:
-                self.logger.warning("Error looking up metadata mapping: %s", str(e))
+                self.logger.warning("Error looking up metadata mapping: %s", type(e).__name__)
+                if raise_on_error:
+                    raise ReconciliationMetadataUnavailable("the metadata mapping could not be read") from e
                 return None
 
             # Download metadata from storage
@@ -4135,6 +4149,8 @@ class BlobStorage(Transformer):
                                     "⚠️ Failed to fetch metadata from signed URL: status %s, virtual_record_id: %s",
                                     signed_resp.status, virtual_record_id
                                 )
+                                if raise_on_error:
+                                    raise ReconciliationMetadataUnavailable("the signed URL answered with an error status")
                                 return None
                     # Handle both compressed (from upload_next_version) and uncompressed formats
                     if data.get("isCompressed"):
@@ -4153,8 +4169,15 @@ class BlobStorage(Transformer):
                         "⚠️ Failed to retrieve metadata: status %s, virtual_record_id: %s",
                         resp.status, virtual_record_id
                     )
+                    if raise_on_error:
+                        raise ReconciliationMetadataUnavailable("the download answered with an error status")
                     return None
 
+        except ReconciliationMetadataUnavailable:
+            raise
         except Exception as e:
-            self.logger.error("❌ Error retrieving reconciliation metadata: %s", str(e))
+            # The type only: a redirect error's text carries the signed download URL, with its credential.
+            self.logger.error("❌ Error retrieving reconciliation metadata: %s", type(e).__name__)
+            if raise_on_error:
+                raise ReconciliationMetadataUnavailable("the metadata could not be read") from e
             return None

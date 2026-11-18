@@ -23,6 +23,7 @@ from google_behaviour_fakes import (
     FakeEntitiesProcessor,
     FakeGoogleHttp,
     FakeSyncPointStore,
+    google_error,
 )
 from googleapiclient.errors import HttpError
 
@@ -33,7 +34,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.models.entities import User
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 
 CONNECTOR_ID = "drive-workspace-1"
 ADMIN = "admin@example.com"
@@ -3123,6 +3124,919 @@ async def test_an_unreadable_limited_item_loses_an_audience_grant_a_folder_above
     assert ("workspace-members", "GROUP", "READ") not in ws.grants("f")
     assert any(g[1] == "USER" for g in ws.grants("f")), "what else is stored stays"
     assert ("workspace-members", "GROUP", "READ") in ws.grants("dir")
+
+
+async def test_an_empty_permission_list_for_a_my_drive_item_is_read_again_so_a_removed_grant_goes(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB), reader(carol)])
+    await ws.sync()
+    assert (carol, "USER", "READ") in ws.grants("f")
+
+    ws.world.unshare("f", carol)
+    ws.world.files["f"].perm_access = "empty"  # a 200 with no entries: a My Drive item's list always names its owner
+    await ws.sync()
+    assert ws.incomplete, "not an answer: the item is read again"
+    assert (BOB, "USER", "READ") in ws.grants("f"), "what was stored stays meanwhile"
+
+    ws.world.files["f"].perm_access = None
+    await ws.sync()
+    assert not ws.incomplete
+    assert (carol, "USER", "READ") not in ws.grants("f")
+    assert (BOB, "USER", "READ") in ws.grants("f")
+
+
+async def test_a_my_drive_item_that_keeps_failing_is_read_again_by_id_after_its_feed_moves_on(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[reader(BOB), reader(carol)])
+    await ws.sync()
+
+    ws.world.unshare("f", carol)
+    # Every permission read fails until the fault clears (an empty list is cut down after MAX_HELD_RUNS instead).
+    ws.http.fail("GET", "/drive/v3/files/f/permissions", 500, "backendError")
+    for _ in range(MAX_HELD_RUNS + 1):  # the feeds hold, then move on past the change
+        await ws.sync()
+    assert (carol, "USER", "READ") in ws.grants("f"), "kept as stored while it cannot be read"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert (carol, "USER", "READ") not in ws.grants("f"), "read again by id once the feed moved on"
+    assert (BOB, "USER", "READ") in ws.grants("f")
+    await ws.sync()
+    assert not ws.incomplete
+
+
+def _empty_list_for(ws: Workspace, file_id: str, *readers: str) -> None:
+    """These readers' permission reads of the item answer a 200 with no entries; anyone else's are as usual."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+
+    def answer(req: ApiRequest) -> object:
+        if req.identity in readers and req.path == f"/drive/v3/files/{file_id}/permissions":
+            return {"permissions": []}
+        return real(req)
+
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", answer)  # the latest route matching wins
+
+
+async def test_an_empty_list_for_a_my_drive_item_is_read_again_as_its_owner(ws: Workspace) -> None:
+    carol, dana = "carol@example.com", "dana@example.com"
+    ws.world.add_user(carol)  # the owner: in the Workspace, not synced here
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent=f"root-{carol.split('@')[0]}", owner=carol, perms=[reader(BOB), reader(dana)])
+    await ws.sync()
+    assert (dana, "USER", "READ") in ws.grants("f")
+
+    ws.world.unshare("f", dana)
+    _empty_list_for(ws, "f", BOB)
+    await ws.sync()
+
+    assert (dana, "USER", "READ") not in ws.grants("f"), "the owner's list says she is gone"
+    assert (BOB, "USER", "READ") in ws.grants("f")
+    assert not ws.incomplete
+
+
+async def test_an_empty_list_no_one_can_read_again_cuts_the_grants_to_what_is_proven(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    assert (dana, "USER", "READ") in ws.grants("f")
+
+    ws.world.unshare("f", dana)
+    _empty_list_for(ws, "f", BOB, ALICE)  # even the owner's read comes back empty
+    for _ in range(MAX_HELD_RUNS - 1):
+        await ws.sync()
+    assert (dana, "USER", "READ") in ws.grants("f"), "kept as stored while it may still be read"
+    await ws.sync()
+
+    assert (dana, "USER", "READ") not in ws.grants("f"), "a grant no list can show is not kept for good"
+    assert {ALICE, BOB} <= ws.records.perm_emails("f"), "its owner and the reader who opened it keep it"
+
+
+def _lists_read_again(ws: Workspace) -> None:
+    """Every permission read answers as usual again."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", real)
+
+
+async def test_a_cut_list_is_read_again_by_id_until_a_real_list_restores_it(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    ws.world._mutate("f", lambda: ws.world._bump("f", name="y.txt"))  # reported once; failing, it is read each run
+    _empty_list_for(ws, "f", BOB, ALICE)
+    for _ in range(MAX_HELD_RUNS):
+        await ws.sync()
+    assert (dana, "USER", "READ") not in ws.grants("f"), "cut to what is proven"
+
+    _lists_read_again(ws)  # nothing changed at the source, so no feed reports the item
+    await ws.sync()
+
+    assert (dana, "USER", "READ") in ws.grants("f"), "she still holds it, and the real list says so"
+
+
+async def test_a_list_cut_during_a_full_listing_is_read_again_by_id_once_lists_can_be_read(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    for email in (ALICE, BOB):  # their Drives are listed in full again
+        ws.sync_points.sync_points.pop(next(
+            k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[email].user_id}")
+        ))
+    _empty_list_for(ws, "f", BOB, ALICE)
+    for _ in range(MAX_HELD_RUNS):  # held while it fails, each run a full listing; cut on the last
+        await ws.sync()
+    assert (dana, "USER", "READ") not in ws.grants("f"), "cut to what is proven"
+    assert ws.user_checkpoint(BOB), "the listing moved on"
+
+    _lists_read_again(ws)  # nothing changed at the source, so no feed reports the item
+    await ws.sync()
+
+    assert (dana, "USER", "READ") in ws.grants("f"), "read again by id: the real list names her"
+
+
+async def test_more_cuts_than_the_cap_never_cost_the_feed_its_position(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    monkeypatch.setattr(drive_connector, "MAX_FAILED_ITEMS", 1)
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    items = ["f1", "f2", "f3"]
+    for item in items:
+        ws.world.add_item(item, f"{item}.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    ws.world.add_item("g", "g.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    await ws.sync()
+    for email in (ALICE, BOB):  # their Drives are listed in full again
+        ws.sync_points.sync_points.pop(next(
+            k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[email].user_id}")
+        ))
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", lambda req: (
+        {"permissions": []} if req.path in {f"/drive/v3/files/{i}/permissions" for i in items} else real(req)
+    ))
+    for _ in range(MAX_HELD_RUNS):  # cut on the last: three cuts, a cap of one
+        await ws.sync()
+    assert not any((dana, "USER", "READ") in ws.grants(i) for i in items), "cut to what is proven"
+    assert ws.user_checkpoint(ALICE) and ws.user_checkpoint(BOB), "the start token is saved whatever the count"
+
+    _lists_read_again(ws)  # nothing changed at the source but this:
+    ws.world.unshare("g", ALICE)
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert any(r.path == "/drive/v3/changes" for r in ws.http.requests[before:]), "the feed is read, not the listing"
+    assert (ALICE, "USER", "READ") not in ws.grants("g"), "the removal it reports applies"
+
+    for _ in range(len(items)):  # one a run, in turn
+        await ws.sync()
+    assert all((dana, "USER", "READ") in ws.grants(i) for i in items), "every cut item is read again in the end"
+
+
+async def test_a_checkpoint_write_that_fails_after_the_queue_write_loses_no_item(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    monkeypatch.setattr(drive_connector, "MAX_FAILED_ITEMS", 1)
+    dana = "dana@example.com"
+    ws.world.add_user(dana)
+    items = ["f1", "f2", "f3"]
+    for item in items:
+        ws.world.add_item(item, f"{item}.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(dana)])
+    await ws.sync()
+    for email in (ALICE, BOB):
+        ws.sync_points.sync_points.pop(next(
+            k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[email].user_id}")
+        ))
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", lambda req: (
+        {"permissions": []} if req.path in {f"/drive/v3/files/{i}/permissions" for i in items} else real(req)
+    ))
+    for _ in range(MAX_HELD_RUNS):  # three cut, one on each checkpoint, two on each queue
+        await ws.sync()
+    _lists_read_again(ws)
+
+    # The next run's checkpoint writes fail once each, after their queue was written.
+    store, write = ws.sync_points, ws.sync_points.update_sync_point
+    failed_once: set[str] = set()
+
+    async def failing(key: str, data: dict) -> None:
+        if "/users/" in key and drive_connector.FEED_FAILED_ITEMS in data and key not in failed_once:
+            failed_once.add(key)
+            raise RuntimeError("store down")
+        await write(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", failing)
+    with contextlib.suppress(Exception):
+        await ws.sync()
+    monkeypatch.setattr(store, "update_sync_point", write)
+    for _ in range(len(items) + 1):
+        await ws.sync()
+
+    assert all((dana, "USER", "READ") in ws.grants(i) for i in items), "no item fell between the queue and the checkpoint"
+
+
+async def test_a_queue_write_that_fails_part_way_leaves_the_earlier_queue_whole(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.connectors.sources.google.drive.team.connector as drive_connector
+
+    monkeypatch.setattr(drive_connector, "MAX_FAILED_ITEMS", 1)
+    await ws.sync()
+    connector, store = ws.connector, ws.sync_points
+    await connector._write_id_queue("q", ["a", "b", "c"])
+    write = store.update_sync_point
+
+    async def failing(key: str, data: dict) -> None:
+        if key.endswith("q") and "parts" in data:  # the first key's write, after the new parts
+            raise RuntimeError("store down")
+        await write(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", failing)
+    with contextlib.suppress(RuntimeError):
+        await connector._write_id_queue("q", ["x", "y", "z"])
+    monkeypatch.setattr(store, "update_sync_point", write)
+
+    assert await connector._read_id_queue("q") == ["a", "b", "c"]
+
+
+async def test_an_item_read_again_by_id_then_reported_removed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    await ws.sync()
+    # A new item of Bob's shared with Alice, waiting on her checkpoint to be read again by id.
+    ws.world.add_item("n", "n.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["n"]
+    ws.records.records.pop("n", None)
+    ws.records.permissions.pop("n", None)
+    # Her read by id finds it; then she loses it, and her feed in the same run says so.
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    unshared: list[bool] = []
+
+    def permissions(req: ApiRequest) -> object:
+        answer = real(req)
+        if req.identity == ALICE and req.path == "/drive/v3/files/n/permissions" and not unshared:
+            unshared.append(True)
+            ws.world.unshare("n", ALICE)
+        return answer
+
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", permissions)
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no other read of the item writes it
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert unshared, "her read by id came first"
+    assert ALICE not in ws.records.perm_emails("n"), "the flush does not write the access her feed just removed"
+
+
+def _after_permission_read_by(ws: Workspace, file_id: str, reader_email: str, then: Callable[[], None]) -> list[bool]:
+    """Run `then` right after the reader's first permission read of the item; returns a flag list it fills."""
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern == r"^/drive/v3/files/([^/]+)/permissions$")
+    done: list[bool] = []
+
+    def permissions(req: ApiRequest) -> object:
+        answer = real(req)
+        if req.identity == reader_email and req.path == f"/drive/v3/files/{file_id}/permissions" and not done:
+            done.append(True)
+            then()
+        return answer
+
+    ws.http.route("GET", r"/drive/v3/files/([^/]+)/permissions", permissions)
+    return done
+
+
+async def test_an_item_read_again_by_id_then_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    await ws.sync()
+    ws.world.add_item("n", "n.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["n"]
+    # Drive reports a trashed file as a change with `removed: false` and `file.trashed`.
+    done = _after_permission_read_by(ws, "n", ALICE, lambda: ws.world.trash("n"))
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no other read of the item writes it
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "n" not in ws.records.records, "the flush does not write an item her feed reported in the trash"
+
+
+async def test_a_new_item_below_a_folder_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    ws.world.folder("top", "Top", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    ws.world.folder("sub", "Sub", parent="top", owner=BOB)
+    await ws.sync()
+    ws.world.add_item("c", "c.txt", parent="sub", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["c"]
+    # Only the folder is reported trashed: Google does not say each descendant gets a change of its own.
+    done = _after_permission_read_by(ws, "c", ALICE, lambda: ws.world.trash("top"))
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no other read of the item writes it
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "c" not in ws.records.records, "below a folder in the trash: not written"
+    assert "top" not in ws.records.records, "nor its folders, as placeholders above it"
+
+
+async def test_an_item_read_again_by_id_then_deleted_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    await ws.sync()
+    ws.world.add_item("n", "n.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["n"]
+    # Created and deleted for good in one sync: her read by id comes first, then her feed reports it removed.
+    done = _after_permission_read_by(ws, "n", ALICE, lambda: ws.world.delete("n"))
+    bob = ws.world.users.pop(BOB)  # only Alice's run this time, so no later run of Bob's tidies it up
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "n" not in ws.records.records, "nobody can open it any more: not written, for anyone"
+
+
+async def test_a_shared_drive_item_read_again_by_id_then_deleted_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import FAILED_ITEMS
+
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer"})
+    await ws.sync()
+    ws.world.add_item("s", "s.txt", parent="sd-1")
+    user_id = ws.world.users[ALICE].user_id
+    key = next(k for k in ws.sync_points.sync_points if k.endswith("_sd-1") and user_id in k)
+    ws.sync_points.sync_points[key][FAILED_ITEMS] = ["s"]
+    done = _after_permission_read_by(ws, "s", ALICE, lambda: ws.world.delete("s"))
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "s" not in ws.records.records, "the drive's feed said removed, and nobody can open it: not written"
+
+
+async def test_a_new_item_below_a_child_kept_when_its_removed_folder_went_is_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import FAILED_ITEMS
+
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", erin: "organizer"})
+    ws.world.folder("d", "Old", parent="sd-1")
+    ws.world.folder("k", "Kept", parent="d")
+    await ws.sync()
+    ws.world.add_item("n", "n.txt", parent="k")
+    user_id = ws.world.users[ALICE].user_id
+    key = next(k for k in ws.sync_points.sync_points if k.endswith("_sd-1") and user_id in k)
+    ws.sync_points.sync_points[key][FAILED_ITEMS] = ["n"]
+    # The folder goes; the folder below it is still open (here: the source deletes only the folder), so it is kept.
+    done = _after_permission_read_by(ws, "n", ALICE, lambda: ws.world.delete("d"))
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "d" not in ws.records.records
+    assert "k" in ws.records.records, "still open: kept"
+    assert "n" in ws.records.records, "below the kept folder: written"
+
+
+async def test_a_folder_the_reporter_lost_but_another_opens_keeps_its_new_child_for_the_other(ws: Workspace) -> None:
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.world.folder("f", "Shared", parent="root-bob", owner=BOB, perms=[reader(ALICE), reader(erin)])
+    await ws.sync()
+    ws.world.add_item("c", "c.txt", parent="f", owner=BOB)
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["c"]
+    # Alice reads the new child by id, then loses the folder before her feed is read. Bob and Erin still open
+    # both, though their own feeds fail this run, so only Alice's read can write the child now.
+    real = next(h for m, p, h in ws.http._routes if m == "GET" and p.pattern.endswith("/changes$"))
+    done: list[bool] = []
+
+    def changes(req: ApiRequest) -> object:
+        if req.identity in (BOB, erin):
+            return google_error(500, "backendError")
+        if req.identity == ALICE and not done:
+            done.append(True)
+            ws.world.unshare("f", ALICE)
+        return real(req)
+
+    ws.http.route("GET", r"/drive/v3/changes", changes)
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "f" in ws.records.records, "Erin still opens the folder: only Alice's grant went"
+    assert erin in ws.records.perm_emails("c"), "the child is written for whoever still opens it"
+    assert ALICE not in ws.records.perm_emails("c"), "but not for Alice, who lost the folder"
+
+
+async def test_a_new_file_below_an_unknown_folder_under_one_trashed_this_run_is_read_again_not_written(
+    ws: Workspace,
+) -> None:
+    ws.world.folder("top", "Top", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    await ws.sync()
+    ws.world.folder("mid", "Mid", parent="top", owner=BOB)  # never stored, never read this run
+    ws.world.add_item("c", "c.txt", parent="mid", owner=BOB, perms=[reader(ALICE)])
+    key = next(k for k in ws.sync_points.sync_points if k.endswith(f"/users/{ws.world.users[ALICE].user_id}"))
+    ws.sync_points.sync_points[key]["feed_failed_items"] = ["c"]
+    done = _after_permission_read_by(ws, "c", ALICE, lambda: ws.world.trash("top"))
+    bob = ws.world.users.pop(BOB)
+    try:
+        await ws.sync()
+    finally:
+        ws.world.users[BOB] = bob
+
+    assert done, "her read by id came first"
+    assert "c" not in ws.records.records, "its folders above are not known, and one this run trashed may hold it"
+    assert "c" in (ws.sync_points.sync_points[key].get("feed_failed_items") or []), "kept to read again by id"
+
+
+async def test_the_flush_settles_new_records_against_what_the_sync_withdrew(ws: Workspace) -> None:
+    from app.config.constants.arangodb import Connectors
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+    from app.models.entities import FileRecord, OriginTypes, RecordType
+
+    await ws.sync()
+    connector = ws.connector
+
+    def new(ext: str, parent: str) -> FileRecord:
+        return FileRecord(
+            org_id="org-1", record_name=ext, record_type=RecordType.FILE, external_record_id=ext,
+            parent_external_record_id=parent, version=1, origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.GOOGLE_DRIVE, connector_id=CONNECTOR_ID, is_file=True,
+            shared_with_me_record_group_ids=[f"0S:{ALICE}"],
+        )
+
+    def grants(*emails: str) -> list:
+        return [Permission(email=e, type=PermissionType.READ, entity_type=EntityType.USER) for e in emails]
+
+    # A shared drive folder removed from Alice's feed: kept because Erin still opens it (lost), or removed for
+    # everyone (deleted), with a new child waiting in the batch under each.
+    erin = "erin@example.com"
+    w = drive_connector._SyncWithdrawals(ALICE)
+    w.lost.add("kept-folder")
+    w.deleted.add("gone-folder")
+    drive_connector._withdrawals.set(w)
+    failed = connector._track_failed_items()
+    written: list = []
+
+    async def capture(batch: list) -> None:
+        written.extend(batch)
+
+    connector.data_entities_processor.on_new_records = capture
+    batch = [(new("open-child", "kept-folder"), grants(ALICE, erin)), (new("gone-child", "gone-folder"), grants(erin))]
+    await connector._flush_batch(batch)
+    drive_connector._withdrawals.set(None)
+
+    assert [r.external_record_id for r, _ in written] == ["open-child"]
+    record, perms = written[0]
+    assert {p.email for p in perms} == {erin}, "written for Erin, who still opens it; not for Alice"
+    assert record.shared_with_me_record_group_ids == []
+    assert failed == {"open-child", "gone-child"}, "both read again by id: nothing passed over"
+
+
+async def test_a_shared_drive_item_read_again_by_id_then_trashed_in_the_same_run_is_not_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import FAILED_ITEMS
+
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer"})
+    await ws.sync()
+    ws.world.add_item("s", "s.txt", parent="sd-1")
+    user_id = ws.world.users[ALICE].user_id
+    key = next(k for k in ws.sync_points.sync_points if k.endswith("_sd-1") and user_id in k)
+    ws.sync_points.sync_points[key][FAILED_ITEMS] = ["s"]
+    done = _after_permission_read_by(ws, "s", ALICE, lambda: ws.world.trash("s"))
+    await ws.sync()
+
+    assert done, "her read by id came first"
+    assert "s" not in ws.records.records, "the flush does not write an item the drive's feed reported in the trash"
+
+
+def _new_file_record(ext: str, parent: str) -> object:
+    from app.config.constants.arangodb import Connectors
+    from app.models.entities import FileRecord, OriginTypes, RecordType
+
+    return FileRecord(
+        org_id="org-1", record_name=ext, record_type=RecordType.FILE, external_record_id=ext,
+        parent_external_record_id=parent, version=1, origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.GOOGLE_DRIVE, connector_id=CONNECTOR_ID, is_file=True,
+    )
+
+
+async def test_a_shared_drive_file_kept_for_another_member_is_lost_to_the_reporter(ws: Workspace) -> None:
+    from functools import partial
+
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        FolderFailureRuns,
+    )
+
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer", erin: "organizer"})
+    ws.world.add_item("f", "f.txt", parent="sd-1", perms=[reader(ALICE)])
+    await ws.sync()
+    assert ALICE in ws.records.perm_emails("f")
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+    # Her feed reports the file removed and her own check does not open it; Erin's does.
+    ws.http.fail("GET", "/drive/v3/files/f", 404, "notFound", when=lambda r: r.identity == ALICE)
+    w = drive_connector._SyncWithdrawals(ALICE)
+    drive_connector._withdrawals.set(w)
+    try:
+        await connector._bounded_removal(
+            "f", "sd-1", FolderFailureRuns(None), "k", connector._undecided_key(alice, "sd-1"),
+            partial(connector._apply_shared_drive_removal, "f", alice, "sd-1", None),
+        )
+    finally:
+        drive_connector._withdrawals.set(None)
+
+    assert "f" in ws.records.records, "Erin still opens it: kept"
+    assert ALICE not in ws.records.perm_emails("f"), "her own grant went"
+    assert "f" in w.lost and "f" not in w.kept, "a new record of it is written without her"
+
+
+async def test_an_undecided_shared_drive_removal_is_lost_to_the_reporter(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        FolderFailureRuns,
+    )
+
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+
+    async def undecided() -> object:  # what the drive removal answers once her grant went and a member group is unread
+        return drive_connector._Settled.UNDECIDED
+
+    w = drive_connector._SyncWithdrawals(ALICE)
+    drive_connector._withdrawals.set(w)
+    try:
+        await connector._bounded_removal(
+            "f", "sd-1", FolderFailureRuns(None), "k", connector._undecided_key(alice, "sd-1"), undecided,
+        )
+    finally:
+        drive_connector._withdrawals.set(None)
+
+    assert "f" in w.lost, "her grant went before the answer: a new record of it is written without her"
+
+
+async def test_a_placeholder_below_a_removed_folder_lets_no_new_record_under_it_be_written(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+
+    ws.world.add_drive("sd-1", "Team", {ALICE: "organizer"})
+    ws.world.folder("d", "Old", parent="sd-1")
+    await ws.sync()
+    connector = ws.connector
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+    folder = ws.records.records["d"]
+    # A stand-in below the folder for a folder never read, with a new record under it waiting in the batch.
+    ws.records.records["p"] = folder.model_copy(update={
+        "id": "rec-p", "external_record_id": "p", "record_name": "p", "parent_external_record_id": "d",
+        "is_placeholder": True,
+    })
+    ws.world.delete("d")
+    w = drive_connector._SyncWithdrawals(ALICE)
+    drive_connector._withdrawals.set(w)
+    written: list = []
+
+    async def capture(batch: list) -> None:
+        written.extend(batch)
+
+    try:
+        assert await connector._apply_shared_drive_removal("d", alice, "sd-1", None) is drive_connector._Settled.REMOVED
+        connector.data_entities_processor.on_new_records = capture
+        await connector._flush_batch([(_new_file_record("n", "p"), [])])
+    finally:
+        drive_connector._withdrawals.set(None)
+
+    assert "p" not in w.kept, "nobody was asked whether the stand-in is open"
+    assert written == [], "below the deleted folder: not written"
+
+
+async def _flush_one(ws: Workspace, record: object, perms: list, *, unsettled: str) -> list:
+    """Flush one new record while the sync's own removal of `unsettled` (the record or a folder above it) found
+    nothing stored; returns what was written."""
+    from app.connectors.sources.google.drive.team import connector as drive_connector
+
+    connector = ws.connector
+    w = drive_connector._SyncWithdrawals(ALICE)
+    w.unsettled.add(unsettled)
+    drive_connector._withdrawals.set(w)
+    written: list = []
+
+    async def capture(batch: list) -> None:
+        written.extend(batch)
+
+    connector.data_entities_processor.on_new_records = capture
+    try:
+        await connector._flush_batch([(record, perms)])
+    finally:
+        drive_connector._withdrawals.set(None)
+    return written
+
+
+async def test_a_new_record_below_a_folder_removed_with_nothing_stored_is_written_for_whoever_still_opens_it(
+    ws: Workspace,
+) -> None:
+    erin = "erin@example.com"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    ws.world.add_item("c", "c.txt", parent="root-bob", owner=BOB, perms=[reader(erin)])
+    await ws.sync()
+    grants = [Permission(email=e, type=PermissionType.READ, entity_type=EntityType.USER) for e in (ALICE, erin)]
+
+    written = await _flush_one(ws, _new_file_record("c", "top"), grants, unsettled="top")
+
+    assert [r.external_record_id for r, _ in written] == ["c"], "Erin still opens it: written"
+    assert {p.email for p in written[0][1]} == {erin}, "without Alice, whose feed removed the folder above it"
+
+
+async def test_a_new_record_shared_with_a_group_the_directory_wont_list_is_written_without_the_reporter(
+    ws: Workspace,
+) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    await ws.sync()
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("g", "root-carol"), grants, unsettled="g")
+
+    assert [r.external_record_id for r, _ in written] == ["g"], "an unknown group may still open it: kept"
+    assert [p.external_id for p in written[0][1]] == ["sales@example.com"], "without Alice"
+
+
+async def test_a_new_record_a_named_reader_finds_in_the_trash_is_not_written_for_an_unlisted_group(ws: Workspace) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    ws.world.add_item("t", "t.txt", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    await ws.sync()
+    ws.world.trash("t")
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(email=BOB, type=PermissionType.OWNER, entity_type=EntityType.USER),
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("t", "root-bob"), grants, unsettled="t")
+
+    assert written == [], "Bob's read finds it in the trash: the unlisted group is not taken as still opening it"
+
+
+async def test_a_new_record_shared_with_an_audience_a_person_of_it_still_opens_is_written(ws: Workspace) -> None:
+    ws.world.add_item("a", "a.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("a", "root-bob"), grants, unsettled="a")
+
+    assert [r.external_record_id for r, _ in written] == ["a"], "a person of the domain still opens it: written"
+    assert [p.external_id for p in written[0][1]] == ["domain-members:example.com"], "without Alice"
+
+
+async def test_a_named_readers_not_found_does_not_drop_a_new_record_an_unlisted_group_may_open(ws: Workspace) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    await ws.sync()
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(email=BOB, type=PermissionType.READ, entity_type=EntityType.USER),  # Bob's read: not found
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("k", "root-carol"), grants, unsettled="k")
+
+    assert [r.external_record_id for r, _ in written] == ["k"], "the group's share is undecided: kept, not dropped"
+    assert ALICE not in {p.email for p in written[0][1]}
+
+
+async def test_a_failed_read_does_not_stop_an_audience_that_opens_a_new_record_from_keeping_it(ws: Workspace) -> None:
+    dave = "dave@example.com"
+    ws.world.add_user(dave)
+    ws.records.active_users.append(User(id="u-dave", email=dave, is_active=True))
+    ws.world.add_item("a", "a.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    ws.http.fail("GET", "/drive/v3/files/a", 500, "backendError", when=lambda r: r.identity == BOB)
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(email=BOB, type=PermissionType.OWNER, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("a", "root-bob"), grants, unsettled="a")
+
+    assert [r.external_record_id for r, _ in written] == ["a"], "Dave, of the domain, still opens it"
+
+
+async def test_a_not_found_from_someone_an_audience_only_may_reach_does_not_drop_a_new_record(ws: Workspace) -> None:
+    erin = "erin@labs.example.org"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    await ws.sync()
+    # Nobody synced is on partner.org; Erin is only someone a share with it may reach.
+    ws.connector._audience_members["domain-members:partner.org"] = {erin}
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:partner.org", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("p", "root-bob"), grants, unsettled="p")
+
+    assert [r.external_record_id for r, _ in written] == ["p"], "Erin's not found says nothing of the share's own people"
+
+
+async def test_a_new_record_a_person_of_its_audience_finds_in_the_trash_is_not_written(ws: Workspace) -> None:
+    ws.world.add_group("sales@example.com", [BOB])
+    ws.world.unlistable_groups["sales@example.com"] = 403
+    ws.world.add_item("t", "t.txt", parent="root-bob", owner=BOB, perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    ws.world.trash("t")
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+        Permission(external_id="sales@example.com", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("t", "root-bob"), grants, unsettled="t")
+
+    assert written == [], "Bob, of the domain, finds it in the trash: no for everyone, the unlisted group too"
+
+
+async def test_the_trash_seen_by_someone_an_audience_only_may_reach_is_still_a_no(ws: Workspace) -> None:
+    erin = "erin@labs.example.org"
+    ws.world.add_user(erin)
+    ws.records.active_users.append(User(id="u-erin", email=erin, is_active=True))
+    ws.world.add_item("t", "t.txt", parent="root-bob", owner=BOB, perms=[reader(erin)])
+    await ws.sync()
+    ws.world.trash("t")
+    ws.connector._audience_members["domain-members:partner.org"] = {erin}
+    grants = [
+        Permission(email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER),
+        Permission(external_id="domain-members:partner.org", type=PermissionType.READ, entity_type=EntityType.GROUP),
+    ]
+
+    written = await _flush_one(ws, _new_file_record("t", "root-bob"), grants, unsettled="t")
+
+    assert written == [], "Erin finds it in the trash"
+
+
+async def test_a_reader_who_lost_the_item_is_no_evidence_for_a_later_cut_in_the_run(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        FolderFailureRuns,
+    )
+
+    await ws.sync()
+    connector = ws.connector
+    (await connector._load_empty_list_runs())["f"] = MAX_HELD_RUNS
+    meta = {"id": "f", "owners": [{"emailAddress": "carol@example.com"}]}
+    assert await connector._proven_grants_after_held_runs("f", meta, ALICE) is not None  # Alice's read, then
+    alice = next(u for u in connector.synced_users if u.email == ALICE)
+    await connector._apply_removed_change({"fileId": "f", "removed": True}, alice, {}, FolderFailureRuns(None), "k")
+
+    proven = await connector._proven_grants_after_held_runs("f", meta, BOB)
+
+    assert ALICE not in {p.email for p in proven[0]}, "her feed said she can no longer open it"
+
+
+async def test_a_suspended_owner_gets_no_grant_from_a_cut_list(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    carol = "carol@example.com"
+    ws.world.add_user(carol, suspended=True)
+    await ws.sync()
+    connector = ws.connector
+    (await connector._load_empty_list_runs())["f"] = MAX_HELD_RUNS
+    meta = {"id": "f", "owners": [{"emailAddress": carol}]}
+
+    proven = await connector._proven_grants_after_held_runs("f", meta, BOB)
+
+    # The status pass takes a suspended user's grants off at the start of a run; this one would come back after it.
+    assert {p.email for p in proven[0]} == {BOB}
+
+
+async def test_a_cut_list_of_a_limited_folder_gives_a_reader_who_sees_its_name_only_no_grant(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS
+
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    # A folder: "limited access isn't available for files"
+    # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+    ws.world.folder("f", "Locked", parent="root-carol", owner=carol, perms=[reader(BOB)])
+    await ws.sync()
+    ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
+    ws.world.files["f"].meta["capabilities"]["canListChildren"] = False  # he sees its name, not its content
+    _empty_list_for(ws, "f", BOB, carol)
+    for _ in range(MAX_HELD_RUNS + 1):
+        await ws.sync()
+
+    assert BOB not in ws.records.perm_emails("f")
+
+
+async def test_a_real_list_that_writes_a_new_item_clears_its_empty_list_count(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.team.connector import (
+        EMPTY_LIST_RUNS_SYNC_POINT_KEY,
+    )
+
+    dana = "dana@example.com"  # not synced: Bob, its owner, is the only one who reads it
+    ws.world.add_user(dana)
+    ws.world.add_item("f", "x.txt", parent="root-bob", owner=BOB, perms=[reader(dana)])
+    ws.world.files["f"].meta.setdefault("capabilities", {})["canShare"] = True  # its owner can share it
+    _empty_list_for(ws, "f", BOB)
+    await ws.sync()
+    assert ws.incomplete, "an owner's empty list is not an answer: the item fails"
+
+    _lists_read_again(ws)
+    await ws.sync()
+
+    assert (dana, "USER", "READ") in ws.grants("f")
+    stored = await ws.connector.drive_delta_sync_point.read_sync_point(EMPTY_LIST_RUNS_SYNC_POINT_KEY) or {}
+    assert "f" not in (stored.get("runs") or "{}"), "a real list ends the count, new item or not"
+
+
+async def test_an_empty_list_after_a_real_one_in_the_same_run_counts_from_nothing(ws: Workspace) -> None:
+    await ws.sync()
+    connector = ws.connector
+    meta = {"id": "f", "owners": [{"emailAddress": BOB}]}
+    assert await connector._proven_grants_after_held_runs("f", meta, ALICE) is None
+    await connector._forget_empty_list_runs("f")  # a reader's real list
+    assert await connector._proven_grants_after_held_runs("f", meta, "carol@example.com") is None
+    assert (await connector._load_empty_list_runs())["f"] == 1
+
+
+async def test_an_empty_permission_list_for_a_new_my_drive_item_still_grants_its_reader(ws: Workspace) -> None:
+    carol = "carol@example.com"  # not a synced user: Bob is the only one who reads it
+    ws.world.add_user(carol)
+    ws.world.add_item("f", "x.txt", parent=f"root-{carol.split('@')[0]}", owner=carol, perms=[reader(BOB)])
+    ws.world.files["f"].perm_access = "empty"
+    await ws.sync()
+    assert (BOB, "USER", "READ") in ws.grants("f"), "nothing is stored to go stale, so the reader is not shut out"
+
+
+async def test_an_empty_permission_list_for_a_shared_drive_item_still_grants_its_reader(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
+    ws.world.add_item("g", "x.txt", parent="sd-1")
+    await ws.sync()
+    assert (BOB, "USER", "READ") in ws.grants("g"), "a reader of a shared drive item is answered with no entries"
+    assert not ws.incomplete
+
+
+async def test_a_limited_item_whose_permission_list_comes_back_empty_stops_inheriting(ws: Workspace) -> None:
+    carol = "carol@example.com"
+    ws.world.add_user(carol)
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1", perms=[reader(carol)])
+    # A folder: "limited access isn't available for files"
+    # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+    ws.world.folder("f", "Sub", parent="dir")
+    ws.world.files["f"].perm_access = "all"
+    await ws.sync()
+    assert ws.records.records["f"].inherit_permissions is True
+
+    ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
+    ws.world.files["f"].perm_access = None  # Bob, a shared drive reader, is answered with no entries
+    await ws.sync()
+
+    assert "f" in ws.records.stopped_inheriting, "known from its metadata: a limited item inherits nothing"
+    assert ws.records.records["f"].inherit_permissions is False
+    assert (carol, "USER", "READ") not in ws.grants("f"), "the folder's share no longer reaches it"
+
+
+async def test_a_limited_shared_drive_item_answered_with_an_empty_list_keeps_its_own_audience_share(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Team", {BOB: "reader"})
+    ws.world.folder("dir", "Plans", parent="sd-1", perms=[discoverable("anyone")])
+    # A folder: "limited access isn't available for files"
+    # (https://developers.google.com/workspace/drive/api/guides/limited-expansive-access).
+    ws.world.folder("f", "Sub", parent="dir", perms=[discoverable("anyone")])
+    ws.world.files["f"].perm_access = "all"
+    await ws.sync()
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
+
+    ws.world._mutate("f", lambda: ws.world._bump("f", inheritedPermissionsDisabled=True))
+    ws.world.files["f"].perm_access = None
+    await ws.sync()
+
+    assert "f" in ws.records.stopped_inheriting
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f"), "its own share, though the folder has the same"
 
 
 async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Workspace) -> None:
