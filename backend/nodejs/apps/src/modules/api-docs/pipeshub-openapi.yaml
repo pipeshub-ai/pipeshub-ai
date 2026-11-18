@@ -8056,8 +8056,10 @@ components:
       type: object
       description: |
         Optional body for single-record reindex. Only `depth`, `statusFilters` and `force` are read;
-        any other field is dropped by the validator before the handler runs. No body, an empty object
-        or an empty `statusFilters` list mean depth `0`, no status filter and no force.
+        any other field is dropped by the validator before the handler runs. Each default applies on its
+        own: an omitted `depth` is `0`, an omitted `force` is `false`, and an empty `statusFilters` list
+        (or an omitted one) turns status filtering off. `{"depth":2,"statusFilters":[],"force":true}` keeps
+        depth 2, has no status filter and forces.
       properties:
         force:
           type: boolean
@@ -8065,8 +8067,9 @@ components:
           description: |
             `true` is a Force reindex: the record is parsed and indexed again from scratch, and no
             stored result (parse, OCR, image and table descriptions, classification, entities, embeddings)
-            is reused, so every model call is paid for again. Only the literal `true` forces; a plain
-            reindex reuses what is stored.
+            is reused from earlier runs, so every model call is paid for again. A retry of the same request can
+            reuse the results that request already stored. Only the literal `true` forces; a plain reindex
+            reuses what is stored.
         depth:
           type: integer
           minimum: -1
@@ -38450,7 +38453,9 @@ paths:
         purge that lands late leaves what a newer run stored since. `before` must be an instant the
         storage service itself returned from `purge-cutoff` (an upper bound on what may go): one in
         the future by more than 15 minutes (a store clock may differ a little from this host's) is
-        refused with 400.
+        refused with 400. The guarantee covers objects as they were when the purge listed them: an object
+        replaced after it was listed and before the delete ran is removed with the old one, because no
+        storage adapter offers a delete conditional on the object's version.
       operationId: internalPurgeRecordPaidResults
       security:
         - scopedToken: []

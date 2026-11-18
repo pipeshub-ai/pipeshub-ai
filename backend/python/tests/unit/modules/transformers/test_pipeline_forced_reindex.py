@@ -56,7 +56,7 @@ async def test_a_forced_reindex_purges_the_points_and_indexes_every_block_with_n
     pipeline.sink_orchestrator.vector_store.purge_record_vectors.assert_awaited_once()
     assert not result.rekey_ids                                         # no re-key or move
     assert not result.block_ids_to_delete
-    assert not result.blocks_to_index_ids                               # no diff: the whole record is indexed
+    assert result.blocks_to_index_ids is None                           # no diff: None means every block is indexed
     pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_not_awaited()
 
 
@@ -108,5 +108,5 @@ async def test_a_forced_run_that_fails_while_embedding_is_not_completed_and_its_
     assert sink.vector_store.purge_record_vectors.await_count == 2              # the retry purges again
     assert sink.index.await_count == 2
     reconciliation = retry.reconciliation_context
-    assert not reconciliation.rekey_ids and not reconciliation.blocks_to_index_ids and not reconciliation.block_ids_to_delete
+    assert not reconciliation.rekey_ids and reconciliation.blocks_to_index_ids is None and not reconciliation.block_ids_to_delete
     pipeline.stage_ingress.on_indexed.assert_awaited_once()                     # the full path ran: the stages follow the index

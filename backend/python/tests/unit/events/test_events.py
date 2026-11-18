@@ -2271,6 +2271,25 @@ class TestOnEventDuplicate:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
+    async def test_a_users_force_reindex_is_not_settled_by_attaching_to_a_finished_twin(self):
+        """D-180: a forced refresh parses and indexes; a plain event for the same record attaches to the twin."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+        decision = DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=decision):
+            plain = await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+            processor.process_docx_document.reset_mock()
+            forced_event = _make_event_payload(extension=ExtensionTypes.DOCX.value)
+            forced_event["payload"].update({"forceReindex": True, "refreshPaidOutputs": True})
+            forced = await _drain(ep.on_event(forced_event))
+
+        assert any(e.event == "indexing_complete" for e in plain)
+        assert processor.process_docx_document.called          # the forced event ran the parse; the twin did not settle it
+        assert any(e.event == "indexing_complete" for e in forced)
+
+    @pytest.mark.asyncio
     async def test_duplicate_skip_invalidates_accessible_records_cache(self):
         """When dedup skips indexing, the accessible-records cache must still
         be invalidated so the newly attached record is searchable immediately.

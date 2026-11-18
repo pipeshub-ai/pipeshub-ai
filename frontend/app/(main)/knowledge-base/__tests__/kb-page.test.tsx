@@ -1361,6 +1361,24 @@ describe('Knowledge base page — working with files', () => {
     expect(api.kb.reindexItem.mock.calls[0]).toEqual(['rec-notes', 0, undefined]);
   });
 
+  it('keeps the success when only the list refresh after a reindex fails, and offers no retry that would resend it', async () => {
+    await openEngineering();
+    api.kb.reindexItem.mockImplementation(async () => {
+      // The request is accepted; the refresh of the page that follows it then fails.
+      for (const [name, fn] of Object.entries(api.kb)) {
+        if (name !== 'reindexItem' && vi.isMockFunction(fn)) fn.mockRejectedValue(new Error('refresh failed'));
+      }
+      return {};
+    });
+
+    await chooseRowAction('notes.txt', 'Retry indexing');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.variant === 'success')).toBe(true));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(useToastStore.getState().toasts.some((t) => t.variant === 'error')).toBe(false);
+    expect(api.kb.reindexItem).toHaveBeenCalledTimes(1);
+  });
+
   it('offers to try again when reindexing could not start', async () => {
     await openEngineering();
     api.kb.reindexItem.mockRejectedValueOnce(new Error('Error publishing to Kafka topic records')).mockResolvedValue({});

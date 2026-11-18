@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.file_types import Route
+from app.services.paid_cache.run import refresh_requested
 from app.events.dedup import (
     DedupDecision,
     DuplicateMatch,
@@ -1847,7 +1848,8 @@ class EventProcessor:
                     file_content, doc, before_reusing_status=before_reusing_status,
                     content_rev=content_rev, scans_for_secrets=scans_for_secrets,
                 )
-                if dedup_decision.skip_indexing:
+                # A user's Force reindex re-parses and re-embeds: it is never settled by attaching to a finished twin.
+                if dedup_decision.skip_indexing and not refresh_requested(event_data):
                     self.logger.info("Duplicate record detected, skipping processing")
                     if embed_marker:
                         await self._discard_embed_marker(doc, embed_marker, org_id)

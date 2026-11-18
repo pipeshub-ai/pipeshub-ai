@@ -19,6 +19,7 @@ def _request(body: dict | None) -> MagicMock:
 
 async def _published(body: dict | None, topic: str) -> dict:
     gp = AsyncMock()
+    gp.get_document.return_value = None                      # the connector lock check takes its no-lock path
     gp.reindex_single_record = AsyncMock(return_value={
         "success": True,
         "eventData": {"eventType": "newRecord", "topic": topic, "payload": {"recordId": "rec-1"}},
