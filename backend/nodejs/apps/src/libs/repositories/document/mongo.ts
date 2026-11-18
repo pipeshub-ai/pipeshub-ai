@@ -115,8 +115,12 @@ async function touchArtifactSet(
     // The stamp always moves strictly forward, so a purge that listed it earlier can tell a touch happened: to `now`
     // when that is later than the stored stamp, otherwise one millisecond past it (a touch read at an earlier `now`
     // that lands late must not leave the stamp a purge listed unchanged).
+    const later: Record<string, unknown> = {
+      ...writable,
+      updatedAt: { $lt: now },
+    };
     const forward = await DocumentModel.findOneAndUpdate(
-      { ...writable, updatedAt: { $lt: now } } as never,
+      later as never,
       { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
       { new: true, timestamps: false },
     );
