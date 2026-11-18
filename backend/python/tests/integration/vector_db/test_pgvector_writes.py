@@ -220,6 +220,95 @@ async def test_a_shared_vrid_is_deleted_for_one_org_only(store) -> None:
     assert (await sql(store, "SELECT count(*) FROM retrieval.points WHERE org_id = $1", A))[0][0] == (2 if store._safe_mode else 0)
 
 
+async def test_the_stray_sweep_removes_only_unreferenced_blocks_of_one_org(store) -> None:
+    from app.modules.indexing.stray_sweep import sweep_stray_points
+
+    await store.upsert_points("records", [point(A, "keep"), point(A, "stray-1", i=1), point(A, "stray-2", i=2, terms=(5,))])
+    await store.upsert_points("records", [point(B, "stray-1")])
+    result = await sweep_stray_points(store, "records", org_id=A, virtual_record_id="r1", keep_block_ids={"keep"})
+    assert result.stray_blocks == 2
+    assert (await live(store, A), await live(store, B)) == (1, 1)
+    assert (await sweep_stray_points(store, "records", org_id=A, virtual_record_id="r1", keep_block_ids={"keep"})).stray_blocks == 0
+
+
+async def test_scroll_with_vectors_returns_the_vector_the_terms_and_the_payload_of_one_org(store) -> None:
+    big = 3_000_000_000                  # above 2^31 - 1: stored wrapped, given back as written
+    await store.upsert_points("records", [point(A, "p1", i=1, terms=(3, big), text="alpha"), point(A, "p2", i=2, terms=(), text="beta")])
+    await store.upsert_points("records", [point(B, "p1", text="other org")])
+    seen: dict[str, VectorPoint] = {}
+    offset = None
+    while True:
+        page = await store.scroll_with_vectors("records", flt(A, virtualRecordId="r1"), 1, offset)
+        seen.update({p.id: p for p in page.points})
+        if not page.next_offset:
+            break
+        offset = page.next_offset
+    p1 = seen[pid(f"{A}/p1")]
+    assert set(seen) == {pid(f"{A}/p1"), pid(f"{A}/p2")}
+    assert p1.payload["page_content"] == "alpha" and p1.payload["metadata"]["blockId"] == "p1"
+    assert p1.dense_vector == [0.0, 1.0] + [0.0] * (DIM - 2)
+    assert dict(zip(p1.sparse_vector.indices, p1.sparse_vector.values, strict=True)) == {3: 0.5, big: 0.5}
+    again = await store.scroll_with_vectors("records", flt(A), 10)
+    assert {p.payload["metadata"]["blockId"] for p in again.points} == {"p1", "p2"}
+    assert next(p for p in again.points if p.payload["metadata"]["blockId"] == "p2").sparse_vector is None
+    # and the point can be written under another id, vector and terms intact: the move a re-key makes
+    moved = [VectorPoint(id=pid(f"{A}/moved-{p.id}"), dense_vector=p.dense_vector, sparse_vector=p.sparse_vector, payload=p.payload)
+             for p in again.points]
+    await store.upsert_points("records", moved)
+    assert await live(store, A) == 4 and await postings(store, A) == 4
+
+
+async def test_a_points_sparse_vector_is_its_own_postings_not_those_of_other_points_with_the_same_terms(store) -> None:
+    first = dataclasses.replace(point(A, "p1", i=1, text="alpha"), sparse_vector=SparseVector([3, 7], [0.25, 0.75]))
+    second = dataclasses.replace(point(A, "p2", i=2, text="beta"), sparse_vector=SparseVector([3, 7], [0.5, 0.125]))
+    await store.upsert_points("records", [first, second])
+    page = await store.scroll_with_vectors("records", flt(A, virtualRecordId="r1"), 10)
+    got = {p.payload["metadata"]["blockId"]: dict(zip(p.sparse_vector.indices, p.sparse_vector.values, strict=True)) for p in page.points}
+    assert got == {"p1": {3: 0.25, 7: 0.75}, "p2": {3: 0.5, 7: 0.125}}
+
+
+async def test_a_write_between_the_statements_of_the_vector_read_never_mixes_two_versions(store, monkeypatch) -> None:
+    """The read of a point's dense vector and its terms is one statement, so one snapshot: a write of the same point that commits
+    while the read is under way gives the old vector with the old terms or the new with the new, never a mix."""
+    import contextvars
+
+    from app.services.vector_db.pgvector import reads
+
+    old, new = point(A, "p1", i=1, terms=(3, 7)), point(A, "p1", i=2, terms=(11, 13))
+    await store.upsert_points("records", [old])
+    real = reads.scroll
+    state = {"fetches": 0, "written": False}
+
+    class _Tx:
+        def __init__(self, tx) -> None:
+            self._tx = tx
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._tx, name)
+
+        async def fetch(self, *args: object, **kwargs: object) -> list:
+            rows = await self._tx.fetch(*args, **kwargs)
+            state["fetches"] += 1
+            if state["fetches"] == 1 and not state["written"]:
+                state["written"] = True
+                # another connection, outside this unit of work; it commits before the read goes on
+                await asyncio.create_task(store.upsert_points("records", [new]), context=contextvars.Context())
+            return rows
+
+    async def scroll(tx: object, *args: object, **kwargs: object) -> tuple:
+        return await real(_Tx(tx), *args, **kwargs)
+
+    monkeypatch.setattr(reads, "scroll", scroll)
+    page = await store.scroll_with_vectors("records", flt(A, virtualRecordId="r1"), 10)
+    monkeypatch.setattr(reads, "scroll", real)
+    assert state["written"]
+    got = next((p for p in page.points if p.id == pid(f"{A}/p1")), None)
+    if got is not None:
+        terms = tuple(got.sparse_vector.indices) if got.sparse_vector else ()
+        assert (tuple(got.dense_vector), terms) in {(tuple(old.dense_vector), (3, 7)), (tuple(new.dense_vector), (11, 13))}, \
+            f"dense vector of one version with terms {terms} of the other"
+
+
 async def test_deletes_run_in_batches(store, monkeypatch) -> None:
     monkeypatch.setattr(writes, "DELETE_BATCH", 2)
     await store.upsert_points("records", [point(A, f"p{n}", terms=(n + 1,)) for n in range(5)])

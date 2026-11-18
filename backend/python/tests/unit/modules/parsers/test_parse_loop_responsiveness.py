@@ -33,32 +33,6 @@ from tests.support.pdf_samples import blank_pdf
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-MAX_GAP_SECONDS = 0.2
-
-
-async def _worst_loop_gap(coro_factory: Callable[[], Awaitable[object]]) -> tuple[float, object]:
-    worst = 0.0
-    stop = False
-
-    async def heartbeat() -> None:
-        nonlocal worst
-        last = time.monotonic()
-        while not stop:
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            worst = max(worst, now - last)
-            last = now
-
-    task = asyncio.create_task(heartbeat())  # test-local task, awaited below
-    await asyncio.sleep(0.05)
-    try:
-        result = await coro_factory()
-    finally:
-        stop = True
-        await task
-    return worst, result
-
-
 def _strategy() -> VLMOCRStrategy:
     strategy = VLMOCRStrategy(logging.getLogger("test-loop"), MagicMock())
     strategy._get_multimodal_llm = AsyncMock(return_value=MagicMock())
@@ -66,22 +40,35 @@ def _strategy() -> VLMOCRStrategy:
     return strategy
 
 
-@pytest.fixture
-def slow_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_open = pdfplumber.open
-
-    def slow(*args: object, **kwargs: object) -> object:
-        time.sleep(0.5)  # a scanned or damaged file makes the open this slow
-        return real_open(*args, **kwargs)
-
-    monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", slow)
-
-
 class TestVlmLoadDocument:
-    async def test_opening_the_pdf_does_not_block_the_loop(self, slow_open: None) -> None:
-        strategy = _strategy()
-        worst, _ = await _worst_loop_gap(lambda: strategy.load_document(blank_pdf(pages=2)))
-        assert worst < MAX_GAP_SECONDS, worst
+    async def test_opening_the_pdf_does_not_block_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Counted, not timed: the open (slow for a scanned or damaged file) does not finish until the loop has
+        # run ten turns after it started, which it can do only while the open is off the loop. A bound on the
+        # loop's longest gap also measured every other thread on the host (2.17 s on a busy CI runner).
+        entered, release = threading.Event(), threading.Event()
+        released_while_open: list[bool] = []
+        real_open = pdfplumber.open
+
+        def held_open(*args: object, **kwargs: object) -> object:
+            entered.set()
+            released_while_open.append(release.wait(10))  # bounds a hang only: on the loop, nobody releases it
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", held_open)
+        turns = 0
+
+        async def heartbeat() -> None:
+            nonlocal turns
+            assert await asyncio.to_thread(entered.wait, 30)
+            while turns < 10:
+                await asyncio.sleep(0.001)
+                turns += 1
+            release.set()
+
+        beat = asyncio.create_task(heartbeat())  # test-local task, awaited below
+        await _strategy().load_document(blank_pdf(pages=2))
+        await beat
+        assert released_while_open == [True]
 
     async def test_the_temp_file_is_removed_and_state_cleared(self) -> None:
         strategy = _strategy()
@@ -282,3 +269,54 @@ class TestTableRows:
         assert [b.index for b in container.blocks] == list(range(len(kept)))
         assert [b.data["row_number"] for b in container.blocks] == [n for n, _ in kept]
         assert [b.data["row_natural_language_text"] for b in container.blocks] == [t for _, t in kept]
+
+
+class TestTableEnrichmentReachesThePaidResultCache:
+    async def test_the_table_prepass_makes_the_cache_ambient_before_the_model_is_called(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.services.paid_cache.access import ambient_cache, set_ambient_cache
+
+        seen: list[object] = []
+
+        async def enrich(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            seen.append(ambient_cache())
+            return [TableEnrichmentResult(summary="s", headers=["h"], descriptions=["x"]) for _ in grids]
+
+        sentinel = MagicMock(name="ambient cache")
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", enrich)
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "remember_cache", lambda *_a, **_k: set_ambient_cache(sentinel)
+        )
+        set_ambient_cache(None)
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["h"], ["x"]])
+        try:
+            await _processor().create_blocks([_page(region)])
+        finally:
+            set_ambient_cache(None)
+        assert seen == [sentinel]
+
+
+    async def test_the_inline_fallback_for_a_table_the_prepass_missed_also_reaches_the_cache(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        remembered: list[object] = []
+
+        async def prepass_finds_nothing(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            return []                                              # every table is missed: the walk enriches inline
+
+        async def inline(llm: object, grid: object, **_k: object) -> TableEnrichmentResult:
+            return TableEnrichmentResult(summary="s", headers=["h"], descriptions=[])
+
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", prepass_finds_nothing)
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_table_grid", inline)
+        monkeypatch.setattr(pdfplumber_opencv_processor, "remember_cache", lambda *a, **_k: remembered.append(a))
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["h"], ["x"]])
+        await _processor().create_blocks([_page(region)])
+        assert len(remembered) == 2                                # the pre-pass, then the inline fallback

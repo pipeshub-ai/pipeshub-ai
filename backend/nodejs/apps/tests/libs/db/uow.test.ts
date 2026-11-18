@@ -402,6 +402,10 @@ describe('libs/db unit of work', () => {
       expect(() => registerLockKey('profile_fence', 7341)).to.throw(UowUsageError)
       const forged = { name: 'forged', classId: 7341 }
       expect(() => lockKeyArgs(forged, 1)).to.throw(UowUsageError)
+      // the object id is a PostgreSQL int: the whole signed 32-bit range, including a hash of -2^31
+      expect(lockKeyArgs(key, -(2 ** 31))).to.deep.equal([7_340_101, -(2 ** 31)])
+      expect(lockKeyArgs(key, 2 ** 31 - 1)).to.deep.equal([7_340_101, 2 ** 31 - 1])
+      for (const bad of [2 ** 31, -(2 ** 31) - 1, 1.5, Number.NaN]) expect(() => lockKeyArgs(key, bad), String(bad)).to.throw(UowUsageError)
       const pool = new FakePool((t) => (t.includes('try_advisory') ? { rows: [{ ok: true }] } : {}))
       await inOrg('o', () => rtFor(pool).withUow({}, async (tx) => {
         await tx.advisoryXactLock(key, 5)

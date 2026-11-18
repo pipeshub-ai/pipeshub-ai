@@ -2,7 +2,7 @@
 
 The answers are those of ``Neo4jProvider``. Every statement binds the ambient org and the org argument matches the documents' ``orgId``. A failed read
 raises: nothing here answers "empty" or "all" for "failed". A list of ids or connectors that is empty matches nothing, and an empty ``within`` admits nothing.
-``get_permitted_entity_records`` is not the access decision (it reads neither the access rule nor the connector gate): its callers decide each row with ``check_access``.
+``get_permitted_entity_records`` is not the access decision (it reads the access rule only so far that a record needing its own grant, RESTRICTED or PARENT_AND_GRANT, takes its role from its own grants alone, never from what it inherits, and it does not read the connector gate): its callers decide each row with ``check_access``.
 Every statement is a literal with bound parameters.
 """
 from __future__ import annotations

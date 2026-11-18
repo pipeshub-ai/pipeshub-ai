@@ -9,15 +9,15 @@ import os
 import threading
 import time
 from collections.abc import Mapping
-from urllib.parse import quote
 from typing import Dict, List, NamedTuple, Optional, Union
+from urllib.parse import quote
 
 from qdrant_client import AsyncQdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
     BinaryQuantization,
     BinaryQuantizationConfig,
+    CompressionRatio,
     Distance,
-    FieldCondition as QdrantFieldCondition,
     Filter,
     FilterSelector,
     HasIdCondition,
@@ -30,7 +30,6 @@ from qdrant_client.http.models import (  # type: ignore
     PayloadSchemaType,
     ProductQuantization,
     ProductQuantizationConfig,
-    CompressionRatio,
     Range,
     ScalarQuantization,
     ScalarQuantizationConfig,
@@ -42,14 +41,18 @@ from qdrant_client.http.models import (  # type: ignore
     VectorParams,
     VectorParamsDiff,
 )
+from qdrant_client.http.models import (
+    FieldCondition as QdrantFieldCondition,
+)
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, checked_fence
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
-    forbid_org_in_payload,
     forbid_fence_in_payload,
+    forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
     require_filter_org,
@@ -71,6 +74,7 @@ from app.services.vector_db.models import (
     ScrollResult,
     SearchFailureKind,
     SearchResult,
+    SparseVector,
     VectorCollectionInfo,
     VectorDBCapabilities,
     VectorDBHealth,
@@ -80,9 +84,12 @@ from app.services.vector_db.models import (
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_memory_size
-from app.services.vector_db.qdrant.utils import MAX_HNSW_EF_CONSTRUCT, QdrantUtils, env_number
+from app.services.vector_db.qdrant.utils import (
+    MAX_HNSW_EF_CONSTRUCT,
+    QdrantUtils,
+    env_number,
+)
 from app.utils.logger import create_logger
-from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 logger = create_logger("qdrant_service")
 
@@ -813,6 +820,39 @@ class QdrantService(IVectorDBService):
             points=points,
             next_offset=str(next_offset) if next_offset is not None else None,
         )
+
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        self._assert_connected()
+        raw_points, next_offset = await self.client.scroll(  # type: ignore
+            collection_name=collection_name,
+            scroll_filter=QdrantUtils.filter_expression_to_qdrant(scroll_filter),
+            limit=limit,
+            with_payload=True,
+            with_vectors=True,
+            offset=offset,
+        )
+        points: list[VectorPoint] = []
+        for p in raw_points:
+            vectors = p.vector if isinstance(p.vector, dict) else {"dense": p.vector}
+            sparse = vectors.get("sparse")
+            points.append(
+                VectorPoint(
+                    id=str(p.id),
+                    dense_vector=list(vectors["dense"]) if vectors.get("dense") is not None else None,
+                    sparse_vector=(
+                        SparseVector(indices=list(sparse.indices), values=list(sparse.values))
+                        if sparse is not None else None
+                    ),
+                    payload=p.payload or {},
+                )
+            )
+        return ScrollResult(points=points, next_offset=str(next_offset) if next_offset is not None else None)
 
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         self._assert_connected()

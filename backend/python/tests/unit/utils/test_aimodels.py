@@ -801,12 +801,14 @@ class TestGetEmbeddingModel:
         mock_fn.assert_called_once_with("test-model", trust_remote_code=False)
         assert result is mock_fn.return_value
 
-    @patch("langchain_community.embeddings.jina.JinaEmbeddings")
-    def test_jina_ai(self, mock_cls):
+    @patch("app.utils.custom_embeddings._build_jina_embeddings")
+    def test_jina_ai(self, mock_build):
+        # The class built is the one that admits and counts its requests; the model name and key reach its constructor.
+        mock_cls = mock_build.return_value
         mock_cls.return_value = MagicMock()
         config = self._base_config()
         result = get_embedding_model(EmbeddingProvider.JINA_AI.value, config)
-        mock_cls.assert_called_once()
+        mock_cls.assert_called_once_with(model_name="test-model", jina_api_key="test-key")
         assert result is mock_cls.return_value
 
     @patch("langchain_mistralai.MistralAIEmbeddings")

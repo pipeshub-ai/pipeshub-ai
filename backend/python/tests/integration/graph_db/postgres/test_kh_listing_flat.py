@@ -19,6 +19,7 @@ from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge
@@ -138,8 +139,9 @@ async def test_another_organisations_connector_is_never_read(pg_db) -> None:
         page = await p.get_knowledge_hub_connector_page_v3(**asks(theirs), limit=10)       # asks for an org that is not the session's
     assert page["rows"] == [] and not page["hasMore"]
     other = new_org()
-    with ctx(other), pytest.raises(KnowledgeHubListingNotReady):      # the session's org holds no such connector: nothing of the other's is found
-        await p.get_knowledge_hub_connector_page_v3(**asks(other), limit=10)
+    with ctx(other):      # the session's org holds no such connector and nothing of it: nothing of the other's is found, an empty page
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(other), limit=10)
+    assert page["rows"] == [] and page["total"] == 0 and not page["hasMore"]
 
 
 async def test_a_connector_kg_serves_has_an_exact_total_beyond_the_scan_and_one_it_does_not_has_a_lower_bound(pg_db, monkeypatch) -> None:
@@ -161,7 +163,7 @@ async def test_the_exact_total_stops_at_its_cap_and_says_so(pg_db, monkeypatch) 
     monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
     with ctx(org):
         page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=9), limit=3)
-    assert page["total"] == 4 and page["totalCapped"] is True
+    assert page["total"] == 4 and page["totalCapped"] is True and page["counts"] == {"record": 4}      # the counts by type add up to the total
 
 
 async def test_a_page_that_stops_early_says_where_and_the_walk_from_there_lists_every_readable_row_once(pg_db, monkeypatch) -> None:
@@ -365,8 +367,8 @@ async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never
                 seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
                 assert not seq, f"{at}: sequential scan of {seq}"
                 # once analyzed (with no statistics the planner may take a wider range of a small table: the plan without a scan above is what holds then)
-                loose = [n["Index Name"] for n in _nodes(plan) if analyzed and str(n.get("Index Name")).startswith(("records_", "links_")) and not NODE_COND.search(n.get("Index Cond") or "")]
-                assert not loose, f"{at}: reads {loose} without the node in its index condition: {[n.get('Index Cond') for n in _nodes(plan) if n.get('Index Name') in loose]}"
+                loose = plan_gate.unkeyed(plan, ("records", "links"), NODE_COND.pattern) if analyzed else []
+                assert not loose, f"{at}: reads without the node in its index condition: {loose}"
                 if name == "hiders":      # the connector's hiders by their own index, not a pass over the connector's rows
                     assert {n.get("Index Name") for n in _nodes(plan)} & {"records_hiders"}, f"{at}: {plan}"
     finally:

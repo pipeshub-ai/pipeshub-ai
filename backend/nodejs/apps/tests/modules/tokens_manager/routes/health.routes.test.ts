@@ -19,6 +19,8 @@ describe('tokens_manager/routes/health.routes', () => {
   let router: any
   let mockConfigService: any
   let savedRedisMode: string | undefined
+  let savedKvStoreType: string | undefined
+  let savedMessageBroker: string | undefined
 
   beforeEach(() => {
     // Default cases assert standalone labels. The cluster integration job
@@ -26,6 +28,11 @@ describe('tokens_manager/routes/health.routes', () => {
     // change serviceNames.redis to "Redis (Cluster)".
     savedRedisMode = process.env.REDIS_MODE
     delete process.env.REDIS_MODE
+    // With both set to postgres an unset REDIS_MODE means the PostgreSQL cache.
+    savedKvStoreType = process.env.KV_STORE_TYPE
+    savedMessageBroker = process.env.MESSAGE_BROKER
+    delete process.env.KV_STORE_TYPE
+    delete process.env.MESSAGE_BROKER
 
     mockConfigService = {
       readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
@@ -74,10 +81,13 @@ describe('tokens_manager/routes/health.routes', () => {
   afterEach(() => {
     (ConfigService as any).instance = undefined
     sinon.restore()
-    if (savedRedisMode === undefined) {
-      delete process.env.REDIS_MODE
-    } else {
-      process.env.REDIS_MODE = savedRedisMode
+    for (const [name, saved] of [
+      ['REDIS_MODE', savedRedisMode],
+      ['KV_STORE_TYPE', savedKvStoreType],
+      ['MESSAGE_BROKER', savedMessageBroker],
+    ] as const) {
+      if (saved === undefined) delete process.env[name]
+      else process.env[name] = saved
     }
   })
 
@@ -282,6 +292,38 @@ describe('tokens_manager/routes/health.routes', () => {
       const names = res.json.firstCall.args[0].serviceNames
       expect(names.messageBroker).to.equal('PostgreSQL queue')
       expect(names.redis).to.equal('PostgreSQL cache')
+    })
+
+    it('publishes the postgres cache mode when REDIS_MODE is unset and the KV store and broker are PostgreSQL', async () => {
+      process.env.KV_STORE_TYPE = 'postgres'
+      process.env.MESSAGE_BROKER = 'postgres'
+      mockAppConfig.deployment.messageBrokerType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.serviceNames.redis).to.equal('PostgreSQL cache')
+      expect(body.deployment.redisMode).to.equal('postgres')
+    })
+
+    it('keeps an explicit REDIS_MODE=standalone on Redis when the KV store and broker are PostgreSQL', async () => {
+      process.env.REDIS_MODE = 'standalone'
+      process.env.KV_STORE_TYPE = 'postgres'
+      process.env.MESSAGE_BROKER = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.serviceNames.redis).to.equal('Redis')
+      expect(body.deployment.redisMode).to.equal('standalone')
     })
 
     it('names the in-process cache when REDIS_MODE is inprocess', async () => {

@@ -102,3 +102,29 @@ async def test_a_worker_whose_projection_gives_up_keeps_the_log_and_finishes_onc
     finally:
         await worker.stop()
     assert calls["n"] >= 3 and not await differences(p, org)
+
+
+async def test_the_worker_folds_the_counters_and_counts_each_connector_whole(pg_db) -> None:
+    """kg.counts: the worker's passes leave no delta unfolded, count every connector it knows whole once, and the counters are count(*) of what they count."""
+    from .test_kg_counts import state
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+
+    async def orgs() -> list[str]:
+        return [org]
+
+    async def settled() -> bool:
+        async def go(tx) -> bool:
+            return await tx.fetchval("""SELECT NOT EXISTS (SELECT 1 FROM kg.counts WHERE org_id = $1 AND NOT folded) AND EXISTS (SELECT 1 FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0)
+                AND NOT EXISTS (SELECT 1 FROM kg.projection_state s WHERE s.org_id = $1 AND s.app_sk <> 0
+                                AND NOT EXISTS (SELECT 1 FROM kg.counts c WHERE c.org_id = $1 AND c.app_sk = s.app_sk AND c.facet = 0))""", org)
+        with ctx(org):
+            return await p._q(go, None)
+    worker = KgWorker(pg_db, orgs, dsn=None, poll_s=0.2)
+    worker.start()
+    try:
+        assert await until(settled, 60)
+    finally:
+        await worker.stop()
+    truth, held, unfolded = await state(p, org)
+    assert held == truth and unfolded == 0

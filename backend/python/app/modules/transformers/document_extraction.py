@@ -14,6 +14,7 @@ from app.agents.agent_loop.prompt_cache import (
     family_cache_strategy,
     forget_cache_params,
 )
+from app.config import file_types
 from app.config.constants.arangodb import DepartmentNames
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlockGroup, BlocksContainer, SemanticMetadata
@@ -37,7 +38,7 @@ from app.services.llm_gateway.gateway import (
     provider_key,
 )
 from app.services.model_identity.errors import policy_error_from_exception
-from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.image_utils import to_llm_image_format
 from app.utils.llm import (
     LLMNotConfiguredError,
@@ -665,6 +666,8 @@ class DocumentExtraction(Transformer):
         DepartmentNames defaults. A code file takes the code prompt (or none, see
         ``_classify_code``), whichever path calls this.
         """
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
             return code
@@ -720,7 +723,9 @@ class DocumentExtraction(Transformer):
                 summary produced anything.
         """
         # A local, not an attribute: one instance classifies documents of different orgs at once.
-        llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+        llm, config = await get_llm_for_role(
+            self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         self.logger.debug(f"Context length: {context_length}")
         # Off the loop: PIL resizing and tiktoken on a large deck stall it for seconds.
@@ -857,6 +862,8 @@ class DocumentExtraction(Transformer):
         *,
         allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
@@ -907,7 +914,9 @@ class DocumentExtraction(Transformer):
         or ``ExtractionLLMError`` when neither the structured call nor the fallback answered.
         """
         # A local, not an attribute: one instance classifies documents of different orgs at once.
-        llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+        llm, config = await get_llm_for_role(
+            self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         summary_data = summary_block.data if isinstance(summary_block.data, dict) else {}
         file_path = summary_data.get("file_path") or summary_block.name or "unknown"

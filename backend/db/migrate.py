@@ -103,6 +103,24 @@ def _ensure_kernel_schema(conn: psycopg.Connection) -> None:
         conn.execute("RESET ROLE")
 
 
+def kv_access_mode() -> str | None:
+    """``PG_KV_ACCESS``: ``shadow`` logs key-value access outside a service role's prefixes, ``enforce`` refuses it; unset keeps the stored mode."""
+    raw = os.environ.get("PG_KV_ACCESS", "").strip()
+    if raw not in ("", "shadow", "enforce"):
+        raise RunnerError(EXIT_CONFIG, f"PG_KV_ACCESS must be shadow or enforce (or unset to keep the stored mode), got {raw!r}")
+    return raw or None
+
+
+def _set_kv_access(conn: psycopg.Connection, mode: str) -> None:
+    conn.execute(f"SET ROLE {OWNER_ROLE}")
+    try:
+        conn.execute("UPDATE platform.kv_access SET enforce = %s, updated_at = now() WHERE enforce IS DISTINCT FROM %s",
+                     (mode == "enforce", mode == "enforce"))
+    finally:
+        conn.execute("RESET ROLE")
+    log(f"key-value access by prefix: {mode}")
+
+
 def alembic_config(url: str) -> Config:
     cfg = Config()
     cfg.set_main_option("script_location", str(DB_DIR))
@@ -204,6 +222,7 @@ def _ahead_of_this_build(conn: psycopg.Connection, cfg: Config) -> str | None:
 def run(argv: list[str]) -> None:
     cmd = argv[0] if argv else "upgrade"
     url = migrate_url()
+    kv_mode = kv_access_mode()
     with locked(url) as conn:
         _ensure_kernel_schema(conn)
         cfg = alembic_config(url)
@@ -211,6 +230,8 @@ def run(argv: list[str]) -> None:
             _path["existing_install"] = _has_revisions(conn)
             if _path["existing_install"] and (ahead := _ahead_of_this_build(conn, cfg)):
                 log(ahead)
+                if kv_mode:            # the newer schema is compatible (checked above), and it holds the mode table this build knows
+                    _set_kv_access(conn, kv_mode)
                 return
             if _path["existing_install"]:
                 cfg.attributes["verify"] = _report
@@ -218,6 +239,8 @@ def run(argv: list[str]) -> None:
             else:               # an empty database has nothing to protect, and all revisions in one transaction hold ~6,600 locks
                 _upgrade_with_retries(cfg, "heads")
                 _report(conn)
+            if kv_mode:
+                _set_kv_access(conn, kv_mode)
         elif cmd == "current":
             command.current(cfg, verbose=True)
         elif cmd == "downgrade" and len(argv) == 2:

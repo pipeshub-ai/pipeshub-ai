@@ -35,6 +35,7 @@ from app.modules.pipeline.models import (
 )
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import StageIO
+from app.services.llm_gateway.gateway import current_pause_fields
 
 # Bump when the extraction prompt, its strategies or the stored section's shape change.
 ENTITIES_PROMPT_VERSION = 1
@@ -91,6 +92,10 @@ class EntitiesStage:
     headline: ClassVar[HeadlineField | None] = None
     budget_s: ClassVar[float] = 900.0
 
+    # A redrive runs it even where `applies` is false, so an install that turned extraction off still clears the
+    # entities it wrote; the other stages end SKIPPED there.
+    runs_when_not_applicable: ClassVar[bool] = True
+
     def applies(self, view: RecordView, policy: PipelinePolicy) -> bool:
         # Images carry no text the recognizers read. Whether extraction is on is read when the
         # job runs: an install that turns it off must still clear the entities it wrote.
@@ -121,7 +126,7 @@ class EntitiesStage:
         if extraction.status == "FAILED":
             # The model failed; the record keeps its last good entities meanwhile.
             if _provider_down(extraction):
-                return StageResult(outcome=StageOutcome.PAUSED, reason=_PROVIDER_DOWN)
+                return StageResult.paused_for(extraction.pause_cause, _PROVIDER_DOWN, traced=current_pause_fields())
             return StageResult(
                 outcome=StageOutcome.RETRY,
                 reason=f"Named-entity extraction failed ({extraction.termination_reason})",
@@ -142,7 +147,9 @@ class EntitiesStage:
             # What was found is saved, or the last good entities kept; settling now would store
             # the fingerprint, and the record would never get the names the model missed.
             if _provider_down(extraction):
-                return StageResult(outcome=StageOutcome.PAUSED, reason=f"{_PROVIDER_DOWN}; saved what was found")
+                return StageResult.paused_for(
+                    extraction.pause_cause, f"{_PROVIDER_DOWN}; saved what was found", traced=current_pause_fields()
+                )
             return StageResult(
                 outcome=StageOutcome.RETRY,
                 reason=f"Named-entity model call failed ({extraction.termination_reason}); saved what was found",

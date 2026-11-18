@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from .scenario import world_from_data
+from .scenario import load_all, world_from_data
 
 if TYPE_CHECKING:
     from .model import World
@@ -320,7 +320,7 @@ gates: [[u, A]]
 """))
 
 # STUBTOP: a placeholder group whose only content is a chain-top: a granted record that belongs to it and hangs from nothing. Opening the group lists the record, so the folder above
-# lists the group, with an arrow. (Not in KH_WORLDS: Neo4j's folder leaves the group out and ArangoDB lists the record under the App instead.)
+# lists the group, with an arrow. (ArangoDB keeps no placeholder group: there r hangs from nothing and is listed under the App.)
 STUBTOP = world_from_data(yaml.safe_load("""
 principals: [{id: u}]
 nodes:
@@ -613,9 +613,9 @@ grants: [[u, h], [u, q]]
 gates: [[u, A]]
 """))
 
-# CAPSTUB: a stub S with one child more than the check is asked about per node (`_KH_UNDECIDED_MAX`, the first by id): none of the first is
-# readable, and the last, k200, is (through q). Opening S asks about the first ones only and lists nothing, so S is not listed (and k200, left out
-# under S by the cap, is reported); it is listed under q.
+# CAPSTUB: a stub S with one child more than an arrow asks the check about (`_KH_UNDECIDED_MAX`, the first by id): none of the first is readable,
+# and the last, k200, is (through q). Opening S lists k200 (a browse asks about every undecided child), but S's listing under h asks about the
+# first ones only, so S is not listed there (reported, as the arrow's sample); k200 is listed under q too.
 CAP_KIDS = 201
 CAPSTUB = world_from_data(yaml.safe_load("""
 principals: [{id: u}]
@@ -627,6 +627,25 @@ nodes:
 """ + "".join(f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [S]}}\n" for i in range(CAP_KIDS - 1)) + f"""\
   - {{id: k{CAP_KIDS - 1:03d}, kind: record, connector: A, rule: STRICT, parents: [S, q], inherits: [q]}}
 grants: [[u, h], [u, q]]
+gates: [[u, A]]
+"""))
+
+# WIDE: a group f with more children its rules leave to the check than one read asks it about (`_KH_UNDECIDED_MAX`): each is readable only
+# through q, the first ten and the last thirty (past the first 200 by id) are, the rest are not. A browse of f lists all forty in order, over
+# pages whose first ones are decided before every child is asked about (a total that says it is a lower bound). g's ten children are all left to
+# the check too, few enough to ask about at once: its second page starts at one of them.
+WIDE_KIDS = 230
+WIDE = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+""" + "".join(f"  - {{id: j{i:02d}, kind: record, connector: A, rule: STRICT, parents: [g, q], inherits: [q]}}\n" for i in range(10)) + "".join(
+    f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [f, q], inherits: [q]}}\n" if i < 10 or i >= 200 else
+              f"  - {{id: k{i:03d}, kind: record, connector: A, rule: STRICT, parents: [f]}}\n" for i in range(WIDE_KIDS)) + """\
+grants: [[u, f], [u, q], [u, g]]
 gates: [[u, A]]
 """))
 
@@ -843,8 +862,45 @@ grants: [[u, r1], [u, r2], [u, r3], [u, open]]
 gates: [[u, A]]
 """))
 
+# PAGSEED: regression REGR-09 before its change. dave reads the issue i1 only by his own grant (a seed); the PARENT_AND_GRANT comment c1 holds a grant
+# for his group, so he reads it, the OPEN file f1 in it and the PARENT_AND_GRANT reply c5 granted to him. c2 (not his grant), c3 (under carol's i2),
+# c4 (does not inherit) and the STRICT s1 stay closed to him.
+PAGSEED = next(s for s in load_all() if s.id == "REGR-09").before_world()
+
+# PAGSTORY: regression REGR-10. RESTRICTED keeps its meaning below a seed: dave reads the epic by his own grant, not the leveled story under it nor
+# anything below the story, though his level group is granted on each.
+PAGSTORY = next(s for s in load_all() if s.id == "REGR-10").before_world()
+
+# DECLPAG: a PARENT_AND_GRANT record c under k, a member of the declared group d that u reads. k is admitted by the declaration, so it is no seed even
+# though u is granted on it, and what hangs under it is not read through it: c is denied, as an OPEN child of k would be.
+DECLPAG = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: JIRA}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d], belongs: [d]}
+  - {id: c, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, d], [u, k], [u, c]]
+gates: [[u, A]]
+"""))
+
+# PAGMEMBER: as DECLPAG, but the member M also inherits from S, an OPEN record u is granted on (a seed). M is read below that seed, not only through
+# the declaration, so what hangs under it is read below the seed too: the PARENT_AND_GRANT record C (granted) and the OPEN record O (inheriting).
+PAGMEMBER = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: JIRA}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: S, kind: record, connector: A, rule: OPEN, belongs: [A]}
+  - {id: M, kind: record, connector: A, rule: OPEN, parents: [S], inherits: [S], belongs: [d]}
+  - {id: C, kind: record, connector: A, rule: PARENT_AND_GRANT, parents: [M], inherits: [M], belongs: [A]}
+  - {id: O, kind: record, connector: A, rule: OPEN, parents: [M], inherits: [M], belongs: [A]}
+grants: [[u, d], [u, S], [u, C]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
-             STUBSEED, NESTSTUB, CAPSTUB, HIDESEED, FLATSIDE, REACHSTUB,
-             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED]
+             STUBSEED, NESTSTUB, CAPSTUB, WIDE, HIDESEED, FLATSIDE, REACHSTUB,
+             SCOPEDSIDE, XHOP, XLINK, DECLHIDE, XBADGE, XLINKBADGE, UNPLACED, STUBTOP, PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]

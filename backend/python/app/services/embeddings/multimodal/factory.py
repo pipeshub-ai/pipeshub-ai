@@ -53,6 +53,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         api_key=config.api_key,
         model_name=config.model_name,
         logger=config.logger,
+        sdk_retries=config.sdk_retries,
     ),
     EmbeddingProvider.VOYAGE.value: lambda config: VoyageMultimodalProvider(
         dense_embeddings=config.dense_embeddings,
@@ -66,6 +67,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         embedding_size=config.embedding_size,
         normalize_fn=config.normalize_fn,
         logger=config.logger,
+        sdk_retries=config.sdk_retries,
     ),
     EmbeddingProvider.JINA_AI.value: lambda config: JinaMultimodalProvider(
         api_key=config.api_key,
@@ -78,6 +80,7 @@ _PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         model_name=config.model_name,
         normalize_fn=config.normalize_fn,
         logger=config.logger,
+        sdk_retries=config.sdk_retries,
     ),
     EmbeddingProvider.OLLAMA.value: lambda config: OllamaMultimodalProvider(
         base_url=config.base_url,

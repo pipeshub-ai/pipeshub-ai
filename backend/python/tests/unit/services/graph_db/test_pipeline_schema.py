@@ -22,6 +22,7 @@ def _arango(*, stages_exist: bool = True) -> tuple[ArangoHTTPProvider, AsyncMock
     client.create_collection = AsyncMock(return_value=True)
     client.update_collection_schema = AsyncMock(return_value=True)
     client.ensure_persistent_index = AsyncMock(return_value=True)
+    client.record_guard = None  # a client with no records-schema guard writes the schema itself
     provider.http_client = client
     return provider, client
 
@@ -164,3 +165,28 @@ class TestNeo4jPipelineSchema:
         assert any("stage_state_status_updated" in index for index in indexes)
         assert any("stage_state_revision" in index for index in indexes)
         assert any("stage_state_connector" in index for index in indexes)
+
+
+class TestRecordsSchemaUpdate:
+    def test_the_schema_indexing_waits_for_lists_the_indexing_note(self) -> None:
+        # ensure_pipeline_schema applies this before indexing starts, so no note is written against
+        # a records schema that does not allow it.
+        assert "indexingNote" in record_schema["rule"]["properties"]
+
+    async def test_a_schema_the_bootstrap_cannot_update_is_logged_as_an_error(self) -> None:
+        logger = MagicMock()
+        provider = ArangoHTTPProvider(logger, AsyncMock())
+        client = AsyncMock()
+        client.has_collection = AsyncMock(return_value=True)
+        client.update_collection_schema = AsyncMock(side_effect=lambda name, _schema: name != RECORDS)
+        client.has_graph = AsyncMock(return_value=True)
+        client.record_guard = None
+        provider.http_client = client
+        provider._ensure_edge_definitions_up_to_date = AsyncMock()  # type: ignore[method-assign]
+        provider._ensure_indexes = AsyncMock()  # type: ignore[method-assign]
+        provider._ensure_departments_seed = AsyncMock()  # type: ignore[method-assign]
+
+        await provider.ensure_schema()
+
+        errors = [call.args for call in logger.error.call_args_list]
+        assert any(RECORDS in args for args in errors), errors

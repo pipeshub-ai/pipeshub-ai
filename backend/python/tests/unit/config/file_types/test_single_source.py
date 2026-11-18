@@ -47,6 +47,7 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "connectors/sources/notion/block_parser.py": (2, _MEDIA),
     "connectors/sources/notion/connector.py": (2, _MEDIA),
     "connectors/sources/web/connector.py": (3, _SOURCE),
+    "migrations/file_type_requeue/gate_v1.py": (4, "the gate's lists frozen as they were, which the re-queue compares against the registry"),
     "modules/agents/qna/router.py": (1, _AGENT_TOOLS),
     "modules/artifacts/record_backend.py": (1, _IMAGES),
     "modules/artifacts/writer.py": (1, _IMAGES),

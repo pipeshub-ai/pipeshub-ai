@@ -70,6 +70,8 @@ POINT_KEY = "embedKey"
 DELIVERY_ID_KEY = "_delivery_id"
 #: Set by stale recovery on the event it republishes: the delivery id of the interrupted run.
 RESUME_DELIVERY_ID_KEY = "_resume_delivery_id"
+#: Set beside it from the verified envelope's event id; absent when the message had no envelope.
+EVENT_ID_KEY = "_event_id"
 
 
 def cleared_fields() -> dict[str, None]:
@@ -102,15 +104,23 @@ def digest_of(point_ids: Iterable[str]) -> str:
     return h.hexdigest()[:32]
 
 
-def stamp_delivery_id(payload: dict[str, Any], stable_message_id: str) -> None:
+def stamp_delivery_id(payload: dict[str, Any], stable_message_id: str, org_ctx: object | None = None) -> None:
     """Put the identity of this delivery in the event payload, before the handler reads it.
 
     ``stable_message_id`` is what the consumer already uses to follow one event across its own
     re-queues. A republish by stale recovery continues an interrupted run, so it names that run's
     delivery id in ``_resume_delivery_id`` and that wins.
+
+    ``org_ctx`` is the message's verified context: when it came from an envelope it carries the producer's
+    event id, which goes in ``_event_id`` beside the delivery id. A key the sender put there itself is never
+    kept, so only a verified envelope can name an event id.
     """
     resumed = payload.get(RESUME_DELIVERY_ID_KEY)
     payload[DELIVERY_ID_KEY] = str(resumed) if resumed else str(stable_message_id)
+    payload.pop(EVENT_ID_KEY, None)
+    event_id = getattr(org_ctx, "event_id", None)
+    if isinstance(event_id, str) and event_id:
+        payload[EVENT_ID_KEY] = event_id
 
 
 def may_resume(

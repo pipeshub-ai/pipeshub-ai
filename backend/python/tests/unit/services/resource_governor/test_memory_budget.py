@@ -141,6 +141,44 @@ class TestMemoryBudget:
         budget.release(900 * MB)
         assert await asyncio.wait_for(known_size, 3)
 
+    async def test_small_reservations_that_go_ahead_are_served_in_arrival_order(self) -> None:
+        """``ahead`` puts a small reservation before the big ones, not before earlier small ones."""
+        budget = MemoryBudget()
+        budget.limit = 1000 * MB
+        assert await budget.reserve(400 * MB)
+        big = asyncio.create_task(budget.reserve(900 * MB))
+        await asyncio.sleep(0.01)
+        first = asyncio.create_task(budget.reserve(900 * MB, ahead=True))
+        await asyncio.sleep(0.01)
+        second = asyncio.create_task(budget.reserve(900 * MB, ahead=True))
+        await asyncio.sleep(0.01)
+
+        budget.release(400 * MB)
+        assert await asyncio.wait_for(first, 3)
+        await asyncio.sleep(0.05)
+        assert not second.done() and not big.done()
+        budget.release(900 * MB)
+        assert await asyncio.wait_for(second, 3)
+        budget.release(900 * MB)
+        assert await asyncio.wait_for(big, 3)
+
+    async def test_a_waiter_holding_its_content_stays_ahead_of_small_reservations(self) -> None:
+        budget = MemoryBudget()
+        budget.limit = 1000 * MB
+        assert await budget.reserve(400 * MB)
+        small = asyncio.create_task(budget.reserve(900 * MB, ahead=True))
+        await asyncio.sleep(0.01)
+        downloaded = asyncio.create_task(budget.reserve(900 * MB, held=225 * MB))
+        await asyncio.sleep(0.01)
+
+        budget.release(400 * MB)
+        assert await asyncio.wait_for(downloaded, 3)
+        await asyncio.sleep(0.05)
+        assert not small.done()
+        small.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await small
+
     async def test_with_nothing_reserved_the_head_runs_even_past_what_others_hold(self) -> None:
         """Nothing running will free memory, and what other waiters hold goes only
         when they run or give up: waiting would stall the queue."""

@@ -24,7 +24,7 @@ from app.connectors.sources.web.connector import (
     MAX_PAGES_LIMIT,
     MAX_SIZE_MB_LIMIT,
 )
-from app.core.org_context import for_org, system
+from app.core.org_jobs import for_each_org
 from app.services.graph_db.common.utils import org_id_from_app_edge
 
 # v2: also fills Maximum pages and clamps the numeric settings; v1 did the identity alone.
@@ -118,30 +118,38 @@ class WebBrowserIdentityBackfill:
         if await self._is_already_done():
             return {"success": True, "skipped": True, "connectors_updated": 0}
 
-        with system("web_browser_identity_backfill"):
+        updated = failures = 0
+
+        async def backfill_org(bound_org_id: str) -> None:
+            nonlocal updated, failures
             apps = await self.graph_provider.get_nodes_by_field_in(
                 CollectionNames.APPS.value, "type", ["Web"], ["id", "orgId"], raise_on_error=True
             )
-        updated = failures = 0
-        for app in apps or []:
-            connector_id = app.get("id")
-            if not connector_id:
-                continue
-            try:
-                # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
-                with system("web_browser_identity_backfill"):
+            for app in apps or []:
+                connector_id = app.get("id")
+                if not connector_id:
+                    continue
+                try:
+                    # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
                     org_id = app.get("orgId") or await org_id_from_app_edge(
                         self.graph_provider, connector_id, raise_on_error=True
                     )
-                if not org_id:
-                    # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
-                    self.logger.warning(f"Web settings backfill: connector {connector_id} has no org; skipped")
-                    continue
-                with for_org(org_id, job="web_browser_identity_backfill"):
+                    if not org_id:
+                        # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
+                        self.logger.warning(f"Web settings backfill: connector {connector_id} has no org; skipped")
+                        continue
+                    if org_id != bound_org_id:
+                        continue  # Arango and Neo4j list every org's apps; its own org's pass backfills it
                     updated += await self._backfill(connector_id, org_id)
-            except Exception as e:
-                failures += 1
-                self.logger.error(f"Web settings backfill: could not update connector {connector_id}: {e}")
+                except Exception as e:
+                    failures += 1
+                    self.logger.error(f"Web settings backfill: could not update connector {connector_id}: {e}")
+
+        # A failed org list raises to the caller, which logs it; the flag stays unset.
+        failed_orgs = await for_each_org(
+            self.graph_provider, "web_browser_identity_backfill", backfill_org, self.logger, raise_on_error=True,
+        )
+        failures += len(failed_orgs)
 
         # Leave the flag unset after a failure so the next start retries; updated connectors are skipped then.
         if failures == 0:
