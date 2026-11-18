@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import time
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -356,6 +357,53 @@ async def test_the_limit_check_and_the_stored_deadline_use_one_delay(monkeypatch
     assert before + 120_000 <= stored <= before + 121_000, "the stored deadline is not the delay that was checked"
 
 
+async def test_the_limit_check_counts_the_stored_jittered_delay_not_the_providers_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The limit is checked against the delay that would be stored (the provider's wait plus its jitter), so a delay the jitter
+    carries past the limit ends the record even when the provider's own wait is far inside it."""
+    from app.services.messaging import config as config_module
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    monkeypatch.setattr(type(config_module.messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 300.0))
+    monkeypatch.setattr(record_module, "handback_delay_s", lambda *a, **k: 310.0)
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
+    with pytest.raises(ProviderRateLimitedTooLongError):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert all("deferredUntilMs" not in w for w in harness.writes()), "no wait was stored for a delay past the limit"
+    monkeypatch.setattr(record_module, "handback_delay_s", lambda *a, **k: 290.0)
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
+    with pytest.raises(ProviderRateLimitRequeue):
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+
+
+async def test_the_limit_check_takes_no_draw_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One draw per hand-back: with draws 290 s then 310 s and a 300 s limit, the first draw is the one checked and stored, so the
+    record is handed back for 290 s (a second draw for the check, or for the store, would see 310 s)."""
+    from app.services.messaging import config as config_module
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    monkeypatch.setattr(type(config_module.messaging_env), "rate_limit_max_wait_seconds", property(lambda self: 300.0))
+    draws = iter([290.0, 310.0])
+    calls: list[int] = []
+
+    def draw(*_: Any, **__: Any) -> float:  # noqa: ANN401
+        calls.append(1)
+        return next(draws)
+
+    monkeypatch.setattr(record_module, "handback_delay_s", draw)
+    harness = Harness(_record(indexingStatus="QUEUED"))
+    harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
+    now_ms = 1_800_000_000_000
+    monkeypatch.setattr(record_module, "get_epoch_timestamp_in_ms", lambda: now_ms)  # a fixed clock: no wall-clock race
+    with pytest.raises(ProviderRateLimitRequeue) as raised:
+        await harness.run(_payload(parseNow=False, is_final_failure=False))
+    assert calls == [1], "the limit check took a second draw"
+    assert raised.value.delay_s == 290.0
+    stored = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")][-1]
+    assert stored == now_ms + 290_000
+
+
 async def test_a_consumer_whose_clock_runs_behind_does_not_shorten_the_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Elapsed time is derived only from stamps the record carries (``max(now, deferredUntilMs) - rateLimitedSinceMs``), so a
     consumer 15 minutes behind the one that stamped the first hand-back cannot step the backoff back."""
@@ -434,3 +482,18 @@ def test_the_startup_warning_is_logged_when_the_setting_is_on(monkeypatch: pytes
     monkeypatch.delenv("RECORD_DEFERRAL_FIELDS_WRITE")
     warn_if_deferral_fields_write(logger)
     logger.warning.assert_not_called()
+
+
+@pytest.mark.parametrize("final", [False, True])
+async def test_a_wait_on_the_virtual_records_lease_is_not_a_failure_even_on_the_last_delivery(final: bool) -> None:
+    """A sibling record of the same virtual record is still writing: the record goes back in line (QUEUED), never FAILED,
+    and its next-queued duplicate is not triggered by a failure that was not one."""
+    from app.modules.transformers.vectorstore import VirtualRecordBusy
+
+    harness = Harness(_record(indexingStatus="IN_PROGRESS", processingStartedAt=1_000, parsingStatus="IN_PROGRESS"))
+    harness.fail_with = VirtualRecordBusy("another record of the virtual record is writing")
+    with pytest.raises(VirtualRecordBusy):
+        await harness.run(_payload(parseNow=False, is_final_failure=final))
+    assert all(w.get("indexingStatus") != "FAILED" for w in harness.writes())
+    queued = [w for w in harness.writes() if w.get("indexingStatus") == "QUEUED"]
+    assert queued and queued[-1]["processingStartedAt"] is None
