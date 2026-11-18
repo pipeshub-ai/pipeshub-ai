@@ -36,10 +36,12 @@ interface MarkdownRendererProps {
   fileName: string;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  /** Increments on every click on a citation, so a repeat click on the active one scrolls again. */
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
 }
 
-export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, activeCitationId, onHighlightClick }: MarkdownRendererProps) {
+export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, activeCitationId, citationClickVersion, onHighlightClick }: MarkdownRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [content, setContent] = useState<string>('');
@@ -191,7 +193,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
     }, 150);
 
     return clearAll;
-  }, [activeCitationId, markdownDomReady, scrollToHighlight, citations, applyHighlights]);
+  }, [activeCitationId, citationClickVersion, markdownDomReady, scrollToHighlight, citations, applyHighlights]);
 
   if (isLoading) {
     return (

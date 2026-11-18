@@ -1101,6 +1101,43 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def write_attempt_start(
+        self,
+        record_id: str,
+        fields: dict[str, Any],
+        now: int | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Write ``fields`` (an already-shaped status write) to the record and start an indexing attempt, in ONE statement.
+
+        The statement decides from the stored record whether this continues the open run or starts a new one
+        (``firstQueuedAt``), adds one to ``indexingAttempts`` (or sets it to 1 for a new run), and drops a stored
+        ``pageCount`` when ``fields`` carry a ``contentRev`` the record does not hold. Reading the stored record
+        where it is written is what keeps a reset that lands between a read and a write from being continued.
+
+        Returns:
+            True iff the record exists and was written.
+        """
+        pass
+
+    async def update_node_if_unchanged(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        snapshot: dict[str, Any],
+        expected: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """Merge ``updates`` into the node only while it still holds ``expected``, given ``snapshot`` (the node as the caller
+        read it a moment ago). A store with a revision per document can refuse the write when the node changed at all since
+        the snapshot, with a plain document update and no query; the default is the field-checked write of
+        :meth:`update_node_fields_if_match`, one statement on the stores that have no such revision. False is "do not rely
+        on this write": the caller falls back to a write that does not need the condition.
+        """
+        return await self.update_node_fields_if_match(key, collection, updates, expected, transaction)
+
+    @abstractmethod
     async def update_node_if_match(
         self,
         key: str,

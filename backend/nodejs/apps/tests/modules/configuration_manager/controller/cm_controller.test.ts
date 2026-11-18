@@ -928,6 +928,7 @@ describe('ConfigurationManager Controller', () => {
         'ENABLE_SOFT_DELETE',
         'ENABLE_NAMED_ENTITY_EXTRACTION',
         'ENABLE_USER_CONTEXT',
+        'ENABLE_RECORD_PREVIEW_CACHE',
       ])
       expect(flags.find((f: any) => f.key === 'ENABLE_MCP')?.advanced).to.not.equal(true)
       expect(flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')?.defaultEnabled).to.equal(false)
@@ -946,6 +947,16 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].featureFlags.ENABLE_MCP).to.equal(true)
+    })
+
+    it('should default ENABLE_RECORD_PREVIEW_CACHE to true when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_RECORD_PREVIEW_CACHE).to.equal(true)
     })
 
     it('should default ENABLE_SKILLS to true when the store has no entry', async () => {

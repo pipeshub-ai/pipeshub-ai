@@ -35,19 +35,60 @@ def test_every_connector_has_an_anchor() -> None:
     assert {c.path for c in matrix.CONNECTORS} == set(matrix.ANCHORS)
 
 
-def test_deleting_a_cited_line_is_caught(tmp_path: Path) -> None:
-    """The guard has teeth: on a copy of the sources, delete each cited line and the citation must fail."""
-    for c in (x for x in matrix.CONNECTORS if x.path in ("box", "microsoft/sharepoint_online", "linear")):
-        file, _, at = c.evidence.rpartition(":")
-        root = tmp_path / c.path.replace("/", "_")
-        copy = root / file
-        copy.parent.mkdir(parents=True)
-        text = (SOURCES / file).read_text().splitlines()
-        copy.write_text("\n".join(text))
-        assert matrix.evidence_problems(root, [c]) == [], f"{c.path}: an intact copy passes"
-        lo = max(0, int(at) - 1 - 3)
-        copy.write_text("\n".join(text[:lo] + text[int(at) + 3:]))  # the cited line and its neighbours are gone
-        assert matrix.evidence_problems(root, [c]), f"{c.path}: the deletion was not caught"
+_WRITER = """\
+@register(model="RECORD_LEVEL")
+class Sample:
+    def write(self, record):
+        record.inherit_permissions = False
+
+    def other(self, record):
+        pass
+"""
+_MOVED = """\
+@register(model="RECORD_LEVEL")
+class Sample:
+    def write(self, record):
+        pass
+
+    def other(self, record):
+        record.inherit_permissions = False
+"""
+_SAMPLE = (matrix.Connector("sample", "item-acl", matrix.OVERRIDE, "sample/connector.py::Sample.write"),
+           matrix.Connector("sample_app", "container", matrix.CONTAINER, "sample/connector.py::Sample"))
+
+
+@pytest.mark.parametrize(("source", "failing"), [
+    (_WRITER, []),
+    ("import os\n\n\n" + _WRITER, []),                                        # an unrelated edit shifts every line
+    (_WRITER.replace("record.inherit_permissions = False", "pass"), ["sample"]),
+    (_WRITER.replace("def write", "def write_all"), ["sample"]),
+    (_MOVED, ["sample"]),
+    (_WRITER.replace("RECORD_LEVEL", "APP_LEVEL"), ["sample_app"]),            # a class's decorators are part of it
+    (_WRITER.replace("        record.inherit_permissions = False",
+                     "        def helper():\n            record.inherit_permissions = False"), ["sample"]),
+    (_WRITER.replace("        record.inherit_permissions = False",
+                     "        # record.inherit_permissions = False\n        pass"), ["sample"]),
+    ("# a comment with a line separator \u2028 in it\n" + _WRITER, []),       # ast counts only \n as a line break
+    (_WRITER.replace("        record.inherit_permissions = False", "        pass  # record.inherit_permissions = False"), ["sample"]),
+    (_WRITER.replace("        record.inherit_permissions = False", '        """record.inherit_permissions = False"""'), ["sample"]),
+    (_WRITER + "\n    def write(self, record):\n        pass\n", ["sample"]),        # a later def replaces the cited one
+], ids=["intact", "lines-shifted", "code-deleted", "function-renamed", "moved-to-another-function", "decorator-changed",
+        "moved-into-a-nested-function", "commented-out", "unicode-line-separator", "trailing-comment", "docstring",
+        "redefined"])
+def test_a_citation_holds_only_while_its_function_holds_the_anchor(tmp_path: Path, monkeypatch, source, failing) -> None:
+    (tmp_path / "sample").mkdir()
+    (tmp_path / "sample" / "connector.py").write_text(source, encoding="utf-8")
+    monkeypatch.setitem(matrix.ANCHORS, "sample", "record.inherit_permissions = False")
+    monkeypatch.setitem(matrix.ANCHORS, "sample_app", 'model="RECORD_LEVEL"')
+    assert [p.split(":")[0] for p in matrix.evidence_problems(tmp_path, _SAMPLE)] == failing
+
+
+def test_the_resolved_line_follows_the_code(tmp_path: Path) -> None:
+    path = tmp_path / "connector.py"
+    path.write_text(_WRITER)
+    assert matrix.cited_line(path, "Sample.write", "inherit_permissions = False") == 4
+    path.write_text("import os\n\n\n" + _WRITER)
+    assert matrix.cited_line(path, "Sample.write", "inherit_permissions = False") == 7
 
 
 def test_every_connector_group_exists() -> None:

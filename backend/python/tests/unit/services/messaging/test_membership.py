@@ -15,7 +15,7 @@ NOW = 1_700_000_000_000
 
 
 def _entry(checked_at: int = NOW, untagged: list[str] | None = None) -> dict[str, Any]:
-    return {"checkedAt": checked_at, "untagged": untagged or [], "groupsChecked": ["g"]}
+    return {"checkedAt": checked_at, "untagged": untagged or [], "groupsChecked": ["g"], "groupsExpected": ["g"]}
 
 
 class TestEvaluate:
@@ -37,6 +37,31 @@ class TestEvaluate:
 
     def test_a_stale_finding_does_not_count(self) -> None:
         assert m.evaluate([_entry(NOW - 200_000, ["gone"]), _entry(NOW)], NOW).ok
+
+    def test_a_clean_entry_proves_only_when_it_checked_every_group_it_was_configured_to_expect(self) -> None:
+        """A publisher that checked only the groups registered so far (a stage consumer starts later) proves nothing about
+        the rest; nor does one that does not say what it expected (an older publisher)."""
+        partial = {"checkedAt": NOW, "untagged": [], "groupsChecked": ["records"], "groupsExpected": ["records", "pipeline_x"]}
+        unstated = {"checkedAt": NOW, "untagged": [], "groupsChecked": ["records"]}
+        empty = {"checkedAt": NOW, "untagged": [], "groupsChecked": [], "groupsExpected": []}
+        full = {"checkedAt": NOW, "untagged": [], "groupsChecked": ["pipeline_x", "records"], "groupsExpected": ["records", "pipeline_x"]}
+
+        for entry in (partial, unstated, empty):
+            assert m.evaluate([entry], NOW) == m.MembershipVerdict(False, (), "stale"), entry
+        assert m.evaluate([full], NOW).ok
+        assert m.evaluate([{**unstated, "untagged": ["old-pod"]}, full], NOW).untagged == ("old-pod",)  # a finding counts all the same
+
+    def test_a_group_one_fresh_entry_expects_must_be_checked_by_some_fresh_entry(self) -> None:
+        """A leader handover: the ex-leader's entry, still fresh, proves the groups it expected; the new leader expects a
+        stage group more and has not covered it. No fresh entry checked that group, so the result is not clean."""
+        ex_leader = {"checkedAt": NOW - 60_000, "untagged": [], "groupsChecked": ["records"], "groupsExpected": ["records"]}
+        new_leader = {
+            "checkedAt": NOW - 1_000, "untagged": [], "groupsChecked": ["records"], "groupsExpected": ["pipeline_x", "records"],
+        }
+        covered = {**new_leader, "groupsChecked": ["pipeline_x", "records"]}
+
+        assert m.evaluate([ex_leader, new_leader], NOW) == m.MembershipVerdict(False, (), "stale")
+        assert m.evaluate([ex_leader, covered], NOW).ok
 
 
 class TestChecks:
@@ -75,6 +100,25 @@ class TestChecks:
         admin.close.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_kafka_describes_one_group_per_request(self) -> None:
+        """aiokafka 0.14 reads a v3 DescribeGroups answer with the v2 layout (no authorized_operations), so every group after
+        the first in one answer comes back shifted (error -32768, an empty name)."""
+        admin = self._admin([])
+        admin.describe_consumer_groups = AsyncMock(
+            side_effect=lambda groups: [self._described(1, (0, groups[0], [f"old-{groups[0]}"]))] if len(groups) == 1 else
+            [self._described(1, (0, groups[0], []), (-32768, "", []))],
+        )
+
+        assert await m.kafka_untagged(lambda: admin, ["g1", "g2"]) == ["old-g1", "old-g2"]
+        assert [c.args[0] for c in admin.describe_consumer_groups.await_args_list] == [["g1"], ["g2"]]
+
+    @pytest.mark.asyncio
+    async def test_kafka_a_group_that_does_not_exist_yet_has_no_members(self) -> None:
+        """A stage group whose consumers have not started anywhere: GROUP_ID_NOT_FOUND (69), not a failed check."""
+        admin = self._admin([self._described(1, (69, "pipeline_x", []), (0, "g1", ["older-pod-1"]))])
+        assert await m.kafka_untagged(lambda: admin, ["pipeline_x", "g1"]) == ["older-pod-1"]
+
+    @pytest.mark.asyncio
     async def test_kafka_group_error_fails_the_check_rather_than_reporting_clean(self) -> None:
         admin = self._admin([self._described(1, (15, "g1", []))])
         with pytest.raises(RuntimeError, match="g1"):
@@ -100,6 +144,26 @@ class TestChecks:
         redis.xinfo_consumers = AsyncMock(side_effect=RuntimeError("NOGROUP No such consumer group"))
         assert await m.redis_untagged(redis, {"g": ["s"]}) == []
 
+    def test_a_postgres_indexing_consumer_registers_its_group_and_claims_under_the_tag(self) -> None:
+        from app.services.messaging.config import RedisStreamsConfig
+        from app.services.messaging.postgres.consumer import PgMessagingConsumer
+        from app.services.messaging.storage_protocol import is_tagged
+
+        m.reset_registered_groups()
+        try:
+            cfg = RedisStreamsConfig(topics=["record-events"], group_id="records_group", client_id="records")
+            indexing = PgMessagingConsumer(logging.getLogger("t"), cfg, indexing=True, queue=MagicMock())
+            simple = PgMessagingConsumer(
+                logging.getLogger("t"),
+                RedisStreamsConfig(topics=["entity-events"], group_id="entity_group", client_id="entity"),
+                queue=MagicMock(),
+            )
+
+            assert m.registered_groups() == {"records_group": ["record-events"]}
+            assert is_tagged(indexing.consumer_name) and not is_tagged(simple.consumer_name)
+        finally:
+            m.reset_registered_groups()
+
 
 class TestPublisher:
     @staticmethod
@@ -108,7 +172,8 @@ class TestPublisher:
             puts.append((key, entry, ttl))
 
         return m.MembershipPublisher(
-            logging.getLogger("t"), check, put, holder="h1", now_ms=lambda: NOW, groups=lambda: {"g": ["t"]}, **kw,
+            logging.getLogger("t"), check, put, holder="h1", now_ms=lambda: NOW,
+            groups=lambda: {"g": ["t"]}, expected=lambda: {"g": ["t"]}, **kw,
         )
 
     @pytest.mark.asyncio
@@ -136,7 +201,7 @@ class TestPublisher:
         puts: list = []
         await self._publisher(AsyncMock(return_value=["b", "a", "a"]), puts).publish_once()
 
-        assert puts == [(f"{m.MEMBERSHIP_DIRECTORY}h1", {"checkedAt": NOW, "untagged": ["a", "b"], "groupsChecked": ["g"]}, 300)]
+        assert puts == [(f"{m.MEMBERSHIP_DIRECTORY}h1", {"checkedAt": NOW, "untagged": ["a", "b"], "groupsChecked": ["g"], "groupsExpected": ["g"]}, 300)]
 
     @pytest.mark.asyncio
     async def test_a_failed_check_or_a_non_leader_writes_nothing(self) -> None:
@@ -155,7 +220,7 @@ class TestPublisher:
             stamps.append(entry["checkedAt"])
 
         publisher = m.MembershipPublisher(
-            logging.getLogger("t"), AsyncMock(return_value=[]), put, now_ms=lambda: clock["now"], groups=lambda: {"g": ["t"]},
+            logging.getLogger("t"), AsyncMock(return_value=[]), put, now_ms=lambda: clock["now"], groups=lambda: {"g": ["t"]}, expected=lambda: {"g": ["t"]},
         )
         slow_sweep = asyncio.create_task(asyncio.sleep(0.3))
         task = asyncio.create_task(publisher.run(period_seconds=0.02))
@@ -181,7 +246,7 @@ class TestPublisherFailures:
             raise RuntimeError("the membership entry was not stored")
 
         publisher = m.MembershipPublisher(
-            logging.getLogger("t"), AsyncMock(return_value=[]), put, now_ms=lambda: NOW, groups=lambda: {"g": ["t"]},
+            logging.getLogger("t"), AsyncMock(return_value=[]), put, now_ms=lambda: NOW, groups=lambda: {"g": ["t"]}, expected=lambda: {"g": ["t"]},
         )
         with caplog.at_level(logging.WARNING, logger="t"):
             task = asyncio.create_task(publisher.run(period_seconds=0.01))
@@ -223,3 +288,62 @@ class TestPlaintextEntries:
         assert is_unencrypted_key(f"{m.MEMBERSHIP_DIRECTORY}holder-1")
         assert not is_unencrypted_key("/services/platform/settings")
         assert not is_unencrypted_key("/services/platform/artifactRollout/membership")
+
+
+class TestExpectedGroups:
+    """The groups a clean entry covers are the ones this process is configured to run, started or not: a stage consumer
+    whose topics are missing starts later, and an older member of its group must still be found."""
+
+    RECORDS = {"records_consumer_group": ["record-events"]}
+    EXPECTED = {**RECORDS, "pipeline_classify_group": ["pipeline-classify"]}
+
+    @pytest.fixture(autouse=True)
+    def _clean(self) -> Any:  # noqa: ANN401
+        m.reset_registered_groups()
+        yield
+        m.reset_registered_groups()
+
+    @staticmethod
+    def _broker_check(broker: str) -> Any:  # noqa: ANN401
+        """The broker's own check, with a live member without the tag in the stage group only."""
+        if broker == "kafka":
+            def described(groups: list[str]) -> list[Any]:
+                members = {"records_consumer_group": ["records/sp3-1"], "pipeline_classify_group": ["old-stage"]}
+                return [TestChecks._described(1, *[(0, g, members[g]) for g in groups])]
+
+            admin = MagicMock()
+            admin.start, admin.close = AsyncMock(), AsyncMock()
+            admin.describe_consumer_groups = AsyncMock(side_effect=described)
+            return lambda groups: m.kafka_untagged(lambda: admin, list(groups))
+        redis = MagicMock()
+        consumers = {"record-events": [{"name": "records/sp3-1", "pending": 0, "idle": 0}],
+                     "pipeline-classify": [{"name": "old-stage", "pending": 1, "idle": 0}]}
+        redis.xinfo_consumers = AsyncMock(side_effect=lambda stream, group: consumers[stream])
+        return lambda groups: m.redis_untagged(redis, groups)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("broker", ["kafka", "redis"])
+    async def test_a_stage_group_that_registers_late_is_checked_and_its_older_member_found(self, broker: str) -> None:
+        m.register_group("records_consumer_group", ["record-events"])     # the record consumer has started; the stage one has not
+        m.expect_groups(self.EXPECTED)
+        puts: list = []
+        publisher = m.MembershipPublisher(
+            logging.getLogger("t"), self._broker_check(broker), TestPublisher._put_into(puts), holder="h1", now_ms=lambda: NOW,
+        )
+
+        await publisher.publish_once()
+
+        entry = puts[0][1]
+        assert entry["groupsChecked"] == entry["groupsExpected"] == sorted(self.EXPECTED)
+        assert m.evaluate([entry], NOW) == m.MembershipVerdict(False, ("old-stage",), "untagged")
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_published_before_the_expected_groups_are_declared(self) -> None:
+        m.register_group("records_consumer_group", ["record-events"])
+        puts: list = []
+        check = AsyncMock(return_value=[])
+        publisher = m.MembershipPublisher(logging.getLogger("t"), check, TestPublisher._put_into(puts), holder="h1", now_ms=lambda: NOW)
+
+        assert await publisher.publish_once() is None
+        assert puts == []
+        check.assert_not_awaited()

@@ -39,6 +39,12 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
 )
 from app.models.entities import Record
+from app.modules.indexing import replay_set
+from app.modules.indexing.connector_off_events import (
+    SAME_BYTES_SKIP_RETRY_DELAY_S,
+    SameBytesSkipPending,
+    enrichment_cut_short,
+)
 from app.modules.indexing.embed_resume import (
     DELIVERY_ID_KEY,
     EMBED_DELIVERY_ID,
@@ -60,6 +66,13 @@ from app.modules.indexing.parse_now_marker import (
     shape_status_write,
     store_only_active,
 )
+from app.modules.indexing.record_diagnostics import (
+    PAGE_COUNT,
+    WriteKind,
+    page_count_of,
+    write_with_revision_rule,
+)
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parse_engine.inspection import (
     InspectedFacts,
@@ -192,7 +205,7 @@ class EventProcessor:
         """
         return getattr(self.processor, "indexing_pipeline", None)
 
-    async def sync_vector_membership(self, virtual_record_id: str) -> None:
+    async def sync_vector_membership(self, virtual_record_id: str, *, log_failure: bool = True) -> None:
         """Recompute a VRID's connector/group arrays from graph. Never deletes."""
         if not virtual_record_id or not isinstance(virtual_record_id, str):
             return
@@ -216,10 +229,94 @@ class EventProcessor:
             # record attached to the VRID with its connectorId missing from the
             # points and nothing to repair it; both callers are event handlers,
             # and re-running a duplicate attach is idempotent.
-            self.logger.error(
-                "Failed to sync vector membership for %s: %s", virtual_record_id, e
-            )
+            if log_failure:
+                self.logger.error(
+                    "Failed to sync vector membership for %s: %s", virtual_record_id, e
+                )
             raise
+
+    @staticmethod
+    def _is_same_bytes_update(
+        event_type: str,
+        event_data: Mapping[str, Any],
+        record: Mapping[str, Any],
+        content_rev: str,
+        *,
+        store_only: bool,
+        is_code: bool,
+        is_sql: bool,
+    ) -> bool:
+        """Whether an update carries the very bytes the record is already indexed from.
+
+        Plain updates only: a forced reindex, a vector-store rebuild and a named-stage re-run each
+        ask for work. Code and SQL kinds are never skipped: their projection and stored blocks are
+        not the whole content, so the bytes alone do not show the record is current. The record must
+        be COMPLETED at this very content revision with an indexed copy, enrichment must not have
+        been cut short, and nothing that is not a full index (a parse-now run, a store-only run) is
+        in play. Anything unknown fails closed, to the full run.
+        """
+        return (
+            event_type == EventTypes.UPDATE_RECORD.value
+            and not event_data.get("forceReindex")
+            and not event_data.get("vectorDbOnly")
+            and not event_data.get("stages")
+            and not store_only
+            and current_run() is None
+            and not is_code
+            and not is_sql
+            and record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and record.get("hasIndexedCopy") is True
+            and not enrichment_cut_short(record)
+            and bool(record.get("virtualRecordId"))
+            and bool(content_rev)
+            and record.get("contentRev") == content_rev
+        )
+
+    async def _skip_same_bytes(self, record: Mapping[str, Any], record_id: str) -> bool:
+        """Settle a same-bytes update without parsing or embedding; False when it must run in full.
+
+        1. The membership sync: a full update ends in one, and the update may be the sign that the
+           record's connector, groups or permissions changed under the same bytes.
+        2. An unforced redrive of the stages after embed that did not finish (failed or paused). A
+           finished stage is not claimed, so statuses and `reason` stay; the claim never resets the
+           revision's pause budget (only a forced one does).
+        3. The delivery is remembered in the replay set, as the record's COMPLETED write would.
+
+        A revision the stage runtime never saw (a lost hand-off, or content indexed before it existed)
+        is not skipped: the full run dispatches every stage. A sync, redrive or state read that fails
+        raises ``SameBytesSkipPending``: the record is left untouched and the delivery handed back.
+        """
+        ingress = self.stage_ingress
+        if ingress is None:
+            return False
+        vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
+        try:
+            if await ingress.handoff_lost(record):
+                return False
+            await self.sync_vector_membership(vrid, log_failure=False)
+            dispatched = await ingress.redrive_unchanged(vrid, rev, record)
+        except Exception as exc:
+            # The record is indexed and stays as it is: no status is written and nothing is re-indexed
+            # (a full run of a type not reconciled block by block replaces its vrid and takes its points
+            # out before it parses). The delivery is handed back instead; the broker's backstop bounds it.
+            self.logger.warning(
+                "Record %s: the same-bytes skip could not finish (%s); handing the update back, record untouched",
+                record_id, type(exc).__name__,
+            )
+            raise SameBytesSkipPending(
+                f"{record_id}: same-bytes skip could not finish: {type(exc).__name__}",
+                delay_s=SAME_BYTES_SKIP_RETRY_DELAY_S,
+            ) from exc
+        if dispatched is None:
+            return False
+        self.logger.info(
+            "Record %s: same content as its indexed revision %s; parse and embed skipped, %d stage(s) re-dispatched",
+            record_id, rev, len(dispatched),
+        )
+        completed_at = record.get("lastIndexTimestamp")
+        if isinstance(completed_at, int):
+            await replay_set.note_record_completed(record_id, completed_at, self.logger)
+        return True
 
     async def _rewrite_or_delete_vrid_vectors(self, virtual_record_id: str) -> None:
         if not virtual_record_id or not isinstance(virtual_record_id, str):
@@ -308,6 +405,53 @@ class EventProcessor:
                         virtual_record_id, max_attempts, e,
                     )
 
+    async def _write_page_count(
+        self,
+        record_id: str,
+        content_rev: str | None,
+        pages: object,
+    ) -> None:
+        """Record the page count of the PDF revision being parsed, only while the record is still on that revision.
+
+        Written on every attempt, even when the record held this count before it: the attempt's own start write drops a count
+        when the record moved to another revision in between, and the snapshot read before it cannot tell.
+
+        Not an attempt's business: a failure here is logged and never fails the record. A parse-now store-only run
+        writes no status, so it is matched on the revision alone."""
+        count = page_count_of(pages)
+        if count is None or content_rev is None:
+            return
+        match: dict[str, Any] = {"contentRev": content_rev}
+        if not store_only_active():
+            match["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+        try:
+            await self.graph_provider.update_node_fields_if_match(
+                record_id, CollectionNames.RECORDS.value, {PAGE_COUNT: count}, match
+            )
+        except Exception as error:  # diagnostic only
+            self.logger.warning("Could not record the page count of %s: %s", record_id, error)
+
+    async def _persist_parsing_completed(self, record_doc: dict[str, Any], pages: object, content_rev: str | None = None) -> None:
+        """``parsingStatus=COMPLETED``, with the page count the parsing service reported in the same conditional write
+        while the record is still on this revision and attempt. When nothing matches, the plain status write runs, as
+        before, without a count. ``content_rev`` is the revision of the bytes that were parsed, never the one of the record read
+        afterwards: a record that moved to another revision while the service parsed matches nothing."""
+        fields = {"parsingStatus": ProgressStatus.COMPLETED.value}
+        count = page_count_of(pages)
+        record_id = _record_key(record_doc)
+        if count is not None and record_id and content_rev is not None:
+            match: dict[str, Any] = {"contentRev": content_rev}
+            if not store_only_active():
+                match["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+            shaped = shape_status_write({**fields, PAGE_COUNT: count})
+            try:
+                if await self.graph_provider.update_node_if_unchanged(record_id, CollectionNames.RECORDS.value, shaped, record_doc, match):
+                    record_doc.update(shaped)
+                    return
+            except Exception as error:  # fall back to the plain write
+                self.logger.warning("Could not record the page count of %s with its status: %s", record_id, error)
+        await self.update_record_fields(record_doc, fields)
+
     async def _dispatch_pdf_binary(
         self,
         record_name: str,
@@ -319,12 +463,15 @@ class EventProcessor:
         virtual_record_id: str,
         event_type: str | None = None,
         prev_virtual_record_id: str | None = None,
+        content_rev: str | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
         """
         self.logger.info("🔍 Checking if PDF needs OCR processing")
         inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
+        # The count of the bytes that are parsed (the pdfium rewrite when the file was repaired), written once per revision.
+        await self._write_page_count(record_id, content_rev, inspected.page_count)
         # Every parser below reads the bytes that passed inspection.
         pdf_binary = inspected.content
         needs_ocr = inspected.needs_ocr
@@ -488,6 +635,7 @@ class EventProcessor:
         *,
         is_code: bool = False,
         file_path: str | None = None,
+        content_rev: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """New orchestration path: parse → index → enrich via standalone services.
 
@@ -554,10 +702,7 @@ class EventProcessor:
         if record_doc is None:
             raise RecordDeletedError(record_id)
 
-        await self.update_record_fields(
-            record_doc,
-            {"parsingStatus": ProgressStatus.COMPLETED.value},
-        )
+        await self._persist_parsing_completed(record_doc, (parse_result.metadata or {}).get("page_count"), content_rev)
 
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
@@ -683,13 +828,16 @@ class EventProcessor:
             current = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value, raise_on_error=True
             ) or {}
+            now = get_epoch_timestamp_in_ms()
             updates: dict[str, Any] = {
                 "indexingStatus": ProgressStatus.QUEUED.value,
-                "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "queuedAtTimestamp": now,
                 "processingStartedAt": None,
                 "reason": RETRY_SCHEDULED,
                 EMBED_SECONDS: embed_seconds,
                 EMBED_UNCOUNTED: uncounted,
+                # a cut hands the record back to its queue inside the run it is in
+                **run_reference(current, WriteKind.QUEUE, now),
             }
             if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
@@ -718,11 +866,20 @@ class EventProcessor:
 
         return write
 
-    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> bool:
-        """Persist a partial record update or fail the current attempt."""
+    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any], *, attempt_start: bool = False) -> bool:
+        """Persist a partial record update or fail the current attempt.
+
+        ``attempt_start``: the write is the start of an indexing attempt (the status becomes IN_PROGRESS for a new
+        attempt). The store then decides, from the stored record, whether this continues the run or starts one,
+        and counts the attempt, in the same statement. A parse-now store-only run writes no status, so it is not
+        an attempt."""
         record_id = _record_key(doc) or "unknown"
         # In a parse-now run the status fields become the marker (see parse_now_marker).
         fields = shape_status_write(fields)
+        # A count belongs to the content it was taken from, the same rule as ``write_attempt_start``, decided in the store's own statement
+        # (see ``write_with_revision_rule``). A store-only run drops the status fields, so its attempt start is a plain write that carries the
+        # revision too.
+        sets_revision = "contentRev" in fields and not (attempt_start and "indexingStatus" in fields)
         left_vrid = doc.get("virtualRecordId") if "virtualRecordId" in fields else None
         leaving = bool(left_vrid) and left_vrid != fields["virtualRecordId"] and scope_fields_enabled()
         doc.update(fields)
@@ -732,11 +889,16 @@ class EventProcessor:
         success = False
         try:
             async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
-                success = await self.graph_provider.update_node(
-                    record_id,
-                    CollectionNames.RECORDS.value,
-                    fields,
-                )
+                if attempt_start and "indexingStatus" in fields:
+                    success = await self.graph_provider.write_attempt_start(record_id, fields)
+                elif sets_revision:
+                    success = await write_with_revision_rule(self.graph_provider, record_id, CollectionNames.RECORDS.value, fields)
+                else:
+                    success = await self.graph_provider.update_node(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        fields,
+                    )
         except Exception as e:
             if not success:
                 raise
@@ -767,9 +929,9 @@ class EventProcessor:
     ) -> None:
         """An update that leaves a record empty must not leave its old content searchable.
 
-        Types not reconciled block by block lost their vectors before this
-        event ran; reconciled ones still hold them. A VRID another record also
-        holds is that record's content, so it is left alone.
+        Every type still holds its vectors when this runs: nothing is taken out
+        ahead of the work. A VRID another record also holds is that record's
+        content, so it is left alone.
         """
         if not virtual_record_id or event_type not in (
             EventTypes.UPDATE_RECORD.value,
@@ -845,7 +1007,7 @@ class EventProcessor:
             fields["parsingStatus"] = ProgressStatus.IN_PROGRESS.value
         if content_rev is not None:
             fields["contentRev"] = content_rev
-        success = await self.update_record_fields(doc, fields)
+        success = await self.update_record_fields(doc, fields, attempt_start=status == ProgressStatus.IN_PROGRESS)
         self._require_persisted(
             success, f"Failed to persist status {status.value} for record", doc
         )
@@ -1112,10 +1274,16 @@ class EventProcessor:
         if before_reusing_status is not None:
             await before_reusing_status()
             before_reusing_status = None
+        # The record is in its run already (its attempt began it): this continues it. Read again, because `doc` does not
+        # carry what the attempt's own write stamped.
+        current = await self.graph_provider.get_document(_record_key(doc), CollectionNames.RECORDS.value) or doc
         self._require_persisted(
             await self.update_record_fields(
                 doc,
-                {"indexingStatus": ProgressStatus.QUEUED.value},
+                {
+                    "indexingStatus": ProgressStatus.QUEUED.value,
+                    **run_reference(current, WriteKind.QUEUE, get_epoch_timestamp_in_ms()),
+                },
             ),
             "Failed to persist QUEUED status for duplicate record",
             doc,
@@ -1554,16 +1722,6 @@ class EventProcessor:
             # (status, revision) before the vrid is chosen, so a marker read from it would match any event.
             embed_marker = marker_of(record)
 
-            # A successful attempt never clears `reason` (the status writer only
-            # sets it when non-empty), so drop the previous failure text here or
-            # it outlives a good reindex.
-            if doc.get("reason") and not store_only:
-                self._require_persisted(
-                    await self.update_record_fields(doc, {"reason": None}),
-                    "Failed to clear the previous failure reason for record",
-                    doc,
-                )
-
             # Extract necessary data
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
@@ -1622,6 +1780,30 @@ class EventProcessor:
             scans_for_secrets = self._scans_for_secrets(
                 record_type, reads_as_code_file=reads_as_code_file
             )
+
+            # The same bytes again (an update re-delivered, or queued behind one that already indexed
+            # them): nothing to parse or embed. Decided before anything is written, so `reason` and the
+            # statuses stay as they are.
+            if self._is_same_bytes_update(
+                event_type, event_data, record, content_rev, store_only=store_only,
+                is_code=is_code or reads_as_code_file or record_type == RecordTypes.CODE_FILE.value,
+                is_sql=mime_type in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
+                or (dispatch is not None and dispatch.route in (Route.SQL_TABLE, Route.SQL_VIEW)),
+            ) and await self._skip_same_bytes(record, record_id):
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+
+            # A successful attempt never clears `reason` (the status writer only
+            # sets it when non-empty), so drop the previous failure text here or
+            # it outlives a good reindex.
+            if doc.get("reason") and not store_only:
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"reason": None}),
+                    "Failed to clear the previous failure reason for record",
+                    doc,
+                )
+
 
             # The blob and the vectors are shared through the duplicate's
             # virtualRecordId, but block nodes are keyed by record, so a deduped
@@ -1757,6 +1939,7 @@ class EventProcessor:
                         "processingStartedAt": processing_started_at,
                         "contentRev": content_rev,
                     },
+                    attempt_start=True,
                 )
             else:
                 # Legacy inline pipeline: parse+index run in-process without a
@@ -1864,10 +2047,11 @@ class EventProcessor:
             # Persist the vrid this attempt will index under *before* parsing
             # starts. If this attempt fails partway through (after vectors are
             # written but before indexingStatus=COMPLETED), the retry re-reads
-            # this same vrid from the record instead of minting a fresh one —
-            # so record.py's bulk_delete_embeddings (for non-reconciliation
-            # types) or the reconciliation diff (for reconciliation-enabled
-            # types) targets the orphaned vectors instead of abandoning them.
+            # this same vrid from the record instead of minting a fresh one
+            # (an interrupted embedding resumes under it; a reconciliation-enabled
+            # type diffs against its stored blocks) so the orphaned vectors are
+            # not abandoned. A type that is not reconciled block by block and
+            # is not resuming mints a new vrid below, and its old one is cleaned.
             if virtual_record_id != doc.get("virtualRecordId"):
                 await self.update_record_fields(
                     doc, {"virtualRecordId": virtual_record_id}
@@ -2048,6 +2232,7 @@ class EventProcessor:
                     file_content=content_bytes,
                     is_code=is_code,
                     file_path=event_data.get("filePath"),
+                    content_rev=content_rev,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None
@@ -2218,6 +2403,7 @@ class EventProcessor:
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
+                    content_rev=content_rev,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None
