@@ -6,7 +6,7 @@ go, and the original error is raised. A failed removal never replaces that error
 """
 
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -217,3 +217,149 @@ async def test_an_int8_entity_batch_beside_an_fp32_claim_with_an_unreadable_pin_
         await _entity_write(world)
     assert written["yes"]
     assert INT8 not in {p["embedPrecision"] for p in _entity_points(world)}
+
+
+# -- the removal is the batch's own, and only while the writer still owns the record ------------------------------------
+
+import asyncio  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from langchain_core.documents import Document  # noqa: E402
+
+from app.modules.transformers import vectorstore as vs_module  # noqa: E402
+
+
+def _other_block_point(db: _FakeDb, epoch: str, block: str = "other-block") -> None:
+    db.points.append({
+        "id": f"p-{block}", "orgId": ORG, "virtualRecordId": VRID, "embedPrecision": INT8, "embedEpoch": epoch, "blockId": block,
+    })
+
+
+def _add_other_block_when_written(db: _FakeDb, written: dict) -> None:
+    """A point of the same record, org, precision and epoch for a block this batch did not write."""
+    inner = db.upsert_points
+
+    async def upsert(collection_name, points):  # noqa: ANN202
+        await inner(collection_name, points)
+        _other_block_point(db, points[0].payload["metadata"]["embedEpoch"])
+
+    db.upsert_points = upsert
+
+
+@pytest.mark.asyncio
+async def test_the_rollback_of_a_record_batch_keeps_another_block_of_the_same_record_and_epoch() -> None:
+    db = _FakeDb()
+    store, written = _record_store(db)
+    _add_other_block_when_written(db, written)
+    _unreadable_after_write(store._guard._pins, written)
+    await _index(store)
+    assert [p["id"] for p in db.points] == ["p-other-block"]  # the batch's own block went, the other block's confirmed point stayed
+
+
+@pytest.mark.asyncio
+async def test_a_lost_lease_removes_nothing_and_leaves_the_batch_to_the_holder(monkeypatch) -> None:
+    db = _FakeDb()
+    store, written = _record_store(db)
+    _unreadable_after_write(store._guard._pins, written)
+    handle = SimpleNamespace(confirm=AsyncMock(side_effect=lambda: not written["yes"]))  # held until the batch has landed
+    token = vs_module._HELD_LEASE.set(handle)
+    try:
+        error = await _index(store)
+    finally:
+        vs_module._HELD_LEASE.reset(token)
+    assert any(isinstance(e, PrecisionUnreadable) for e in _chain(error))
+    assert len(db.points) == 1  # nothing was removed: the run that holds the record now owns it
+    store.logger.warning.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_a_held_lease_lets_the_batch_remove_its_own_points() -> None:
+    db = _FakeDb()
+    store, written = _record_store(db)
+    _unreadable_after_write(store._guard._pins, written)
+    handle = SimpleNamespace(confirm=AsyncMock(return_value=True))
+    token = vs_module._HELD_LEASE.set(handle)
+    try:
+        await _index(store)
+    finally:
+        vs_module._HELD_LEASE.reset(token)
+    assert db.points == [] and handle.confirm.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_while_confirming_removes_the_batch_and_goes_on() -> None:
+    db = _FakeDb()
+    store, written = _record_store(db)
+    real = store._guard._pins.get
+
+    async def get(*a, **k):  # noqa: ANN202
+        if written["yes"]:
+            raise asyncio.CancelledError
+        return await real(*a, **k)
+
+    store._guard._pins.get = get
+    with pytest.raises(asyncio.CancelledError):
+        await store.index_documents(_blocks("b1"), ORG, "rec-1", VRID)
+    assert db.points == []
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_names_no_record_logs_an_error_instead_of_removing_nothing_silently() -> None:
+    db = _FakeDb()
+    store, _ = _record_store(db)
+    guard = SimpleNamespace(
+        confirm_after_write=AsyncMock(side_effect=PrecisionUnreadable("no")), delete_written=AsyncMock(),
+    )
+    with pytest.raises(PrecisionUnreadable):
+        await store._confirm_batch(guard, "records", INT8, SimpleNamespace(token="t0"), [Document(page_content="x", metadata={})])
+    store.logger.error.assert_called()
+    guard.delete_written.assert_not_awaited()
+
+
+# -- entities --------------------------------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_the_rollback_of_an_entity_batch_keeps_another_entity_of_the_same_epoch(world) -> None:  # noqa: F811
+    world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
+    world.served["precision"] = INT8
+    await world.pins._claim_unfenced(ENTITIES, INT8)
+    token = (await world.store._guard().capture(ENTITIES)).token
+    world.vdb.add(ENTITIES, INT8, entityType="person", entityId="someone-else", embedEpoch=token)
+    _entity_unreadable(world)
+    with pytest.raises(PrecisionUnreadable):
+        await _entity_write(world)
+    assert _entity_points(world) == []
+    assert [p["entityId"] for p in world.vdb.points[ENTITIES] if p.get("embedEpoch") == token] == ["someone-else"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_while_confirming_an_entity_batch_removes_it_and_goes_on(world) -> None:  # noqa: F811
+    world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
+    world.served["precision"] = INT8
+    await world.pins._claim_unfenced(ENTITIES, INT8)
+    written = {"yes": False}
+    real_upsert = world.vdb.upsert_points
+    pins = world.store._guard()._pins
+    real_get = pins.get
+
+    async def upsert_then_flag(collection_name, points):  # noqa: ANN202
+        await real_upsert(collection_name, points)
+        written["yes"] = True
+
+    async def get(*a, **k):  # noqa: ANN202
+        if written["yes"]:
+            raise asyncio.CancelledError
+        return await real_get(*a, **k)
+
+    world.vdb.upsert_points = upsert_then_flag
+    pins.get = get
+    with pytest.raises(asyncio.CancelledError):
+        await _entity_write(world)
+    assert _entity_points(world) == []
+
+
+@pytest.mark.asyncio
+async def test_an_entity_rollback_that_names_no_entity_logs_an_error(world) -> None:  # noqa: F811
+    world.store.logger = MagicMock()
+    await world.store._remove_written(ORG, INT8, {}, [], SimpleNamespace(token="t0"))
+    world.store.logger.error.assert_called()

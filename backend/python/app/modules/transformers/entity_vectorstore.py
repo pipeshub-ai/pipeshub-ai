@@ -89,7 +89,11 @@ from app.services.vector_db.models import (
     SearchResult,
     VectorPoint,
 )
-from app.services.vector_db.precision_guard import UNCONFIRMED_WRITE, PrecisionGuard
+from app.services.vector_db.precision_guard import (
+    UNCONFIRMED_WRITE,
+    PrecisionGuard,
+    run_despite_cancellation,
+)
 from app.services.vector_db.rebuild_state import (
     RebuildJobLock,
     redis_from_config_service,
@@ -1322,13 +1326,21 @@ class EntityVectorStore:
         """The pin is read again after the write: a cleanup that released it, or a writer of the other precision that
         claimed it, between the check and the write would otherwise leave these points beside the other precision.
 
-        A pin of another precision than the batch's, or a pin that cannot be read, removes the points just written and hands the batch back.
+        A pin of another precision than the batch's, or a pin that cannot be read, removes the points just written and raises
+        (a flip is handed back to the queue; an unreadable pin takes the ordinary retry path).
+        A cancellation removes them too (shielded, bounded) and goes on.
         """
         for precision in {w[0] for w in witnessed.values() if w is not None}:
             try:
                 await self._guard().confirm_after_write(collection, org, precision, fence)
             except UNCONFIRMED_WRITE:
                 await self._remove_written(org, precision, witnessed, written, fence)
+                raise
+            except asyncio.CancelledError:
+                try:
+                    await run_despite_cancellation(self._remove_written(org, precision, witnessed, written, fence))
+                except BaseException:
+                    self.logger.error("Could not remove the %s entity points of a cancelled batch (org %s)", precision, org, exc_info=True)
                 raise
 
     async def _remove_written(
@@ -1346,12 +1358,14 @@ class EntityVectorStore:
             point = witnessed.get(self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id))
             if point is not None and point[0] == precision:
                 by_type.setdefault(entity.entity_type.value, []).append(entity.entity_id)
+        if not by_type:
+            self.logger.error("The %s entity points of a rejected batch (org %s) were not removed: the batch names no entity", precision, org)
         for entity_type, ids in by_type.items():
             try:
                 await self.delete_entities(org, entity_type, ids, precision=precision, epoch=fence.token)
             except Exception:
                 self.logger.error(
-                    "Could not remove the %s entity points of a rejected batch (org %s, type %s); handing the batch back anyway",
+                    "Could not remove the %s entity points of a rejected batch (org %s, type %s); the error is raised anyway",
                     precision, org, entity_type, exc_info=True,
                 )
 

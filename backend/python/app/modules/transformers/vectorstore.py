@@ -126,7 +126,11 @@ from app.services.vector_db.membership import (
     vector_point_payload,
 )
 from app.services.vector_db.models import SparseVector, VectorChunkPayload, VectorPoint
-from app.services.vector_db.precision_guard import UNCONFIRMED_WRITE, PrecisionGuard
+from app.services.vector_db.precision_guard import (
+    UNCONFIRMED_WRITE,
+    PrecisionGuard,
+    run_despite_cancellation,
+)
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
@@ -3222,31 +3226,65 @@ class VectorStore(Transformer):
     async def _confirm_batch(
         self, guard: PrecisionGuard, collection_name: str, precision: str, fence: Fence, documents: List[Document],
     ) -> None:
-        """After the write: the epoch and the pin are still the batch's, else the batch's own points go and the record goes back.
+        """After the write: the epoch and the pin are still the batch's, else the batch's own points go and the error is raised.
 
-        What is removed is what this batch's record wrote at this precision under this epoch: another writer's
-        points (another epoch or precision) are never matched.
+        What is removed is what this batch wrote: its blocks of this record, at this precision, under this epoch, in the writer's
+        organisation. Other blocks of the record (confirmed earlier), and another writer's points (another epoch or precision), are never
+        matched, and nothing is removed once the record's lease is no longer this run's: the run that holds it now owns those points.
+        A cancellation removes them too (shielded, bounded), then goes on.
         """
         org = _bound_org()
         try:
             await guard.confirm_after_write(collection_name, org, precision, fence)
         except UNCONFIRMED_WRITE:
-            record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
-            try:
-                if record_ids:
-                    await guard.delete_written(collection_name, org, precision, fence, {"virtualRecordId": record_ids})
-            except Exception:
-                self.logger.error(
-                    "Could not remove the points of a rejected batch from '%s'; handing the record back anyway",
-                    collection_name, exc_info=True,
-                )
+            await self._remove_unconfirmed(guard, collection_name, org, precision, fence, documents)
             raise
+        except asyncio.CancelledError:
+            try:
+                await run_despite_cancellation(
+                    self._remove_unconfirmed(guard, collection_name, org, precision, fence, documents))
+            except BaseException:
+                self.logger.error("Could not remove the points of a cancelled batch from '%s'", collection_name, exc_info=True)
+            raise
+
+    async def _remove_unconfirmed(
+        self, guard: PrecisionGuard, collection_name: str, org: str | None, precision: str, fence: Fence, documents: List[Document],
+    ) -> None:
+        record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
+        block_ids = sorted({d.metadata.get("blockId") for d in documents if d.metadata.get("blockId")})
+        if not record_ids or not block_ids or any(
+            not d.metadata.get("virtualRecordId") or not d.metadata.get("blockId") for d in documents
+        ):
+            self.logger.error(
+                "The points of an unconfirmed batch in '%s' were not all removed: %d of its %d documents name no record or block",
+                collection_name,
+                sum(1 for d in documents if not d.metadata.get("virtualRecordId") or not d.metadata.get("blockId")), len(documents),
+            )
+            if not record_ids or not block_ids:
+                return
+        try:
+            await _require_lease("the removal of an unconfirmed batch")
+        except LeaseLost:
+            self.logger.warning(
+                "The lease on the record was lost before its unconfirmed batch in '%s' could be removed; the run that holds it now, "
+                "the sweep of retired epochs and the leak check at the end of a record deal with those points", collection_name,
+            )
+            return
+        try:
+            await guard.delete_written(
+                collection_name, org, precision, fence, {"virtualRecordId": record_ids, "blockId": block_ids},
+            )
+        except Exception:
+            self.logger.error(
+                "Could not remove the points of an unconfirmed batch from '%s'; the error is raised anyway",
+                collection_name, exc_info=True,
+            )
 
     async def _check_for_leaks(self, collection_name: str, org_id: str | None, virtual_record_id: str) -> None:
         """End of a record: no point of the record may carry the other precision's tag.
 
         A claim race or a pin released under a writer can leave one. Only those points are removed (the
-        record's other points may be unchanged blocks of a reconciled record), and the message goes back.
+        record's other points may be unchanged blocks of a reconciled record), and the message goes back to the queue.
         """
         if not isinstance(self.dense_embeddings, EmbeddingServerEmbeddings):
             return

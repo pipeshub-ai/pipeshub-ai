@@ -65,9 +65,10 @@ GRAPH_CHECKED = {   # the last record of a virtual record, or a connector, went 
     ("services/vector_db/membership.py", "_drop_points_where_no_record_remains"),
     ("services/vector_db/membership.py", "_rewrite_or_delete_locked"),
 }
-# The precision guard's deletes remove only points the filter pins to their own writer, never a record's other points, so they hold
-# whether or not a lease is still held (a run that lost its lease must still take back what it wrote and could not confirm):
-#   delete_written: this batch's points (its record or entity ids, its precision tag, its epoch token, the writer's org);
+# The precision guard's deletes are pinned to points their caller knows are its own or are provably wrong or dead:
+#   delete_written: the batch's own points (its blocks of one record, or its entity ids, its precision tag, its epoch token, the writer's
+#                   org). The record writer calls it from ``VectorStore._remove_unconfirmed``, which confirms the record's lease right
+#                   before (``_require_lease``) and removes nothing once it is lost; the entity writer holds its entity locks;
 #   delete_leaked:  the record's points tagged with a precision other than the pin's (wrong whoever wrote them);
 #   sweep_dead:     the points of epochs a reset retired (no live writer can own them).
 PRECISION_GUARD = {

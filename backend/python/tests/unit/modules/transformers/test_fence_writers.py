@@ -38,7 +38,7 @@ def _with_epoch(store, db: _FakeDb) -> None:
             meta = p.payload["metadata"]
             db.points.append({
                 "id": p.id, "orgId": meta.get("orgId"), "virtualRecordId": meta.get("virtualRecordId"),
-                "embedPrecision": meta.get("embedPrecision"), "embedEpoch": meta.get("embedEpoch"),
+                "embedPrecision": meta.get("embedPrecision"), "embedEpoch": meta.get("embedEpoch"), "blockId": meta.get("blockId"),
             })
             store.stored.append(meta.get("embedPrecision"))
 

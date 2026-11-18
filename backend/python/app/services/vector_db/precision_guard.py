@@ -57,9 +57,19 @@ class PrecisionDerivationTimeout(PrecisionUnreadable):
 
 
 # A write that was refused, or whose precision could not be confirmed (the pin or the epoch could not be read), is
-# not known to be right: the writer removes its own points and hands the record back. ``FenceMoved`` is a
+# not known to be right: the writer removes the points it wrote and the error is raised (a flip is handed back to the
+# queue as it is; an unreadable pin takes the ordinary retry path). ``FenceMoved`` is a
 # ``PrecisionFlip``; its points carry the retired epoch, which the removal matches.
 UNCONFIRMED_WRITE = (PrecisionFlip, PrecisionUnreadable)
+
+
+# A removal that runs because the task was cancelled gets this long, shielded from a second cancellation.
+CANCELLED_REMOVAL_TIMEOUT_SECONDS = 10.0
+
+
+async def run_despite_cancellation(awaitable, timeout: float = CANCELLED_REMOVAL_TIMEOUT_SECONDS) -> None:  # noqa: ANN001
+    """Await *awaitable* to its end within *timeout*, even though the calling task has been cancelled and may be cancelled again."""
+    await asyncio.wait_for(asyncio.shield(asyncio.ensure_future(awaitable)), timeout)
 
 
 def _bound_org_or_none() -> str | None:
@@ -408,7 +418,10 @@ class PrecisionGuard:
     async def delete_written(
         self, collection: str, org: str | None, precision: str, fence: Fence, extra: dict | None = None,
     ) -> None:
-        """Remove what a rejected batch wrote: its precision, its epoch, and the record or ids in *extra*; nothing of another writer's.
+        """Remove what a rejected batch wrote: its precision, its epoch, and what *extra* pins (the record and the batch's own blocks, or
+        the entity ids); never a point of another precision or epoch.
+
+        The caller must hold what makes the points its own (the record writer its record lease, confirmed right before the call).
 
         The delete always carries the writer's organisation: a shared store refuses a delete without one, and an
         organisation's own space needs it. Only the derivation of an index's precision is collection-wide.
