@@ -90,6 +90,8 @@ from app.modules.indexing.rate_limit_deferral import (
     provider_rate_limit_wait,
     rate_limit_retry_after,
 )
+from app.modules.indexing.record_diagnostics import WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.pipeline.parse_now import (
     ELIGIBLE_STATUSES as PARSE_NOW_ELIGIBLE_STATUSES,
 )
@@ -232,6 +234,26 @@ _DISABLED_TYPES_TTL_SECONDS = 60.0
 #: How long the broker holds a refresh event handed back because another delivery is purging.
 REFRESH_HANDBACK_DELAY_S = 30.0
 
+
+def requeue_updates(current: dict | None, *, store_only: bool) -> dict:
+    """The fields that put a record back in line after a transient failure, from the record as it is stored: nothing for a
+    record that already advanced past IN_PROGRESS. A retry stays in the run it is in; only a record from before the run fields
+    existed gains its start."""
+    updates: dict = {}
+    if not current:
+        return updates
+    if store_only:
+        # Its own statuses were never touched; only the marker goes back in line.
+        updates["indexingStatus"] = ProgressStatus.QUEUED.value
+    if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+        updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
+    if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
+        updates["indexingStatus"] = ProgressStatus.QUEUED.value
+        updates["queuedAtTimestamp"] = get_epoch_timestamp_in_ms()
+        updates.update(run_reference(current, WriteKind.QUEUE, updates["queuedAtTimestamp"]))
+        if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
+            updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+    return updates
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -2852,18 +2874,7 @@ class RecordEventHandler(BaseEventService):
                         current = await self.event_processor.graph_provider.get_document(
                             record_id, CollectionNames.RECORDS.value
                         )
-                        updates: dict = {}
-                        if current:
-                            if store_only:
-                                # Its own statuses were never touched; only the marker goes back in line.
-                                updates["indexingStatus"] = ProgressStatus.QUEUED.value
-                            if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
-                                updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
-                            if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
-                                updates["indexingStatus"] = ProgressStatus.QUEUED.value
-                                updates["queuedAtTimestamp"] = get_epoch_timestamp_in_ms()
-                                if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
-                                    updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+                        updates = requeue_updates(current, store_only=store_only)
                         if updates:
                             updates["reason"] = RETRY_SCHEDULED
                             updates["processingStartedAt"] = None
@@ -2946,6 +2957,8 @@ class RecordEventHandler(BaseEventService):
 
             if reason:
                 updates["reason"] = reason
+            if indexing_status == ProgressStatus.FAILED.value:
+                updates["failedAt"] = get_epoch_timestamp_in_ms()
             # Each of these statuses ends a record's wait on a rate limit.
             if is_deferred(record) and not store_only_active():
                 updates.update(cleared_deferral())
