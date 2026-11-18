@@ -27,7 +27,6 @@ from app.utils.streaming import (
     escape_ctl,
     extract_json_from_string,
     find_unescaped_quote,
-    invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
     stream_content,
     strip_llm_authored_markers_in_parts,
@@ -1408,127 +1407,6 @@ class TestInvokeWithStructuredOutputAndReflection:
         assert result is None
         # Only the initial call should happen (no retries)
         assert mock_structured_llm.ainvoke.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# invoke_with_row_descriptions_and_reflection
-# ---------------------------------------------------------------------------
-class TestInvokeWithRowDescriptionsAndReflection:
-    """Tests for invoke_with_row_descriptions_and_reflection."""
-
-    async def test_success_correct_count(self):
-        """Successful invocation returning correct number of descriptions."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        expected = RowDescriptions(descriptions=["desc1", "desc2", "desc3"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is not None
-        assert len(result.descriptions) == 3
-
-    async def test_initial_parse_failure_returns_none(self):
-        """If initial parse fails, return None."""
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_success(self):
-        """Count mismatch triggers reflection that succeeds."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong_count = RowDescriptions(descriptions=["d1", "d2"])
-        correct_count = RowDescriptions(descriptions=["d1", "d2", "d3"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong_count, correct_count],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is not None
-        assert len(result.descriptions) == 3
-
-    async def test_count_mismatch_reflection_still_wrong(self):
-        """Count mismatch, reflection also returns wrong count -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong1 = RowDescriptions(descriptions=["d1", "d2"])
-        wrong2 = RowDescriptions(descriptions=["d1", "d2", "d3", "d4"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong1, wrong2],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_parse_failure(self):
-        """Count mismatch, reflection itself fails to parse -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong = RowDescriptions(descriptions=["d1"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong, None],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_exception(self):
-        """Count mismatch, reflection raises an exception -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong = RowDescriptions(descriptions=["d1"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong, RuntimeError("reflection exploded")],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_exact_match_no_reflection(self):
-        """When count matches, no reflection should be attempted."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        exact = RowDescriptions(descriptions=["a", "b"])
-
-        mock_invoke = AsyncMock(return_value=exact)
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new=mock_invoke,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=2
-            )
-        assert result is not None
-        # Should only be called once (no reflection)
-        assert mock_invoke.call_count == 1
 
 
 # ---------------------------------------------------------------------------
