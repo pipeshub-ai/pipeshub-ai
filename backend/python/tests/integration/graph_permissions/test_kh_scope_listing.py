@@ -261,10 +261,11 @@ async def test_a_parent_and_grant_node_is_listed_only_where_it_inherits_and_is_g
 async def test_a_strict_or_grant_node_is_listed_from_the_app_or_by_its_own_grant_alone(
     scope_graph, neo4j_provider, monkeypatch, mode,
 ) -> None:
-    """From the App as STRICT (a gate with its grant, or free), and below a seed only by its own grant, which lists nothing below it."""
+    """From the App only where it inherits (free), and otherwise by its own grant alone, which lists nothing below it: g-sog does not inherit
+    from the App, so u reads it by its grant and not r-sog-1 below it; below a seed the same."""
     monkeypatch.setenv("KH_SCOPE_MODE", mode)
     sog = {"g-sog", "r-sog-1", "r-sog-free", "r-seed-sog", "r-seed-sog-1", "r-seed-sog-no"}
-    for user, want in ((USER_U, {"g-sog", "r-sog-1", "r-sog-free", "r-seed-sog"}), (USER_V, {"r-sog-free"})):
+    for user, want in ((USER_U, {"g-sog", "r-sog-free", "r-seed-sog"}), (USER_V, {"r-sog-free"})):
         rows = {r[0] for p in await _walk(neo4j_provider, user, APP, 500) if p != ("back",) for r in p[0]}
         assert rows & sog == want, user
 
