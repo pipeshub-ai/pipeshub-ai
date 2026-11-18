@@ -3451,6 +3451,24 @@
         "reach": "Changes in {{connector}} reach PipesHub within {{interval}}.",
         "reachUnknown": "Changes in {{connector}} reach PipesHub on its next sync.",
         "syncNow": "Sync permissions now",
+        "filter": {
+          "label": "How search checks access",
+          "mode": {
+            "inherit": "Deployment default",
+            "legacy": "Classic check",
+            "scopes": "Faster search"
+          },
+          "effective": {
+            "scopes": "Searches of {{connector}} use the faster search: results come straight from what each person may see.",
+            "legacy": "Searches of {{connector}} use the classic check: results are checked after they are found."
+          },
+          "waiting": "Faster search starts once the permissions of {{connector}} are up to date.",
+          "blocker": {
+            "serving_off": "Faster search is turned off for this deployment.",
+            "store_unsupported": "This deployment's vector store does not support faster search."
+          },
+          "saveError": "Could not change this setting. Try again."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",

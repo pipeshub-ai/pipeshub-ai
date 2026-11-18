@@ -728,4 +728,14 @@ export interface PermissionStatus {
     container?: string | null;
     fix?: { vendor?: string; permission?: string } | null;
   }>;
+  filter: PermissionFilter;
+}
+
+export type PermissionFilterMode = 'inherit' | 'legacy' | 'scopes';
+
+/** The connector's own permission filter mode, what its next search uses, and why `scopes` cannot be used on this deployment. */
+export interface PermissionFilter {
+  mode: PermissionFilterMode;
+  effective: 'legacy' | 'scopes';
+  blockers: Array<'serving_off' | 'store_unsupported'>;
 }

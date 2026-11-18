@@ -3460,6 +3460,24 @@
         "reach": "Änderungen in {{connector}} erreichen PipesHub innerhalb von {{interval}}.",
         "reachUnknown": "Änderungen in {{connector}} erreichen PipesHub bei der nächsten Synchronisierung.",
         "syncNow": "Berechtigungen jetzt synchronisieren",
+        "filter": {
+          "label": "Wie die Suche den Zugriff prüft",
+          "mode": {
+            "inherit": "Standard der Bereitstellung",
+            "legacy": "Klassische Prüfung",
+            "scopes": "Schnellere Suche"
+          },
+          "effective": {
+            "scopes": "Suchen in {{connector}} nutzen die schnellere Suche: Ergebnisse kommen direkt aus dem, was jede Person sehen darf.",
+            "legacy": "Suchen in {{connector}} nutzen die klassische Prüfung: Ergebnisse werden geprüft, nachdem sie gefunden wurden."
+          },
+          "waiting": "Die schnellere Suche beginnt, sobald die Berechtigungen von {{connector}} aktuell sind.",
+          "blocker": {
+            "serving_off": "Die schnellere Suche ist für diese Bereitstellung ausgeschaltet.",
+            "store_unsupported": "Der Vektorspeicher dieser Bereitstellung unterstützt die schnellere Suche nicht."
+          },
+          "saveError": "Diese Einstellung konnte nicht geändert werden. Versuchen Sie es erneut."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
