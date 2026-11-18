@@ -77,19 +77,37 @@ async def test_later_calls_return_without_importing_again(fake_heavy: tuple[str,
     assert len(lazy_heavy._attempts) == 1  # type: ignore[attr-defined]
 
 
-async def test_the_loop_keeps_running_while_the_import_runs(fake_heavy: tuple[str, list[int]]) -> None:
-    ticks = []
+async def test_the_loop_keeps_running_while_the_import_runs(
+    fake_heavy: tuple[str, list[int]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counted, not timed: the import does not finish until the loop has run ten turns after it started, which the
+    loop can do only while the import runs elsewhere. On the loop, the import never sees the release (the longest-gap
+    bound this replaced also measured how busy the runner was)."""
+    import types
+
+    name, imported_on = fake_heavy
+    gate = types.ModuleType("_lazy_heavy_test_gate")
+    gate.started, gate.release = threading.Event(), threading.Event()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, gate.__name__, gate)
+    (tmp_path / f"{name}.py").write_text(
+        "import _lazy_heavy_test_gate as gate\ngate.started.set()\n"
+        "assert gate.release.wait(10), 'the loop never ran during the import'\nVALUE = 1\n"
+    )
+    importlib.invalidate_caches()
+    turns = 0
 
     async def probe() -> None:
-        while True:
-            ticks.append(time.perf_counter())
-            await asyncio.sleep(0.01)
+        nonlocal turns
+        assert await asyncio.to_thread(gate.started.wait, 30)
+        while turns < 10:
+            await asyncio.sleep(0.001)
+            turns += 1
+        gate.release.set()
 
     task = asyncio.create_task(probe())
     await lazy_heavy.ensure_docling()
-    task.cancel()
-    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
-    assert len(ticks) > 5 and max(gaps) < 0.1
+    await task
+    assert turns == 10 and name in sys.modules
 
 
 async def test_a_failed_import_raises_and_is_retried_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
