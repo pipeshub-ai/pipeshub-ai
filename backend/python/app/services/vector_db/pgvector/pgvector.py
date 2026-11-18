@@ -514,6 +514,24 @@ class PgVectorService(IVectorDBService):
         position = {str(i): n for n, i in enumerate(wanted)}
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
 
+    async def scroll_with_vectors(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None) -> ScrollResult:
+        """``scroll`` returning each point whole: its payload, its dense vector (the halfvec column) and its sparse terms (the postings)."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, None, vectors=True),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
+
     async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
         """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""
         db, catalog = self._assert_connected()
