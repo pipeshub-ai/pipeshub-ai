@@ -18525,13 +18525,16 @@ components:
       properties:
         includeImages:
           type: boolean
-          description: Whether to include images in search results
+          description: >-
+            Whether images on the web pages an assistant reads are sent to the model with the page
+            (only to models that accept images)
         maxImages:
           type: integer
           minimum: 1
           maximum: 500
           description: |
-            Maximum number of images to return. Required when `includeImages` is `true`; when
+            Most images sent from each page read; at most 50 are read from a page, so a larger
+            value acts as 50. Required when `includeImages` is `true`; when
             left out otherwise, the stored value is kept.
       anyOf:
         - properties:
@@ -18605,12 +18608,16 @@ components:
       properties:
         includeImages:
           type: boolean
-          description: Whether to include images in search results
+          description: >-
+            Whether images on the web pages an assistant reads are sent to the model with the page
+            (only to models that accept images)
         maxImages:
           type: integer
           minimum: 1
           maximum: 500
-          description: Maximum number of images to return when includeImages is true
+          description: >-
+            Most images sent from each page read when includeImages is true; at most 50 are read
+            from a page, so a larger value acts as 50
     WebSearchProvidersResponse:
       type: object
       additionalProperties: false
