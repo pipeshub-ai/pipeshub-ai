@@ -1,9 +1,11 @@
 """new_lint_findings.py lints main's versions without touching the checkout.
 
-Run: python3 -m unittest discover -s scripts -p 'test_*.py'
+Run: TS_MODULE=<backend/nodejs/apps/node_modules/typescript> python3 -m unittest discover -s scripts -p 'test_*.py'
+The relative TS_MODULE test needs that package (npm ci in backend/nodejs/apps sets it up); it fails without it, never skips.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,11 +19,12 @@ A = "backend/python/app/a.py"
 B = "backend/python/app/b.py"
 CONFIG = "backend/python/pyproject.toml"
 TS = "backend/nodejs/apps/src/m.ts"
+PKG = "backend/python/pkg"
 
-# A caller such as a git hook may export these; the fixture must not write to the caller's repository or index.
-GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-                "GIT_COMMON_DIR"}
-BASE_ENV = {**{k: v for k, v in os.environ.items() if k not in GIT_LOCATION},
+# A caller such as a git hook may export these; the fixture must not use the caller's repository, index or config.
+GIT_CALLER_VARS = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                   "GIT_COMMON_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+BASE_ENV = {**{k: v for k, v in os.environ.items() if k not in GIT_CALLER_VARS},
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
             "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -34,7 +37,7 @@ n = len(open(calls).read()) if os.path.exists(calls) else 0
 open(calls, "a").write("x")
 if n == 1 and os.environ.get("FAKE_RUFF_KILL"):
     os.kill(os.getppid(), signal.SIGKILL)
-strict = os.path.exists("pyproject.toml") and "strict" in open("pyproject.toml").read()
+strict = os.path.isfile("pyproject.toml") and "strict" in open("pyproject.toml").read()
 files = sys.argv[4:] if strict else []
 print(json.dumps([{{"filename": os.path.abspath(f), "code": "STRICT", "location": {{"row": 1}}}} for f in files]))
 """
@@ -49,8 +52,15 @@ class TestBaselineLeavesCheckoutAlone(unittest.TestCase):
         (self.repo / "backend" / "python" / "app").mkdir(parents=True)
         (self.repo / "backend" / "nodejs" / "apps" / "src").mkdir(parents=True)
         self._git("init", "-q", "-b", "main")
-        self._commit({A: 'logger.info("✅ one")\n', CONFIG: "", TS: "export const a = 1;\n"})
+        (self.repo / PKG).mkdir()
+        self._commit({A: 'logger.info("✅ one")\n', CONFIG: "", TS: "export const a = 1;\n", f"{PKG}/m.py": "x = 1\n"})
         self._git("checkout", "-q", "-b", "pr")
+        # The pull request turns the package into a link to a directory outside the repository.
+        self.outside = Path(self._tmp.name) / "outside"
+        self.outside.mkdir()
+        (self.outside / "m.py").write_text("outside\n", encoding="utf-8")
+        shutil.rmtree(self.repo / PKG)
+        (self.repo / PKG).symlink_to(self.outside)
         self._commit({A: 'logger.info("✅ one")\nlogger.info("❌ two")\n', TS: "export const a = 2;\n"})
         self._git("checkout", "-q", "main")
         self._commit({A: 'x = 1\nlogger.info("✅ one")\n', B: 'logger.info("✅ main only")\n'})
@@ -97,6 +107,7 @@ class TestBaselineLeavesCheckoutAlone(unittest.TestCase):
         self.assertEqual(self._git("status", "--porcelain", "--untracked-files=all"), self.status)
         self.assertEqual((self.repo / A).read_text(encoding="utf-8"), 'logger.info("✅ one")\nlogger.info("❌ two")\n')
         self.assertFalse(self.hook_marker.exists(), "a repository hook ran on the baseline worktree")
+        self.assertEqual((self.outside / "m.py").read_text(encoding="utf-8"), "outside\n")
 
     def test_killed_during_the_baseline_lint(self) -> None:
         result = self._check("ruff", A, FAKE_RUFF_KILL="1")
@@ -120,6 +131,29 @@ class TestBaselineLeavesCheckoutAlone(unittest.TestCase):
         result = self._check("ruff", A)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("No new ruff findings.", result.stdout)
+        self._assert_checkout_unchanged()
+
+    def test_a_path_under_a_linked_directory_is_not_written_through(self) -> None:
+        result = self._check("ruff", f"{PKG}/m.py")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self._assert_checkout_unchanged()
+
+    def test_a_file_and_a_directory_swapped_in_the_checkout(self) -> None:
+        (self.repo / CONFIG).unlink()
+        (self.repo / CONFIG).mkdir()
+        (self.repo / CONFIG / "x").write_text("x\n", encoding="utf-8")
+        shutil.rmtree(self.repo / "backend" / "nodejs" / "apps" / "src")
+        (self.repo / "backend" / "nodejs" / "apps" / "src").write_text("now a file\n", encoding="utf-8")
+        self.status = self._git("status", "--porcelain", "--untracked-files=all")
+        result = self._check("ruff", A)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self._assert_checkout_unchanged()
+
+    def test_an_untracked_file_name_that_is_not_utf8(self) -> None:
+        (self.repo / os.fsdecode(b"bad\xff.txt")).write_text("x\n", encoding="utf-8")
+        self.status = self._git("status", "--porcelain", "--untracked-files=all")
+        result = self._check("ruff", A)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self._assert_checkout_unchanged()
 
     def test_a_relative_ts_module(self) -> None:

@@ -114,8 +114,8 @@ def main() -> None:
         untracked = git("ls-files", "-z", "--others", "--exclude-standard")
         if changed.returncode or untracked.returncode:
             sys.exit(f"git could not list uncommitted files: {(changed.stderr + untracked.stderr).decode().strip()}")
-        # An entry ending in / is a nested repository, not a file.
-        local = [p for p in (changed.stdout + untracked.stdout).decode().split("\0") if p and not p.endswith("/")]
+        # An entry ending in / is a nested repository, not a file. fsdecode keeps names that are not UTF-8.
+        local = [p for p in os.fsdecode(changed.stdout + untracked.stdout).split("\0") if p and not p.endswith("/")]
         with tempfile.TemporaryDirectory() as tmp:
             tree = os.path.join(os.path.realpath(tmp), "tree")
             # No hook directory: a developer's post-checkout hook must not run on, or change, the baseline.
@@ -126,15 +126,20 @@ def main() -> None:
             if added.returncode:
                 sys.exit(f"git worktree add failed: {added.stderr.decode().strip()}")
             try:
+                # git lists paths sorted, and changed ones first, so a file or link replaced by a directory is
+                # removed before the directory's files are copied in.
                 for p in local:
                     dst = os.path.join(tree, p)
-                    if os.path.lexists(dst):
+                    if os.path.isdir(dst) and not os.path.islink(dst):
+                        shutil.rmtree(dst)   # a directory the checkout replaced with a file
+                    elif os.path.lexists(dst):
                         os.remove(dst)   # unlinks a symlink instead of writing through it
-                    if os.path.lexists(p):
+                    if os.path.lexists(p) and (os.path.islink(p) or not os.path.isdir(p)):
                         os.makedirs(os.path.dirname(dst), exist_ok=True)
                         shutil.copy2(p, dst, follow_symlinks=False)
-                # A symlink is never written through: its target may be outside the worktree.
-                on_main = [f for f in on_main if not os.path.islink(os.path.join(tree, f))]
+                # Nothing is written through a symlink, in the file or a parent: its target may be outside the worktree.
+                on_main = [f for f in on_main
+                           if os.path.realpath(os.path.join(tree, f)) == os.path.normpath(os.path.join(tree, f))]
                 for f in on_main:
                     shown = git("show", f"{base}:{main_path[f]}")
                     if shown.returncode:
