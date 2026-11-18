@@ -2166,10 +2166,10 @@
         "errorNameRequired": "請為此權杖輸入名稱。",
         "errorCreateTitle": "無法建立權杖",
         "expiryHeading": "有效期限",
+        "expiry7Days": "7 天",
         "expiry30Days": "30 天",
         "expiry90Days": "90 天",
         "expiry365Days": "365 天",
-        "expiryNever": "永不到期",
         "permissionsHeading": "範圍",
         "errorScopeRequired": "請至少選取一個範圍。",
         "selectAllScopes": "全選",
@@ -5930,6 +5930,55 @@
       "offDescription": "它已從所有人的回覆、搜尋與記錄中移除，範例帳戶也無法登入。請在「個人資料 → 示範資料」中重新開啟。",
       "onTitle": "已為所有人重新開啟示範資料",
       "errorTitle": "無法為所有人變更示範資料"
+    },
+    "about": {
+      "open": "示範裡有什麼？",
+      "title": "關於 Acme Corp 示範",
+      "description": "Acme Corp 是一家虛構的軟體公司。Demo 連接器會載入它的記錄，讓你不必連接自己的工具就能試用 PipesHub。不會聯絡 PipesHub 以外的任何服務，其中也沒有你公司的資料。",
+      "status": {
+        "shown": "它現在會出現在你的回答、搜尋和記錄中。示範結果帶有 Demo 標籤。",
+        "hiddenRealData": "由於你的組織已有自己的資料，它已從你的回答中隱藏。除非有人為自己開啟，否則沒人會看到它。",
+        "hiddenByChoice": "由於你已將其關閉，它已從你的回答中隱藏。",
+        "offForEveryone": "管理員已為所有人關閉它，因此它不會出現在任何人的回答中，範例帳號也無法登入。",
+        "show": "在我的回答中顯示"
+      },
+      "tools": {
+        "title": "包含內容",
+        "tool": "工具",
+        "places": "位置",
+        "records": "記錄",
+        "total": "合計"
+      },
+      "people": {
+        "title": "人員",
+        "description": "範例員工。他們的名字以記錄作者的身分出現；其中只有兩人可以登入。",
+        "canSignIn": "可以登入"
+      },
+      "restricted": {
+        "title": "誰能看到什麼",
+        "description": "新增 Demo 連接器的人可以讀取其中的大部分內容，Alice 和 Bob 可以讀取各自團隊能看到的內容。你組織中的其他人無法讀取任何內容；在你的回答中顯示示範並不會授予存取權限。以下每筆記錄只有其群組成員才能讀取，因此同一個問題會因提問者不同而得到不同的回答。",
+        "readers": "可以開啟：{{names}}",
+        "noReaders": "兩個範例帳號都無法開啟這些記錄。"
+      },
+      "questions": {
+        "title": "試著問問"
+      },
+      "accounts": {
+        "title": "可登入的範例帳號",
+        "description": "在另一個瀏覽器中以 Alice 或 Bob 身分登入，看看同一個問題在不同權限下如何回答。",
+        "state": {
+          "checking": "正在檢查…",
+          "active": "可以登入",
+          "off": "已關閉登入",
+          "missing": "未建立",
+          "unknown": "無法檢查"
+        },
+        "password": "它們使用安裝 PipesHub 時設定的初始密碼（PIPESHUB_DEMO_PASSWORD）。PipesHub 只保存其加密形式，因此無法在此顯示。",
+        "lostPassword": "如果沒人知道密碼，「忘記密碼」也幫不上忙，因為 .example 位址無法接收郵件。伺服器維運人員可以在 PipesHub 容器中執行以下指令，取得設定新密碼的連結：",
+        "missing": "範例帳號僅在安裝時設定了 PIPESHUB_DEMO_PERSONAS=1 才會建立。沒有它們示範也能使用，只是無法以 Alice 或 Bob 身分登入。",
+        "retry": "重試"
+      },
+      "close": "關閉"
     }
   },
   "graph": {
