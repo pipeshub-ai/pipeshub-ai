@@ -74,10 +74,12 @@ print("RESULT " + json.dumps({"texts": texts, "docling": [m for m in sys.modules
 
 
 _REAL_DOCLING = """
-import asyncio, importlib.abc, json, logging, threading
+import asyncio, importlib.abc, json, logging, os, threading
 from io import BytesIO
 from unittest.mock import MagicMock
 
+# Read at import: above 1 it sends the conversion to a process pool, where this script cannot see its thread.
+os.environ.pop("LOCAL_DOCLING_PARSE_WORKERS", None)
 loop_thread = threading.get_ident()
 imported_on = []
 converted_on = []
