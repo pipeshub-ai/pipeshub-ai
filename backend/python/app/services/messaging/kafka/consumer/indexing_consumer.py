@@ -349,6 +349,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # _partition_lock like the other dispatch bookkeeping, because the
         # worker thread's completion callback releases entries.
         self._in_flight_records: set[str] = set()
+        # Parallel dispatch: events whose record was in flight when they
+        # reached the head of their leaf. The scheduler judges a leaf by its
+        # head, so leaving one there stalls every later event of its
+        # connector and tier until that record finishes, which for a reindex
+        # can be hours. Each record's list is kept in offset order and only
+        # its first entry is ever back in the scheduler (``_record_offered``),
+        # so a record's events still run oldest first. Their offsets stay
+        # tracked with no dwell clock, so the watermark floors at them; they
+        # are counted against the buffer budget. Main-loop-only state.
+        self._record_waiting: dict[
+            str,
+            deque[tuple[tuple[TopicPartition, ConsumerRecord, StreamMessage], FairnessKey]],
+        ] = {}
+        self._record_waiting_count = 0
+        self._record_offered: dict[str, tuple[TopicPartition, ConsumerRecord, StreamMessage]] = {}
+        # Records with waiting events and nothing in flight or offered; their
+        # first event goes back to the scheduler as soon as it has room.
+        self._records_released: set[str] = set()
         # Messages read but with no buffer room for their key yet. Held in
         # memory rather than seeked back: their offsets stay tracked, so the
         # watermark still floors at them, and re-reading them would only
@@ -816,6 +834,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._deferred_partition_offsets.clear()
             self._in_flight_records.clear()
 
+        # Never committed: their offsets floor the watermark, so a restart reads them again.
+        waited = self.__forget_record_waits(lambda _tp: False)
+        if waited:
+            self.logger.info(
+                "Discarded %d event(s) waiting for a busy record at shutdown (redelivered on restart)",
+                waited,
+            )
         if self._scheduler is not None:
             drained = self._scheduler.drain_all()
             if drained:
@@ -891,6 +916,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._deferred_messages = deque(
             entry for entry in self._deferred_messages if entry[0] not in revoked_set
         )
+        waited = self.__forget_record_waits(lambda tp: tp not in revoked_set)
+        if waited:
+            self.logger.info(
+                "Rebalance: dropped %d event(s) waiting for a busy record on revoked "
+                "partition(s); their new owner reads them from the committed offset",
+                waited,
+            )
         forgotten = (
             self._remembered.drop_partitions(revoked_set)
             if self._remembered is not None
@@ -988,7 +1020,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         "Backpressure engaged: fair-scheduling buffer full "
                         "(%d/%d messages); pausing Kafka partition reads",
                         self._scheduler.pending_count  # type: ignore[union-attr]
-                        + len(self._deferred_messages),
+                        + self.__held_beside_scheduler(),
                         self.fair_scheduler_config.max_buffered_messages,
                     )
                 else:
@@ -1059,6 +1091,121 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 return False
             self._in_flight_records.add(record_key)
         return True
+
+    def __held_beside_scheduler(self) -> int:
+        """Buffered messages the scheduler does not count: parked for room and waiting for their record."""
+        return len(self._deferred_messages) + self._record_waiting_count
+
+    def __waits_for_record(
+        self,
+        record_key: str,
+        item: tuple[TopicPartition, ConsumerRecord, StreamMessage],
+        key: FairnessKey,
+    ) -> bool:
+        """Park a dequeued event whose record is busy, or which an older event of its record must precede.
+
+        Called with no await between the dequeue and the reservation, so the
+        in-flight check and ``__reserve_record`` see the same set.
+        """
+        offered = self._record_offered.get(record_key)
+        is_offered = offered is item
+        if is_offered:
+            del self._record_offered[record_key]
+        with self._partition_lock:
+            busy = record_key in self._in_flight_records
+        waiting = self._record_waiting.get(record_key)
+        must_wait = (
+            busy
+            or (offered is not None and not is_offered)
+            or (bool(waiting) and (not is_offered or self.__arrived_before(waiting[0][0], item)))
+        )
+        if not must_wait:
+            return False
+        if waiting is None:
+            waiting = self._record_waiting[record_key] = deque()
+        position = len(waiting)
+        while position and self.__arrived_before(item, waiting[position - 1][0]):
+            position -= 1
+        waiting.insert(position, (item, key))
+        self._record_waiting_count += 1
+        if not busy and record_key not in self._record_offered:
+            self._records_released.add(record_key)
+        tp, message, _ = item
+        self.logger.info(
+            "Record %s is busy: event %s-%s-%s waits for it, not for its connector (%d waiting for this record)",
+            record_key,
+            tp.topic,
+            tp.partition,
+            message.offset,
+            len(waiting),
+        )
+        return True
+
+    @staticmethod
+    def __arrived_before(
+        a: tuple[TopicPartition, ConsumerRecord, StreamMessage],
+        b: tuple[TopicPartition, ConsumerRecord, StreamMessage],
+    ) -> bool:
+        # Offsets order events only within one partition.
+        return a[0] == b[0] and a[1].offset < b[1].offset
+
+    def __reoffer_released(self) -> None:
+        """Give each released record's oldest waiting event back to the scheduler.
+
+        One at a time per record: the next waits until that one has run. An
+        event the scheduler has no room for stays waiting, and is offered
+        again on the next pass.
+        """
+        scheduler = self._scheduler
+        if not self._records_released or scheduler is None:
+            return
+        for record_key in list(self._records_released):
+            waiting = self._record_waiting.get(record_key)
+            with self._partition_lock:
+                busy = record_key in self._in_flight_records
+            if not waiting or busy or record_key in self._record_offered:
+                # A busy record's finish releases it again.
+                self._records_released.discard(record_key)
+                continue
+            item, key = waiting[0]
+            tp, message, parsed = item
+            result = scheduler.enqueue(key, item, not_before=self.__retry_not_before(parsed))
+            if result != EnqueueResult.ACCEPTED:
+                self.logger.debug(
+                    "No room to re-offer event %s-%s-%s of record %s yet (%s)",
+                    tp.topic, tp.partition, message.offset, record_key, result.value,
+                )
+                continue
+            waiting.popleft()
+            self._record_waiting_count -= 1
+            if not waiting:
+                del self._record_waiting[record_key]
+            self._record_offered[record_key] = item
+            self._records_released.discard(record_key)
+            self.logger.info(
+                "Record %s is free: re-offered its waiting event %s-%s-%s (%d more waiting)",
+                record_key, tp.topic, tp.partition, message.offset, len(waiting),
+            )
+
+    def __forget_record_waits(self, keep: "Callable[[TopicPartition], bool]") -> int:
+        """Drop waiting and offered events on partitions ``keep`` rejects; return how many waited."""
+        dropped = 0
+        for record_key in list(self._record_waiting):
+            waiting = self._record_waiting[record_key]
+            kept = deque(entry for entry in waiting if keep(entry[0][0]))
+            dropped += len(waiting) - len(kept)
+            if kept:
+                self._record_waiting[record_key] = kept
+            else:
+                del self._record_waiting[record_key]
+                self._records_released.discard(record_key)
+        for record_key, item in list(self._record_offered.items()):
+            if not keep(item[0]):
+                del self._record_offered[record_key]
+                if record_key in self._record_waiting:
+                    self._records_released.add(record_key)
+        self._record_waiting_count -= dropped
+        return dropped
 
     def __reserve_partition(self, message: ConsumerRecord) -> bool:
         # Only one message per partition is ever in flight at a time (Kafka
@@ -1136,6 +1283,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # global backpressure own the read side.
             with self._partition_lock:
                 self._in_flight_records.discard(record_key)
+            if record_key in self._record_waiting:
+                self._records_released.add(record_key)
+                self.__reoffer_released()
             return
 
         topic_partition = TopicPartition(message.topic, message.partition)
@@ -1288,13 +1438,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         scheduler = self._scheduler
         if scheduler is None or self.consumer is None:
             return
+        # Before the parked messages: an event that waited for its record is
+        # older, and must not lose its connector's room to them every pass.
+        self.__reoffer_released()
         self.__drain_deferred()
         await self.__fetch_back_remembered()
         buffer_room = max(
             0,
             self.fair_scheduler_config.max_buffered_messages
             - scheduler.pending_count
-            - len(self._deferred_messages),
+            - self.__held_beside_scheduler(),
         )
         # getmany() is called on every iteration even with no buffer room --
         # it is what resets max_poll_interval_ms, and skipping it would have
@@ -1562,7 +1715,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         scheduler = self._scheduler
         if scheduler is None:
             return False
-        held = scheduler.pending_count + len(self._deferred_messages)
+        held = scheduler.pending_count + self.__held_beside_scheduler()
         return held < self.fair_scheduler_config.max_buffered_messages
 
     def __other_lane_is_readable(self, tp: TopicPartition) -> bool:
@@ -1831,7 +1984,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         room = (
             self.fair_scheduler_config.max_buffered_messages
             - scheduler.pending_count
-            - len(self._deferred_messages)
+            - self.__held_beside_scheduler()
         )
         plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
         for entity in remembered.entities():
@@ -2124,14 +2277,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # tier or the next entity.
             if not budget.allows(concurrency.dispatch_tier(self, parsed)):
                 return False
+            if parallel:
+                # A busy record is not refused here: refusing the head stalls
+                # the whole leaf. The loop below parks it instead.
+                return True
             with self._partition_lock:
-                if parallel:
-                    return (
-                        self.__record_key(message, parsed)
-                        not in self._in_flight_records
-                    )
                 return tp not in self._in_flight_partitions
 
+        self.__reoffer_released()
         while self.running:
             budget = self._dispatch_budget()
             downstream_paused = (
@@ -2155,18 +2308,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if dispatched is None:
                 break
 
-            key, (tp, message, parsed) = dispatched
+            key, item = dispatched
+            tp, message, parsed = item
+            record_key = self.__record_key(message, parsed) if parallel else None
+            if record_key is not None and self.__waits_for_record(record_key, item, key):
+                continue
             metrics.record_dispatch("kafka", key[0] if key else "unknown")
             in_flight = _InFlightOffset(tp, message.offset, self._partition_epoch.get(tp, 0))
-            record_key = self.__record_key(message, parsed) if parallel else None
             reserved = (
                 self.__reserve_record(record_key)
                 if record_key is not None
                 else self.__reserve_partition(message)
             )
             if not reserved:
-                # can_dispatch above already checked this partition wasn't in
-                # flight, and nothing awaits between that check and this
+                # can_dispatch (the partition) or __waits_for_record (the
+                # record) already checked it wasn't in flight, and nothing awaits between that check and this
                 # reservation, so a single-threaded main loop rules this out.
                 # If it ever fires the item is already out of the scheduler,
                 # so hand the offset back for redelivery rather than dropping
