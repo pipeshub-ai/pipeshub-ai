@@ -219,3 +219,56 @@ async def test_a_paused_stage_still_stops_claiming() -> None:
     consumer = await _settle_raising(StagePaused("the model provider is down", delay_s=15.0))
 
     assert consumer._paused_until > 0.0
+
+
+async def test_a_delivery_whose_record_lease_is_not_renewed_is_cancelled_and_redone() -> None:
+    """The heartbeat used to ignore the result of renewing: a delivery whose lease lapsed went on writing."""
+    from app.services.messaging.postgres.consumer import RecordHeld
+
+    worker = WorkerLoop(LOG, thread_name="test-indexing-worker")
+    try:
+        started = threading.Event()
+        cancelled = threading.Event()
+
+        class Manager:
+            renews = True
+
+            async def try_acquire(self, pool: str, owner: str, limit: int, seconds: float) -> bool:
+                return True
+
+            async def renew_many(self, leases: list, seconds: float) -> dict:
+                return dict.fromkeys(leases, self.renews)
+
+            async def release(self, pool: str, owner: str) -> None:
+                return None
+
+        manager = Manager()
+
+        async def handler(_msg):  # noqa: ANN202
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            yield SimpleNamespace(event=IndexingEvent.INDEXING_COMPLETE)
+
+        consumer = PgMessagingConsumer(LOG, CFG, indexing=True, worker=worker, concurrency_manager=manager)  # type: ignore[arg-type]
+        consumer.message_handler = handler
+        consumer._take_slot = lambda parsed: _none()  # type: ignore[method-assign]
+        driver = asyncio.create_task(consumer._drive_indexing(_parsed(), "message:1"))
+        await asyncio.to_thread(started.wait, 10)
+        await consumer._renew_leases()                    # renewed: the delivery runs on
+        assert not driver.done()
+        manager.renews = False
+        await consumer._renew_leases()                    # not renewed: it is cancelled
+        with contextlib.suppress(Exception):
+            await driver
+        assert driver.done() and isinstance(driver.exception(), RecordHeld)
+        assert cancelled.wait(5), "the handler on the worker loop was cancelled"
+    finally:
+        worker.stop()
+
+
+async def _none() -> None:
+    return None
