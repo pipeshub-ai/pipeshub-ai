@@ -128,14 +128,21 @@ def test_a_refresh_failure_without_a_status_still_asks_for_a_new_sign_in(error: 
     assert classify_mcp_failure(error) is MCPFailureReason.AUTH_EXPIRED
 
 
-@pytest.mark.parametrize(("raised", "reason"), [
-    (httpx.ConnectError("Name or service not known"), MCPFailureReason.UNREACHABLE),
-    (httpx.ConnectError("Connection refused"), MCPFailureReason.UNREACHABLE),
-    (httpx.ReadTimeout("slow"), MCPFailureReason.TIMEOUT),
-    (httpx.ConnectTimeout("slow"), MCPFailureReason.TIMEOUT),
+# A sign-in provider that never answered is down, however it failed: UNREACHABLE (the listing shows it red), never
+# TIMEOUT (which the listing shows as a slow but connected server). The log class still tells a timeout apart.
+@pytest.mark.parametrize(("raised", "error_class"), [
+    (httpx.ConnectError("Name or service not known"), "unavailable"),
+    (httpx.ConnectError("Connection refused"), "unavailable"),
+    (httpx.RemoteProtocolError("Server disconnected without sending a response."), "unavailable"),
+    (httpx.ReadTimeout("slow"), "timeout"),
+    (httpx.ConnectTimeout("slow"), "timeout"),
 ])
-async def test_a_token_request_that_got_no_answer(raised: Exception, reason: MCPFailureReason) -> None:
-    assert classify_mcp_failure(await token_request_error(raised)) is reason
+async def test_a_token_request_that_got_no_answer(raised: Exception, error_class: str) -> None:
+    error = await token_request_error(raised)
+
+    assert classify_mcp_failure(error) is MCPFailureReason.UNREACHABLE
+    assert classify_mcp_failure(ExceptionGroup("tg", [error])) is MCPFailureReason.UNREACHABLE
+    assert mcp_error_class(error) == error_class
 
 
 class TestTheLogErrorClass:

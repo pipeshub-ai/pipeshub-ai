@@ -8,6 +8,7 @@ import { ChatSuggestion } from '@/chat/types';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useRestrictedQuestionAccess } from '@/app/(main)/workspace/connectors/demo-data/use-restricted-question';
 import { useDemoSwitch } from '@/app/(main)/workspace/connectors/demo-data/use-demo-switch';
+import { AboutDemoDataLink } from '@/app/(main)/workspace/connectors/demo-data/components';
 
 const EMAIL_SLOT = '\u2063';
 
@@ -70,6 +71,8 @@ export function DemoSuggestions({ isAdmin, isMobile, onPick }: DemoSuggestionsPr
             {t('chat.demoHide')}
           </button>
         </Link>
+        {' · '}
+        <AboutDemoDataLink isAdmin={isAdmin} />
       </Text>
       <Flex
         direction={isMobile ? 'column' : 'row'}

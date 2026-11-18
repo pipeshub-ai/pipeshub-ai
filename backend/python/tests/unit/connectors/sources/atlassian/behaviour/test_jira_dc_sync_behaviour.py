@@ -182,9 +182,14 @@ class IssueSearch:
         return page if isinstance(page, httpx.Response) else json_response(page)
 
 
+# Every user of the stub site has Jira product access: they are the members of jira-software-users.
+LICENSED = ("alice-key", "bob-key", "carol-key", "dave-key")
+
+
 def stub_site(api: AtlassianApiStub, search: IssueSearch) -> None:
     """A small but complete Jira DC site: users, groups, roles, one project, its ACL."""
     api.on("GET", f"{API}/field", json_response([{"id": EPIC_FIELD, "name": "Epic Link", "schema": {"custom": DC_EPIC_LINK_SCHEMA_CUSTOM}}]))
+    api.on("GET", f"{API}/serverInfo", {"version": "11.3.13", "versionNumbers": [11, 3, 13], "deploymentType": "Server"})
 
     def user_list(request: httpx.Request) -> httpx.Response:
         if AtlassianApiStub.query(request).get("cursor") == "abc":
@@ -211,7 +216,7 @@ def stub_site(api: AtlassianApiStub, search: IssueSearch) -> None:
     def members(request: httpx.Request) -> httpx.Response:
         q = AtlassianApiStub.query(request)
         if q["groupname"] == "jira-software-users":
-            return json_response({"values": [{"key": "bob-key"}], "isLast": True})
+            return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
         if q.get("startAt", "0") == "0":
             ghosts = [{"key": f"ghost-{i}"} for i in range(49)]
             return json_response({"values": [*ghosts, {"key": "alice-key"}], "isLast": False})
@@ -344,7 +349,8 @@ class TestFullSync:
         )
         devs = {m.email for m in db.groups_saved["devs"]}
         assert devs == {"alice@example.com", "carol@example.com"}, "second page of group members is read"
-        assert jira.calls("GET", f"{API}/group/member")[1].url.params["startAt"] == "50"
+        devs_calls = [r for r in jira.calls("GET", f"{API}/group/member") if r.url.params["groupname"] == "devs"]
+        assert devs_calls[1].url.params["startAt"] == "50"
 
         (acl,) = db.record_group_permissions.values()
         grants = {(p.entity_type, p.external_id or p.email) for p in acl}
@@ -580,6 +586,9 @@ class TestAccessControlSafety:
     async def test_application_roles_forbidden_grants_only_the_configuring_user(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         jira.on("GET", f"{API}/applicationrole", json_response({}, status=403))
+        # Product access is unknown, so only accounts linked before stay linked: bob, whom the scheme names.
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
         connector, notes = await make_connector(db, store)
 
         await connector.run_sync()
@@ -630,7 +639,7 @@ class TestAccessControlSafety:
         developers_before = sorted(m.email for m in db.app_roles["ENG_10002"])
         assert "alice@example.com" in developers_before, "alice is in the role only through the devs group"
         devs_before = sorted(m.email for m in db.groups_saved["devs"])
-        assert [m.email for m in db.app_roles["ENG_10004"]] == ["bob@example.com"]
+        assert len(db.app_roles["ENG_10004"]) == len(LICENSED)
         assert [m.email for m in db.app_roles["ENG_10005"]] == ["alice@example.com"]
 
         jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "jira-software-users"}], "total": 2})
@@ -728,6 +737,368 @@ class TestAccessControlSafety:
         assert "ENG_10002" in db.app_roles
         assert "ENG_10004" not in db.app_roles, "a role that could not be read keeps its previous members"
         assert any("couldn't sync project roles" in t for t in notes.titles())
+
+
+class TestProductAccess:
+    """Jira treats an account without application access (no group of any application role) as
+    anonymous: its groups, roles and its name on a scheme give it nothing."""
+
+    @staticmethod
+    def _stub_members(jira: AtlassianApiStub, licensed: tuple[str, ...], *, product_status: int = 200) -> None:
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+                if product_status != 200:
+                    return json_response({"errorMessages": ["busy"]}, status=product_status)
+                return json_response({"values": [{"key": k} for k in licensed], "isLast": True})
+            return json_response({"values": [{"key": k} for k in ("alice-key", "carol-key", "dave-key")], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+
+    @staticmethod
+    def _grant_dave_by_name(jira: AtlassianApiStub) -> None:
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "dave-key", "user": {
+                "key": "dave-key", "name": "dave", "emailAddress": "dave@example.com", "active": True}}},
+        ]})
+
+    @staticmethod
+    def _dave_reaches(db: JiraRecordsDb) -> list[str]:
+        how = [f"group {g}" for g, ms in db.groups_saved.items() if any(m.email == "dave@example.com" for m in ms)]
+        how += [f"role {r}" for r, ms in db.app_roles.items() if any(m.email == "dave@example.com" for m in ms)]
+        how += [f"grant {p.external_id}" for p in db.record_group_permissions["10000"] if p.email == "dave@example.com"]
+        return how
+
+    async def test_an_account_without_product_access_gets_no_link_group_role_or_grant(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, ("alice-key", "bob-key", "carol-key"))
+        self._grant_dave_by_name(jira)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert "dave@example.com" not in {u.email for u in db.app_users}
+        assert self._dave_reaches(db) == []
+        assert {m.email for m in db.groups_saved["devs"]} == {"alice@example.com", "carol@example.com"}
+
+    async def test_the_user_link_step_leaves_out_an_account_without_product_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, ("alice-key", "bob-key", "carol-key"))
+        connector, _ = await make_connector(db, store)
+
+        await connector._link_users_and_groups()
+
+        assert {u.email for u in db.app_users} == {"alice@example.com", "bob@example.com", "carol@example.com"}
+        assert "dave@example.com" not in {m.email for m in db.groups_saved["devs"]}
+
+    async def test_an_account_that_loses_product_access_is_withdrawn_and_one_that_regains_it_is_linked(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, LICENSED)
+        self._grant_dave_by_name(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert self._dave_reaches(db), "dave has product access, so his group, role and grant reach him"
+        db.cached_app_users = list(db.app_users)
+
+        self._stub_members(jira, ("alice-key", "bob-key", "carol-key"))  # also how a deactivated account looks
+        await connector.run_sync()
+
+        assert [u.email for u in db.withdrawn_users] == ["dave@example.com"]
+        assert self._dave_reaches(db) == []
+
+        db.cached_app_users = [u for u in db.cached_app_users if u.email != "dave@example.com"]
+        db.app_users.clear()
+        self._stub_members(jira, LICENSED)
+        await connector.run_sync()
+
+        assert "dave@example.com" in {u.email for u in db.app_users}
+        assert self._dave_reaches(db)
+
+    async def test_a_stored_account_sharing_a_licensed_accounts_email_keeps_the_link(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, LICENSED)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="old-bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.withdrawn_users == []
+
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param([{"errorMessages": []}], id="first page with no values"),
+            pytest.param(["not a page"], id="first page not an object"),
+            pytest.param([{"values": [{"key": "alice-key"}], "isLast": False}, {"values": None, "isLast": True}],
+                         id="later page with no list of values"),
+        ],
+    )
+    async def test_a_product_group_page_that_is_not_a_page_links_no_one_new(
+        self, jira, db, store, search, pages
+    ) -> None:
+        """Read as the end of the members, it would make the members read so far everyone with product access."""
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q["groupname"] == "jira-software-users":
+                return json_response(pages[int(q.get("startAt", "0")) and 1])
+            return json_response({"values": [{"key": "alice-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"}, "the stored link stays; no one new is linked"
+        assert db.withdrawn_users == []
+
+    async def test_an_empty_product_group_gives_no_account_product_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, ())
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
+
+    @pytest.mark.parametrize("unread", ["roles busy", "roles refused", "roles not found", "product group",
+                                        "a role without a group list"])
+    async def test_product_access_that_cannot_be_read_links_no_one_new(self, jira, db, store, search, unread) -> None:
+        """Unknown is not no access, so the stored links stay, but neither is it access: an account not linked
+        (one withdrawn earlier included) is linked only by a read that shows it has product access. The
+        connector's own account can use Jira, so it is linked."""
+        stub_site(jira, search)
+        self._stub_members(jira, ("alice-key",), product_status=503 if unread == "product group" else 200)
+        roles = {"roles busy": json_response({"errorMessages": ["busy"]}, status=503),
+                 "roles refused": json_response({}, status=403), "roles not found": json_response({}, status=404),
+                 "a role without a group list": json_response([{"key": "jira-software", "name": "Jira Software"}])}
+        if unread in roles:
+            jira.on("GET", f"{API}/applicationrole", roles[unread])
+        jira.on("GET", f"{API}/myself", {"key": "carol-key", "name": "carol", "emailAddress": "carol@example.com"})
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com", "carol@example.com"}
+        assert db.withdrawn_users == []
+        assert {m.email for m in db.groups_saved["devs"]} <= {"bob@example.com", "carol@example.com"}
+
+    @pytest.mark.parametrize(
+        "groups",
+        [pytest.param([None], id="null"), pytest.param([""], id="empty name"), pytest.param(["  "], id="blank name"),
+         pytest.param([{"name": "jira-software-users"}], id="an object"), pytest.param([7], id="a number"),
+         pytest.param(["jira-software-users", None], id="one good one bad")],
+    )
+    async def test_a_role_with_a_group_entry_that_is_not_a_group_name_leaves_product_access_unknown(
+        self, jira, db, store, search, groups,
+    ) -> None:
+        """Dropping the entry would leave a role that looks read in full with fewer groups, or none."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": groups}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    @pytest.mark.parametrize(
+        "row",
+        [pytest.param({"displayName": "Bob"}, id="no key or name"), pytest.param({"key": ""}, id="an empty key"),
+         pytest.param("bob-key", id="not an object")],
+    )
+    async def test_a_product_group_member_row_without_an_identifier_leaves_product_access_unknown(
+        self, jira, db, store, search, row,
+    ) -> None:
+        """Skipping the row would leave a member list read in full without that member."""
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+                return json_response({"values": [{"key": "alice-key"}, row], "isLast": True})
+            return json_response({"values": [{"key": "alice-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    async def test_a_failed_read_of_the_linked_accounts_fails_the_sync_and_changes_no_access(
+        self, jira, db, store, search,
+    ) -> None:
+        """Read as no accounts, it would link no one while product access is unknown, and save every group empty."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+
+        async def linked(connector_id: str, *, raise_on_error: bool = False) -> list[AppUser]:
+            if raise_on_error:
+                raise RuntimeError("graph unavailable")
+            return []  # what the store answers on a failed read without raise_on_error
+
+        db.get_all_app_users = linked
+        connector, _ = await make_connector(db, store)
+
+        with pytest.raises(RuntimeError, match="graph unavailable"):
+            await connector.run_sync()
+
+        assert db.app_users == [] and db.groups_saved == {} and db.withdrawn_users == []
+
+    async def test_the_groups_of_a_role_marked_not_defined_give_no_product_access(self, jira, db, store, search) -> None:
+        """`defined` has no description in the Data Center REST API (ApplicationRoleBean,
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-applicationrole/), so a role
+        marked `defined: false` is not taken to grant anything."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([
+            {"key": "jira-software", "groups": ["jira-software-users"], "defined": True},
+            {"key": "jira-core", "groups": ["jira-core-users"], "defined": False},
+        ]))
+
+        def members(request: httpx.Request) -> httpx.Response:
+            name = AtlassianApiStub.query(request)["groupname"]
+            keys = {"jira-software-users": ["alice-key", "bob-key", "carol-key"], "jira-core-users": ["dave-key"]}.get(
+                name, ["alice-key"])
+            return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"alice@example.com", "bob@example.com", "carol@example.com"}
+
+    async def test_roles_all_marked_not_defined_leave_product_access_unknown(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([
+            {"key": "jira-software", "groups": ["jira-software-users"], "defined": False}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    async def test_the_user_list_is_read_with_its_documented_parameters_only(self, jira, db, store, search) -> None:
+        """GET /rest/api/2/user/list takes `cursor` and `maxResults` only (Jira DC REST 10.3 and 11.2,
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-user/); the connector keeps the
+        active users itself."""
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        calls = jira.calls("GET", f"{API}/user/list")
+        assert calls and all(set(c.url.params) <= {"cursor", "maxResults"} for c in calls)
+
+    async def test_roles_read_in_full_with_no_groups_give_no_account_product_access(self, jira, db, store, search) -> None:
+        """Only an administrator can read the roles, so the answer is the whole picture: access comes only through
+        a role's groups, and no role has one."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": []},
+                                                                 {"key": "jira-core", "groups": []}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
+
+
+class TestVersions:
+    """Behaviour per Jira Data Center version, each checked against that version's REST specification
+    (developer.atlassian.com/server/jira/platform/rest/v<NNNNN>/): the oldest supported (10.2), the 10.3 LTS before
+    and after /user/list was added (10.3.13), a middle release without it (10.5) and the newest (11.3)."""
+
+    @staticmethod
+    def _searchable_directory(jira: AtlassianApiStub) -> None:
+        """/user/search with username "." lists the directory, as on these versions."""
+        everyone = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                    user("carol-key", "carol", "carol@example.com")]
+        jira.on("GET", f"{API}/user/search", lambda request: json_response(
+            everyone if AtlassianApiStub.query(request).get("username") == "." else []))
+
+    @pytest.mark.parametrize(
+        ("version", "supported", "user_list"),
+        [
+            pytest.param((10, 2, 1), True, False, id="10.2 oldest supported"),
+            pytest.param((10, 3, 12), True, False, id="10.3 before the user list"),
+            pytest.param((10, 3, 13), True, True, id="10.3 with the user list"),
+            pytest.param((10, 5, 1), True, False, id="10.5 middle"),
+            pytest.param((11, 0, 1), True, True, id="11.0"),
+            pytest.param((11, 3, 13), True, True, id="11.3 newest"),
+            pytest.param((9, 12, 20), False, False, id="9.12 out of support"),
+            pytest.param((11, 4, 0), False, True, id="a release not checked yet"),
+            pytest.param(None, False, True, id="unknown"),
+        ],
+    )
+    def test_the_rest_profile_of_each_version(self, version, supported, user_list) -> None:
+        from app.connectors.sources.atlassian.jira_data_center.connector import (
+            dc_rest_profile,
+        )
+
+        assert dc_rest_profile(version) == (supported, user_list)
+
+    @pytest.mark.parametrize(
+        ("server_info", "lists"),
+        [
+            pytest.param({"version": "10.2.1", "versionNumbers": [10, 2, 1]}, False, id="10.2"),
+            pytest.param({"version": "10.5.1", "versionNumbers": [10, 5, 1]}, False, id="10.5"),
+            pytest.param({"version": "10.3.13", "versionNumbers": [10, 3, 13]}, True, id="10.3.13"),
+            pytest.param({"version": "11.3.13"}, True, id="11.3 from the version text"),
+        ],
+    )
+    async def test_the_user_list_is_read_only_where_its_version_documents_it(
+        self, jira, db, store, search, server_info, lists,
+    ) -> None:
+        stub_site(jira, search)
+        self._searchable_directory(jira)
+        jira.on("GET", f"{API}/serverInfo", server_info)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert bool(jira.calls("GET", f"{API}/user/list")) is lists
+        assert "alice@example.com" in {u.email for u in db.app_users}
+
+    @pytest.mark.parametrize(
+        "server_info",
+        [
+            pytest.param(json_response({"version": "9.12.20", "versionNumbers": [9, 12, 20]}), id="9.12"),
+            pytest.param(json_response({"version": "12.0.0", "versionNumbers": [12, 0, 0]}), id="a later release"),
+            pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="unreadable"),
+            pytest.param(json_response({"version": "next"}), id="no version number"),
+        ],
+    )
+    async def test_an_unsupported_or_unknown_version_links_no_one_new_and_withdraws_no_one(
+        self, jira, db, store, search, server_info,
+    ) -> None:
+        stub_site(jira, search)
+        self._searchable_directory(jira)
+        jira.on("GET", f"{API}/serverInfo", server_info)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
 
 
 class TestUserDirectoryFallbacks:
@@ -1052,11 +1423,12 @@ class TestRoleActors:
         stub_site(jira, search)
         jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [
             {"type": "atlassian-user-role-actor", "actorUser": "not-a-dict", "key": "alice-key"},
-            {"type": "atlassian-user-role-actor", "actorUser": {"emailAddress": "BOB@example.com"}},
+            {"type": "atlassian-user-role-actor", "name": "Bob"},
             {"type": "atlassian-user-role-actor", "actorUser": {"key": "nobody"}},
             {"type": "atlassian-group-role-actor", "groupId": "grp-1", "name": "renamed"},
         ]})
         connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"bob": "bob-key"}
         users = [
             AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id=k, org_id="org-1", email=e, full_name=k)
             for k, e in (("alice-key", "alice@example.com"), ("bob-key", "bob@example.com"), ("carol-key", "carol@example.com"))
@@ -1065,6 +1437,60 @@ class TestRoleActors:
         await connector._sync_project_roles(["ENG"], users, {"grp-1": [users[2]]})
 
         assert {m.email for m in db.app_roles["ENG_10002"]} == {"alice@example.com", "bob@example.com", "carol@example.com"}
+
+    async def test_an_actor_never_resolves_through_an_email_another_account_shares(
+        self, jira, db, store, search,
+    ) -> None:
+        """Bob has no product access and shares Alice's email: his role must not make Alice a member."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "bob", "actorUser": {"emailAddress": "shared@example.com"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"bob": "bob-key", "alice": "alice-key"}
+        alice = AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="alice-key",
+                        org_id="org-1", email="shared@example.com", full_name="Alice")
+
+        await connector._sync_project_roles(["ENG"], [alice], {})
+
+        assert db.app_roles["ENG_10002"] == []
+
+    async def test_a_username_resolves_to_its_own_account_not_to_a_key_equal_to_it(
+        self, jira, db, store, search,
+    ) -> None:
+        """A renamed account keeps its first username as its key; a new account may now hold that username."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "alice"},
+        ]})
+        connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.smith": "alice"}
+        renamed = AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="alice",
+                          org_id="org-1", email="alice.smith@example.com", full_name="Alice Smith")
+
+        await connector._sync_project_roles(["ENG"], [renamed], {})
+
+        assert db.app_roles["ENG_10002"] == []
+
+    @pytest.mark.parametrize("actor", [
+        {"type": "atlassian-user-role-actor", "name": "alice"},
+        {"type": "atlassian-user-role-actor", "actorUser": {"name": "alice"}},
+    ], ids=["name", "actorUser-name"])
+    async def test_a_username_the_user_list_did_not_show_is_never_taken_for_a_key(
+        self, jira, db, store, search, actor: dict,
+    ) -> None:
+        """A user list cut short (the search fallback stops at 100 on Jira 10+) did not show "alice": the synced account
+        whose key is "alice" (a renamed account keeps its first username as its key) is not that person."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [actor]})
+        connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"alice.smith": "alice"}
+        renamed = AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="alice",
+                          org_id="org-1", email="alice.smith@example.com", full_name="Alice Smith")
+
+        await connector._sync_project_roles(["ENG"], [renamed], {})
+
+        assert db.app_roles["ENG_10002"] == []
 
     async def test_unreadable_role_list_is_reported_not_fatal(self, jira, db, store, search) -> None:
         stub_site(jira, search)
@@ -1088,7 +1514,7 @@ class TestGroupMemberPaging:
         def members(request: httpx.Request) -> httpx.Response:
             q = AtlassianApiStub.query(request)
             if q["groupname"] != "devs":
-                return json_response({"values": [], "isLast": True})
+                return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
             return json_response(pages[q.get("startAt", "0")])
 
         jira.on("GET", f"{API}/group/member", members)
@@ -1124,10 +1550,13 @@ class TestDirectoryEdgeCases:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)
 
+        connector._dc_name_to_source_id = {"b": "b-key"}  # a member named by username is the account the user list gave it
         jira.on("GET", f"{API}/group/member", json_response([{"key": "a"}, {"name": "b"}]))
-        assert await connector._fetch_group_members("g", "g") == ["a", "b"]
+        assert await connector._fetch_group_members("g", "g") == ["a", "b-key"]
 
         jira.on("GET", f"{API}/group/member", json_response("odd"))
+        assert await connector._fetch_group_members("g", "g") is None, "a body that is not a page leaves the members unknown"
+        jira.on("GET", f"{API}/group/member", json_response({"values": [], "isLast": True}))
         assert await connector._fetch_group_members("g", "g") == []
         assert await connector._fetch_group_members("g", "") == []
 
@@ -1363,7 +1792,7 @@ class TestUnfinishedUserRead:
 
         def members(request: httpx.Request) -> httpx.Response:
             if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
-                return json_response({"values": [{"key": "bob-key"}], "isLast": True})
+                return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
             return json_response({"values": [{"key": "alice-key"}, {"key": "dave-key"}], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)
@@ -1881,7 +2310,7 @@ class TestFullSyncCoverage:
 
         def members(request: httpx.Request) -> httpx.Response:
             name = AtlassianApiStub.query(request)["groupname"]
-            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"], "qa": ["alice-key"]}[name]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": list(LICENSED), "qa": ["alice-key"]}[name]
             return json_response({"values": [{"key": k} for k in keys], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)
@@ -1934,7 +2363,7 @@ class TestFullSyncCoverage:
 
         def members(request: httpx.Request) -> httpx.Response:
             name = AtlassianApiStub.query(request)["groupname"]
-            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"], "qa": ["alice-key"]}[name]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": list(LICENSED), "qa": ["alice-key"]}[name]
             return json_response({"values": [{"key": k} for k in keys], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)
@@ -2049,7 +2478,7 @@ class TestFullSyncCoverage:
 
         def members(request: httpx.Request) -> httpx.Response:
             name = AtlassianApiStub.query(request)["groupname"]
-            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"]}.get(name, ["alice-key"])
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": list(LICENSED)}.get(name, ["alice-key"])
             return json_response({"values": [{"key": k} for k in keys], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)

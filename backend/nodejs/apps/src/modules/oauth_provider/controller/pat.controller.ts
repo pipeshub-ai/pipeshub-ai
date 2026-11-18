@@ -59,7 +59,7 @@ export class PatController {
         userId,
         domain: domainFromEmail(email),
         scope_count: token.scopes.length,
-        // The lifetime the token was actually minted with ('never' stays 'never').
+        // The lifetime the token was actually minted with.
         expiry_days: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
         ...clientTags(req.headers),
       })

@@ -139,6 +139,41 @@ jobs:
           set -o pipefail
           integration-tests/sdk_tests/generate_sdks.sh open-api "$SDK_WORK_DIR" 2>&1 | tee "$SDK_REPORTS_DIR/generate.log"
 
+      # main's generation settings are the same (OPEN_API_REF); only the spec differs.
+      - name: Checkout main for the surface comparison
+        if: ${{ always() }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: base-main
+          persist-credentials: false
+
+      # Adding caching or range headers to the record stream is documented in prose so that no
+      # SDK's generated operation changes. This step fails, with no continue-on-error, when the
+      # generation above failed or left a checkout out (a failed language is deleted by
+      # generate_sdks.sh), and when the operation's generated files differ from those generated
+      # from main's spec, other than in comments.
+      - name: Check the generated surface of streamRecordBuffer
+        if: ${{ always() }}
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+          GENERATE_OUTCOME: ${{ steps.generate.outcome }}
+          SDK_BASE_DIR: ${{ github.workspace }}/sdk-base
+        run: |
+          if [ "$GENERATE_OUTCOME" != "success" ]; then
+            echo "::error::The SDKs were not generated (outcome: $GENERATE_OUTCOME), so the surface of streamRecordBuffer was not checked."
+            exit 1
+          fi
+          for lang in typescript python go; do
+            if [ ! -d "$SDK_WORK_DIR/pipeshub-sdk-$lang" ]; then
+              echo "::error::No generated $lang SDK in $SDK_WORK_DIR."
+              exit 1
+            fi
+          done
+          set -o pipefail
+          base-main/integration-tests/sdk_tests/generate_sdks.sh open-api "$SDK_BASE_DIR" 2>&1 | tee "$SDK_REPORTS_DIR/generate-base.log"
+          python3 integration-tests/sdk_tests/check_operation_surface.py streamRecordBuffer "$SDK_WORK_DIR" "$SDK_BASE_DIR"
+
       # The app Dockerfile uses these as FROM stages. From GHCR first, as integration-tests.yml does;
       # Docker Hub is the fallback per image.
       - name: Pull pre-built base images

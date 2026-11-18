@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import contextlib
 import dataclasses
 import itertools
 import time
@@ -22,6 +23,7 @@ from typing import TYPE_CHECKING
 from app.modules.parse_engine.admission import (
     AdmissionNumbers,
     ClassDemand,
+    Grant,
     next_grant,
     slots,
 )
@@ -178,6 +180,7 @@ class ClassGate:
         self.grants: deque[GrantRecord] = deque(maxlen=log_size)
         self.upgrades = 0
         self._seen_capacity: PoolCapacity | None = None
+        self._unbounded: list[_Waiter] = []  # waiting big records that cannot be split, oldest first (see A5)
         self._repump_at = float("inf")  # the next time the policy changes by the clock alone (see ``_pump``)
 
     # -- public ---------------------------------------------------------
@@ -274,6 +277,8 @@ class ClassGate:
             bisect.insort(self._q[cls].setdefault(w.req.org, []), w, key=lambda x: x.key)
         if cls in _BIG:
             self._shares.arrive("big", w.req.org)
+            if not w.req.bounded:
+                bisect.insort(self._unbounded, w, key=lambda x: x.key)
 
     def _dequeue(self, w: _Waiter) -> bool:
         cls = w.req.cls
@@ -284,6 +289,9 @@ class ClassGate:
             return False
         if not w.req.priority and not lst:
             self._q[cls].pop(w.req.org, None)
+        if cls in _BIG and not w.req.bounded:
+            with contextlib.suppress(ValueError):
+                self._unbounded.remove(w)
         return True
 
     def _finish(self, w: _Waiter) -> None:
@@ -379,6 +387,23 @@ class ClassGate:
                 due = min(due, now + (numbers.aging_s - oldest))
         return due
 
+    def _aged_unbounded_head(self, now: float, aging_s: float, skipped: set[_Waiter]) -> _Waiter | None:
+        """The oldest waiting big record that cannot be split into bounded units, if it has waited ``aging_s``.
+
+        ``_unbounded`` is ordered by arrival, so the aged ones are a prefix and nothing is scanned when there are none.
+        A priority waiter among the aged goes first, then the oldest."""
+        best: _Waiter | None = None
+        for w in self._unbounded:
+            if w in skipped:
+                continue
+            if now - w.first_seen < aging_s:
+                break
+            if w.req.priority:
+                return w
+            if best is None:
+                best = w
+        return best
+
     def _pump_grants(self) -> None:
         numbers = self._numbers()
         skipped: set[_Waiter] = set()  # waiters this gate will not admit now (over their class ceiling): not retried this pump
@@ -392,13 +417,29 @@ class ClassGate:
                 demand[c] = dataclasses.replace(demand[c], waiting=0)
             small = demand[CostClass.SMALL]
             since = 0.0 if (small.waiting or small.running) else now - self._last_small
-            g = next_grant(
-                numbers, P, demand, since_small_s=since, held_floors=H, small_waiting_elsewhere=self._elsewhere()
-            )
+            g = None
+            aged = self._aged_unbounded_head(now, numbers.aging_s, skipped) if self._unbounded else None
+            if (
+                aged is not None
+                and P < 2
+                and demand[CostClass.SMALL].waiting
+            ):
+                # A5, for the one case the ordinary rules cannot grant: at a capacity under 2, A1 (which needs room for
+                # two while small work waits) never admits a big record that cannot be split, and a steady small stream
+                # would starve it. Once it has aged it is served next, whatever its lane and whatever else is waiting (a priority
+                # one among the aged heads first): it is overdue, and a priority-lane consumer's own small stream is
+                # priority too. When it does not fit yet the other rules go on.
+                used_now = sum(self._running.values())
+                if not used_now or used_now + aged.req.cpu <= P:
+                    g = Grant(aged.req.cls, "A5")
+            if g is None:
+                g = next_grant(
+                    numbers, P, demand, since_small_s=since, held_floors=H, small_waiting_elsewhere=self._elsewhere()
+                )
             if g is None:
                 return
             bounded_only = g.rule in ("A2", "A4")
-            w = self._pick(g.cls, bounded_only=bounded_only, big_limit=max(1, P), exclude=skipped)
+            w = aged if g.rule == "A5" else self._pick(g.cls, bounded_only=bounded_only, big_limit=max(1, P), exclude=skipped)
             if w is None:
                 if masked or skipped:
                     masked.add(g.cls)
