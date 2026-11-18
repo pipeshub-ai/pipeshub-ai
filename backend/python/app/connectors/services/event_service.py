@@ -1461,6 +1461,7 @@ class EventService:
         user_key: str | None,
         status_filters: list[str] | None,
         stages: list[str] | None = None,
+        *,
         force: bool = False,
     ) -> None:
         """Walk every matching record once and hand each batch to the connector.
@@ -1474,7 +1475,7 @@ class EventService:
         """
         scope_generation = await self._kh_scope_begin(connector_id)
         try:
-            with forced_by_user(force):
+            with forced_by_user(forced=force):
                 await self._reindex_batches(
                     connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
                     user_key, status_filters, stages,

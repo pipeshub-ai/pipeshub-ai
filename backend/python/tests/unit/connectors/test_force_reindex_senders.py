@@ -10,7 +10,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.services.reindex_force import forced_by_user, user_forced_reindex
 from app.services.paid_cache.run import refresh_requested
 
@@ -29,7 +31,7 @@ def test_a_connector_reindex_of_unchanged_records_reuses_the_stored_results() ->
 
 
 def test_the_same_reindex_during_a_users_force_walk_refreshes() -> None:
-    with forced_by_user(True):
+    with forced_by_user(forced=True):
         assert user_forced_reindex() is True
         payload = DataSourceEntitiesProcessor._reindex_event_payload(_record(), vector_db_only=False)
     assert refresh_requested(payload) is True
@@ -37,7 +39,7 @@ def test_the_same_reindex_during_a_users_force_walk_refreshes() -> None:
 
 
 def test_the_force_flag_is_not_inherited_by_a_later_plain_reindex() -> None:
-    with forced_by_user(True):
+    with forced_by_user(forced=True):
         pass
     assert refresh_requested(DataSourceEntitiesProcessor._reindex_event_payload(_record(), vector_db_only=False)) is False
 
@@ -45,7 +47,9 @@ def test_the_force_flag_is_not_inherited_by_a_later_plain_reindex() -> None:
 async def test_a_reindex_after_storage_cleanup_refreshes() -> None:
     from unittest.mock import AsyncMock
 
-    from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+    from app.connectors.core.base.data_processor.storage_cleanup import (
+        StorageCleanupHelper,
+    )
 
     graph = AsyncMock()
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])

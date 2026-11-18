@@ -29,6 +29,6 @@ def test_a_plain_update_of_the_same_bytes_is_skipped_and_a_forced_one_is_not() -
 
 def test_a_forced_reindex_takes_no_embed_resume_checkpoint() -> None:
     marker = {EMBED_DELIVERY_ID: "d1", EMBED_REV: "rev-1", EMBED_VRID: "vr", EMBED_DIGEST: "x"}
-    common = dict(delivery_id="d1", rev="rev-1", node_vrid="vr")
+    common = {"delivery_id": "d1", "rev": "rev-1", "node_vrid": "vr"}
     assert may_resume(marker, force_reindex=False, **common) is True
     assert may_resume(marker, force_reindex=True, **common) is False

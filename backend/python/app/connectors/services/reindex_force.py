@@ -7,8 +7,11 @@ handler that walks the records sets this for the length of the walk, and the rei
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
 from contextvars import ContextVar
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _user_forced: ContextVar[bool] = ContextVar("user_forced_reindex", default=False)
 
@@ -18,7 +21,7 @@ def user_forced_reindex() -> bool:
 
 
 @contextlib.contextmanager
-def forced_by_user(forced: bool) -> Iterator[None]:
+def forced_by_user(*, forced: bool) -> Iterator[None]:
     token = _user_forced.set(bool(forced))
     try:
         yield

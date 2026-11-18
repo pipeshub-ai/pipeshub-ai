@@ -10,7 +10,11 @@ from app.config.constants.arangodb import EventTypes
 from app.models.blocks import Block, BlockType
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.services.paid_cache.run import begin_run, clear_run
-from tests.unit.modules.transformers.test_pipeline_reconciliation import _ctx, _pipeline, _record
+from tests.unit.modules.transformers.test_pipeline_reconciliation import (
+    _ctx,
+    _pipeline,
+    _record,
+)
 
 ORG, REC = "org-1", "rec-1"
 
@@ -88,7 +92,7 @@ async def test_a_forced_run_that_fails_while_embedding_is_not_completed_and_its_
     sink.index.side_effect = [RuntimeError("embedding failed"), None]
     begin_run(ORG, REC, None, "index", refresh=True)
 
-    def ctx():
+    def ctx() -> object:
         return _ctx(_record(blocks=[block]), event_type=EventTypes.REINDEX_RECORD.value, prev_vrid="vr-1")
 
     with pytest.raises(RuntimeError, match="embedding failed"):                # not swallowed: the delivery is retried

@@ -319,7 +319,7 @@ class TestReindexBatchPaging:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("force", [True, False])
-    async def test_a_users_force_is_set_for_the_length_of_the_walk_and_no_longer(self, service, force):
+    async def test_a_users_force_is_set_for_the_length_of_the_walk_and_no_longer(self, service, force) -> None:
         """D-180: the reindex events a walk publishes carry ``refreshPaidOutputs`` only for a user's Force reindex."""
         from app.connectors.services.reindex_force import user_forced_reindex
 

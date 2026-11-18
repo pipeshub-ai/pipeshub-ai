@@ -90,7 +90,7 @@ class IndexingPipeline:
                     raise  # the virtual record's lease is busy or lost: the delivery is handed back, not indexed over old points
                 except Exception as e:
                     # Not purged: an unchanged block would be indexed twice, so the failure is the delivery's.
-                    logger.warning(f"⚠️ Failed to purge vectors for a forced reindex of {record.virtual_record_id}: {e}")
+                    logger.warning(f"Failed to purge vectors for a forced reindex of {record.virtual_record_id}: {e}")
                     raise
             elif prev_vrid and prev_vrid == record.virtual_record_id:
                 # 1:1 case: same vrid, do diff-based reconciliation
