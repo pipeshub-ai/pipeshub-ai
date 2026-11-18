@@ -769,6 +769,15 @@ async def test_pg_admit_writes_nothing_for_a_claim_that_no_longer_stands(pg) -> 
     assert third.admission_ms is None
 
 
+async def test_pg_a_dead_lettered_delivery_is_not_handed_out_again(pg) -> None:
+    """A message dead-lettered as stale is not redriven by the queue: only a new publish, from the source, replaces it."""
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert await pg.queue.dead("g", d, "envelope rejected: stale")
+    assert await pg.queue.claim("g", [pg.topic], "c", 1, 30.0) == []
+
+
 async def test_pg_a_nack_renews_the_admission_in_its_own_statement_and_a_plain_nack_leaves_it(pg) -> None:
     await pg.queue.ensure_group(pg.topic, "g", from_start=True)
     await _publish_raw(pg, "{}")

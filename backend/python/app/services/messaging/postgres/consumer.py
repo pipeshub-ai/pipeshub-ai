@@ -79,6 +79,10 @@ _HANDBACK_CAP_S = 60.0   # longest the per-message back-off of hand-backs grows 
 _HANDBACK_TABLE_MAX = 10_000   # hand-back counts kept in memory
 
 
+class ClaimLost(Exception):
+    """This consumer no longer holds the delivery (another claimed it, or its claim lapsed): nothing is run, acknowledged, retried or reported for it."""
+
+
 class AdmissionWriteError(Exception):
     """The record that a delivery's message was opened could not be written; the delivery fails transiently and is retried."""
 
@@ -411,6 +415,8 @@ class PgMessagingConsumer(IMessagingConsumer):
     async def _settle(self, d: Delivery) -> None:
         try:
             await self._settle_one(d)
+        except ClaimLost as e:
+            self.logger.info("Claim on %s was lost before it was opened; it belongs to another consumer", e)
         finally:
             self._opened.pop((d.topic, d.message_id, d.attempts), None)
 
@@ -494,6 +500,8 @@ class PgMessagingConsumer(IMessagingConsumer):
         try:
             message = await self._parse_for_sink(d, record=True)
             delays = self.precision_filter.hand_back([message]) if message is not None else {}
+        except ClaimLost:
+            raise
         except Exception:
             self.logger.warning("Could not check %s against the embedding precision; it takes the normal path", d.message_id, exc_info=True)
             return False
@@ -557,11 +565,16 @@ class PgMessagingConsumer(IMessagingConsumer):
         self._opened[key] = "aged" if within_lifetime(raw) else "stored"
         try:
             stamp = await new_admission(d.topic, self.config.group_id, d.message_id, raw)
-            if stamp is not None:
-                await self.queue.admit(self.config.group_id, d, *stamp)
+            held = True if stamp is None else await self.queue.admit(self.config.group_id, d, *stamp)
         except Exception as e:
             self._opened.pop(key, None)
             raise AdmissionWriteError(type(e).__name__) from e
+        if not held:
+            # The write is conditional on this claim: False says another consumer holds the row now, and it is theirs to run. A claim
+            # lost after a handler has started is still at-least-once; this stops one that was lost before it.
+            self._opened.pop(key, None)
+            self._handback_log["claim_lost"] = self._handback_log.get("claim_lost", 0) + 1
+            raise ClaimLost(f"{d.topic}:{d.message_id}")
         return result
 
     async def _parse_for_sink(self, d: Delivery, *, record: bool = False) -> StreamMessage | None:
@@ -575,8 +588,22 @@ class PgMessagingConsumer(IMessagingConsumer):
             return await self._open(
                 d, raw, lambda admitted: open_stream_message(d.topic, raw, StreamMessage, admitted=admitted), record=record
             )
+        except ClaimLost:
+            raise
         except Exception as e:
             self.logger.warning("Could not read the exhausted message %s for its record: %s", d.message_id, e)
+            return None
+
+    async def _read_stale_for_sink(self, d: Delivery, raw: dict) -> StreamMessage | None:
+        """The message of a delivery rejected only for its age, so the sink can leave the record it names in a visible terminal state.
+
+        The age is waived for this one read and for nothing else: the signature, shape, organisation and future-time checks still
+        run, nothing is processed, and no admission is written.
+        """
+        try:
+            return await open_stream_message(d.topic, raw, StreamMessage, admitted=True)
+        except Exception as e:
+            self.logger.warning("Could not read the stale message %s for its record: %s", d.message_id, type(e).__name__)
             return None
 
     async def _abandon(
@@ -619,7 +646,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 except DuplicateEnvelope:
                     return True, False, None, ""
                 except EnvelopeRejected as e:
-                    return False, True, None, f"envelope rejected: {e.reason}"
+                    stale = await self._read_stale_for_sink(d, raw) if e.reason == "stale" else None
+                    return False, True, stale, f"envelope rejected: {e.reason}"
                 if parsed is None:
                     return False, True, None, "unparseable message"
                 parsed.is_final_failure = final
@@ -640,7 +668,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             with bind_optional(opened.ctx):
                 ok = await self.message_handler(parsed)
             return bool(ok), False, parsed, "" if ok else "handler returned false"
-        except RequeueWithoutAttempt:
+        except (RequeueWithoutAttempt, ClaimLost):
             raise
         except Exception as e:
             expected = is_expected_outcome(e)

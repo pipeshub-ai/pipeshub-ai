@@ -576,3 +576,77 @@ class TestQueueNackValue:
         assert "attempts = $4 AND status = 'claimed'" in tx.statements[0][0]
         assert tx.statements[0][1] == ("g", TOPIC, 7, 3, 99, "mac")
         assert not await self._queue(_Tx("UPDATE 0")).admit("g", d, 99, "mac")
+
+
+# -- a stale rejection still reaches the sink; a claim lost before the open runs nothing --------------------------------------
+
+async def test_a_message_rejected_for_its_age_alone_is_given_to_the_sink_so_its_record_is_not_left_queued(clock) -> None:
+    queue = _Queue(_signed(clock[0] - LIFETIME - 5, record="rec-9"))
+    consumer = _consumer(queue)
+    await consumer._settle(_claim(queue))
+    consumer._drive_indexing.assert_not_awaited()
+    consumer._abandon.assert_awaited_once()
+    parsed = consumer._abandon.await_args.args[1]
+    assert isinstance(parsed, StreamMessage) and parsed.payload["recordId"] == "rec-9"
+    assert "stale" in consumer._abandon.await_args.args[2]
+    assert queue.admits == [] and queue.admission == (None, None)  # the waiver is for the disposition only: nothing is admitted
+
+
+async def test_a_message_rejected_for_more_than_its_age_is_not_given_to_the_sink(clock) -> None:
+    raw = json.loads(_signed(clock[0] - LIFETIME - 5))
+    raw["ctx"]["sig"] = "A" * len(raw["ctx"]["sig"])
+    queue = _Queue(json.dumps(raw))
+    consumer = _consumer(queue)
+    await consumer._settle(_claim(queue))
+    consumer._abandon.assert_awaited_once()
+    assert consumer._abandon.await_args.args[1] is None
+
+
+async def test_a_claim_lost_before_the_message_is_opened_runs_and_reports_nothing(clock) -> None:
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue)
+    delivery = _claim(queue)
+    queue.claimed_attempts = 2  # another consumer claimed the row: admit() answers False for this claim
+    await consumer._settle(delivery)
+    consumer._drive_indexing.assert_not_awaited()
+    consumer._abandon.assert_not_awaited()
+    queue.ack.assert_not_awaited()
+    assert queue.nacks == [] and queue.admits == [] and consumer._opened == {}
+    assert consumer._handback_log == {"claim_lost": 1}
+
+
+async def test_a_claim_lost_at_the_precision_check_stops_before_the_check_and_the_handler(clock) -> None:
+    """The precision check opens the delivery first: its lost claim must not be swallowed into "takes the normal path"."""
+    checked: list[int] = []
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue, hand_backs=1, on_check=lambda: checked.append(1))
+    delivery = _claim(queue)
+    queue.claimed_attempts = 2
+    await consumer._settle(delivery)
+    assert checked == [] and consumer._handback_log == {"claim_lost": 1}  # opened once, stopped at the first open
+    consumer._drive_indexing.assert_not_awaited()
+    consumer._abandon.assert_not_awaited()
+    assert queue.nacks == []
+
+
+async def test_a_claim_lost_then_the_message_expiring_is_dead_lettered_by_the_new_claimant_only(clock) -> None:
+    queue = _Queue(_signed(clock[0]))
+    first, second = _consumer(queue), _consumer(queue)
+    lost = _claim(queue)
+    queue.claimed_attempts = 2
+    await first._settle(lost)
+    clock[0] += LIFETIME + 60  # the new claimant gets it after it has gone stale
+    await second._settle(_claim(queue, attempts=2))
+    first._abandon.assert_not_awaited()
+    second._abandon.assert_awaited_once()
+    assert "stale" in second._abandon.await_args.args[2]
+
+
+async def test_a_claim_lost_while_reading_a_message_for_the_sink_is_not_swallowed(clock) -> None:
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue)
+    delivery = _claim(queue)
+    queue.claimed_attempts = 2
+    with pytest.raises(Exception) as caught:
+        await consumer._parse_for_sink(delivery, record=True)
+    assert type(caught.value).__name__ == "ClaimLost"
