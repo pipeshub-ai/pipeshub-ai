@@ -386,6 +386,17 @@ class TestATypeFilterThatMatchesNoName:
         assert [r["entityId"] for r in payload["otherTypeMatches"]] == ["epic-1"]
 
     @pytest.mark.asyncio
+    async def test_a_requested_type_is_never_listed_as_another_type(self, patched) -> None:
+        """A matching record group ranked past the filtered results is not "of another type"."""
+        late_group = _hit("rg-late", "record_group")
+        patched[1].side_effect = [self.UNRELATED, [late_group, self.EPIC]]
+        state = _state(entity_vector_store=_matching_store(*self._names("rg-late", "epic-1")))
+
+        payload = json.loads((await execute_search_entities(state, "SAAS Launch", entity_types=["record_group"]))[1])
+
+        assert [r["entityId"] for r in payload["otherTypeMatches"]] == ["epic-1"]
+
+    @pytest.mark.asyncio
     async def test_other_type_matches_stop_at_top_k(self, patched) -> None:
         epics = [_hit(f"epic-{i}", "record") for i in range(5)]
         patched[1].side_effect = [self.UNRELATED, epics]

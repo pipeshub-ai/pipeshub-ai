@@ -144,6 +144,7 @@ async def _other_type_matches(
     query: str,
     hits: list[EntityHit],
     *,
+    requested_types: list[str],
     top_k: int,
     include_named: bool,
 ) -> _OtherTypes:
@@ -167,7 +168,12 @@ async def _other_type_matches(
             store, graph, context, query, top_k=max(top_k, TITLE_SEARCH_TOP_K), include_named=include_named,
         )
         shown = {(h.entity_type, h.entity_id) for h in hits}
-        candidates = [h for h in wider if (h.entity_type, h.entity_id) not in shown]
+        # Only other types: an entity of a requested type that ranks past the filtered results
+        # is not "a match of another type", and the note would say it is.
+        candidates = [
+            h for h in wider
+            if (h.entity_type, h.entity_id) not in shown and h.entity_type not in requested_types
+        ]
         cosines = await store.dense_similarities(query, [h.name for h in candidates])
     except EntitySearchTimedOut:
         return _OtherTypes(incomplete=True)
@@ -315,7 +321,7 @@ async def execute_search_entities(
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
     others = await _other_type_matches(
         entity_vector_store, graph_provider, context, query, hits,
-        top_k=bounded_top_k, include_named=enabled,
+        requested_types=valid_types, top_k=bounded_top_k, include_named=enabled,
     ) if valid_types else _OtherTypes()
 
     payload: dict[str, Any] = {"status": "success"}
