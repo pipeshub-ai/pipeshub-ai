@@ -225,6 +225,16 @@ jobs:
             --output reports/perf/query.json \
             --summary reports/perf/summary.md
 
+      # The conditional read of a stored record: the 304 p95 at 1 and 16 clients against its budget, and a
+      # history file (perf/history/citation-viewer.jsonl) whose median a run may not exceed by 10 %.
+      - name: Run citation viewer benchmark
+        if: ${{ !cancelled() }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python perf/citation_viewer/bench_stream_conditional.py \
+            --output reports/perf/citation-viewer.json
+
       # Reports only: compare.py exits 0 on a regression until the thresholds
       # have a few weeks of CI history behind them (see perf/README.md).
       # A benchmark that exits 0 without writing a result would otherwise let

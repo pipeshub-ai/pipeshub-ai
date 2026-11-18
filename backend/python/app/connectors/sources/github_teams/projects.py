@@ -178,8 +178,10 @@ class ProjectsSync:
             # returns PR stubs too, but those lack head refs and reviewers, and
             # recovering them cost one get_pull per PR.
             ("issues", lambda: c.issues.fetch_issues_batched(repo)),
-            ("pull_requests", lambda: c.pull_requests.fetch_prs_batched(repo)),
+            # Before the PRs: indexing links a PR to the code-file records it changed (MODIFIES), and a
+            # file not yet walked has no record, so a PR indexed first stays unlinked until it changes.
             ("code", lambda: c.repos.run(repo)),
+            ("pull_requests", lambda: c.pull_requests.fetch_prs_batched(repo)),
         ):
             try:
                 if await step() is False:

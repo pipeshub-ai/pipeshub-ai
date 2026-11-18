@@ -1017,6 +1017,8 @@ async def rewrite_or_delete_virtual_record(
 ) -> str:
     """Delete points if no graph records remain; otherwise rewrite both arrays.
 
+    Returns ``"rewritten"``, ``"deleted"``, ``"kept"`` (this org's points went, but the
+    mapping stays because another org still holds points) or ``"skipped"``.
     ``release_mapping`` replaces the plain mapping-row delete after the points
     go, so a caller can remove the virtual record's stored content first.
     """
@@ -1129,7 +1131,7 @@ async def _rewrite_or_delete_locked(
                 logger.warning(
                     "Kept the mapping of virtual record %s: another org still holds points on it", virtual_record_id,
                 )
-        return "deleted"
+        return "kept"
     _shared_row_kept.discard(virtual_record_id)
 
     if release_mapping is not None:

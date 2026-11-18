@@ -10,8 +10,8 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/confluence_cloud` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_cloud/connector.py:4848` | writer read |
 | `atlassian/confluence_datacenter` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_datacenter/connector.py:1145` | writer read |
 | `atlassian/confluence_datacenter_personal` | container | container | the whole app | `app/connectors/sources/atlassian/confluence_datacenter_personal/connector.py:133` | writer read |
-| `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py:5579` | writer read |
-| `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:5035` | writer read |
+| `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py:5726` | writer read |
+| `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:5165` | writer read |
 | `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:97` | writer read |
 | `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py:66` | writer read |
 | `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1692` | writer read |
@@ -31,7 +31,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `gitlab_personal` | container | container | the whole app | `app/connectors/sources/gitlab_personal/connector.py:107` | writer read |
 | `notion` | container | container | workspace and team groups | `app/connectors/sources/notion/connector.py:2325` | writer read |
 | `notion_personal` | container | container | the whole app | `app/connectors/sources/notion_personal/connector.py:55` | writer read |
-| `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py:57` | writer read |
+| `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py:65` | writer read |
 | `local_fs` | container | container | the whole app | `app/connectors/sources/local_fs/connector.py:467` | writer read |
 | `local_repo` | container | container | the whole app | `app/connectors/sources/local_repo/connector.py:38` | writer read |
 | `local_folder` | container | container | the whole app | `app/connectors/sources/local_folder/connector.py:347` | writer read |
@@ -51,7 +51,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `web` | container | container | the whole app | `app/connectors/sources/web/connector.py:351` | writer read |
 | `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:528` | grep, to confirm |
 | `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:145` | grep, to confirm |
-| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3766` | grep, to confirm |
+| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3767` | grep, to confirm |
 | `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3801` | grep, to confirm |
 | `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2088` | grep, to confirm |
 | `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py:2003` | grep, to confirm |

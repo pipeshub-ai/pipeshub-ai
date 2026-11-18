@@ -577,7 +577,7 @@ async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the
     await w.nodes("teams", {"_key": f"all_{w.org}"})
     await w.member("m", f"all_{w.org}", coll="teams")
     await w.edge("userAppRelation", ("teams", f"all_{w.org}"), ("apps", APP))           # the gate, open to the org
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     await processor.on_new_app_users([app_user("m@x.com", "m"), app_user("k@x.com", "k")])

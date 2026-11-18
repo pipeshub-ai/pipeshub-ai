@@ -257,6 +257,26 @@ class TestSyncProjectsErrorIsolation:
         await projects_sync._sync_projects()
         assert c.repos.run.await_count == 2
 
+    async def test_the_code_is_walked_before_the_merge_requests_are_read(self) -> None:
+        """Indexing links an MR to the files it changed through the code checkpoint, which the first
+        walk writes only when it ends; an MR read before that would never be linked."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        projects_sync = ProjectsSync(c)
+        projects_sync._resolve_projects_with_filters = AsyncMock(return_value=[_project(1, "eng/proj-a")])
+        order: list[str] = []
+        projects_sync._sync_project_members_as_pseudo = AsyncMock(side_effect=lambda _p: order.append("members"))
+        c.issues = MagicMock()
+        c.issues.fetch_issues_batched = AsyncMock(side_effect=lambda _p: order.append("issues"))
+        c.merge_requests = MagicMock()
+        c.merge_requests.fetch_prs_batched = AsyncMock(side_effect=lambda _p: order.append("merge_requests"))
+        c.repos = MagicMock()
+        c.repos.run = AsyncMock(side_effect=lambda *_a: order.append("code"))
+
+        await projects_sync._sync_projects()
+
+        assert order == ["members", "issues", "code", "merge_requests"]
+
 
 # ===========================================================================
 # _create_permission_from_principal

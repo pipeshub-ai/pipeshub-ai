@@ -78,3 +78,29 @@ describe('createS3Service', () => {
     })
   })
 })
+
+describe('createS3Service presigned conditional PUT', () => {
+  const signedHeaders = (url: string): string[] =>
+    (new URL(url).searchParams.get('X-Amz-SignedHeaders') ?? '').split(';')
+
+  it('signs If-None-Match into the URL, as S3 applies a conditional header only when it is signed', async () => {
+    const url = await service().getSignedUrlPromise('putObject', {
+      Bucket: 'b',
+      Key: 'k',
+      ContentType: 'application/json',
+      IfNoneMatch: '*',
+      Expires: 60,
+    })
+    expect(signedHeaders(url)).to.include('if-none-match')
+  })
+
+  it('does not sign it for an overwriting PUT', async () => {
+    const url = await service().getSignedUrlPromise('putObject', {
+      Bucket: 'b',
+      Key: 'k',
+      ContentType: 'application/json',
+      Expires: 60,
+    })
+    expect(signedHeaders(url)).to.not.include('if-none-match')
+  })
+})

@@ -6,6 +6,7 @@ to get consistent retry/timeout/error-handling behaviour.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -23,6 +24,8 @@ from app.utils.jwt import generate_jwt
 from app.utils.request_context import inject_request_headers
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from app.config.configuration_service import ConfigurationService
     from app.config.constants.service import TokenScopes
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -385,6 +388,9 @@ class BaseServiceClient:
         # app.services.messaging.backpressure) — this client's own retry
         # budget below is unaffected either way.
         self._backpressure_coordinator = backpressure_coordinator
+        # Told how long the service asked this client to wait on a 429, for a caller that slows down this service's
+        # calls only (no coordinator, so no other work is paused). None by default.
+        self.on_backpressure: Callable[[float], None] | None = None
         self.logger = logging.getLogger(f"{__name__}.{service_name}")
         self.circuit_breaker = CircuitBreaker(
             service_name=service_name,
@@ -412,6 +418,11 @@ class BaseServiceClient:
             timeout=self._timeout,
             limits=self._limits,
         )
+
+    def _attempt_slot(self) -> contextlib.AbstractAsyncContextManager[Any]:
+        """Admission for one HTTP attempt. None by default; a client with a concurrency limiter overrides it, so a
+        retry (after a backoff or a ``Retry-After`` wait) is admitted again at the limit then in force."""
+        return contextlib.nullcontext()
 
     async def _request_with_retry(
         self,
@@ -529,7 +540,8 @@ class BaseServiceClient:
                     if data is not None:
                         kwargs["data"] = data
 
-                    response = await client.request(method, url, **kwargs)
+                    async with self._attempt_slot():
+                        response = await client.request(method, url, **kwargs)
                     last_status = response.status_code
                     # A 429 with Retry-After is the service declining before any work; every other answer may
                     # have done some.
@@ -570,6 +582,8 @@ class BaseServiceClient:
                         wait = min(max(retry_after, MIN_BACKPRESSURE_WAIT), DEFAULT_BACKPRESSURE_WAIT_CAP)
                         if self._backpressure_coordinator is not None:
                             self._backpressure_coordinator.signal(self.service_name, wait)
+                        if self.on_backpressure is not None:
+                            self.on_backpressure(wait)
                         backpressure_attempts += 1
                         if backpressure_attempts > self.max_backpressure_attempts:
                             self.logger.warning(
@@ -754,11 +768,12 @@ class BaseServiceClient:
         budget_seconds: float | None = None,
         org_id: str | None = None,
         read_timeout: float | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         return await self._request_with_retry(
             "POST", url, files=files, data=data, operation=operation,
-            headers=await self._auth_headers(org_id),
+            headers={**await self._auth_headers(org_id), **(extra_headers or {})},
             budget_seconds=budget_seconds,
             read_timeout=read_timeout,
         )

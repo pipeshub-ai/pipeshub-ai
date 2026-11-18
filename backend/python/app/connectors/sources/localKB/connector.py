@@ -6,12 +6,14 @@ the graph, and gets its own `KnowledgeBaseConnector` runtime instance keyed by i
 unique KB app ID. Sync methods are no-ops since KBs are local storage.
 """
 
+import asyncio
 from logging import Logger
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import aiohttp
 from fastapi import HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, AppGroups, Connectors, OriginTypes
@@ -31,9 +33,15 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import Record
+from app.services.storage_documents import StorageDocuments, StorageUploadError
 from app.utils.api_call import make_api_call
+from app.utils.content_tag import SERVED_VERSION_TIMEOUT_SECONDS
 from app.utils.jwt import generate_jwt
 from app.connectors.core.base.error.stream_errors import to_internal_service_error
+
+if TYPE_CHECKING:
+    from app.services.storage_documents import StorageDocumentInfo
+    from app.utils.byte_range import ByteRange
 
 KB_CONNECTOR_NAME = "Collections"
 _STORAGE_UNREADABLE = (
@@ -188,6 +196,69 @@ class KnowledgeBaseConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to get signed URL for record {record.id}: {e}", exc_info=True)
             return None
+
+    async def served_version(self, record: Record) -> "StorageDocumentInfo | None":
+        """The storage service's verified answer about the document ``stream_record`` would serve.
+
+        None wherever ``stream_record`` would refuse, and on any failure or timeout: a missing answer
+        means no validator, and the body path then runs as it always did.
+        """
+        if record.origin != OriginTypes.UPLOAD or not record.external_record_id:
+            return None
+        try:
+            return await asyncio.wait_for(
+                StorageDocuments(self.config_service, self.logger).info(
+                    record.org_id, record.external_record_id, verify=True
+                ),
+                timeout=SERVED_VERSION_TIMEOUT_SECONDS,
+            )
+        except Exception as e:  # total on purpose: the validator is an optimisation
+            self.logger.debug("served_version unavailable (%s)", type(e).__name__)
+            return None
+
+    async def stream_record_bound(
+        self, record: Record, info: "StorageDocumentInfo", byte_range: "ByteRange | None" = None
+    ) -> StreamingResponse:
+        """Stream the object ``info`` verified, bound to its version: the whole body, or one range of it.
+
+        The body is read in chunks, so memory does not grow with the file. Raises ``BoundReadChanged`` when the
+        object is another one now (the route then reads it again) and ``BoundReadOutOfRange`` for a range past
+        its end.
+        """
+        if record.origin != OriginTypes.UPLOAD:
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Cannot stream record with origin {record.origin}. Only uploaded records can be streamed.",
+            )
+        if not record.external_record_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail="Record has no externalRecordId"
+            )
+        try:
+            read = await StorageDocuments(self.config_service, self.logger).open_bound(
+                record.org_id, record.external_record_id, info, byte_range=byte_range
+            )
+        except StorageUploadError as e:
+            self.logger.error("Failed to open a bound read for record %s: %s", record.id, e)
+            raise HTTPException(status_code=HttpStatusCode.BAD_GATEWAY.value, detail=_STORAGE_UNREADABLE) from e
+        try:
+            headers: dict[str, str] = {}
+            if read.content_length is not None:
+                headers["Content-Length"] = str(read.content_length)
+            if read.status == 206 and read.content_range:
+                headers["Content-Range"] = read.content_range
+            # The body generator closes the read once it runs; the background task covers a body that never starts
+            # (a client that left between the headers and the first chunk). ``close`` is idempotent.
+            return StreamingResponse(
+                read.chunks(),
+                status_code=read.status,
+                media_type=record.mime_type if record.mime_type else "application/octet-stream",
+                headers=headers,
+                background=BackgroundTask(read.close),
+            )
+        except BaseException:
+            await read.close()
+            raise
 
     async def stream_record(
         self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None

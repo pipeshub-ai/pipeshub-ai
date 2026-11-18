@@ -103,11 +103,37 @@ def _present(members=None) -> IssueSecurityContext:
 
 async def _build(
     connector: JiraConnector, issue: dict, context: IssueSecurityContext, existing: MagicMock | None = None,
+    *, full_sync: bool = False,
 ) -> tuple:
     connector._issue_security[PROJECT_ID] = context
     connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
-    records, _ = await connector._build_issue_records([issue], PROJECT_ID, _users())
+    records, _ = await connector._build_issue_records([issue], PROJECT_ID, _users(), full_sync)
     return records[0]
+
+
+class TestSecuredSubtasks:
+    """A sub-task carries its parent's level, but a per-issue holder of that level is resolved on the sub-task."""
+
+    @staticmethod
+    def _subtask(level: str) -> dict:
+        sub = _issue({"id": level, "name": "L"}, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        return sub
+
+    @pytest.mark.asyncio
+    async def test_its_own_assignee_reads_it_without_reading_the_parent(self) -> None:
+        record, perms, _ = await _build(_connector(), self._subtask("10102"), _present())
+        assert record.parent_external_record_id is None, "filed under the parent it would need the parent's readers"
+        assert record.access_rule == AccessRule.RESTRICTED
+        assert {"rep@x.com", "asg@x.com"} <= {p.email for p in perms}
+
+    @pytest.mark.asyncio
+    async def test_a_level_that_names_the_same_people_everywhere_keeps_it_under_the_parent(self) -> None:
+        context = _present({"10102": [{"type": "group", "value": "group-1"}]})
+        record, perms, _ = await _build(_connector(), self._subtask("10102"), context)
+        assert record.parent_external_record_id == "1001"
+        assert [(p.entity_type, p.external_id) for p in perms] == [(EntityType.GROUP, "group-1")]
 
 
 class TestSecuredIssues:
@@ -1195,13 +1221,23 @@ class TestStoriesUnderTheirEpic:
         assert story.parent_external_record_id == "2001"
 
     @pytest.mark.asyncio
-    async def test_a_sub_task_still_goes_under_its_parent(self) -> None:
+    async def test_a_sub_task_still_goes_under_a_parent_with_no_level(self) -> None:
+        """Read in the same page, so its level is not asked for again."""
         sub = _story()
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         c = _connector()
         c._get_fresh_datasource = AsyncMock()
-        assert (await _story_record(c, [sub])).parent_external_record_id == "2001"
+        assert (await _story_record(c, [_issue(None, key="PROJ-9", issue_id="2001"), sub])).parent_external_record_id == "2001"
         c._get_fresh_datasource.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_read_with_no_level_stays_under_a_leveled_parent(self) -> None:
+        """Jira gives a sub-task its parent's level, so a null is a payload behind it: off the parent it would be
+        read by the whole project."""
+        sub = _story()
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        parent = _issue(LEVEL, key="PROJ-9", issue_id="2001")
+        assert (await _story_record(_connector(), [parent, sub])).parent_external_record_id == "2001"
 
     @pytest.mark.asyncio
     async def test_a_malformed_issue_in_the_page_does_not_stop_the_others(self) -> None:
@@ -1261,7 +1297,9 @@ class TestEpicsReadAgainNextSync:
 class TestReindexFollowsTheCurrentIssueType:
     @staticmethod
     async def _reindexed(parent: dict) -> TicketRecord:
-        c = _reindex_connector(_issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000"), [])
+        # The one read: the parent's level, which it does not have.
+        c = _reindex_connector(_issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000"),
+                               [_resp(200, {"issues": [_issue(None, key="PROJ-1", issue_id="1001")]})])
         sub = _issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000")
         sub["fields"].update(issuetype={"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}, parent=parent)
         c._get_fresh_datasource.return_value.get_issue.return_value = _resp(200, sub)
@@ -1272,7 +1310,7 @@ class TestReindexFollowsTheCurrentIssueType:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("parent", [{"id": "1001", "key": "PROJ-1"}, {"id": "1001"}])
     async def test_a_story_that_became_a_sub_task_is_filed_under_its_parent(self, parent: dict) -> None:
-        """The stored copy had no parent (a story the sync did not file under it); a sub-task always follows its parent."""
+        """The stored copy had no parent (a story the sync did not file under it); a sub-task follows a parent with no level."""
         assert (await self._reindexed(parent)).parent_external_record_id == "1001"
 
 
@@ -1372,12 +1410,42 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == []
 
     @pytest.mark.asyncio
-    async def test_a_sub_task_follows_its_parent_and_is_not_granted(self) -> None:
+    async def test_a_sub_task_hangs_off_its_project_and_is_granted_its_own_people(self) -> None:
+        # Jira grants Browse on each issue to that issue's reporter and assignee, so the sub-task's
+        # own people read it without reading its parent.
         sub = _issue(None, key="PROJ-2", issue_id="1002")
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
         record, perms, _ = await _build(_connector(), sub, self._none(self.HOLDERS))
+        assert record.parent_external_record_id is None
+        assert {p.email for p in perms} == {"rep@x.com", "asg@x.com"} and record.access_rule == AccessRule.OPEN
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_follows_its_parent_when_no_holder_names_people(self) -> None:
+        sub = _issue(None, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        record, perms, _ = await _build(_connector(), sub, self._none([]))
+        assert record.parent_external_record_id == "1001"
         assert perms == [] and record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.asyncio
+    async def test_a_sub_task_stays_under_its_parent_while_the_holders_are_unknown(self) -> None:
+        sub = _issue(None, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        record, _, _ = await _build(_connector(), sub, self._none(None))
+        assert record.parent_external_record_id == "1001"
+
+    @pytest.mark.asyncio
+    async def test_a_stored_sub_task_off_its_parent_stays_off_it_while_the_holders_are_unknown(self) -> None:
+        """A failed Browse read must not put it back under the parent, whose readers its own holders may lack."""
+        sub = _issue(None, key="PROJ-2", issue_id="1002", updated="2025-01-01T00:00:00.000+0000")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        stored = _stored_ticket(external_record_id="1002", parent_external_record_id=None)
+        record, _, _ = await _build(_connector(), sub, self._none(None), existing=stored)
+        assert record.parent_external_record_id is None
 
     def test_a_story_is_not_filed_under_an_epic_its_reporter_may_not_read(self) -> None:
         c = _connector()
@@ -1470,6 +1538,38 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     async def test_an_unread_scheme_rereads_nothing_and_saves_nothing_for_a_project_without_holders(self) -> None:
         c, calls, _ = await self._sync_with(None, stored=None)  # no entry: not read this sync
         assert len(calls) == 1 and self._saved_digests(c) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("build_fails", [False, True], ids=["clean_walk", "an_issue_fails_to_build"])
+    async def test_holders_unread_after_the_checkpoints_were_cleared_stay_unknown_and_stored_grants_stay(
+        self, build_fails: bool,
+    ) -> None:
+        """A full resync clears the project's checkpoint, so no stored digest is not proof that the holders granted
+        nothing: a stored issue a reporter or assignee reads through them keeps its grants until they are read. The
+        unknown marker is saved before the walk, so a walk cut short by an issue that fails to build, which still
+        advances the cursor, does not leave the next sync reading the holders as none."""
+        c = _connector()  # no holders read this sync
+        store: dict = {}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: dict(store.get(k) or {}))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, dict(v)))
+        c._load_issue_security = AsyncMock(return_value=_present())
+
+        async def fetch(*a, **kw) -> AsyncIterator:
+            if build_fails:
+                c._issue_build_failures += 1
+            yield [], False, 1_700_000_000_000  # the batch moves the cursor
+
+        c._fetch_issues_batched = fetch
+        c._reread_leveled_issues = AsyncMock()
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert c._issue_security[PROJECT_ID].browse_holders is None
+        assert c._keeps_stored_grants(_stored_ticket(version=0)) is True
+        assert store["project_PROJ"]["last_sync_time"] and store["project_PROJ"]["browse_holders"] == "?"
+
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert c._issue_security[PROJECT_ID].browse_holders is None, "the next sync, no longer new, still sees them unknown"
+        assert c._keeps_stored_grants(_stored_ticket(version=0)) is True
 
     @pytest.mark.asyncio
     async def test_an_unread_scheme_marks_a_project_that_had_holders_so_the_next_read_rereads(self) -> None:
@@ -1580,18 +1680,44 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert perms == [] and record.rewrite_permissions is True and record.access_rule == AccessRule.STRICT
 
     @pytest.mark.asyncio
-    async def test_an_issue_that_keeps_its_grants_is_written_by_the_content_update_not_a_full_sync_rewrite(self) -> None:
-        """A full sync's first write through on_new_records replaces an existing record's grants."""
+    @pytest.mark.parametrize(("stored_rule", "updated", "kept"), [
+        (AccessRule.OPEN, False, True), (AccessRule.STRICT, False, True), (AccessRule.RESTRICTED, False, False),
+        (AccessRule.OPEN, True, False)], ids=["open_unchanged", "strict_unchanged", "was_leveled", "changed"])
+    async def test_an_unchanged_issue_stored_without_a_level_keeps_its_grants_while_the_holders_are_unread(
+        self, stored_rule: AccessRule, updated: bool, kept: bool,
+    ) -> None:
+        """No level now and none stored, and the issue unchanged: the stored grants are the holders' grants for the
+        same people, so a sync that cannot read the holders keeps them. A stored RESTRICTED issue had a level whose
+        members must lose it, and a changed one may name other people: both are rewritten."""
         c = _connector()
-        issue = _issue()
-        del issue["fields"]["security"]
-        record, perms, _ = await _build(c, issue, self._none(None))
-        record.version = 1
+        first, _, _ = await _build(c, _issue(None), self._none(None))
+        existing = MagicMock(id="rid", version=0, is_placeholder=False, access_rule=stored_rule,
+                             source_updated_at=first.source_updated_at - (1 if updated else 0))
+        record, perms, _ = await _build(c, _issue(None), self._none(None), existing, full_sync=True)
+        assert perms == [] and record.rewrite_permissions is not kept
+        assert record.access_rule == (stored_rule if kept else AccessRule.STRICT)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("version", "changed", "kept"), [(1, False, True), (0, False, True), (0, True, False)],
+                             ids=["changed_before", "never_changed_since_its_first_sync", "new_or_promoted"])
+    async def test_an_issue_that_keeps_its_grants_is_written_by_the_content_update_not_a_full_sync_rewrite(
+        self, version: int, changed: bool, kept: bool,
+    ) -> None:
+        """A full sync's first write through on_new_records replaces an existing record's grants. An issue still at
+        version 0 (unchanged since its first sync) is just as existing; only a new issue, or a promoted placeholder
+        (both reported changed), has no stored grants to keep."""
+        c = _connector()
+        first, _, _ = await _build(c, _issue(None), self._none(None))  # search returns "security": null
+        existing = None if changed else MagicMock(
+            id="rid", version=version, source_updated_at=first.source_updated_at, is_placeholder=False,
+            access_rule=AccessRule.OPEN)
+        record, perms, built_changed = await _build(c, _issue(None), self._none(None), existing, full_sync=True)
+        assert built_changed is changed
         c.data_entities_processor.on_record_content_update = AsyncMock()
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        await c._process_new_records([(record, perms, False)], "PROJ", {"new_count": 0, "updated_count": 0})
-        c.data_entities_processor.on_record_content_update.assert_awaited_once()
-        c.data_entities_processor.on_new_records.assert_not_awaited()
+        await c._process_new_records([(record, perms, changed)], "PROJ", {"new_count": 0, "updated_count": 0})
+        assert c.data_entities_processor.on_record_content_update.await_count == (1 if kept else 0)
+        assert c.data_entities_processor.on_new_records.await_count == (0 if kept else 1)
 
     @pytest.mark.asyncio
     async def test_a_stored_unread_marker_followed_by_a_good_read_rereads_every_stored_issue(self) -> None:
@@ -1780,6 +1906,28 @@ class TestIssueGrantsNameListedAccountsOnly:
                                          email="", full_name="Mia", is_active=True)]
         records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, users)
         assert {(p.email, p.external_id) for p in records[0][1]} == {(None, "acc-9")}  # by account, reaching that user
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("listed", "licensed", "granted"), [
+        (True, True, True), (False, True, False), (True, False, False), (True, None, False)],
+        ids=["listed_and_licensed", "not_listed", "not_licensed", "product_access_unknown"])
+    async def test_a_linked_account_stored_without_an_email_is_in_the_directory_a_sync_resolves_against(
+        self, listed: bool, licensed: bool | None, granted: bool,
+    ) -> None:
+        """The user list read in full lists acc-9 active, and it is linked, but its email is hidden, so the directory a sync
+        builds (`_fetch_users` keeps a cached account only with an email) does not hold it. The level names it: it is
+        granted by account when the list shows it active and it has product access; not otherwise."""
+        c = _connector()
+        mia = AppUser(app_name="JIRA", connector_id="conn-sec", source_user_id="acc-9", org_id="org-1", email="",
+                      full_name="Mia", is_active=True)
+        c._stored_app_users = [*_users()[:2], mia]
+        c._listed_account_ids = {"acc-1", "acc-2"} | ({"acc-9"} if listed else set())
+        c._seen_account_ids = {"acc-1", "acc-2", "acc-9"}
+        c._licensed_account_ids = None if licensed is None else ({"acc-1", "acc-2"} | ({"acc-9"} if licensed else set()))
+        c._issue_security[PROJECT_ID] = _present({"10102": [
+            {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9", "emailAddress": "mia@x.com"}}]})
+        records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, _users()[:2])
+        assert {(p.email, p.external_id) for p in records[0][1]} == ({(None, "acc-9")} if granted else set())
 
     @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
     def test_a_directory_not_read_in_full_counts_the_linked_accounts_and_no_one_else(self, not_in_full: str) -> None:

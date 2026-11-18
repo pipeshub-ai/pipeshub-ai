@@ -91,6 +91,7 @@ from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
 from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
 from app.utils.libreoffice_convert import LibreOfficeCouldNotReadFileError, convert_with_libreoffice
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -134,10 +135,12 @@ class Processor:
         # but block construction (incl. LLM table enrichment) always happens here.
         self.docling_processor = DoclingProcessor(logger=self.logger, config=self.config_service)
 
-    async def _get_llm_for_role(self, role: str, *, reasoning_effort: str | None = None):
+    async def _get_llm_for_role(
+        self, role: str, *, reasoning_effort: str | None = None, sdk_retries: int | None = None,
+    ):
         """Resolve LLM for a role."""
         return await get_llm_for_role(
-            self.config_service, role, reasoning_effort=reasoning_effort
+            self.config_service, role, reasoning_effort=reasoning_effort, sdk_retries=sdk_retries,
         )
 
     def _pipeline(self) -> IndexingPipeline:
@@ -241,7 +244,9 @@ class Processor:
             if record is None:
                 raise RecordDeletedError(record_id)
 
-            _ , config = await self._get_llm_for_role("indexing", reasoning_effort="low")
+            _ , config = await self._get_llm_for_role(
+                "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
             is_multimodal_llm = config.get("isMultimodal")
 
             embedding_config = await get_embedding_model_config(self.config_service)
@@ -1413,7 +1418,9 @@ class Processor:
 
         try:
             self.logger.debug("📊 Processing Excel content")
-            llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
+            llm, _ = await self._get_llm_for_role(
+                "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
             parser = cast(ExcelParser, self.parsers[ExtensionTypes.XLSX.value])
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
@@ -1516,7 +1523,9 @@ class Processor:
             else:
                 parser = cast(CSVParser, self.parsers[extension])
 
-            llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
+            llm, _ = await self._get_llm_for_role(
+                "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
 
             # A large file is read, and its tables found, in a parse worker
             # process: both steps hold the GIL, so a thread would not free the loop.
@@ -1615,6 +1624,8 @@ class Processor:
             status_update["reason"] = ""
         elif reason is not None:
             status_update["reason"] = reason
+        if indexing_status == ProgressStatus.FAILED:
+            status_update["failedAt"] = timestamp
         # The parsing-service path writes parsingStatus=IN_PROGRESS before it
         # dispatches. Left there with processingStartedAt cleared, the record
         # reads as a crashed parse and stale recovery republishes it for ever.

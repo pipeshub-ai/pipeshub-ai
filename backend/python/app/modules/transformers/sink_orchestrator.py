@@ -120,6 +120,19 @@ def _fit_images(images: "list[Block]") -> int:
     return dropped
 
 
+
+def sink_only_end_fields(record_id: str, virtual_record_id: str | None) -> dict[str, object]:
+    """What a sink-only run writes when it ends: NOT_STARTED is the outcome, so the run is over and ``firstQueuedAt`` goes (a
+    later re-save or forced reindex starts a new run)."""
+    return {
+        "id": record_id,
+        "virtualRecordId": virtual_record_id,
+        "indexingStatus": ProgressStatus.NOT_STARTED.value,
+        "processingStartedAt": None,
+        "isDirty": False,
+        "firstQueuedAt": None,
+    }
+
 class SinkOrchestrator(Transformer):
     def __init__(
         self,
@@ -302,13 +315,7 @@ class SinkOrchestrator(Transformer):
             await self._project_properties(ctx, record_doc)
             success = await self.graph_provider.batch_update_nodes(
                 [
-                    {
-                        "id": record_id,
-                        "virtualRecordId": record.virtual_record_id,
-                        "indexingStatus": ProgressStatus.NOT_STARTED.value,
-                        "processingStartedAt": None,
-                        "isDirty": False,
-                    }
+                    sink_only_end_fields(record_id, record.virtual_record_id)
                 ],
                 CollectionNames.RECORDS.value,
             )

@@ -321,7 +321,11 @@ class TestRateLimits:
         eng_attempts = [b for b in search.bodies if '"ENG"' in b["jql"]]
         assert len(eng_attempts) == 4, "gives up after the retry cap"
         assert len(backoff_sleeps) == 3 and all(0 < s <= 60 for s in backoff_sleeps)
-        assert checkpoints.values_for("project_ENG") is None
+        # No cursor is saved, so the next sync reads the project from the start; the holders it could not read are
+        # marked unknown before the walk.
+        saved = checkpoints.values_for("project_ENG")
+        assert saved["last_sync_time"] is None and saved["last_issue_updated"] is None
+        assert saved["browse_holders"] == "?"
 
     async def test_a_failure_part_way_resumes_from_the_last_saved_page(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")], "nextPageToken": "T2"})
@@ -410,6 +414,9 @@ def stub_site(api: AtlassianApiStub) -> None:
         {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
     ]})
     api.on("GET", f"{JIRA}/project/ENG/role", {"Developers": f"{SITE}{JIRA}/project/ENG/role/10002"})
+    # Jira product access: one role, granted through one group (whose members the group/member route answers).
+    api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [
+        {"groupId": "grp-sw", "name": "jira-software-users"}]}]))
     api.on("GET", f"{JIRA}/project/ENG/role/10002", {
         "name": "Developers", "actors": [{"type": "atlassian-group-role-actor", "name": "devs", "groupId": "grp-dev"}],
     })
@@ -1796,6 +1803,33 @@ class TestUnreadApplicationRoles:
 
         assert acl(site_db) == before
         assert "1" in tickets(site_db), "the project's issues are still synced"
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="roles unread"),
+        pytest.param(json_response({"errorMessages": ["no"]}, status=403), id="roles refused"),
+    ])
+    async def test_while_product_access_is_unknown_no_new_account_is_linked_and_none_is_withdrawn(
+        self, api, site_db, checkpoints, search, answer,
+    ) -> None:
+        """Bo joins the site while the application roles cannot be read: Jira may not license him, so he is not
+        linked (and reads nothing); Ana, linked before, keeps the connector; nobody is withdrawn as unlicensed."""
+        stub_site(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert [u.source_user_id for u in site_db.app_users] == ["acc-ana"]
+
+        two_users(api)
+        api.on("GET", f"{JIRA}/group/member", {"values": [{"accountId": "acc-ana"}, {"accountId": "acc-bo"}], "isLast": True})
+        api.on("GET", f"{JIRA}/applicationrole", answer)
+        await connector.run_sync()
+
+        assert "acc-bo" not in {u.source_user_id for u in site_db.app_users}
+        assert site_db.withdrawn_users == []
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [
+            {"groupId": "grp-sw", "name": "jira-software-users"}]}]))
+        await connector.run_sync()
+        assert "acc-bo" in {u.source_user_id for u in site_db.app_users}, "linked once his product access is read"
 
     async def test_an_unread_application_role_list_still_updates_projects_that_do_not_use_one(
         self, api, site_db, checkpoints, search

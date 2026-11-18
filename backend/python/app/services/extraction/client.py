@@ -59,7 +59,10 @@ class ExtractionClient(BaseServiceClient):
         self,
         service_url: str | None = None,
         read_timeout: float = 600.0,  # 10 min — LLM calls can be slow
-        max_retries: int = 2,
+        # Attempts per request (``BaseServiceClient`` counts the first): one, so no request is sent twice. A paid
+        # classify call that failed after the service ran it would be paid again; a retry is safe only once the
+        # service single-flights identical requests.
+        max_retries: int = 1,
         retry_delay: float = 2.0,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
         config_service: "ConfigurationService | None" = None,

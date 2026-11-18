@@ -291,6 +291,19 @@ def _reset_default_backpressure_coordinator():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_process_retry_budget() -> Iterator[None]:
+    """The retry budget (``spend_guard.retry_policy``) is one per process and shared by the LLM and embeddings gateways;
+    a test that fails many calls on purpose must not leave the next one with no retries to spend."""
+    from app.services.spend_guard.retry_policy import (
+        RETRY_BUDGET_CAPACITY,
+        process_retry_budget,
+    )
+
+    process_retry_budget().refund(RETRY_BUDGET_CAPACITY)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_narrow_access_memo() -> Iterator[None]:
     """Search remembers, per process, scopes its container filter could not
     serve. A scope marked in one test must not route another test's search."""
@@ -391,3 +404,14 @@ def mock_config_service():
 def mock_blob_store():
     """Mock BlobStorage."""
     return MagicMock()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """``stress`` tests are probabilistic load tests: they run on request (``-m stress`` or
+    ``RUN_STRESS_TESTS=1``), never in a shared runner's unit job."""
+    if os.environ.get("RUN_STRESS_TESTS") == "1" or "stress" in (config.getoption("-m") or ""):
+        return
+    skip = pytest.mark.skip(reason="a stress test: run with -m stress or RUN_STRESS_TESTS=1")
+    for item in items:
+        if "stress" in item.keywords:
+            item.add_marker(skip)

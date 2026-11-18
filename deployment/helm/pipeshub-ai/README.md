@@ -396,7 +396,11 @@ carry the label `pipeshub.ai/workload: parsing`.
 
 ## Metrics
 
-The chart exposes no scrape port: the services push product telemetry to the collector (see `telemetry.collection.enabled`) and do not serve `/metrics`. The earlier `metrics`, `monitoring.serviceMonitor` and `telemetry.otlp` values configured nothing and were removed.
+The chart serves the indexing governor's Prometheus metrics (a fixed set of series with closed labels: no pid, pod, org or record label, at most 300 series) when `metrics.enabled` is true (the default). Each pod publishes `/metrics` on the container port named `metrics` (`metrics.port`, default `9091`, plain HTTP, no authentication). `metrics.bind` is the address it listens on: `podIP` (the default) binds the pod's own address through the downward API, `0.0.0.0` listens on every interface, and any other IP address is used as given. The chart sets `PIPESHUB_METRICS_ENABLED`, `PIPESHUB_METRICS_PORT` and `PIPESHUB_METRICS_BIND` from these values.
+
+- `metrics.podMonitor.enabled: true` adds a `PodMonitor` for the Prometheus Operator (the CRDs must exist, so it is off by default); `metrics.podMonitor.labels` carries the labels your Prometheus selects on (for example `release: kube-prometheus-stack`), and `interval` / `scrapeTimeout` tune the scrape.
+- With `networkPolicy.enabled: true`, add an ingress rule that lets your Prometheus reach the `metrics` port.
+- Product telemetry is separate: the services push it to the collector (see `telemetry.collection.enabled`), and the exporter never touches it.
 
 ## Validation
 

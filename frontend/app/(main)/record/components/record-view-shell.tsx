@@ -20,6 +20,9 @@ import { resolveWebUrl } from '@/app/components/file-preview/resolve-web-url';
 import { withCurrentOrgId } from '@/lib/navigation';
 import type { PaginationControls } from '@/app/components/file-preview/types';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
+import { selectRecordPreviewCacheEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { openRecordRange, shouldOpenByRange, type RecordRangeTransport } from '@/lib/record-content/pdf-range-transport';
+import { openRecordContent, PartyLeftError, SessionEndedError, type Pending, type RecordLease, type Variant, type Grant } from '@/lib/record-content';
 import {
   canShowReindexMenu,
   getReindexNodeFromHubItem,
@@ -75,6 +78,9 @@ function recordTypeIcon(recordType: string): string {
   }
 }
 
+/** How long the object URL of a download stays valid after the click. */
+const DOWNLOAD_URL_LIFETIME_MS = 5 * 60 * 1000;
+
 export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -90,6 +96,10 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [fileName, setFileName] = useState('');
   const [fileUrl, setFileUrl] = useState('');
   const [fileBlob, setFileBlob] = useState<Blob | undefined>(undefined);
+  // A large PDF read by byte ranges; `rangeBlockedFor` is the record whose range mode ended (it then opens whole).
+  const [rangeTransport, setRangeTransport] = useState<RecordRangeTransport | undefined>(undefined);
+  const [rangeBlockedFor, setRangeBlockedFor] = useState<string | null>(null);
+  const rangeRef = useRef<RecordRangeTransport | null>(null);
   const [fileType, setFileType] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,14 +117,39 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [isReindexBlockedOpen, setIsReindexBlockedOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const blobUrlRef = useRef<string | null>(null);
+  const leaseRef = useRef<RecordLease | null>(null);
+  const pendingRef = useRef<Pending | null>(null);
+  // Bumped whenever the page lets go of its content (unmount, record change): an open that lands after
+  // that must not keep a lease nobody will release.
+  const epochRef = useRef(0);
 
+  // The page's hold on the cached content: dropping it lets the cache revoke the object URL.
   const revokeBlobUrl = useCallback(() => {
-    if (blobUrlRef.current?.startsWith('blob:')) {
-      URL.revokeObjectURL(blobUrlRef.current);
-    }
-    blobUrlRef.current = null;
+    epochRef.current += 1;
+    rangeRef.current?.destroy();
+    rangeRef.current = null;
+    pendingRef.current?.leave();
+    pendingRef.current = null;
+    leaseRef.current?.release();
+    leaseRef.current = null;
   }, []);
+
+  const openContent = useCallback(
+    async (id: string, variant: Variant, grant?: Grant | null) => {
+      const epoch = epochRef.current;
+      const pending = openRecordContent(id, variant, grant ?? undefined);
+      pendingRef.current = pending;
+      const lease = await pending.promise;
+      if (epochRef.current !== epoch) {
+        lease.release();
+        throw new PartyLeftError();
+      }
+      pendingRef.current = null;
+      leaseRef.current = lease;
+      return lease;
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +161,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     revokeBlobUrl();
     setFileUrl('');
     setFileBlob(undefined);
+    setRangeTransport(undefined);
     setFileName('');
     setFileType('');
     setCurrentPage(1);
@@ -134,11 +170,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     (async () => {
       try {
         let details: RecordDetailsResponse;
+        let grant: Grant | null = null;
         try {
           // No toast for a refusal: the server's words for a 403 ("not shared with this connected app") would confirm the record exists.
-          details = await KnowledgeBaseApi.getRecordDetails(recordId, {
+          ({ details, grant } = await KnowledgeBaseApi.getRecordDetailsForOpen(recordId, {
             suppressErrorToast: (e) => e.statusCode === 403 || e.statusCode === 404,
-          });
+          }));
         } catch (detailsErr) {
           if (cancelled) return;
           // Only this request says "no access": a 403 or 404 from it looks the same on purpose (revoked, never held and
@@ -170,6 +207,34 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           return;
         }
 
+        // A large PDF is read by the pages shown. Anything but a partial answer opens the whole record as usual.
+        if (
+          rangeBlockedFor !== recordId &&
+          selectRecordPreviewCacheEnabled(useFeatureFlagsStore.getState()) &&
+          shouldOpenByRange(details.record)
+        ) {
+          const epoch = epochRef.current;
+          // A range that cannot be opened is no reason to fail the page: the whole record is tried below, and only
+          // its failure is shown.
+          const opened: Awaited<ReturnType<typeof openRecordRange>> = await openRecordRange({
+            recordId,
+            onFallback: () => {
+              if (epochRef.current === epoch) setRangeBlockedFor(recordId);
+            },
+          }).catch(() => ({ mode: 'whole' as const }));
+          if (cancelled) {
+            if (opened.mode === 'range') opened.transport.destroy();
+            return;
+          }
+          if (opened.mode === 'range') {
+            rangeRef.current = opened.transport;
+            setRangeTransport(opened.transport);
+            setFileType('application/pdf');
+            setIsLoading(false);
+            return;
+          }
+        }
+
         const wantsPdfConversion = isPresentationFile(
           details.record.mimeType,
           details.record.recordName,
@@ -181,22 +246,23 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
           if (wantsPdfConversion) {
             try {
-              blob = await KnowledgeBaseApi.streamRecord(recordId, {
-                convertTo: 'application/pdf',
-              });
+              blob = (await openContent(recordId, 'pdf', grant)).blob;
               usedPdfConversion = true;
-            } catch {
+            } catch (conversionErr) {
+              // The page leaving or the session ending is not a failed conversion: do not stream the original for nobody.
+              if (conversionErr instanceof PartyLeftError || conversionErr instanceof SessionEndedError) throw conversionErr;
+              // The page may have gone while the failure was in flight: an original opened now would hold a lease nobody releases.
+              if (cancelled) return;
               // Conversion failed — still fetch the original so download works.
-              blob = await KnowledgeBaseApi.streamRecord(recordId);
+              const lease = await openContent(recordId, 'original');
+              blob = lease.blob;
               if (cancelled) return;
               const isDocx = isDocxFile(resolvedType, name);
               if (isDocx) {
                 setFileBlob(blob);
                 setFileUrl('');
               } else {
-                const nextUrl = URL.createObjectURL(blob);
-                blobUrlRef.current = nextUrl;
-                setFileUrl(nextUrl);
+                setFileUrl(lease.url);
                 setFileBlob(undefined);
               }
               setPreviewError(
@@ -208,7 +274,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
               return;
             }
           } else {
-            blob = await KnowledgeBaseApi.streamRecord(recordId);
+            blob = (await openContent(recordId, 'original', grant)).blob;
           }
 
           if (cancelled) return;
@@ -220,11 +286,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
             usedPdfConversion,
           );
           const isDocx = isDocxFile(previewMime, name);
-          const nextUrl = isDocx ? '' : URL.createObjectURL(blob);
-
-          if (!isDocx) {
-            blobUrlRef.current = nextUrl;
-          }
+          const nextUrl = isDocx ? '' : (leaseRef.current?.url ?? '');
 
           setFileType(previewMime);
           setFileBlob(isDocx ? blob : undefined);
@@ -247,7 +309,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     return () => {
       cancelled = true;
     };
-  }, [recordId, revokeBlobUrl, t]);
+  }, [recordId, rangeBlockedFor, revokeBlobUrl, openContent, t]);
 
   useEffect(() => () => revokeBlobUrl(), [revokeBlobUrl]);
 
@@ -269,7 +331,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     setCurrentPage(1);
     setTotalPages(null);
     setZoomLevel(1);
-  }, [recordId, fileUrl, fileBlob]);
+  }, [recordId, fileUrl, fileBlob, rangeTransport]);
 
   const handlePrevPage = () => setCurrentPage((p) => Math.max(1, p - 1));
   const handleNextPage = () => {
@@ -300,7 +362,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const paginationVisibility = shouldShowPagination(fileType, fileName, totalPages, isLoading, false);
   const hasError = !isLoading && !!error;
   const hasPreviewError = !isLoading && !!previewError;
-  const hasDownloadableFile = Boolean(fileUrl || fileBlob);
+  const hasDownloadableFile = Boolean(fileUrl || fileBlob || rangeTransport);
   const headerTitle = recordDetails?.record.recordName || fileName || t('recordView.loading');
   const handleFullscreenToggle = async () => {
     const el = previewHostRef.current;
@@ -316,11 +378,26 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     }
   };
 
-  const handleDownload = useCallback(() => {
+  const handleDownload = useCallback(async () => {
     let url = fileUrl;
     let created = false;
-    if (!url && fileBlob) {
-      url = URL.createObjectURL(fileBlob);
+    let source = fileBlob;
+    if (!url && !source && rangeTransport) {
+      // A range-mode document holds only the pages viewed: a download reads the whole file. The bytes are taken
+      // out of the cache entry and the page's hold on it is let go at once; the download reads from its own object
+      // URL, so evicting or revoking the entry cannot cut a large file short.
+      let lease: RecordLease | null = null;
+      try {
+        lease = await openRecordContent(recordId, 'original').promise;
+        source = lease.blob;
+      } catch {
+        return;
+      } finally {
+        lease?.release();
+      }
+    }
+    if (!url && source) {
+      url = URL.createObjectURL(source);
       created = true;
     }
     if (!url) return;
@@ -330,8 +407,9 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    if (created) setTimeout(() => URL.revokeObjectURL(url), 100);
-  }, [fileUrl, fileBlob, fileName]);
+    // The browser reads the object URL after the click returns; a large file needs far longer than a moment.
+    if (created) setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
+  }, [fileUrl, fileBlob, fileName, rangeTransport, recordId]);
 
   const handleReindexClick = () => {
     const indexingStatus = recordDetails?.record?.indexingStatus;
@@ -674,6 +752,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                   fileName={fileName}
                   fileType={fileType}
                   fileBlob={fileBlob}
+                  rangeTransport={rangeTransport}
                   webUrl={webUrl}
                   pagination={paginationControls}
                 />

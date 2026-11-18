@@ -684,10 +684,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Each waiting connector's cap on records in flight, for one
         dispatch decision. None when fair scheduling is off.
 
-        Only connectors whose next record could be dispatched now count as
-        waiting (``can_dispatch`` is the dispatch phase's own check). One
-        whose head is waiting out a retry backoff cannot take a slot, so it
-        must not shrink anyone else's share."""
+        A connector counts as waiting in two cases. Its next buffered record
+        could be dispatched now (``can_dispatch`` is the dispatch phase's own
+        check): one whose head is waiting out a retry backoff cannot take a
+        slot, so it must not shrink anyone else's share. Or it has a
+        dispatched record that has not reached the gate yet (``started`` but
+        not ``admitted``, counted by ``SlotShare.plan``): that record holds
+        no earlier place in the gate's arrival order, so without counting it
+        another connector would get no cap and fill the gate ahead of it."""
         scheduler = self._scheduler
         slot_share = self._slot_share
         if scheduler is None or slot_share is None:
@@ -2240,7 +2244,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Counted against the connector's share from dispatch until the
             # task ends, including any wait at the gate: a record queued for
             # a slot is as good as holding one, because the gate admits in
-            # arrival order.
+            # arrival order. Until it is admitted it also marks the connector
+            # as waiting, since it may be held up before the gate.
             slot_share.started(slot_token, slot_key, self._slot_pool_of(slot_key))
         try:
             future = asyncio.run_coroutine_threadsafe(
@@ -2412,6 +2417,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         stable_message_id: str,
         retry_count: int = 1,
         delay_s: float | None = None,
+        parse_enqueued_at_ms: int | None = None,
     ) -> None:
         """Re-publish a failed message to the same topic for retry.
         
@@ -2441,6 +2447,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             payload["_retry_tracking_id"] = stable_message_id
             backoff_seconds = delay_s if delay_s is not None else _compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff_seconds
+            if parse_enqueued_at_ms:
+                # PARSE_ADMISSION=classes: when it first queued, kept across hand-backs so aging survives them.
+                payload.setdefault("parseEnqueuedAtMs", parse_enqueued_at_ms)
 
             # The handler's context is reset by now, and the send runs on the
             # main loop under its own: re-bind the message's so the retry
@@ -2740,6 +2749,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # record routes to heavy (see effective_index_tier). The gate, the
         # lease limit and the lease pool name all have to agree on that.
         index_tier = concurrency.dispatch_tier(self, parsed_message)
+        class_ctx = concurrency.class_context(self, parsed_message.payload)  # None unless PARSE_ADMISSION=classes
         index_lease_pool = concurrency.admission_lease_pool(self, index_tier)
         success = False
         # Set where an exit is neither a success nor a failure; the
@@ -2779,10 +2789,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
             index_admission = await concurrency.at_gate(
-                waiter_token, concurrency.acquire_index_slot(self, index_tier)
+                waiter_token, concurrency.acquire_index_slot(self, index_tier, **concurrency.class_kwargs(class_ctx))
             )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
+            if self._slot_share is not None:
+                self._slot_share.admitted(
+                    (message.topic, message.partition, message.offset)
+                )
             if waiter_token is not None:
                 waiter_token.admit()
 
@@ -2872,7 +2886,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 begin_progress(progress)
 
                 async def consume_handler_events() -> None:
-                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool, class_ctx
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
@@ -2900,6 +2914,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                             parsed_message,
                                             concurrency.acquire_download_slot(
                                                 self, index_tier, timeout=wait.remaining(),
+                                                **concurrency.class_kwargs(
+                                                    class_ctx, size_bytes=event.data.size_bytes if event.data else None
+                                                ),
                                             ),
                                         )
                                         memory_admission = await concurrency.reserve_record_memory(
@@ -2908,6 +2925,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
                                             kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -2929,10 +2947,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         self, budget, message_id
                                     ) as wait:
                                         size_bytes = event.data.size_bytes if event.data else None
+                                        # The size and what the inspection found are known now: the index permit
+                                        # moves to its class in place.
+                                        if class_ctx is not None and event.data is not None:
+                                            class_ctx = class_ctx.inspected(event.data.pages, scanned=event.data.scanned, cells=event.data.cells)
+                                        concurrency.reclass_index_slot(index_admission, class_ctx, size_bytes)
+                                        download_admission = await concurrency.reclass_download_slot(
+                                            download_admission, class_ctx, size_bytes, wait.remaining()
+                                        )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
                                             current=memory_admission, kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
                                         parsing_admission = await concurrency.in_phase(
                                             self,
@@ -2946,6 +2973,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                                 timeout=wait.remaining(),
                                                 kind=record_kind,
                                                 reserved_bytes=memory_admission.cost if memory_admission else 0,
+                                                **concurrency.class_kwargs(class_ctx),
                                             ),
                                         )
                                         # Set before the lease attempt so the
@@ -3136,7 +3164,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         return False
                 try:
                     await self._requeue_message(
-                        topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
+                        topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s,
+                        **concurrency.first_admission_kwargs(e),
                     )
                 except Exception as requeue_error:
                     self.logger.error(

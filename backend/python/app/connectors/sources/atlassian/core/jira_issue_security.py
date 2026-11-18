@@ -721,6 +721,7 @@ def apply_issue_access_settled(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str], bool]:
     """Set the issue's access rule and return the grants to write, the holder types
     skipped, and whether the result is settled. Settled means the level (or its
@@ -731,7 +732,8 @@ def apply_issue_access_settled(
     issue, whose level Jira copies onto it; a story under its epic only when everyone who
     reads the story reads the epic; any other issue under its project. A parent in another
     project is handled by the processor, which keeps the child on its own project.
-    Attachments are handled separately and stay empty.
+    Attachments are handled separately and stay empty. ``unchanged_stored_rule`` is the
+    stored record's access rule when the issue has not changed since it was stored.
     """
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
@@ -767,11 +769,22 @@ def apply_issue_access_settled(
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
+        # shortcut: Jira also shows an unleveled sub-task to its own Browse assignee and user-field holders, without its
+        # parent (JSWCLOUD-25762, https://jira.atlassian.com/browse/JSWCLOUD-25762). The read rule cannot grant them: an OPEN
+        # sub-task is read below its parent by the parent's own holders, who may not read it in Jira
+        # (tests/permissions/test_subtask_own_holders.py). It stays STRICT, read with its parent, until the rule can say
+        # "the project, plus its own holders".
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
             # reporter grant still opens the issue. An explicit null level is not this: the issue may have
             # been RESTRICTED, and its old level members must lose it (OPEN would accept their grant alone).
             record.access_rule = AccessRule.OPEN
+            record.rewrite_permissions = False
+            return [], [], True
+        if top_level and context.browse_holders is None and unchanged_stored_rule in (AccessRule.OPEN, AccessRule.STRICT):
+            # Holders unread, no level now and none when it was stored, and the issue unchanged since: its stored
+            # grants are the holders' grants for the same people, so they and its stored rule stay.
+            record.access_rule = unchanged_stored_rule
             record.rewrite_permissions = False
             return [], [], True
         grants = browse_holder_grants(
@@ -836,13 +849,14 @@ def apply_issue_access(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str]]:
     """``apply_issue_access_settled`` without the settled flag: the grants to write
     and the holder types skipped."""
     grants, skipped, _settled = apply_issue_access_settled(
         record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
         user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
-        reporter_email=reporter_email, assignee_email=assignee_email,
+        reporter_email=reporter_email, assignee_email=assignee_email, unchanged_stored_rule=unchanged_stored_rule,
     )
     return grants, skipped
 
