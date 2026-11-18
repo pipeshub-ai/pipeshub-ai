@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.connectors.services.reindex_force import user_forced_reindex
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
@@ -4863,6 +4864,10 @@ class DataSourceEntitiesProcessor:
         selected: bool = False,
     ) -> dict:
         payload = {**record.to_kafka_record(), "forceReindex": True}
+        if user_forced_reindex():
+            # A user's Force reindex: every stored paid result is bypassed and paid for again. The platform's own
+            # reindexes of unchanged records (a policy change) keep reusing them.
+            payload["refreshPaidOutputs"] = True
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:

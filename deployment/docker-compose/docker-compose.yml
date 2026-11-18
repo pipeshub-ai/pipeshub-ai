@@ -322,6 +322,11 @@ services:
       - PIPESHUB_CPU_OVERSUB=${PIPESHUB_CPU_OVERSUB:-}
       - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
       - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
+      # The paid-result cache: stores nothing unless PAID_CACHE_WRITE is true (off by default for the release that
+      # ships it); the delayed re-purge hops are published only when PAID_RESULT_REPURGE_CHAIN is true. Empty keeps defaults.
+      - PAID_CACHE=${PAID_CACHE:-}
+      - PAID_CACHE_WRITE=${PAID_CACHE_WRITE:-}
+      - PAID_RESULT_REPURGE_CHAIN=${PAID_RESULT_REPURGE_CHAIN:-}
       - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
       # Query-service runtime tuning. Defaults reproduce current behaviour:
       # langchain transport, accessible-records cache on, signed-URL cache off.

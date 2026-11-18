@@ -695,10 +695,8 @@ class ConfluenceConnector(BaseConnector):
             raise ConnectorInitError(str(e)) from e
         except ValueError as e:
             # The client builder's own message names the missing or bad setting.
-            self.logger.error(f"❌ Failed to initialize Confluence connector: {e}")
             raise ConnectorInitError(f"Confluence settings are incomplete: {e}") from e
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
             # The message reaches any user who opens a record while the connector starts, so no raw
             # error text (hosts, response bodies): that stays in the log.
             raise ConnectorInitError(
@@ -753,10 +751,6 @@ class ConfluenceConnector(BaseConnector):
     async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
         """Notify admin: account-level app reaches multiple sites — needs a new
         Resource-restricted OAuth app (grants cannot be changed on an existing app)."""
-        self.logger.error(
-            "❌ Confluence connector %s: OAuth app can access multiple Atlassian sites: %s",
-            self.connector_id, error,
-        )
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,

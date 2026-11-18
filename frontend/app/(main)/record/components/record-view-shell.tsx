@@ -426,15 +426,18 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     if (requiresForceReindexConfirmation(reindexNode)) {
       setIsForceReindexOpen(true);
     } else {
-      handleForceReindex();
+      void handleForceReindex(false);
     }
   };
 
-  const handleForceReindex = async () => {
+  // ``force`` is what the dialog displayed when it opened (a Force reindex of an indexed file): the status is not read
+  // again here, so a reload while the dialog is open cannot turn a confirmed Force reindex into a plain one.
+  const handleForceReindex = async (force: boolean) => {
     setIsReindexing(true);
     setIsForceReindexOpen(false);
     try {
-      await toast.promise(KnowledgeBaseApi.reindexItem(recordId), {
+      // A Force reindex re-parses and re-indexes the file: nothing stored is reused.
+      await toast.promise(force ? KnowledgeBaseApi.reindexItem(recordId, 0, undefined, true) : KnowledgeBaseApi.reindexItem(recordId), {
         loading: t('recordView.reindexLoading'),
         success: t('recordView.reindexSuccess'),
         error: t('recordView.reindexError'),
@@ -930,7 +933,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
               <Button
                 variant="solid"
                 color="jade"
-                onClick={handleForceReindex}
+                onClick={() => void handleForceReindex(true)}
                 disabled={isReindexing}
               >
                 <MaterialIcon name="sync" size={16} />

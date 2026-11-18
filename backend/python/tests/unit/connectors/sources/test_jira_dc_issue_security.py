@@ -67,6 +67,13 @@ class TestUsernames:
         resolved = connector._users_with_usernames(users)
         assert resolved["carol"].email == "carol@example.com" and resolved["carol-key"] is users["carol-key"]
 
+    def test_a_username_that_is_a_listed_accounts_key_is_no_alias(self) -> None:
+        """Alice was renamed to alice.old and kept "alice" as her key; a newer account took the username "alice"."""
+        connector = _connector()
+        connector._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.old": "alice"}
+        users = {"JIRAUSER10100": _user("JIRAUSER10100", "new-alice@example.com")}
+        assert "alice" not in connector._users_with_usernames(users)
+
 
 class TestStoredGrantsKept:
     """A leveled issue whose level could not be read yet keeps the grants it has: a full sync's first
@@ -174,6 +181,61 @@ class TestParentGate:
         with pytest.raises(Exception, match="parent issue 5"):
             await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
 
+    @pytest.mark.parametrize(
+        ("knowledge", "holders", "own_level", "parent_level", "files"),
+        [
+            pytest.param(SchemeKnowledge.PRESENT, [{"type": "reporter"}], None, None, False, id="neither has a level"),
+            pytest.param(SchemeKnowledge.PRESENT, [{"type": "reporter"}], None, "20", True, id="the parent has a level"),
+            pytest.param(SchemeKnowledge.PRESENT, [{"type": "reporter"}], "20", None, True, id="it has a level"),
+            pytest.param(SchemeKnowledge.PRESENT, [], None, None, True, id="no per-issue holder"),
+            pytest.param(SchemeKnowledge.PRESENT, None, None, None, True, id="holders unread, a new sub-task"),
+            pytest.param(SchemeKnowledge.NONE, [{"type": "reporter"}], None, None, False, id="no scheme"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], None, None, False,
+                         id="scheme unread, neither has a level"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], None, "20", True,
+                         id="scheme unread, the parent has a level"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], "absent", None, True,
+                         id="its level not returned"),
+        ],
+    )
+    async def test_a_sub_task_leaves_its_parent_only_where_a_holder_may_read_it_alone(
+        self, knowledge: SchemeKnowledge, holders: list | None, own_level: str | None, parent_level: str | None,
+        files: bool,
+    ) -> None:
+        """Then it hangs off its project with its own holders' grants, which on the parent would reach the parent's readers."""
+        connector = _connector()
+        parent = {"id": "5", "fields": {"project": {"id": "10", "key": "P"},
+                                        "security": {"id": parent_level} if parent_level else None}}
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=parent)))
+        # A level naming the same people on every issue: one naming the sub-task's own people takes it off its parent.
+        security = IssueSecurityContext(knowledge=knowledge, members_readable=True, browse_holders=holders,
+                                        members_by_level={"20": [{"type": "group", "parameter": "g"}]})
+        fields = {"project": {"id": "10", "key": "P"}, "security": {"id": own_level} if own_level else None}
+        if own_level == "absent":
+            del fields["security"]
+        assert await connector._files_under_parent(fields, "5", security, is_subtask=True) is files
+
+    @pytest.mark.parametrize(("stored_parent", "files"), [(None, False), ("5", True)])
+    async def test_a_stored_sub_task_stays_where_it_was_filed_while_the_holders_are_unread(
+        self, stored_parent: str | None, files: bool,
+    ) -> None:
+        connector = _connector()
+        connector._get_issue_with_retry = AsyncMock()
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, browse_holders=None)
+        fields = {"project": {"id": "10", "key": "P"}, "security": None}
+        assert await connector._files_under_parent(
+            fields, "5", security, stored_parent=stored_parent, stored=True, is_subtask=True) is files
+        connector._get_issue_with_retry.assert_not_awaited()
+
+    async def test_a_parent_read_refused_with_403_is_a_failed_read_not_a_hidden_parent(self) -> None:
+        """GET /rest/api/2/issue/{id} documents 404 for an issue that is missing or hidden from the caller, and no
+        403 (https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/)."""
+        connector = _connector()
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=403))
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
+        with pytest.raises(Exception, match="parent issue 5"):
+            await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
+
     async def test_a_parent_the_account_cannot_see_is_not_a_parent(self) -> None:
         connector = _connector()
         connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=404))
@@ -250,6 +312,38 @@ class TestParentKeyLookup:
         assert connector._issue_id_to_key_cache["8"] == "P-8"
 
 
+class TestIssuesNamingNewAccounts:
+    @pytest.mark.parametrize(("status", "whole_project"), [(400, True), (503, None)])
+    async def test_a_refused_jql_reads_the_whole_project_and_a_failed_one_fails_the_walk(
+        self, status: int, whole_project: bool | None,
+    ) -> None:
+        from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
+
+        connector = _connector()
+        connector._dc_name_to_source_id = {"carol": "carol-key", "bob": "bob-key"}
+        connector._accounts_to_hand = {"carol-key"}
+        clauses: list[str] = []
+
+        async def search(*_: object, extra_jql: str, **__: object) -> AsyncIterator[tuple[list, bool, None]]:
+            clauses.append(extra_jql)
+            raise JiraReadError(status, "no")
+            yield
+
+        connector._fetch_issues_batched = search
+        connector._update_project_sync_checkpoint = AsyncMock()
+        holders = [{"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_20000"},
+                   {"type": "groupCustomField", "parameter": "customfield_20001"}]
+        if whole_project is None:
+            with pytest.raises(JiraReadError):
+                await connector._reread_issues_naming("P", "10", [], {}, holders)
+        else:
+            assert await connector._reread_issues_naming("P", "10", [], {}, holders) is True
+            assert connector._reread_whole_project is True
+            # Marked before the whole-project read that replaces the refused one, which may fail too.
+            connector._update_project_sync_checkpoint.assert_awaited_once_with("P", browse_holders="?")
+        assert clauses == ['(assignee in ("carol") OR cf[20000] in ("carol"))']
+
+
 class TestWithdrawnAccounts:
     """An account the complete active-user list no longer shows loses the connector and its own grants; an
     issue's level grants name only listed accounts; an account listed again has the leveled issues read again."""
@@ -287,6 +381,16 @@ class TestWithdrawnAccounts:
         c = _connector()
         stored = self._stored(c)
         await c._withdraw_unlisted_app_users([_user("kept", "k@x.com"), _user("moved-new", "m@x.com")])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
+        assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
+
+    async def test_an_account_without_product_access_is_withdrawn_with_its_grants(self) -> None:
+        """Still on the active user list, but in no product group: like an unlisted account it loses the connector and
+        its own grants, and no longer counts as linked this sync, where a list cut short would grant it again."""
+        c = _connector()
+        stored = self._stored(c)
+        c._licensed_keys = {"kept", "moved"}
+        await c._withdraw_ineligible_app_users(stored[1:])
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
         assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
 
@@ -562,6 +666,7 @@ class TestWithdrawnAccounts:
         order: list = []
         listed = [_user("alice-key", "a@x.com"), _user("carol-key", "c@x.com")]
         c._fetch_users = AsyncMock(return_value=listed)
+        c._eligible_users = AsyncMock(side_effect=lambda users: users)  # both have Jira product access
         c._stored_app_users = [listed[0]]
         c._note_people_to_reread = AsyncMock(side_effect=lambda ids: order.append(("note", sorted(ids))))
         c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=lambda _u: order.append(("link",)))
@@ -657,6 +762,18 @@ class TestLevelsJiraLeavesOut:
         with pytest.raises(JiraReadError):
             await connector._parent_level("5")
         assert "5" not in connector._parent_levels
+
+    @pytest.mark.parametrize(("answer", "unsettled"), [({"total": 1}, {"1"}), ({}, {"1"}), ({"total": 0}, set())],
+                             ids=["matches but no list", "nothing", "no match"])
+    async def test_an_answer_without_an_issues_list_settles_only_a_zero_match(self, answer, unsettled) -> None:
+        """SearchResultsBean declares issues but does not require it: a zero total is an answer (none of them has no
+        level, so the key stays missing and the issue closed); anything else without the list is not."""
+        connector = _connector()
+        connector._search_issues_with_retry = AsyncMock(
+            return_value=MagicMock(status=200, json=MagicMock(return_value=answer)))
+        issue = {"id": "1", "fields": {}}
+        assert await connector._null_levels_jira_left_out([issue]) == unsettled
+        assert "security" not in issue["fields"]
 
     async def test_nothing_is_asked_when_every_issue_carries_the_key(self) -> None:
         connector = _connector()
