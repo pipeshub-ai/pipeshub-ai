@@ -1671,3 +1671,85 @@ def test_a_row_whose_first_cell_is_absent_still_splits_by_the_next_column_of_lab
     bands = ola.split_record_bands([[], labels, values], cells)
     assert bands is not None and len(bands) == 3
     assert [[c["text"] for c in band[2]] for band in bands] == [["Selects."], ["Chooses."], ["Clears."]]
+
+
+def _table_note_and_list_page(c: canvas.Canvas) -> list[Fixture]:
+    c.setLineWidth(0.6)
+    top = 300.0
+    for x in (60, 140, 260):
+        c.line(x, _top(top), x, _top(top + 60))
+    for r in range(4):
+        c.line(60, _top(top + 20 * r), 260, _top(top + 20 * r))
+    c.setFont("Helvetica", 8)
+    for r in range(3):
+        c.drawString(64, _top(top + 20 * r + 13), f"K{r}")
+        c.drawString(144, _top(top + 20 * r + 13), f"value {r}")
+    c.drawString(64, _top(372), "- item one")  # a list under the table, kept apart from it
+    c.drawString(200, _top(372), "NOTE ab")  # a note that the table absorbs
+    return []
+
+
+def _table_note_and_list_regions() -> list[LayoutRegion]:
+    return [
+        LayoutRegion(type=LayoutRegionType.TABLE, bbox=(60.0, 300.0, 260.0, 360.0), text=""),
+        LayoutRegion(type=LayoutRegionType.TEXT, bbox=(198.0, 362.0, 240.0, 374.0), text="NOTE ab"),
+        LayoutRegion(type=LayoutRegionType.LIST, bbox=(62.0, 362.0, 110.0, 374.0), text="- item one"),
+    ]
+
+
+def test_text_cut_back_from_a_table_is_not_repeated_when_a_list_beside_it_owns_it() -> None:
+    pdf, page, _ = make_page(_table_note_and_list_page)
+    try:
+        words = page.extract_words()
+        out = ola._resolve_overlaps(_table_note_and_list_regions(), page=page, all_words=words,
+                                    page_w=PAGE_W, page_h=PAGE_H)
+        texts = [r for r in out if r.type == LayoutRegionType.TEXT]
+        assert sum(r.text.count("item one") for r in out if r.type != LayoutRegionType.TABLE) == 1
+        assert [r.text for r in texts] == ["NOTE ab"]  # the note, which no region owned, stays as text
+        assert len([r for r in out if r.type == LayoutRegionType.LIST]) == 1
+    finally:
+        pdf.close()
+
+
+def test_resolving_overlaps_without_a_word_list_keeps_the_table_region_as_it_is() -> None:
+    pdf, page, _ = make_page(_table_note_and_list_page)
+    try:
+        out = ola._resolve_overlaps(_table_note_and_list_regions(), page=page, all_words=None,
+                                    page_w=PAGE_W, page_h=PAGE_H)
+        assert any(r.type == LayoutRegionType.TABLE for r in out)
+    finally:
+        pdf.close()
+
+
+def test_a_key_centred_in_the_gap_between_two_cells_is_judged_in_the_cell_it_is_rendered_into() -> None:
+    """Cells (0, 40) and (41.5, 300): a word centred at 40.75 is equally far from both and is
+    rendered into the first. The record analysis must put it in the same cell."""
+    cells = [(0.0, 0.0, 40.0, 60.0), (41.5, 0.0, 300.0, 60.0)]
+
+    def word(text: str, x0: float, top: float) -> dict:
+        w = _word(text, x0, top)
+        w["chars"] = [w]
+        return w
+
+    keys = [word("Aaa", 2.0, 10.0), word("K", 38.75, 19.0)]  # "K" is 4 pt wide: centre 40.75
+    values = [word("Selects.", 52.0, 10.0), word("Chooses.", 52.0, 19.0)]
+    bands = ola.split_record_bands([keys, values], cells)
+    assert bands is not None and len(bands) == 2
+    assert [[c["text"] for c in band[0]] for band in bands] == [["Aaa"], ["K"]]
+
+
+def test_column_for_puts_a_gap_word_in_the_nearest_column_and_is_the_splitters_default() -> None:
+    from app.modules.parsers.pdf.table_rows import column_for
+
+    cols = [(0.0, 40.0), (41.5, 300.0)]
+    assert column_for(20.0, cols) == 0 and column_for(100.0, cols) == 1
+    assert column_for(40.0, cols) == 0  # in the gap: equally near both, the first wins (as when rendered)
+    assert column_for(40.75, cols) == 0
+    assert column_for(41.0, cols) == 1  # nearer the second
+    assert column_for(300.0, cols) == 1  # the last column holds its right edge
+    assert column_for(-5.0, cols) == 0 and column_for(500.0, cols) == 1
+    assert column_for(5.0, []) is None
+    # the default assignment of the splitter is the same function
+    lines = band_lines([_word("Aaa", 2.0, 10.0), _word("Selects.", 52.0, 10.0),
+                        _word("K", 38.75, 19.0), _word("Chooses.", 52.0, 19.0)])
+    assert [len(g) for g in split_band_records(lines, cols, ruled_cell=True)] == [1, 1]
