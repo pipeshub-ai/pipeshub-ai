@@ -511,7 +511,7 @@ class TestFetchIssuesBatched:
          0, False),
         ([{"issues": [], "isLast": True, "nextPageToken": "t1"}], 0, True),
     ], ids=["empty_page_then_issues", "repeated_token", "last_page"])
-    async def test_an_empty_page_that_is_not_the_last_is_followed(self, pages: list, built: int, complete: bool):
+    async def test_an_empty_page_that_is_not_the_last_is_followed(self, pages: list, built: int, complete: bool) -> None:
         """Enhanced search can answer an empty page with a nextPageToken before a page with issues: stopping there would
         leave the later issues with their old access and report the pass done."""
         connector = _make_connector()
