@@ -44,6 +44,7 @@ from app.services.messaging.kafka.handlers.record import (
 from app.services.vector_db.rebuild_state import PHASE_FAILED, PHASE_READY
 from app.utils import user_errors
 from tests.support.record_handler import make_record_handler
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1343,6 +1344,7 @@ class TestVectorDbOnlyReindex:
             return_value=_vector_only_graph_doc()
         )
         handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        handler.event_processor.graph_provider.write_attempt_start = attempt_start_via(handler.event_processor.graph_provider)
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
         pipeline.delete_points_for_virtual_record = AsyncMock()
@@ -1387,6 +1389,7 @@ class TestVectorDbOnlyReindex:
             return_value=graph_doc
         )
         handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        handler.event_processor.graph_provider.write_attempt_start = attempt_start_via(handler.event_processor.graph_provider)
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
         pipeline.delete_points_for_virtual_record = AsyncMock()
@@ -1425,6 +1428,7 @@ class TestVectorDbOnlyReindex:
             )
         )
         handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        handler.event_processor.graph_provider.write_attempt_start = attempt_start_via(handler.event_processor.graph_provider)
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()
         pipeline.delete_points_for_virtual_record = AsyncMock()
@@ -2435,6 +2439,8 @@ class TestAlreadyIndexed:
             return True
 
         gp.update_node = AsyncMock(side_effect=update_node)
+
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         class _StoreRefused(Exception):
@@ -2482,6 +2488,8 @@ class TestAlreadyIndexed:
             return True
 
         gp.update_node = AsyncMock(side_effect=update_node)
+
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         async def on_event(*_a, **_k) -> AsyncGenerator:
@@ -2572,6 +2580,7 @@ class TestAlreadyIndexed:
 
         gp.get_document = AsyncMock(side_effect=get_document)
         gp.update_node = AsyncMock(side_effect=update_node)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(side_effect=promote)
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         handler.event_processor.on_event = MagicMock()
@@ -2703,6 +2712,7 @@ class TestReleasingQueuedCopies:
 
         gp.get_document = AsyncMock(side_effect=get_document)
         gp.update_node = AsyncMock(side_effect=update_node)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(side_effect=promote)
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         return rows, state
@@ -2835,6 +2845,7 @@ class TestConnectorActiveCheck:
         # __update_document_status, then the finally block's record fetch
         gp.get_document = AsyncMock(side_effect=[record, connector_instance, connector_instance, record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
@@ -2996,6 +3007,7 @@ class TestUnsupportedFileType:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -3455,6 +3467,7 @@ class TestSignedUrlPath:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         async def failing_processor() -> AsyncGenerator[None, None]:
             raise RuntimeError("parsing service unavailable")
@@ -3639,6 +3652,7 @@ class TestConnectorStreamingPath:
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         handler._trigger_next_queued_duplicate = AsyncMock()
 
@@ -3683,6 +3697,7 @@ class TestProcessEventErrors:
         # this attempt indexed it, then __update_document_status.
         gp.get_document = AsyncMock(side_effect=[record, record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._trigger_next_queued_duplicate = AsyncMock()
 
         # Mock bulk_delete_embeddings for REINDEX_RECORD path
@@ -3753,6 +3768,7 @@ class TestProcessEventErrors:
         # __update_document_status.
         gp.get_document = AsyncMock(side_effect=[record, connector_instance, connector_instance, record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
 
         handler.event_processor.on_event = lambda event_data: _failing_async_gen(
@@ -3864,6 +3880,7 @@ class TestProcessEventErrors:
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         handler._trigger_next_queued_duplicate = AsyncMock()
 
@@ -3938,6 +3955,67 @@ class TestProcessEventErrors:
         assert isinstance(updates.get("queuedAtTimestamp"), int)
 
     @pytest.mark.asyncio
+    async def test_a_records_schema_refusal_inside_a_transaction_is_retried_not_failed(self) -> None:
+        """The real handler, first delivery: the indexing write is refused by a narrow records schema (the transaction was
+        aborted). The record goes back in line for the redelivery and is not marked FAILED."""
+        from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record_in_progress = {
+            "_key": "r1", "virtualRecordId": "vr1", "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            "extractionStatus": ProgressStatus.IN_PROGRESS.value, "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record_in_progress)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        refusal = ArangoQueryError("Query failed", 400, '{"errorNum":1620}')
+        narrow = RecordSchemaNarrowError("the records schema refused a write in transaction 1; it was aborted")
+        narrow.__cause__ = refusal
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "mimeType": "application/pdf",
+                   "extension": "pdf", "is_final_failure": False}
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.side_effect = narrow
+                handler.config_service.get_config = AsyncMock(return_value={"connectors": {"endpoint": "http://localhost:8088"}})
+                with pytest.raises(Exception) as caught:  # raised to the consumer, which redelivers
+                    await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        assert isinstance(caught.value.__cause__, RecordSchemaNarrowError), "the consumer classifies the chain"
+
+        written = [call.args[2] for call in gp.update_node.await_args_list]
+        assert all(w.get("indexingStatus") != ProgressStatus.FAILED.value for w in written)
+        assert written and written[-1].get("indexingStatus") == ProgressStatus.QUEUED.value
+
+    @pytest.mark.asyncio
+    async def test_the_same_refusal_without_the_exception_type_is_marked_failed(self) -> None:
+        """The control: the store's bare 400 is a terminal error, and the first delivery marks the record FAILED."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record_in_progress = {
+            "_key": "r1", "virtualRecordId": "vr1", "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            "extractionStatus": ProgressStatus.IN_PROGRESS.value, "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record_in_progress)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "mimeType": "application/pdf",
+                   "extension": "pdf", "is_final_failure": False}
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.side_effect = ArangoQueryError("Query failed", 400, '{"errorNum":1620}')
+                handler.config_service.get_config = AsyncMock(return_value={"connectors": {"endpoint": "http://localhost:8088"}})
+                with pytest.raises(Exception, match="1620"):
+                    await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        written = [call.args[2] for call in gp.update_node.await_args_list]
+        assert any(w.get("indexingStatus") == ProgressStatus.FAILED.value for w in written)
+
+    @pytest.mark.asyncio
     async def test_transient_parse_failure_reverts_all_in_progress_statuses(self):
         """A transient failure during the parsing phase resets parsingStatus
         to NOT_STARTED and indexingStatus to QUEUED for the broker retry."""
@@ -4000,6 +4078,7 @@ class TestProcessEventErrors:
             }
         )
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.batch_update_nodes = AsyncMock(return_value=True)
 
         entered_processor = asyncio.Event()
@@ -4066,6 +4145,7 @@ class TestProcessEventErrors:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         entered_processor = asyncio.Event()
         never_complete = asyncio.Event()
@@ -4688,6 +4768,7 @@ class TestReconcilePendingFlag:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.update_node = AsyncMock()
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._reconcile_promoted_duplicates = AsyncMock(return_value=True)
 
         await handler._reconcile_pending_duplicates("r1", "vr1")
@@ -4700,6 +4781,7 @@ class TestReconcilePendingFlag:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.update_node = AsyncMock()
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._reconcile_promoted_duplicates = AsyncMock(return_value=False)
 
         await handler._reconcile_pending_duplicates("r1", "vr1")
@@ -4713,6 +4795,7 @@ class TestReconcilePendingFlag:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.update_node = AsyncMock()
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._reconcile_promoted_duplicates = AsyncMock(side_effect=[False, True])
 
         await handler._reconcile_pending_duplicates("r1", "vr1")
@@ -4724,6 +4807,7 @@ class TestReconcilePendingFlag:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.update_node = AsyncMock(side_effect=RuntimeError("graph down"))
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._reconcile_promoted_duplicates = AsyncMock(return_value=True)
 
         await handler._reconcile_pending_duplicates("r1", "vr1")
@@ -4905,6 +4989,7 @@ class TestUpdateDocumentStatus:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         result = await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -4946,6 +5031,7 @@ class TestUpdateDocumentStatus:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -4967,6 +5053,7 @@ class TestUpdateDocumentStatus:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -5003,6 +5090,7 @@ class TestUpdateDocumentStatus:
             }
         )
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         result = await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -5286,6 +5374,7 @@ class TestFolderRecordSkip:
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -5313,6 +5402,7 @@ class TestFolderRecordSkip:
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -5337,6 +5427,7 @@ class TestFolderRecordSkip:
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -5371,6 +5462,7 @@ class TestCodeFileHandling:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -5589,6 +5681,7 @@ class TestKbUploadedCodeFileHandling:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -5782,6 +5875,7 @@ class TestAdditionalCoverage:
         # record + finally
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -5809,6 +5903,7 @@ class TestAdditionalCoverage:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
@@ -6110,6 +6205,7 @@ class TestOnMessageAbandoned:
             }
         )
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
 
         await handler.on_message_abandoned(
@@ -6149,6 +6245,7 @@ class TestOnMessageAbandoned:
             return_value={"_key": "r1", "indexingStatus": settled_status}
         )
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         await handler.on_message_abandoned(
             self._message(), reason="poison", attempts=3
@@ -6164,6 +6261,7 @@ class TestOnMessageAbandoned:
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value})
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.compare_and_set_indexing_status = AsyncMock(side_effect=ConnectionError("graph restarting"))
 
         await handler.on_message_abandoned(self._message(), reason="4 transient failures", attempts=4)  # never raises
@@ -6187,6 +6285,7 @@ class TestOnMessageAbandoned:
             }
         )
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
 
         await handler.on_message_abandoned(
@@ -6206,6 +6305,7 @@ class TestOnMessageAbandoned:
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.IN_PROGRESS.value})
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
         handler._trigger_next_queued_duplicate = AsyncMock()
         handler.record_leases = MagicMock(
@@ -6229,6 +6329,7 @@ class TestOnMessageAbandoned:
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(return_value=None)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         await handler.on_message_abandoned(
             self._message(), reason="poison", attempts=3
@@ -6278,6 +6379,7 @@ class TestOnMessageAbandoned:
         # Nothing swapped: someone else moved the record first.
         gp.compare_and_set_indexing_status = AsyncMock(return_value=[])
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
 
         await handler.on_message_abandoned(
             self._message(), reason="poison", attempts=3
@@ -6313,6 +6415,7 @@ class TestOnMessageAbandoned:
             return_value={"_key": "r1", "indexingStatus": ProgressStatus.QUEUED.value}
         )
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
         gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
 
         await handler.on_message_abandoned(
@@ -6469,6 +6572,7 @@ class TestRecoveryExhausted:
         graph = handler.event_processor.graph_provider
         graph.get_document = AsyncMock(return_value=record)
         graph.update_node = AsyncMock(return_value=True)
+        graph.write_attempt_start = attempt_start_via(graph)
         return handler, graph
 
     async def test_a_record_that_never_indexed_fails_and_its_next_copy_is_triggered(self) -> None:
@@ -6505,6 +6609,7 @@ class TestRecoveryExhausted:
     async def test_a_status_write_that_fails_raises_so_recovery_tries_again(self) -> None:
         handler, graph = self._stuck_handler({"_key": "r1", "indexingStatus": ProgressStatus.IN_PROGRESS.value})
         graph.update_node = AsyncMock(return_value=False)
+        graph.write_attempt_start = attempt_start_via(graph)
 
         with patch.object(handler, "_trigger_next_queued_duplicate", new=AsyncMock()) as trigger, \
              pytest.raises(IndexingError):
@@ -6547,6 +6652,7 @@ class TestRejectedTooLargeCounter:
                   "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "application/pdf"}
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._trigger_next_queued_duplicate = AsyncMock()
         pipeline = handler.event_processor.processor.indexing_pipeline
         pipeline.bulk_delete_embeddings = AsyncMock()

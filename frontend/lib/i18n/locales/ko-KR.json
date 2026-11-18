@@ -2166,10 +2166,10 @@
         "errorNameRequired": "이 토큰의 이름을 입력해 주세요.",
         "errorCreateTitle": "토큰을 생성하지 못했습니다",
         "expiryHeading": "만료 기간",
+        "expiry7Days": "7일",
         "expiry30Days": "30일",
         "expiry90Days": "90일",
         "expiry365Days": "365일",
-        "expiryNever": "만료 없음",
         "permissionsHeading": "범위",
         "errorScopeRequired": "하나 이상의 범위를 선택해 주세요.",
         "selectAllScopes": "모두 선택",
@@ -5930,6 +5930,55 @@
       "offDescription": "모든 사용자의 답변, 검색, 레코드에서 제외되었고 샘플 계정은 로그인할 수 없습니다. 프로필 → 데모 데이터에서 다시 켜세요.",
       "onTitle": "모두에 대해 데모 데이터를 다시 켰습니다",
       "errorTitle": "모두에 대한 데모 데이터를 변경하지 못했습니다"
+    },
+    "about": {
+      "open": "데모에는 무엇이 있나요?",
+      "title": "Acme Corp 데모 정보",
+      "description": "Acme Corp는 가상의 소프트웨어 회사입니다. Demo 커넥터가 이 회사의 레코드를 불러와, 자체 도구를 연결하지 않고도 PipesHub를 체험할 수 있습니다. PipesHub 외부와는 통신하지 않으며, 회사의 실제 데이터는 포함되지 않습니다.",
+      "status": {
+        "shown": "지금 내 답변, 검색, 레코드에 표시됩니다. 데모 결과에는 Demo 라벨이 붙습니다.",
+        "hiddenRealData": "조직에 자체 데이터가 생겨 내 답변에서 숨겨져 있습니다. 각자 직접 켜지 않는 한 아무에게도 보이지 않습니다.",
+        "hiddenByChoice": "직접 꺼서 내 답변에서 숨겨져 있습니다.",
+        "offForEveryone": "관리자가 모두에게 꺼 두어 누구의 답변에도 나타나지 않으며, 샘플 계정은 로그인할 수 없습니다.",
+        "show": "내 답변에 표시"
+      },
+      "tools": {
+        "title": "포함된 내용",
+        "tool": "도구",
+        "places": "위치",
+        "records": "레코드",
+        "total": "합계"
+      },
+      "people": {
+        "title": "사람",
+        "description": "샘플 직원입니다. 레코드 작성자로 이름이 표시되며, 이 중 두 명만 로그인할 수 있습니다.",
+        "canSignIn": "로그인 가능"
+      },
+      "restricted": {
+        "title": "누가 무엇을 볼 수 있나요",
+        "description": "Demo 커넥터를 추가한 사람은 대부분을 읽을 수 있고, Alice와 Bob은 각자의 팀이 볼 수 있는 내용을 읽을 수 있습니다. 조직의 다른 사람은 아무것도 읽을 수 없으며, 데모를 내 답변에 표시해도 접근 권한이 생기지 않습니다. 아래 각 레코드는 해당 그룹의 구성원만 읽을 수 있으므로, 같은 질문이라도 묻는 사람에 따라 답이 달라집니다.",
+        "readers": "열람 가능: {{names}}",
+        "noReaders": "어느 샘플 계정도 열 수 없습니다."
+      },
+      "questions": {
+        "title": "이렇게 물어보세요"
+      },
+      "accounts": {
+        "title": "로그인용 샘플 계정",
+        "description": "다른 브라우저에서 Alice나 Bob으로 로그인하면 같은 질문이 다른 권한으로 어떻게 답변되는지 볼 수 있습니다.",
+        "state": {
+          "checking": "확인 중…",
+          "active": "로그인 가능",
+          "off": "로그인 꺼짐",
+          "missing": "생성되지 않음",
+          "unknown": "확인할 수 없음"
+        },
+        "password": "PipesHub 설치 시 정한 초기 비밀번호(PIPESHUB_DEMO_PASSWORD)를 사용합니다. PipesHub는 암호화된 형태로만 보관하므로 여기에 표시할 수 없습니다.",
+        "lostPassword": "아무도 모른다면 비밀번호 찾기는 도움이 되지 않습니다. .example 주소는 이메일을 받을 수 없기 때문입니다. 서버 운영자가 PipesHub 컨테이너에서 다음 명령을 실행하면 새 비밀번호를 정하는 링크를 받을 수 있습니다:",
+        "missing": "샘플 계정은 설치 시 PIPESHUB_DEMO_PERSONAS=1이 설정된 경우에만 생성됩니다. 계정이 없어도 데모는 작동하지만, Alice나 Bob으로 로그인할 수는 없습니다.",
+        "retry": "다시 시도"
+      },
+      "close": "닫기"
     }
   },
   "graph": {

@@ -23,6 +23,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from tests.unit.attempt_start import attempt_start_via
 
 RECORDS = CollectionNames.RECORDS.value
 APPS = CollectionNames.APPS.value
@@ -61,6 +62,7 @@ class Harness:
         graph = AsyncMock()
         graph.get_document = AsyncMock(side_effect=self._get)
         graph.update_node = AsyncMock(return_value=True)
+        graph.write_attempt_start = attempt_start_via(graph)
         graph.check_record_access_with_details = AsyncMock(return_value={"record": {}} if access else None)
         event_processor.graph_provider = graph
         event_processor.stage_ingress = None

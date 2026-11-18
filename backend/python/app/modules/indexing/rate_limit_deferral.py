@@ -41,6 +41,8 @@ from tenacity import RetryError
 
 from app.config.constants.arangodb import ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.modules.indexing.record_diagnostics import WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.utils.api_call import ApiCallError
 
 if TYPE_CHECKING:
@@ -195,6 +197,8 @@ def deferral_updates(plan: DeferralPlan, *, reason: str, record: Mapping[str, ob
     }
     if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
         updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
+    # A deferral continues the run the record is in; a record from before the run fields existed gains its start.
+    updates.update(run_reference(record, WriteKind.QUEUE, now_ms))
     return updates
 
 
