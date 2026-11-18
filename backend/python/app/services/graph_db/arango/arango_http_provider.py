@@ -8771,6 +8771,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch all active users from the database who belong to the organization.
@@ -8778,6 +8779,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             org_id (str): Organization ID
             active (bool): Filter for active users only if True
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of user documents with their details
@@ -8789,6 +8791,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR edge IN {CollectionNames.BELONGS_TO.value}
                     FILTER edge._to == CONCAT('organizations/', @org_id)
                     AND edge.entityType == 'ORGANIZATION'
+                    AND IS_SAME_COLLECTION('{CollectionNames.USERS.value}', edge._from)
                     LET user = DOCUMENT(edge._from)
                     FILTER @active == false OR user.isActive == true
                     RETURN user
@@ -8805,6 +8808,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch users: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(
@@ -12098,6 +12103,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         result = await self.http_client.execute_aql(
             query=query,
             bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
+                                   CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
+            txn_id=transaction,
+        )
+        return len(result or [])
+
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when the user has no USER_APP_RELATION edge to the connector, checked in the same query."""
+        query = """
+        FOR perm IN permission
+            FILTER IS_SAME_COLLECTION(@users, perm._from)
+            FILTER PARSE_IDENTIFIER(perm._to).collection IN @targets
+            LET target = DOCUMENT(perm._to)
+            FILTER target != null AND target.connectorId == @connector_id
+            FILTER LENGTH(FOR rel IN @@relation FILTER rel._from == perm._from AND rel._to == @app LIMIT 1 RETURN 1) == 0
+            REMOVE perm IN permission
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"users": CollectionNames.USERS.value, "connector_id": connector_id,
+                       "app": f"{CollectionNames.APPS.value}/{connector_id}",
+                       "@relation": CollectionNames.USER_APP_RELATION.value,
                        "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
                                    CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
             txn_id=transaction,

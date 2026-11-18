@@ -398,8 +398,15 @@ class SiteDb(CloudRecordsDb):
         for role, members in roles:
             self.app_roles[role.source_role_id] = list(members)
 
+    async def open_app_to_org_team(self, connector_id: str) -> None:
+        self.team_gate_open = True
+
+    async def withdraw_team_app_edge(self, connector_id: str) -> None:
+        self.team_gate_open = False
+
     async def get_nodes_by_filters(
-        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """The stored project and role nodes, with the fields the connector asks for."""
         if collection == "roles":
