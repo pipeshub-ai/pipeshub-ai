@@ -194,8 +194,8 @@ class DemoApp(App):
     .with_supported_auth_types("NONE")
     .with_description(
         "Acme Corp, a small fictional company: pull requests, tickets, chat threads, "
-        "documents and support cases across five systems, with two people who can "
-        "see different things. Nothing external is contacted."
+        "documents and support cases across five systems, written by 11 sample employees. "
+        "Two of them can sign in and see different things. Nothing external is contacted."
     )
     .with_categories(["Demo"])
     .with_scopes([ConnectorScope.TEAM.value])
