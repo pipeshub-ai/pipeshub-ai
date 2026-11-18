@@ -67,6 +67,13 @@ class TestUsernames:
         resolved = connector._users_with_usernames(users)
         assert resolved["carol"].email == "carol@example.com" and resolved["carol-key"] is users["carol-key"]
 
+    def test_a_username_that_is_a_listed_accounts_key_is_no_alias(self) -> None:
+        """Alice was renamed to alice.old and kept "alice" as her key; a newer account took the username "alice"."""
+        connector = _connector()
+        connector._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.old": "alice"}
+        users = {"JIRAUSER10100": _user("JIRAUSER10100", "new-alice@example.com")}
+        assert "alice" not in connector._users_with_usernames(users)
+
 
 class TestStoredGrantsKept:
     """A leveled issue whose level could not be read yet keeps the grants it has: a full sync's first
@@ -170,6 +177,15 @@ class TestParentGate:
     async def test_a_parent_that_cannot_be_read_holds_the_story_instead_of_guessing(self) -> None:
         connector = _connector()
         connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=503))
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
+        with pytest.raises(Exception, match="parent issue 5"):
+            await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
+
+    async def test_a_parent_read_refused_with_403_is_a_failed_read_not_a_hidden_parent(self) -> None:
+        """GET /rest/api/2/issue/{id} documents 404 for an issue that is missing or hidden from the caller, and no
+        403 (https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/)."""
+        connector = _connector()
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=403))
         security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
         with pytest.raises(Exception, match="parent issue 5"):
             await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
@@ -289,6 +305,29 @@ class TestWithdrawnAccounts:
         await c._withdraw_unlisted_app_users([_user("kept", "k@x.com"), _user("moved-new", "m@x.com")])
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
         assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
+
+    async def test_an_account_without_product_access_is_withdrawn_with_its_grants(self) -> None:
+        """Still on the active user list, but in no product group: like an unlisted account it loses the connector and
+        its own grants, and no longer counts as linked this sync, where a list cut short would grant it again."""
+        c = _connector()
+        stored = self._stored(c)
+        c._licensed_keys = {"kept", "moved"}
+        await c._withdraw_ineligible_app_users(stored[1:])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
+        assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
+
+    async def test_an_account_with_a_hidden_email_and_no_product_access_is_withdrawn_and_never_admitted(self) -> None:
+        """frank and gina both have a hidden email; only gina has product access. The empty email they share keeps
+        nobody: frank is withdrawn, so the directory never holds him and no re-read is queued for him."""
+        c = _connector()
+        frank, gina = _user("frank-key", ""), _user("gina-key", "")
+        c._stored_app_users = [frank, gina]
+        c._listed_user_keys = c._seen_user_keys = {"frank-key", "gina-key"}
+        c._licensed_keys = {"gina-key"}
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        await c._withdraw_ineligible_app_users([])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [frank], drop_grants=True)
+        assert [u.source_user_id for u in c._directory_extra()] == ["gina-key"]
 
     @pytest.mark.parametrize("flag", ["_user_bulk_incomplete", "_user_bulk_refused"])
     async def test_a_deactivated_row_from_the_search_fallback_or_a_refused_list_withdraws_nobody(self, flag: str) -> None:
@@ -597,6 +636,7 @@ class TestWithdrawnAccounts:
         order: list = []
         listed = [_user("alice-key", "a@x.com"), _user("carol-key", "c@x.com")]
         c._fetch_users = AsyncMock(return_value=listed)
+        c._eligible_users = AsyncMock(side_effect=lambda users: users)  # both have Jira product access
         c._stored_app_users = [listed[0]]
         c._note_people_to_reread = AsyncMock(side_effect=lambda ids: order.append(("note", sorted(ids))))
         c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=lambda _u: order.append(("link",)))
