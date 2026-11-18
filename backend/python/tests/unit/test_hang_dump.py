@@ -30,3 +30,12 @@ def test_fails(stuck_teardown):
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-p", "no:timeout", "-o", "faulthandler_timeout=1")
     result.assert_outcomes(failed=1)
     assert "Timeout (0:00:01)!" in result.stderr.str()
+
+
+def test_a_failure_with_the_faulthandler_plugin_off_is_reported_normally(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTHONPATH", str(_ROOT))
+    pytester.makeconftest("from tests.hang_dump import pytest_exception_interact  # noqa: F401\n")
+    pytester.makepyfile(test_probe="def test_fails():\n    assert False\n")
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-p", "no:timeout", "-p", "no:faulthandler")
+    result.assert_outcomes(failed=1)
+    assert "INTERNALERROR" not in result.stdout.str() + result.stderr.str()
