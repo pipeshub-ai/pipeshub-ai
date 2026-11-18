@@ -42,6 +42,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -183,10 +184,11 @@ def cap_text(text: str | None) -> str:
         encoded = text.encode(errors="replace")
         if len(encoded) <= head + tail:
             return text
-    else:
-        encoded = text.encode(errors="replace")
+    # Encoded a slice at a time: one full-size encoded copy of a huge
+    # output would cost as much memory again as the output itself.
     buf = HeadTail(head, tail)
-    buf.feed(encoded)
+    for start in range(0, len(text), _READ_CHUNK):
+        buf.feed(text[start:start + _READ_CHUNK].encode(errors="replace"))
     return buf.text()
 
 
@@ -381,6 +383,10 @@ class _ArchiveTooLarge(Exception):
     pass
 
 
+class _StreamFailed(Exception):
+    """The archive stream itself failed (the daemon connection broke)."""
+
+
 class _ChunkReader(io.RawIOBase):
     """A read-only file over an iterator of byte chunks, refusing to read
     past ``limit`` bytes in total. Never holds more than one chunk."""
@@ -401,6 +407,8 @@ class _ChunkReader(io.RawIOBase):
                 chunk = next(self._it)
             except StopIteration:
                 return 0
+            except Exception as exc:
+                raise _StreamFailed(str(exc) or type(exc).__name__) from exc
             if chunk:
                 self._view = memoryview(chunk)
         n = min(len(b), len(self._view))
@@ -411,6 +419,10 @@ class _ChunkReader(io.RawIOBase):
         self.consumed += n
         return n
 
+
+# Failures of the archive itself, which end its extraction; any other
+# error skips one member.
+_STREAM_ERRORS = (_ArchiveTooLarge, _StreamFailed, tarfile.ReadError)
 
 _warned_tar_filter = False
 
@@ -488,12 +500,10 @@ def extract_tar_stream(
     _discard_spool: list[str] = []
     resolved_root = os.path.realpath(local_dir)
     prefix = os.path.basename(container_path.rstrip("/")) + "/"
-    current_target: str | None = None
     try:
         with tarfile.open(fileobj=reader, mode="r|*") as tar:
             tar.members = _NoMembers()
             for member in tar:
-                current_target = None
                 budget.entries += 1
                 if budget.entries > limits.max_files:
                     budget.stopped_reason = (
@@ -531,7 +541,7 @@ def extract_tar_stream(
                     if baseline is not None:
                         try:
                             spooled = _spool_if_changed(tar, member, baseline, target)
-                        except _ArchiveTooLarge:
+                        except _STREAM_ERRORS:
                             raise
                         except Exception as exc:
                             logger.warning(
@@ -586,7 +596,6 @@ def extract_tar_stream(
                     )
                     logger.warning("sandbox output: sandbox retention limit reached at %r", shown)
                     return
-                current_target = target
                 try:
                     if spooled is not None:
                         # The member's bytes were read while comparing them.
@@ -595,11 +604,13 @@ def extract_tar_stream(
                         os.chmod(spooled, (member.mode & 0o755) | 0o600)
                         os.replace(spooled, target)
                         _discard_spool.remove(spooled)
+                    elif member.isfile():
+                        _extract_whole(tar, member, local_dir, target)
                     else:
                         # `data` filter rejects a link whose target escapes the
                         # destination; skip that member rather than abort the run.
                         tar.extract(member, local_dir, filter="data")
-                except _ArchiveTooLarge:
+                except _STREAM_ERRORS:
                     raise
                 except Exception as exc:
                     logger.warning(
@@ -607,7 +618,6 @@ def extract_tar_stream(
                         member.name, container_path, exc,  # log-pii: ok tar member path, not a person
                     )
                     continue
-                current_target = None
                 budget.extracted_bytes += size
                 budget.streamed_bytes += size
                 budget.kept_files += 1
@@ -621,11 +631,14 @@ def extract_tar_stream(
             f"the {_human(budget.read_limit)} read limit at {container_path}"
         )
         logger.warning("sandbox output: archive of %s went past the read limit", container_path)
-        if current_target and os.path.lexists(current_target) and not os.path.isdir(current_target):
-            try:
-                os.unlink(current_target)
-            except OSError:
-                pass
+    except (_StreamFailed, tarfile.ReadError) as exc:
+        # A broken or cut-short stream is not the end of the archive: say
+        # so, so the caller does not take what arrived for all of it.
+        budget.stopped_reason = (
+            f"collection stopped because reading {container_path} from the sandbox failed, "
+            "so it and any later files were not collected"
+        )
+        logger.warning("sandbox output: reading the archive of %s failed: %s", container_path, exc)
     finally:
         for path in _discard_spool:
             try:
@@ -634,6 +647,26 @@ def extract_tar_stream(
                 pass
         budget.read_bytes += reader.consumed
         _close(chunks)
+
+
+def _extract_whole(tar: tarfile.TarFile, member: tarfile.TarInfo, local_dir: str, target: str) -> None:
+    """Extract the regular file ``member`` to ``target`` through a
+    temporary sibling, renamed into place once all its bytes are written: a
+    stream that fails part-way leaves the file that was there (or none),
+    never a partial one."""
+    part = member.replace(
+        name=os.path.join(os.path.dirname(member.name), f".sandbox-part-{uuid.uuid4().hex}"), deep=False,
+    )
+    part_path = os.path.join(local_dir, part.name)
+    try:
+        tar.extract(part, local_dir, filter="data")
+        os.replace(part_path, target)
+    except BaseException:
+        try:
+            os.unlink(part_path)
+        except OSError:
+            pass
+        raise
 
 
 def _kept_size(path: str) -> int | None:
