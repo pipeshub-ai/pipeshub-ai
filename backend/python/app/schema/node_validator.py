@@ -109,6 +109,36 @@ _EDGE_FULL_CACHE: dict[str, tuple[dict, Validator]] = {}
 _EDGE_PARTIAL_CACHE: dict[str, tuple[dict, Validator]] = {}
 
 
+_node_lookup: Callable[[str], dict | None] | None = None
+_edge_lookup: Callable[[str], dict | None] | None = None
+
+
+def use_schema_lookups(
+    node: Callable[[str], dict | None] | None,
+    edge: Callable[[str], dict | None] | None,
+) -> None:
+    """Replace where the validator reads node and edge schemas from.
+
+    A build may call this once at startup to validate against its own schema registry. Nothing calls it at import, so by default the validator
+    reads the registry in ``node_schema_registry``. Passing ``None`` for both restores that default. A lookup must return the same schema object for a collection on every call (the compiled-validator caches are keyed on the
+    schema object, so a lookup that builds a new dict each call recompiles each time); switching lookups never serves a validator built from the previous schema. Both
+    lookups are process-wide state: call this in every process that validates.
+    """
+    if (node is not None and not callable(node)) or (edge is not None and not callable(edge)):
+        raise TypeError("use_schema_lookups takes callables (or None)")
+    global _node_lookup, _edge_lookup  # noqa: PLW0603 - the lookups are per process by design
+    _node_lookup = node
+    _edge_lookup = edge
+
+
+def _node_schema(collection: str) -> dict | None:
+    return (_node_lookup or get_node_schema)(collection)
+
+
+def _edge_schema(collection: str) -> dict | None:
+    return (_edge_lookup or get_edge_schema)(collection)
+
+
 def _cached(
     cache: dict[str, tuple[dict, Validator]],
     collection: str,
@@ -123,7 +153,7 @@ def _cached(
     validator if an entry were ever swapped, which is both a real (if unlikely)
     correctness trap and the reason the unit tests patch get_node_schema.
     """
-    schema = (lookup or get_node_schema)(collection)
+    schema = (lookup or _node_schema)(collection)
     if schema is None:
         return None
     entry = cache.get(collection)
@@ -155,11 +185,11 @@ def _partial_validator(collection: str) -> Validator | None:
 
 
 def _full_edge_validator(collection: str) -> Validator | None:
-    return _cached(_EDGE_FULL_CACHE, collection, _compile, get_edge_schema)
+    return _cached(_EDGE_FULL_CACHE, collection, _compile, _edge_schema)
 
 
 def _partial_edge_validator(collection: str) -> Validator | None:
-    return _cached(_EDGE_PARTIAL_CACHE, collection, _build_partial, get_edge_schema)
+    return _cached(_EDGE_PARTIAL_CACHE, collection, _build_partial, _edge_schema)
 
 
 def _clean(collection: str, payload: dict[str, Any], strip: frozenset[str]) -> dict[str, Any]:
@@ -272,7 +302,7 @@ class NodeSchemaValidator:
             return []
         payload = _clean(collection, node, _NODE_STRIP)
         _check(_partial_validator(collection), collection, payload)
-        schema = get_node_schema(collection)
+        schema = _node_schema(collection)
         if schema is None:
             return []
         return [name for name in (schema.get("required") or ()) if name not in payload]
