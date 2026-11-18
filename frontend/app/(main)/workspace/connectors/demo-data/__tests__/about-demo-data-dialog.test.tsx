@@ -68,7 +68,8 @@ describe('AboutDemoDataDialog', () => {
   it('says what the demo holds: tools, people, restricted records and questions', () => {
     renderDialog(false);
     expect(screen.getByText('Google Drive')).toBeTruthy();
-    expect(screen.getByText('82')).toBeTruthy();
+    // As sync stores them: each Slack thread is one record.
+    expect(screen.getByText('65')).toBeTruthy();
     expect(screen.getByText('Tomás Rivera')).toBeTruthy();
     expect(screen.getAllByText(en.demoData.about.people.canSignIn)).toHaveLength(2);
     expect(screen.getByText('Pricing committee')).toBeTruthy();
@@ -92,7 +93,28 @@ describe('AboutDemoDataDialog', () => {
     expect(screen.getAllByText(en.demoData.about.accounts.state.active)).toHaveLength(3);
     expect(screen.getByText(en.demoData.about.accounts.password)).toBeTruthy();
     expect(screen.getByText(en.demoData.about.accounts.missing)).toBeTruthy();
-    expect(screen.getByText(/set-password-link\.js alice@acme-demo\.example/)).toBeTruthy();
+    expect(screen.getByText(/cd \/app\/backend && node dist\/scripts\/set-password-link\.js alice@acme-demo\.example/)).toBeTruthy();
+    // Every sample account counts, including one the admin may be signed in as.
+    expect(findSampleAccounts).toHaveBeenCalledWith();
+  });
+
+  it('names only accounts that exist in the reset command', async () => {
+    vi.mocked(findSampleAccounts).mockResolvedValue([
+      { userId: 'u-bob', email: 'bob@acme-demo.example', name: 'Bob Okafor' },
+    ]);
+    renderDialog(true);
+    await waitFor(() => expect(screen.getByText(/set-password-link\.js bob@acme-demo\.example/)).toBeTruthy());
+    expect(screen.queryByText(/set-password-link\.js alice@/)).toBeNull();
+  });
+
+  it('says the accounts could not be checked, rather than missing, and can try again', async () => {
+    vi.mocked(findSampleAccounts).mockRejectedValueOnce(new Error('offline')).mockResolvedValue([]);
+    renderDialog(true);
+    await waitFor(() => expect(screen.getAllByText(en.demoData.about.accounts.state.unknown)).toHaveLength(2));
+    expect(screen.queryByText(en.demoData.about.accounts.missing)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: en.demoData.about.accounts.retry }));
+    await waitFor(() => expect(screen.getAllByText(en.demoData.about.accounts.state.missing)).toHaveLength(2));
+    expect(findSampleAccounts).toHaveBeenCalledTimes(2);
   });
 
   it('explains why the demo is hidden and lets the person show it', async () => {

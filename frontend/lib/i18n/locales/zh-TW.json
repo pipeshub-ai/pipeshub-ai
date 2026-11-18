@@ -5956,7 +5956,7 @@
       },
       "restricted": {
         "title": "誰能看到什麼",
-        "description": "大多數記錄對所有使用示範的人開放。以下記錄各自僅限一個群組，因此同一個問題會因提問者不同而得到不同的回答。",
+        "description": "開啟示範的人可以讀取其中的大部分內容，Alice 和 Bob 可以讀取各自團隊能看到的內容。你組織中的其他人無法讀取任何內容。以下記錄各自僅限一個群組，而開啟示範的人不在其中，因此同一個問題會因提問者不同而得到不同的回答。",
         "readers": "可以開啟：{{names}}",
         "noReaders": "兩個範例帳號都無法開啟這些記錄。"
       },
@@ -5970,11 +5970,13 @@
           "checking": "正在檢查…",
           "active": "可以登入",
           "off": "已關閉登入",
-          "missing": "未建立"
+          "missing": "未建立",
+          "unknown": "無法檢查"
         },
         "password": "它們使用安裝 PipesHub 時設定的初始密碼（PIPESHUB_DEMO_PASSWORD）。PipesHub 只保存其加密形式，因此無法在此顯示。",
-        "lostPassword": "如果沒人知道密碼，「忘記密碼」也幫不上忙，因為 .example 位址無法接收郵件。伺服器維運人員可以在後端容器中執行以下指令，取得設定新密碼的連結：",
-        "missing": "範例帳號僅在安裝時設定了 PIPESHUB_DEMO_PERSONAS=1 才會建立。沒有它們示範也能使用，只是無法以 Alice 或 Bob 身分登入。"
+        "lostPassword": "如果沒人知道密碼，「忘記密碼」也幫不上忙，因為 .example 位址無法接收郵件。伺服器維運人員可以在 PipesHub 容器中執行以下指令，取得設定新密碼的連結：",
+        "missing": "範例帳號僅在安裝時設定了 PIPESHUB_DEMO_PERSONAS=1 才會建立。沒有它們示範也能使用，只是無法以 Alice 或 Bob 身分登入。",
+        "retry": "重試"
       },
       "close": "關閉"
     }

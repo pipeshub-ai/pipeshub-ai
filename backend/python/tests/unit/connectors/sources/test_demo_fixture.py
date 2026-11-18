@@ -259,33 +259,36 @@ def test_every_record_revision_changes_so_a_resync_reaches_it(fx: dict) -> None:
 
 
 def _about_summary(fx: dict) -> dict:
-    """What the product's "About the demo" panel says is in the fixture."""
+    """What the product's "About the demo" panel says is in the fixture, counted as sync stores it."""
     containers = {c["id"]: c for c in fx["containers"]}
+    threads = {t["id"]: t for t in fx.get("threads", [])}
     labels = demo_connector._SYSTEM_LABEL
     tools: dict[str, dict] = {}
     for c in fx["containers"]:
         tool = tools.setdefault(c["system"], {"name": labels[c["system"]], "places": 0, "records": 0})
         tool["places"] += 1
-    for r in fx["records"]:
+    # Sync folds a thread's messages into one record, so count each thread once.
+    stored = [r for r in fx["records"] if r.get("thread") not in threads]
+    stored += [threads[tid] for tid in dict.fromkeys(r["thread"] for r in fx["records"] if r.get("thread") in threads)]
+    for r in stored:
         tools[containers[r["container"]]["system"]]["records"] += 1
-    groups = {g["id"]: g["name"] for g in fx["groups"]}
-    threads = {t["id"]: t["title"] for t in fx.get("threads", [])}
+    group_of = _group_of_record(fx)
+    groups = {g["id"]: g for g in fx["groups"]}
     sign_in = [p for p in fx["people"] if p.get("login")]
     restricted: dict[str, dict] = {}
-    for r in fx["records"]:
-        if not r.get("group"):
+    for r in stored:
+        group = groups[group_of[r["id"]]]
+        if group.get("installer_joins"):
             continue
-        entry = restricted.setdefault(r["group"], {
-            "group": groups[r["group"]],
+        entry = restricted.setdefault(group["id"], {
+            "group": group["name"],
             "records": [],
-            "signInReaders": [p["name"] for p in sign_in if r["group"] in p["groups"]],
+            "signInReaders": [p["name"] for p in sign_in if group["id"] in p["groups"]],
         })
-        title = threads.get(r.get("thread"), r["title"])
-        if title not in entry["records"]:
-            entry["records"].append(title)
+        entry["records"].append(r["title"])
     return {
         "company": fx["company"],
-        "recordCount": len(fx["records"]),
+        "recordCount": len(stored),
         "tools": list(tools.values()),
         "people": [
             {"name": p["name"], "title": p["title"], **({"email": p["email"]} if p.get("login") else {}), "signIn": bool(p.get("login"))}

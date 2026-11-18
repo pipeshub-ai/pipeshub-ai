@@ -5991,7 +5991,7 @@
       },
       "restricted": {
         "title": "Wer was sieht",
-        "description": "Die meisten Datensätze sind für alle offen, die die Demo nutzen. Diese hier sind jeweils auf eine Gruppe beschränkt, daher bekommt dieselbe Frage je nach Fragendem eine andere Antwort.",
+        "description": "Wer die Demo eingeschaltet hat, kann fast alles davon lesen, und Alice und Bob können lesen, was ihre Teams lesen dürfen. Andere Personen in Ihrer Organisation können nichts davon lesen. Die Datensätze unten sind jeweils auf eine Gruppe beschränkt, zu der die Person, die die Demo eingeschaltet hat, nicht gehört. Daher bekommt dieselbe Frage je nach Fragendem eine andere Antwort.",
         "readers": "Können diese öffnen: {{names}}",
         "noReaders": "Keines der Beispielkonten kann diese öffnen."
       },
@@ -6005,11 +6005,13 @@
           "checking": "Wird geprüft…",
           "active": "Kann sich anmelden",
           "off": "Anmeldung ausgeschaltet",
-          "missing": "Nicht angelegt"
+          "missing": "Nicht angelegt",
+          "unknown": "Konnte nicht geprüft werden"
         },
         "password": "Sie verwenden das Startpasswort, das bei der Installation von PipesHub gewählt wurde (PIPESHUB_DEMO_PASSWORD). PipesHub speichert es nur in verschlüsselter Form, daher kann es hier nicht angezeigt werden.",
-        "lostPassword": "Hat es niemand, hilft Passwort vergessen nicht, denn .example-Adressen können keine E-Mails empfangen. Wer den Server betreibt, kann mit diesem Befehl im Backend-Container einen Link zum Festlegen eines neuen Passworts ausgeben:",
-        "missing": "Beispielkonten werden nur bei der Installation angelegt, wenn PIPESHUB_DEMO_PERSONAS=1 gesetzt ist. Die Demo funktioniert auch ohne sie; Sie können sich nur nicht als Alice oder Bob anmelden."
+        "lostPassword": "Hat es niemand, hilft Passwort vergessen nicht, denn .example-Adressen können keine E-Mails empfangen. Wer den Server betreibt, kann mit diesem Befehl im PipesHub-Container einen Link zum Festlegen eines neuen Passworts ausgeben:",
+        "missing": "Beispielkonten werden nur bei der Installation angelegt, wenn PIPESHUB_DEMO_PERSONAS=1 gesetzt ist. Die Demo funktioniert auch ohne sie; Sie können sich nur nicht als Alice oder Bob anmelden.",
+        "retry": "Erneut versuchen"
       },
       "close": "Schließen"
     }

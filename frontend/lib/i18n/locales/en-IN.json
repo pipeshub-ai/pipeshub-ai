@@ -5770,7 +5770,7 @@
       },
       "restricted": {
         "title": "Who can see what",
-        "description": "Most records are open to everyone using the demo. These are limited to one group each, so the same question gets a different answer depending on who asks.",
+        "description": "Whoever turned on the demo can read most of it, and Alice and Bob can read what their teams can. Other people in your organization can't read any of it. The records below are limited to one group each, which doesn't include whoever turned on the demo, so the same question gets a different answer depending on who asks.",
         "readers": "Can open these: {{names}}",
         "noReaders": "Neither sample account can open these."
       },
@@ -5784,11 +5784,13 @@
           "checking": "Checking…",
           "active": "Can sign in",
           "off": "Sign-in turned off",
-          "missing": "Not created"
+          "missing": "Not created",
+          "unknown": "Couldn't check"
         },
         "password": "They use the starting password chosen when PipesHub was installed (PIPESHUB_DEMO_PASSWORD). PipesHub keeps only a scrambled form of it, so it can't be shown here.",
-        "lostPassword": "If nobody has it, Forgot password won't help, because .example addresses can't receive email. Whoever runs the server can print a link to choose a new password by running this in the backend container:",
-        "missing": "Sample accounts are only created at install, when PIPESHUB_DEMO_PERSONAS=1 is set. The demo works without them; you just can't sign in as Alice or Bob."
+        "lostPassword": "If nobody has it, Forgot password won't help, because .example addresses can't receive email. Whoever runs the server can print a link to choose a new password by running this in the PipesHub container:",
+        "missing": "Sample accounts are only created at install, when PIPESHUB_DEMO_PERSONAS=1 is set. The demo works without them; you just can't sign in as Alice or Bob.",
+        "retry": "Try again"
       },
       "close": "Close"
     }

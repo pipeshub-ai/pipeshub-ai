@@ -3,13 +3,12 @@
 import React, { useEffect, useState } from 'react';
 import { Badge, Button, Code, Dialog, Flex, Link, Table, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useUserStore, selectUserEmail } from '@/lib/store/user-store';
 import summary from '../acme-corp-summary.json';
 import { findSampleAccounts } from '../remove-demo-data';
 import { useDemoDataStatus } from '../use-demo-data';
 import { useDemoSwitch } from '../use-demo-switch';
 
-type AccountState = 'checking' | 'active' | 'off' | 'missing';
+type AccountState = 'checking' | 'active' | 'off' | 'missing' | 'unknown';
 
 const SIGN_IN_PEOPLE = summary.people.filter((p) => p.signIn);
 
@@ -58,37 +57,38 @@ function StatusLine() {
 /** Admins only: which sample accounts exist here, and how they sign in. */
 function SignInAccounts({ open }: { open: boolean }) {
   const { t } = useTranslation();
-  const myEmail = useUserStore(selectUserEmail);
-  const offForEveryone = useDemoDataStatus()?.offForEveryone === true;
-  const [existing, setExisting] = useState<Set<string> | null>(null);
+  const status = useDemoDataStatus();
+  // null while looking, 'failed' if the lookup failed, else the addresses found.
+  const [existing, setExisting] = useState<Set<string> | 'failed' | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setExisting(null);
-    findSampleAccounts(myEmail)
+    // Every sample account counts here, including one the viewer is signed in as.
+    findSampleAccounts()
       .then((found) => {
         if (!cancelled) setExisting(new Set(found.map((a) => a.email.trim().toLowerCase())));
       })
       .catch(() => {
-        // Unknown is shown as missing; the explanation below covers both.
-        if (!cancelled) setExisting(new Set());
+        if (!cancelled) setExisting('failed');
       });
     return () => {
       cancelled = true;
     };
-  }, [open, myEmail]);
+  }, [open, attempt]);
 
   const stateOf = (email: string): AccountState => {
-    if (existing === null) return 'checking';
+    if (existing === 'failed') return 'unknown';
+    if (existing === null || status === null) return 'checking';
     if (!existing.has(email)) return 'missing';
-    return offForEveryone ? 'off' : 'active';
+    return status.offForEveryone ? 'off' : 'active';
   };
   const states = SIGN_IN_PEOPLE.map((p) => stateOf(p.email as string));
-  const anyExists = states.some((s) => s === 'active' || s === 'off');
-  const anyMissing = states.includes('missing');
-  const color: Record<AccountState, 'green' | 'gray' | 'orange'> = {
-    checking: 'gray', active: 'green', off: 'gray', missing: 'orange',
+  const found = SIGN_IN_PEOPLE.filter((_, i) => states[i] === 'active' || states[i] === 'off');
+  const color: Record<AccountState, 'green' | 'gray' | 'orange' | 'red'> = {
+    checking: 'gray', active: 'green', off: 'gray', missing: 'orange', unknown: 'red',
   };
 
   return (
@@ -106,16 +106,23 @@ function SignInAccounts({ open }: { open: boolean }) {
           </Flex>
         ))}
       </Flex>
-      {anyExists && (
+      {existing === 'failed' && (
+        <Flex>
+          <Button size="1" variant="soft" color="gray" onClick={() => setAttempt((n) => n + 1)}>
+            {t('demoData.about.accounts.retry')}
+          </Button>
+        </Flex>
+      )}
+      {found.length > 0 && (
         <>
           <Text size="2" color="gray">{t('demoData.about.accounts.password')}</Text>
           <Text size="2" color="gray">{t('demoData.about.accounts.lostPassword')}</Text>
           <Code size="1" style={{ display: 'block', padding: 'var(--space-2)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-            {`node dist/scripts/set-password-link.js ${SIGN_IN_PEOPLE[0].email}`}
+            {found.map((p) => `cd /app/backend && node dist/scripts/set-password-link.js ${p.email}`).join('\n')}
           </Code>
         </>
       )}
-      {anyMissing && <Text size="2" color="gray">{t('demoData.about.accounts.missing')}</Text>}
+      {states.includes('missing') && <Text size="2" color="gray">{t('demoData.about.accounts.missing')}</Text>}
     </Section>
   );
 }
@@ -244,8 +251,9 @@ export function AboutDemoDataLink({ isAdmin, size = '1' }: { isAdmin: boolean | 
       <Link asChild size={size} weight="medium">
         <button
           type="button"
+          className="touch-size"
           onClick={() => setOpen(true)}
-          style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer' }}
+          style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}
         >
           {t('demoData.about.open')}
         </button>

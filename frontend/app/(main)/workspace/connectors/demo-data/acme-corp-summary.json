@@ -1,6 +1,6 @@
 {
   "company": "Acme Corp",
-  "recordCount": 82,
+  "recordCount": 65,
   "tools": [
     {
       "name": "GitHub",
@@ -15,7 +15,7 @@
     {
       "name": "Slack",
       "places": 7,
-      "records": 32
+      "records": 15
     },
     {
       "name": "Google Drive",

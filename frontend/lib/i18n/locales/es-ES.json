@@ -6066,7 +6066,7 @@
       },
       "restricted": {
         "title": "Quién ve qué",
-        "description": "La mayoría de los registros están abiertos a todos los que usan la demo. Estos están limitados a un grupo cada uno, así que la misma pregunta recibe otra respuesta según quién la haga.",
+        "description": "Quien activó la demo puede leer casi todo, y Alice y Bob pueden leer lo que sus equipos pueden leer. Las demás personas de tu organización no pueden leer nada. Los registros siguientes están limitados a un grupo cada uno, que no incluye a quien activó la demo, así que la misma pregunta recibe otra respuesta según quién la haga.",
         "readers": "Pueden abrirlos: {{names}}",
         "noReaders": "Ninguna cuenta de ejemplo puede abrirlos."
       },
@@ -6080,11 +6080,13 @@
           "checking": "Comprobando…",
           "active": "Puede iniciar sesión",
           "off": "Inicio de sesión desactivado",
-          "missing": "No creada"
+          "missing": "No creada",
+          "unknown": "No se pudo comprobar"
         },
         "password": "Usan la contraseña inicial elegida al instalar PipesHub (PIPESHUB_DEMO_PASSWORD). PipesHub solo guarda una versión cifrada, así que no se puede mostrar aquí.",
-        "lostPassword": "Si nadie la tiene, ¿Olvidaste tu contraseña? no sirve, porque las direcciones .example no reciben correo. Quien administra el servidor puede obtener un enlace para elegir una contraseña nueva ejecutando esto en el contenedor del backend:",
-        "missing": "Las cuentas de ejemplo solo se crean al instalar, cuando se define PIPESHUB_DEMO_PERSONAS=1. La demo funciona sin ellas; simplemente no puedes iniciar sesión como Alice o Bob."
+        "lostPassword": "Si nadie la tiene, ¿Olvidaste tu contraseña? no sirve, porque las direcciones .example no reciben correo. Quien administra el servidor puede obtener un enlace para elegir una contraseña nueva ejecutando esto en el contenedor de PipesHub:",
+        "missing": "Las cuentas de ejemplo solo se crean al instalar, cuando se define PIPESHUB_DEMO_PERSONAS=1. La demo funciona sin ellas; simplemente no puedes iniciar sesión como Alice o Bob.",
+        "retry": "Reintentar"
       },
       "close": "Cerrar"
     }
