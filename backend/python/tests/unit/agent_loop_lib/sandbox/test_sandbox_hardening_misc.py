@@ -102,7 +102,9 @@ class TestInstallCommandsQuoteSpecs:
         produced = {"n": 0}
 
         def _chunks() -> Iterator[bytes]:
-            while True:
+            # Finite, so a reader that stops enforcing the limit fails the
+            # assertion below instead of reading forever.
+            for _ in range(10):
                 produced["n"] += 1
                 yield b"\0" * (1024 * 1024)
 
