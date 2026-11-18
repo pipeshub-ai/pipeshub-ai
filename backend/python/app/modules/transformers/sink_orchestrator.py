@@ -67,7 +67,7 @@ from app.modules.transformers.transformer import (
     TransformContext,
     Transformer,
 )
-from app.modules.transformers.vectorstore import VectorStore
+from app.modules.transformers.vectorstore import WRITTEN_UNDER, VectorStore
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.featureflag.platform_settings import (
@@ -356,6 +356,10 @@ class SinkOrchestrator(Transformer):
                 await self._sync_record_identity_entities(ctx)
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             with stage("graph.status"):
+                # A cleanup that moved the epoch after the last batch was confirmed drops these points: not marked indexed then.
+                written_under = ctx.settings.get(WRITTEN_UNDER) if isinstance(ctx.settings, dict) else None
+                if written_under:
+                    await self.vector_store.require_epochs_current(written_under)
                 if not await self._update_indexing_status(ctx):
                     # Deleted while its vectors were written: nothing more is saved for it
                     # (a reconciliation save would bring back a mapping the delete removed),

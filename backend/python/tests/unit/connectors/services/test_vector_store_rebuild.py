@@ -190,7 +190,9 @@ async def test_cleanup_publishes_delete_event_only():
 
     event = kafka.publish_event.await_args.args[1]
     assert event["eventType"] == EventTypes.DELETE_VECTOR_COLLECTION.value
-    graph.reset_indexing_status_for_connector.assert_awaited_once_with(
+    # Once before the drop and once after it is confirmed.
+    assert graph.reset_indexing_status_for_connector.await_count == 2
+    graph.reset_indexing_status_for_connector.assert_awaited_with(
         "app-1",
         ProgressStatus.NOT_STARTED.value,
         exclude_statuses=[ProgressStatus.IN_PROGRESS.value],
@@ -1079,3 +1081,68 @@ async def test_a_cleanup_whose_epoch_cannot_move_resets_nothing() -> None:
             )
     graph.reset_indexing_status_for_connector.assert_not_awaited()
     kafka.publish_event.assert_not_awaited()
+
+
+async def _cleanup_with(reset_side_effect, publish_hook=None):  # noqa: ANN001, ANN202
+    from app.connectors.services import vector_store_rebuild as rebuild
+
+    config = await _config_with("records")
+    redis = FakeRedis()
+    lock = RebuildJobLock(redis, token="cleanup")
+    await lock.try_acquire()
+    graph = AsyncMock()
+    graph.get_records_by_status = AsyncMock(return_value=[])
+    graph.reset_indexing_status_for_connector = AsyncMock(side_effect=reset_side_effect)
+    kafka = AsyncMock()
+
+    async def _publish(topic, event) -> bool:
+        if publish_hook is not None:
+            publish_hook()
+        redis.store[CLEANUP_PHASE_KEY] = PHASE_READY
+        return True
+
+    kafka.publish_event = AsyncMock(side_effect=_publish)
+    with patch.object(rebuild, "_RESET_AFTER_DROP_WAITS", (0.0, 0.0)):
+        try:
+            await rebuild.start_vector_store_cleanup(
+                logger=MagicMock(), config_service=config, graph_provider=graph, kafka_service=kafka, lock=lock,
+                redis=redis, org_id="org-1", user_id="user-1", apps=[("org-1", "app-1")],
+            )
+            error = None
+        except Exception as exc:  # noqa: BLE001
+            error = exc
+    return graph, redis, error
+
+
+@pytest.mark.asyncio
+async def test_a_record_completed_after_the_first_reset_is_reset_again_once_the_drop_is_confirmed() -> None:
+    """A record that began after the first reset completes before the drop and would stay indexed with its points gone."""
+    statuses = {"early": "COMPLETED"}
+
+    async def reset(connector_id, to, exclude_statuses=None):  # noqa: ANN001, ANN202
+        for key, value in statuses.items():
+            if value not in (exclude_statuses or []):
+                statuses[key] = to
+
+    def late_record_completes() -> None:
+        statuses["late"] = "COMPLETED"  # completes between the first reset and the drop
+
+    graph, redis, error = await _cleanup_with(reset, late_record_completes)
+    assert error is None
+    assert statuses == {"early": "NOT_STARTED", "late": "NOT_STARTED"}
+    assert graph.reset_indexing_status_for_connector.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_reset_after_the_drop_that_fails_twice_is_tried_again() -> None:
+    graph, _, error = await _cleanup_with([None, ConnectionError("down"), ConnectionError("down"), None])
+    assert error is None and graph.reset_indexing_status_for_connector.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_a_reset_after_the_drop_that_keeps_failing_is_raised_after_the_drop_and_says_so() -> None:
+    graph, redis, error = await _cleanup_with([None] + [ConnectionError("down")] * 3)
+    assert isinstance(error, RuntimeError) and "dropped and recreated" in str(error)
+    assert graph.reset_indexing_status_for_connector.await_count == 4
+    assert redis.store[CLEANUP_PHASE_KEY] == PHASE_READY  # the drop succeeded and is not reported as failed
+    assert JOB_LOCK_KEY not in redis.store

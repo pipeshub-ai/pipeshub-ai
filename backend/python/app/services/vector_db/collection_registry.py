@@ -20,6 +20,7 @@ only resolves *which* collection(s) an operation targets and executes the
 uncontroversial collection-level operations.
 """
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -62,6 +63,8 @@ _EXISTENCE_CACHE_TTL_SECONDS = 60
 LivenessProbe = Callable[[DeleteContext, str], Awaitable[bool]]
 
 
+_SECOND_RESET_ATTEMPTS = 3
+_SECOND_RESET_WAITS = (0.2, 1.0)
 _FENCE_FIELDS = frozenset({CONTENT_REV_FIELD, EMBED_KEY_FIELD})
 
 
@@ -639,7 +642,29 @@ class CollectionRegistry:
             if not _is_collection_missing(e):
                 raise
             self._logger.info("Collection %s already absent", name)
-        await self._pins().epochs.confirm_reset(ticket)
+        # A second epoch after the delete returned: a batch that was accepted under the first one while the delete was running
+        # (it wrote into the collection being dropped) can no longer confirm. Retried like the first; if it cannot be made, the first
+        # reset is still confirmed (the drop did happen) and the error is raised, so the cleanup fails visibly and can be run
+        # again; the collection is absent until then and is created by the next writer.
+        epochs = self._pins().epochs
+        try:
+            for attempt in range(_SECOND_RESET_ATTEMPTS):
+                try:
+                    ticket = await epochs.begin_reset(name)
+                    break
+                except Exception:
+                    if attempt == _SECOND_RESET_ATTEMPTS - 1:
+                        raise
+                    await asyncio.sleep(_SECOND_RESET_WAITS[min(attempt, len(_SECOND_RESET_WAITS) - 1)])
+        except Exception:
+            self._logger.error(
+                "Collection %s was dropped but its epoch could not be moved again; writers that began during the drop are not fenced. "
+                "Run the cleanup again", name,
+            )
+            await epochs.confirm_reset(ticket)
+            self._existence.invalidate(name)
+            raise
+        await epochs.confirm_reset(ticket)
         self._existence.invalidate(name)
         # After the vectors, never before: a crash in between leaves a pin over nothing, which the next
         # creator of the collection replaces; the other order would leave vectors with no pin. A pin the

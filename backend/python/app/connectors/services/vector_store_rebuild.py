@@ -308,6 +308,31 @@ async def _move_epochs_before_reset(config_service: Any, logger: Logger) -> None
             await epochs.begin_reset(entry.name)
 
 
+_RESET_AFTER_DROP_ATTEMPTS = 3
+_RESET_AFTER_DROP_WAITS = (1.0, 2.0)
+
+
+async def _reset_apps_after_drop(graph_provider: IGraphDBProvider, apps: list[tuple[str, str]], logger: Logger) -> None:
+    """Reset the records again once the drop is confirmed.
+
+    A record that began after the first reset can complete before the collection is dropped and then lose its points
+    while it is marked indexed. Records still being written are skipped by the reset, as before. A reset that keeps
+    failing is raised, and says that the drop itself succeeded: running the cleanup again is safe.
+    """
+    for attempt in range(_RESET_AFTER_DROP_ATTEMPTS):
+        try:
+            await _reset_apps(graph_provider, apps)
+            return
+        except Exception as exc:
+            if attempt == _RESET_AFTER_DROP_ATTEMPTS - 1:
+                raise RuntimeError(
+                    "The search index was dropped and recreated, but the records could not be reset afterwards; "
+                    "run the cleanup again to reset them"
+                ) from exc
+            logger.warning("Resetting the records after the drop failed (attempt %d); trying again", attempt + 1, exc_info=True)
+            await asyncio.sleep(_RESET_AFTER_DROP_WAITS[min(attempt, len(_RESET_AFTER_DROP_WAITS) - 1)])
+
+
 async def start_vector_store_cleanup(
     *,
     logger: Logger,
@@ -349,6 +374,7 @@ async def start_vector_store_cleanup(
             phase = await get_cleanup_phase(redis)
             if phase == PHASE_READY:
                 logger.info("Vector-store collection recreate acknowledged")
+                await _reset_apps_after_drop(graph_provider, apps, logger)
                 return
             if phase == PHASE_FAILED:
                 raise RuntimeError(
