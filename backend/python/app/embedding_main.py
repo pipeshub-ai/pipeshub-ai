@@ -34,8 +34,8 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.api.validation_errors import input_free_422
 from app.capacity.admission import parse_class, reserve_or_adopt
-from app.capacity.member_budget import AdmissionTimeout
 from app.capacity.budget_policy import EMBED_WEIGHT, QUERY_EMBED_WEIGHT, Demand, Family
+from app.capacity.member_budget import AdmissionTimeout
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,

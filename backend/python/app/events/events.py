@@ -277,6 +277,7 @@ class EventProcessor:
     async def _skip_same_bytes(self, record: Mapping[str, Any], record_id: str) -> bool:
         """Settle a same-bytes update without parsing or embedding; False when it must run in full.
 
+        0. The record's own points are still in the store (a cleanup or reset of the index leaves a COMPLETED record with none).
         1. The membership sync: a full update ends in one, and the update may be the sign that the
            record's connector, groups or permissions changed under the same bytes.
         2. An unforced redrive of the stages after embed that did not finish (failed or paused). A
@@ -294,6 +295,13 @@ class EventProcessor:
         vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
         try:
             if await ingress.handoff_lost(record):
+                return False
+            # The record's points must still be in the store: after a cleanup or a reset of the index its status still says
+            # COMPLETED while its vectors are gone (or were never written under the live epoch), and skipping would keep it
+            # unsearchable until a reindex reaches it. No point of its own, or nothing to ask: run in full, which embeds under
+            # the index's current precision and epoch.
+            pipeline = self._indexing_pipeline()
+            if pipeline is None or str(record.get("orgId") or "") not in await pipeline.orgs_holding_points(vrid):
                 return False
             await self.sync_vector_membership(vrid, log_failure=False)
             dispatched = await ingress.redrive_unchanged(vrid, rev, record)

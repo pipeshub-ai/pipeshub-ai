@@ -30,7 +30,13 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
-from app.core.org_context import MissingOrgContext, current_or_system, current_org_id, for_org, system
+from app.core.org_context import (
+    MissingOrgContext,
+    current_or_system,
+    current_org_id,
+    for_org,
+    system,
+)
 from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import (
@@ -1650,13 +1656,6 @@ class RecordEventHandler(BaseEventService):
             },
             key=str(payload.get("connectorId")),
         )
-
-    async def _require_matching_precision_before_delete(self, org_id: str | None) -> None:
-        """Before the record's vectors are taken out to be written again: refuse if the index's precision is not what is served."""
-        sink = getattr(self.event_processor, "sink_orchestrator", None)
-        vector_store = getattr(sink, "vector_store", None) if sink is not None else None
-        if vector_store is not None:
-            await vector_store.require_matching_precision_before_delete(None, org_id, build_model=True)
 
     async def _org_ids_to_sweep(self) -> list[str]:
         """The organisations whose retired-epoch points the cleanup's tail removes.

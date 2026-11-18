@@ -67,6 +67,7 @@ class _World:
         self.graph = graph
         processor = MagicMock()
         processor.indexing_pipeline = AsyncMock()
+        processor.indexing_pipeline.orgs_holding_points = AsyncMock(return_value={"org-1"})  # the record's points are in the store
         processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
         processor.process_delimited_document = MagicMock(side_effect=self._parse)
         processor.process_code_document = MagicMock(side_effect=self._parse)
@@ -199,6 +200,29 @@ async def test_a_lost_hand_off_runs_in_full() -> None:
 
     assert world.parses == 1
     world.processor.indexing_pipeline.sync_vector_membership.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_record_whose_points_are_gone_runs_in_full() -> None:
+    """After a cleanup or reset of the index the record still says COMPLETED: skipping would leave it with no vectors."""
+    world = _World(node={"contentRev": content_revision(NEW)})
+    world.processor.indexing_pipeline.orgs_holding_points = AsyncMock(return_value=set())
+
+    await world.run(world.event(NEW))
+
+    assert world.parses == 1
+    world.processor.indexing_pipeline.sync_vector_membership.assert_not_awaited()
+    world.ingress.redrive_unchanged.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_points_held_only_by_another_org_do_not_count() -> None:
+    world = _World(node={"contentRev": content_revision(NEW)})
+    world.processor.indexing_pipeline.orgs_holding_points = AsyncMock(return_value={"org-2"})
+
+    await world.run(world.event(NEW))
+
+    assert world.parses == 1
 
 
 @pytest.mark.asyncio
