@@ -186,8 +186,9 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
         "created_ms": listing_ts(doc, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
         "size_bytes": _ms(doc.get("sizeInBytes")), "record_type": _s(doc.get("recordType")), "origin": _s(doc.get("origin")),
         "external_id": _s(doc.get("externalRecordId")), "deleted": flag(doc.get("isDeleted")), "placeholder": flag(doc.get("isPlaceholder")), "granted": granted,
-        # a node of another organisation is no row of a listing (the walk reads its nodes by the viewer's orgId)
-        "alien": _stored_org(doc) != snap.org,
+        # a node of another organisation is no row of a listing (the walk reads its nodes by the viewer's orgId), nor is a group that carries access only
+        # (neo4j_provider._cypher_read_by_app): what hangs under it is listed under its other parents
+        "alien": _stored_org(doc) != snap.org or (coll == "recordGroups" and flag(doc.get("accessOnly"))),
         # the listing's order of names: a string by UTF-16 code unit (what the merge that pages the listing compares by), kept as the bytes of it
         "name_sort": name.lower().encode("utf-16-be", "surrogatepass") if name is not None else None,
         # the hub's node type 'folder': neo4j_provider._cypher_hub_type (mimeType in FOLDER_MIME_TYPES, or recordType FOLDER), of a record only

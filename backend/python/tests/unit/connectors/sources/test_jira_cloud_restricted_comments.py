@@ -411,11 +411,16 @@ async def test_a_level_set_on_an_issue_with_a_restricted_comment_closes_the_issu
         knowledge=SchemeKnowledge.PRESENT, scheme_id="1", members_readable=True,
         members_by_level={"10102": [{"type": "group", "value": "g-lead", "group": {"groupId": "g-lead"}}]}))
     connector.data_entities_processor.on_new_records = AsyncMock()
+    connector.data_entities_processor.on_new_record_groups = AsyncMock()
     result = await connector._check_and_fetch_updated_issue(_stored_issue(), {})
     assert result is not None
     record, grants = result
-    assert record.access_rule == AccessRule.RESTRICTED and record.rewrite_permissions is True
-    assert {(g.entity_type, g.external_id) for g in grants} == {(EntityType.GROUP, "g-lead")}
+    # The level's people read it through the level's group, and only through it.
+    assert (record.access_rule, record.access_group_external_id) == (AccessRule.STRICT, "level:10000:10102")
+    assert record.rewrite_permissions is True and grants == []
+    (group, group_grants), = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+    assert group.external_group_id == "level:10000:10102"
+    assert {(g.entity_type, g.external_id) for g in group_grants} == {(EntityType.GROUP, "g-lead")}
     assert record.source_updated_at == 1  # still changed for the next sync, which rebuilds the comment records
     connector.data_entities_processor.on_new_records.assert_not_awaited()
 
