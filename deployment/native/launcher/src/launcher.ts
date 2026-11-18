@@ -402,7 +402,12 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     await reapLeftovers(dataDir, lay, previous, false);
     delete state.leftover; save();
     if (stopping) throw new Cancelled();
-    const saved = readJson<Ports>(join(dataDir, "ports.json"));
+    const raw = readJson<unknown>(join(dataDir, "ports.json"));
+    const saved = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Partial<Ports>) : undefined;
+    // Without the saved web port an existing database would get a new one its stored addresses do not match.
+    if (!Number.isInteger(saved?.api) && existsSync(join(lay.pgData, "PG_VERSION"))) {
+      throw new Error(`${join(dataDir, "ports.json")} has no web port, which the existing database's stored addresses use. Restore it from a backup.`);
+    }
     secrets = loadSecrets(dataDir, nonEmpty(lay.pgData));
     const ports = await pickPorts(saved, o.portBase);
     // The API's address is stored in the database's settings on its first start (auth, storage and other endpoints), so it
@@ -449,7 +454,8 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   try { await stopPostgres(lay); } catch (e) { failed ??= e as Error; }
   // On failure the state stays, so the next start or stop ends what is left.
   if (failed) { emit({ event: "error", code: "stop_failed", message: failed.message }); exitCode = 1; }
-  else rmSync(statePath(dataDir), { force: true });
+  // A crashed launcher's processes that this start could not end stay on record for the next start or stop.
+  else if (!state.leftover) rmSync(statePath(dataDir), { force: true });
   stopping = true;
   held.release();
   process.off("SIGTERM", onSignal); process.off("SIGINT", onSignal);
@@ -581,7 +587,8 @@ export async function startDetached(o: Options, emit: Emit, args: string[], self
   p.unref(); closeSync(fd);
   const until = Date.now() + ((o.healthTimeoutS ?? 300) + 120) * 1000;
   let exited = false; p.once("exit", () => { exited = true; });
-  p.once("error", () => { exited = true; });   // could not run at all: without a listener this would throw
+  let spawnError: Error | undefined;
+  p.once("error", (e) => { spawnError = e; exited = true; });   // could not run at all: without a listener this would throw
   for (;;) {
     const s = readState(dataDir);
     if (s && s.pid === p.pid && s.phase === "ready") { emit({ event: "ready", url: s.url, ports: s.ports, healthy_after_s: s.healthyAfterS, pid: s.pid, data_dir: dataDir }); return 0; }
@@ -594,7 +601,9 @@ export async function startDetached(o: Options, emit: Emit, args: string[], self
     const end = Date.now() + launcherStopMs(o);
     while (!exited && Date.now() < end) await sleep(300);
   }
-  const mine = (() => { try { return readFileSync(log, "utf8").slice(from); } catch { return ""; } })();
+  if (spawnError) { emit({ event: "error", code: "start_failed", message: `the launcher could not be started: ${spawnError.message}` }); return 1; }
+  // from counts bytes: cut the bytes, then decode, or an earlier non-ASCII line shifts the cut
+  const mine = (() => { try { return readFileSync(log).subarray(from).toString("utf8"); } catch { return ""; } })();
   // The background launcher's own error (already_running, start_failed, ...) says more than "not ready".
   const own = mine.split("\n").reverse().map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
     .find((e) => e?.event === "error");
