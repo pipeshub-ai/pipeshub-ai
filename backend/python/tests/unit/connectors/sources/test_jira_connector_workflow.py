@@ -619,7 +619,7 @@ class TestJiraFullSync:
             connector._sync_project_lead_roles.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_the_org_gate_is_settled_before_the_issue_checkpoint_is_saved(self):
+    async def test_the_org_gate_is_settled_before_the_issue_checkpoint_is_saved(self) -> None:
         """An incomplete pass of a public project closes an open gate; a checkpoint write that fails must not skip that."""
         connector, dep, dsp, cs, tx = _make_connector()
         connector.data_source = MagicMock()
