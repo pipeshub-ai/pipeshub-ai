@@ -21,12 +21,14 @@ from atlassian_behaviour_fakes import (
 from test_jira_dc_sync_behaviour import (
     API,
     EPIC_FIELD,
+    LICENSED,
     IssueSearch,
     JiraRecordsDb,
     attachment,
     make_connector,
     stub_site,
     ts,
+    user,
 )
 
 from app.config.constants.arangodb import AccessRule
@@ -248,7 +250,7 @@ class TestLevelHolders:
         assert sub.parent_external_record_id == "2" and hidden_from_project(sub)
         assert readers(db, "3") == {("USER", "alice@example.com")}
 
-    async def test_a_holder_who_cannot_browse_the_project_is_granted_but_the_project_still_gates_the_issue(
+    async def test_a_holder_outside_the_directory_is_not_granted_and_the_project_still_gates_the_issue(
         self, jira, db, store, jql_search,
     ) -> None:
         stub_site(jira, jql_search)
@@ -259,10 +261,11 @@ class TestLevelHolders:
 
         await connector.run_sync()
 
-        # The issue inherits the project, so a holder outside it reads nothing; the grant is still the holder's.
+        # ghost is not in the active-user list (deactivated or removed): Jira treats the account as gone, so the
+        # level's grant does not name it. The issue still inherits the project and stays closed to it.
         assert db.records["2"].inherit_permissions is True
         assert hidden_from_project(db.records["2"])
-        assert readers(db, "2") == {("USER", "ghost@example.com")}
+        assert readers(db, "2") == set()
 
 
 class TestUpgrade:
@@ -405,6 +408,27 @@ class TestFailClosed:
         assert not hidden_from_project(db.records["1"])
         warning = next(n for n in notes.sent if "issue security levels" in n["title"])
         assert "does not list who holds" in warning["message"] and "ENG" in warning["message"]
+
+    @pytest.mark.parametrize("status", [404, 403, 401])
+    async def test_level_holders_that_cannot_be_read_keep_a_stored_issues_grants(
+        self, jira, db, store, jql_search, status,
+    ) -> None:
+        """The level-members route is not in Data Center's documented REST API (10.3 and 11.2 list only
+        /issuesecurityschemes, /issuesecurityschemes/{id}, /project/{key}/issuesecuritylevelscheme,
+        /project/{key}/securitylevel and /securitylevel/{id}, https://developer.atlassian.com/server/jira/platform/rest/v11002/),
+        so any answer other than the members is a failed read: an unchanged issue keeps what it was granted."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]})
+        secured = sec_issue("2", "ENG-2", level=SECRET)
+        jql_search.put(secured)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[secured])
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+
+        jira.on("GET", f"{API}/issuesecurityschemes/{SCHEME}/members", json_response({"message": "no"}, status=status))
+        await sync(connector, jql_search, recent=[secured])
+
+        assert readers(db, "2") == {("USER", "alice@example.com")}
 
     async def test_an_account_refused_the_scheme_hides_secured_issues_and_names_the_permission(
         self, jira, db, store, jql_search,
@@ -946,3 +970,254 @@ class TestReindex:
 
         written = {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
         assert hidden_from_project(written) and readers(db, "2") == set()
+
+
+class TestProductAccessRegained:
+    async def test_an_account_that_gains_product_access_gets_its_level_grants_without_the_issue_changing(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """A level's user holder resolves only through the linked accounts, so the leveled issues are read again
+        for an account newly linked, though none changed."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") not in readers(db, "2")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+        assert "2" in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}
+
+    async def test_a_project_a_key_filter_left_out_reads_its_levels_again_when_it_is_next_synced(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Carol is linked by a sync whose project-key filter leaves ENG out. ENG's leveled issues are read again
+        when a later sync includes it, and only then; the saved accounts stay until every project has had them."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") not in readers(db, "2")
+
+        product_group(*LICENSED)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"project_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}}
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") not in readers(db, "2"), "ENG was not synced"
+
+        connector.config_service.config["filters"] = {}
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert "2" not in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}, (
+            "read again once"
+        )
+        assert store.values_for("project_ENG").get("people_handed") == "[]", (
+            "the hand-out ended with the sync that cleared the saved accounts, so a later listing starts a new one"
+        )
+
+    async def test_an_account_withdrawn_and_linked_again_gets_its_level_grants_again(self, jira, db, store, jql_search) -> None:
+        """The first hand-out of carol ends once every project had her; linked again after a withdrawal, she starts
+        a new one, so her level grant, dropped meanwhile, comes back though the issue did not change."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        product_group(*LICENSED)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        product_group("alice-key", "bob-key", "dave-key")
+        await sync(connector, jql_search, recent=[])
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+        db.record_permissions["2"] = [p for p in db.record_permissions["2"] if p.email != "carol@example.com"]
+
+        product_group(*LICENSED)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+    async def test_the_saved_accounts_stay_until_every_projects_hand_out_is_reset(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """A failure while resetting a project's handed list keeps the saved accounts: the next sync hands them out
+        again, rather than leave a stale list that would skip an account listed again later."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key", "name": "carol"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="alice"))
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key", "carol-key")
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+
+        product_group(*LICENSED)
+        update = connector._update_project_sync_checkpoint
+
+        async def failing_reset(project_key: str, *args: object, **kwargs: object) -> None:
+            if kwargs.get("people_handed") == "[]":
+                raise RuntimeError("checkpoint store unavailable")
+            await update(project_key, *args, **kwargs)
+
+        connector._update_project_sync_checkpoint = failing_reset
+        with pytest.raises(RuntimeError, match="checkpoint store unavailable"):
+            await sync(connector, jql_search, recent=[])
+
+        saved = json.loads((store.values_for("people_reread") or {}).get("accounts") or "[]")
+        assert "carol-key" in saved
+
+
+class TestWithdrawnAccounts:
+    async def test_a_deactivated_reporter_is_withdrawn_with_their_grants_and_regains_the_issue_when_listed_again(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Their level grant on the issue goes with the link (the store drops it); listed again, the leveled
+        issues are read again, though none changed, so the grant comes back."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("reporter")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        everyone_but_carol = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                              user("dave-key", "dave", None)]
+        jira.on("GET", f"{API}/user/list", json_response({"values": everyone_but_carol, "isLast": True}))
+        await sync(connector, jql_search, recent=[])
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+        db.record_permissions["2"] = [p for p in db.record_permissions["2"] if p.email != "carol@example.com"]
+
+        jira.on("GET", f"{API}/user/list", json_response({
+            "values": [*everyone_but_carol, user("carol-key", "carol", "carol@example.com")], "isLast": True}))
+        batches_before = len(db.record_batches)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "2")
+        assert "2" in {r.external_record_id for batch in db.record_batches[batches_before:] for r in batch}
+
+    async def test_a_level_holder_a_short_user_list_missed_keeps_their_grant_or_has_the_issue_read_again(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """carol is on the user list's second page, which fails. A level naming her by key alone still grants
+        her (she is linked); one naming her by username alone cannot be resolved, so its issues are read again
+        once the list is read in full, though neither issue changed."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="carol-key", user={"key": "carol-key"})],
+                            TEAM: [CAROL_BY_NAME]})
+        by_key, by_name = sec_issue("2", "ENG-2", level=SECRET), sec_issue("3", "ENG-3", level=TEAM)
+        jql_search.put(by_key, by_name)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[by_key, by_name])
+        assert ("USER", "carol@example.com") in readers(db, "2") and ("USER", "carol@example.com") in readers(db, "3")
+
+        full_list = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/user/list"))
+
+        def first_page_only(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("cursor") == "abc":
+                return json_response({"errorMessages": ["expired"]}, status=401)
+            return full_list(request)
+
+        jira.on("GET", f"{API}/user/list", first_page_only)
+        changed = [sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)), sec_issue("3", "ENG-3", level=TEAM, updated=ts(2))]
+        jql_search.put(*changed)
+        await sync(connector, jql_search, recent=changed)
+        assert connector._user_read_unfinished is True and db.withdrawn_users == []
+        assert ("USER", "carol@example.com") in readers(db, "2")
+        assert json.loads(store.values_for("project_ENG")["security_levels"]).get("*") == "retry"
+
+        jira.on("GET", f"{API}/user/list", full_list)
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "carol@example.com") in readers(db, "3")
+
+    async def test_an_account_listed_again_stays_owed_a_re_read_until_the_stub_sweep_has_run(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """carol is listed again and the leveled issues are read again, but the sweep that re-secures the project's
+        stubs is skipped (the synced users could not be read): she stays owed, so the next sync reads and sweeps."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("reporter")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        everyone = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/user/list"))
+        everyone_but_carol = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                              user("dave-key", "dave", None)]
+        jira.on("GET", f"{API}/user/list", json_response({"values": everyone_but_carol, "isLast": True}))
+        await sync(connector, jql_search, recent=[])
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+
+        jira.on("GET", f"{API}/user/list", everyone)
+        real_sweep = connector._sweep_placeholder_records
+        connector._sweep_placeholder_records = AsyncMock(return_value=None)
+        await sync(connector, jql_search, recent=[])
+        assert json.loads(store.values_for("people_reread")["accounts"]) == ["carol-key"]
+
+        connector._sweep_placeholder_records = AsyncMock(side_effect=real_sweep)
+        await sync(connector, jql_search, recent=[])
+        assert connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"] == {"10000"}
+        assert json.loads(store.values_for("people_reread")["accounts"]) == []
+
+    async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Absence from a list cut short says nothing, but a row marked inactive does: carol is withdrawn with her
+        grants, so neither the reindex nor the stub sweep, which read the linked accounts, can name her again."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [holder("reporter")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "carol@example.com") in readers(db, "2")
+
+        carol_inactive = {**user("carol-key", "carol", "carol@example.com"), "active": False}
+
+        def short_list(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("cursor") == "abc":
+                return json_response({"errorMessages": ["expired"]}, status=401)
+            return json_response({"values": [user("alice-key", "alice", "alice@example.com"), carol_inactive],
+                                  "nextPage": f"{API}/user/list?cursor=abc", "isLast": False})
+
+        jira.on("GET", f"{API}/user/list", short_list)
+        await sync(connector, jql_search, recent=[])
+        assert connector._user_read_unfinished is True
+        assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
+        assert "carol-key" not in {u.source_user_id for u in await db.get_all_app_users("jira-dc-1")}

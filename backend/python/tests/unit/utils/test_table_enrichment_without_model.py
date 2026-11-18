@@ -129,7 +129,7 @@ async def test_a_configured_model_that_fails_every_table_still_fails_the_record(
     container = HtmlToBlocksConverter().convert(_TABLE_HTML)
     failing = AsyncMock(side_effect=RuntimeError("provider down"))
 
-    with patch.object(table_enrichment, "invoke_with_count_validation_and_reflection", failing):
+    with patch.object(table_enrichment, "invoke_with_structured_output_and_reflection", failing):
         with pytest.raises(RuntimeError, match="All 1 tables failed"):
             await enhance_tables_with_llm(
                 container, _unconfigured_config_service(), MagicMock(), llm=MagicMock()

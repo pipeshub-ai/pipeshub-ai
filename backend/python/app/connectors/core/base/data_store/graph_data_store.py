@@ -542,7 +542,7 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
     async def get_user_by_email(
-        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+        self, email: str, *, raise_on_error: bool = False, org_id: str,
     ) -> Optional[User]:
         # Every record in a batch carries the same owner, so this is the same
         # lookup a hundred times over. Users are not created inside a record
@@ -550,9 +550,8 @@ class GraphTransactionStore(TransactionStore):
         key = ("user_email", email, org_id)
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
-        scope = {"org_id": org_id} if org_id is not None else {}
         value = await self.graph_provider.get_user_by_email(
-            email, transaction=self.txn, raise_on_error=raise_on_error, **scope
+            email, transaction=self.txn, raise_on_error=raise_on_error, org_id=org_id
         )
         self._memo_put(key, value)
         return value
@@ -625,6 +624,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
         return await self.graph_provider.remove_user_access_to_connector(connector_id, user_id, transaction=self.txn)
+
+    async def remove_unlinked_user_access_to_connector(self, connector_id: str) -> int:
+        return await self.graph_provider.remove_unlinked_user_access_to_connector(connector_id, transaction=self.txn)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
@@ -795,8 +797,8 @@ class GraphTransactionStore(TransactionStore):
             connector_id, external_id, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
-        users_dict = await self.graph_provider.get_users(org_id, active=active)
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list[User]:
+        users_dict = await self.graph_provider.get_users(org_id, active=active, raise_on_error=raise_on_error)
         return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
     async def get_app_users(
@@ -1149,13 +1151,13 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_app_roles(app_roles, transaction=self.txn)
 
-    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser], org_id: str) -> None:
         """
         Batch upsert app users.
 
         Delegates to graph_provider for implementation.
         """
-        return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn)
+        return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn, org_id=org_id)
 
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         """
@@ -1321,7 +1323,7 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
 
     async def batch_upsert_record_group_permissions(
-        self, record_group_id: str, permissions: list[Permission], connector_id: str
+        self, record_group_id: str, permissions: list[Permission], connector_id: str, org_id: str
     ) -> None:
         """
         Batch upsert permissions for a record group.
@@ -1334,6 +1336,7 @@ class GraphTransactionStore(TransactionStore):
             record_group_id: Internal ID (_key) of the record group
             permissions: List of Permission objects
             connector_id: Connector ID for scoped group lookups
+            org_id: The org whose users the permissions' addresses name
         """
         if not permissions:
             return
@@ -1350,7 +1353,7 @@ class GraphTransactionStore(TransactionStore):
                 # Lookup user by email
                 user = None
                 if permission.email:
-                    user = await self.get_user_by_email(permission.email)
+                    user = await self.get_user_by_email(permission.email, org_id=org_id)
 
                 if user:
                     from_id = user.id
@@ -1917,6 +1920,7 @@ _CONNECTOR_WRITERS: dict[str, Callable[[dict], str | None]] = {
     "remove_user_access_to_record": lambda b: b["connector_id"],
     # the same for every grant the user holds on the connector: any of them may be the last on its record or group
     "remove_user_access_to_connector": lambda b: b["connector_id"],
+    "remove_unlinked_user_access_to_connector": lambda b: b["connector_id"],
 }
 for _name, _of in _CONNECTOR_WRITERS.items():
     _wrap_connector_writer(_name, _of)

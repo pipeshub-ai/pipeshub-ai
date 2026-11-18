@@ -301,12 +301,26 @@ class PermissionsMixin(PgBase):
             await self.delete_edge(user_id, "users", record.id, "records", "permission", transaction)
 
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str, transaction: str | None = None) -> int:
-        """The user's own grants on the connector's records and record groups, and their memberships of its user groups, go; grants held by a
-        group, a team or the organization stay. Returns how many edges went."""
-        return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH d AS (DELETE FROM graph.edges e
-            USING graph.nodes n WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2
-              AND e.to_coll IN ('records', 'recordGroups', 'groups') AND n.org_id = $1 AND n.coll = e.to_coll AND n.id = e.to_id
-              AND n.doc->>'connectorId' = $3 RETURNING 1) SELECT count(*) FROM d""", current_org_id(), user_id, connector_id), transaction, write=True) or 0)
+        """The user's own PERMISSION edges to the connector's records, record groups, user groups and roles go; grants
+        through groups, teams or the organization stay. Returns how many went."""
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_user_access_to_connector */ WITH gone AS (
+            DELETE FROM graph.edges p USING graph.nodes n
+            WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2
+              AND p.to_coll IN ('records', 'recordGroups', 'groups', 'roles')
+              AND n.org_id = p.org_id AND n.coll = p.to_coll AND n.id = p.to_id AND n.doc->>'connectorId' = $3
+            RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), user_id, connector_id), transaction, write=True) or 0
+
+    async def remove_unlinked_user_access_to_connector(self, connector_id: str, transaction: str | None = None) -> int:
+        """Every user's own PERMISSION edges to the connector's records, record groups, user groups and roles go when the user has no
+        userAppRelation edge to the connector, checked in the same statement. Returns how many went."""
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_unlinked_user_access_to_connector */ WITH gone AS (
+            DELETE FROM graph.edges p USING graph.nodes n
+            WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users'
+              AND p.to_coll IN ('records', 'recordGroups', 'groups', 'roles')
+              AND n.org_id = p.org_id AND n.coll = p.to_coll AND n.id = p.to_id AND n.doc->>'connectorId' = $2
+              AND NOT EXISTS (SELECT 1 FROM graph.edges l WHERE l.org_id = p.org_id AND l.coll = 'userAppRelation'
+                              AND l.from_coll = 'users' AND l.from_id = p.from_id AND l.to_coll = 'apps' AND l.to_id = $2)
+            RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), connector_id), transaction, write=True) or 0
 
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:

@@ -2253,9 +2253,8 @@ class TestUserAndOrganizationLookups:
         assert "u.orgId = $org_id" in query
         assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com", "org_id": "org-1"}
 
-        await neo4j_provider.get_user_by_email("a@x.com")
-        assert "orgId" not in neo4j_provider.client.execute_query.await_args.args[0]
-        assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com"}
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await neo4j_provider.get_user_by_email("a@x.com")  # type: ignore[call-arg]
 
     @pytest.mark.asyncio
     async def test_get_user_by_email_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2265,11 +2264,11 @@ class TestUserAndOrganizationLookups:
             "app.services.graph_db.neo4j.neo4j_provider.User.from_arango_user",
             return_value={"user": "ok"},
         ):
-            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue")
+            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue", org_id="org-1")
         assert found == {"user": "ok"}
 
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        assert await neo4j_provider.get_user_by_email("missing@x.com") is None
+        assert await neo4j_provider.get_user_by_email("missing@x.com", org_id="org-1") is None
 
     @pytest.mark.asyncio
     async def test_get_user_by_source_id_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2447,6 +2446,16 @@ class TestUserAndOrganizationLookups:
         assert params["status"] == "NOT_STARTED"
         assert params["exclude_statuses"] == ["IN_PROGRESS"]
         assert "n.reason" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_locks_each_record_before_it_reads_the_run_fields(self, neo4j_provider: Neo4jProvider) -> None:
+        """The run fields (attempt count, first queued) are read after the write lock is held, and the status filters are checked again then."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector("app-1", "NOT_STARTED", exclude_statuses=["IN_PROGRESS"])
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        lock = query.index("SET n.matchLock = true")
+        assert lock < query.index("n.indexingStatus AS _st") < query.index("SET n.indexingStatus = $status")
+        assert query.index("NOT coalesce(n.indexingStatus, '') IN $exclude_statuses", lock) > lock
 
     @pytest.mark.asyncio
     async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider) -> None:
@@ -5773,7 +5782,7 @@ class TestAppUserMembershipClearsExternalFlag:
                 email="member@corp.com",
                 full_name="Member",
             )
-        ])
+        ], org_id="org-1")
 
         app_edges = [
             c for c in mocked.batch_create_edges.await_args_list
@@ -6213,7 +6222,8 @@ class TestPrincipalLookupsCanRaise:
             "get_person_by_email": ("a@b.com", "org-1"),
             "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
         }[method]
-        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+        scope = {"org_id": "org-1"} if method == "get_user_by_email" else {}
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error, **scope)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])

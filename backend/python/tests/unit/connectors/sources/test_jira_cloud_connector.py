@@ -30,6 +30,7 @@ Targets the ~607 uncovered lines to achieve 95%+ coverage by testing:
 - Various ADF edge cases, media, marks, list types
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -83,6 +84,8 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-cov-1"
     dep.on_new_app_users = AsyncMock()
+    dep.open_app_to_org_team = AsyncMock()
+    dep.withdraw_team_app_edge = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -110,6 +113,7 @@ def _make_mock_deps():
     dep.initialize = AsyncMock()
 
     dsp = MagicMock()
+    dsp.transaction.return_value.__aenter__.return_value.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
     cs = MagicMock()
     cs.get_config = AsyncMock()
     return logger, dep, dsp, cs
@@ -120,6 +124,9 @@ def _make_connector():
     connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
     # No issue security scheme: unsecured issues are unchanged
     connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    # The role list kept for security levels (roles_for_levels): nothing kept yet.
+    connector.issues_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.issues_sync_point.update_sync_point = AsyncMock()
     return connector
 
 
@@ -130,6 +137,17 @@ def _make_mock_response(status=200, data=None):
     resp.text = MagicMock(return_value="")
     resp.bytes = MagicMock(return_value=b"file-bytes-content")
     return resp
+
+
+def _empty_user_page() -> MagicMock:
+    resp = _make_mock_response(200)
+    resp.json = MagicMock(return_value=[])
+    return resp
+
+
+def _then_empty(first: MagicMock) -> AsyncMock:
+    """``/users/search`` answers ``first``, then an empty page: the list ends only on an empty page."""
+    return AsyncMock(side_effect=[first, _empty_user_page()])
 
 
 def _make_app_user(email="user@example.com", account_id="acc-1", name="User One"):
@@ -1029,7 +1047,7 @@ class TestFetchUsersCoverage:
             {"accountId": "u3", "accountType": "atlassian", "emailAddress": "u3@test.com", "displayName": "Inactive", "active": False},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_users()
@@ -1049,6 +1067,7 @@ class TestFetchUsersCoverage:
         mock_ds.get_all_users = AsyncMock(side_effect=[
             _make_mock_response(200, batch1),
             _make_mock_response(200, batch2),
+            _empty_user_page(),  # only an empty page ends the list
         ])
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1060,7 +1079,7 @@ class TestFetchUsersCoverage:
         connector = _make_connector()
         connector.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(500))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(500))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         with pytest.raises(Exception, match="Failed to fetch users"):
@@ -1079,7 +1098,7 @@ class TestFetchUsersCoverage:
         connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(403))
         mock_ds.find_users = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector.notify = AsyncMock()
@@ -1104,7 +1123,7 @@ class TestFetchUsersCoverage:
         connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(401))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(401))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector.notify = AsyncMock()
 
@@ -1120,7 +1139,7 @@ class TestFetchUsersCoverage:
         resp = _make_mock_response(200)
         resp.json.side_effect = Exception("bad json")
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=resp)
+        mock_ds.get_all_users = _then_empty(resp)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_users()
@@ -1132,7 +1151,7 @@ class TestFetchUsersCoverage:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, {
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, {
             "values": [{"accountId": "u1", "accountType": "atlassian", "emailAddress": "u1@test.com", "active": True}]
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
@@ -1163,7 +1182,7 @@ class TestFetchUsersPhases:
             {"accountId": "u2", "accountType": "atlassian", "active": True},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         result = await connector._fetch_users()
@@ -1190,7 +1209,7 @@ class TestFetchUsersPhases:
         reverse_resp = _make_mock_response(200, [{"accountId": "u2", "displayName": "Hidden User"}])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock(return_value=reverse_resp)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1214,7 +1233,7 @@ class TestFetchUsersPhases:
             {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [
             {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
         ]))
@@ -1232,7 +1251,7 @@ class TestFetchUsersPhases:
             return_value=[MagicMock(email="hidden@example.com")]
         )
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
             {"accountId": "u2", "accountType": "atlassian", "active": True},
         ]))
         mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [{"accountId": "other"}]))
@@ -1248,35 +1267,157 @@ class TestFetchUsersPhases:
             for i in ("lic", "unlic")
         )
         connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        connector._app_roles_read = True
         mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
 
         assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
         connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
         assert connector._licensed_account_ids == {"lic"}, "kept for the scheme's user grants"
 
-    @pytest.mark.asyncio
-    async def test_product_access_unknown_keeps_every_user(self) -> None:
+    @staticmethod
+    def _three(connector: JiraConnector) -> list[AppUser]:
+        """An account linked before, the connector's own account, and an account never linked."""
+        users = [AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
+                 for i in ("linked", "own", "new")]
+        connector._stored_app_users = [users[0]]
+        connector._authenticated_jira_account_id = "own"
+        return users
+
+    @pytest.mark.parametrize(("licensed", "withdrawn"), [({"lic"}, {"hidden"}), ({"lic", "hidden"}, set()), (None, set())],
+                             ids=["without_product_access", "with_product_access", "product_access_unknown"])
+    def test_a_linked_account_with_a_hidden_email_and_no_product_access_is_withdrawn(self, licensed, withdrawn) -> None:
+        """``_fetch_users`` leaves a linked account with a hidden email out of the users it returns, so the licence filter
+        never sees it: it is classified against the licence set here, and only while that set is known."""
         connector = _make_connector()
-        users = [AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="u", email="u@x.com", full_name="u")]
+        hidden = AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="hidden", email="", full_name="h")
+        lic = AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="lic", email="lic@x.com", full_name="l")
+        connector._stored_app_users = [hidden, lic]
+        connector._listed_account_ids = {"hidden", "lic"}
+        connector._licensed_account_ids = licensed
+        assert connector._unlicensed_ids([lic], [lic]) == withdrawn
+
+    @pytest.mark.asyncio
+    async def test_a_linked_account_with_a_hidden_email_newly_held_by_the_directory_has_its_issues_read_again(self) -> None:
+        """Written while product access was unknown, its issues left out its grants: the first sync that holds it reads
+        them again (saved before it is noted as held), and the next one does not."""
+        connector = _make_connector()
+        hidden = AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="hidden", email="", full_name="h")
+        connector._stored_app_users = [hidden]
+        connector._listed_account_ids = {"hidden"}
+        points: dict = {}
+        connector.issues_sync_point = MagicMock()
+        connector.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: points.get(k))
+        connector.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: points.__setitem__(k, v))
+        connector._licensed_account_ids = None  # product access unknown: no one held, nothing noted
+        assert await connector._note_newly_listed([]) == []
+        connector._licensed_account_ids = {"hidden"}
+        assert await connector._note_newly_listed([]) == ["hidden"]
+        points["people_reread"] = {"accounts": "[]"}  # handed on to every project
+        assert await connector._note_newly_listed([]) == []
+        # Unknown again: issues written now leave its grant out, so the next sync that knows reads them again.
+        connector._licensed_account_ids = None
+        assert await connector._note_newly_listed([]) == []
+        connector._licensed_account_ids = {"hidden"}
+        assert await connector._note_newly_listed([]) == ["hidden"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cause", ["roles_unread", "members_unread"])
+    async def test_product_access_unknown_links_no_new_user(self, cause: str) -> None:
+        """Jira may not license an account the groups could not show: only the accounts already linked, and the
+        connector's own, keep the connector; no one new is linked and no one is withdrawn as unlicensed."""
+        connector = _make_connector()
+        users = self._three(connector)
+        connector._app_roles_read = cause != "roles_unread"
         connector._fetch_group_members = AsyncMock(return_value=([], False))
         mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
 
-        assert await connector._keep_licensed_users(users, {}) == users
-        assert await connector._keep_licensed_users(users, mapping) == users
+        assert await connector._keep_licensed_users(users, mapping) == users[:2]
+        assert connector._licensed_account_ids is None
 
     @pytest.mark.asyncio
-    async def test_a_partly_read_role_list_keeps_every_user(self) -> None:
+    async def test_a_partly_read_role_list_links_no_new_user(self) -> None:
         connector = _make_connector()
-        users = [
-            AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
-            for i in ("lic", "other")
-        ]
-        connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        users = self._three(connector)
+        connector._fetch_group_members = AsyncMock(return_value=(["linked", "own", "new"], True))
         connector._app_roles_unread = True
         mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
 
-        assert await connector._keep_licensed_users(users, mapping) == users
+        assert await connector._keep_licensed_users(users, mapping) == users[:2]
         connector._fetch_group_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("user_count", "read"), [(0, True), (3, False), (None, True)],
+                             ids=["no_users", "users_outside_groups", "count_not_given"])
+    async def test_a_role_with_no_group_licenses_nobody_unless_it_counts_users(self, user_count, read) -> None:
+        """Roles read in full with no group license nobody. A role whose licence counts users that no group
+        grants licenses them some other way, which the groups cannot show: product access is then unknown."""
+        connector = _make_connector()
+        role = {"key": "jira-software", "groupDetails": []}
+        if user_count is not None:
+            role["userCount"] = user_count
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is read
+        users = self._three(connector)
+        assert await connector._keep_licensed_users(users, mapping) == ([] if read else users[:2])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("details", [None, [], [{"name": "jira-software-users"}]],
+                             ids=["no_group_details", "empty_group_details", "group_details_without_id"])
+    async def test_a_role_naming_groups_it_does_not_identify_leaves_product_access_unknown(self, details) -> None:
+        """ApplicationRole.groups: "The groups associated with the application role. As a group's name can change, use of
+        `groupDetails` is recommended to identify a groups." A role naming a group its groupDetails do not identify by id
+        licenses people this read cannot name: product access is unknown, so the linked keep it and no one new is linked."""
+        connector = _make_connector()
+        role = {"key": "jira-software", "groups": ["jira-software-users"]}
+        if details is not None:
+            role["groupDetails"] = details
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is False
+        users = self._three(connector)
+        assert await connector._keep_licensed_users(users, mapping) == users[:2]
+
+    @pytest.mark.asyncio
+    async def test_a_product_group_identified_by_id_alone_is_read_by_its_id(self) -> None:
+        """GroupName: groupId "uniquely identifies the group across all Atlassian products"; name is optional. A group
+        groupDetails identify by id without a name is read like any other, not skipped (its members would be dropped
+        as unlicensed)."""
+        connector = _make_connector()
+        role = {"key": "jira-software", "groups": ["jira-software-users"], "groupDetails": [{"groupId": "g1"}]}
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is True
+        connector._fetch_group_members = AsyncMock(return_value=(["linked", "new"], True))
+        users = self._three(connector)
+        assert await connector._keep_licensed_users(users, mapping) == [users[0], users[2]]
+        connector._fetch_group_members.assert_awaited_once_with("g1", "g1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("role", [
+        {"key": "jira-software", "groups": ["jira-software-users", "contractors"],
+         "groupDetails": [{"groupId": "g1", "name": "jira-software-users"}]},
+        {"key": "jira-software", "groupDetails": [], "userCount": 3},
+    ], ids=["a_group_without_its_id", "users_outside_groups"])
+    async def test_a_project_granting_an_incompletely_read_role_keeps_its_stored_access(self, role: dict) -> None:
+        """The role's people are not all known, so a Browse grant to it is unread, not the groups that were read:
+        run_sync keeps the project's stored access instead of saving a partial list."""
+        connector = _make_connector()
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(200, [role]))
+        mapping = await connector._fetch_application_roles_to_groups_mapping()
+        connector._projects_naming_unread_roles = set()
+        grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}}
+        connector._permissions_for_browse_grant(grant, "ENG", mapping, {}, set())
+        assert connector._projects_naming_unread_roles == {"ENG"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [403, 404])
+    async def test_a_role_list_refused_or_missing_leaves_product_access_unknown(self, status: int) -> None:
+        connector = _make_connector()
+        connector.notify = AsyncMock()
+        connector._call_with_retry = AsyncMock(return_value=_make_mock_response(status, {}))
+        await connector._fetch_application_roles_to_groups_mapping()
+        assert connector._app_roles_read is False
 
     @pytest.mark.asyncio
     async def test_withdraws_stored_users_jira_reports_ineligible(self) -> None:
@@ -1292,9 +1433,183 @@ class TestFetchUsersPhases:
 
         await connector._withdraw_ineligible_app_users(kept, {"dead", "unlic", "old"})
 
+        # Their own grants go too: the org's All team may still pass them through the gate.
         connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
-            "conn-jira-cov", [stored[0], stored[1]]
+            "conn-jira-cov", [stored[0], stored[1]], drop_grants=True
         )
+        assert connector._stored_app_users == stored[2:], "the withdrawn no longer count as linked this sync"
+
+    @pytest.mark.asyncio
+    async def test_a_stored_account_gone_from_the_directory_is_ineligible(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
+            AppUser(id="n1", app_name=Connectors.JIRA, connector_id="c", source_user_id="gone", email="g@x.com", full_name="g"),
+            AppUser(id="n2", app_name=Connectors.JIRA, connector_id="c", source_user_id="u2", email="h@x.com", full_name="h"),
+        ])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await connector._fetch_users()
+        assert connector._deactivated_account_ids == {"gone"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_linked_accounts_fails_the_user_read(self) -> None:
+        """The linked accounts decide who is kept while product access is unknown, who is newly listed and who left.
+        Read as none after a failure, every account would look new and nobody would be kept: the read fails instead."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        async def get_all_app_users(connector_id: str, *, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []  # what every store answers for a failed read without the flag
+
+        connector.data_entities_processor.get_all_app_users = AsyncMock(side_effect=get_all_app_users)
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True, "emailAddress": "h@x.com"}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ConnectionError):
+            await connector._fetch_users()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_pipeshub_users_fails_the_user_read(self) -> None:
+        """The PipesHub users are the emails a hidden-email account is looked up by; read as none after a failure,
+        those accounts would go unresolved as if no one could match them. The read fails instead."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        async def get_all_active_users(*, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=get_all_active_users)
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ConnectionError):
+            await connector._fetch_users()
+
+    @pytest.mark.asyncio
+    async def test_a_short_page_is_not_the_end_of_the_user_list(self) -> None:
+        """/users/search answers a bare array with no end marker: a page shorter than asked for may be followed by
+        more, so only an empty page ends the list, and the next page starts after the rows returned."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        first = [{"accountId": "a1", "accountType": "atlassian", "active": True}]
+        second = [{"accountId": "a2", "accountType": "atlassian", "active": True}]
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(side_effect=[
+            _make_mock_response(200, first), _make_mock_response(200, second), _empty_user_page()])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        rows = await connector._fetch_all_jira_users_bulk()
+        assert [r["accountId"] for r in rows] == ["a1", "a2"]
+        assert [c.kwargs["startAt"] for c in mock_ds.get_all_users.await_args_list] == [0, 1, 2]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("row", [{"accountId": "unknown", "accountType": "atlassian"},
+                                     {"accountId": "x1", "accountType": "unknown"}], ids=["account_id", "account_type"])
+    async def test_fallback_rows_make_the_user_list_unfinished(self, row: dict) -> None:
+        """User schema: during an outage "all parameters have fallback values" (accountId "unknown"): the read is not
+        the directory, so nobody may be withdrawn for missing from it."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
+            {"accountId": "a1", "accountType": "atlassian", "active": True}, row]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        await connector._fetch_all_jira_users_bulk()
+        assert connector._user_read_unfinished is True
+
+    @staticmethod
+    def _withdrawing(connector: JiraConnector) -> dict:
+        store: dict = {}
+        connector.issues_sync_point = MagicMock()
+        connector.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        connector.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        connector.notify = AsyncMock()
+        connector._stored_app_users = [
+            AppUser(id=f"n{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=f"u{i}", email=f"u{i}@x.com",
+                    full_name=str(i)) for i in range(40)]
+        connector._listed_account_ids = {f"u{i}" for i in range(11, 40)}  # a complete read
+        return store
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("between", [set(), {"u20", "u21"}], ids=["none_missing", "a_few_others_missing"])
+    async def test_a_complete_read_with_few_or_none_missing_ends_the_hold(self, between: set) -> None:
+        """The reads have to agree in a row: one in between that shows the held accounts again (or misses only a
+        few others) clears the hold, so the next time the same set is missing the count starts again at one."""
+        connector = _make_connector()
+        store = self._withdrawing(connector)
+        missing = {f"u{i}" for i in range(11)}
+        listed = {f"u{i}" for i in range(40)}
+        for _ in range(2):
+            connector._seen_account_ids = listed - missing
+            await connector._withdraw_ineligible_app_users([], missing)
+        connector._seen_account_ids = listed - between
+        await connector._withdraw_ineligible_app_users([], between)
+        assert store["withdrawals_held"]["seen"] == 0
+        connector.data_entities_processor.withdraw_app_user_access.reset_mock()
+        connector._seen_account_ids = listed - missing
+        await connector._withdraw_ineligible_app_users([], missing)
+        connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        assert store["withdrawals_held"]["seen"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_read_not_complete_leaves_the_hold_alone(self) -> None:
+        """With /users/search forbidden, accounts found by reverse lookup without product access are not in the
+        list; they are evidence of their own and must not replace or count a pending hold."""
+        connector = _make_connector()
+        store = self._withdrawing(connector)
+        missing = {f"u{i}" for i in range(11)}
+        connector._seen_account_ids = {f"u{i}" for i in range(11, 40)}
+        await connector._withdraw_ineligible_app_users([], missing)
+        held = dict(store["withdrawals_held"])
+        connector._user_bulk_forbidden = True
+        connector._seen_account_ids = set()
+        unlicensed = {f"u{i}" for i in range(20, 31)}
+        await connector._withdraw_ineligible_app_users([], unlicensed)
+        assert store["withdrawals_held"] == held
+        withdrawn = connector.data_entities_processor.withdraw_app_user_access.await_args.args[1]
+        assert {u.source_user_id for u in withdrawn} == unlicensed
+
+    @pytest.mark.asyncio
+    async def test_many_accounts_missing_from_the_list_go_after_three_reads_agree_and_the_owner_is_told_once(self) -> None:
+        """Absence is the only evidence for them and the list's end is not promised by the docs: eleven missing at
+        once (over a tenth of forty, and the floor of ten) wait until three complete reads in a row agree."""
+        connector = _make_connector()
+        store = self._withdrawing(connector)
+        connector._seen_account_ids = {f"u{i}" for i in range(11, 40)}
+        missing = {f"u{i}" for i in range(11)}
+        for _ in range(2):
+            await connector._withdraw_ineligible_app_users([], missing)
+            connector.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+        assert connector.notify.await_count == 1, "told once, not every sync"
+        assert json.loads(store["withdrawals_held"]["accounts"]) == sorted(missing)
+        await connector._withdraw_ineligible_app_users([], missing)
+        withdrawn = connector.data_entities_processor.withdraw_app_user_access.await_args.args[1]
+        assert {u.source_user_id for u in withdrawn} == missing
+        assert store["withdrawals_held"]["accounts"] == "[]"
+
+    @pytest.mark.asyncio
+    async def test_accounts_the_list_shows_deactivated_go_whatever_their_number(self) -> None:
+        connector = _make_connector()
+        self._withdrawing(connector)
+        connector._seen_account_ids = {f"u{i}" for i in range(40)}  # every one is in the list; eleven are inactive
+        await connector._withdraw_ineligible_app_users([], {f"u{i}" for i in range(11)})
+        assert len(connector.data_entities_processor.withdraw_app_user_access.await_args.args[1]) == 11
+        connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):
@@ -1307,7 +1622,7 @@ class TestFetchUsersPhases:
             {"accountId": "u1", "accountType": "atlassian", "emailAddress": "u1@test.com", "active": True},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1329,7 +1644,7 @@ class TestFetchUsersPhases:
             {"accountId": "u1", "accountType": "atlassian", "active": True},
         ]
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, users_data))
         mock_ds.find_users = AsyncMock(return_value=_make_mock_response(500))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1354,7 +1669,7 @@ class TestFetchUsersPhases:
         )
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(403))
         mock_ds.find_users = AsyncMock(side_effect=[
             _make_mock_response(200, [{"accountId": "acc-alice", "displayName": "Alice"}]),
             _make_mock_response(200, [{"accountId": "acc-bob", "displayName": "Bob"}]),
@@ -1380,7 +1695,7 @@ class TestFetchUsersPhases:
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
-        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(403))
+        mock_ds.get_all_users = _then_empty(_make_mock_response(403))
         mock_ds.find_users = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1510,6 +1825,9 @@ class TestFetchGroupMembersCoverage:
 
         result = await connector._fetch_group_members("g1", "devs")
         assert result == (["acc-1"], True)
+        # A group's name can change; its id cannot, so the members are read by id (the docs recommend groupId).
+        assert mock_ds.get_users_from_group.await_args.kwargs["groupId"] == "g1"
+        assert mock_ds.get_users_from_group.await_args.kwargs["groupname"] is None
 
     @pytest.mark.asyncio
     async def test_pagination(self):
@@ -1843,6 +2161,25 @@ class TestFetchIssuesBatchedCoverage:
             batches.append((batch, has_more, ts))
 
         assert len(batches) >= 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result", [{"success": False, "deleted_records": []}, {"failed_count": 1}],
+                             ids=["not_a_success", "a_failed_record"])
+    async def test_a_delete_cascade_that_failed_fails_the_batch_so_the_issues_are_read_again(self, result: dict) -> None:
+        """Records an issue no longer holds (a removed file, a stale restricted comment) that could not be deleted are
+        not left behind: the batch fails before its records are written, so the project's issues are read again."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = None
+        mock_ds = MagicMock()
+        mock_ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            return_value=_make_mock_response(200, {"issues": [_make_issue()], "nextPageToken": None}))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._build_issue_records = AsyncMock(return_value=([], ["stale-comment-rec"]))
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value=result)
+        with pytest.raises(Exception, match="could not be deleted"):
+            async for _ in connector._fetch_issues_batched("PROJ", "p1", []):
+                pass
 
     @pytest.mark.asyncio
     async def test_with_modified_filter(self):
@@ -4443,7 +4780,7 @@ class TestGroupSyncForbiddenNotification:
 
 @pytest.mark.parametrize("read_unfinished,account_type,licensed,granted", [
     (False, "atlassian", None, False),       # a complete user read without them: no Jira product access
-    (True, "atlassian", None, True),         # a cut-short read may have missed a licensed account
+    (True, "atlassian", None, False),        # product access unknown is not access: the stored access is kept
     (True, "customer", None, False),         # a portal customer never browses the project
     (True, "atlassian", set(), False),       # outside the product groups, listed or not
     (True, "atlassian", {"acc-u"}, True),    # in a product group but missing from the cut-short user read
@@ -4465,6 +4802,7 @@ async def test_an_unresolved_account_outside_the_product_groups_gets_no_browse_g
     """A hidden-email account whose lookup failed never reaches the licence filter; the groups still decide."""
     connector = _make_connector()
     connector._fetch_group_members = AsyncMock(return_value=(["acc-x", "acc-lic"], True))
+    connector._app_roles_read = True
     listed = [_make_app_user("x@acme.com", "acc-x")]
     kept = await connector._keep_licensed_users(listed, {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]})
     connector._user_read_unfinished = True  # what a failed email lookup leaves
@@ -4476,3 +4814,14 @@ async def test_an_unresolved_account_outside_the_product_groups_gets_no_browse_g
     users = {u.source_user_id: u for u in kept}
     assert connector._permissions_for_browse_grant(grant("acc-unlic"), "ENG", {}, users, set()) == []
     assert [p.email for p in connector._permissions_for_browse_grant(grant("acc-lic"), "ENG", {}, users, set())] == ["acc-lic@acme.com"]
+
+
+def test_a_user_grant_is_not_admitted_while_product_access_is_unknown() -> None:
+    """On a user list cut short, an account the list did not show and that product access could not be read for may
+    be unlicensed (Jira treats it as anonymous): no new grant names it; the project's stored access is kept instead."""
+    connector = _make_connector()
+    connector._user_read_unfinished = True
+    connector._licensed_account_ids = None
+    grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-x", "user": {
+        "accountId": "acc-x", "emailAddress": "x@acme.com", "active": True, "accountType": "atlassian"}}}
+    assert connector._permissions_for_browse_grant(grant, "ENG", {}, {}, set()) == []

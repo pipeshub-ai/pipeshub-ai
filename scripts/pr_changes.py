@@ -146,6 +146,7 @@ STORAGE_NODE = (
 INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/conftest.py",
     f"{PYTHON}/tests/support/**",
+    f"{PYTHON}/tests/unit/attempt_start.py",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
     f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",

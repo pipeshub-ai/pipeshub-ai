@@ -411,6 +411,7 @@ export interface OauthApps {
   version: Generated<number>;
   created_at: Date;
   updated_at: Date;
+  owner_format: number | null;
 }
 
 export interface OauthAuthorizationCodes {

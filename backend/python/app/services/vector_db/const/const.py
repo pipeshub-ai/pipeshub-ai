@@ -11,6 +11,8 @@ from app.services.vector_db.collections import CollectionType, sanitize_collecti
 
 VIRTUAL_RECORD_ID_FIELD = "metadata.virtualRecordId"
 ORG_ID_FIELD = "metadata.orgId"
+# Deleting some of a record's points by block id filters on it; Redis refuses a filter on a field its index lacks.
+BLOCK_ID_FIELD = "metadata.blockId"
 # Which revision and embedding setup wrote a point, so a resumed embedding run can remove the points
 # of another (see app/modules/indexing/embed_resume.py).
 CONTENT_REV_FIELD = "metadata.contentRev"
@@ -25,6 +27,7 @@ ROOT_RECORD_GROUP_IDS_FIELD = "rootRecordGroupIds"
 PAYLOAD_KEYWORD_INDEXES = (
     (VIRTUAL_RECORD_ID_FIELD, {"type": "keyword"}),
     (ORG_ID_FIELD, {"type": "keyword"}),
+    (BLOCK_ID_FIELD, {"type": "keyword"}),
     (CONTENT_REV_FIELD, {"type": "keyword"}),
     (EMBED_KEY_FIELD, {"type": "keyword"}),
     (CONNECTOR_IDS_FIELD, {"type": "keyword"}),

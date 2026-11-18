@@ -1101,6 +1101,43 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def write_attempt_start(
+        self,
+        record_id: str,
+        fields: dict[str, Any],
+        now: int | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Write ``fields`` (an already-shaped status write) to the record and start an indexing attempt, in ONE statement.
+
+        The statement decides from the stored record whether this continues the open run or starts a new one
+        (``firstQueuedAt``), adds one to ``indexingAttempts`` (or sets it to 1 for a new run), and drops a stored
+        ``pageCount`` when ``fields`` carry a ``contentRev`` the record does not hold. Reading the stored record
+        where it is written is what keeps a reset that lands between a read and a write from being continued.
+
+        Returns:
+            True iff the record exists and was written.
+        """
+        pass
+
+    async def update_node_if_unchanged(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        snapshot: dict[str, Any],
+        expected: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """Merge ``updates`` into the node only while it still holds ``expected``, given ``snapshot`` (the node as the caller
+        read it a moment ago). A store with a revision per document can refuse the write when the node changed at all since
+        the snapshot, with a plain document update and no query; the default is the field-checked write of
+        :meth:`update_node_fields_if_match`, one statement on the stores that have no such revision. False is "do not rely
+        on this write": the caller falls back to a write that does not need the condition.
+        """
+        return await self.update_node_fields_if_match(key, collection, updates, expected, transaction)
+
+    @abstractmethod
     async def update_node_if_match(
         self,
         key: str,
@@ -3552,16 +3589,16 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-        org_id: str | None = None,
+        org_id: str,
     ) -> Optional['User']:
         """
-        Get a user by email address. Several organisations can hold a user with
-        the same address; ``org_id`` restricts the answer to that organisation's.
+        Get the user of org ``org_id`` with this email address. The org is required:
+        several organisations can hold a user with the same address, so an unscoped
+        read could answer another org's user.
 
         None means there is no such user. A read that fails also answers None unless
         ``raise_on_error`` is set, which a caller needs when it would act on "no such
-        user" (replacing a record's permissions without them, say). With ``org_id``,
-        only that org's users are read: an address is not unique across orgs.
+        user" (replacing a record's permissions without them, say).
 
         Args:
             email (str): User email
@@ -3722,6 +3759,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users in an organization.
@@ -3729,6 +3767,7 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             active (bool): Filter by active status
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of users
@@ -5624,16 +5663,20 @@ class IGraphDBProvider(ABC):
     async def batch_upsert_app_users(
         self,
         users: list,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> None:
         """
         Batch upsert app users with org and app relations.
 
-        Creates users if they don't exist, creates org relation and user-app relation.
+        Creates users if they don't exist, creates org relation and user-app relation. The users are looked up and
+        created in ``org_id``, the connector's org: a user belongs to the org whose connector lists it.
 
         Args:
             users (List[AppUser]): List of AppUser objects
             transaction (Optional[Any]): Optional transaction context
+            org_id (str): The org of the connector the users come from
         """
         pass
 
@@ -5797,10 +5840,13 @@ class IGraphDBProvider(ABC):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> str | None:
         """
-        Get entity ID (user or group) by email.
+        Get the ID of the user, group or person of org ``org_id`` with this email. The org is required: an address
+        is unique only within an org.
 
         Args:
             email (str): Email address
@@ -5815,10 +5861,12 @@ class IGraphDBProvider(ABC):
     async def bulk_get_entity_ids_by_email(
         self,
         emails: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict[str, tuple[str, str, str]]:
         """
-        Bulk get entity IDs for multiple emails.
+        Bulk get entity IDs of org ``org_id`` for multiple emails (the org is required, as for get_entity_id_by_email).
 
         Args:
             emails (List[str]): List of email addresses
@@ -5935,9 +5983,21 @@ class IGraphDBProvider(ABC):
         user_id: str,
         transaction: str | None = None,
     ) -> int:
-        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
+        """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles,
         for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
         teams or the organization are left alone. Returns how many edges were deleted."""
+        raise NotImplementedError
+
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when that user has no USER_APP_RELATION edge to the connector, the link checked in the same statement (a user
+        linked meanwhile, say by a verified email taking over a stub, keeps them). Before the org's All team passes
+        the connector gate, no grant may wait there for a person the connector does not link. Returns how many
+        edges were deleted."""
         raise NotImplementedError
 
     @abstractmethod
@@ -6417,7 +6477,9 @@ class IGraphDBProvider(ABC):
         self,
         user_email: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Get user's sync state for a specific service.
@@ -6438,7 +6500,9 @@ class IGraphDBProvider(ABC):
         user_email: str,
         state: str,
         service_type: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        org_id: str,
     ) -> dict | None:
         """
         Update user's sync state for a specific service.

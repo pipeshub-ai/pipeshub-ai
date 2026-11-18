@@ -410,6 +410,27 @@ class CollectionRegistry:
         else:
             self._fence_missing.discard(name)
 
+    async def reconcile_payload_indexes(self) -> list[str]:
+        """Make sure every managed collection has the payload indexes this release filters on; never raises.
+
+        Meant for service startup, like :meth:`reconcile_lexical_scoring`: a deployment that only serves search never reaches the
+        write path that ensures them, and a collection from an older release may lack some (Redis refuses a filter on a field its
+        index does not hold). Idempotent on every store. Returns the collections it went over.
+        """
+        try:
+            managed = await self.list_managed_collections(fresh=True)
+        except Exception as e:
+            self._logger.warning("Could not list collections to ensure payload indexes: %s", e)
+            return []
+        done: list[str] = []
+        for entry in managed:
+            try:
+                await self._ensure_payload_indexes(entry.name)
+                done.append(entry.name)
+            except Exception as e:
+                self._logger.warning("Could not ensure payload indexes on '%s': %s", entry.name, e)
+        return done
+
     async def reconcile_lexical_scoring(self) -> list[str]:
         """Bring every managed collection's keyword scoring up to date.
 

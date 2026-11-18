@@ -389,8 +389,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = ["t1"]
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = ["tool1", "tool2"]
 
         mock_app = MagicMock()
         mock_app.container = None
@@ -404,24 +402,16 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("aiconfig", AsyncMock())]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch("app.query_main.get_toolset_registry", return_value=mock_toolset_registry, create=True),
-            patch("app.query_main._global_tools_registry", mock_tools_registry, create=True),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.retrieval_service = AsyncMock(return_value=mock_retrieval)
             mock_container.config_service.return_value = mock_config_service
 
-            # We need to mock the in-lifespan imports
-            with (
-                patch.dict("sys.modules", {
-                    "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                    "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                }),
-            ):
-                async with lifespan(mock_app):
-                    # Inside lifespan — app should have container set
-                    assert mock_app.container is mock_container
-                    # Chat attachment PDFs parse in killable worker processes.
-                    assert parse_pool.parse_pool_workers() > 0
+            async with lifespan(mock_app):
+                # Inside lifespan — app should have container set
+                assert mock_app.container is mock_container
+                # Chat attachment PDFs parse in killable worker processes.
+                assert parse_pool.parse_pool_workers() > 0
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
@@ -437,8 +427,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -451,10 +439,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
             mock_container.retrieval_service = AsyncMock()
@@ -491,10 +476,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
             async with lifespan(MagicMock()):
@@ -533,10 +515,7 @@ class TestLifespan:
             patch("app.agents.agent_loop.skills_wiring.skills_enabled", return_value=True),
             patch("app.services.featureflag.platform_settings.is_skills_enabled", new_callable=AsyncMock, return_value=True),
             patch("app.agents.agent_loop.skills.manager_factory.reconcile_builtin_skills_for_orgs", side_effect=_seed),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
         ):
             async with lifespan(app):
                 await app.state.skills_seed_task
@@ -555,8 +534,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -569,10 +546,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
 
@@ -608,8 +582,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -622,10 +594,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock, side_effect=Exception("stop err")),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
 
@@ -643,8 +612,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -657,10 +624,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
 

@@ -323,12 +323,14 @@ class TestBulkDeleteMembership:
         )
         pipeline.vector_db_service.delete_points = AsyncMock()
         pipeline.vector_db_service.set_payload = AsyncMock()
+        pipeline.vector_db_service.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
         assert result["virtual_record_ids_processed"] == 1
         pipeline.vector_db_service.delete_points.assert_awaited_once()
         pipeline.vector_db_service.set_payload.assert_not_awaited()
+        pipeline.graph_provider.delete_nodes.assert_awaited_once()      # the last copy: the mapping goes too
 
     @pytest.mark.asyncio
     async def test_shared_instance_rewrites_arrays(self):
@@ -625,6 +627,7 @@ class TestSyncAndRewriteMembership:
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
         vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=None)  # answered by the scroll
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -733,6 +736,7 @@ class TestSyncAndRewriteMembership:
         gp.delete_nodes = AsyncMock(side_effect=RuntimeError("arango down"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -740,6 +744,7 @@ class TestSyncAndRewriteMembership:
 
         assert result == "deleted"
         vdb.delete_points.assert_awaited_once()
+        gp.delete_nodes.assert_awaited_once()          # the mapping delete was tried, and its failure did not undo the points delete
 
 
 class TestVectorStoreBindMembership:
@@ -1180,6 +1185,7 @@ class TestDeleteConfirmation:
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
         m.EMPTY_CONFIRM_DELAY_SECONDS = 0
@@ -1192,6 +1198,7 @@ class TestDeleteConfirmation:
 
         assert result == "deleted"
         vdb.delete_points.assert_awaited_once()
+        gp.delete_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_points_deleted_before_mapping(self):
@@ -1205,6 +1212,7 @@ class TestDeleteConfirmation:
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
         vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=None)  # answered by the scroll
         vdb.delete_points = AsyncMock(side_effect=lambda **k: order.append("points"))
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
@@ -1510,3 +1518,27 @@ class TestDeleteDuringIndexLeavesNoOrphans:
         await vs._resync_membership_after_write("vr-x", "rec-1")
 
         vdb.delete_points.assert_not_awaited()
+
+
+class TestOtherOrgsHoldPoints:
+    """A provider that answers the cross-org question itself (pgvector: its reads must name one org) is not scrolled."""
+
+    @pytest.mark.parametrize("answer", [True, False])
+    async def test_the_providers_answer_is_used_without_a_scroll(self, answer) -> None:
+        from app.services.vector_db.membership import _other_orgs_hold_points
+
+        vdb = AsyncMock()
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=answer)
+        assert await _other_orgs_hold_points(vdb, ["records"], "vr-1", "org-a") is answer
+        vdb.other_orgs_hold_virtual_record.assert_awaited_once_with("vr-1", "org-a")
+        vdb.scroll.assert_not_awaited()
+
+    async def test_none_falls_back_to_a_scroll_that_excludes_the_org(self) -> None:
+        from app.services.vector_db.membership import _other_orgs_hold_points
+
+        vdb = AsyncMock()
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=None)
+        vdb.filter_collection = AsyncMock(side_effect=lambda **kw: kw)
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[VectorPoint(id="p", payload={})], next_offset=None))
+        assert await _other_orgs_hold_points(vdb, ["records"], "vr-1", "org-a") is True
+        assert vdb.scroll.await_args.kwargs["scroll_filter"] == {"must": {"virtualRecordId": "vr-1"}, "must_not": {"orgId": "org-a"}}

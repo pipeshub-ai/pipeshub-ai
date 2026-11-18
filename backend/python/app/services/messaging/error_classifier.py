@@ -17,6 +17,7 @@ import asyncio
 import json
 from typing import Optional
 
+from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
 from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
@@ -217,7 +218,7 @@ def is_expected_outcome(exc: BaseException | None) -> bool:
     """Whether ``exc`` ends a record the way nobody needs to act on (the source
     refused it, or it was deleted while it was being indexed): logged once below
     error level by the handler, not as a fault."""
-    return is_source_refusal(exc) or is_record_deleted(exc)
+    return is_source_refusal(exc) or is_record_deleted(exc) or bool(getattr(exc, "expected_outcome", False))
 
 
 def _classify_aiohttp_transport_error(exc: Exception) -> Optional[str]:
@@ -331,6 +332,11 @@ class MessageErrorClassifier:
         # document, whatever the store answered (a 4xx root would otherwise
         # mark an already searchable record FAILED on its first delivery).
         if any(isinstance(chain_exc, EntityLookupUnavailableError) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
+
+        # 0a3. The records schema was narrower than this process's and the transaction was aborted with nothing kept:
+        # the next delivery finds the schema wide. Its root is the store's 400, which would otherwise read as terminal.
+        if any(isinstance(chain_exc, RecordSchemaNarrowError) for chain_exc in chain):
             return MessageErrorType.TRANSIENT
 
         # 0b. Scan full chain for aiohttp transport errors before HTTP status rules.

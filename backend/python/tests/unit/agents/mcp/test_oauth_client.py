@@ -2,6 +2,7 @@
 import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.agents.mcp.oauth_client import (
@@ -328,8 +329,6 @@ class TestTokenRequestUrlGuard:
 
     @pytest.mark.asyncio
     async def test_public_token_url_is_sent_pinned_and_does_not_follow_redirects(self) -> None:
-        import httpx
-
         sent: list[httpx.Request] = []
 
         def _handler(request: httpx.Request) -> httpx.Response:
@@ -347,6 +346,60 @@ class TestTokenRequestUrlGuard:
         assert len(sent) == 1
         assert sent[0].url.host == "93.184.216.34"
         assert sent[0].headers["host"] == "auth.example.com"
+
+
+class TestATokenEndpointThatNeverAnswers:
+    """Refused, timed out or cut off before an answer: the module's own error, marked as an outage."""
+
+    @pytest.mark.parametrize("raised", [
+        httpx.ConnectError("All connection attempts failed"),
+        httpx.ConnectTimeout("timed out"),
+        httpx.ReadTimeout("timed out"),
+        httpx.RemoteProtocolError("Server disconnected without sending a response."),
+    ], ids=["refused", "connect-timeout", "read-timeout", "cut-off"])
+    @pytest.mark.parametrize("request_token", [
+        lambda: exchange_code_for_token(token_url="https://auth.example.com/token", client_id="cid", client_secret="cs",
+                                        code="c", redirect_uri="https://app/cb", allow_private=False),
+        lambda: refresh_access_token(token_url="https://auth.example.com/token", client_id="cid", client_secret="cs",
+                                     refresh_token="r", allow_private=False),
+        lambda: request_client_credentials_token("https://auth.example.com/token", "cid", "cs", allow_private=False),
+    ], ids=["code-exchange", "refresh", "client-credentials"])
+    async def test_it_is_an_unanswered_oauth_error(self, raised: Exception, request_token) -> None:
+        inner = MagicMock()
+        inner.post = AsyncMock(side_effect=raised)
+        with mock_async_client(inner), pytest.raises(MCPOAuthError) as caught:
+            await request_token()
+
+        error = caught.value
+        assert type(error) is MCPOAuthError and error.unanswered
+        assert (error.status, error.error_code, error.rejected_client) == (None, None, False)
+        assert error.__cause__ is raised
+        # The type, never the text or the URL.
+        assert str(error) == f"OAuth token request failed before an answer ({type(raised).__name__})"
+
+    async def test_an_answer_is_not_unanswered(self) -> None:
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=json_response(503, {"error": "temporarily_unavailable"}))
+        with mock_async_client(inner), pytest.raises(MCPOAuthError) as caught:
+            await refresh_access_token(token_url="https://auth.example.com/token", client_id="cid", client_secret=None,
+                                       refresh_token="r", allow_private=False)
+        assert caught.value.status == 503 and not caught.value.unanswered
+
+    async def test_a_url_the_guard_refuses_is_not_unanswered(self) -> None:
+        with pytest.raises(MCPOAuthError) as caught:
+            await refresh_access_token(token_url="https://10.0.0.8/token", client_id="cid", client_secret=None,
+                                       refresh_token="r", allow_private=False)
+        assert not caught.value.unanswered
+
+    def test_an_error_raised_with_just_a_message_is_not_unanswered(self) -> None:
+        assert not MCPOAuthError("OAuth refresh response missing access_token").unanswered
+
+    async def test_our_own_bug_is_not_wrapped_as_a_token_failure(self) -> None:
+        inner = MagicMock()
+        inner.post = AsyncMock(side_effect=RuntimeError("ours"))
+        with mock_async_client(inner), pytest.raises(RuntimeError, match="^ours$"):
+            await refresh_access_token(token_url="https://auth.example.com/token", client_id="cid", client_secret=None,
+                                       refresh_token="r", allow_private=False)
 
 
 class TestErrorsInTheResponseBody:
