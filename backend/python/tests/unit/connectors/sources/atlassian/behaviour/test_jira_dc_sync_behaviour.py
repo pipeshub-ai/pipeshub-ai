@@ -3257,6 +3257,67 @@ class TestBrowseHolders:
         assert len(db.record_batches) > before and grants(db, "1001") == [CAROL]
         assert store.values_for("project_ENG")["browse_holders"] not in ("", "?")
 
+    async def test_a_project_missing_while_an_account_was_admitted_reads_its_issues_for_it_when_back(
+        self, jira, db, store, search,
+    ) -> None:
+        """Carol, the reporter of ENG-1, is linked while ENG is missing from the project list, and the accounts are
+        handed on. ENG covered an older generation than the emptied queue, so the queue no longer names whom it
+        missed: when ENG is back, every stored issue is read, and Carol gets her grant."""
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert CAROL not in grants(db, "1001")
+
+        projects = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/project"))
+        jira.on("GET", f"{API}/project", json_response([]))
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        await connector.run_sync()
+        assert json.loads(store.values_for("people_reread")["accounts"]) == [], "the projects listed took them"
+
+        jira.on("GET", f"{API}/project", projects)
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001")
+
+    async def test_the_naming_pass_for_an_admitted_account_has_the_project_stubs_swept(self, jira, db, store, search) -> None:
+        """ENG has no levels; Carol, ENG-1's reporter, is linked, so only the naming pass reads ENG again. Its stubs may
+        name her too, so ENG is in the projects whose stubs the sweep revisits."""
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        sweep = connector._sweep_placeholder_records
+        connector._sweep_placeholder_records = AsyncMock(side_effect=sweep)
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001")
+        assert "10000" in connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"]
+
     async def test_a_refused_naming_query_keeps_the_project_marked_until_the_whole_read_succeeds(
         self, jira, db, store, search,
     ) -> None:
@@ -3411,6 +3472,9 @@ class TestBrowseHolders:
                     email=f"{name}@example.com" if name != "dave" else "", full_name=name, is_active=True)
             for name in ("alice", "bob", "carol", "dave")
         ]  # none newly listed: no read of the issues naming them
+        # dave's email is hidden: an earlier sync already held him by account, so he is no new admission either.
+        await connector.issues_sync_point.update_sync_point(
+            "admitted_without_email", {"accounts": '["dave-key"]', "key_only": "[]"})
         searched = len(search.jql)
         await connector.run_sync()
         assert ("EntityType.USER", None, "bob@example.com") in grants(db, "1001")
