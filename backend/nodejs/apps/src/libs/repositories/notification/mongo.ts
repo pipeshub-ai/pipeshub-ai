@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { Notifications } from '../../../modules/notification/schema/notification.schema';
 import { retentionCutoff } from '../../../modules/notification/utils/notification-api.utils';
 import { toPlain } from '../plain';
+import { prepareNotification } from './dates';
 import type {
   NewNotification,
   NotificationCursor,
@@ -23,6 +24,8 @@ function retentionFilter(
     assignedTo: oid(scope.userId),
     isDeleted: false,
     createdAt: { $gte: retentionCutoff() },
+    // a scheduled notification is invisible to every read and change until its time
+    $and: [{ $or: [{ visibleAt: null }, { visibleAt: { $lte: new Date() } }] }],
     ...(notificationStatus
       ? { status: notificationStatus }
       : includeArchived
@@ -42,13 +45,31 @@ function cursorFilter(cursor: NotificationCursor): Record<string, unknown> {
 
 const rowOf = (doc: unknown): NotificationRow => toPlain<NotificationRow>(doc);
 
+/**
+ * The row to store, with both timestamps set here: the schema's `timestamps: true` would stamp `updatedAt` with the time of the
+ * insert (or with `createdAt`), and a scheduled row's `updatedAt` is its `visibleAt`.
+ */
+function stamped(row: NewNotification, now: Date): NewNotification {
+  const r = prepareNotification(row) as Record<string, unknown>;
+  const createdAt = (r.createdAt as Date | undefined) ?? now;
+  return { ...r, createdAt, updatedAt: r.updatedAt ?? createdAt } as unknown as NewNotification;
+}
+
 export class MongoNotificationRepository implements NotificationRepository {
   async insert(row: NewNotification): Promise<NotificationRow> {
-    return rowOf(await Notifications.create(row));
+    const doc = prepareNotification(row);
+    // a row with no time of its own is stored exactly as it always was: the schema stamps both times
+    if (doc.visibleAt === undefined && doc.createdAt === undefined)
+      return rowOf(await Notifications.create(doc));
+    return (await this.insertMany([row]))[0] as NotificationRow;
   }
 
   async insertMany(rows: NewNotification[]): Promise<NotificationRow[]> {
-    const saved = await Notifications.create(rows);
+    const now = new Date();
+    const saved = await Notifications.create(
+      rows.map((r) => stamped(r, now)),
+      { timestamps: false },
+    );
     return saved.map(rowOf);
   }
 

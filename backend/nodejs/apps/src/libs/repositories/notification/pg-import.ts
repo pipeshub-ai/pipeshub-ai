@@ -14,6 +14,9 @@ import {
 } from '../import';
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+/** A date as the copy carries it: an ISO string; absent for a notification that was never scheduled. */
+const when = (v: unknown): string | null =>
+  typeof v === 'string' ? v : v instanceof Date ? v.toISOString() : null;
 
 export async function importNotificationDocs(
   k: KernelTx,
@@ -54,8 +57,9 @@ export async function importNotificationDocs(
       payload: d.payload ?? null,
       is_deleted: d.isDeleted ?? false,
       deleted_by: idText(d.deletedBy),
+      visible_at: when(d.visibleAt),
       version: typeof d.__v === 'number' ? d.__v : 0,
-      updated_at: d.updatedAt ?? d.createdAt,
+      updated_at: d.updatedAt ?? when(d.visibleAt) ?? d.createdAt,
     });
   }
   await writePlan(k, [{ table: 'platform.notifications', rows }], stats);

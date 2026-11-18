@@ -176,4 +176,116 @@ export function describeNotificationContract(fx: NotificationFixture): void {
     expect(await repo.list(scope, { status: 'archived', limit: 10 })).to.deep.equal([]);
     expect(await repo.softDelete({ orgId: org, userId: fx.newId() }, a._id)).to.equal(null);
   });
+
+  describe('scheduled notifications (visibleAt)', function () {
+    this.timeout(30_000);
+    const ahead = (ms: number) => new Date(Date.now() + ms);
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const HOLD_MS = 1500;
+
+    it('a row without visibleAt carries none and reads as before', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const row = await repo.insert(mk(org, me));
+      expect(row.visibleAt).to.equal(undefined);
+      expect((await repo.list({ orgId: org, userId: me }, { status: null, limit: 10 })).map((r) => r._id)).to.deep.equal([row._id]);
+    });
+
+    it('before visibleAt a row is not listed, counted or marked read; at visibleAt it is there, still unread', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const scope = { orgId: org, userId: me };
+      const [plain, later] = await repo.insertMany([mk(org, me), mk(org, me, { visibleAt: ahead(HOLD_MS) })]);
+      expect((await repo.list(scope, { status: null, limit: 10 })).map((r) => r._id)).to.deep.equal([plain._id]);
+      expect((await repo.list(scope, { status: 'unread', limit: 10 })).map((r) => r._id)).to.deep.equal([plain._id]);
+      expect(await repo.counts(scope)).to.deep.equal({ unread: 1, read: 0, archived: 0 });
+      expect(await repo.markAllRead(scope)).to.equal(1);
+      expect(await repo.counts(scope)).to.deep.equal({ unread: 0, read: 1, archived: 0 });
+      await sleep(HOLD_MS + 150);
+      expect((await repo.list(scope, { status: null, limit: 10 })).map((r) => r._id)).to.have.members([plain._id, later._id]);
+      expect(await repo.counts(scope)).to.deep.equal({ unread: 1, read: 1, archived: 0 });
+      expect(await repo.markAllRead(scope)).to.equal(1);
+    });
+
+    it('a row that is not yet visible is not found by id: setStatus, unarchive and softDelete answer null, and change nothing', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const scope = { orgId: org, userId: me };
+      const at = ahead(HOLD_MS);
+      const [a, arch, d] = await repo.insertMany([
+        mk(org, me, { visibleAt: at }),
+        mk(org, me, { visibleAt: at, status: 'archived' }),
+        mk(org, me, { visibleAt: at }),
+      ]);
+      expect(await repo.setStatus(scope, a._id, 'read')).to.equal(null);
+      expect(await repo.setStatus(scope, a._id, 'archived')).to.equal(null);
+      expect(await repo.unarchive(scope, arch._id)).to.equal(null);
+      expect(await repo.softDelete(scope, d._id)).to.equal(null);
+      expect(await repo.softDelete(scope, arch._id)).to.equal(null);
+      await sleep(HOLD_MS + 150);
+      // nothing happened to them meanwhile
+      expect(await repo.counts(scope)).to.deep.equal({ unread: 2, read: 0, archived: 1 });
+      expect((await repo.setStatus(scope, a._id, 'read'))?.status).to.equal('read');
+      expect((await repo.unarchive(scope, arch._id))?.status).to.equal('read');
+      expect((await repo.softDelete(scope, d._id))?.isDeleted).to.equal(true);
+    });
+
+    it('the served updatedAt is visibleAt (not the time of the insert) and createdAt defaults to it', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const at = ahead(60_000);
+      const row = await repo.insert(mk(org, me, { visibleAt: at }));
+      expect(row.visibleAt).to.be.instanceOf(Date);
+      expect(row.visibleAt?.getTime()).to.equal(at.getTime());
+      expect(row.updatedAt?.getTime()).to.equal(at.getTime());
+      expect(row.createdAt.getTime()).to.equal(at.getTime());
+      const given = new Date(at.getTime() - 5000);
+      const two = await repo.insert(mk(org, me, { visibleAt: at, createdAt: given }));
+      expect(two.createdAt.getTime()).to.equal(given.getTime());
+      expect(two.updatedAt?.getTime()).to.equal(at.getTime());
+    });
+
+    it('visibleAt and createdAt that arrive as ISO strings are stored as dates', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const scope = { orgId: org, userId: me };
+      const past = ago(10_000);
+      const [seen, hidden] = await repo.insertMany([
+        mk(org, me, { visibleAt: past.toISOString(), createdAt: past.toISOString() }),
+        mk(org, me, { visibleAt: ahead(60_000).toISOString() }),
+      ]);
+      expect(seen.visibleAt).to.be.instanceOf(Date);
+      expect(seen.createdAt).to.be.instanceOf(Date);
+      expect(seen.visibleAt?.getTime()).to.equal(past.getTime());
+      expect(seen.createdAt.getTime()).to.equal(past.getTime());
+      expect(seen.updatedAt?.getTime()).to.equal(past.getTime());
+      expect(hidden.visibleAt).to.be.instanceOf(Date);
+      expect((await repo.list(scope, { status: null, limit: 10 })).map((r) => r._id)).to.deep.equal([seen._id]);
+      expect((await repo.list(scope, { status: null, limit: 10 }))[0].visibleAt).to.be.instanceOf(Date);
+    });
+
+    it('a visibleAt that is not a date is refused, and nothing is stored', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      let err: unknown;
+      try {
+        await repo.insert(mk(org, me, { visibleAt: 'not a date' }));
+      } catch (e) {
+        err = e;
+      }
+      expect(err).to.be.instanceOf(Error);
+      expect(await repo.counts({ orgId: org, userId: me })).to.deep.equal({ unread: 0, read: 0, archived: 0 });
+    });
+
+    it('a row scheduled far ahead (past any partition made in advance) is stored and stays hidden', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const scope = { orgId: org, userId: me };
+      const far = await repo.insert(mk(org, me, { visibleAt: ahead(400 * 24 * 3600_000) }));
+      expect(far._id).to.match(HEX);
+      expect(await repo.list(scope, { status: null, limit: 10 })).to.deep.equal([]);
+      expect(await repo.counts(scope)).to.deep.equal({ unread: 0, read: 0, archived: 0 });
+      expect(await repo.setStatus(scope, far._id, 'read')).to.equal(null);
+    });
+  });
 }

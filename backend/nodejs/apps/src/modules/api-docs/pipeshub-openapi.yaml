@@ -20450,6 +20450,15 @@ components:
           type: string
           format: objectId
           description: ObjectId of the user who dismissed the notification (set on soft-delete)
+        visibleAt:
+          type: string
+          format: date-time
+          description: |
+            Present only on a notification that was scheduled. Until this instant the notification
+            is not returned by any list, count or by-id call (a by-id call answers `404`, as for an
+            unknown id), is not changed by mark-all-read, and is not pushed over the socket. From
+            this instant it is returned like any other, and `updatedAt` equals it until the
+            notification is next changed.
         createdAt:
           type: string
           format: date-time

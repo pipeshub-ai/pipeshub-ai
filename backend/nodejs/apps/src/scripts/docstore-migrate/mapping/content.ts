@@ -220,6 +220,7 @@ const notifications: CollectionMapping = {
     { col: 'payload', path: 'payload', type: 'json' },
     { col: 'is_deleted', path: 'isDeleted', type: 'bool', readAbsentAs: false },
     { col: 'deleted_by', path: 'deletedBy', type: 'oid' },
+    { col: 'visible_at', path: 'visibleAt', type: 'date' },
     ...CREATED,
   ],
   derived: [],

@@ -16,6 +16,7 @@ import type {
 } from './types';
 import type { Importable, ImportStats, NeutralDoc } from '../import';
 import { importNotificationDocs } from './pg-import';
+import { prepareNotification } from './dates';
 import { kernelTx } from '../pg';
 import type { Tx } from '../uow';
 
@@ -33,13 +34,14 @@ interface Row {
   payload: Record<string, unknown> | null;
   is_deleted: boolean;
   deleted_by: string | null;
+  visible_at: Date | null;
   version: number;
   created_at: Date;
   updated_at: Date;
 }
 
 const COLS = `n.id, n.org_id, n.assigned_to, n.type, n.title, n.message, n.redirect_link, n.severity, n.origin_service, n.status,
-  n.payload, n.is_deleted, n.deleted_by, n.version, n.created_at, n.updated_at`;
+  n.payload, n.is_deleted, n.deleted_by, n.visible_at, n.version, n.created_at, n.updated_at`;
 
 function toRow(r: Row): NotificationRow {
   const o: Record<string, unknown> = {
@@ -60,11 +62,16 @@ function toRow(r: Row): NotificationRow {
   if (r.origin_service !== null) o.originService = r.origin_service;
   if (r.payload !== null) o.payload = r.payload;
   if (r.deleted_by !== null) o.deletedBy = r.deleted_by;
+  if (r.visible_at !== null) o.visibleAt = r.visible_at;
   return o as unknown as NotificationRow;
 }
 
-/** The conditions every read and change shares; `$1` org, `$2` user, `$3` retention cutoff. */
-const LIVE = `n.org_id = $1 AND n.assigned_to = $2 AND NOT n.is_deleted AND n.created_at >= $3`;
+/**
+ * The conditions every read and change shares; `$1` org, `$2` user, `$3` retention cutoff. A scheduled row (`visible_at` set)
+ * is not there until its time.
+ */
+const LIVE = `n.org_id = $1 AND n.assigned_to = $2 AND NOT n.is_deleted AND n.created_at >= $3
+  AND (n.visible_at IS NULL OR n.visible_at <= now())`;
 
 export class PgNotificationRepository
   implements NotificationRepository, Importable
@@ -84,7 +91,9 @@ export class PgNotificationRepository
   async insertMany(rows: NewNotification[]): Promise<NotificationRow[]> {
     if (rows.length === 0) return [];
     return inUnit(undefined, { write: true }, async (k) => {
-      const docs = rows.map((r) => stripNul(r, 'notification', 'row'));
+      const docs = rows.map((r) =>
+        stripNul(prepareNotification(r), 'notification', 'row'),
+      );
       for (const d of docs) assertOrg(k, d.orgId);
       const ids = docs.map(() => newObjectId());
       const text = (f: (d: NewNotification) => unknown): (string | null)[] =>
@@ -97,11 +106,11 @@ export class PgNotificationRepository
         });
       const { rows: out } = await k.query<Row>(
         `/* pipeshub:platform.notification_insert */ INSERT INTO platform.notifications AS n
-           (org_id, id, created_at, type, title, message, redirect_link, severity, status, origin_service, assigned_to, payload, is_deleted, deleted_by, updated_at)
-         SELECT $1::text, u.id, $2::timestamptz, u.type, u.title, u.message, u.redirect_link, u.severity, COALESCE(u.status, 'unread'), u.origin_service, u.assigned_to,
-                u.payload::jsonb, COALESCE(u.is_deleted, false), u.deleted_by, $2::timestamptz
-           FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::boolean[])
-             AS u(id, type, title, message, redirect_link, severity, status, origin_service, assigned_to, payload, deleted_by, is_deleted)
+           (org_id, id, created_at, type, title, message, redirect_link, severity, status, origin_service, assigned_to, payload, is_deleted, deleted_by, visible_at, updated_at)
+         SELECT $1::text, u.id, COALESCE(u.created_at, $2::timestamptz), u.type, u.title, u.message, u.redirect_link, u.severity, COALESCE(u.status, 'unread'), u.origin_service, u.assigned_to,
+                u.payload::jsonb, COALESCE(u.is_deleted, false), u.deleted_by, u.visible_at, COALESCE(u.visible_at, $2::timestamptz)
+           FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::boolean[], $15::timestamptz[], $16::timestamptz[])
+             AS u(id, type, title, message, redirect_link, severity, status, origin_service, assigned_to, payload, deleted_by, is_deleted, created_at, visible_at)
          RETURNING ${COLS}`,
         [
           k.orgId,
@@ -122,6 +131,8 @@ export class PgNotificationRepository
           docs.map((d) =>
             d.isDeleted === undefined ? null : Boolean(d.isDeleted),
           ),
+          docs.map((d) => (d.createdAt as Date | undefined) ?? null),
+          docs.map((d) => (d.visibleAt as Date | undefined) ?? null),
         ],
       );
       const byId = new Map(out.map((r) => [r.id, r]));

@@ -4,7 +4,8 @@
  * Rows leave as plain objects with every id as a string. A notification older
  * than the retention window, or deleted, is never returned or changed: the
  * window and the delete flag are part of every method here, not of the caller's
- * filter.
+ * filter. So is `visibleAt`: a notification created with a `visibleAt` still in
+ * the future is neither listed, counted, marked read nor found by id until then.
  */
 export type NotificationStatus = 'read' | 'unread' | 'archived';
 
@@ -22,6 +23,8 @@ export interface NotificationRow {
   payload?: Record<string, unknown>;
   isDeleted: boolean;
   deletedBy?: string;
+  /** When set, the notification is not visible before this instant. */
+  visibleAt?: Date;
   createdAt: Date;
   updatedAt?: Date;
 }
