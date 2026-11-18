@@ -33,6 +33,7 @@ import {
   PaidResultFileParams,
   ListPaidResultsSchema,
   DeletePaidResultsSchema,
+  PurgeCutoffPaidResultsSchema,
   PurgePaidResultsSchema,
   PurgeOrgPaidResultsSchema,
 } from '../validators/validators';
@@ -354,6 +355,23 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         await storageController.listPaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/paid-results/:recordId/purge-cutoff',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeCutoffPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.paidResultsPurgeCutoff(req, res, next);
       } catch (error) {
         next(error);
       }

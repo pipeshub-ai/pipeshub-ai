@@ -18,6 +18,7 @@ from app.services.paid_cache.cache import (
     NullPaidResultCache,
     PaidResultCache,
     enabled,
+    writes_enabled,
 )
 from app.services.paid_cache.keys import (
     CacheKey,
@@ -80,6 +81,7 @@ async def _redis_locks_of(config_service: "ConfigurationService") -> RedisLocks:
 def _redis_locks(config_service: "ConfigurationService", logger: logging.Logger) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
     clients: LoopLocal[Any] = LoopLocal(lambda: {})
     fallback = InProcessLocks()
+    fallback.degraded = True
 
     async def backend() -> LockBackend:
         holder = clients.get()
@@ -205,6 +207,7 @@ def template_text_of(template: object) -> str:
 
 def start_run(
     content_rev: str | None, writer: str, *, refresh: bool = False, stage_deadline_s: float | None = None,
+    reuse_prior_attempt: bool = False,
 ) -> RunScope | None:
     """Opens the retention manifest of this writer's work on the record in flight.
 
@@ -216,8 +219,12 @@ def start_run(
     if identity is None or not enabled():
         return None
     prior = current_run()
-    refresh = refresh or (prior is not None and prior.matches(*identity) and prior.refresh)
-    return begin_run(identity[0], identity[1], content_rev, writer, refresh=refresh, stage_deadline_s=stage_deadline_s)
+    inherited = prior is not None and prior.matches(*identity) and prior.refresh
+    reuse = reuse_prior_attempt or (inherited and prior.reuse_prior_attempt)
+    return begin_run(
+        identity[0], identity[1], content_rev, writer, refresh=refresh or inherited, stage_deadline_s=stage_deadline_s,
+        reuse_prior_attempt=reuse, refresh_token=prior.refresh_token if inherited and prior is not None else None,
+    )
 
 
 async def complete_run(
@@ -229,12 +236,13 @@ async def complete_run(
     Best effort: a manifest or sweep that cannot be written is retried by the next completed revision and
     never fails the record.
     """
-    if run is None or config_service is None:
+    if run is None or config_service is None or not writes_enabled():
         return
     log = logger or logging.getLogger(__name__)
     cache = paid_cache_for(config_service, log)
     if not isinstance(cache, PaidResultCache):
         return
+    run.manifest_guard = cache.manifest_lock
     try:
         await run.finish(cache.store)
     except Exception as exc:
@@ -244,6 +252,20 @@ async def complete_run(
         spawn_detached(_sweep(cache, run, log), name="paid-cache-sweep")
 
 
+async def claim_refresh(config_service: "ConfigurationService", token: str, logger: logging.Logger | None = None) -> bool:
+    """True when this request is the first to ask for the refresh named by ``token``; False for a retry of it.
+
+    The claim is atomic: of any number of concurrent requests with one token exactly one wins. A retry is still a
+    refresh, but reuses what the first attempt stored (``reuse_prior_attempt``). Without a token or an identity the
+    request is the first.
+    """
+    identity = ambient_identity()
+    if not token or identity is None or config_service is None:
+        return True
+    cache = paid_cache_for(config_service, logger or logging.getLogger(__name__))
+    return await cache.claim_refresh(identity[0], identity[1], "parse:" + token) is not None
+
+
 async def abandon_run(
     run: RunScope | None, config_service: "ConfigurationService", logger: logging.Logger | None = None,
 ) -> None:
@@ -251,12 +273,13 @@ async def abandon_run(
 
     Best effort and bounded by the write deadline; never raises (the failure being handled is the one that matters).
     """
-    if run is None or config_service is None or run.finished:
+    if run is None or config_service is None or run.finished or not writes_enabled():
         return
     log = logger or logging.getLogger(__name__)
     try:
         cache = paid_cache_for(config_service, log)
         if isinstance(cache, PaidResultCache):
+            run.manifest_guard = cache.manifest_lock
             await run.flush(cache.store)
     except Exception as exc:
         log.warning("Paid-result manifest of a failed run not updated for record %s (%s)", run.record_id, type(exc).__name__)

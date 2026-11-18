@@ -145,11 +145,12 @@ describe('Artifact sets over HTTP: the local disk path', () => {
       rows.push(doc)
       return doc
     }) as never)
-    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set: Row; $unset?: Row }) =>
+    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set?: Row; $inc?: Row; $unset?: Row }) =>
       query(() => {
         const row = rows.find((r) => matches(r, filter))
         if (!row) return null
-        for (const [key, value] of Object.entries(update.$set)) setAt(row, key, value)
+        for (const [key, value] of Object.entries(update.$set ?? {})) setAt(row, key, value)
+        for (const [key, value] of Object.entries(update.$inc ?? {})) setAt(row, key, Number(row[key] ?? 0) + Number(value))
         for (const key of Object.keys(update.$unset ?? {})) {
           const parts = key.split('.')
           const last = parts.pop()!
