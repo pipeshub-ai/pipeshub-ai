@@ -213,7 +213,6 @@ describe('notification/service/notification.consumer', () => {
 
         it('stores it but emits no newNotification and queues nothing; one that is already visible is pushed as before', async () => {
           const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['setTimeout', 'setInterval', 'setImmediate', 'Date'] });
-          const timers = sinon.spy(global, 'setTimeout');
           try {
             const insertMany = sinon.stub().callsFake(async () => [
               row('s1', new Date(Date.now() + 60_000)),
@@ -222,12 +221,12 @@ describe('notification/service/notification.consumer', () => {
               row('p1'),
             ]);
             const { outcome } = await run(insertMany, { ...event, visibleAt: new Date(Date.now() + 60_000).toISOString() });
-            const before = timers.callCount;
+            const before = clock.countTimers();
             await outcome;
             expect(insertMany.calledOnce).to.be.true;
             expect(pushed()).to.deep.equal([['newNotification', 'v1'], ['newNotification', 'p1']]);
             // the consumer sets no timer to deliver it later, and nothing is pushed when the time comes
-            expect(timers.callCount).to.equal(before);
+            expect(clock.countTimers()).to.equal(before);
             await clock.tickAsync(2 * 86_400_000);
             expect(pushed()).to.deep.equal([['newNotification', 'v1'], ['newNotification', 'p1']]);
           } finally {
