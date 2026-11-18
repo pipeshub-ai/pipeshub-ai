@@ -365,9 +365,14 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     const id = meta?.recordId;
     return id === undefined || id === '' ? undefined : id;
   };
-  // A web citation names an address instead of a record.
+  // A web citation names an address instead of a record. A web search result is checked by its
+  // page address (its `webUrl` adds a text fragment no stored record matches); `webUrl` is shown.
   const webUrlOf = (c: CitationEntry | null): string | undefined => {
-    const url = metaOf(c)?.webUrl;
+    const meta = metaOf(c);
+    const url =
+      meta?.origin === WEB_SEARCH_ORIGIN && (meta.recordId ?? '') !== ''
+        ? meta.recordId
+        : meta?.webUrl;
     return recordIdOf(c) === undefined && url !== undefined && url !== ''
       ? url
       : undefined;

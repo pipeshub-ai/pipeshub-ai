@@ -958,24 +958,27 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
   })
 
   it('a web search citation is checked by its address, not as a record, and keeps the answer', async () => {
-    const asked = stubAccess([], [LINK])
+    const asked = stubAccess([], [PAGE])
     stubConversation([{ messageType: 'bot_response', content: 'Market week', citations: [webSearchCitation()] }])
     const [m] = await fetchRows(OWNER)
     expect(m.content).to.equal('Market week')
     expect(m.answerHidden).to.equal(undefined)
     expect(asked.flat()).to.not.include(PAGE)
-    expect(askedUrls).to.include(LINK)
+    // The page address is checked; the link with its text fragment is only shown.
+    expect(askedUrls).to.include(PAGE)
+    expect(askedUrls).to.not.include(LINK)
   })
 
   it('a shared viewer sees a web search citation of a public page, not a placeholder', async () => {
-    stubAccess([], [LINK])
+    stubAccess([], [PAGE])
     stubPeerConversation([{ messageType: 'bot_response', content: 'Market week', citations: [webSearchCitation()] }])
     const m = await fetchConversation(VIEWER)
     expect(m.citations[0].citationData.metadata.webUrl).to.equal(LINK)
   })
 
   it('a web search citation at the address of a record the reader cannot read still hides the answer', async () => {
-    stubAccess([], [])
+    // Only the fragment link is unmatched: the page address is where an unreadable record is stored.
+    stubAccess([], [LINK])
     stubConversation([{ messageType: 'bot_response', content: SECRET, citations: [webSearchCitation()] }])
     const [m] = await fetchRows(OWNER)
     expect(m.answerHidden).to.deep.equal(lost)
