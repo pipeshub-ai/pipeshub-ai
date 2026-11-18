@@ -330,7 +330,7 @@ class TestTheWaitEnds:
         for wait in consumer._record_waits.values():
             wait.parked_at = 0.0
         consumer._ownership_confirmed_at.clear()
-        consumer.redis.xclaim = AsyncMock(side_effect=ConnectionError("redis down"))  # type: ignore[method-assign]
+        consumer.redis.eval = AsyncMock(side_effect=ConnectionError("redis down"))  # type: ignore[method-assign]
 
         await harness.refresh()
 
@@ -342,7 +342,12 @@ class TestTheWaitEnds:
     async def test_refresh_keeps_waiting_entries_from_going_idle(self, harness: Harness) -> None:
         consumer = harness.consumer
         waiting = await _park(harness, 2)
-        await asyncio.sleep(0.05)
+        # Aged far past any runner pause: the assertion below can only pass
+        # if the refresh reset the idle time.
+        await consumer.redis.xclaim(
+            LANE, GROUP, consumer.consumer_name, min_idle_time=0, message_ids=waiting,
+            idle=3_600_000, justid=True,
+        )
 
         await harness.refresh()
 
@@ -350,7 +355,7 @@ class TestTheWaitEnds:
             LANE, GROUP, min="-", max="+", count=10, consumername=consumer.consumer_name
         )
         assert sorted(d["message_id"].decode() if isinstance(d["message_id"], bytes) else d["message_id"] for d in details) == sorted(waiting)
-        assert all(d["time_since_delivered"] < 50 for d in details)
+        assert all(d["time_since_delivered"] < 600_000 for d in details)
         # JUSTID: refreshing counts no delivery, so waiting never nears the backstop.
         assert all(d["times_delivered"] == 1 for d in details)
 
@@ -521,13 +526,12 @@ class TestBoundsAndSignals:
             f"Record r1 is free: entry {first} on {LANE} is offered again"
         ]
 
-    async def test_the_number_waiting_is_published(self, harness: Harness) -> None:
-        with patch(f"{_MODULE}.metrics.record_record_waits") as gauge:
-            await _park(harness, 2)
-            assert [c.args for c in gauge.call_args_list] == [("redis", 1), ("redis", 2)]
-            harness.consumer._release_record("r1")
-            await harness.passes(1)
-            assert gauge.call_args_list[-1].args == ("redis", 1)
+    async def test_the_number_waiting_is_published(self, harness: Harness, gauge: MagicMock) -> None:
+        await _park(harness, 2)
+        assert _gauge_values() == [1, 2]
+        harness.consumer._release_record("r1")
+        await harness.passes(1)
+        assert _gauge_values()[-1] == 1
 
 
 class TestClaimAndReleaseAreOneStep:
@@ -567,10 +571,22 @@ class TestClaimAndReleaseAreOneStep:
 
 
 def _assert_index_matches(consumer: IndexingRedisStreamsConsumer) -> None:
-    by_record: dict[str, set[tuple[str, str]]] = {}
+    """The per-record state is exactly what the waits say."""
+    expected: dict[str, tuple[set, list, set]] = {}
     for key, wait in consumer._record_waits.items():
-        by_record.setdefault(wait.record_key, set()).add(key)
-    assert consumer._record_waiters == by_record
+        keys, local, active = expected.setdefault(wait.record_key, (set(), [], set()))
+        keys.add(key)
+        if not wait.on_lease:
+            local.append(key)
+        if wait.woken or wait.running:
+            active.add(key)
+    actual = {
+        record: (w.keys, [entry[2] for entry in w.local], w.active)
+        for record, w in consumer._record_waiters.items()
+    }
+    for _keys, local, _active in expected.values():
+        local.sort(key=lambda k: (tuple(int(p) for p in k[1].split("-")), k[0]))
+    assert actual == expected
 
 
 @pytest.mark.asyncio
@@ -598,13 +614,13 @@ class TestAtScale:
         first, second, third = await _park(harness, 3)
         await consumer.redis.xack(LANE, GROUP, second)
         calls: list[int] = []
-        real = consumer.redis.xclaim
+        real = consumer.redis.eval
 
-        async def counting(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-            calls.append(len(kwargs["message_ids"]))
-            return await real(*args, **kwargs)
+        async def counting(script: str, numkeys: int, *args: Any) -> Any:  # noqa: ANN401
+            calls.append(len(args) - 3)  # stream, group, consumer, then the ids
+            return await real(script, numkeys, *args)
 
-        consumer.redis.xclaim = counting  # type: ignore[method-assign]
+        consumer.redis.eval = counting  # type: ignore[method-assign]
         with patch(f"{_MODULE}._REFRESH_CLAIM_CHUNK", 2):
             await harness.refresh()
 
@@ -647,3 +663,206 @@ class TestReleaseCost:
         # Walking every wait on each release is 10^8 steps, minutes in Python.
         assert elapsed < 2.0
         assert all(not consumer._is_waiting_for_record(f"{i}-0", LANE) for i in range(0, 10_000, 997))
+
+
+
+def _gauge_values() -> list[float]:
+    return [c.kwargs["value"] for c in _RECORD_WAITS_SET.call_args_list]
+
+
+_RECORD_WAITS_SET = MagicMock()
+
+
+@pytest.fixture
+def gauge() -> Any:  # noqa: ANN401
+    _RECORD_WAITS_SET.reset_mock()
+    from app.telemetry.modules import scheduling_metrics
+
+    scheduling_metrics._record_waits_by_owner.clear()
+    with patch("app.telemetry.modules.scheduling_metrics.RECORD_WAITS.set", _RECORD_WAITS_SET):
+        yield _RECORD_WAITS_SET
+
+
+@pytest.mark.asyncio
+class TestReviewOfTheWaits:
+    async def test_a_lease_wait_that_loses_its_lease_a_thousand_times_still_backs_off(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        consumer._wait_for_record_lease("r1", LANE, "1-0")
+        consumer._record_waits[(LANE, "1-0")].parks = 5_000
+
+        consumer._wait_for_record_lease("r1", LANE, "1-0")
+
+        wait = consumer._record_waits[(LANE, "1-0")]
+        assert wait.due_at - wait.parked_at == pytest.approx(300.0)
+
+    async def test_the_gauge_is_the_total_of_every_consumer_in_the_process(
+        self, provider: FakeRedisConnectionProvider, gauge: MagicMock
+    ) -> None:
+        records = _make(provider)
+        priority = _make(provider)
+        assert records._claim_record("r1") and priority._claim_record("p1")
+
+        assert not records._claim_record_or_wait("r1", LANE, "1-0")
+        assert not priority._claim_record_or_wait("p1", LANE, "2-0")
+        assert not priority._claim_record_or_wait("p1", LANE, "3-0")
+        assert _gauge_values()[-1] == 3
+
+        priority._stop_worker_thread()
+        # The records consumer still has its wait: stopping the other one
+        # must not read as none.
+        assert _gauge_values()[-1] == 1
+        records._stop_worker_thread()
+        assert _gauge_values()[-1] == 0
+
+    async def test_a_count_published_late_cannot_overwrite_a_newer_one(
+        self, harness: Harness, gauge: MagicMock
+    ) -> None:
+        """A worker records a wait; the main loop ends it. Each publishes the
+        count it saw. Published outside the state change, the worker's 1 could
+        land after the main loop's 0 and stay there."""
+        consumer = harness.consumer
+        assert consumer._claim_record("r1")
+        main_published = threading.Event()
+
+        def slow_set(*_args: Any, value: float, **_kwargs: Any) -> None:  # noqa: ANN401
+            if value == 1 and threading.current_thread().name == "worker":
+                main_published.wait(timeout=0.5)
+            _RECORD_WAITS_SET(value=value)
+
+        with patch("app.telemetry.modules.scheduling_metrics.RECORD_WAITS.set", slow_set):
+            worker = threading.Thread(
+                target=consumer._claim_record_or_wait, args=("r1", LANE, "1-0"), name="worker"
+            )
+            worker.start()
+            for _ in range(200):
+                if consumer._record_waits:
+                    break
+                time.sleep(0.001)
+            consumer._end_record_wait(LANE, "1-0")
+            main_published.set()
+            worker.join()
+
+        assert consumer._record_waits == {}
+        assert _gauge_values()[-1] == 0
+
+    async def test_waiters_whose_recheck_passed_during_a_long_run_still_go_oldest_first(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        first, second, third = await _park(harness, 3)
+        harness.dispatched.clear()
+        # The run outlasted every waiter's recheck bound.
+        _expire(consumer)
+        # Recovery's scan resumes after the oldest, so it meets the newer first.
+        consumer._own_scan_resume[LANE] = f"({first}"
+
+        consumer._release_record("r1")
+        await harness.passes(1)
+
+        assert harness.dispatched == [first]
+        _assert_index_matches(consumer)
+        await harness.passes(2)
+        assert harness.dispatched == [first, second, third]
+        _assert_index_matches(consumer)
+
+    async def test_a_woken_waiter_awaiting_admission_is_not_also_counted_as_waiting(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        (woken,) = await _park(harness, 1)
+        consumer._release_record("r1")
+        # Dispatched and holding its record, still before the index slot.
+        consumer._mark_in_flight(woken, LANE)
+        assert consumer._claim_record_or_wait("r1", LANE, woken)
+        # Another entry of the lane, pending here and untracked.
+        await consumer.redis.xadd(LANE, _fields("r2"))
+        (other,) = [
+            i for _s, entries in await consumer.redis.xreadgroup(
+                GROUP, consumer.consumer_name, {LANE: ">"}, count=10
+            ) for i, _f in entries
+        ]
+
+        await harness.recover()
+
+        assert (LANE, other) in consumer._held_entries
+
+    async def test_a_refresh_whose_later_chunk_fails_keeps_what_the_earlier_one_confirmed(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        first, second, third = await _park(harness, 3)
+        for wait in consumer._record_waits.values():
+            wait.parked_at = 0.0
+        consumer._ownership_confirmed_at.clear()
+        script = consumer.redis.eval
+        calls = 0
+
+        async def second_chunk_fails(*args: Any) -> Any:  # noqa: ANN401
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ConnectionError("redis blip")
+            return await script(*args)
+
+        consumer.redis.eval = second_chunk_fails  # type: ignore[method-assign]
+        with patch(f"{_MODULE}._REFRESH_CLAIM_CHUNK", 2):
+            await harness.refresh()
+
+        assert sorted(consumer._record_waits) == sorted([(LANE, first), (LANE, second)])
+
+    async def test_a_refresh_never_takes_back_an_entry_a_peer_claimed(self, harness: Harness) -> None:
+        consumer = harness.consumer
+        first, second = await _park(harness, 2)
+        await consumer.redis.xadd(LANE, _fields("r9"))
+        (held,) = await harness.read_new()
+        # This consumer stalled past the claim window; a peer took two.
+        await consumer.redis.xclaim(LANE, GROUP, "peer", min_idle_time=0, message_ids=[first, held])
+
+        await harness.refresh()
+
+        owners = {
+            (d["message_id"].decode() if isinstance(d["message_id"], bytes) else d["message_id"]): (
+                d["consumer"].decode() if isinstance(d["consumer"], bytes) else d["consumer"]
+            )
+            for d in await consumer.redis.xpending_range(LANE, GROUP, min="-", max="+", count=10)
+        }
+        assert owners[first] == "peer"
+        assert owners[held] == "peer"
+        assert owners[second] == consumer.consumer_name
+        assert list(consumer._record_waits) == [(LANE, second)]
+
+    async def test_a_fresh_event_for_the_record_does_not_overtake_the_ones_waiting(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        older = await _park(harness, 2)
+        harness.dispatched.clear()
+        consumer._release_record("r1")
+        # Read fresh and dispatched before recovery offers the woken waiter.
+        await consumer.redis.xadd(LANE, _fields("r1"))
+        (fresh,) = await harness.read_new()
+        await harness.dispatch()
+        assert harness.handler.ran == []
+
+        await harness.passes(4)
+
+        assert harness.handler.ran == ["r1", "r1", "r1"]
+        # Dispatched once on arrival, where it waited behind the two older;
+        # it ran on its second dispatch, after both of them.
+        assert harness.dispatched == [fresh, *older, fresh]
+
+    async def test_a_woken_run_interrupted_before_its_lease_is_the_one_offered_again(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        first, second = await _park(harness, 2)
+        consumer._release_record("r1")
+        # The woken entry's run takes the record, then stops before the lease
+        # (an error, or the consumer stopping), its entry still pending.
+        assert consumer._claim_record_or_wait("r1", LANE, first)
+        consumer._release_record("r1", (LANE, first))
+
+        assert not consumer._is_waiting_for_record(first, LANE)
+        assert consumer._is_waiting_for_record(second, LANE)

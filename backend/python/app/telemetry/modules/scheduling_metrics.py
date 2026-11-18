@@ -12,6 +12,9 @@ labelled by org only -- bounded by customer count, and the same choice
 exposed as a *count* of active keys rather than one series per key.
 """
 
+import threading
+import weakref
+
 from app.telemetry.backend import METRICS_BACKEND
 
 # The one you cannot operate without. Every buffered offset must reach a
@@ -136,8 +139,25 @@ def record_lanes_paused(broker: str, count: int) -> None:
     LANES_PAUSED.set(broker, value=count)
 
 
-def record_record_waits(broker: str, count: int) -> None:
-    RECORD_WAITS.set(broker, value=count)
+# Several consumers of one broker wait in one process (the record and the
+# priority consumers): the gauge is their total, kept here because no one
+# consumer can see the others'. Held weakly, so a consumer dropped without
+# a stop does not count for ever.
+_record_waits_lock = threading.Lock()
+_record_waits_by_owner: dict[str, weakref.WeakKeyDictionary[object, int]] = {}
+
+
+def record_record_waits(broker: str, owner: object, count: int) -> None:
+    with _record_waits_lock:
+        _record_waits_by_owner.setdefault(broker, weakref.WeakKeyDictionary())[owner] = count
+        RECORD_WAITS.set(broker, value=sum(_record_waits_by_owner[broker].values()))
+
+
+def forget_record_waits(broker: str, owner: object) -> None:
+    with _record_waits_lock:
+        owners = _record_waits_by_owner.setdefault(broker, weakref.WeakKeyDictionary())
+        owners.pop(owner, None)
+        RECORD_WAITS.set(broker, value=sum(owners.values()))
 
 
 def record_lane_assignment_fallback(reason: str) -> None:

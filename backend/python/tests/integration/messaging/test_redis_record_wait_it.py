@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 import pytest
@@ -32,14 +33,16 @@ from app.services.resource_governor.models import ParseTier
 from tests.integration.messaging.conftest import DRAIN_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from app.services.messaging.config import StreamMessage
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 LOGGER_NAME = "it-record-wait"
-LONG_RUN_SECONDS = 6.0
+# Past the old loop's once-a-second re-offers several times over, and past
+# an ownership refresh (claim_min_idle_ms / 3).
+HOLD_SECONDS = 3.0
 
 
 @pytest.fixture
@@ -71,7 +74,7 @@ async def _add(client: Redis, stream: str, record_id: str, seq: int) -> str:
     )
 
 
-async def _until(predicate, what: str, timeout: float = DRAIN_TIMEOUT_SECONDS) -> None:  # noqa: ANN001
+async def _until(predicate: Callable[[], bool], what: str, timeout: float = DRAIN_TIMEOUT_SECONDS) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
         if asyncio.get_running_loop().time() > deadline:
@@ -94,6 +97,9 @@ class TestALongRunHoldsItsRecord:
         done: list[tuple[str, int]] = []
         long_run_started = asyncio.Event()
         long_run_ended = asyncio.Event()
+        # The test, not a timer, ends the long run: it ends only after the
+        # checks made while it holds the record.
+        release_long_run = threading.Event()
         main_loop = asyncio.get_running_loop()
 
         async def handle(message: StreamMessage) -> AsyncIterator[PipelineEvent]:
@@ -102,7 +108,9 @@ class TestALongRunHoldsItsRecord:
             record_id, seq = message.payload["recordId"], int(message.payload["seq"])
             if seq == 0:
                 main_loop.call_soon_threadsafe(long_run_started.set)
-                await asyncio.sleep(LONG_RUN_SECONDS)
+                # The handler runs on the consumer's worker loop, not this
+                # test's, so it waits on a thread event, off that loop.
+                await asyncio.to_thread(release_long_run.wait, DRAIN_TIMEOUT_SECONDS)
                 main_loop.call_soon_threadsafe(long_run_ended.set)
             done.append((record_id, seq))
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
@@ -129,18 +137,17 @@ class TestALongRunHoldsItsRecord:
             # The connector's other records do not wait for R.
             await _until(lambda: sum(1 for r, _ in done if r != "R") == 5, "the other records")
             assert not long_run_ended.is_set()
-            # Long enough for the old loop to have re-offered each waiter
-            # several times (once a second) and past the ownership refresh.
-            await asyncio.sleep(3.0)
-            assert not long_run_ended.is_set()
+            await asyncio.sleep(HOLD_SECONDS)
             pending = await redis_client.xpending_range(stream, group, min="-", max="+", count=100)
             assert sorted(p["message_id"] for p in pending if p["message_id"] in waiting) == sorted(waiting)
             # Refreshed, never claimed again: one delivery each, so waiting
             # never moves them toward the dead-letter backstop.
             assert all(p["times_delivered"] == 1 for p in pending if p["message_id"] in waiting)
 
+            release_long_run.set()
             await _until(lambda: sum(1 for r, _ in done if r == "R") == 5, "R's queued events")
         finally:
+            release_long_run.set()
             await consumer.stop()
 
         assert [seq for r, seq in done if r == "R"] == [0, 1, 2, 3, 4]
