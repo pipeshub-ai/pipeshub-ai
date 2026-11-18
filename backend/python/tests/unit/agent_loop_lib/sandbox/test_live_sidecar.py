@@ -110,6 +110,7 @@ class TestSidecarReader:
         ("sidecar", _proxy(None, error="stale")),
         ("sidecar", _proxy(status=502)),
         ("sidecar-containers", _proxy(containers={**CONTAINERS_BLOCK, "partial": True})),
+        ("sidecar-containers", _proxy(containers={**CONTAINERS_BLOCK, "truncated": True})),
         ("sidecar-containers", _proxy(containers=None)),
     ])
     def test_errors_give_an_empty_sample(

@@ -281,7 +281,9 @@ class SidecarReader:
         if status != 200 or not isinstance(body, dict):
             return None
         block = body.get("containers" if containers else "sidecar")
-        if not isinstance(block, dict) or (containers and block.get("partial")):
+        # Truncated: more containers run than the proxy reads, so the total
+        # leaves some out, as a partial one does.
+        if not isinstance(block, dict) or (containers and (block.get("partial") or block.get("truncated"))):
             return None
         return block
 
