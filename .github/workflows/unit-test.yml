@@ -548,7 +548,10 @@ jobs:
         working-directory: backend/python
         env:
           SANDBOX_TEST_IMAGE: pipeshubai/pipeshub-sandbox:local
+        # The fixtures skip without a daemon or the image, and an all-skipped
+        # run passes, so check the same condition first and fail instead.
         run: |
+          python -c 'import sys; from tests.unit.agent_loop_lib.sandbox.contract.conftest import docker_available; ok, why = docker_available(); sys.exit(0 if ok else f"live Docker tests would skip: {why}")'
           pytest -m docker -rs \
             tests/unit/agent_loop_lib/sandbox/test_docker_live.py \
             tests/unit/sandbox/test_docker_proxy_live.py \
