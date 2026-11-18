@@ -314,10 +314,17 @@ async def test_waiting_payloads_count_against_the_buffer_budget() -> None:
 class _Fetcher:
     """Stands in for the record fetch-back reader: serves each offset as an event for ``record``."""
 
-    def __init__(self, consumer: IndexingKafkaConsumer, record: str, gone: frozenset[int] = frozenset()) -> None:
+    def __init__(
+        self,
+        consumer: IndexingKafkaConsumer,
+        record: str,
+        gone: frozenset[int] = frozenset(),
+        unparseable: frozenset[int] = frozenset(),
+    ) -> None:
         self.consumer = consumer
         self.record = record
         self.gone = gone
+        self.unparseable = unparseable
         self.calls: list[tuple[list[int], bool]] = []
 
     async def fetch(self, wanted: dict) -> tuple[dict, set]:
@@ -325,6 +332,9 @@ class _Fetcher:
         self.calls.append((offsets, self.record in self.consumer._in_flight_records))
         found = {(tp, o): _message(o, self.record, tp=tp) for tp, os in wanted.items() for o in os if o not in self.gone}
         gone = {(tp, o) for tp, os in wanted.items() for o in os if o in self.gone}
+        for (_tp, o), message in found.items():
+            if o in self.unparseable:
+                message.value = b"\xff not utf-8"
         return found, gone
 
     async def close(self) -> None:
@@ -478,3 +488,31 @@ async def test_an_event_deleted_by_retention_before_read_back_is_resolved_not_st
 
     assert consumer.started == [(0, "R"), (2, "R")]
     consumer.consumer.commit.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_read_back_event_that_no_longer_parses_is_settled_not_read_back_for_ever(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    consumer = _consumer(max_buffered_messages=4)
+    fetcher = _Fetcher(consumer, "R", unparseable=frozenset({1}))
+    consumer._waiting_fetcher = fetcher
+    consumer._in_flight_records.add("R")
+    await _burst(consumer, "R", range(3))
+    _finish(consumer, "R")
+    await _dispatch(consumer)  # R@0 runs
+    consumer._offset_tracker.mark_done(TP, 0)
+    _finish(consumer, "R")
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        for _ in range(6):
+            await _settle(consumer)
+            _finish(consumer, "R")
+
+    # R@1 is settled once; R@2 behind it is not held up.
+    assert consumer.started == [(0, "R"), (2, "R")]
+    assert sum(1 in offsets for offsets, _ in fetcher.calls) == 1
+    assert any(
+        "record-events-0-1, which waited for a busy record, no longer parses; settled as poison" in r.getMessage()
+        for r in caplog.records
+    )
+    assert consumer._record_waiting == {}

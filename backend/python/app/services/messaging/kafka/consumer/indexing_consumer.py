@@ -1393,6 +1393,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     ) -> None:
         """Put read-back payloads into their waiting entries in place, so each record's order is unchanged."""
         parsed_at: dict[tuple[TopicPartition, int], StreamMessage] = {}
+        # Parsed when first read, but no longer (an envelope key gone since):
+        # left waiting it would be read back on every pass and hold its
+        # record's later events for good, so it is settled as a fresh read
+        # settles one that never parses.
+        poison: set[tuple[TopicPartition, int]] = set()
         for positions in plan.values():
             for position in positions:
                 if position not in found:
@@ -1407,10 +1412,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     continue
                 if parsed is not None:
                     parsed_at[position] = parsed
+                else:
+                    poison.add(position)
 
         # No awaits from here until the deleted offsets are committed, so the
         # entries and epochs checked below cannot change underneath.
         deleted: list[tuple[TopicPartition, int]] = []
+        unparseable: list[tuple[TopicPartition, int]] = []
         for record_key, positions in plan.items():
             waiting = self._record_waiting.get(record_key)
             if not waiting:
@@ -1427,10 +1435,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     or self._partition_epoch.get(tp, 0) != epochs.get(tp)
                 ):
                     continue
-                if position in gone:
+                if position in gone or position in poison:
                     waiting.remove(entry)
                     self.__count_waiting(record_key, entry, -1)
-                    deleted.append(position)
+                    (deleted if position in gone else unparseable).append(position)
                     continue
                 parsed = parsed_at.get(position)
                 if parsed is None:
@@ -1453,6 +1461,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 len(deleted),
             )
             await self.__commit_resolved(deleted)
+        for tp, offset in unparseable:
+            self.logger.error(
+                "Event %s-%s-%s, which waited for a busy record, no longer parses; settled as poison",
+                tp.topic, tp.partition, offset,
+            )
+            await self.__commit_if_appropriate(
+                found[(tp, offset)],
+                None,
+                success=False,
+                is_terminal_error=True,
+                in_flight=_InFlightOffset(tp, offset),
+            )
 
     def __reserve_partition(self, message: ConsumerRecord) -> bool:
         # Only one message per partition is ever in flight at a time (Kafka
