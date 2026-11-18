@@ -450,6 +450,7 @@ def test_the_search_reads_kept_term_frequencies_and_each_posting_once(rdb):
     assert counted == kept and read == 2 * (30 + 26 + 7) and probes == 0       # the same answer, scores included, by counting
     with connect_as(cluster, name, "pipeshub_jobs") as jobs:
         assert fold.run(jobs)[1] == {}
+        assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)    # the fold, before recount could repair it
         assert fold.recount_org(jobs, ORG_A) is not None
     with cluster.admin(name) as c:
         assert c.execute("SELECT count(*) FROM retrieval.lexical_term_delta WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 0
@@ -466,6 +467,24 @@ def test_the_search_reads_kept_term_frequencies_and_each_posting_once(rdb):
     assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A)
 
 
+def test_a_fold_keeps_no_frequency_row_for_a_term_that_has_no_postings_left(rdb):
+    """A term's postings inserted and folded, then deleted and folded: the row goes (a missing row is a frequency of 0 to the search), so
+    the table does not grow with every term that ever came and went."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        write_terms(c, ORG_A, "a0000000-0000-0000-0000-000000000001", "g1", {5: 1.0, 6: 1.0})
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {}
+    with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
+        c.execute("DELETE FROM retrieval.postings WHERE org_id = %s AND term = 6", (ORG_A,))
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {}
+    with cluster.admin(name) as c:
+        assert dict(c.execute("SELECT term, df FROM retrieval.lexical_df WHERE org_id = %s", (ORG_A,))) == {5: 1}
+    assert kept_frequencies(cluster, name, ORG_A) == counted_frequencies(cluster, name, ORG_A) == {5: 1}
+
+
 def test_every_table_the_lexical_search_reads_is_filtered_by_the_bound_org():
     """Static check: the function takes the org from the unit of work, so every reference to a retrieval table must say so."""
     import re
@@ -477,9 +496,35 @@ def test_every_table_the_lexical_search_reads_is_filtered_by_the_bound_org():
     refs = re.findall(r"\b(?:FROM|JOIN)\s+retrieval\.(\w+)\s+(\w+)", fn.body)
     assert {t for t, _ in refs} == {"org_spaces", "collection_stats", "lexical_df_delta", "postings", "points", "group_members", "point_tombstones",
                                     "lexical_df", "lexical_term_delta", "lexical_df_pending"}
-    for table, alias in refs:
-        assert re.search(rf"\b{alias}\.org_id = v_org\b", fn.body), f"{table} {alias} is not filtered by v_org"
+    assert scopes_without_org(fn.body) == []
     assert "p_org" not in fn.body and all("org" not in a.name for a in fn.args)               # no argument can name an org
+
+
+def scopes_without_org(body: str) -> list[str]:
+    """The retrieval table references of a function body whose own query scope (from the reference to the end of its parenthesised
+    query, or of its statement) has no ``<alias>.org_id = v_org``: one alias reused in two subqueries is checked in each."""
+    import re
+
+    body = re.sub(r"--[^\n]*", "", body)
+    missing = []
+    for m in re.finditer(r"\b(?:FROM|JOIN)\s+retrieval\.(\w+)\s+(\w+)", body):
+        depth, end = 0, len(body)
+        for i in range(m.end(), len(body)):
+            depth += {"(": 1, ")": -1}.get(body[i], 0)
+            if depth < 0 or (depth == 0 and body[i] == ";"):
+                end = i
+                break
+        if not re.search(rf"\b{m[2]}\.org_id = v_org\b", body[m.end():end]):
+            missing.append(f"{m[1]} {m[2]}")
+    return missing
+
+
+def test_the_org_check_of_a_table_reference_looks_only_inside_its_own_query():
+    body = ("SELECT (SELECT 1 FROM retrieval.lexical_df_pending x WHERE x.collection_id = 1) INTO v_kept;\n"
+            "SELECT 1 FROM retrieval.points p WHERE p.org_id = v_org AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones x "
+            "WHERE x.org_id = v_org AND x.point_sk = p.point_sk);")
+    assert scopes_without_org(body) == ["lexical_df_pending x"]
+    assert scopes_without_org(body.replace("WHERE x.collection_id", "WHERE x.org_id = v_org AND x.collection_id")) == []
 
 
 def test_the_membership_path_widens_to_every_point_when_the_best_ones_do_not_pass(rdb):
@@ -559,7 +604,7 @@ def test_a_space_check_is_written_and_read_by_its_own_org_only_and_the_lock_clas
     with connect_as(cluster, name, "pipeshub_node_login") as c, uow(c, "pipeshub_node", ORG_A), pytest.raises(pg.InsufficientPrivilege):
         c.execute("SELECT 1 FROM retrieval.space_checks")
     with cluster.admin(name) as c:
-        assert {r[0] for r in c.execute("SELECT class_id FROM kernel.lock_keys")} >= {7361, 7362, 7363, 7370}
+        assert {r[0] for r in c.execute("SELECT class_id FROM kernel.lock_keys")} >= {7361, 7362, 7363, 7366, 7370}
 
 
 def test_an_upgrade_without_pgvector_stops_with_a_message_and_changes_nothing(db):

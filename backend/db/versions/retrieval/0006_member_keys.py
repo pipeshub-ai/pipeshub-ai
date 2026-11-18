@@ -21,3 +21,4 @@ def downgrade():
     op.execute("DELETE FROM kernel.trigger_exemptions WHERE proc::oid IN (SELECT oid FROM pg_proc WHERE proname IN ('points_member_keys', 'group_members_keys'))")
     op.execute("DROP FUNCTION IF EXISTS retrieval.points_member_keys(), retrieval.group_members_keys()")
     op.execute("ALTER TABLE retrieval.points DROP COLUMN IF EXISTS member_keys")
+    op.execute("DELETE FROM kernel.lock_keys WHERE class_id = 7366")

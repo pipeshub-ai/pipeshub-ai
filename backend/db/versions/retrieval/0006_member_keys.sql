@@ -11,6 +11,10 @@
 -- line (four more buffers per candidate).
 ALTER TABLE retrieval.points ADD COLUMN member_keys text[] STORAGE MAIN;
 
+-- Every writer of group rows takes the advisory locks of its group keys first, in one order (a group with no row yet has no row to lock).
+INSERT INTO kernel.lock_keys VALUES
+  (7366, 'retrieval_group_write', 'writers of group rows and their membership, one at a time per group (key: hash of org, collection and group key)');
+
 -- A restore has no lock on the group rows, and its export of points and of membership rows need not be one snapshot: a restored point gets
 -- NULL keys (searched through the membership rows) until its group is written again, whatever keys the export carried.
 CREATE FUNCTION retrieval.points_member_keys() RETURNS trigger LANGUAGE plpgsql

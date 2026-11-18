@@ -43,15 +43,23 @@ cnt AS (
   RETURNING 1)
 SELECT (SELECT count(*) FROM taken)"""
 
+# A frequency that folds to 0 loses its row instead (the search reads a missing row as 0), so the table does not keep every term that
+# ever came and went. The current values are read in the statement's snapshot: only a fold or a recount changes them, under the org lock.
 FOLD_TERMS = """
 WITH taken AS (
   DELETE FROM retrieval.lexical_term_delta d WHERE d.org_id = %(org)s
      AND d.seq IN (SELECT t.seq FROM retrieval.lexical_term_delta t WHERE t.org_id = %(org)s ORDER BY t.seq LIMIT %(batch)s)
   RETURNING d.collection_id, d.space_id, d.term, d.d),
-sums AS (SELECT collection_id, space_id, term, sum(d)::bigint AS d FROM taken GROUP BY 1, 2, 3 HAVING sum(d) <> 0),
+sums AS (
+  SELECT s.*, coalesce(f.df, 0) + s.d AS df FROM (SELECT collection_id, space_id, term, sum(d)::bigint AS d FROM taken GROUP BY 1, 2, 3 HAVING sum(d) <> 0) s
+    LEFT JOIN retrieval.lexical_df f ON f.org_id = %(org)s AND f.collection_id = s.collection_id AND f.space_id = s.space_id AND f.term = s.term),
+gone AS (
+  DELETE FROM retrieval.lexical_df f USING sums s
+   WHERE f.org_id = %(org)s AND f.collection_id = s.collection_id AND f.space_id = s.space_id AND f.term = s.term AND s.df = 0
+  RETURNING 1),
 up AS (
   INSERT INTO retrieval.lexical_df AS f (org_id, collection_id, space_id, term, df)
-  SELECT %(org)s, s.collection_id, s.space_id, s.term, s.d FROM sums s
+  SELECT %(org)s, s.collection_id, s.space_id, s.term, s.d FROM sums s WHERE s.df <> 0
   ON CONFLICT (org_id, collection_id, space_id, term) DO UPDATE SET df = f.df + EXCLUDED.df
   RETURNING 1)
 SELECT (SELECT count(*) FROM taken)"""
