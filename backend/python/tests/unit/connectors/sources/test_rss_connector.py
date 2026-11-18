@@ -1,6 +1,7 @@
 """Tests for the RSS connector."""
 
 import time
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -128,7 +129,7 @@ class TestRSSApp:
 
 class TestRSSConnectorInit:
     @pytest.fixture
-    async def connector(self):
+    async def connector(self) -> AsyncIterator[RSSConnector]:
         connector = _make_connector()
         yield connector
         await connector.cleanup()  # a successful init opens a real HTTP session; left open, its finaliser logs later
