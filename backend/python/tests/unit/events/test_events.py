@@ -2278,7 +2278,7 @@ class TestOnEventDuplicate:
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
         seen: list[bool] = []
 
-        async def decide(*_args, force_index: bool = False, **_kwargs):
+        async def decide(*_args: object, force_index: bool = False, **_kwargs: object) -> DedupDecision:
             seen.append(force_index)
             return DedupDecision() if force_index else DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)
 

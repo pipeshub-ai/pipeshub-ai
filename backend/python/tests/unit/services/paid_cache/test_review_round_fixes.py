@@ -8,7 +8,11 @@ import logging
 import pytest
 
 from app.services.paid_cache import cache as cache_module
-from app.services.paid_cache.cache import PaidResultCache, RefreshLockUnavailable, RefreshPurgeInProgress
+from app.services.paid_cache.cache import (
+    PaidResultCache,
+    RefreshLockUnavailable,
+    RefreshPurgeInProgress,
+)
 from app.services.paid_cache.locks import InProcessLocks
 from app.services.paid_cache.run import (
     RunScope,
