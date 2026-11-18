@@ -7,7 +7,12 @@ revision = "platform_data_0005"
 down_revision = "platform_data_0004"
 branch_labels = None
 depends_on = None
-older_code_compatible = "adds one nullable column without a default and one index; older code never names the column, so its inserts leave it NULL and its queries keep working. Older code does not know scheduling: after a rollback, or on an old pod during a rolling deploy, a row stored with a future visible_at is listed, counted and marked read as if visible now. Only its own recipient sees it, so no access changes; an early notice is accepted rather than refusing every rollback past this revision"
+# A contract. A build before this revision does not check `visible_at` in its list, count, mark-all-read and by-id paths, so it would show a
+# future-dated row early and act on it. With min_code_epoch = 5 such a build refuses to boot on this schema (boot_assert) and its migrate Job
+# refuses to run, so a restarted or rolled-back pod cannot serve one. It does not stop a pod of the older build that is already running while the
+# new release rolls out. After the upgrade a rollback of the code is refused as well (a development downgrade keeps min_code_epoch): roll
+# forward, or restore a backup taken before the upgrade. MongoDB has no schema epoch, so there an older build reads a scheduled row as visible.
+min_code_epoch = 5
 
 
 def upgrade():
@@ -17,5 +22,7 @@ def upgrade():
 
 
 def downgrade():
+    # Development only (it keeps min_code_epoch, so no build runs until the schema is upgraded again). Dropping the column forgets every
+    # `visible_at`: a row still scheduled stops being scheduled and, on a later upgrade, is visible at once.
     op.execute("DROP INDEX platform.notifications_visible")
     op.execute("ALTER TABLE platform.notifications DROP COLUMN visible_at")

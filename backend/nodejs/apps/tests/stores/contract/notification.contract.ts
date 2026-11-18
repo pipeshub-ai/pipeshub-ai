@@ -368,6 +368,31 @@ export function describeNotificationContract(fx: NotificationFixture): void {
       expect(await repo.exists({ orgId: org, userId: me }, inside), 'inside the window').to.equal(true);
     });
 
+    it('a batch with one refused row stores none of its rows, and a single insert with a supplied id is idempotent', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const scope = { orgId: org, userId: me };
+      const day = 24 * 3600_000;
+      const [good, bad] = [fx.newId(), fx.newId()];
+      let err: unknown;
+      try {
+        await repo.insertMany([
+          mk(org, me, { _id: good }),
+          mk(org, me, { _id: bad, createdAt: new Date(), visibleAt: ahead(31 * day) }),
+        ]);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).to.be.instanceOf(Error);
+      expect(await repo.exists(scope, good), 'the earlier row of the refused batch').to.equal(false);
+      const id = fx.newId();
+      const first = await repo.insert(mk(org, me, { _id: id, title: 'first' }));
+      const again = await repo.insert(mk(org, me, { _id: id, title: 'second' }));
+      expect(again._id).to.equal(first._id);
+      expect(again.title).to.equal('first');
+      expect((await repo.counts(scope)).unread).to.equal(1);
+    });
+
     it('a row scheduled far ahead (past any partition made in advance) is stored and stays hidden', async () => {
       const org = fx.newId();
       const me = fx.newId();
