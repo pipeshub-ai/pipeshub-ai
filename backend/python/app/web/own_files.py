@@ -23,9 +23,10 @@ _SIGNATURE_PARAMS = frozenset({"x-amz-signature", "x-goog-signature", "sig"})
 _URL_IN_TEXT = re.compile(r"https?://[^\s'\"<>)\\]+")
 # A signature or credential value wherever it is: a link with a space, `(` or `'` in its file name
 # ends the scan above early, and the signature after that point still opens the file. The value stops
-# at a backslash, which in JSON text escapes the quote that closes the string.
+# at a backslash, which in JSON text escapes the quote that closes the string. JSON written by some
+# encoders (Go's, by default) spells `&` as `\u0026`.
 _SIGNATURE_VALUE = re.compile(
-    r"(?i)([?&](?:x-amz-signature|x-goog-signature|sig|x-amz-credential|x-amz-security-token|x-goog-credential)=)"
+    r"(?i)((?:[?&]|\\u0026)(?:x-amz-signature|x-goog-signature|sig|x-amz-credential|x-amz-security-token|x-goog-credential)=)"
     r"[^&\s\"'<>)\\]+"
 )
 

@@ -156,6 +156,18 @@ class TestHideStorageSignatures:
         assert "AKIAEXAMPLE" not in hidden and "SESSIONEXAMPLE" not in hidden and "abc123" not in hidden
         assert "O'Brien.pdf?" in hidden
 
+    def test_google_credentials_of_a_link_cut_short_are_hidden(self) -> None:
+        link = "https://storage.googleapis.com/b/O'Brien.pdf?X-Goog-Credential=svc%40p.iam&X-Goog-Signature=abcd1234"
+        hidden = hide_storage_signatures(f"Reading {link}")
+        assert "svc%40p.iam" not in hidden and "abcd1234" not in hidden
+
+    def test_json_that_spells_the_separator_as_an_escape(self) -> None:
+        """Go's JSON encoder writes `&` as `\\u0026`; the link scan stops at its backslash."""
+        text = '{"url":"https://acct.blob.core.windows.net/c/f.pdf?sv=2023-11-03\\u0026sp=r\\u0026sig=abc%2Bdef%3D"}'
+        hidden = hide_storage_signatures(text)
+        assert "abc%2Bdef" not in hidden
+        assert json.loads(hidden)["url"].endswith("&sig=[REDACTED]")
+
     def test_a_link_cut_short_inside_json(self) -> None:
         link = "https://acct.blob.core.windows.net/c/O'Brien.pdf?sv=2023-11-03&sig=abc%2Bdef%3D"
         stored = json.loads(hide_storage_signatures(json.dumps({"url": link})))
