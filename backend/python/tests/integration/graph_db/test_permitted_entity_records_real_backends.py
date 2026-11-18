@@ -68,6 +68,7 @@ NOISE = 70
 # Newest first among the readable records.
 READABLE = ("app", "direct", "group", "inherited")
 HIDDEN = ("anyone", "anyone-off", "denied")
+CANDIDATES = NOISE + len(READABLE) + len(HIDDEN)  # the topic's records
 
 logger = logging.getLogger("permitted-entity-records-it")
 
@@ -513,46 +514,58 @@ class TestNeo4jRoleWalkLeftOut:
         return out
 
     @staticmethod
-    def _same(both: dict[bool, list[dict[str, Any]]]) -> list[dict[str, Any]]:
-        """The hits both forms returned, after checking they are the same rows."""
+    def _same(both: dict[bool, list[dict[str, Any]]], ref_id: str, *, has_row: bool = True) -> dict[str, Any]:
+        """The one row both forms returned for ``ref_id``, after checking it is the same row.
+        A missing row must not read as an empty window: only a ref whose MATCH finds no
+        record at all (``has_row=False``) gets none, which the provider reads as empty."""
         import json
 
-        def canonical(rows: list[dict[str, Any]]) -> list[str]:
-            return sorted(json.dumps(row, sort_keys=True, default=str) for row in rows)
-
-        assert canonical(both[False]) == canonical(both[True])
-        return [hit for row in both[True] for hit in row.get("hits") or []]
+        for rows in both.values():
+            assert [row["id"] for row in rows] == ([ref_id] if has_row else [])
+        if not has_row:
+            return {"window_size": 0, "hits": []}
+        assert json.dumps(both[False][0], sort_keys=True, default=str) == json.dumps(
+            both[True][0], sort_keys=True, default=str,
+        )
+        return both[True][0]
 
     @pytest.mark.parametrize(
-        ("connectors", "offset", "window", "limit", "expected_hits"),
+        ("connectors", "offset", "window", "limit", "expected_window", "expected_hits"),
         [
-            ("both", 0, 200, 200, NOISE + len(READABLE) + len(HIDDEN)),  # every candidate, in one window
-            ("both", 0, 20, 5, 5),                                       # the walk stops at the limit
-            ("both", 60, 60, 60, NOISE + len(READABLE) + len(HIDDEN) - 60),  # a later window
-            ("both", 500, 60, 60, 0),                                    # past the last candidate: empty
-            ("app", 0, 200, 200, 1),                                     # one connector: its one record
-            ("none", 0, 200, 200, 0),                                    # no connectors: no candidates
+            ("both", 0, 200, 200, CANDIDATES, CANDIDATES),         # every candidate, in one window
+            ("both", 0, 20, 5, 20, 5),                             # the walk stops at the limit
+            ("both", 0, 20, 200, 20, 20),                          # the window bounds the walk
+            ("both", 60, 60, 60, CANDIDATES - 60, CANDIDATES - 60),  # a later window
+            ("both", 500, 60, 60, 0, 0),                           # past the last candidate: empty
+            ("app", 0, 200, 200, 1, 1),                            # one connector: its one record
+            ("none", 0, 200, 200, 0, 0),                           # no connectors: no candidates
         ],
     )
     async def test_a_topic_reads_the_same_with_and_without_the_walk(
-        self, backend, connectors: str, offset: int, window: int, limit: int, expected_hits: int,
+        self, backend, connectors: str, offset: int, window: int, limit: int,
+        expected_window: int, expected_hits: int,
     ) -> None:
         provider, org_id = backend
         connector_ids = {"both": [APP_LEVEL, RECORD_LEVEL], "app": [APP_LEVEL], "none": []}[connectors]
         ref = {"id": _keys(org_id)["topic"], "type": "topic", "connectorIds": connector_ids}
 
-        hits = self._same(await self._both(provider, org_id, ref, offset=offset, window=window, limit=limit))
+        both = await self._both(provider, org_id, ref, offset=offset, window=window, limit=limit)
+        # A window past the last candidate still gets its row (window_size 0); a ref with no
+        # connectors matches no record, so the statement returns no row for it.
+        row = self._same(both, ref["id"], has_row=connectors != "none")
 
+        assert row["window_size"] == expected_window
         # Every candidate is admitted here, so the walk keeps the first window rows, in order.
-        assert [hit["pos"] for hit in hits] == list(range(expected_hits))
+        assert [hit["pos"] for hit in row["hits"]] == list(range(expected_hits))
 
     async def test_a_record_ref_reads_the_same_with_and_without_the_walk(self, backend) -> None:
         provider, org_id = backend
         ref = {"id": _keys(org_id)["records"]["direct"], "type": "record", "connectorIds": [RECORD_LEVEL]}
 
-        hits = self._same(await self._both(provider, org_id, ref, offset=0, window=200, limit=200))
+        row = self._same(await self._both(provider, org_id, ref, offset=0, window=200, limit=200), ref["id"])
 
-        assert [(hit["pos"], hit["row"]["_key"]) for hit in hits] == [(0, ref["id"])]
+        assert row["window_size"] == 1
+        assert [(hit["pos"], hit["row"]["_key"]) for hit in row["hits"]] == [(0, ref["id"])]
 
     async def test_the_provider_leaves_the_walk_out_and_returns_every_candidate(self, backend) -> None:
         """The decision itself, through the method: with both connectors app-level every
