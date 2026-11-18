@@ -3,8 +3,9 @@
 import asyncio
 import os
 import time
-from unittest.mock import ANY, AsyncMock, MagicMock, patch, PropertyMock
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import ANY, AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from app.services.messaging.retry_manager import RetryManager
+
+
+# What start_kafka_consumers reads from the record consumer config besides passing it to the factory.
+RECORD_CONFIG = SimpleNamespace(group_id="records_consumer_group", topics=["record-events"])
+
 
 @pytest.fixture(autouse=True)
 def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1148,7 +1154,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, priority_consumer, stage_consumer]) as create_consumer,
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
@@ -1215,7 +1221,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[mock_consumer, priority_consumer, stage_consumer]) as create_consumer,
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
@@ -1269,7 +1275,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer) as create_consumer,
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
@@ -1294,7 +1300,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer) as create_consumer,
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
@@ -1326,7 +1332,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
             patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock(), cleanup=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.MessagingFactory.create_lease_manager", return_value=mock_manager),
         ):
             with pytest.raises(RuntimeError, match="redis down"):
@@ -1351,7 +1357,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, side_effect=RuntimeError("handler fail")),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
@@ -1387,7 +1393,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
@@ -1417,7 +1423,7 @@ class TestStageTopicsUnavailable:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, priority_consumer, stage_consumer]),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
@@ -1460,7 +1466,7 @@ class TestStageTopicsUnavailable:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch(
                 "app.indexing_main.MessagingFactory.create_consumer",
@@ -1521,7 +1527,7 @@ class TestPriorityTopicUnavailable:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", side_effect=[record_consumer, priority_consumer]),
             patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
@@ -2446,7 +2452,7 @@ class TestStartKafkaConsumersCleanupPath:
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
-            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value=RECORD_CONFIG),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -3109,6 +3115,134 @@ class TestSweepOrphanedVirtualRecordMappings:
         )
 
         assert m._orphan_sweep_cursor == {"org-1": 0}
+
+
+class TestOrphanSweepWhileAnotherOrgHoldsTheVrid:
+    """The real orphan path on the in-memory store, which answers the hold check the way
+    the scroll does on Qdrant, OpenSearch and Redis: the swept org's records and points
+    are gone, another org still has points on the same virtual record."""
+
+    @pytest.fixture
+    def world(self, monkeypatch) -> dict:
+        import app.indexing_main as m
+        from app.services.vector_db import membership
+        from app.services.vector_db.collection_locator import StaticCollectionLocator
+        from app.services.vector_db.models import VectorPoint
+        from tests.support.in_memory_vector_db import InMemoryVectorDBService
+
+        monkeypatch.setattr(membership, "EMPTY_CONFIRM_DELAY_SECONDS", 0)
+        monkeypatch.setattr(membership, "_shared_row_kept", set())
+        monkeypatch.setattr(m, "_orphan_sweep_cursor", {})
+        monkeypatch.setattr(m, "_orphan_kept_until", {}, raising=False)
+
+        vdb = InMemoryVectorDBService()
+        vdb.collections["records"] = {
+            "b-1": VectorPoint(
+                id="b-1", dense_vector=[1.0],
+                payload={"metadata": {"orgId": "org-b", "virtualRecordId": "vr-shared"}},
+            )
+        }
+        deletes: list[str] = []
+        delete_points = vdb.delete_points
+
+        async def _spy_delete(**kwargs) -> None:
+            deletes.append(kwargs["collection_name"])
+            await delete_points(**kwargs)
+
+        vdb.delete_points = _spy_delete
+
+        graph = _orphan_graph([], records_by_vrid={})
+        rows = [{"_key": "vr-shared", "orgId": "o1"}]
+
+        async def _paged(collection, skip=0, limit=50, filters=None, sort_field=None, transaction=None,
+                         raise_on_error=False) -> list[dict]:
+            # Each org reads only its own mapping rows, as on PostgreSQL where every org has its own row.
+            return [r for r in rows if r["orgId"] == (filters or {}).get("orgId")][skip : skip + limit]
+
+        graph.get_documents_paginated = AsyncMock(side_effect=_paged)
+        graph.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        released: list[str] = []
+
+        async def _release(vrids) -> None:
+            released.extend(vrids)
+
+        async def _cleanup(vrid) -> str:
+            return await membership.rewrite_or_delete_virtual_record(
+                vdb, StaticCollectionLocator(["records"]), graph, vrid, MagicMock(),
+                release_mapping=_release,
+            )
+
+        pipeline = MagicMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=_cleanup)
+
+        async def sweep(org_id: str = "o1") -> int:
+            return await m._sweep_orphaned_virtual_record_mappings(
+                graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+                org_id=org_id,
+            )
+
+        return {"vdb": vdb, "deletes": deletes, "released": released, "sweep": sweep, "rows": rows}
+
+    @pytest.mark.asyncio
+    async def test_a_held_vrid_is_not_counted_and_not_redone_every_tick(self, world) -> None:
+        first = await world["sweep"]()
+        second = await world["sweep"]()
+
+        assert (first, second) == (0, 0), "a kept mapping is not a cleaned-up orphan"
+        assert world["deletes"] == ["records"], "the second tick repeated the delete"
+        assert world["released"] == []
+        assert "b-1" in world["vdb"].collections["records"]
+
+    @pytest.mark.asyncio
+    async def test_the_mapping_is_released_once_the_other_org_lets_go(self, world, monkeypatch) -> None:
+        import time
+
+        import app.indexing_main as m
+
+        class _Clock:
+            """The sweep's clock only; the event loop keeps the real one."""
+
+            now = 1000.0
+
+            def monotonic(self) -> float:
+                return self.now
+
+            def __getattr__(self, name: str):  # noqa: ANN204 - the rest of the time module
+                return getattr(time, name)
+
+        clock = _Clock()
+        monkeypatch.setattr(m, "time", clock)
+
+        assert await world["sweep"]() == 0
+        del world["vdb"].collections["records"]["b-1"]
+
+        clock.now = 1000.0 + 3600 - 0.001
+        assert await world["sweep"]() == 0, "inside the hour's back-off the row is not rechecked"
+        assert world["released"] == []
+
+        clock.now = 1000.0 + 3600
+        assert await world["sweep"]() == 1
+        assert world["released"] == ["vr-shared"]
+        assert m._orphan_kept_until == {}
+
+    @pytest.mark.asyncio
+    async def test_one_orgs_kept_row_does_not_hold_back_another_orgs_row(self, world) -> None:
+        """Two orgs each have their own mapping row for the same id, and a third org still holds points."""
+        from app.services.vector_db.models import VectorPoint
+
+        world["rows"].append({"_key": "vr-shared", "orgId": "o2"})
+        for org in ("o1", "o2"):
+            world["vdb"].collections["records"][f"{org}-1"] = VectorPoint(
+                id=f"{org}-1", dense_vector=[1.0],
+                payload={"metadata": {"orgId": org, "virtualRecordId": "vr-shared"}},
+            )
+
+        assert await world["sweep"]("o1") == 0
+        assert await world["sweep"]("o2") == 0
+
+        assert set(world["vdb"].collections["records"]) == {"b-1"}, "o2's points stayed behind o1's back-off"
+        assert world["deletes"] == ["records", "records"]
+        assert world["released"] == []
 
 
 # ===================================================================
@@ -4149,6 +4283,69 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
         claim = graph.update_node.await_args_list[0].args[2]
         assert set(claim) == {"lastRepublishedAt"}, "a rate-limit wait earns no stranded back-off"
         assert claim["lastRepublishedAt"] >= now
+
+    @pytest.mark.asyncio
+    async def test_a_record_handed_back_for_a_providers_wait_is_not_sent_before_it_ends(self) -> None:
+        """``deferredUntilMs``: the record carries a provider's wait; the sweep leaves it to the broker's delayed message."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(
+            now, deferredUntilMs=now + HOUR_MS, retryNotBefore=None, rateLimitedSince=None, queuedAtTimestamp=now - 3 * HOUR_MS
+        )
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_wait_set_while_the_sweep_was_looking_is_seen_under_the_lease(self) -> None:
+        """The scan's snapshot has no wait; by the time the sweep holds the record's lease the consumer has handed it back for
+        one. The record is read again before the claim is written or the event is sent."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=None, rateLimitedSince=None, queuedAtTimestamp=now - 3 * HOUR_MS)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        previous = graph.get_document.side_effect
+
+        async def get_document(key, collection, **kwargs) -> dict:
+            if collection == CollectionNames.RECORDS.value:
+                return {**row, "deferredUntilMs": now + HOUR_MS}
+            return previous(key, collection, **kwargs)
+
+        graph.get_document = AsyncMock(side_effect=get_document)
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reread_under_the_lease_is_not_taken_for_no_wait(self) -> None:
+        """A graph error reads as ``None`` unless the read is told to raise: the sweep must skip the record, not send another
+        event while the broker may still hold the delayed one."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=None, rateLimitedSince=None, queuedAtTimestamp=now - 3 * HOUR_MS)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        previous = graph.get_document.side_effect
+
+        async def get_document(key, collection, **kwargs) -> dict | None:
+            if collection == CollectionNames.RECORDS.value:
+                if kwargs.get("raise_on_error"):
+                    raise ConnectionError("graph unavailable")
+                return None  # what a provider answers for an unreadable record when not asked to raise
+            return previous(key, collection, **kwargs)
+
+        graph.get_document = AsyncMock(side_effect=get_document)
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_not_sent_before_its_time(self) -> None:

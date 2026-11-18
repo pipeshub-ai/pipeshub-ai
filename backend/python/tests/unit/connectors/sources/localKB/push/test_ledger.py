@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from app.connectors.sources.localKB.push import ledger as L
@@ -211,19 +209,42 @@ def test_checks_do_not_touch_the_lru(clock) -> None:
 
 
 def test_a_check_is_cheap_at_4096_callers() -> None:
-    ledger = L.PushLedger()
-    for i in range(4096):
-        ledger.strike(("o", f"u{i}"), "k", L.IMAGE)
-    samples = []
-    for i in range(2_000):
-        t = time.perf_counter()
-        ledger.check_all(("o", f"u{i % 4096}"))
-        ledger.check_images(("o", f"u{i % 4096}"))
-        samples.append(time.perf_counter() - t)
-    samples.sort()
-    p95 = samples[int(len(samples) * 0.95)]
-    print(f"ledger check p95 {p95 * 1e6:.1f} us")
-    assert p95 < 250e-6  # measured well under 50 us; the margin is for a shared host
+    """A check costs the same with 4,096 callers on record as with 16: counted (Python calls, builtin calls and
+    bytecode instructions), not timed. A 250 us p95 bound measured the shared runner as much as the check."""
+    import sys
+
+    def cost(callers: int) -> tuple[int, int, int]:
+        ledger = L.PushLedger()
+        for i in range(callers):
+            ledger.strike(("o", f"u{i}"), "k", L.IMAGE)
+        work = {"call": 0, "c_call": 0, "opcode": 0}
+
+        def count(frame: object, event: str, _arg: object) -> object:
+            if event in work:
+                work[event] += 1
+            if event == "call":
+                frame.f_trace_opcodes = True  # type: ignore[attr-defined]
+            return count
+
+        def check() -> None:
+            ledger.check_all(("o", "u7"))
+            ledger.check_images(("o", "u7"))
+
+        for _ in range(2):  # Python 3.12 counts a code object's instructions from the run after it was first traced
+            work.update(call=0, c_call=0, opcode=0)
+            previous_profile, previous_trace = sys.getprofile(), sys.gettrace()
+            sys.setprofile(count)
+            sys.settrace(count)
+            try:
+                check()
+            finally:
+                sys.settrace(previous_trace)
+                sys.setprofile(previous_profile)
+        return work["call"], work["c_call"], work["opcode"]
+
+    few, many = cost(16), cost(4096)
+    print(f"ledger check at 16 callers {few}, at 4096 callers {many}")
+    assert many == few  # nothing in a check walks the callers on record
 
 
 def test_many_small_charges_cannot_push_a_large_one_out_of_the_budget(

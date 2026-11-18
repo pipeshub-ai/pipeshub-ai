@@ -26,11 +26,14 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_enrichment_prompt,
 )
+from app.services.paid_cache.access import cached_model_call, remember_cache
+from app.services.paid_cache.keys import KIND_TABLE_ROWS, KIND_TABLE_SUMMARY
 
 # Imported as a module, not by name: ~30 tests patch
 # module-level `from ... import name` here would bind its own reference and silently
 # bypass those patches.
 from app.utils import indexing_helpers
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.concurrency import (
     MAX_CONCURRENT_ROW_BATCHES,
     MAX_CONCURRENT_TABLES,
@@ -95,6 +98,11 @@ async def _describe_batch(
         descriptions = list(descriptions) + _simple_texts(rows[len(descriptions) :], headers)
     return descriptions[: len(rows)]
 
+def _rendered(messages: Sequence[Any]) -> str:
+    """The prompt as sent: the template filled with this table's rows."""
+    return "\n".join(str(getattr(m, "content", m)) for m in messages)
+
+
 def _header_context(known_headers: Optional[List[str]]) -> str:
     if known_headers is None:
         return ""
@@ -116,10 +124,13 @@ async def indexing_llm_or_none(config_service: Any, logger: Logger) -> Optional[
     A model that is set up but cannot be built still raises, so the record retries.
     """
     try:
-        llm, _ = await get_llm_for_role(config_service, "indexing", reasoning_effort="low")
+        llm, _ = await get_llm_for_role(
+            config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
     except LLMNotConfiguredError:
         logger.info("No AI model is set up: tables are indexed with plain row text")
         return None
+    remember_cache(config_service, logger)
     return llm
 
 
@@ -196,8 +207,18 @@ async def enrich_table_grid(
 
     parsed: Optional[TableEnrichment] = None
     try:
-        parsed = await invoke_with_count_validation_and_reflection(
-            llm, messages, TableEnrichment, "descriptions", len(first_batch)
+        parsed = await cached_model_call(
+            KIND_TABLE_SUMMARY,
+            llm=llm,
+            template=table_enrichment_prompt,
+            rendered=_rendered(messages),
+            params={"flow": "count_validated", "count": len(first_batch)},
+            call=lambda: invoke_with_count_validation_and_reflection(
+                llm, messages, TableEnrichment, "descriptions", len(first_batch)
+            ),
+            encode=lambda enrichment: enrichment.model_dump(),
+            decode=TableEnrichment.model_validate,
+            cacheable=lambda enrichment: len(enrichment.descriptions) == len(first_batch),
         )
     except Exception as e:
         logger.warning(f"Table enrichment call failed: {e}")
@@ -603,8 +624,18 @@ async def get_rows_text(
             descriptions = [str(row) for row in rows_data]
 
             # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, RowDescriptions
+            parsed_response = await cached_model_call(
+                KIND_TABLE_ROWS,
+                llm=llm,
+                template=row_text_prompt,
+                rendered=_rendered(messages),
+                params={"flow": "structured"},
+                call=lambda: invoke_with_structured_output_and_reflection(
+                    llm, messages, RowDescriptions
+                ),
+                encode=lambda parsed: parsed.model_dump(),
+                decode=RowDescriptions.model_validate,
+                cacheable=lambda parsed: len(parsed.descriptions) == len(rows_data),
             )
 
             if parsed_response is not None and parsed_response.descriptions:
