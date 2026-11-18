@@ -10,6 +10,8 @@ Gaps are reported, not failed, until the corpus is complete (see test_matrix_cov
 from __future__ import annotations
 
 import ast
+import io
+import tokenize
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -256,29 +258,32 @@ def _scope(node: ast.AST) -> Iterator[tuple[str, ast.AST]]:
 
 def cited_line(path: Path, where: str, snippet: str) -> int | None:
     """The line holding `snippet` in the code of the def, class or assignment the dotted name `where` names in `path`, or
-    None when the name is gone or no longer holds it. A class's decorators count; comment lines and the defs and classes
-    nested inside do not (they are another function, cited by their own dotted name)."""
+    None when the name is gone, bound twice in its scope (a later binding replaces the cited one) or no longer holds it.
+    A class's decorators count; comments, bare strings (docstrings) and the defs and classes nested inside do not (a
+    nested function is cited by its own dotted name)."""
     text = path.read_text(encoding="utf-8")
-    lines, nodes = text.split("\n"), [ast.parse(text)]  # not splitlines(): ast counts only newlines, not \f or U+2028
+    lines = text.split("\n")  # not splitlines(): ast counts only newlines, not \f or U+2028
+    for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+        if tok.type == tokenize.COMMENT:  # blanked in place, so lines and columns still match the ast
+            (row, col), (_, end) = tok.start, tok.end
+            lines[row - 1] = lines[row - 1][:col] + " " * (end - col) + lines[row - 1][end:]
+    nodes = [ast.parse(text)]
     for part in where.split("."):
         nodes = [n for parent in nodes for name, n in _scope(parent) if name == part]
+        if len(nodes) != 1:
+            return None
 
     def span(n: ast.AST) -> range:
         return range(min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])]), n.end_lineno + 1)
 
-    for n in nodes:
-        if isinstance(n, (ast.Assign, ast.AnnAssign)):
-            segment = ast.get_source_segment(text, n) or ""  # by column: `A = None; B = "key"` is two statements
-            if snippet in segment:
-                return n.lineno + segment[:segment.index(snippet)].count("\n")
-            continue
-        nested = {i for c in ast.walk(n) if c is not n and isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                  for i in span(c)}
-        hit = next((i for i in span(n) if i not in nested and snippet in lines[i - 1]
-                    and not lines[i - 1].lstrip().startswith("#")), None)
-        if hit:
-            return hit
-    return None
+    n = nodes[0]
+    if isinstance(n, (ast.Assign, ast.AnnAssign)):
+        segment = ast.get_source_segment("\n".join(lines), n) or ""  # by column: `A = None; B = "key"` is two statements
+        return n.lineno + segment[:segment.index(snippet)].count("\n") if snippet in segment else None
+    skip = {i for c in ast.walk(n) if c is not n and (isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            or isinstance(c, ast.Expr) and isinstance(c.value, ast.Constant) and isinstance(c.value.value, str))
+            for i in span(c)}
+    return next((i for i in span(n) if i not in skip and snippet in lines[i - 1]), None)
 
 
 def evidence_problems(sources: Path, connectors: Iterable[Connector] | None = None) -> list[str]:
