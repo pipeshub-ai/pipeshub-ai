@@ -25,6 +25,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -2459,20 +2460,27 @@ class TestProcessMessageWrapperWithGovernor:
 # ===================================================================
 
 
+_NOW = 1_000_000.0
+
+
+def _freeze_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp not-before from a frozen clock: read twice on the wall clock, a stalled runner pushed it past the window."""
+    monkeypatch.setattr("app.services.messaging.redis_streams.indexing_consumer.time", SimpleNamespace(time=lambda: _NOW))
+
+
 class TestRetryDelayBeforeSemaphore:
     @pytest.mark.asyncio
-    async def test_requeue_message_stamps_not_before(self, consumer):
+    async def test_requeue_message_stamps_not_before(self, consumer, monkeypatch):
         consumer.producer = AsyncMock()
         message = StreamMessage(eventType="newRecord", payload={"recordId": "r1"})
-        before = time.time()
+        _freeze_clock(monkeypatch)
 
         await consumer._requeue_message("stream-a", message, "stable-id", retry_count=2)
 
         consumer.producer.send_event.assert_awaited_once()
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
         assert sent_payload["_retry_tracking_id"] == "stable-id"
-        # retry_count=2 -> ~60s backoff
-        assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
+        assert sent_payload["_retry_not_before"] == _NOW + 60.0  # retry_count=2: a 60 s backoff
 
     @pytest.mark.asyncio
     async def test_requeue_message_keeps_request_id_and_org(self, consumer) -> None:
@@ -2490,9 +2498,9 @@ class TestRetryDelayBeforeSemaphore:
         assert seen == [RequestContext(root_id="root-1", org_id="org-1")]
 
     @pytest.mark.asyncio
-    async def test_requeue_message_holds_for_a_given_delay(self, consumer) -> None:
+    async def test_requeue_message_holds_for_a_given_delay(self, consumer, monkeypatch) -> None:
         consumer.producer = AsyncMock()
-        before = time.time()
+        _freeze_clock(monkeypatch)
 
         await consumer._requeue_message(
             "stream-a", StreamMessage(eventType="stageJob", payload={"jobId": "j1"}), "stable-id",
@@ -2500,7 +2508,7 @@ class TestRetryDelayBeforeSemaphore:
         )
 
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
-        assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
+        assert sent_payload["_retry_not_before"] == _NOW + 90.0
 
     @pytest.mark.asyncio
     async def test_requeue_is_signed_afresh_under_the_message_org(self, consumer, monkeypatch) -> None:

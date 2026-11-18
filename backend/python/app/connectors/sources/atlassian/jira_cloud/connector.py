@@ -92,6 +92,7 @@ from app.connectors.sources.atlassian.core.html_utils import (
     inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    BROWSE_ISSUE_HOLDER_TYPES,
     HOLDER_USER,
     HOLDER_USER_FIELD,
     ROLE_LIST_MAX_AGE_MS,
@@ -100,6 +101,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     SchemeKnowledge,
     apply_issue_access,
     apply_issue_access_settled,
+    browse_issue_holders,
     classify_scheme_response,
     closed_level_groups,
     collect_paged_values,
@@ -238,10 +240,6 @@ HOLDER_TYPE_PROJECT_ROLE: str = "projectRole"
 HOLDER_TYPE_PROJECT_LEAD: str = "projectLead"
 # JSM portal customers — external users PipesHub does not sync.
 HOLDER_TYPE_SD_PORTAL_CUSTOMER: str = "sd.customer.portal.only"
-# Members come from a per-issue custom field value, so there is no static ACL to resolve.
-HOLDER_TYPES_CUSTOM_FIELD: tuple[str, ...] = ("groupCustomField", "userCustomField")
-# Browse holders that name people on each issue, so the grant goes on the issue, not the project.
-BROWSE_ISSUE_HOLDER_TYPES: tuple[str, ...] = ("reporter", "assignee", *HOLDER_TYPES_CUSTOM_FIELD)
 
 # App-only project role: its members are Atlassian apps, not people, so it grants nobody.
 ATLASSIAN_ADDONS_PROJECT_ROLE: str = "atlassian-addons-project-access"
@@ -3049,7 +3047,7 @@ class JiraConnector(BaseConnector):
 
             grants_data = grants_response.json()
             permission_grants = grants_data.get("permissions", [])
-            self._browse_issue_holders[project_key] = self._browse_issue_holders_of(permission_grants)
+            self._browse_issue_holders[project_key] = browse_issue_holders(permission_grants)
 
             # Step 3: Resolve each BROWSE_PROJECTS grant to holders. Isolate per-grant so a
             # single malformed grant can't collapse the whole project's ACL to empty.
@@ -3075,18 +3073,6 @@ class JiraConnector(BaseConnector):
             # keeps the project's stored access.
             self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return None
-
-    @staticmethod
-    def _browse_issue_holders_of(permission_grants: list[Any]) -> list[dict[str, Any]]:
-        """The per-issue Browse holders of a scheme's grants; a malformed grant or holder is skipped."""
-        found: list[dict[str, Any]] = []
-        for grant in permission_grants if isinstance(permission_grants, list) else []:
-            if not isinstance(grant, dict) or grant.get("permission") != BROWSE_PROJECTS_PERMISSION:
-                continue
-            holder = grant.get("holder")
-            if isinstance(holder, dict) and holder.get("type") in BROWSE_ISSUE_HOLDER_TYPES:
-                found.append(holder)
-        return found
 
     async def _attach_browse_holders(
         self, security: IssueSecurityContext, project_key: str, *, fresh: bool = False,
@@ -3131,7 +3117,7 @@ class JiraConnector(BaseConnector):
             )
             if grants.status != HttpStatusCode.OK.value:
                 return None
-            return self._browse_issue_holders_of(grants.json().get("permissions", []))
+            return browse_issue_holders(grants.json().get("permissions", []))
         except Exception as e:
             self.logger.warning("Could not read the permission scheme of %s: %s", project_key, e)
             return None
