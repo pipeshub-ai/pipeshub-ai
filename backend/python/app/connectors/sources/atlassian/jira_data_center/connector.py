@@ -3605,12 +3605,20 @@ class JiraDataCenterConnector(BaseConnector):
             levels_to_save = pre_walk_marker(levels_to_save)  # the marker saved during the walk stays
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(project_key, levels_to_save, force=security.defer_checkpoint)
-        if self._retry_given_up:
-            # Once per generation: one that fails again is held, and given up again, as before.
-            await self._update_project_sync_checkpoint(project_key, given_up_retried=self._people_generation)
-            self._retry_given_up = False
-        if not self._issue_build_failures and people_read != self._people_generation:
-            self._people_read_due.append(project_key)
+        # The generation is covered by a walk over every leveled issue (or a project with none): a sync whose level
+        # read was deferred walked nothing, so it leaves the generation, and the retry of given-up issues, owed.
+        walked = is_new_project or reread in ("leveled", "project") or not stored_levels
+        if owed and walked:
+            # With the retry marker, the attempts and give-ups the walk changed: an issue it revived that failed
+            # again is held, read by the next walk, and given up again after the usual attempts.
+            await self._update_project_sync_checkpoint(
+                project_key, failed_issue_attempts=self._held_issue_attempts(),
+                given_up_issues=self._given_up_issues_to_keep(None),
+                given_up_retried=self._people_generation if self._retry_given_up else None,
+            )
+            if not self._issue_build_failures:
+                self._people_read_due.append(project_key)
+        self._retry_given_up = False
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")

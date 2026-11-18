@@ -1142,6 +1142,54 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert ("USER", "frank-key") in readers(db, "2")
 
+    @staticmethod
+    async def _given_up_eng2_then_frank_listed(jira, db, store, jql_search) -> tuple[JiraDataCenterConnector, dict]:
+        """ENG-2 stored, then given up on and unchanged since; frank is listed with a hidden email but not linked yet."""
+        stub_site(jira, jql_search)
+        jira.on("GET", f"{API}/user/list", json_response({"values": [
+            user("alice-key", "alice", "alice@example.com"), user("frank-key", "frank", None)], "isLast": True}))
+        serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]})
+        leveled = sec_issue("2", "ENG-2", level=SECRET)
+        jql_search.put(leveled)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[leveled])
+        store.values_for("project_ENG")["given_up_issues"] = json.dumps({"2": leveled["fields"]["updated"]})
+        db.cached_app_users.append(AppUser(app_name="JIRA DATA CENTER", connector_id="jira-dc-1", source_user_id="frank-key",
+                                           org_id="org-1", email="", full_name="Frank", is_active=True))
+        return connector, leveled
+
+    async def test_a_sync_that_cannot_walk_the_levels_leaves_the_given_up_retry_and_the_generation_owed(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """frank is admitted while the level holders cannot be read, so no walk runs: neither the retry of ENG-2 nor
+        the generation is spent. The next sync walks, tries ENG-2 again, and frank reads it."""
+        connector, _ = await self._given_up_eng2_then_frank_listed(jira, db, store, jql_search)
+        serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]},
+                     members=json_response({"errorMessages": ["busy"]}, status=503))
+        await sync(connector, jql_search, recent=[])
+        serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]})
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "frank-key") in readers(db, "2")
+
+    async def test_a_given_up_issue_that_fails_its_retry_once_is_tried_again_next_sync(self, jira, db, store, jql_search) -> None:
+        """The retry of ENG-2 fails once (its parent's read, say). Its held attempt and the end of its give-up are saved
+        with the retry, so the next walk tries it again rather than skipping it, and frank reads it."""
+        connector, _ = await self._given_up_eng2_then_frank_listed(jira, db, store, jql_search)
+        real = connector._extract_issue_data_with_parent
+        failures = []
+
+        async def fail_once(issue, users):
+            if issue.get("id") == "2" and not failures:
+                failures.append(1)
+                raise RuntimeError("parent read failed")
+            return await real(issue, users)
+
+        connector._extract_issue_data_with_parent = fail_once
+        await sync(connector, jql_search, recent=[])
+        assert failures and ("USER", "frank-key") not in readers(db, "2")
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "frank-key") in readers(db, "2")
+
     async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
         self, jira, db, store, jql_search,
     ) -> None:

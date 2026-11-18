@@ -1977,13 +1977,15 @@ class TestIssueGrantsNameListedAccountsOnly:
         assert naming == ['reporter in ("acc-0", "acc-1") OR assignee in ("acc-0", "acc-1") OR level in (10102)']
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("queued", [[], ["acc-1"]], ids=["queue_empty", "accounts_queued"])
     @pytest.mark.parametrize("failed", [False, True], ids=["read", "an_issue_failed"])
-    async def test_a_project_that_missed_an_emptied_queue_reads_every_stored_issue_again(self, failed: bool) -> None:
+    async def test_a_project_that_missed_an_emptied_queue_reads_every_stored_issue_again(self, failed: bool, queued: list) -> None:
         """It covered generation 1; the queue was emptied at 2 while it was missing from the project list, so the
         accounts it missed are no longer named: every stored issue is read again. It is due its generation only
         after a pass in which no issue failed (and the sweep, which saves it)."""
         c = _connector()
         self._pass(c)
+        c._newly_listed_account_ids = queued  # queued since base: they do not name what it missed before
         c._people_generation, c._people_base = 3, 2
 
         async def reread(*_a: object, **_kw: object) -> None:
@@ -2019,6 +2021,25 @@ class TestIssueGrantsNameListedAccountsOnly:
         c._reread_issues_naming = AsyncMock()
         assert not await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), {"people_read": 3}, covered=False)
         c._reread_issues_naming.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_queue_and_its_base_stay_while_a_listed_project_still_owes_its_pass(self) -> None:
+        """An issue failed in PROJ's targeted pass, so PROJ keeps the accounts and its generation. Emptying the queue
+        (moving base past PROJ) would turn its next pass into a read of every stored issue."""
+        c = _connector()
+        self._pass(c)
+        c._newly_listed_account_ids = ["acc-1"]
+        c._people_generation, c._people_base = 3, 2
+
+        async def failing(*_a: object, **_kw: object) -> None:
+            c._issue_build_failures += 1
+
+        c._reread_issues_naming = AsyncMock(side_effect=failing)
+        await c._reread_for_newly_listed("PROJ", PROJECT_ID, [], {}, self._ctx(), {"people_read": 2}, covered=False)
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        await c._people_to_reread_handed_on({"failed_project_keys": []}, swept=True)
+        c.issues_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("swept", [True, False])

@@ -587,6 +587,8 @@ class JiraConnector(BaseConnector):
         self._people_generation = 0
         self._people_base = 0
         self._people_read_due: list[str] = []
+        # A project that owed the pass and did not finish it this sync: the queue and its base stay for it.
+        self._people_unfinished = False
         self._listed_account_ids: set[str] = set()
         # Every account the user list showed, active or not.
         self._seen_account_ids: set[str] = set()
@@ -4343,6 +4345,7 @@ class JiraConnector(BaseConnector):
         full_sync_project_ids: set[str] = set()
         leveled_reread_project_ids: set[str] = set()
         self._people_read_due = []
+        self._people_unfinished = False
         self._unreadable_security = {}
         self._never_tightened_security = set()
         self._skipped_holders_logged = set()
@@ -4861,7 +4864,7 @@ class JiraConnector(BaseConnector):
             return
         for key in self._people_read_due:
             await self._update_project_sync_checkpoint(key, people_read=self._people_generation)
-        if (self._newly_listed_account_ids and not sync_stats.get("failed_project_keys")
+        if (self._newly_listed_account_ids and not sync_stats.get("failed_project_keys") and not self._people_unfinished
                 and not self._skipped_project_keys and not self._unresolved_selected_keys):
             await self.issues_sync_point.update_sync_point(
                 PEOPLE_REREAD_KEY, {"accounts": "[]", "generation": self._people_generation, "base": self._people_generation})
@@ -4890,10 +4893,12 @@ class JiraConnector(BaseConnector):
                 await self._update_project_sync_checkpoint(project_key, people_reread="[]")
             if not self._issue_build_failures and people_read != self._people_generation:
                 self._people_read_due.append(project_key)
+            self._people_unfinished |= bool(self._issue_build_failures) and people_read < self._people_generation
             return False
         if pending:
             await self._update_project_sync_checkpoint(project_key, people_reread=json.dumps(sorted(pending)))
         if security.browse_holders is None:
+            self._people_unfinished = True
             return False  # holders unknown: an issue read now keeps its stored grants; the next sync that reads them re-reads
         failures_before = self._issue_build_failures
         if people_read < self._people_base or not pending:
@@ -4903,6 +4908,8 @@ class JiraConnector(BaseConnector):
         if self._issue_build_failures == failures_before:
             await self._update_project_sync_checkpoint(project_key, people_reread="[]")
             self._people_read_due.append(project_key)
+        else:
+            self._people_unfinished = True
         return True
 
     async def _reread_issues_naming(
