@@ -38,6 +38,7 @@ from app.connectors.sources.google.drive.utils.drive_run_report import (
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     drive_error_reasons,
+    is_permission_denied_403,
     is_retryable_403,
     is_unrecognised_403,
 )
@@ -505,6 +506,12 @@ class TestReasons:
     def test_quota_reasons_are_read_from_errors_even_when_details_are_present(self) -> None:
         error = _http_error(403, "rateLimitExceeded", details=True)
         assert {"rateLimitExceeded", "RATELIMITEXCEEDED"} <= drive_error_reasons(error)
+        assert is_retryable_403(error) and not is_unrecognised_403(error)
+
+
+    def test_a_domain_policy_refusal_is_app_wide_retried_and_never_skips_an_item(self) -> None:
+        error = _http_error(403, "domainPolicy")
+        assert not is_permission_denied_403(error), "it refuses the app everywhere, not this item"
         assert is_retryable_403(error) and not is_unrecognised_403(error)
 
 

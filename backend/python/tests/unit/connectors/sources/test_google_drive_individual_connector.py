@@ -9,7 +9,9 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,6 +37,11 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
+if TYPE_CHECKING:
+    from app.connectors.sources.google.drive.individual.connector import (
+        GoogleDriveIndividualConnector,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2930,30 +2937,136 @@ class TestSweepPlaceholderRecords:
 
     @pytest.mark.asyncio
     async def test_inaccessible_ancestor_stays_a_stub_and_walk_continues(self, connector):
-        """A 403 (shared item's unreadable parent) re-submits the stub so its structural
-        edges are restored, and the walk still climbs to the next ancestor."""
+        """A 403 (shared item's unreadable parent) keeps the stored stub as it is, noted kept so a full sync's
+        unlink leaves its edges, and the walk still climbs to the next ancestor, which is kept the same way. The
+        stub read back by external id is a plain Record, as every graph store returns it: never written, since no
+        store writes a plain Record as a file."""
         connector._get_fresh_datasource = AsyncMock()
-        connector.data_entities_processor.get_placeholder_records = AsyncMock(
-            return_value=[_make_folder_stub("B", parent="A")]
-        )
+        # As the store returns stubs: plain records that keep the parent id, not its type.
+        stub_b = _make_folder_stub("B", parent="A")
+        stub_b = Record.model_validate(stub_b.model_dump(include=set(Record.model_fields)) | {"parent_record_type": None})
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub_b])
         resp = MagicMock()
         resp.status = 403
         resp.reason = "Forbidden"
         connector.drive_data_source.files_get = AsyncMock(
             side_effect=HttpError(resp, b"forbidden")
         )
+        stub_a = _make_folder_stub("A", parent=None)
+        plain_a = Record.model_validate(stub_a.model_dump(include=set(Record.model_fields)))
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id, ext_id: _make_folder_stub("A", parent=None)
-            if ext_id == "A"
-            else None
+            side_effect=lambda connector_id, ext_id: plain_a if ext_id == "A" else None
         )
+        kept: list[str] = []
+        connector.data_entities_processor.note_kept_records = MagicMock(
+            side_effect=lambda connector_id, ids: kept.extend(ids)
+        )
+        stub_b_id = connector.data_entities_processor.get_placeholder_records.return_value[0].id
 
         await connector._sweep_placeholder_records("u1", "u@t.com", "drive-1")
 
         assert _fetched_ids(connector) == ["A", "B"]
-        submitted = _submitted_records(connector)
-        assert sorted(submitted) == ["A", "B"]
-        assert all(r.is_placeholder is True for r in submitted.values())
+        assert _submitted_records(connector) == {}
+        assert kept == [stub_b_id, plain_a.id]
+
+    @staticmethod
+    def _as_stored(stub: FileRecord, **changes: object) -> Record:
+        """A stub as the store returns it: a plain record that keeps the parent id, not its type."""
+        return Record.model_validate(
+            stub.model_dump(include=set(Record.model_fields)) | {"parent_record_type": None, **changes}
+        )
+
+    def _wire_a(self, connector: "GoogleDriveIndividualConnector") -> tuple[Record, list]:
+        plain_a = self._as_stored(_make_folder_stub("A", parent=None))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: plain_a if ext_id == "A" else None
+        )
+        kept: list = []
+        connector.data_entities_processor.note_kept_records = MagicMock(
+            side_effect=lambda connector_id, ids: kept.extend(ids)
+        )
+        return plain_a, kept
+
+    @pytest.mark.asyncio
+    async def test_a_real_ancestor_whose_fetch_fails_is_kept_and_its_parent_walked(
+        self, connector: "GoogleDriveIndividualConnector"
+    ) -> None:
+        """A folder-filtered full sync walks real ancestors too. One that cannot be fetched is kept, and its parent A
+        is still reached and kept, so the unlink leaves A's edges."""
+        connector._get_fresh_datasource = AsyncMock()
+        connector._folder_seed_ids = {"seed"}
+        connector._sync_ledger.incremental = False
+        real_b = self._as_stored(_make_folder_stub("B", parent="A"), is_placeholder=False)
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[])
+        connector._out_of_scope_seed_parents = AsyncMock(return_value=[real_b])
+        resp = MagicMock()
+        resp.status = 404
+        resp.reason = "Not Found"
+        connector.drive_data_source.files_get = AsyncMock(side_effect=HttpError(resp, b"not found"))
+        plain_a, kept = self._wire_a(connector)
+
+        await connector._sweep_placeholder_records("u1", "u@t.com", "drive-1")
+
+        assert _fetched_ids(connector) == ["A", "B"]
+        assert kept == [real_b.id, plain_a.id]
+        assert _submitted_records(connector) == {}
+
+    @pytest.mark.asyncio
+    async def test_an_ancestor_whose_permissions_cannot_be_read_is_kept_and_its_parent_walked(
+        self, connector: "GoogleDriveIndividualConnector"
+    ) -> None:
+        """B is fetched but processing it fails (its permission read failed), so nothing is written for it. It is
+        kept, and the walk still reaches A through B's stored parent id."""
+        connector._get_fresh_datasource = AsyncMock()
+        stub_b = self._as_stored(_make_folder_stub("B", parent="A"))
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub_b])
+        resp = MagicMock()
+        resp.status = 404
+        resp.reason = "Not Found"
+
+        async def files_get(**kwargs: object) -> dict:
+            if kwargs["fileId"] == "A":
+                raise HttpError(resp, b"not found")
+            return _make_folder_metadata("B", parents=["A"])
+
+        connector.drive_data_source.files_get = AsyncMock(side_effect=files_get)
+
+        async def nothing_written(*args: object, **kwargs: object) -> AsyncIterator[tuple]:
+            return
+            yield
+
+        connector._process_drive_items_generator = nothing_written
+        plain_a, kept = self._wire_a(connector)
+
+        await connector._sweep_placeholder_records("u1", "u@t.com", "drive-1")
+
+        assert _fetched_ids(connector) == ["A", "B"]
+        assert kept == [stub_b.id, plain_a.id]
+        assert _submitted_records(connector) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_walk_the_safety_bound_stops_leaves_the_run_incomplete(
+        self, connector: "GoogleDriveIndividualConnector", monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ancestors above where the bound stopped the walk were never reached, so nothing the run did not see
+        may be taken for gone: the run is incomplete, which holds the cleanup and the unlink."""
+        import app.connectors.sources.google.drive.individual.connector as personal
+
+        monkeypatch.setattr(personal, "PLACEHOLDER_SWEEP_SAFETY_MAX", 0)
+        connector._get_fresh_datasource = AsyncMock()
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_make_folder_stub("C", parent="B")]
+        )
+        connector.drive_data_source.files_get = AsyncMock(
+            side_effect=lambda **kwargs: _make_folder_metadata(kwargs["fileId"], parents=["B" if kwargs["fileId"] == "C" else "A"])
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: _make_folder_stub(ext_id, parent="A" if ext_id == "B" else None)
+        )
+
+        await connector._sweep_placeholder_records("u1", "u@t.com", "drive-1")
+
+        assert connector._sync_ledger.incomplete
 
     @pytest.mark.asyncio
     async def test_cyclic_source_terminates(self, connector):
