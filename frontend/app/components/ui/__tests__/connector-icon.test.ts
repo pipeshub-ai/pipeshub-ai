@@ -23,6 +23,13 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('fathom')).toBe('fathom');
   });
 
+  it('matches Intercom, Granola, Fireflies and Fathom as whole words only', () => {
+    expect(resolveConnectorType('Fathom MCP')).toBe('fathom');
+    expect(resolveConnectorType('my-fireflies-server')).toBe('fireflies');
+    expect(resolveConnectorType('Unfathomable Drive')).toBe('google-drive');
+    expect(resolveConnectorType('Intercomm')).toBe('generic');
+  });
+
   it('maps the bare Google toolset slugs to their logos', () => {
     expect(resolveConnectorType('docs')).toBe('google-docs');
     expect(resolveConnectorType('sheets')).toBe('google-sheets');

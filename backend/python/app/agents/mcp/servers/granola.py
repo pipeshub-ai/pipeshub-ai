@@ -7,7 +7,10 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
     MCPServerTemplate(
         type_id="granola",
         display_name="Granola",
-        description="Search and read your meeting notes, transcripts and summaries in Granola.",
+        description=(
+            "Search and read your meeting notes and summaries in Granola. "
+            "Transcripts need a paid plan."
+        ),
         icon="/icons/connectors/granola.svg",
         transport=MCPTransport.STREAMABLE_HTTP,
         default_auth_mode=MCPAuthMode.OAUTH,

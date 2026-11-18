@@ -12,7 +12,10 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
     MCPServerTemplate(
         type_id="intercom",
         display_name="Intercom",
-        description="Search and manage conversations, contacts, companies and tickets in Intercom.",
+        description=(
+            "Search and manage conversations, contacts, companies and tickets in Intercom. "
+            "US-hosted workspaces only."
+        ),
         icon="/icons/connectors/intercom.svg",
         transport=MCPTransport.STREAMABLE_HTTP,
         default_auth_mode=MCPAuthMode.OAUTH,
