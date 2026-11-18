@@ -22,6 +22,7 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.kafka.handlers import record as record_module
 from app.utils import user_errors
 from app.utils.api_call import ApiCallError, _source_reason
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.services.messaging.test_record_handler import (
     _collect_events,
     _make_handler,
@@ -119,6 +120,7 @@ class TestHandlerLogging:
                   "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "text/html"}
         gp.get_document = AsyncMock(return_value=record)
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
         handler._trigger_next_queued_duplicate = AsyncMock()
         payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",

@@ -431,7 +431,7 @@ async def _search_answer(hits: list, *, named: bool = False, **body) -> tuple[di
 
 
 async def test_the_search_answer_is_exactly_what_the_published_schema_documents() -> None:
-    from app.modules.retrieval.entity_permissions import EntityHit
+    from app.modules.retrieval.entity_permissions import EntityHit, EntitySearchHits
 
     row = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}
     found, _ = await _search_answer([
@@ -440,12 +440,15 @@ async def test_the_search_answer_is_exactly_what_the_published_schema_documents(
         EntityHit(RID, "record", "Acme plan", 0.7, [row], False, indexing_status="QUEUED", indexed=False),
     ])
     empty, _ = await _search_answer([])
-    for payload in (found, empty):
+    cut_short, _ = await _search_answer(EntitySearchHits([EntityHit("o1", "organization", "Acme", 0.8, [row], False)],
+                                                         incomplete=True))
+    for payload in (found, empty, cut_short):
         _validate("EntitySearchResponse", payload)
     schema = openapi_spec()["components"]["schemas"]["EntitySearchResponse"]
     item = schema["properties"]["results"]["items"]["properties"]
     # every field the route writes is documented, and every documented field is one the route writes
-    assert set(found) | set(empty) == set(schema["properties"])
+    assert set(found) | set(empty) | set(cut_short) == set(schema["properties"])
+    assert cut_short["incomplete"] is True and "incomplete" not in found
     assert {k for r in found["results"] for k in r} == set(item)
     # the route never limits the search to part of the caller's sources, so it never says it did
     assert "scopeNote" not in empty
@@ -742,13 +745,12 @@ async def test_grep_never_returns_a_line_from_a_record_the_caller_cannot_read() 
     "a{101}", "a{1,101}", "a{101,}", "(?:ab){999}", "x{0,100000}",
 ])
 def test_grep_refuses_costly_repeats_before_compiling_and_fast(pattern) -> None:
-    import time
-
-    started = time.monotonic()
-    with pytest.raises(HTTPException) as err:
+    # Refused before the compiler sees it, which is what keeps it fast: proved by the compiler never being called, not by
+    # a 0.5 s wall-clock bound a busy runner can stretch.
+    with patch.object(ks.regex, "compile", side_effect=AssertionError("the pattern reached the compiler")), \
+            pytest.raises(HTTPException) as err:
         ks._grep_command(ks.GrepQuery(pattern=pattern, regex=True))
     assert err.value.status_code == 400
-    assert time.monotonic() - started < 0.5
 
 
 @pytest.mark.parametrize("pattern", [
@@ -800,10 +802,8 @@ async def test_a_record_whose_stored_size_is_over_the_limit_is_not_loaded_at_all
 
 
 def test_the_scan_is_linear_in_the_length_of_the_pattern() -> None:
-    import time
-
-    started = time.monotonic()
-    with pytest.raises(HTTPException) as err:  # 500 opening parentheses: refused by the scan, never reaching the compiler
+    # 500 opening parentheses: refused by the scan, never reaching the compiler
+    with patch.object(ks.regex, "compile", side_effect=AssertionError("the pattern reached the compiler")), \
+            pytest.raises(HTTPException) as err:
         ks._grep_command(ks.GrepQuery(pattern="(" * 500, regex=True))
     assert err.value.status_code == 400 and "deeper" in err.value.detail
-    assert time.monotonic() - started < 0.5

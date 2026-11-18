@@ -1243,3 +1243,43 @@ def test_a_final_error_raised_from_a_connection_error_is_terminal() -> None:
             raise Final("stop") from cause
     except Final as exc:
         assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+
+
+class TestARecordsSchemaRefusalIsTransient:
+    """A records write refused by a schema narrower than ours aborts its transaction, nothing is kept, and the next delivery
+    finds the schema wide: the consumer must retry it, not mark the record FAILED on its first delivery. The store's own answer
+    is a 400, which alone reads as terminal."""
+
+    @staticmethod
+    def _refusal(shape: str) -> Exception:
+        from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        body = '{"error":true,"errorNum":1620,"errorMessage":"Document does not match the record schema."}'
+        causes = {
+            "aql": ArangoQueryError("Query failed", 400, body),
+            "document patch": Exception(f"Failed to update document (status=400): {body}"),
+            "batch insert": Exception("Batch insert failed with 1 error(s): Item 0: [1620] Document does not match the record schema."),
+        }
+        try:
+            raise RecordSchemaNarrowError("the records schema refused a write in transaction 1; it was aborted") from causes[shape]
+        except RecordSchemaNarrowError as error:
+            return error
+
+    @pytest.mark.parametrize("shape", ["aql", "document patch", "batch insert"])
+    def test_it_is_transient_whatever_the_store_answered(self, shape: str) -> None:
+        assert MessageErrorClassifier.classify_by_exception(self._refusal(shape)) == MessageErrorType.TRANSIENT
+
+    def test_it_is_transient_when_wrapped_by_a_stage(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        outer = IndexingError("write failed")
+        outer.__cause__ = self._refusal("aql")
+        assert MessageErrorClassifier.classify_by_exception(outer) == MessageErrorType.TRANSIENT
+
+    def test_the_stores_bare_400_is_still_terminal(self) -> None:
+        """The control: without the exception type in the chain, a 400 stays terminal (a data refusal is permanent)."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        bare = ArangoQueryError("Query failed", 400, '{"errorNum":1620}')
+        assert MessageErrorClassifier.classify_by_exception(bare) == MessageErrorType.TERMINAL

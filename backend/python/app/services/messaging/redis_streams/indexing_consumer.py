@@ -300,6 +300,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self.gate_waiters = concurrency.GateWaiters()
+        # Read-only counts of records waiting at each admission stage (see consumer_concurrency).
+        from app import edition_services
+
+        self.admission_backlog = edition_services.admission_backlog()
+        self._suspects_waiting = 0
         self._backpressure_active = False
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
@@ -975,6 +980,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Dispatch admission state for the health endpoint."""
         return self._dispatch_budget().as_dict()
 
+    def read_paused_for_admission(self) -> bool:
+        """Whether reads are paused because no record could be admitted (not a downstream pause)."""
+        return self._backpressure_active
+
+    def admission_explain(self) -> dict[str, Any]:
+        """Why this consumer is or is not admitting records (see consumer_concurrency)."""
+        return concurrency.admission_explain(self)
+
     def _slot_pool_of(self, key: FairnessKey) -> str:
         return concurrency.slot_pool_of_key(
             self, key, tier_level=self.fair_scheduler_config.tier_level
@@ -986,10 +999,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Each waiting connector's cap on records in flight, for one
         dispatch decision. None when fair scheduling is off.
 
-        Only connectors whose next record could be dispatched now count as
-        waiting (``can_dispatch`` is the dispatch phase's own check). One
-        whose head is waiting out a retry backoff cannot take a slot, so it
-        must not shrink anyone else's share."""
+        A connector counts as waiting in two cases. Its next buffered record
+        could be dispatched now (``can_dispatch`` is the dispatch phase's own
+        check): one whose head is waiting out a retry backoff cannot take a
+        slot, so it must not shrink anyone else's share. Or it has a
+        dispatched record that has not reached the gate yet (``started`` but
+        not ``admitted``, counted by ``SlotShare.plan``): that record holds
+        no earlier place in the gate's arrival order, so without counting it
+        another connector would get no cap and fill the gate ahead of it."""
         scheduler = self._scheduler
         slot_share = self._slot_share
         if scheduler is None or slot_share is None:
@@ -3126,7 +3143,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Counted against the connector's share from dispatch until the
             # task ends, including any wait at the gate: a record queued for
             # a slot is as good as holding one, because the gate admits in
-            # arrival order.
+            # arrival order. Until it is admitted it also marks the connector
+            # as waiting, since it may be held up before the gate.
             slot_share.started(
                 (stream_name, message_id), slot_key, self._slot_pool_of(slot_key)
             )
@@ -3144,7 +3162,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # be known before the token exists. The wrapper reuses this parse.
                 parsed_message = await self._parse_message(message_id, fields, stream_name)
             waiter_token = concurrency.GateWaiterToken(
-                self, concurrency.dispatch_tier(self, parsed_message)
+                self,
+                concurrency.dispatch_tier(self, parsed_message),
+                parsed_message,
             )
             processing_coro = self._process_message_wrapper(
                 stream_name,
@@ -3334,6 +3354,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         stable_message_id: str,
         retry_count: int = 1,
         delay_s: float | None = None,
+        parse_enqueued_at_ms: int | None = None,
     ) -> None:
         """Re-publish a failed message for retry.
 
@@ -3366,6 +3387,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             payload["_retry_tracking_id"] = stable_message_id
             backoff = delay_s if delay_s is not None else compute_retry_backoff_seconds(retry_count)
             payload["_retry_not_before"] = time.time() + backoff
+            if parse_enqueued_at_ms:
+                # PARSE_ADMISSION=classes: when it first queued, kept across hand-backs so aging survives them.
+                payload.setdefault("parseEnqueuedAtMs", parse_enqueued_at_ms)
 
             # The handler's context is reset by now, and the send runs on the
             # main loop under its own: re-bind the message's so the retry
@@ -3588,6 +3612,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # record routes to heavy (see effective_index_tier). The gate, the
         # lease limit and the lease pool name all have to agree on that.
         index_tier = concurrency.dispatch_tier(self, parsed_message)
+        class_ctx = concurrency.class_context(self, parsed_message.payload)  # None unless PARSE_ADMISSION=classes
         index_lease_pool = concurrency.admission_lease_pool(self, index_tier)
         # Set where an exit is neither a success nor a failure; the
         # timing summary falls back to indexing_complete/shutting_down.
@@ -3624,15 +3649,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # one; one that will be given up on below does not need it.
             unfinished = await concurrency.unfinished_attempts(self, record_lock_id)
             if 0 < unfinished < concurrency.MAX_UNFINISHED_ATTEMPTS:
-                await self._suspects.acquire()
+                self._suspects_waiting += 1
+                try:
+                    await self._suspects.acquire()
+                finally:
+                    self._suspects_waiting -= 1
                 suspect_held = True
 
             # The active-pipeline bound. Without this outer permit, parsed
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
-            index_admission = await concurrency.acquire_index_slot(self, index_tier)
+            index_admission = await concurrency.at_gate(
+                waiter_token, concurrency.acquire_index_slot(self, index_tier, **concurrency.class_kwargs(class_ctx))
+            )
             indexing_held = True
             timeline.mark(timing.ADMITTED)
+            if self._slot_share is not None:
+                self._slot_share.admitted((stream_name, message_id))
             if waiter_token is not None:
                 waiter_token.admit()
 
@@ -3641,11 +3674,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # recovery reads this lease as proof of active processing, so
                 # a task still queued on the gate must not own one.
                 with timing.stage("lease.index"):
-                    index_lease_held = await self._acquire_distributed_slot(
-                        index_lease_pool,
-                        lease_owner,
-                        concurrency.index_ceiling(self, index_tier),
-                        leases=distributed_leases,
+                    index_lease_held = await concurrency.in_phase(
+                        self,
+                        concurrency.PHASE_LEASE,
+                        index_tier,
+                        parsed_message,
+                        self._acquire_distributed_slot(
+                            index_lease_pool,
+                            lease_owner,
+                            concurrency.index_ceiling(self, index_tier),
+                            leases=distributed_leases,
+                        ),
+                        pool=index_lease_pool,
                     )
                 if not index_lease_held:
                     # Capacity leases only give up when self.running flips.
@@ -3713,7 +3753,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 begin_progress(progress)
 
                 async def consume_handler_events() -> None:
-                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool, class_ctx
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
@@ -3734,8 +3774,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         # Place first: a record waiting for memory
                                         # must not hold what a place holder needs,
                                         # nor the reverse (one cycle, both time out).
-                                        download_admission = await concurrency.acquire_download_slot(
-                                            self, index_tier, timeout=wait.remaining(),
+                                        download_admission = await concurrency.in_phase(
+                                            self,
+                                            concurrency.PHASE_DOWNLOAD,
+                                            index_tier,
+                                            parsed_message,
+                                            concurrency.acquire_download_slot(
+                                                self, index_tier, timeout=wait.remaining(),
+                                                **concurrency.class_kwargs(
+                                                    class_ctx, size_bytes=event.data.size_bytes if event.data else None
+                                                ),
+                                            ),
                                         )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self,
@@ -3743,6 +3792,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
                                             kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -3750,8 +3800,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 ):
                                     parse_tier = event.data.tier if event.data else None
                                     timeline.mark(timing.PARSE_REQUESTED)
-                                    if self.governor is not None:
-                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier, self)
+                                    parse_lease_pool = concurrency.admission_parse_lease_pool(self, parse_tier)
                                     # Node-local gate first, cluster lease
                                     # second. The gate is an asyncio Event and
                                     # costs nothing to queue on, so it absorbs
@@ -3765,18 +3814,34 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         self, budget, message_id
                                     ) as wait:
                                         size_bytes = event.data.size_bytes if event.data else None
+                                        # The size and what the inspection found are known now: the index permit
+                                        # moves to its class in place.
+                                        if class_ctx is not None and event.data is not None:
+                                            class_ctx = class_ctx.inspected(event.data.pages, scanned=event.data.scanned, cells=event.data.cells)
+                                        concurrency.reclass_index_slot(index_admission, class_ctx, size_bytes)
+                                        download_admission = await concurrency.reclass_download_slot(
+                                            download_admission, class_ctx, size_bytes, wait.remaining()
+                                        )
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
                                             current=memory_admission, kind=record_kind,
+                                            **concurrency.class_kwargs(class_ctx),
                                         )
-                                        parsing_admission = await concurrency.acquire_parsing_slot(
+                                        parsing_admission = await concurrency.in_phase(
                                             self,
+                                            concurrency.PHASE_PARSE,
                                             parse_tier,
-                                            size_bytes,
-                                            timeout=wait.remaining(),
-                                            kind=record_kind,
-                                            reserved_bytes=memory_admission.cost if memory_admission else 0,
+                                            parsed_message,
+                                            concurrency.acquire_parsing_slot(
+                                                self,
+                                                parse_tier,
+                                                size_bytes,
+                                                timeout=wait.remaining(),
+                                                kind=record_kind,
+                                                reserved_bytes=memory_admission.cost if memory_admission else 0,
+                                                **concurrency.class_kwargs(class_ctx),
+                                            ),
                                         )
                                         # Set before the lease attempt so the
                                         # wrapper's finally hands this permit
@@ -3784,12 +3849,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         parsing_held = True
                                         lease_held = (
                                             self.concurrency_manager is None
-                                            or await self._acquire_distributed_slot(
-                                                parse_lease_pool,
-                                                lease_owner,
-                                                concurrency.parse_ceiling(self, parse_tier),
-                                                deadline_seconds=wait.remaining(),
-                                                leases=distributed_leases,
+                                            or await concurrency.in_phase(
+                                                self,
+                                                concurrency.PHASE_LEASE,
+                                                parse_tier,
+                                                parsed_message,
+                                                self._acquire_distributed_slot(
+                                                    parse_lease_pool,
+                                                    lease_owner,
+                                                    concurrency.parse_ceiling(self, parse_tier),
+                                                    deadline_seconds=wait.remaining(),
+                                                    leases=distributed_leases,
+                                                ),
+                                                pool=parse_lease_pool,
                                             )
                                         )
                                         if not lease_held and self.running:
@@ -3928,8 +4000,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # whose dependency is paused): hand the message back with no attempt
             # counted, so it cannot be dead-lettered for waiting.
             outcome = "requeued"
-            self.logger.warning(
-                "%s handed back without counting an attempt: %s", message_id, e,
+            self.logger.log(
+                e.log_level, "%s handed back without counting an attempt: %s", message_id, e,
             )
             if parsed_message is not None:
                 if not e.counts_toward_backstop:
@@ -3951,7 +4023,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         return False
                 try:
                     await self._requeue_message(
-                        stream_name, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
+                        stream_name, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s,
+                        **concurrency.first_admission_kwargs(e),
                     )
                     await self._ack_message(stream_name, message_id)
                     acked = True

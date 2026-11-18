@@ -63,7 +63,11 @@ from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
-from app.services.vector_db.errors import OrgRequired, PartialResult
+from app.services.vector_db.errors import (
+    OrgRequired,
+    PartialResult,
+    VectorsNotFetchable,
+)
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
     build_generic_conditions,
@@ -102,6 +106,7 @@ from app.services.vector_db.redis.errors import (
     classify_redis_search_error,
 )
 from app.services.vector_db.redis.utils import (
+    bytes_to_vector,
     coerce_payload_hash_value,
     decode_hash_doc,
     filter_expression_to_redis_query,
@@ -206,6 +211,9 @@ _DELETE_PAGE_SIZE = 500
 
 # How long RediSearch keeps an idle aggregate cursor alive between reads.
 _CURSOR_MAX_IDLE_MS = 300000
+# Past the search window a scroll reads by cursor: rows read per round trip, and cursors kept open for the next page of a scroll.
+_SCROLL_CURSOR_COUNT = 10000
+_SCROLL_CURSORS_KEPT = 8
 
 # Fallback for when the service was built without a parsed config.
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
@@ -263,6 +271,8 @@ class RedisVectorService(IVectorDBService):
         self._collection_configs: dict[str, CollectionConfig] = {}
         # Dense vector dtype applied to all indexes; set from config on connect().
         self._dense_dtype: str = "FLOAT16"
+        # (index, query) -> (position, cursor id) of the cursor the last past-the-window page left open
+        self._scroll_cursors: dict[tuple[str, str], tuple[int, int]] = {}
         self._max_concurrent_searches: int = _DEFAULT_MAX_CONCURRENT_SEARCHES
 
     # ------------------------------------------------------------------
@@ -1142,17 +1152,19 @@ class RedisVectorService(IVectorDBService):
             except (ValueError, TypeError):
                 int_offset = 0
 
-        # RediSearch refuses offsets past MAXSEARCHRESULTS (10k by default).
-        # Refused here, not on the page before: that page is still returned,
-        # with a next_offset, so the caller sees every point the window holds
-        # and cannot mistake the ceiling for the end of the scroll.
-        if int_offset >= _MAX_SEARCH_RESULTS:
-            raise ScrollWindowExceededError(
-                f"Scroll of '{collection_name}' reached the RediSearch result "
-                f"ceiling at offset {int_offset} (MAXSEARCHRESULTS). Narrow the "
-                f"filter or raise MAXSEARCHRESULTS; continuing would silently "
-                f"drop the remainder."
-            )
+        # FT.SEARCH refuses offsets past MAXSEARCHRESULTS (10k by default), and its pages of an unsorted match set can repeat and skip
+        # points (the order of a LIMIT without SORTBY is not guaranteed, and it moved with other indexes' writes on a shared server). A
+        # match set larger than the window is therefore read by one cursor, start to end (FT.AGGREGATE ... WITHCURSOR, no offset
+        # bound), and so is every page the cursor already left a place for.
+        cached = self._cursor_cache().get((idx, query))
+        if int_offset >= _MAX_SEARCH_RESULTS or (cached is not None and cached[0] == int_offset):
+            try:
+                return await self._scroll_past_window(collection_name, idx, query, int_offset, limit, with_payload)
+            except Exception as e:
+                raise ScrollWindowExceededError(
+                    f"Scroll of '{collection_name}' reached the RediSearch result ceiling at offset {int_offset} "
+                    f"(MAXSEARCHRESULTS) and FT.AGGREGATE could not continue it: {e}"
+                ) from e
 
         # With ON HASH and no RETURN/NOCONTENT clause, FT.SEARCH returns all
         # hash fields for each matching document.  dense_embedding is skipped
@@ -1173,6 +1185,14 @@ class RedisVectorService(IVectorDBService):
                 "LIMIT", str(int_offset), str(limit),
                 *_NO_TIMEOUT,
             )
+
+        if int_offset == 0 and isinstance(raw, (list, tuple)) and raw and str(raw[0]).isdigit() and int(raw[0]) > _MAX_SEARCH_RESULTS:
+            try:
+                return await self._scroll_past_window(collection_name, idx, query, 0, limit, with_payload)
+            except Exception as e:
+                raise ScrollWindowExceededError(
+                    f"Scroll of '{collection_name}' has more than {_MAX_SEARCH_RESULTS} matches and FT.AGGREGATE could not read it: {e}"
+                ) from e
 
         points: list[VectorPoint] = []
         total_count = 0
@@ -1215,6 +1235,93 @@ class RedisVectorService(IVectorDBService):
         next_offset: str | None = str(next_page_start) if more_available else None
         return ScrollResult(points=points, next_offset=next_offset)
 
+    async def _scroll_past_window(
+        self, collection_name: str, idx: str, query: str, offset: int, limit: int, with_payload: list[str] | None,
+    ) -> ScrollResult:
+        """One page at *offset* (past MAXSEARCHRESULTS) through ``FT.AGGREGATE ... WITHCURSOR``: the keys of the page, then their fields.
+        A cursor is not bounded by the offset cap (``LIMIT`` is). The order is the index's, the same as the pages before the window, so the
+        position is a cursor that survives a call: the cursor the last page left is kept for the page that follows it, and any other
+        offset reads and drops the rows before it."""
+        keys = await self._cursor_keys(idx, query, offset, limit)
+        total = await self.client.execute_command(  # type: ignore
+            "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        wanted = [key.replace(".", "_") for key in with_payload] if with_payload else None
+        for key in keys:
+            if wanted:
+                pipeline.execute_command("HMGET", key, *wanted)
+            else:
+                pipeline.execute_command("HGETALL", key)
+        replies = await pipeline.execute()
+        points: list[VectorPoint] = []
+        for key, reply in zip(keys, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            if wanted:
+                doc = decode_hash_doc({name: value for name, value in zip(wanted, reply) if value is not None})
+            else:
+                doc = decode_hash_doc(reply)
+            if doc:
+                points.append(VectorPoint(id=key.split(":")[-1], payload=hash_doc_to_payload(doc)))
+        nxt = offset + len(keys)
+        more = len(keys) == limit and nxt < int(total[0])
+        return ScrollResult(points=points, next_offset=str(nxt) if more else None)
+
+    def _cursor_cache(self) -> dict[tuple[str, str], tuple[int, int]]:
+        return self.__dict__.setdefault("_scroll_cursors", {})
+
+    async def _cursor_keys(self, idx: str, query: str, offset: int, limit: int) -> list[str]:
+        """The document keys at positions ``offset`` .. ``offset + limit`` of the query's match set, by cursor."""
+        cache = self._cursor_cache()
+        cached = cache.pop((idx, query), None)
+        cursor, position = 0, 0
+        raw = None
+        if cached is not None and cached[0] == offset:
+            cursor, position = cached[1], offset
+            try:
+                raw = await self.client.execute_command("FT.CURSOR", "READ", idx, cursor, "COUNT", str(limit))  # type: ignore
+            except Exception:  # expired or evicted: read again from the start
+                cursor, position, raw = 0, 0, None
+        elif cached is not None:
+            with contextlib.suppress(Exception):
+                await self.client.execute_command("FT.CURSOR", "DEL", idx, cached[1])  # type: ignore
+        keys: list[str] = []
+        try:
+            while True:
+                if raw is None:
+                    raw = await self.client.execute_command(  # type: ignore
+                        "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key", *_NO_TIMEOUT,
+                        "WITHCURSOR", "COUNT", str(max(1, min(_SCROLL_CURSOR_COUNT, offset or limit))), "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
+                    )
+                rows, cursor, _ = parse_aggregate_rows(raw)
+                for key, _fields in rows:
+                    if position >= offset and len(keys) < limit:
+                        keys.append(key.decode() if isinstance(key, bytes) else key)
+                    position += 1
+                if len(keys) >= limit or not cursor:
+                    break
+                raw = await self.client.execute_command(  # type: ignore
+                    "FT.CURSOR", "READ", idx, cursor,
+                    "COUNT", str(min(_SCROLL_CURSOR_COUNT, offset - position) if position < offset else limit),
+                )
+        except BaseException:
+            if cursor:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
+            raise
+        if cursor and len(keys) >= limit and position == offset + len(keys):
+            cache[(idx, query)] = (position, cursor)
+            while len(cache) > _SCROLL_CURSORS_KEPT:
+                (evicted_idx, _), (_, evicted) = next(iter(cache.items()))
+                del cache[next(iter(cache))]
+                with contextlib.suppress(Exception):
+                    await self.client.execute_command("FT.CURSOR", "DEL", evicted_idx, evicted)  # type: ignore
+        elif cursor:
+            with contextlib.suppress(Exception):
+                await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore
+        return keys
+
     def scroll_offset_after_delete(
         self, next_offset: str | None, deleted: int,
     ) -> str | None:
@@ -1226,6 +1333,44 @@ class RedisVectorService(IVectorDBService):
             return str(max(0, int(next_offset) - deleted))
         except (TypeError, ValueError):
             return next_offset
+
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: str | None = None,
+    ) -> ScrollResult:
+        """``scroll`` plus each point's stored ``dense_embedding`` (one pipelined ``HGET`` per point, decoded with the index's dtype).
+
+        The whole match set comes back in **one** query (one snapshot, no paging: the pages of an unsorted match set can repeat and skip
+        points), so *limit* is not a page size here and ``next_offset`` is always None. A match set larger than one query can return
+        (``MAXSEARCHRESULTS``, 10,000) raises ``VectorsNotFetchable``: the caller embeds instead of moving points.
+        """
+        if offset:
+            return ScrollResult(points=[], next_offset=None)  # everything came with the first call
+        idx = self._index_name(collection_name)
+        counted = await self.client.execute_command(  # type: ignore
+            "FT.SEARCH", idx, filter_expression_to_redis_query(scroll_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        total = int(counted[0]) if isinstance(counted, (list, tuple)) and counted else 0
+        if total == 0:
+            return ScrollResult(points=[], next_offset=None)
+        if total > _MAX_SEARCH_RESULTS:
+            raise VectorsNotFetchable(f"'{collection_name}': {total} matches, more than one query returns ({_MAX_SEARCH_RESULTS})")
+        page = await self.scroll(collection_name, scroll_filter, total, None)
+        page.next_offset = None
+        if not page.points:
+            return page
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point in page.points:
+            pipeline.execute_command("HGET", self._key(collection_name, point.id), "dense_embedding")
+        replies = await pipeline.execute()
+        for point, reply in zip(page.points, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            point.dense_vector = bytes_to_vector(reply, self._dense_dtype) if reply else None
+        return page
 
     async def retrieve_points(
         self,

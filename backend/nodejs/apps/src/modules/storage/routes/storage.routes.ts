@@ -29,6 +29,12 @@ import {
   ArtifactFileParams,
   PurgeArtifactSetSchema,
   ListArtifactSetsSchema,
+  PresignPaidResultsSchema,
+  PaidResultFileParams,
+  ListPaidResultsSchema,
+  DeletePaidResultsSchema,
+  PurgePaidResultsSchema,
+  PurgeOrgPaidResultsSchema,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
@@ -41,7 +47,10 @@ import { StorageController } from '../controllers/storage.controller';
 import { NotFoundError } from '../../../libs/errors/http.errors';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
-import { ARTIFACT_FILE_MAX_BYTES } from '../constants/constants';
+import {
+  ARTIFACT_FILE_MAX_BYTES,
+  PAID_RESULT_FILE_MAX_BYTES,
+} from '../constants/constants';
 
 const logger = Logger.getInstance({ service: 'StorageRoutes' });
 
@@ -231,6 +240,137 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         await storageController.purgeArtifactSet(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Paid-result cache: model outputs filed per (org, record). Registered ahead of
+  // /internal/:documentId, which would otherwise take "paid-results" for a document id.
+  router.post(
+    '/internal/paid-results/presign',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PresignPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.presignPaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/internal/paid-results/org',
+    // Express matches paths case-insensitively: `/Org` is a record id, never the whole-org purge, so only the exact
+    // spelling reaches this route and any other falls through to the record route.
+    (req: Request, _res: Response, next: NextFunction): void => {
+      if (req.path.replace(/\/$/, '') === '/internal/paid-results/org') {
+        next();
+      } else {
+        next('route');
+      }
+    },
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeOrgPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgePaidResultsOfOrg(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.put(
+    '/internal/paid-results/:recordId/files/*',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PaidResultFileParams),
+    express.raw({ type: () => true, limit: PAID_RESULT_FILE_MAX_BYTES }),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.putPaidResultFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/paid-results/:recordId/files/*',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PaidResultFileParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.getPaidResultFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/paid-results/:recordId/delete',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(DeletePaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.deletePaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/paid-results/:recordId',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(ListPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.listPaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/internal/paid-results/:recordId',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgePaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgePaidResultsOfRecord(req, res, next);
       } catch (error) {
         next(error);
       }

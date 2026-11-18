@@ -242,6 +242,16 @@ class PgVectorService(IVectorDBService):
         _, catalog = self._assert_connected()
         return await catalog.orgs_of_vrids(virtual_record_ids)
 
+    async def other_orgs_hold_virtual_record(self, virtual_record_id: str, org_id: str) -> bool:
+        """A vetted function answers it (true or false, never which org): a scroll here reads one org only."""
+        db, _ = self._assert_connected()
+
+        async def read(tx: Tx) -> bool:
+            return await tx.fetchval("/* pipeshub:pgvector.vrid_held_elsewhere */ SELECT retrieval.vrid_held_elsewhere($1)", virtual_record_id)
+
+        with org_scope(org_id):
+            return bool(await db.run(read, custom_plan=True))
+
     def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
         return classify_pg_search_error(error)
 
@@ -503,6 +513,24 @@ class PgVectorService(IVectorDBService):
         found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
         position = {str(i): n for n, i in enumerate(wanted)}
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
+
+    async def scroll_with_vectors(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None) -> ScrollResult:
+        """``scroll`` returning each point whole: its payload, its dense vector (the halfvec column) and its sparse terms (the postings)."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, None, vectors=True),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
 
     async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
         """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""

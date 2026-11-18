@@ -31,6 +31,7 @@ import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -97,25 +98,24 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
     (non-namespaced) cgroupfs — see corner case: "Nested/host-mounted
     cgroupfs".
 
-    Tries, in order: the v2 unified path directly under the cgroup root, the
-    v1 controller path directly under the root (both true in the common
-    Docker/Kubernetes case where the container's own cgroup is mounted at
-    ``/sys/fs/cgroup``), then resolves this process's own relative path via
-    ``/proc/self/cgroup`` and joins it — needed when the host's full
-    cgroupfs is bind-mounted instead.
+    Tries, in order: this process's own relative path via ``/proc/self/cgroup``
+    joined onto the cgroup root (the host's full cgroupfs, or a cgroup
+    namespace rooted above this process), then the v2 file and the v1
+    controller file directly under the root (the container's own cgroup mounted
+    at ``/sys/fs/cgroup``, where its membership path is not visible).
     """
     v2_name = v2_filename or v1_filename
     direct_v2 = _CGROUP_ROOT / v2_name
-    if direct_v2.exists():
-        return direct_v2
     direct_v1 = _CGROUP_ROOT / v1_controller / v1_filename
-    if direct_v1.exists():
-        return direct_v1
 
+    # The mount root is the hierarchy root, or, in a cgroup namespace, the
+    # namespace's root cgroup: the file directly under it is that cgroup's,
+    # not this process's. So this process's own membership
+    # (``/proc/self/cgroup``, relative to the same root) is tried first; a
+    # direct file answers only when the membership path is not mounted, i.e.
+    # only the container's own cgroup is (a private namespace or subtree mount).
     cgroup_self = _read_text(_PROC_SELF_CGROUP)
-    if not cgroup_self:
-        return None
-    for line in cgroup_self.splitlines():
+    for line in (cgroup_self or "").splitlines():
         parts = line.split(":", 2)
         if len(parts) != 3:
             continue
@@ -129,6 +129,9 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
             candidate = _CGROUP_ROOT / v1_controller / rel / v1_filename
             if candidate.exists():
                 return candidate
+    for direct in (direct_v2, direct_v1):
+        if direct.exists():
+            return direct
     return None
 
 
@@ -471,11 +474,26 @@ def _cgroup_v1_cpu_quota() -> float | None:
     return quota / period
 
 
-def _affinity_cpu_count() -> int | None:
+def _own_affinity_cpus() -> int | None:
+    """CPUs this process itself may run on (its live affinity mask), whatever the container has."""
     try:
         return len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
     except (AttributeError, OSError):
         return None
+
+
+def _affinity_cpu_count() -> int | None:
+    """CPUs this container may use. A NUMA-pinned cell reports the count from before its pin (left
+    in ``PIPESHUB_CONTAINER_CPUS``): the cpu counters read here are container-wide, and the
+    ceilings are split over all the container's cells, so a node-local count would shrink both."""
+    try:
+        own = len(os.sched_getaffinity(0))  # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return None
+    raw = os.environ.get("PIPESHUB_CONTAINER_CPUS", "")
+    if raw.isascii() and raw.isdigit() and own < int(raw) <= (os.cpu_count() or own):
+        return int(raw)
+    return own
 
 
 @functools.cache
@@ -676,6 +694,122 @@ def _cpu_pressure() -> float | None:
     return _read_psi_avg10(_resolve_cgroup_path("cpu", "cpu.pressure"))
 
 
+# Saturation, as the load signal reports it: the container is out of CPU when
+# stalls are frequent or the quota is nearly used, out of memory when the
+# working set is nearly the limit. Reported only; no limit reads them.
+CPU_SATURATED_PSI_AVG60 = 0.20
+CPU_SATURATED_UTILISATION = 0.90
+MEM_SATURATED_RATIO = 0.90
+
+
+@dataclass(frozen=True)
+class PressureSample:
+    """Kernel pressure readings of one tick, for observability only (no limit reads them).
+
+    Every field is ``None`` where the kernel does not expose it (macOS, cgroup v1, PSI disabled):
+    unknown is never zero.
+    """
+
+    cpu_psi_some_avg10: float | None = None
+    cpu_psi_some_avg60: float | None = None
+    cpu_psi_full_avg10: float | None = None
+    cpu_psi_full_avg60: float | None = None
+    mem_psi_some_avg10: float | None = None
+    mem_psi_some_avg60: float | None = None
+    mem_psi_full_avg10: float | None = None
+    mem_psi_full_avg60: float | None = None
+    oom_kills_total: int | None = None
+    """``oom_kill`` of the cgroup's ``memory.events``; every process of the container shares it."""
+    cpu_saturated: bool | None = None
+    mem_saturated: bool | None = None
+    """This tick's flags (cpu: PSI some avg60 at least 0.20 or utilisation at least 0.90; memory: the
+    working set at least 0.90 of the limit); ``None`` when none of the inputs is known."""
+
+
+def _read_psi(path: Path | None) -> dict[tuple[str, str], float]:
+    """``{("some" | "full", "avg10" | "avg60"): ratio}`` from a PSI file, with whatever parsed.
+
+    A missing file, a kernel without PSI, or garbage gives an empty dict (or fewer keys), never an error.
+    """
+    if path is None:
+        return {}
+    text = _read_text(path)
+    if not text:
+        return {}
+    out: dict[tuple[str, str], float] = {}
+    for line in text.splitlines():
+        kind, _, rest = line.partition(" ")
+        if kind not in ("some", "full"):
+            continue
+        for window in ("avg10", "avg60"):
+            # A whole number token (the kernel writes "12.34"), and a percentage: anything else, or a
+            # ratio outside 0..1, is not a reading and is left out (unknown, never invented).
+            match = re.search(rf"(?:^|\s){window}=(\d+(?:\.\d+)?)(?=\s|$)", rest)
+            if match:
+                ratio = float(match.group(1)) / 100.0
+                if 0.0 <= ratio <= 1.0:
+                    out[(kind, window)] = ratio
+    return out
+
+
+def _cgroup_oom_kills() -> int | None:
+    """Cumulative ``oom_kill`` of this container's memory cgroup, or ``None`` where it is not exposed."""
+    if not sys.platform.startswith("linux"):
+        return None
+    path = _resolve_cgroup_path("memory", "memory.oom_control", "memory.events")
+    text = _read_text(path) if path else None
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "oom_kill":
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+    return None
+
+
+def _saturation_flags(
+    cpu_utilisation: float | None, cpu_psi_some_avg60: float | None, mem_ratio: float | None
+) -> tuple[bool | None, bool | None]:
+    # NaN is no reading: it must not make the flag "known".
+    cpu_utilisation = None if cpu_utilisation is not None and cpu_utilisation != cpu_utilisation else cpu_utilisation
+    mem_ratio = None if mem_ratio is not None and mem_ratio != mem_ratio else mem_ratio
+    cpu_inputs = [v for v in (cpu_utilisation, cpu_psi_some_avg60) if v is not None]
+    cpu = (
+        None
+        if not cpu_inputs
+        else bool(
+            (cpu_utilisation is not None and cpu_utilisation >= CPU_SATURATED_UTILISATION)
+            or (cpu_psi_some_avg60 is not None and cpu_psi_some_avg60 >= CPU_SATURATED_PSI_AVG60)
+        )
+    )
+    mem = None if mem_ratio is None else mem_ratio >= MEM_SATURATED_RATIO
+    return cpu, mem
+
+
+def read_pressure(cpu_utilisation: float | None, mem_ratio: float | None) -> PressureSample:
+    """PSI (cpu and memory, some and full, avg10 and avg60), ``oom_kill`` and this tick's saturation flags."""
+    if sys.platform.startswith("linux"):
+        cpu = _read_psi(_resolve_cgroup_path("cpu", "cpu.pressure"))
+        mem = _read_psi(_resolve_cgroup_path("memory", "memory.pressure"))
+    else:
+        cpu, mem = {}, {}
+    cpu_saturated, mem_saturated = _saturation_flags(cpu_utilisation, cpu.get(("some", "avg60")), mem_ratio)
+    return PressureSample(
+        cpu_psi_some_avg10=cpu.get(("some", "avg10")),
+        cpu_psi_some_avg60=cpu.get(("some", "avg60")),
+        cpu_psi_full_avg10=cpu.get(("full", "avg10")),
+        cpu_psi_full_avg60=cpu.get(("full", "avg60")),
+        mem_psi_some_avg10=mem.get(("some", "avg10")),
+        mem_psi_some_avg60=mem.get(("some", "avg60")),
+        mem_psi_full_avg10=mem.get(("full", "avg10")),
+        mem_psi_full_avg60=mem.get(("full", "avg60")),
+        oom_kills_total=_cgroup_oom_kills(),
+        cpu_saturated=cpu_saturated,
+        mem_saturated=mem_saturated,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Probe implementation
 # ---------------------------------------------------------------------------
@@ -755,7 +889,16 @@ class SystemResourceProbe:
                                 0.0, delta_usec / (elapsed * 1_000_000 * host_cpus)
                             )
                     elif cpu_quota > 0:
-                        cpu_utilisation = max(0.0, delta_usec / (elapsed * 1_000_000 * cpu_quota))
+                        # A cgroup counter covers the whole container, so it divides by the container's
+                        # CPUs. ``os.times`` covers this process (and its children) only, so it divides
+                        # by what this process may run on: a cell pinned to one node of a larger
+                        # container would otherwise read half busy when it used every CPU it has.
+                        scope_cpus = cpu_quota
+                        if cpu_source == "os_times":
+                            own = _own_affinity_cpus()
+                            if own:
+                                scope_cpus = min(cpu_quota, float(own))
+                        cpu_utilisation = max(0.0, delta_usec / (elapsed * 1_000_000 * scope_cpus))
                     if throttled_usec is not None and self._prev_throttled_usec is not None:
                         throttled_delta = throttled_usec - self._prev_throttled_usec
                         cpu_throttled_ratio = max(0.0, throttled_delta / (elapsed * 1_000_000))

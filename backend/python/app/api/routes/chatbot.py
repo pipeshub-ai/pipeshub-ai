@@ -97,7 +97,7 @@ from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import EXCEL_TOO_LARGE
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import get_caller_user, get_user_or_503
 from app.utils.validation_messages import validation_error_text
 
 DEFAULT_CONTEXT_LENGTH = 128000
@@ -656,6 +656,35 @@ async def upload_chat_attachments(
         return await _upload_chat_attachments(request, graph_provider, config_service)
 
 
+
+def attachment_record_doc(*, record_id: str, org_id: str, item: Any, external_record_id: str, virtual_record_id: str, now: int) -> dict[str, Any]:  # noqa: ANN401
+    """The record written for an uploaded chat attachment: a new record, so it starts its indexing run at ``now``."""
+    return {
+        "_key": record_id,
+        "id": record_id,
+        "orgId": org_id,
+        "recordName": item.fileName,
+        "externalRecordId": external_record_id,
+        "recordType": "FILE",
+        "origin": "UPLOAD",
+        "connectorId": f"attachments_{org_id}",
+        "connectorName": Connectors.ATTACHMENTS.value,
+        "createdAtTimestamp": now,
+        "updatedAtTimestamp": now,
+        "sourceCreatedAtTimestamp": now,
+        "sourceLastModifiedTimestamp": now,
+        "isDeleted": False,
+        "isArchived": False,
+        "indexingStatus": "NOT_STARTED",
+        "extractionStatus": "NOT_STARTED",
+        "firstQueuedAt": now,
+        "indexingAttempts": 0,
+        "version": 1,
+        "mimeType": item.mimeType,
+        "sizeInBytes": item.size,
+        "virtualRecordId": virtual_record_id,
+    }
+
 async def _upload_chat_attachments(
     request: Request,
     graph_provider: IGraphDBProvider,
@@ -741,29 +770,10 @@ async def _upload_chat_attachments(
         )
         external_record_id = storage_doc_id if storage_doc_id else record_id
 
-        record_doc = {
-            "_key": record_id,
-            "id": record_id,
-            "orgId": org_id,
-            "recordName": item.fileName,
-            "externalRecordId": external_record_id,
-            "recordType": "FILE",
-            "origin": "UPLOAD",
-            "connectorId": f"attachments_{org_id}",
-            "connectorName": Connectors.ATTACHMENTS.value,
-            "createdAtTimestamp": now,
-            "updatedAtTimestamp": now,
-            "sourceCreatedAtTimestamp": now,
-            "sourceLastModifiedTimestamp": now,
-            "isDeleted": False,
-            "isArchived": False,
-            "indexingStatus": "NOT_STARTED",
-            "extractionStatus": "NOT_STARTED",
-            "version": 1,
-            "mimeType": item.mimeType,
-            "sizeInBytes": item.size,
-            "virtualRecordId": virtual_record_id,
-        }
+        record_doc = attachment_record_doc(
+            record_id=record_id, org_id=org_id, item=item, external_record_id=external_record_id,
+            virtual_record_id=virtual_record_id, now=now,
+        )
 
         needs_ocr = False
         parse_mode = "pdfplumber"
@@ -1241,7 +1251,7 @@ async def _attachment_caller(
     if user.get("isServiceAccount"):
         return org_id, None, True
     user_id = user.get("userId")
-    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    user_doc = await get_caller_user(graph_provider, user_id) if user_id else None
     return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
 
 
@@ -1505,7 +1515,7 @@ async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) 
     by the caller's `gather(..., return_exceptions=True)`."""
     if not user_id:
         return None
-    return await graph_provider.get_user_by_user_id(user_id)
+    return await get_caller_user(graph_provider, user_id)
 
 
 async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) -> dict | None:

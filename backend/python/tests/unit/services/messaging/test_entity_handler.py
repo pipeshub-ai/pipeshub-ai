@@ -19,6 +19,7 @@ from app.connectors.core.sync.sync_runner import _run_sync_alone
 from app.exceptions.non_retryable import NonRetryableError
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.logger import log_record_fields
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -360,6 +361,7 @@ class TestUserAdded:
         existing_user.id = "existing-key"
 
         graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
         graph_provider.get_user_by_email = AsyncMock(return_value=existing_user)
         graph_provider.get_document = AsyncMock(
             return_value={"_key": "org-1", "accountType": "enterprise"}
@@ -603,9 +605,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_success(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            return_value="user-key-1"
-        )
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1", user_id=None))
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -623,9 +623,29 @@ class TestUserDeleted:
         assert user_data["id"] == "user-key-1"
 
     @pytest.mark.asyncio
+    async def test_a_late_delete_finds_its_user_by_user_id_not_the_new_holder_of_the_address(self) -> None:
+        """u-old was deleted after u-new took the address. Its late userDeleted deactivates u-old, never u-new."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "key-old", "orgId": "org-1", "email": "old@test.com"})
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is True
+        written = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert (written["id"], written["email"], written["isActive"]) == ("key-old", "old@test.com", False)
+
+    @pytest.mark.asyncio
+    async def test_a_delete_never_deactivates_a_user_of_another_user_id_found_by_address(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is False
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(return_value=None)
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -639,8 +659,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_db_error_raises(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            side_effect=Exception("DB fail")
+        graph_provider.get_user_by_email = AsyncMock(side_effect=Exception("DB fail")
         )
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -773,6 +792,7 @@ class TestAppDisabled:
             }
         )
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -806,6 +826,7 @@ class TestAppDisabled:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"_key": "conn-1", "name": "Legacy"})
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
         svc = _make_entity_service(graph_provider=graph_provider)
 
         with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc:
@@ -1012,7 +1033,14 @@ class _KbGraph:
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+        if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
+            if raise_on_error:
+                raise RuntimeError("LockAcquisitionTimeout")
+            return None
+        return next((u for u in self.users.values() if u.get("userId") == user_id), None)
+
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False, org_id: str | None = None) -> SimpleNamespace | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
             if raise_on_error:
                 raise RuntimeError("LockAcquisitionTimeout")
@@ -1022,6 +1050,9 @@ class _KbGraph:
 
     async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
         return {"_key": key, "accountType": "enterprise"}
+
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *_a: object, **_k: object) -> bool:
+        return True  # the default claimed: this fake keeps no marker, so every writer reads none
 
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
         pass
@@ -1370,8 +1401,7 @@ class TestHandleUserDeletedExtended:
     @pytest.mark.asyncio
     async def test_user_deleted_exception(self):
         svc = _make_service()
-        svc.graph_provider.get_entity_id_by_email = AsyncMock(
-            side_effect=Exception("DB error")
+        svc.graph_provider.get_user_by_email = AsyncMock(side_effect=Exception("DB error")
         )
         with pytest.raises(Exception, match="DB error"):
             await svc.process_event(

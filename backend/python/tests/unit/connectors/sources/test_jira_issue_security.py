@@ -545,11 +545,11 @@ class TestBrowseHoldersNamingPeoplePerIssue:
 
     @staticmethod
     def _apply(browse: list[dict] | None, fields: dict | None = None, record: Record | None = None,
-               level_returned: bool = True, **kw: object) -> tuple[Record, set, bool]:
+               level_returned: bool = True, is_subtask: bool = False, **kw: object) -> tuple[Record, set, bool]:
         record = record or _record()
         context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=browse)
         grants, _skipped, settled = apply_issue_access_settled(
-            record, {**({"security": None} if level_returned else {}), **(fields or {})}, is_subtask=False, project_key="PROJ", context=context,
+            record, {**({"security": None} if level_returned else {}), **(fields or {})}, is_subtask=is_subtask, project_key="PROJ", context=context,
             **{"reporter_email": "rep@ex.com", "assignee_email": "asg@ex.com", **kw},
         )
         return record, {(p.entity_type, p.email or p.external_id) for p in grants}, settled
@@ -582,6 +582,40 @@ class TestBrowseHoldersNamingPeoplePerIssue:
 
     def test_an_issue_filed_under_another_follows_it_and_gets_no_grant(self) -> None:
         record, grants, _ = self._apply([{"type": "reporter"}], record=_record(parent_external_record_id="99"))
+        assert grants == set() and record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.parametrize("holder", [{"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_10"}],
+                             ids=["assignee", "user_field"])
+    def test_an_unleveled_sub_task_gives_its_own_assignee_or_user_field_holder_no_grant(self, holder: dict) -> None:
+        """Jira shows it to them (JSWCLOUD-25762), but an OPEN sub-task would also be read by its parent's own holders
+        (tests/permissions/test_subtask_own_holders.py): it stays STRICT, read with its parent."""
+        record, grants, _ = self._apply([holder], {"customfield_10": [{"accountId": "acc-7"}]},
+                                        record=_record(parent_external_record_id="99"), is_subtask=True,
+                                        user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
+        assert grants == set() and record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.parametrize("holder", [{"type": "reporter"}, {"type": "groupCustomField", "parameter": "customfield_11"}],
+                             ids=["reporter", "group_field"])
+    def test_a_sub_task_s_own_reporter_or_group_field_holder_still_reads_it_only_with_its_parent(self, holder: dict) -> None:
+        """Not named by the tracker: closed until a live check settles it."""
+        record, grants, _ = self._apply([holder], {"customfield_11": {"groupId": "g-9"}},
+                                        record=_record(parent_external_record_id="99"), is_subtask=True)
+        assert grants == set() and record.access_rule == AccessRule.STRICT
+
+    def test_a_leveled_sub_task_gives_its_own_assignee_holder_nothing_beyond_the_level(self) -> None:
+        """The parent's level applies to the sub-task (Jira copies it): its own Browse assignee is not a level holder."""
+        record = _record(parent_external_record_id="99")
+        context = _present(members={"20": [{"type": "group", "value": "g-1"}]})
+        context.browse_holders = [{"type": "assignee"}]
+        grants, _ = apply_issue_access(
+            record, {"security": {"id": "20"}}, is_subtask=True, project_key="PROJ", context=context,
+            assignee_email="asg@ex.com",
+        )
+        assert {(p.entity_type, p.external_id or p.email) for p in grants} == {(EntityType.GROUP, "g-1")}
+        assert record.access_rule == AccessRule.RESTRICTED
+
+    def test_a_story_filed_under_its_epic_still_follows_it(self) -> None:
+        record, grants, _ = self._apply([{"type": "assignee"}], record=_record(parent_external_record_id="99"))
         assert grants == set() and record.access_rule == AccessRule.STRICT
 
     def test_a_stub_gets_no_grant(self) -> None:
@@ -808,10 +842,37 @@ class TestUnresolvedUserHolders:
         grants, skipped, _ = self._grants({"type": "user", "parameter": "someone", "user": {"name": "someone"}})
         assert grants == [] and skipped == ["user"]
 
-    def test_a_user_with_an_email_on_the_holder_is_granted(self) -> None:
+    def test_an_account_outside_the_directory_is_not_granted_by_the_email_on_the_holder(self) -> None:
+        """The email may be a synced account's too: "k" would be granted that account's access."""
         grants, skipped, _ = self._grants(
-            {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}})
-        assert [g.email for g in grants] == ["k@example.com"] and skipped == []
+            {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}},
+            {"other": type("U", (), {"email": "k@example.com"})()})
+        assert grants == [] and skipped == []  # no access, like a deactivated account: the other holders are written
+
+    def test_a_synced_account_without_an_email_in_the_directory_is_granted_by_its_account(self) -> None:
+        """By its source id, which reaches that linked user: the payload's email would reach whoever holds it in
+        PipesHub, or a new external person, since the linked user has none."""
+        grants, skipped, _ = self._grants(
+            {"type": "user", "parameter": "k", "user": {"key": "k", "emailAddress": "k@example.com"}},
+            {"k": type("U", (), {"email": None, "source_user_id": "k"})()})
+        assert [(g.email, g.external_id) for g in grants] == [(None, "k")] and skipped == []
+
+    def test_an_email_with_no_account_names_the_one_synced_account_holding_it(self) -> None:
+        one = {"a": type("U", (), {"email": "k@example.com"})()}
+        two = {**one, "b": type("U", (), {"email": "K@example.com"})()}
+        holder = {"type": "user", "user": {"emailAddress": "k@example.com"}}
+        assert [g.email for g in self._grants(holder, one)[0]] == ["k@example.com"]
+        assert self._grants(holder, two)[0] == []
+
+    def test_a_reporter_outside_the_directory_is_not_granted_by_an_email_another_account_holds(self) -> None:
+        record = _record()
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[{"type": "reporter"}])
+        grants, _, _ = apply_issue_access_settled(
+            record, {"security": None, "reporter": {"accountId": "x", "emailAddress": "mia@ex.com"}}, is_subtask=False,
+            project_key="P", context=context, user_by_account_id={"acc-9": type("U", (), {"email": "mia@ex.com"})()},
+            reporter_email="mia@ex.com",  # what a connector reads off the payload
+        )
+        assert grants == []
 
     def test_a_deactivated_user_is_not_a_skipped_holder(self) -> None:
         _, skipped, _ = self._grants({"type": "user", "parameter": "k", "user": {"key": "k", "active": False}})

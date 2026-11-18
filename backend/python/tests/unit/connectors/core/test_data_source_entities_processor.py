@@ -207,6 +207,29 @@ class TestPlaceholdersAreRestricted:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("drop_grants", [True, False])
+    async def test_withdraw_takes_the_users_own_grants_only_when_asked(self, drop_grants: bool) -> None:
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        order: list[str] = []
+        tx_store.delete_edge = AsyncMock(side_effect=lambda *a: order.append("link"))
+        tx_store.remove_user_access_to_connector = AsyncMock(side_effect=lambda *a: order.append("grants"))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        user = AppUser(id="node-1", app_name=Connectors.JIRA, connector_id="c", source_user_id="a", email="a@x.com", full_name="a")
+
+        await proc.withdraw_app_user_access("conn-1", [user], drop_grants=drop_grants)
+
+        if drop_grants:
+            tx_store.remove_user_access_to_connector.assert_awaited_once_with("conn-1", "node-1")
+            # Where each statement commits alone, a failure after the first leaves the safe state.
+            assert order == ["grants", "link"]
+        else:
+            tx_store.remove_user_access_to_connector.assert_not_awaited()
+            assert order == ["link"]
+
+    @pytest.mark.asyncio
     async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
         # Without explicit transactions the first delete has already committed.
         from app.config.constants.arangodb import Connectors
@@ -1898,7 +1921,7 @@ class TestFailedPrincipalLookupsStopRewrites:
         with pytest.raises(RuntimeError, match="read failed"):
             await proc.on_new_app_roles([(role, [member])])
 
-        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": proc.org_id}
         tx_store.replace_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2000,7 +2023,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "unknown@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is False
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
@@ -2018,7 +2041,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_skips_edge_without_to(self):
@@ -2037,7 +2060,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2057,7 +2080,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2080,7 +2103,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_awaited_once()
         # Should have created 2 edges
         edges = tx_store.batch_create_edges.call_args[0][0]
@@ -2106,7 +2129,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         # The upsert overwrites the edge: a delete first would lose it if the upsert failed.
         tx_store.delete_edge.assert_not_awaited()
         tx_store.batch_create_edges.assert_awaited_once()
@@ -2133,7 +2156,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         # No new edges created
         tx_store.batch_create_edges.assert_not_awaited()
 
@@ -2156,7 +2179,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
@@ -2187,6 +2210,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
+        assert result is False                    # a grant was not moved: the caller keeps the group
         # Should log warning for first edge
         proc.logger.warning.assert_called()
         # Should still create edge for second
@@ -2623,7 +2647,7 @@ class TestDeletePermissionFromRecord:
         with pytest.raises(RuntimeError, match="read failed"):
             await proc.delete_permission_from_record("rec-1", "user@test.com")
 
-        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": proc.org_id}
         tx_store.batch_delete_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2802,7 +2826,7 @@ class TestOnNewAppUsers:
 
         await proc.on_new_app_users([user])
 
-        tx_store.batch_upsert_app_users.assert_awaited_once_with([user])
+        tx_store.batch_upsert_app_users.assert_awaited_once_with([user], proc.org_id)
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -3634,6 +3658,55 @@ class TestMigrateGroupToUserByExternalId:
             "ext-grp", "user@test.com", "conn-1"
         )
 
+        tx_store.delete_user_group_by_id.assert_awaited_once_with("grp-1")
+
+    @staticmethod
+    def _group_with_grants(user: MagicMock | None, get_edge: AsyncMock | None = None) -> tuple[DataSourceEntitiesProcessor, MagicMock]:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = MagicMock()
+        group.id, group.name = "grp-1", "Test Group"
+        tx_store.get_user_group_by_external_id.return_value = group
+        tx_store.get_user_by_email.return_value = user
+        tx_store.get_edges_from_node.return_value = [
+            {"_key": "e1", "_to": f"{CollectionNames.RECORDS.value}/rec-1", "role": "READER"},
+            {"_key": "e2", "_to": f"{CollectionNames.RECORDS.value}/rec-2", "role": "READER"},
+        ]
+        tx_store.get_edge.side_effect = get_edge or AsyncMock(return_value=None)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_user_not_found_in_the_org_keeps_the_group_and_its_grants(self) -> None:
+        proc, tx_store = self._group_with_grants(None)
+
+        await proc.migrate_group_to_user_by_external_id("ext-grp", "user@test.com", "conn-1")
+
+        tx_store.get_user_by_email.assert_awaited_once_with("user@test.com", org_id="org-1")
+        tx_store.delete_user_group_by_id.assert_not_awaited()
+        tx_store.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_grant_that_could_not_be_moved_keeps_the_group(self) -> None:
+        user = MagicMock()
+        user.id = "user-1"
+        proc, tx_store = self._group_with_grants(user, AsyncMock(side_effect=[RuntimeError("edge error"), None]))
+
+        await proc.migrate_group_to_user_by_external_id("ext-grp", "user@test.com", "conn-1")
+
+        (edge,) = tx_store.batch_create_edges.await_args.args[0]
+        assert edge["to_id"] == "rec-2"
+        tx_store.delete_user_group_by_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_grants_all_moved_delete_the_group(self) -> None:
+        user = MagicMock()
+        user.id = "user-1"
+        proc, tx_store = self._group_with_grants(user)
+
+        await proc.migrate_group_to_user_by_external_id("ext-grp", "user@test.com", "conn-1")
+
+        assert {e["to_id"] for e in tx_store.batch_create_edges.await_args.args[0]} == {"rec-1", "rec-2"}
         tx_store.delete_user_group_by_id.assert_awaited_once_with("grp-1")
 
 

@@ -363,6 +363,8 @@ export interface KnowledgeHubApiResponse {
   success: boolean;
   /** Sources left out of this page because they are still being prepared; they are asked again on the next page. */
   notReady?: string[];
+  /** Nothing could be listed yet: the source is still being prepared. The page is empty, with no cursor; ask again in a moment. */
+  preparing?: boolean;
   error: string | null;
   id: string | null;
   currentNode: {
@@ -569,6 +571,8 @@ export interface RecordDetailsResponse {
     orgId: string;
     recordName: string;
     externalRecordId: string;
+    externalRevisionId?: string | null;
+    contentRev?: string | null;
     recordType: RecordType;
     origin: 'UPLOAD' | 'CONNECTOR';
     createdAtTimestamp: number;

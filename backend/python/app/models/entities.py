@@ -11,7 +11,8 @@ from uuid import uuid4
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+from app.modules.indexing.record_diagnostics import STORED_RUN_FIELDS
 from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     AccessRule,
@@ -332,7 +333,7 @@ class Record(BaseModel):
     # inherit_permissions — which is expressed as an edge — this is stored.
     # OPEN by default: a connector that says nothing gets the permissive
     # reading, and only sources that need every ancestor checked opt in.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
     parsing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Parsing status for the record (parse phase, ahead of indexing/extraction)")
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
@@ -348,6 +349,9 @@ class Record(BaseModel):
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
     first_queued_at: int | None = Field(default=None, description="Epoch ms the record first went in line for its current processing run. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
     indexing_attempts: int | None = Field(default=None, description="How many times processing has been attempted for the record. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
+    # What the stored document said about the record's current run when it was read. Never serialised: it only lets the
+    # save path decide, from the stored values, whether a write continues the run or starts a new one.
+    _stored_run: dict | None = PrivateAttr(default=None)
 
     # Source information
     weburl: str | None = None
@@ -594,7 +598,7 @@ class Record(BaseModel):
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
-        return Record(
+        parsed = Record(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
@@ -641,6 +645,10 @@ class Record(BaseModel):
             push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
         )
+        parsed._stored_run = {
+            name: arango_base_record.get(name) for name in STORED_RUN_FIELDS if name in arango_base_record
+        }
+        return parsed
 
     def to_kafka_record(self) -> dict:
         raise NotImplementedError("Implement this method in the subclass")
@@ -3115,7 +3123,7 @@ class RecordGroup(BaseModel):
     # As on Record: read per node by the traversal, so stored rather than
     # inferred from an edge. A Confluence space is RESTRICTED — it carries its
     # own permission list, so inheriting from the App is never enough alone.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
     hide_children: bool | None = Field(
         default=False,

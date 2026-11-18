@@ -349,6 +349,85 @@ describe('Storage adapters against a real storage server', function () {
     expect(got.equals(Buffer.concat(partBodies))).to.equal(true);
   });
 
+  describe('bound range reads (what the record preview issues)', () => {
+    async function signed(body: Buffer, name = 'ranged.bin'): Promise<{ doc: Document; url: string; etag: string }> {
+      const stored = await upload(name, body);
+      const doc = documentFor(target, stored);
+      const res = await target.adapter.getSignedUrl(doc);
+      expect(res.statusCode).to.equal(200);
+      const url = res.data as string;
+      const whole = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+      const etag = whole.headers.get('etag');
+      expect(etag, 'the object has an ETag').to.be.a('string');
+      await whole.arrayBuffer();
+      return { doc, url, etag: etag as string };
+    }
+
+    it('answers one closed range with exactly those bytes, as 206 with the length', async () => {
+      const body = randomBytes(300 * 1024);
+      const { url, etag } = await signed(body);
+      const res = await fetch(url, { headers: { Range: 'bytes=1000-70999', 'If-Match': etag } });
+      expect(res.status).to.equal(206);
+      const got = Buffer.from(await res.arrayBuffer());
+      expect(got.equals(body.subarray(1000, 71000))).to.equal(true);
+      expect(res.headers.get('content-range')).to.equal(`bytes 1000-70999/${body.length}`);
+    });
+
+    it('honours an open-ended range', async () => {
+      const body = randomBytes(64 * 1024);
+      const { url, etag } = await signed(body);
+      const res = await fetch(url, { headers: { Range: `bytes=${body.length - 100}-`, 'If-Match': etag } });
+      expect(res.status).to.equal(206);
+      expect(Buffer.from(await res.arrayBuffer()).equals(body.subarray(body.length - 100))).to.equal(true);
+    });
+
+    it('answers a range past the end with 416 (the length comes from the verified object size, not from this answer)', async () => {
+      const body = randomBytes(8 * 1024);
+      const { url } = await signed(body);
+      const res = await fetch(url, { headers: { Range: 'bytes=999999999-' } });
+      expect(res.status).to.equal(416);
+      await res.arrayBuffer();
+    });
+
+    it('refuses a read bound to an object that was overwritten (412), even for a range', async () => {
+      const body = randomBytes(32 * 1024);
+      const { doc, url, etag } = await signed(body, 'overwritten.bin');
+      const res = await target.adapter.updateBuffer(randomBytes(32 * 1024), doc);
+      expect(res.statusCode).to.equal(200);
+      const fresh = await target.adapter.getSignedUrl(doc);
+      const stale = await fetch(fresh.data as string, { headers: { Range: 'bytes=0-99', 'If-Match': etag } });
+      expect(stale.status).to.equal(412);
+      await stale.arrayBuffer();
+      // the old link is not a way around the binding either
+      const old = await fetch(url, { headers: { Range: 'bytes=0-99', 'If-Match': etag } });
+      expect([200, 206, 403, 404, 412]).to.include(old.status);
+      if (old.status !== 412) {
+        const now = await fetch(fresh.data as string, { headers: { Range: 'bytes=0-0' } });
+        await now.arrayBuffer();
+        expect(now.headers.get('etag')).to.not.equal(etag);
+      }
+    });
+
+    it('streams a whole object bound to its tag without holding it in memory', async () => {
+      const body = randomBytes(24 * 1024 * 1024);
+      const { url, etag } = await signed(body, 'stream.bin');
+      const res = await fetch(url, { headers: { 'If-Match': etag } });
+      expect(res.status).to.equal(200);
+      let received = 0;
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let peak = process.memoryUsage().rss;
+      const start = peak;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.length;
+        peak = Math.max(peak, process.memoryUsage().rss);
+      }
+      expect(received).to.equal(body.length);
+      expect(peak - start).to.be.lessThan(4 * body.length);
+    });
+  });
+
   describe('artifact sets', () => {
     // One content revision's files, as the presign route lays them out.
     const revisionRoot = (rev: string): string => `${orgPrefix}/record-revisions/${runId}-vr/${rev}`
@@ -428,6 +507,104 @@ describe('Storage adapters against a real storage server', function () {
 
       expect(put.status).to.equal(403)
     })
+  });
+
+  describe('paid-result cache objects', () => {
+    const org = new mongoose.Types.ObjectId().toString();
+    const recordRoot = (record: string): string => `${org}/PipesHub/paid-results/${record}`;
+    const key = (record: string, n: number): string =>
+      `${recordRoot(record)}/ocr_page/${n.toString(16).padStart(64, '0')}.json`;
+
+    async function signedPut(storageKey: string, body: string, ifAbsent: boolean): Promise<number> {
+      const signed = await target.adapter.signObjectUrl!(storageKey, {
+        method: 'PUT',
+        contentType: 'application/json',
+        expiresInSeconds: 60,
+        ifAbsent,
+      });
+      const res = await fetch(signed.url, { method: 'PUT', headers: signed.headers, body });
+      await res.arrayBuffer();
+      return res.status;
+    }
+
+    async function signedGet(storageKey: string): Promise<{ status: number; text: string }> {
+      const signed = await target.adapter.signObjectUrl!(storageKey, { method: 'GET', expiresInSeconds: 60 });
+      const res = await fetch(signed.url, { headers: signed.headers });
+      return { status: res.status, text: await res.text() };
+    }
+
+    it('a signed PUT with the condition keeps the first writer, and one without it replaces', async () => {
+      const k = key('cond', 1);
+      expect(await signedPut(k, '{"first":true}', true)).to.be.oneOf([200, 201]);
+      expect(await signedPut(k, '{"second":true}', true)).to.be.oneOf([409, 412]);
+      expect(await signedGet(k)).to.deep.equal({ status: 200, text: '{"first":true}' });
+
+      expect(await signedPut(k, '{"replaced":true}', false)).to.be.oneOf([200, 201]);
+      expect((await signedGet(k)).text).to.equal('{"replaced":true}');
+    });
+
+    it('concurrent conditional writers of one key leave exactly one winner', async () => {
+      const k = key('race', 1);
+      const codes = await Promise.all(Array.from({ length: 6 }, (_, i) => signedPut(k, `{"writer":${i}}`, true)));
+      expect(codes.filter((c) => c === 200 || c === 201)).to.have.length(1);
+      expect(codes.filter((c) => c === 409 || c === 412)).to.have.length(5);
+      expect((await signedGet(k)).text).to.match(/^\{"writer":\d\}$/);
+    });
+
+    it('lists one record in key order, page by page, with sizes and write times', async () => {
+      for (const n of [3, 1, 5, 2, 4]) await signedPut(key('list', n), 'x'.repeat(n), true);
+      await signedPut(key('list-longer', 1), 'other record', true);
+
+      const seen: string[] = [];
+      let after: string | undefined;
+      let pages = 0;
+      do {
+        const page = await target.adapter.listObjects!(`${recordRoot('list')}/`, { limit: 2, after });
+        pages += 1;
+        for (const o of page.objects) {
+          seen.push(o.key);
+          expect(o.size).to.equal(parseInt(o.key.slice(-69, -5), 16));
+          expect(o.lastModifiedMs).to.be.greaterThan(Date.now() - 5 * 60 * 1000);
+        }
+        after = page.next;
+      } while (after !== undefined);
+
+      expect(seen).to.deep.equal([1, 2, 3, 4, 5].map((n) => key('list', n)));
+      expect(pages).to.equal(3);
+    });
+
+    it('lists nothing under a prefix with no objects', async () => {
+      expect(await target.adapter.listObjects!(`${recordRoot('nothing-here')}/`, { limit: 10 })).to.deep.equal({
+        objects: [],
+      });
+    });
+
+    it('deletes the named objects, counts a missing one as done, and leaves the rest', async () => {
+      for (const n of [1, 2, 3]) await signedPut(key('batch', n), 'x', true);
+      await target.adapter.deleteObjects!([key('batch', 1), key('batch', 3), key('batch', 99)]);
+
+      const left = await target.adapter.listObjects!(`${recordRoot('batch')}/`, { limit: 10 });
+      expect(left.objects.map((o) => o.key)).to.deep.equal([key('batch', 2)]);
+    });
+
+    it('a record purge removes that record only, and an org purge removes the org only', async () => {
+      const otherOrg = new mongoose.Types.ObjectId().toString();
+      const otherOrgKey = `${otherOrg}/PipesHub/paid-results/purge-a/ocr_page/${'0'.repeat(63)}1.json`;
+      await signedPut(key('purge-a', 1), 'a', true);
+      await signedPut(key('purge-a', 2), 'a', true);
+      await signedPut(key('purge-b', 1), 'b', true);
+      await signedPut(otherOrgKey, 'other org', true);
+
+      await target.adapter.deleteTree!(recordRoot('purge-a'));
+      await target.adapter.deleteTree!(recordRoot('purge-a')); // a repeat is not an error
+      expect((await target.adapter.listObjects!(`${recordRoot('purge-a')}/`, { limit: 10 })).objects).to.deep.equal([]);
+      expect((await signedGet(key('purge-b', 1))).status).to.equal(200);
+      expect((await signedGet(otherOrgKey)).status).to.equal(200);
+
+      await target.adapter.deleteTree!(`${org}/PipesHub/paid-results`);
+      expect((await signedGet(key('purge-b', 1))).status).to.equal(404);
+      expect((await signedGet(otherOrgKey)).status).to.equal(200);
+    });
   });
 });
 
