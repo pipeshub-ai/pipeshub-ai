@@ -173,19 +173,34 @@ def stamped(fields: dict[str, Any], stored: Mapping[str, Any] | None, kind: Writ
     return {**fields, **reference(stored, kind, now, **kw)}
 
 
+#: Rounds of the revision rule's decision before it gives up on a record that keeps changing.
+_REVISION_RULE_TRIES = 5
+
+
 async def write_with_revision_rule(graph: Any, record_id: str, collection: str, fields: dict[str, Any]) -> bool:  # noqa: ANN401
     """``update_node`` for ``fields`` that may set ``contentRev``: the page count is dropped unless the store still holds that revision.
 
-    The rule of ``write_attempt_start`` (a count belongs to the content it was taken from) for every other writer of the revision. The
-    decision is made in the store's own statement, never from a record read earlier: the write is first made conditional on the stored
-    revision being the one written (the count is then kept), and only a record that holds another revision, or none, is written with the
-    count dropped. A record that changed in between can only lose a count (the next parse writes it again), never keep a stale one."""
+    The rule of ``write_attempt_start`` (a count belongs to the content it was taken from) for every other writer of the revision. Every
+    decision is made in the store's own statement, never from a record read earlier. The write is first made conditional on the stored
+    revision being the one written (the count is then kept). If that matches nothing, the stored revision is read and the write that drops
+    the count is made conditional on that very revision (``None`` for none), so it applies only to the revision it was decided for. A record
+    that moved in between refuses it, and the decision is taken again from the new revision: a count another writer has since stored with the
+    revision written here is never cleared. A record that keeps moving past ``_REVISION_RULE_TRIES`` rounds is reported as not written."""
     revision = fields.get("contentRev")
     if revision is None:
         return bool(await graph.update_node(record_id, collection, fields))
-    if await graph.update_node_fields_if_match(record_id, collection, fields, {"contentRev": revision}):
-        return True
-    return bool(await graph.update_node(record_id, collection, {**fields, PAGE_COUNT: None}))
+    for _ in range(_REVISION_RULE_TRIES):
+        if await graph.update_node_fields_if_match(record_id, collection, fields, {"contentRev": revision}):
+            return True
+        stored = await graph.get_document(record_id, collection)
+        if stored is None:
+            return False
+        held = stored.get("contentRev")
+        if held == revision:
+            continue  # it caught up with the revision written: the first statement now keeps the count
+        if await graph.update_node_fields_if_match(record_id, collection, {**fields, PAGE_COUNT: None}, {"contentRev": held}):
+            return True
+    return False
 
 
 def page_count_of(value: Any) -> int | None:  # noqa: ANN401
