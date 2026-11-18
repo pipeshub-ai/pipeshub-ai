@@ -134,7 +134,9 @@ def test_the_filter_fragments_come_from_one_scope() -> None:
     assert narrow.args() == (["c"], [], [], [], ["r"]) and "ANY($9::text[])" in narrow.candidates()
     assert Scope(["c"]).key() == Scope(["c"]).key() != Scope(["d"]).key()
     sql, params = scope_of(FilterExpression(must=[cond("metadata.kind", "k")])).extra_sql()
-    assert sql.startswith(" AND (") and params == [["k"]] and "$12" in sql
+    assert sql.startswith(" AND (") and params == [["k"]] and "$13" in sql                  # $12 is the arms as membership keys
+    assert Scope(["c"], ["g"], None, []).keys() == ["1:c", "2:g"] and Scope().keys() == []
+    assert "p.member_keys OPERATOR(pg_catalog.&&) $12::text[]" in narrow.probe() and "p.member_keys IS NULL THEN EXISTS" in narrow.probe()
 
 
 def test_a_scope_that_lists_every_connector_drops_its_arms_only_when_that_is_provably_the_same_set() -> None:
