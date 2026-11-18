@@ -5201,8 +5201,10 @@ class JiraConnector(BaseConnector):
         re-secure is owed the pass and the sweep again."""
         if not swept:
             return
+        failed = set(sync_stats.get("failed_project_keys") or [])
         for key in self._people_read_due:
-            await self._update_project_sync_checkpoint(key, people_read=self._people_generation)
+            if key not in failed:  # a step after its pass failed: it was not reported re-read, so its stubs may be stale
+                await self._update_project_sync_checkpoint(key, people_read=self._people_generation)
         if (self._newly_listed_account_ids and not sync_stats.get("failed_project_keys") and not self._people_unfinished
                 and not self._skipped_project_keys and not self._unresolved_selected_keys):
             await self.issues_sync_point.update_sync_point(

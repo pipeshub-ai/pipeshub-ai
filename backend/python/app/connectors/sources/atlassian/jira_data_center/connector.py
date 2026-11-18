@@ -5058,8 +5058,9 @@ class JiraDataCenterConnector(BaseConnector):
         del self._given_up_issues[issue_id]
         return False
 
-    def _note_failed_issue(self, issue: dict[str, Any], error: Exception) -> None:
-        """Hold the checkpoint for an issue that failed to process, until it has failed too many runs."""
+    def _note_failed_issue(self, issue: dict[str, Any], error: Exception) -> bool:
+        """Hold the checkpoint for an issue that failed to process, until it has failed too many runs. True when it was
+        given up on already and stays so: the caller closes it, since it cannot be written with its access."""
         issue_id = str(issue.get("id") or "") if isinstance(issue, dict) else ""
         issue_key = (issue.get("key") if isinstance(issue, dict) else None) or issue_id or "unknown"
         updated_text = str((issue.get("fields") or {}).get("updated") or "") if isinstance(issue, dict) else ""
@@ -5067,7 +5068,7 @@ class JiraDataCenterConnector(BaseConnector):
             # Given up on already and unchanged since: a pass that read it again for the project's access is not held
             # by it, or that pass would repeat every sync.
             self.logger.warning(f"Issue {issue_key}, given up on, still could not be processed; it stays given up: {error}")
-            return
+            return True
         self._issue_build_failures += 1
         attempts = self._failed_issue_attempts_before.get(issue_id, 0) + 1
         if attempts >= MAX_FAILED_ISSUE_ATTEMPTS:
@@ -5076,7 +5077,7 @@ class JiraDataCenterConnector(BaseConnector):
                 f"It is read again when it next changes. Last error: {error}"
             )
             self._given_up_issues[issue_id] = str((issue.get("fields") or {}).get("updated") or "")
-            return
+            return False
         try:
             updated: int | None = self._parse_jira_timestamp((issue.get("fields") or {}).get("updated")) or None
         except Exception:
@@ -5087,6 +5088,19 @@ class JiraDataCenterConnector(BaseConnector):
             f"(attempt {attempts} of {MAX_FAILED_ISSUE_ATTEMPTS}): {error}",
             exc_info=True,
         )
+        return False
+
+    async def _close_stored_issue(self, issue_id: str) -> None:
+        """Close a stored issue that a pass for a change of its access could not rebuild: its stored grants may name
+        people Jira no longer lets read it. It opens again once it can be built."""
+        stored = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=issue_id
+        )
+        if stored is None or stored.is_placeholder:
+            return
+        stored.access_rule = AccessRule.RESTRICTED
+        stored.rewrite_permissions = True
+        await self.data_entities_processor.on_new_records([(stored, [])])
 
     def _users_with_usernames(self, user_by_key: dict[str, AppUser]) -> dict[str, AppUser]:
         """The synced users by key, and also by username: a level names its user holders either way. A username that
@@ -5690,7 +5704,8 @@ class JiraDataCenterConnector(BaseConnector):
                 except Exception as e:
                     self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
             except Exception as e:
-                self._note_failed_issue(issue, e)
+                if self._note_failed_issue(issue, e):
+                    await self._close_stored_issue(str(issue.get("id") or ""))
 
         # Log summary only if there were skipped issues
         if skipped_unchanged_count > 0:

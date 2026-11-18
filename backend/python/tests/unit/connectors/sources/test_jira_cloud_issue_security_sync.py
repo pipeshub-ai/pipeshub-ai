@@ -2061,6 +2061,18 @@ class TestIssueGrantsNameListedAccountsOnly:
         assert saved == ([3] if swept else [])
 
     @pytest.mark.asyncio
+    async def test_a_project_that_failed_after_its_pass_does_not_save_its_generation(self) -> None:
+        """PROJ's people pass went through, then a later step of PROJ failed: it was not reported as re-read, so the sweep
+        may have skipped its stubs. It keeps its older generation; OPS, which finished, saves its own."""
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._update_project_sync_checkpoint = AsyncMock()
+        c._people_generation, c._people_read_due = 3, ["PROJ", "OPS"]
+        await c._people_to_reread_handed_on({"failed_project_keys": ["PROJ"]}, swept=True)
+        assert [(a[0], kw.get("people_read")) for a, kw in c._update_project_sync_checkpoint.await_args_list] == [("OPS", 3)]
+
+    @pytest.mark.asyncio
     async def test_an_account_admitted_again_while_still_queued_is_a_new_generation(self) -> None:
         c = _connector()
         store: dict = {"people_reread": {"accounts": '["acc-1"]', "generation": 4, "base": 3}}

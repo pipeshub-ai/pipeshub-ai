@@ -1391,6 +1391,29 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert jql_search.plain_calls == 0, "and is not repeated"
 
+    async def test_an_issue_given_up_on_that_fails_a_pass_revoking_a_holder_is_closed(self, jira, db, store, jql_search) -> None:
+        """ENG-2's level moves from alice to carol, but ENG-2, given up on, cannot be built: rather than keep alice's grant
+        that Jira revoked, the stored issue is closed (no one reads it) until it can be built."""
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]})
+        leveled = sec_issue("2", "ENG-2", level=SECRET)
+        jql_search.put(leveled)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[leveled])
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+        store.values_for("project_ENG")["given_up_issues"] = json.dumps({"2": leveled["fields"]["updated"]})
+        real = connector._extract_issue_data_with_parent
+
+        async def broken(issue: dict[str, Any], users: dict[str, AppUser]) -> dict[str, Any]:
+            if issue.get("id") == "2":
+                raise RuntimeError("cannot be built")
+            return await real(issue, users)
+
+        connector._extract_issue_data_with_parent = broken
+        serve_scheme(jira, {SECRET: [CAROL_BY_NAME]})
+        await sync(connector, jql_search, recent=[])
+        assert readers(db, "2") == set() and hidden_from_project(db.records["2"])
+
     async def test_a_given_up_issue_that_keeps_failing_ends_the_generation_walk_after_the_usual_attempts(
         self, jira, db, store, jql_search,
     ) -> None:
