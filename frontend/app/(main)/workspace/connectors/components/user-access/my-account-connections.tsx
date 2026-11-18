@@ -13,7 +13,6 @@ import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmati
 import { CONNECTOR_OAUTH_POST_MESSAGE } from '@/app/(main)/connectors/oauth/connector-oauth-window-messages';
 import { ConnectorsApi } from '../../api';
 import type { UserAccessConnection, UserAccessConnector } from '../../types';
-import { forgetMyUserAccessConnectors } from './connect-banner';
 
 // shortcut: Notion is the only per-user connector type; add a link per type when another one arrives.
 const TOKEN_HELP_URL: Record<string, string> = {
@@ -321,7 +320,6 @@ export function MyAccountConnections() {
   }, [deepLinkId, connectors, searchParams, pathname, router]);
 
   const setConnection = useCallback((connectorId: string, connection: UserAccessConnection | null) => {
-    forgetMyUserAccessConnectors();
     setConnectors((list) =>
       list.map((c) => (c.connectorId === connectorId ? { ...c, connected: connection !== null, connection } : c))
     );
@@ -344,7 +342,6 @@ export function MyAccountConnections() {
     async (connectorId: string, optedOut: boolean) => {
       try {
         const saved = await ConnectorsApi.setUserAccessReminders(connectorId, optedOut);
-        forgetMyUserAccessConnectors();
         setConnectors((list) => list.map((c) => (c.connectorId === connectorId ? { ...c, optedOut: saved } : c)));
         addToast({
           variant: 'success',

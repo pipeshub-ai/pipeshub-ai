@@ -3872,13 +3872,6 @@
           "removeWho": "Odebrat připojení {{name}}"
         },
         "dontRemind": "Nepřipomínat",
-        "banner": {
-          "notConnected": "Výsledky z {{source}} pro vás zatím nejsou zahrnuty.",
-          "connect": "Připojit {{source}}",
-          "revoked": "Vaše připojení k {{source}} přestalo fungovat.",
-          "reconnect": "Znovu připojit",
-          "dismiss": "Skrýt"
-        },
         "link": {
           "title": "Připojte svůj účet {{source}}",
           "forEmail": "pro {{email}}",

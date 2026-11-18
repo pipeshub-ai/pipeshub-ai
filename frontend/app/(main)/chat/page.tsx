@@ -55,7 +55,6 @@ import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
-import { ConnectAccountBanner } from '@/app/(main)/workspace/connectors/components/user-access/connect-banner';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useBrand } from '@/lib/branding';
 import { chatContentColumnStyle, clampSplitWidth } from './constants';
@@ -1417,8 +1416,6 @@ function ChatContent() {
                 {demoDataActive && showChatInput && !demoHidden && (
                   <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}
-                {/* Last in the column, so appearing after load moves nothing below it. */}
-                {showChatInput && <ConnectAccountBanner style={{ marginTop: 'var(--space-4)' }} />}
               </Flex>
             </Box>
           </Flex>

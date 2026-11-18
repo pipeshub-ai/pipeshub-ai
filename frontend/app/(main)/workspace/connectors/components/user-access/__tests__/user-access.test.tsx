@@ -37,7 +37,6 @@ vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }
 
 import { MyAccountConnections } from '../my-account-connections';
 import { ConnectedUsers } from '../connected-users';
-import { ConnectAccountBanner, forgetMyUserAccessConnectors } from '../connect-banner';
 import { ConnectAccountClient } from '@/app/(public)/connect-account/connect-account-client';
 import { ConnectorOAuthCallbackClient } from '@/app/(public)/connectors/oauth/callback/connector-oauth-callback-client';
 import { installDomShims, renderInTheme, toastTitles, toasts, clearToasts } from '../../../__tests__/fixtures';
@@ -62,7 +61,6 @@ beforeEach(() => {
   Object.values(api).forEach((fn) => fn.mockReset());
   nav.params = new URLSearchParams();
   nav.router.replace.mockReset();
-  forgetMyUserAccessConnectors();
   sessionStorage.clear();
 });
 afterEach(() => cleanup());
@@ -440,97 +438,6 @@ describe('MyAccountConnections deep link, dialog and reminders', () => {
     renderInTheme(<MyAccountConnections />);
     expect(await screen.findAllByRole('button', { name: 'Remind me again' })).toHaveLength(1);
     expect(screen.queryByRole('button', { name: "Don't remind me" })).toBeNull();
-  });
-});
-
-describe('ConnectAccountBanner', () => {
-  const notion = { connectorId: 'c-1', name: 'Team Notion', type: 'Notion', connected: false, connection: null };
-  const notConnected = "Notion results aren't included for you yet.";
-
-  afterEach(() => vi.useRealTimers());
-
-  it('asks to connect, links to the dialog, and stays dismissed for the session', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
-    const { unmount } = renderInTheme(<ConnectAccountBanner />);
-
-    expect(await screen.findByText(notConnected)).toBeTruthy();
-    // next/link drops the trailing slash here; the app's trailingSlash config keeps it.
-    expect(screen.getByRole('link', { name: 'Connect Notion' }).getAttribute('href')).toMatch(
-      /^\/workspace\/connectors\/personal\/?\?connect=c-1$/
-    );
-    expect(api.getMyUserAccessConnectors).toHaveBeenCalledWith({ silent: true });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    expect(screen.queryByText(notConnected)).toBeNull();
-    unmount();
-
-    renderInTheme(<ConnectAccountBanner />);
-    await act(async () => {});
-    expect(screen.queryByText(notConnected)).toBeNull();
-    expect(api.getMyUserAccessConnectors).toHaveBeenCalledTimes(1);
-  });
-
-  it('fetches once for several mounts', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
-    renderInTheme(<ConnectAccountBanner />);
-    renderInTheme(<ConnectAccountBanner />);
-    await waitFor(() => expect(screen.getAllByText(notConnected)).toHaveLength(2));
-    expect(api.getMyUserAccessConnectors).toHaveBeenCalledTimes(1);
-  });
-
-  it('re-reads the list on focus at most once a minute, and hides once connected elsewhere', async () => {
-    const now = vi.spyOn(Date, 'now');
-    now.mockReturnValue(1_000_000);
-    api.getMyUserAccessConnectors.mockResolvedValueOnce([notion]);
-    renderInTheme(<ConnectAccountBanner />);
-    expect(await screen.findByText(notConnected)).toBeTruthy();
-
-    now.mockReturnValue(1_000_000 + 30_000);
-    act(() => void window.dispatchEvent(new Event('focus')));
-    expect(api.getMyUserAccessConnectors).toHaveBeenCalledTimes(1);
-
-    api.getMyUserAccessConnectors.mockResolvedValueOnce([{ ...notion, connected: true, connection: connection() }]);
-    now.mockReturnValue(1_000_000 + 61_000);
-    act(() => void window.dispatchEvent(new Event('focus')));
-    await waitFor(() => expect(screen.queryByText(notConnected)).toBeNull());
-    expect(api.getMyUserAccessConnectors).toHaveBeenCalledTimes(2);
-    now.mockRestore();
-  });
-
-  it("stops reminders for good from the banner", async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([notion]);
-    api.setUserAccessReminders.mockResolvedValue(true);
-    renderInTheme(<ConnectAccountBanner />);
-
-    fireEvent.click(await screen.findByRole('button', { name: "Don't remind me" }));
-    expect(screen.queryByText(notConnected)).toBeNull();
-    expect(api.setUserAccessReminders).toHaveBeenCalledWith('c-1', true);
-  });
-
-  it('asks to reconnect a revoked connection', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([
-      { ...notion, connected: true, connection: connection({ status: 'revoked' }) },
-    ]);
-    renderInTheme(<ConnectAccountBanner />);
-    expect(await screen.findByText('Your Notion connection stopped working.')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Reconnect' })).toBeTruthy();
-  });
-
-  it('stays hidden when connected, opted out, or the list fails', async () => {
-    api.getMyUserAccessConnectors.mockResolvedValue([
-      { ...notion, connected: true, connection: connection() },
-      { ...notion, connectorId: 'c-2', optedOut: true },
-    ]);
-    const first = renderInTheme(<ConnectAccountBanner />);
-    await act(async () => {});
-    expect(first.container.querySelector('[role="status"]')).toBeNull();
-
-    cleanup();
-    forgetMyUserAccessConnectors();
-    api.getMyUserAccessConnectors.mockRejectedValue(new Error('offline'));
-    const second = renderInTheme(<ConnectAccountBanner />);
-    await act(async () => {});
-    expect(second.container.querySelector('[role="status"]')).toBeNull();
   });
 });
 

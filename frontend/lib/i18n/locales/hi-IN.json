@@ -3594,13 +3594,6 @@
           "removeWho": "{{name}} का कनेक्शन हटाएँ"
         },
         "dontRemind": "मुझे याद न दिलाएँ",
-        "banner": {
-          "notConnected": "{{source}} के परिणाम अभी आपके लिए शामिल नहीं हैं।",
-          "connect": "{{source}} कनेक्ट करें",
-          "revoked": "आपका {{source}} कनेक्शन काम करना बंद कर चुका है।",
-          "reconnect": "फिर से कनेक्ट करें",
-          "dismiss": "हटाएँ"
-        },
         "link": {
           "title": "अपना {{source}} खाता कनेक्ट करें",
           "forEmail": "{{email}} के लिए",

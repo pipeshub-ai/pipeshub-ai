@@ -3736,13 +3736,6 @@
           "removeWho": "{{name}}의 연결 제거"
         },
         "dontRemind": "알림 받지 않기",
-        "banner": {
-          "notConnected": "아직 {{source}} 결과가 포함되지 않습니다.",
-          "connect": "{{source}} 연결",
-          "revoked": "{{source}} 연결이 더 이상 작동하지 않습니다.",
-          "reconnect": "다시 연결",
-          "dismiss": "닫기"
-        },
         "link": {
           "title": "{{source}} 계정 연결",
           "forEmail": "{{email}}용",

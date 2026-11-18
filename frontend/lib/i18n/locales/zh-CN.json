@@ -3736,13 +3736,6 @@
           "removeWho": "移除 {{name}} 的连接"
         },
         "dontRemind": "不再提醒我",
-        "banner": {
-          "notConnected": "你的结果中暂未包含 {{source}} 内容。",
-          "connect": "连接 {{source}}",
-          "revoked": "你的 {{source}} 连接已失效。",
-          "reconnect": "重新连接",
-          "dismiss": "关闭"
-        },
         "link": {
           "title": "连接你的 {{source}} 账户",
           "forEmail": "适用于 {{email}}",

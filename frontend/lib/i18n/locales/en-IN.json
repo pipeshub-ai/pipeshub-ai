@@ -3590,13 +3590,6 @@
           "removeWho": "Remove the connection of {{name}}"
         },
         "dontRemind": "Don't remind me",
-        "banner": {
-          "notConnected": "{{source}} results aren't included for you yet.",
-          "connect": "Connect {{source}}",
-          "revoked": "Your {{source}} connection stopped working.",
-          "reconnect": "Reconnect",
-          "dismiss": "Dismiss"
-        },
         "link": {
           "title": "Connect your {{source}} account",
           "forEmail": "for {{email}}",

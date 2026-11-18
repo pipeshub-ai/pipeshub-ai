@@ -3599,13 +3599,6 @@
           "removeWho": "Verbindung von {{name}} entfernen"
         },
         "dontRemind": "Nicht mehr erinnern",
-        "banner": {
-          "notConnected": "{{source}}-Ergebnisse sind für Sie noch nicht enthalten.",
-          "connect": "{{source}} verbinden",
-          "revoked": "Ihre {{source}}-Verbindung funktioniert nicht mehr.",
-          "reconnect": "Erneut verbinden",
-          "dismiss": "Ausblenden"
-        },
         "link": {
           "title": "Verbinden Sie Ihr {{source}}-Konto",
           "forEmail": "für {{email}}",

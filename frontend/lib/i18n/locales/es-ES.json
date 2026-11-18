@@ -3638,13 +3638,6 @@
           "removeWho": "Quitar la conexión de {{name}}"
         },
         "dontRemind": "No recordarme",
-        "banner": {
-          "notConnected": "Los resultados de {{source}} aún no se incluyen para ti.",
-          "connect": "Conectar {{source}}",
-          "revoked": "Tu conexión con {{source}} dejó de funcionar.",
-          "reconnect": "Volver a conectar",
-          "dismiss": "Descartar"
-        },
         "link": {
           "title": "Conecta tu cuenta de {{source}}",
           "forEmail": "para {{email}}",
