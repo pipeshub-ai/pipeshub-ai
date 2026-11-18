@@ -23,25 +23,27 @@ Data defaults to `~/Library/Application Support/PipesHub` (macOS) or `${XDG_DATA
 0. Takes the data folder's lock: an `flock` on `launcher.lock`, held by a small helper process (the bundle's Python) for the
    launcher's lifetime, so the kernel releases it when the launcher dies. A second start on the same folder reports
    `already_running`. Anything a crashed launcher left (its current step, services, PostgreSQL) is ended first.
-1. First run: `initdb` (SCRAM authentication, the administrator password from `secrets.json`).
+1. First run: `initdb` (SCRAM authentication, the administrator password from `secrets.json`) into a side folder, renamed into
+   place when complete. A `pgdata` that holds files but no `PG_VERSION` is never initialised over: the start stops and says so.
 2. Writes `<pgdata>/launcher.conf` (loopback, the picked port, a 0700 socket folder where the path fits, the Compose image's
    `shared_preload_libraries`) and starts PostgreSQL.
-3. Creates the `pipeshub` database if missing, then `python -m db.bootstrap_roles` (the administrator login; every login's password)
-   and `python -m db.migrate` (the migrate login). Every start, so an upgrade migrates. If a step fails, nothing else starts.
+3. Creates the `pipeshub` database if missing and gives every login that exists its password from `secrets.json`, then
+   `python -m db.bootstrap_roles` (the administrator login; creates the missing logins) and `python -m db.migrate` (the migrate login). Every start, so an upgrade migrates. If a step fails, nothing else starts.
 4. Starts query, connectors, indexing, embedding and docling (`python -m app.<service>_main`), each as its own database login, as
    `process_monitor.sh` does; `db.maintain placement --watch` and `fold --watch`; then the API (`node dist/index.js`).
 5. Waits for `/api/v1/health`.
 
 `secrets.json` (0600) holds the generated passwords and signing secrets. They are passed to the processes in their environment, never
 on a command line, and masked in any error message the launcher prints. A `secrets.json` that cannot be read or parsed is never
-replaced: the start stops and says so, because the database already uses those passwords.
+replaced: the start stops and says so, because the database already uses those passwords. The same holds for one without
+`pg_admin` once the database exists.
 
 ## Launcher contract (what the desktop app uses)
 
 | Command | Behaviour | Exit |
 |---|---|---|
 | `start [--data-dir D] [--json] [--detach]` | the steps above; stays in the foreground until TERM/INT or a service dies; `--detach` returns after `ready` | 0 stopped on request, 1 start-up failed, 3 a service died |
-| `stop [--data-dir D] [--json]` | stops a running launcher and everything under it; also ends leftovers of a crashed launcher | 0 (also when none runs) |
+| `stop [--data-dir D] [--json]` | stops a running launcher and everything under it; also ends leftovers of a crashed launcher | 0 stopped (also when none runs), 1 `stop_failed` |
 | `status [--data-dir D] [--json]` | `{"running","phase","pid","url","ports","services":{name:{pid,alive}}}` | 0 running, 3 not |
 | `health [--data-dir D] [--json]` | `{"healthy","checks":{api,pg,...}}` | 0 healthy, 1 not |
 
@@ -85,5 +87,6 @@ folder (about 2.5 GB there with the default model).
 
 ## Tests
 
-`cd deployment/native/launcher && npm test` (Node 24.12 or later; no dependencies). The launcher tests run it as a process against
+`cd deployment/native/launcher && npm test` (Linux or macOS, Node 24.12 or later, `python3` and `pgrep` on `PATH`; no npm
+dependencies). The launcher tests run it as a process against
 a fake bundle (shell stand-ins for PostgreSQL and Python, a stub API).

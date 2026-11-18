@@ -2,7 +2,10 @@
 // starts (each its own process, with its own database login), the placement and fold workers, and the Node API. Each runs in its
 // own process group, so a stop reaches its worker pools.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync,
+  statSync, writeFileSync,
+} from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import {
   type Ctx, HOST, type Layout, PY_SERVICES, type Ports, type ProcessName, type Secrets, apiUrl, defaultDataDir, layout,
@@ -44,6 +47,8 @@ export interface State {
   /** The one-shot step running now (its own process group), so a stop after a killed launcher can end it. */
   step?: { name: string; pid: number; id?: string };
   healthyAfterS?: number;
+  /** A crashed launcher's state, kept until its processes are ended, so a crash during that cleanup does not lose them. */
+  leftover?: State;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -180,7 +185,11 @@ function runStep(c: Ctx, steps: Steps, name: string, cmd: string, args: string[]
     steps.onSpawn?.(name, p.pid);
     const done = (err?: Error) => {
       closeSync(fd);
-      if (steps.current === p) { steps.current = undefined; steps.onSpawn?.(name, undefined); }
+      if (steps.current === p) {
+        steps.current = undefined;
+        // Thrown here it would escape the exit callback and leave the promise (and the shutdown waiting on it) unsettled.
+        try { steps.onSpawn?.(name, undefined); } catch (e) { err ??= e as Error; }
+      }
       err ? rej(err) : res();
     };
     p.once("error", (e) => done(e));
@@ -191,16 +200,31 @@ function runStep(c: Ctx, steps: Steps, name: string, cmd: string, args: string[]
   });
 }
 
-const CREATE_DB = `import psycopg
+// Also gives every login that already exists its password from secrets.json: bootstrap_roles sets one only when it creates the
+// login, so a key filled in after a restore would otherwise never match. Sent as a SCRAM verifier, never in clear text.
+const CREATE_DB = `import os, sys
+sys.path.insert(0, os.getcwd())
+import psycopg
+from psycopg import sql
+from db.bootstrap_roles import PASSWORD_VARS
 c = psycopg.connect(dbname='postgres', autocommit=True)
-c.execute("SELECT 1 FROM pg_database WHERE datname = 'pipeshub'").fetchone() or c.execute('CREATE DATABASE pipeshub')`;
+c.execute("SELECT 1 FROM pg_database WHERE datname = 'pipeshub'").fetchone() or c.execute('CREATE DATABASE pipeshub')
+for role, var in PASSWORD_VARS.items():
+    if c.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone():
+        v = c.pgconn.encrypt_password(os.environ[var].encode(), role.encode(), b"scram-sha-256").decode()
+        c.execute(sql.SQL("ALTER ROLE {} PASSWORD {}").format(sql.Identifier(role), sql.Literal(v)))`;
 
 const pgEnv = () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin" });
+export const nonEmpty = (dir: string) => existsSync(dir) && readdirSync(dir).length > 0;
 
 /** First run: initdb. Every run: write the settings, then start PostgreSQL (a leftover server of a crashed launcher is stopped first). */
 export async function startPostgres(c: Ctx, emit: Emit, steps: Steps = { cancelled: false }): Promise<void> {
   const { layout: lay } = c, pgCtl = join(lay.pgBin, "pg_ctl");
   if (!existsSync(join(lay.pgData, "PG_VERSION"))) {
+    // Files without PG_VERSION may be a cluster that lost only that file: never initialise over it.
+    if (nonEmpty(lay.pgData)) {
+      throw new Error(`${lay.pgData} holds files but no PG_VERSION, so it is not a database this launcher can start, and it will not replace it. Restore it from a backup or move it aside, then start again.`);
+    }
     progress(emit, "initdb");
     // Initialised in a side folder and renamed into place only when complete: a crash part-way leaves nothing that looks
     // initialised, and the next start begins again.
@@ -213,7 +237,7 @@ export async function startPostgres(c: Ctx, emit: Emit, steps: Steps = { cancell
         "-E", "UTF8", "--locale=C", "--locale-provider=builtin", "--builtin-locale=C.UTF-8", "--no-instructions"], pgEnv(), lay.dataDir);
     } finally { rmSync(pwfile, { force: true }); }
     appendFileSync(join(fresh, "postgresql.conf"), "\ninclude 'launcher.conf'\n");
-    rmSync(lay.pgData, { recursive: true, force: true });
+    if (existsSync(lay.pgData)) rmdirSync(lay.pgData); // empty, as checked above; rmdir refuses anything else
     renameSync(fresh, lay.pgData);
   }
   // A data folder whose include went missing (edited, or made by hand) would ignore every setting below.
@@ -221,29 +245,42 @@ export async function startPostgres(c: Ctx, emit: Emit, steps: Steps = { cancell
   if (!/^include 'launcher\.conf'$/m.test(readFileSync(conf, "utf8"))) appendFileSync(conf, "\ninclude 'launcher.conf'\n");
   writeFileSync(join(lay.pgData, "launcher.conf"), postgresConf(c), { mode: 0o600 });
   mkdirSync(lay.run, { recursive: true, mode: 0o700 });
-  if (existsSync(join(lay.pgData, "postmaster.pid"))) spawnSync(pgCtl, ["-D", lay.pgData, "-m", "fast", "-w", "-t", "60", "stop"], { env: pgEnv(), stdio: "ignore" });
+  await stopPostgres(lay);
   progress(emit, "postgres");
   await runStep(c, steps, "pg_ctl", pgCtl, ["-D", lay.pgData, "-l", join(lay.logs, "postgres.log"), "-w", "-t", "60", "start"], pgEnv(), lay.dataDir);
 }
 
-/** The server's pid from postmaster.pid, when that file names this data folder and the process is alive. */
+function cwdOf(pid: number): string | undefined {
+  if (process.platform === "linux") return readlinkSync(`/proc/${pid}/cwd`);
+  return spawnSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout?.split("\n").find((l) => l.startsWith("n"))?.slice(1);
+}
+
+/**
+ * The server's pid from postmaster.pid, when that file names this data folder and the process is alive and works in that folder
+ * (a postmaster changes into its data folder), so a pid a crashed server left there and another process now has is never taken for it.
+ */
 export function postmasterPid(lay: Layout): number | undefined {
   try {
     const [pid, dir] = readFileSync(join(lay.pgData, "postmaster.pid"), "utf8").split("\n");
     const n = Number(pid);
-    return n && resolvePath(dir ?? "") === resolvePath(lay.pgData) && alive(n) ? n : undefined;
+    return n && resolvePath(dir ?? "") === resolvePath(lay.pgData) && alive(n) && cwdOf(n) === realpathSync(lay.pgData) ? n : undefined;
   } catch { return undefined; }
 }
 
-/** Stops this data folder's server: pg_ctl first, then a fast-shutdown signal to its postmaster if pg_ctl could not (bundle gone, say). */
-export async function stopPostgres(lay: Layout): Promise<void> {
-  if (!existsSync(join(lay.pgData, "postmaster.pid"))) return;
+/**
+ * Stops this data folder's server: pg_ctl first, then a fast-shutdown signal to its postmaster if pg_ctl could not (bundle gone, say).
+ * Throws when the server is still running at the end, so no caller reports a stop that did not happen.
+ */
+export async function stopPostgres(lay: Layout, waitMs = 60_000): Promise<void> {
+  // pg_ctl signals whatever pid postmaster.pid names, so it runs only for a server proven to be this folder's.
+  if (!postmasterPid(lay)) return;
   spawnSync(join(lay.pgBin, "pg_ctl"), ["-D", lay.pgData, "-m", "fast", "-w", "-t", "60", "stop"], { env: pgEnv(), stdio: "ignore" });
   const pid = postmasterPid(lay);
   if (!pid) return;
-  try { process.kill(pid, "SIGINT"); } catch { return; }
-  const until = Date.now() + 60_000;
+  try { process.kill(pid, "SIGINT"); } catch { /* exiting */ }
+  const until = Date.now() + waitMs;
   while (alive(pid) && Date.now() < until) await sleep(200);
+  if (alive(pid)) throw new Error(`PostgreSQL (pid ${pid}) did not stop; its data folder is ${lay.pgData}`);
 }
 
 /** Database, roles and schema to head, on every start, so an upgrade migrates. Only these steps see the administrator password. */
@@ -284,7 +321,7 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   const previous = readState(dataDir);
   const state: State = {
     pid: process.pid, pidId: procIdentity(process.pid), bootId: bootId(), phase: "starting", startedAt: t0, bundle, dataDir,
-    url: "", ports: {} as Ports, services: {}, serviceIds: {},
+    url: "", ports: {} as Ports, services: {}, serviceIds: {}, leftover: previous,
   };
   const save = () => writeJson(statePath(dataDir), state);
   save();
@@ -305,7 +342,15 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   const requestStop = (code: number) => {
     if (stopping) return;
     stopping = true; exitCode = code; steps.cancelled = true;
-    if (steps.current?.pid) group(steps.current.pid, "SIGTERM");
+    const p = steps.current;
+    if (p?.pid) {
+      // pg_ctl start hands the server to a child in a session of its own, so ending pg_ctl early would let a server come up
+      // after the shutdown looked for it. It is left to finish (its -t 60 bounds it); every other step is asked to end.
+      const pgCtl = state.step?.name === "pg_ctl";
+      if (!pgCtl) group(p.pid, "SIGTERM");
+      // A step that ignores SIGTERM, or is suspended, would hold the shutdown and the lock forever.
+      setTimeout(() => { if (steps.current === p) group(p.pid!, "SIGKILL"); }, pgCtl ? 70_000 : 10_000).unref();
+    }
     wake();
   };
   const onSignal = () => requestStop(0);
@@ -338,6 +383,7 @@ export async function start(o: Options, emit: Emit): Promise<number> {
 
   try {
     await reapLeftovers(dataDir, lay, previous, false);
+    delete state.leftover; save();
     if (stopping) throw new Cancelled();
     const saved = readJson<Ports>(join(dataDir, "ports.json"));
     // The API's address is stored in the database's settings on its first start (auth, storage and other endpoints), so it
@@ -345,7 +391,7 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     if (saved?.api && existsSync(join(lay.pgData, "PG_VERSION")) && !(await isFree(saved.api))) {
       throw new StartError("port_in_use", `port ${saved.api} on 127.0.0.1 is in use by another program; PipesHub's stored addresses use it. Stop that program and start again.`);
     }
-    secrets = loadSecrets(dataDir);
+    secrets = loadSecrets(dataDir, nonEmpty(lay.pgData));
     const ports = await pickPorts(saved, o.portBase);
     writeJson(join(dataDir, "ports.json"), ports);
     const c: Ctx = { layout: lay, ports, secrets };
@@ -373,15 +419,21 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   }
   await stopRequested;
 
-  state.phase = "stopping"; save();
+  // The phase is only for status: a failed write (a full disk) must not keep the processes below running.
+  state.phase = "stopping"; try { save(); } catch { /* best effort */ }
   emit({ event: "stopping" });
   const pids = [...procs.values()].map((p) => p.pid).filter((p): p is number => !!p);
   pids.forEach((p) => group(p, "SIGTERM"));
   const until = Date.now() + (o.stopWaitS ?? 30) * 1000;
   while (Date.now() < until && pids.some((p) => alive(p))) await sleep(200);
   pids.forEach((p) => group(p, "SIGKILL"));
-  await stopPostgres(lay);
-  rmSync(statePath(dataDir), { force: true });
+  try {
+    await stopPostgres(lay);
+    rmSync(statePath(dataDir), { force: true });
+  } catch (e) {
+    // The state stays, so the next start or stop ends this server.
+    emit({ event: "error", code: "stop_failed", message: (e as Error).message }); exitCode = 1;
+  }
   stopping = true;
   held.release();
   process.off("SIGTERM", onSignal); process.off("SIGINT", onSignal);
@@ -393,14 +445,19 @@ export async function start(o: Options, emit: Emit): Promise<number> {
 /** Call with the data folder's lock held, so it never acts on a successor's processes. */
 export async function reapLeftovers(dataDir: string, lay: Layout, s: State | undefined = readState(dataDir), removeState = true): Promise<void> {
   if (s && sameProcess(s.pid, s.pidId)) return;
+  // A launcher that crashed while cleaning up after another kept that one's state: end those processes too.
+  if (s?.leftover) await reapLeftovers(dataDir, lay, s.leftover, false);
   // Processes recorded in an earlier boot are all gone; their pids may belong to anything now.
   const sameBoot = !!s && (s.bootId === undefined || s.bootId === bootId());
   // A step (initdb, pg_ctl, a schema step) runs in its own group and outlives a killed launcher: end it before anything
   // else touches the data folder, or a new initdb or a late pg_ctl start would run alongside it.
   const step = s?.step;
   if (sameBoot && step?.pid && ownGroupAlive(step.pid, step.id)) {
-    group(step.pid, "SIGTERM");
-    const until = Date.now() + 10_000;
+    // A pg_ctl start is left to finish (its -t 60 bounds it): its server, started in a session of its own, would otherwise come
+    // up after the stopPostgres below looked for it.
+    const pgCtl = step.name === "pg_ctl";
+    if (!pgCtl) group(step.pid, "SIGTERM");
+    const until = Date.now() + (pgCtl ? 70_000 : 10_000);
     while (groupAlive(step.pid) && Date.now() < until) await sleep(100);
     group(step.pid, "SIGKILL");
   }
@@ -415,6 +472,8 @@ export async function reapLeftovers(dataDir: string, lay: Layout, s: State | und
 
 export async function stop(o: Options, emit: Emit): Promise<number> {
   const { dataDir, lay } = resolve(o);
+  // A data folder that was never created has nothing running (a permission error still fails below).
+  if (!statSync(dataDir, { throwIfNoEntry: false })) { emit({ event: "stopped", was_running: false }); return 0; }
   const until = Date.now() + 30_000;
   for (;;) {
     const s = running(dataDir);
@@ -425,7 +484,9 @@ export async function stop(o: Options, emit: Emit): Promise<number> {
       emit({ event: "error", code: "stop_failed", message: (e as Error).message }); return 1;
     }
     if (lock !== "busy") {
-      try { await reapLeftovers(dataDir, lay); } finally { lock.release(); }
+      try { await reapLeftovers(dataDir, lay); } catch (e) {
+        emit({ event: "error", code: "stop_failed", message: (e as Error).message }); return 1;
+      } finally { lock.release(); }
       emit({ event: "stopped", was_running: false }); return 0;
     }
     // A start holds the lock but has not written its state yet: wait for it, then stop it.
@@ -434,19 +495,24 @@ export async function stop(o: Options, emit: Emit): Promise<number> {
   }
 }
 
+// Long enough for a launcher that is still cleaning up a crashed run (a leftover step: up to 70 s; pg_ctl stop: up to 60 s) to
+// finish that cleanup, see the signal, and stop its own services (stopWaitS).
+const launcherStopMs = (o: Options) => ((o.stopWaitS ?? 30) + 140) * 1000;
+
 async function stopPid(pid: number, dataDir: string, lay: Layout, o: Options, emit: Emit): Promise<number> {
   try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
-  // Long enough for a start that is still cleaning up a crashed run (a leftover step: 10 s; pg_ctl stop: up to 60 s) to finish
-  // that cleanup, see the signal, and stop its own services (stopWaitS).
-  const until = Date.now() + ((o.stopWaitS ?? 30) + 100) * 1000;
+  const until = Date.now() + launcherStopMs(o);
   while (alive(pid) && Date.now() < until) await sleep(200);
   if (alive(pid)) { emit({ event: "error", code: "stop_failed", message: `launcher ${pid} did not stop` }); return 1; }
   // If the launcher died rather than stopped, its step or server may still be up. Under the lock, and only if no new start
   // has taken it meanwhile: that start owns the data folder now.
-  try {
-    const lock = await acquireLock(dataDir, lay.python);
-    if (lock !== "busy") { try { await reapLeftovers(dataDir, lay); } finally { lock.release(); } }
-  } catch { /* the launcher stopped; nothing more can be done without the lock */ }
+  let lock: Lock | "busy" | undefined;
+  try { lock = await acquireLock(dataDir, lay.python); } catch { /* the launcher stopped; nothing more can be done without the lock */ }
+  if (lock && lock !== "busy") {
+    try { await reapLeftovers(dataDir, lay); } catch (e) {
+      emit({ event: "error", code: "stop_failed", message: (e as Error).message }); return 1;
+    } finally { lock.release(); }
+  }
   emit({ event: "stopped", was_running: true });
   return 0;
 }
@@ -462,14 +528,14 @@ export function status(o: Options): { code: number; body: Record<string, unknown
 export async function health(o: Options, fetchFn: typeof fetch = fetch): Promise<{ code: number; body: Record<string, unknown> }> {
   const st = status(o);
   if (!st.body.running) return { code: 1, body: { healthy: false, reason: "not running" } };
-  const ports = st.body.ports as Ports;
-  const services = st.body.services as Record<string, { alive: boolean }>;
-  const checks: Record<string, boolean> = Object.fromEntries(Object.entries(services).map(([n, x]) => [n, x.alive]));
-  checks.api = false; checks.pg = false;
-  try { checks.api = (await fetchFn(`http://${HOST}:${ports.api}/api/v1/health`, { signal: AbortSignal.timeout(3000) })).status === 200; } catch { /* down */ }
-  try { checks.pg = alive(Number(readFileSync(join(resolve(o).lay.pgData, "postmaster.pid"), "utf8").split("\n")[0])); } catch { /* no server */ }
-  const healthy = st.body.phase === "ready" && Object.values(checks).every(Boolean);
-  return { code: healthy ? 0 : 1, body: { healthy, phase: st.body.phase, url: st.body.url, checks } };
+  let api = false;
+  try { api = (await fetchFn(`http://${HOST}:${(st.body.ports as Ports).api}/api/v1/health`, { signal: AbortSignal.timeout(3000) })).status === 200; } catch { /* down */ }
+  // Read after the request: the launcher or a service may have stopped while it was pending.
+  const now = status(o);
+  const services = (now.body.services ?? {}) as Record<string, { alive: boolean }>;
+  const checks: Record<string, boolean> = { ...Object.fromEntries(Object.entries(services).map(([n, x]) => [n, x.alive])), api, pg: !!postmasterPid(resolve(o).lay) };
+  const healthy = now.body.pid === st.body.pid && now.body.phase === "ready" && Object.values(checks).every(Boolean);
+  return { code: healthy ? 0 : 1, body: { healthy, phase: now.body.phase, url: st.body.url, checks } };
 }
 
 /** `start --detach`: run the launcher in the background and return once it is ready (or failed, with its own error). */
@@ -488,11 +554,17 @@ export async function startDetached(o: Options, emit: Emit, args: string[], self
   p.unref(); closeSync(fd);
   const until = Date.now() + ((o.healthTimeoutS ?? 300) + 120) * 1000;
   let exited = false; p.once("exit", () => { exited = true; });
-  while (Date.now() < until) {
+  for (;;) {
     const s = readState(dataDir);
     if (s && s.pid === p.pid && s.phase === "ready") { emit({ event: "ready", url: s.url, ports: s.ports, healthy_after_s: s.healthyAfterS, pid: s.pid, data_dir: dataDir }); return 0; }
-    if (exited) break;
+    if (exited || Date.now() >= until) break;
     await sleep(300);
+  }
+  // Out of time: this start is cancelled (it stops what it started), so a "not ready" answer leaves nothing coming up later.
+  if (!exited && p.pid) {
+    try { process.kill(p.pid, "SIGTERM"); } catch { /* exiting */ }
+    const end = Date.now() + launcherStopMs(o);
+    while (!exited && Date.now() < end) await sleep(300);
   }
   const mine = (() => { try { return readFileSync(log, "utf8").slice(from); } catch { return ""; } })();
   // The background launcher's own error (already_running, start_failed, ...) says more than "not ready".

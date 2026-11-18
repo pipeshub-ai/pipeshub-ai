@@ -127,9 +127,10 @@ export function readJson<T>(path: string): T | undefined {
 /**
  * Generated once and kept 0600 in the data folder; a missing key (an older file) is filled in, an existing one never changes.
  * A file that exists but cannot be read or parsed is left untouched and the start stops: the database already uses those
- * passwords, and new ones would lock every service out of it.
+ * passwords, and new ones would lock every service out of it. So does a missing administrator password once the database
+ * exists (`hasCluster`): it was set when the cluster was created and nothing can change it without it.
  */
-export function loadSecrets(dataDir: string): Secrets {
+export function loadSecrets(dataDir: string, hasCluster = false): Secrets {
   const path = join(dataDir, "secrets.json");
   let have: Partial<Secrets> = {};
   if (existsSync(path)) {
@@ -137,12 +138,17 @@ export function loadSecrets(dataDir: string): Secrets {
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));
     } catch (e) {
-      throw new Error(`${path} cannot be read (${(e as Error).message.split("\n")[0]}). It holds the database passwords; restore it from a backup. Nothing was changed.`);
+      // Not the parser's message: it quotes the file's text, passwords included.
+      const why = e instanceof SyntaxError ? "it is not valid JSON" : (e as NodeJS.ErrnoException).code ?? "unknown error";
+      throw new Error(`${path} cannot be read (${why}). It holds the database passwords; restore it from a backup. Nothing was changed.`);
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || Object.values(parsed).some((v) => typeof v !== "string")) {
       throw new Error(`${path} is not a secrets file (an object of strings). It holds the database passwords; restore it from a backup. Nothing was changed.`);
     }
     have = parsed as Partial<Secrets>;
+  }
+  if (hasCluster && !have.pg_admin) {
+    throw new Error(`${path} has no pg_admin, the administrator password the existing database was created with. Restore it from a backup. Nothing was changed.`);
   }
   const names = [...PG_LOGINS.map((r) => `pg_${r}`), ...APP_SECRETS] as (keyof Secrets)[];
   let changed = false;
@@ -223,7 +229,7 @@ export function schemaEnv(c: Ctx): { createdb: Record<string, string>; bootstrap
   const plain = { PATH: h.PATH ?? "/usr/bin:/bin", HOME: c.layout.home, LANG: "C.UTF-8", PYTHONDONTWRITEBYTECODE: "1", PYTHONUNBUFFERED: "1" };
   const passwords = Object.fromEntries(PG_LOGINS.filter((r) => r !== "admin").map((r) => [`PG_${r.toUpperCase()}_PASSWORD`, s[`pg_${r}`]]));
   return {
-    createdb: { ...plain, PGHOST: HOST, PGPORT: String(c.ports.pg), PGUSER: "postgres", PGPASSWORD: s.pg_admin },
+    createdb: { ...plain, PGHOST: HOST, PGPORT: String(c.ports.pg), PGUSER: "postgres", PGPASSWORD: s.pg_admin, ...passwords },
     bootstrap: { ...plain, PG_ADMIN_URL: dsn(c, "postgres", s.pg_admin), PG_BOOTSTRAP_EXTENSIONS: "vector,pg_trgm", ...passwords },
     migrate: { ...plain, PG_MIGRATE_URL: `postgresql+psycopg://pipeshub_migrate:${s.pg_migrate}@${HOST}:${c.ports.pg}/pipeshub` },
   };
@@ -239,6 +245,8 @@ export function socketDir(c: Ctx, platform = process.platform): string {
 }
 
 const quote = (v: string) => `'${v.replace(/'/g, "''")}'`;
+// unix_socket_directories is a comma-separated list: one double-quoted entry keeps a folder with a comma whole.
+const listEntry = (dir: string) => (dir ? `"${dir.replace(/"/g, '""')}"` : "");
 
 /**
  * The server settings, written to <pgdata>/launcher.conf on every start (postgresql.conf includes it): loopback TCP, an
@@ -248,7 +256,7 @@ const quote = (v: string) => `'${v.replace(/'/g, "''")}'`;
 export function postgresConf(c: Ctx, h: NodeJS.ProcessEnv = process.env, platform = process.platform): string {
   const settings: [string, string][] = [
     ["port", String(c.ports.pg)], ["listen_addresses", HOST],
-    ["unix_socket_directories", socketDir(c, platform)], ["unix_socket_permissions", "0700"],
+    ["unix_socket_directories", listEntry(socketDir(c, platform))], ["unix_socket_permissions", "0700"],
     ["shared_preload_libraries", "pg_stat_statements,auto_explain,pg_textsearch"],
     ["max_connections", h.PG_MAX_CONNECTIONS ?? "120"], ["shared_buffers", h.PG_SHARED_BUFFERS ?? "128MB"],
   ];

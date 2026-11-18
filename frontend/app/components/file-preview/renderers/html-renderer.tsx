@@ -12,11 +12,13 @@ interface HtmlRendererProps {
   fileName: string;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  /** Increments on every click on a citation, so a repeat click on the active one scrolls again. */
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
 }
 
 /** Untrusted HTML renders in an isolated frame; see `sandboxed-html.ts`. */
-export function HtmlRenderer({ fileUrl, fileName, citations, activeCitationId, onHighlightClick }: HtmlRendererProps) {
+export function HtmlRenderer({ fileUrl, fileName, citations, activeCitationId, citationClickVersion, onHighlightClick }: HtmlRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [sanitizedHtml, setSanitizedHtml] = useState<string>('');
@@ -95,6 +97,7 @@ export function HtmlRenderer({ fileUrl, fileName, citations, activeCitationId, o
           dark={isDark}
           citations={citations}
           activeCitationId={activeCitationId}
+          citationClickVersion={citationClickVersion}
           onHighlightClick={onHighlightClick}
         />
       )}

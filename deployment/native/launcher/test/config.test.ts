@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,13 +28,14 @@ describe("ports", () => {
   test("a free port from the last run is kept, a taken one is replaced", async () => {
     const taken = net.createServer();
     await new Promise<void>((r) => taken.listen(0, "127.0.0.1", r));
-    const busy = (taken.address() as net.AddressInfo).port;
-    const first = await pickPorts();
-    const again = await pickPorts({ ...first, query: busy });
-    assert.equal(again.api, first.api);
-    assert.equal(again.pg, first.pg);
-    assert.notEqual(again.query, busy);
-    taken.close();
+    try {
+      const busy = (taken.address() as net.AddressInfo).port;
+      const first = await pickPorts();
+      const again = await pickPorts({ ...first, query: busy });
+      assert.equal(again.api, first.api);
+      assert.equal(again.pg, first.pg);
+      assert.notEqual(again.query, busy);
+    } finally { taken.close(); }
   });
   test("a base scans upward from it", async () => {
     const p = await pickPorts({}, 54800, async () => true);
@@ -59,6 +60,21 @@ describe("secrets, damaged", () => {
     writeFileSync(join(d, "secrets.json"), "{oops", { mode: 0o600 });
     assert.throws(() => loadSecrets(d), /secrets\.json/);
     assert.equal(readFileSync(join(d, "secrets.json"), "utf8"), "{oops");
+  });
+  test("the error never quotes the file's text", () => {
+    const d = tmp();
+    writeFileSync(join(d, "secrets.json"), '{"pg_admin": abcd1234secret}', { mode: 0o600 });
+    assert.throws(() => loadSecrets(d), (e: Error) => /secrets\.json/.test(e.message) && !e.message.includes("abcd1234secret"));
+  });
+  test("once the database exists, a missing administrator password is never generated", () => {
+    const d = tmp();
+    assert.throws(() => loadSecrets(d, true), /pg_admin/);
+    assert.ok(!existsSync(join(d, "secrets.json")));
+    const raw = JSON.stringify({ ...loadSecrets(tmp()), pg_admin: undefined });
+    writeFileSync(join(d, "secrets.json"), raw, { mode: 0o600 });
+    assert.throws(() => loadSecrets(d, true), /pg_admin/);
+    assert.equal(readFileSync(join(d, "secrets.json"), "utf8"), raw);
+    assert.ok(loadSecrets(d, false).pg_admin, "a new cluster still gets one");
   });
 });
 
@@ -150,6 +166,10 @@ describe("environments", () => {
     assert.match(e.bootstrap.PG_ADMIN_URL!, new RegExp(`^postgresql://postgres:${s.pg_admin}@127\\.0\\.0\\.1:`));
     for (const r of ["NODE", "CONNECTORS", "INDEXING", "QUERY", "KV", "JOBS", "MIGRATE", "BACKUP"]) assert.ok(e.bootstrap[`PG_${r}_PASSWORD`]);
     assert.equal(e.createdb.PGPASSWORD, s.pg_admin);
+    // createdb also sets each existing login's password, which bootstrap_roles leaves alone
+    for (const r of ["NODE", "CONNECTORS", "INDEXING", "QUERY", "KV", "JOBS", "MIGRATE", "BACKUP"]) {
+      assert.equal(e.createdb[`PG_${r}_PASSWORD`], s[`pg_${r.toLowerCase()}` as keyof typeof s]);
+    }
     assert.ok(!JSON.stringify(e.migrate).includes(s.pg_admin));
   });
 });
@@ -159,7 +179,7 @@ describe("postgres settings", () => {
     const conf = postgresConf(ctx(), {}, "linux");
     assert.match(conf, /^listen_addresses = '127\.0\.0\.1'$/m);
     assert.match(conf, /^port = '50001'$/m);
-    assert.match(conf, /^unix_socket_directories = '\/d\/run'$/m);
+    assert.match(conf, /^unix_socket_directories = '"\/d\/run"'$/m);
     assert.match(conf, /^unix_socket_permissions = '0700'$/m);
   });
   test("no socket where the path would be too long or the platform has none; quotes are escaped", () => {
@@ -167,6 +187,9 @@ describe("postgres settings", () => {
     assert.equal(socketDir(long, "darwin"), "");
     assert.equal(socketDir(ctx(), "win32"), "");
     assert.match(postgresConf(ctx("/Users/o'neil/Library/Application Support/PipesHub"), {}, "darwin"),
-      /^unix_socket_directories = '\/Users\/o''neil\/Library\/Application Support\/PipesHub\/run'$/m);
+      /^unix_socket_directories = '"\/Users\/o''neil\/Library\/Application Support\/PipesHub\/run"'$/m);
+    // a comma would split the list in two
+    assert.match(postgresConf(ctx("/tmp/psh,with-comma"), {}, "linux"), /^unix_socket_directories = '"\/tmp\/psh,with-comma\/run"'$/m);
+    assert.match(postgresConf(long, {}, "darwin"), /^unix_socket_directories = ''$/m);
   });
 });
