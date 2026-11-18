@@ -202,7 +202,7 @@ class TestNothingRunsOnARefusedFilter:
             await svc.delete_points("col", FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG), *flt.must]))
         assert not _calls(execute, "FT.AGGREGATE") and not _calls(execute, "FT.SEARCH")
 
-    @pytest.mark.parametrize("op", ["count", "scroll", "keys"])
+    @pytest.mark.parametrize("op", ["count", "scroll", "scroll past the search window", "scroll with vectors", "keys"])
     async def test_reads_and_scans_are_refused_too(self, op) -> None:
         svc, execute = _service(_info("metadata_orgId"), _info("metadata_orgId"))
         with pytest.raises(FilterFieldNotIndexed):
@@ -210,6 +210,10 @@ class TestNothingRunsOnARefusedFilter:
                 await svc.count_points("col", self._filter())
             elif op == "scroll":
                 await svc.scroll("col", self._filter(), limit=5)
+            elif op == "scroll past the search window":
+                await svc.scroll("col", self._filter(), limit=5, offset="10000")
+            elif op == "scroll with vectors":
+                await svc.scroll_with_vectors("col", self._filter(), limit=5)
             else:
                 await svc._keys_matching_filter("col", self._filter())
         assert not _calls(execute, "FT.SEARCH") and not _calls(execute, "FT.AGGREGATE")

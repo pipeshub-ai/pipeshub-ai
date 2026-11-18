@@ -380,6 +380,13 @@ class TestBackfill:
         await _alter_settled(redis_service, collection)
 
 
+    async def test_a_scroll_past_the_search_window_refuses_an_unindexed_field(self, redis_service, collection) -> None:
+        """Past MAXSEARCHRESULTS a scroll reads by FT.AGGREGATE cursor; in dialect 1 the blockId clause would be dropped (the whole org)."""
+        await self._big_collection(redis_service, collection)
+        flt = await redis_service.filter_collection(must={"orgId": ORG, "blockId": ["blk1"]})
+        with pytest.raises(FilterFieldNotIndexed):
+            await redis_service.scroll(collection, flt, limit=5, offset="10000")
+
     async def test_an_index_created_over_stored_documents_holds_a_delete_by_any_field_until_it_has_read_them(self, redis_service, collection, monkeypatch) -> None:
         """FT.DROPINDEX without DD keeps the hashes; FT.CREATE then indexes them in the background, its own fields included."""
         from app.services.vector_db.models import CollectionConfig, DistanceMetric

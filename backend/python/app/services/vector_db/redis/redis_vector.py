@@ -1160,6 +1160,8 @@ class RedisVectorService(IVectorDBService):
         if int_offset >= _MAX_SEARCH_RESULTS or (cached is not None and cached[0] == int_offset):
             try:
                 return await self._scroll_past_window(collection_name, idx, query, int_offset, limit, with_payload)
+            except FilterFieldNotIndexed:
+                raise
             except Exception as e:
                 raise ScrollWindowExceededError(
                     f"Scroll of '{collection_name}' reached the RediSearch result ceiling at offset {int_offset} "
@@ -1189,6 +1191,8 @@ class RedisVectorService(IVectorDBService):
         if int_offset == 0 and isinstance(raw, (list, tuple)) and raw and str(raw[0]).isdigit() and int(raw[0]) > _MAX_SEARCH_RESULTS:
             try:
                 return await self._scroll_past_window(collection_name, idx, query, 0, limit, with_payload)
+            except FilterFieldNotIndexed:
+                raise
             except Exception as e:
                 raise ScrollWindowExceededError(
                     f"Scroll of '{collection_name}' has more than {_MAX_SEARCH_RESULTS} matches and FT.AGGREGATE could not read it: {e}"
@@ -1243,9 +1247,7 @@ class RedisVectorService(IVectorDBService):
         position is a cursor that survives a call: the cursor the last page left is kept for the page that follows it, and any other
         offset reads and drops the rows before it."""
         keys = await self._cursor_keys(idx, query, offset, limit)
-        total = await self.client.execute_command(  # type: ignore
-            "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
-        )
+        total = await self._ft_query("FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT)
         pipeline = self.client.pipeline(transaction=False)  # type: ignore
         wanted = [key.replace(".", "_") for key in with_payload] if with_payload else None
         for key in keys:
@@ -1290,7 +1292,7 @@ class RedisVectorService(IVectorDBService):
         try:
             while True:
                 if raw is None:
-                    raw = await self.client.execute_command(  # type: ignore
+                    raw = await self._ft_query(
                         "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key", *_NO_TIMEOUT,
                         "WITHCURSOR", "COUNT", str(max(1, min(_SCROLL_CURSOR_COUNT, offset or limit))), "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
                     )
@@ -1350,7 +1352,7 @@ class RedisVectorService(IVectorDBService):
         if offset:
             return ScrollResult(points=[], next_offset=None)  # everything came with the first call
         idx = self._index_name(collection_name)
-        counted = await self.client.execute_command(  # type: ignore
+        counted = await self._ft_query(
             "FT.SEARCH", idx, filter_expression_to_redis_query(scroll_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
         )
         total = int(counted[0]) if isinstance(counted, (list, tuple)) and counted else 0
