@@ -42,6 +42,11 @@ async def test_the_key_may_come_prefixed(filter_collection) -> None:
         await filter_collection(must={"orgId": ORG, "metadata.virtualRecordId": ""})
 
 
+async def test_a_blank_under_a_longer_path_that_ends_in_an_identifying_name_is_not_refused(filter_collection) -> None:
+    flt = await filter_collection(must={"orgId": ORG, "metadata.source.blockId": None})
+    assert {c.key for c in flt.must} == {"metadata.orgId"}
+
+
 async def test_a_real_value_and_an_unrelated_blank_still_build(filter_collection) -> None:
     flt = await filter_collection(must={"orgId": ORG, "virtualRecordId": "vr-1", "connectorId": ""})
     assert {c.key for c in flt.must} == {"metadata.orgId", "metadata.virtualRecordId"}

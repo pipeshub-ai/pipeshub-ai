@@ -290,6 +290,7 @@ class BlankFilterValue(NonRetryableError, ValueError):
 #: Fields that say *which* record or block a filter is about. A filter that names one without a value is a caller's bug, never "no restriction":
 #: ``delete_embeddings("")`` would otherwise become "delete everything of the org".
 REQUIRED_VALUE_KEYS = frozenset({"virtualRecordId", "blockId"})
+_REQUIRED_VALUE_FIELDS = frozenset(canonical_filter_key(k) for k in REQUIRED_VALUE_KEYS)
 
 
 def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondition]:
@@ -303,7 +304,7 @@ def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondi
     """
     conditions: list[FieldCondition] = []
     for key, value in filters.items():
-        if is_missing(value) and canonical_filter_key(key).rsplit(".", 1)[-1] in REQUIRED_VALUE_KEYS:
+        if is_missing(value) and canonical_filter_key(key) in _REQUIRED_VALUE_FIELDS:
             raise BlankFilterValue(f"'{key}' in the filter has no value; the clause would be dropped and the filter widened")
         if value is None:
             continue

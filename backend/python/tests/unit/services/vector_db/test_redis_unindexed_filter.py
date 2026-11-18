@@ -136,14 +136,16 @@ class TestSchemaLookup:
         svc, execute = _service(ResponseError("Unknown index name"), 1, b"OK")
         await svc.create_collection("col", CollectionConfig(embedding_size=8))
         assert [c.args[0] for c in execute.await_args_list] == ["FT.INFO", "DEL", "FT.CREATE"]
-        assert _calls(execute, "DEL") == [("DEL", "col_idx:complete_fields")]
+        assert _calls(execute, "DEL") == [("DEL", "col_idx.complete_fields")]
+        # Document keys are "<collection>:<id>" and collection names are [a-z0-9_]: a key with no ":" is never one of them.
+        assert ":" not in svc._complete_key(svc._index_name("col"))
 
     async def test_delete_collection_drops_it(self) -> None:
         svc, execute = _service(_info("metadata_orgId"), b"OK", 1)
         await svc._indexed_fields("col_idx")
         await svc.delete_collection("col")
         assert "col_idx" not in svc._schema_fields
-        assert ("DEL", "col_idx:complete_fields") in _calls(execute, "DEL")
+        assert ("DEL", "col_idx.complete_fields") in _calls(execute, "DEL")
 
 
 class TestRequireIndexed:
@@ -426,7 +428,7 @@ class TestBackfill:
         await b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})
         server.finish_scan()
         await a.delete_points("col", self._record_filter())  # sees the index idle
-        assert server.sets["col_idx:complete_fields"] == {"metadata_orgId", "metadata_virtualRecordId", "run:1"}
+        assert server.sets["col_idx.complete_fields"] == {"metadata_orgId", "metadata_virtualRecordId", "run:1"}
         await a.create_index("col", "metadata.blockId", {"type": "keyword"})  # another scan starts
         await b.delete_points("col", self._record_filter())
         assert sum(c[0] == "FT.SEARCH" for c in server.calls) == 2
@@ -444,7 +446,7 @@ class TestBackfill:
         svc.client.execute_command.side_effect = boom
         with pytest.raises(ResponseError):
             await svc.create_index("col", "metadata.blockId", {"type": "keyword"})
-        assert "metadata_blockId" not in server.sets.get("col_idx:complete_fields", set())
+        assert "metadata_blockId" not in server.sets.get("col_idx.complete_fields", set())
         assert server.fields == ["metadata_orgId"]
 
     async def test_an_upgrade_ensure_that_starts_one_scan_does_not_hold_the_fields_it_repeats(self) -> None:
@@ -532,6 +534,26 @@ class TestBackfill:
         await svc.delete_points("col", self._record_filter())
         assert sum(c[0] == "FT.SEARCH" for c in server.calls) == 3
 
+    async def test_an_index_that_turns_busy_between_the_check_and_the_record_holds_the_delete(self) -> None:
+        """FT.INFO says idle, then the index is re-created over the stored hashes before the recording script runs: the script's answer decides."""
+        server = _Server(*self.FIELDS)
+        svc = server.store()
+        real = server.execute
+        infos = 0
+
+        async def execute(*args: object) -> object:
+            nonlocal infos
+            reply = await real(*args)
+            infos += args[0] == "FT.INFO"
+            if infos == 2:  # the first is the schema lookup, the second the readiness check
+                server.scan_polls = 10**6
+            return reply
+
+        svc.client.execute_command.side_effect = execute
+        with pytest.raises(IndexBackfilling):
+            await svc.delete_points("col", self._record_filter())
+        assert not server.searched()
+
     async def test_fields_created_with_the_index_wait_while_it_reads_the_documents_already_stored(self) -> None:
         """FT.CREATE over hashes already under the prefix scans them too: no field of the index is complete until it ends."""
         server = _Server(*self.FIELDS)
@@ -547,10 +569,10 @@ class TestBackfill:
             await server.store().set_payload("col", {"metadata.x": "1"}, self._block_filter())
         assert not server.searched()
 
-    @pytest.mark.parametrize("raw", ["bad", "-5"])
+    @pytest.mark.parametrize("raw", ["bad", "-5", "inf", "nan"])
     async def test_an_unusable_bound_falls_back_to_the_default_or_zero(self, raw, monkeypatch) -> None:
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", raw)
-        assert _backfill_wait_seconds() == (_DEFAULT_BACKFILL_WAIT_SECONDS if raw == "bad" else 0.0)
+        assert _backfill_wait_seconds() == (0.0 if raw == "-5" else _DEFAULT_BACKFILL_WAIT_SECONDS)
 
     async def test_a_read_is_not_held_back(self) -> None:
         names = ("metadata_orgId", "metadata_blockId")

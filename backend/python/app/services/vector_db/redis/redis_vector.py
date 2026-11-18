@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import os
 import re
 import time
@@ -249,9 +250,10 @@ def _is_unknown_index_error(exc: Exception) -> bool:
 def _backfill_wait_seconds() -> float:
     """The bound on waiting for a field's back-fill: ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS``, or the default when unset or not a number."""
     try:
-        return max(0.0, float(os.environ[_BACKFILL_WAIT_ENV]))
+        wait = float(os.environ[_BACKFILL_WAIT_ENV])
     except (KeyError, ValueError):
         return _DEFAULT_BACKFILL_WAIT_SECONDS
+    return max(0.0, wait) if math.isfinite(wait) else _DEFAULT_BACKFILL_WAIT_SECONDS
 
 
 class RedisVectorService(IVectorDBService):
@@ -1776,16 +1778,16 @@ class RedisVectorService(IVectorDBService):
 
     @staticmethod
     def _complete_key(idx: str) -> str:
-        """The set beside the index (``<index>:complete_fields``) of the fields an idle FT.INFO showed in its schema. Not under the
-        index's document prefix."""
-        return f"{idx}:complete_fields"
+        """The set beside the index (``<index>.complete_fields``) of the fields an idle FT.INFO showed in its schema. No ``:``: a
+        document key is ``<collection>:<id>`` and a collection name is ``[a-z0-9_]``, so it is never a document's key or under a prefix."""
+        return f"{idx}.complete_fields"
 
-    async def _note_complete_fields(self, idx: str) -> None:
+    async def _note_complete_fields(self, idx: str) -> bool:
         """An idle FT.INFO reply proves every field in its schema fully indexed. Read and recorded in one script, so a drop and
         re-create of the index in between cannot make the old schema vouch for the new index. A field does not become incomplete
         again until the index is dropped (create_collection and delete_collection clear the set) or the server restarts (the set
         is only read back in the run that recorded it)."""
-        await self.client.execute_command("EVAL", _NOTE_COMPLETE_FIELDS, "1", self._complete_key(idx), idx)  # type: ignore
+        return bool(await self.client.execute_command("EVAL", _NOTE_COMPLETE_FIELDS, "1", self._complete_key(idx), idx))  # type: ignore
 
     async def _complete_fields(self, idx: str) -> frozenset[str]:
         raw = await self.client.execute_command("EVAL", _COMPLETE_FIELDS, "1", self._complete_key(idx))  # type: ignore
@@ -1808,8 +1810,8 @@ class RedisVectorService(IVectorDBService):
             read = await self._read_index(idx)
             if read is None:
                 return
-            if not read[2]:
-                await self._note_complete_fields(idx)
+            # The script reads FT.INFO again: an index re-created in between is busy there, and its answer decides.
+            if not read[2] and await self._note_complete_fields(idx):
                 return
             if named <= await self._complete_fields(idx):
                 return
