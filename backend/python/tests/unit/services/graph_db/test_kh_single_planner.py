@@ -6,6 +6,8 @@ instead of each planning a copy; a wait past its budget is busy (503), while the
 
 import asyncio
 import logging
+import time
+from collections.abc import Awaitable
 from types import SimpleNamespace
 
 import pytest
@@ -160,18 +162,27 @@ class StepClient:
 
 
 @pytest.mark.asyncio
-async def test_a_waiter_keeps_one_budget_across_a_failed_planner() -> None:
-    # The planner fails at 0.15 s; one waiter takes over (and runs long), the other waits on it with what is left.
+async def test_a_waiter_keeps_one_budget_across_a_failed_planner(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The planner fails; one waiter takes over (and runs long), the other waits on it with what is left.
+    deadlines: dict[asyncio.Task, list[float]] = {}
+    wait_for = asyncio.wait_for
+
+    async def spy(awaitable: Awaitable[object], timeout: float) -> object:
+        # The deadline each wait aims at, on the clock the provider reads: independent of how fast the host runs.
+        deadlines.setdefault(asyncio.current_task(), []).append(time.monotonic() + timeout)
+        return await wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", spy)
     p = provider(StepClient([(0.15, RuntimeError("planner failed")), (5.0, None)]), wait_s=0.25)
-    loop = asyncio.get_running_loop()
-    started = loop.time()
     planner = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a"))
     await asyncio.sleep(0.01)
     waiters = [asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a")) for _ in range(2)]
     done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_EXCEPTION)
-    busy = [t for t in done if isinstance(t.exception(), KnowledgeHubListingBusy)]
-    assert busy, "the waiter left behind is answered as busy"
-    assert loop.time() - started < 0.35  # within its first budget (0.25 s), not a fresh one after the failure (0.4 s)
+    assert any(isinstance(t.exception(), KnowledgeHubListingBusy) for t in done), "the waiter left behind is busy"
+    waited_twice = [d for d in deadlines.values() if len(d) == 2]
+    assert len(waited_twice) == 1
+    first, second = waited_twice[0]
+    assert second == pytest.approx(first, abs=0.01)  # the same deadline, not a fresh budget after the failure
     for t in [planner, *pending]:
         t.cancel()
     await asyncio.gather(planner, *pending, return_exceptions=True)
@@ -184,10 +195,14 @@ async def test_a_waiters_out_of_memory_is_timed_from_its_own_run() -> None:
     p = provider(StepClient([(0.2, None), (0.0, oom)]))
     planner = asyncio.create_task(p._kh_query("MATCH (a:App) RETURN a"))
     await asyncio.sleep(0.01)
+    started = time.monotonic()
     with pytest.raises(KnowledgeHubListingBusy) as busy:
         await p._kh_query("MATCH (a:App) RETURN a")
+    total = time.monotonic() - started
     assert busy.value.out_of_memory is True
-    assert busy.value.ran_s is not None and busy.value.ran_s < 0.1  # a 503 to retry, not a 422 "too large"
+    # The planner cannot finish before 0.19 s of this request's wait: what is left is the statement's own run,
+    # however slow the host. Counting the wait would make a 503 to retry a 422 "too large".
+    assert busy.value.ran_s is not None and busy.value.ran_s <= total - 0.18
     await planner
 
 
