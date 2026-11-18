@@ -2669,7 +2669,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to re-queue {message_id}: {e}")
-                    raise
+                    if self._scheduler is None:
+                        # The future's callback seeks back here. Returning would
+                        # let the next message's commit cover this offset.
+                        raise
+                    # No copy on the topic: retry this offset here, after the backoff the copy would have had.
+                    await self.__rebuffer_after_failed_handback(
+                        message, parsed_message, in_flight, _compute_retry_backoff_seconds(count)
+                    )
+                    # The helper settled the claim; the tail would log a commit that did not happen.
+                    return
         else:
             self.logger.warning(
                 f"Message {message_id} failed, no retry manager or unparseable, committing"
