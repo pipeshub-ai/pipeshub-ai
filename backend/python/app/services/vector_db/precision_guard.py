@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from app.config.configuration_service import delete_config_confirmed
 from app.core.db.errors import DbTimeout
+from app.core.org_context import spawn_in_request
 from app.services.messaging.precision_flip import (
     CLEANUP_HINT,
     FenceMoved,
@@ -69,7 +70,7 @@ CANCELLED_REMOVAL_TIMEOUT_SECONDS = 10.0
 
 async def run_despite_cancellation(awaitable, timeout: float = CANCELLED_REMOVAL_TIMEOUT_SECONDS) -> None:  # noqa: ANN001
     """Await *awaitable* to its end within *timeout*, even though the calling task has been cancelled and may be cancelled again."""
-    await asyncio.wait_for(asyncio.shield(asyncio.ensure_future(awaitable)), timeout)
+    await asyncio.wait_for(asyncio.shield(spawn_in_request(awaitable, name="unconfirmed-write-removal")), timeout)
 
 
 def _bound_org_or_none() -> str | None:
