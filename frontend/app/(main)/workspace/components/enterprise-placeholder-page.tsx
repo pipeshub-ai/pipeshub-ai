@@ -1,8 +1,12 @@
 'use client';
 
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
+import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EnterpriseGlimpse, type Glimpse } from './enterprise-glimpse';
@@ -29,6 +33,20 @@ export interface EnterprisePlaceholderPageProps {
  */
 export function EnterprisePlaceholderPage({ title, subtitle, heading, message, contactLabel, glimpse }: EnterprisePlaceholderPageProps) {
   const isMobile = useIsMobile();
+  const router = useRouter();
+  const isAdmin = useEnterprisePrompt();
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+
+  // Members have no sidebar link here; one who opens the URL is sent away like on other admin pages.
+  useEffect(() => {
+    if (isProfileInitialized && !isAdmin) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
+  if (!isProfileInitialized || !isAdmin) {
+    return null;
+  }
 
   return (
     <Flex

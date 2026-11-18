@@ -9,12 +9,27 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({
 // jsdom has no matchMedia.
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
+const replace = vi.fn();
+vi.mock('next/navigation', () => ({ useRouter: () => ({ replace, push: vi.fn() }) }));
+
+// The store persists to localStorage; stand in for the selectors the page reads.
+let user = { isAdmin: true as boolean | null, isProfileInitialized: true };
+vi.mock('@/lib/store/user-store', () => ({
+  useUserStore: (selector: (s: typeof user) => unknown) => selector(user),
+  selectIsAdmin: (s: typeof user) => s.isAdmin,
+  selectIsProfileInitialized: (s: typeof user) => s.isProfileInitialized,
+}));
+
 import { EnterprisePlaceholderPage } from '../enterprise-placeholder-page';
 import { ENTERPRISE_GLIMPSES } from '../enterprise-glimpses';
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  replace.mockClear();
+  user = { isAdmin: true, isProfileInitialized: true };
+});
 
-function renderPage(glimpse: React.ComponentProps<typeof EnterprisePlaceholderPage>['glimpse']) {
+function renderPage(glimpse: React.ComponentProps<typeof EnterprisePlaceholderPage>['glimpse'] = ENTERPRISE_GLIMPSES.usage) {
   return render(
     <Theme>
       <EnterprisePlaceholderPage
@@ -30,7 +45,7 @@ function renderPage(glimpse: React.ComponentProps<typeof EnterprisePlaceholderPa
 
 describe('EnterprisePlaceholderPage', () => {
   it('says what is available and offers one way to get it: booking a call', () => {
-    renderPage(ENTERPRISE_GLIMPSES.usage);
+    renderPage();
 
     expect(screen.getByRole('heading', { name: 'Usage' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: /available in the Enterprise Edition/ })).toBeTruthy();
@@ -42,6 +57,30 @@ describe('EnterprisePlaceholderPage', () => {
     expect(contact.getAttribute('target')).toBe('_blank');
     expect(contact.className).toContain('rt-Button');
     expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('sends a member who opens the URL to General settings, showing nothing', () => {
+    user = { isAdmin: false, isProfileInitialized: true };
+    const { container } = renderPage();
+
+    expect(replace).toHaveBeenCalledWith('/workspace/general');
+    expect(container.textContent).toBe('');
+  });
+
+  it('sends the user away when their role could not be loaded', () => {
+    user = { isAdmin: null, isProfileInitialized: true };
+    renderPage();
+
+    expect(replace).toHaveBeenCalledWith('/workspace/general');
+  });
+
+  it('shows nothing, and sends no one away, until it is known who the user is', () => {
+    user = { isAdmin: null, isProfileInitialized: false };
+    const { container } = renderPage();
+
+    expect(container.textContent).toBe('');
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it.each(Object.entries(ENTERPRISE_GLIMPSES))(
