@@ -864,18 +864,23 @@ def test_a_point_moved_to_another_collection_takes_that_collections_membership_k
 
 def test_point_writers_and_membership_writers_running_at_once_leave_every_points_keys_equal_to_its_groups_membership(rdb):
     """Point inserts and membership changes of one group, interleaved by two connections for a while (the membership writer a job that
-    never touches the group row itself): afterwards every point's keys are its group's membership, none kept from a state since replaced."""
+    never touches the group row itself): afterwards every point's keys are its group's membership, none kept from a state since replaced.
+    The point writer starts only once the membership writer is connected, and at least one membership change must commit while points
+    are still being written, so the test cannot pass on point writes alone."""
     import threading
 
     cluster, name = rdb
     adopt(cluster, name, ORG_A)
     with connect_as(cluster, name, "pipeshub_indexing_login") as c, uow(c, "pipeshub_indexing", ORG_A):
         group(c, ORG_A, "g1", {1: ["c0"]})
-    stop, errors = threading.Event(), []
+    stop, ready, errors, overlapped = threading.Event(), threading.Event(), [], []
 
     def points() -> None:
         try:
             with connect_as(cluster, name, "pipeshub_indexing_login") as c:
+                if not ready.wait(20):
+                    errors.append("the membership writer never started")
+                    return
                 for _ in range(60):
                     with uow(c, "pipeshub_indexing", ORG_A):
                         c.execute("SET LOCAL lock_timeout = '20s'")                     # a wait that never ends fails the test instead of hanging it
@@ -889,6 +894,7 @@ def test_point_writers_and_membership_writers_running_at_once_leave_every_points
 
     def members() -> None:
         with connect_as(cluster, name, "pipeshub_jobs") as c:
+            ready.set()
             i = 0
             while not stop.is_set():
                 i += 1
@@ -897,6 +903,8 @@ def test_point_writers_and_membership_writers_running_at_once_leave_every_points
                         c.execute("SET LOCAL lock_timeout = '20s'")
                         c.execute("DELETE FROM retrieval.group_members WHERE org_id = %s AND group_key = 'g1' AND kind = 1", (ORG_A,))
                         c.execute("INSERT INTO retrieval.group_members VALUES (%s, 1, 'g1', 1, %s)", (ORG_A, f"c{i}"))
+                    if not stop.is_set():
+                        overlapped.append(i)                                              # committed while points were still being written
                 except psycopg.Error as e:                                                # a deadlock or a lock wait that ran out
                     errors.append(e)
 
@@ -906,6 +914,7 @@ def test_point_writers_and_membership_writers_running_at_once_leave_every_points
     for t in threads:
         t.join(120)
     assert not any(t.is_alive() for t in threads) and errors == []
+    assert overlapped
     with cluster.admin(name) as c:
         want = c.execute("SELECT array_agg(kind || ':' || member_id ORDER BY kind, member_id) FROM retrieval.group_members "
                          "WHERE org_id = %s AND group_key = 'g1' AND kind IN (1, 2, 3)", (ORG_A,)).fetchone()[0]
