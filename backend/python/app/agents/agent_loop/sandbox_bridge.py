@@ -65,6 +65,7 @@ from app.agent_loop_lib.hooks.middleware.context import (
     ToolResultContext,
 )
 from app.agent_loop_lib.sandbox.coding.base import CodingSandboxBackend, SandboxContext
+from app.agent_loop_lib.sandbox.coding.output_limits import ExtractLimits
 from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
 from app.agent_loop_lib.sandbox.coding.settings import (
     EnvSandboxSettingsLoader,
@@ -1166,10 +1167,28 @@ async def _fetch_within_cap(
     over the cap is never read whole (its size is checked first, or when the
     backend cannot tell, at most one byte past the cap is read), so a huge
     or sparse output file cannot fill this process's memory; it is reported
-    in the second list instead, in the `artifact_errors` shape."""
+    in the second list instead, in the `artifact_errors` shape.
+
+    The files held together are bounded too, by the run output total
+    (`SANDBOX_OUTPUT_MAX_TOTAL_BYTES`): they are all held until they are
+    registered, and a backend does not bound how many a run leaves. Files
+    past that total are reported the same way."""
     cap = _artifact_cap(registry)
+    total_cap = ExtractLimits.for_output().max_total_bytes
+    total = 0
     fetched: list[tuple[str, bytes]] = []
     oversized: list[dict[str, str]] = []
+
+    def _over_total(rel_path: str) -> None:
+        logger.warning(
+            "artifact %r in sandbox %s is past the run's %d-byte artifact total; not collected",
+            rel_path, sandbox_id, total_cap,
+        )
+        oversized.append({
+            "file": redact_sandbox_paths(os.path.basename(rel_path)),
+            "error": f"FileTooLarge: this run's files together exceed the {total_cap}-byte total; not collected",
+        })
+
     for rel_path in rel_paths:
         try:
             size = await backend.file_size(rel_path) if hasattr(backend, "file_size") else None
@@ -1184,6 +1203,9 @@ async def _fetch_within_cap(
                 "file": redact_sandbox_paths(os.path.basename(rel_path)),
                 "error": f"FileTooLarge: {size} bytes exceeds the {cap}-byte cap; not collected",
             })
+            continue
+        if isinstance(size, int) and not isinstance(size, bool) and total + size > total_cap:
+            _over_total(rel_path)
             continue
         try:
             read_head = getattr(backend, "read_file_head", None)
@@ -1208,6 +1230,10 @@ async def _fetch_within_cap(
                 "artifact download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
             )
             continue
+        if total + len(content) > total_cap:
+            _over_total(rel_path)
+            continue
+        total += len(content)
         fetched.append((rel_path, content))
     return fetched, oversized
 
@@ -1217,7 +1243,7 @@ def _add_artifact_errors(data: dict[str, Any], errors: list[dict[str, str]]) -> 
         return
     data["artifact_errors"] = [*(data.get("artifact_errors") or []), *errors]
     data.setdefault("artifact_errors_note", (
-        "These files were produced but are larger than the artifact size limit, so they "
+        "These files were produced but are over the artifact size limits, so they "
         "were NOT saved and are NOT downloadable. Do NOT tell the user the file is ready. "
         "Write a smaller file (split, compress, or keep only what is needed) and run again."
     ))

@@ -130,3 +130,26 @@ async def test_a_file_that_grows_after_its_size_check_is_still_read_up_to_the_ca
     assert backend.whole_reads == []
     assert fetched == []
     assert [e["file"] for e in oversized] == ["late.bin"]
+
+
+async def test_the_files_held_together_are_bounded_by_the_run_total(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SANDBOX_OUTPUT_MAX_TOTAL_BYTES", str(2 * CAP))
+    for known_size in (True, False):
+        backend = await _backend(tmp_path / str(known_size))
+        if not known_size:
+            backend.file_size = lambda path: _none()  # type: ignore[method-assign]
+        out = tmp_path / str(known_size) / "sbx" / "output"
+        for name in ("a.txt", "b.txt", "c.txt"):
+            (out / name).write_bytes(b"y" * CAP)
+
+        fetched, skipped = await _fetch_within_cap(
+            backend, ["output/a.txt", "output/b.txt", "output/c.txt"], _registry(), "sbx-1",
+        )
+
+        assert [p for p, _ in fetched] == ["output/a.txt", "output/b.txt"]
+        assert [e["file"] for e in skipped] == ["c.txt"]
+        assert "total" in skipped[0]["error"]
+
+
+async def _none() -> None:
+    return None
