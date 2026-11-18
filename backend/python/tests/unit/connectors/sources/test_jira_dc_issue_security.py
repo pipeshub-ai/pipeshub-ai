@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -572,7 +573,7 @@ class TestLevelsJiraLeavesOut:
 
     async def test_a_batch_rejected_for_a_deleted_id_is_split_until_that_id_is_alone(self) -> None:
         """Jira answers 400 to ``id in (...)`` naming an id it no longer knows; the others are still settled."""
-        async def search(**kw):
+        async def search(**kw: object) -> MagicMock:
             ids = kw["jql"].split("(")[1].split(")")[0].split(", ")
             if "3" in ids:
                 return MagicMock(status=400, json=MagicMock(return_value={}))
@@ -687,7 +688,7 @@ class TestStoredNoLevelIssuesHealOnce:
             "last_sync_time": 100, "last_issue_updated": 200,
             "security_levels": json.dumps(context.level_fingerprints(), sort_keys=True), **checkpoint})
 
-        async def no_changes(*_a, **_kw):
+        async def no_changes(*_a: object, **_kw: object) -> AsyncIterator[None]:
             return
             yield  # pragma: no cover - makes an async generator
 
