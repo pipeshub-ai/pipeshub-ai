@@ -830,6 +830,110 @@ async def test_a_partition_whose_first_offset_lookup_hangs_does_not_hold_back_th
     assert gone == set()
 
 
+class _BacklogReader:
+    """A fake reader whose every poll costs a second on ``clock`` and returns two records.
+
+    Two a poll makes a long run of wanted offsets a backlog that outlasts the
+    deadline. A ``late_lookup`` partition answers its first-offset lookup only
+    after the first poll of another partition.
+    """
+
+    def __init__(self, clock: _Clock, late_lookup: frozenset[int] = frozenset()) -> None:
+        self.clock = clock
+        self.late_lookup = late_lookup
+        self.polled = asyncio.Event()
+        self.positions: dict[TopicPartition, int] = {}
+        self.polls: list[int] = []
+
+    def __call__(self, **_: object) -> _BacklogReader:
+        return self
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    def assign(self, partitions: list) -> None:
+        return None
+
+    async def beginning_offsets(self, partitions: list) -> dict:
+        if any(tp.partition in self.late_lookup for tp in partitions):
+            await self.polled.wait()
+        return dict.fromkeys(partitions, 0)
+
+    def seek(self, tp: TopicPartition, offset: int) -> None:
+        self.positions[tp] = offset
+
+    async def getmany(self, tp: TopicPartition, timeout_ms: int = 0, max_records: int = 1) -> dict:
+        self.polls.append(tp.partition)
+        self.clock.now += 1.0
+        self.polled.set()
+        # Let a lookup the poll released finish before this poll returns.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        offset = self.positions[tp]
+        count = min(max_records, 2)
+        self.positions[tp] = offset + count
+        return {tp: [_message(o, "R", tp=tp) for o in range(offset, offset + count)]}
+
+
+@pytest.mark.asyncio
+async def test_a_backlogged_partition_numbered_first_does_not_take_the_whole_read(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    backlog, small = TP, TopicPartition(TP.topic, 1)
+    clock = _Clock()
+    monkeypatch.setattr(remembered_module, "AIOKafkaConsumer", _BacklogReader(clock))
+    fetcher = remembered_module.OffsetFetcher({}, logging.getLogger(LOGGER), clock=clock)
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        found, gone = await fetcher.fetch({backlog: list(range(1000)), small: [0, 1]}, timeout_seconds=4.0)
+
+    assert {(small, 0), (small, 1)} <= set(found)
+    assert {(backlog, 0), (backlog, 1)} <= set(found)
+    assert gone == set()
+    unread = 1000 - len([p for p in found if p[0] == backlog])
+    assert (
+        f"Fetch-back reached its deadline with {unread} offset(s) unread on record-events-0; they are asked for again"
+    ) in [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.asyncio
+async def test_a_backlogged_partition_whose_lookup_answers_first_does_not_take_the_whole_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    late, backlog = TP, TopicPartition(TP.topic, 1)
+    clock = _Clock()
+    reader = _BacklogReader(clock, late_lookup=frozenset({0}))
+    monkeypatch.setattr(remembered_module, "AIOKafkaConsumer", reader)
+    fetcher = remembered_module.OffsetFetcher({}, logging.getLogger(LOGGER), clock=clock)
+
+    found, gone = await fetcher.fetch({late: [0, 1], backlog: list(range(1000))}, timeout_seconds=4.0)
+
+    assert reader.polls[0] == 1
+    assert {(late, 0), (late, 1)} <= set(found)
+    assert gone == set()
+
+
+@pytest.mark.asyncio
+async def test_a_read_back_in_progress_keeps_the_poll_short() -> None:
+    consumer = _consumer(max_buffered_messages=4)
+    consumer._waiting_fetcher = _Fetcher(consumer, "R", hold=asyncio.Event())
+    consumer._in_flight_records.add("R")
+    await _burst(consumer, "R", range(3))  # R@0 keeps its payload; R@1, R@2 by offset
+    _finish(consumer, "R")
+    await _dispatch(consumer)  # R@0 runs
+    _finish(consumer, "R")
+    assert consumer._scheduler.pending_count == 0
+
+    await consumer._IndexingKafkaConsumer__read_phase()  # starts reading back R@1, R@2
+
+    assert consumer._waiting_fetch_task is not None
+    timeout_ms = consumer.consumer.getmany.await_args.kwargs["timeout_ms"]
+    assert timeout_ms == indexing_consumer_module._BUSY_POLL_TIMEOUT_MS
+
+
 @pytest.mark.asyncio
 async def test_a_remembered_fetch_back_never_buffers_past_the_combined_budget() -> None:
     consumer = _consumer(max_buffered_messages=4, max_remembered_positions=100)

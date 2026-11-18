@@ -1927,9 +1927,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # but a finish does not wake getmany(): any poll timeout then caps a
         # partition at one record per timeout. So poll without blocking and
         # wait for the finish instead (__wait_for_finish).
+        # A read-back of waiting events in progress, and a released record
+        # whose events are still to be read back or offered, are buffered work
+        # too: their results are taken on the next pass, which a full-length
+        # poll would hold off. (Remembered positions stay remembered while
+        # their own fetch-back runs, so ``total`` covers that one.)
         holds_work = bool(
             scheduler.pending_count
             or (self._remembered is not None and self._remembered.total)
+            or self._waiting_fetch_task is not None
+            or self._records_released
         )
         with self._partition_lock:
             in_flight = bool(self._in_flight_partitions)

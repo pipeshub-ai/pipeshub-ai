@@ -182,7 +182,9 @@ class OffsetFetcher:
         Each partition's first retained offset is looked up on its own, all at
         once, and a partition is read as soon as its answer comes: the batch
         lookup waits for every partition's leader and returns nothing until
-        the slowest answers.
+        the slowest answers. Ready partitions are read in rounds, one poll
+        each per round, so a partition with a long run of offsets cannot spend
+        the whole deadline while another's offsets wait, fetch after fetch.
         """
         found: dict[Position, ConsumerRecord] = {}
         gone: set[Position] = set()
@@ -194,77 +196,92 @@ class OffsetFetcher:
         partitions = sorted(wanted, key=lambda tp: (tp.topic, tp.partition))
         reader.assign(partitions)
         lookups = {asyncio.ensure_future(reader.beginning_offsets([tp])): tp for tp in partitions}
-        waiting = set(lookups)
+        looking = set(lookups)
+        ready: dict[TopicPartition, list[int]] = {}
         try:
-            while waiting:
+            while looking or ready:
                 remaining = None if deadline is None else deadline - clock()
                 if remaining is not None and remaining <= 0:
                     break
-                done, waiting = await asyncio.wait(waiting, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
-                for task in sorted(done, key=lambda t: (lookups[t].topic, lookups[t].partition)):
-                    tp = lookups[task]
-                    try:
-                        first_kept = task.result().get(tp, 0)
-                    except Exception as e:
-                        self._logger.debug("Could not look up the first offset of %s; asked for again: %r", tp, e)
-                        continue
-                    if not await self._read_partition(reader, tp, wanted[tp], first_kept, found, gone, deadline, clock):
-                        return found, gone
+                if looking:
+                    # Take whatever answers have come without waiting while
+                    # there is something to read; wait for one otherwise.
+                    done, looking = await asyncio.wait(
+                        looking, timeout=0 if ready else remaining, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in sorted(done, key=lambda t: (lookups[t].topic, lookups[t].partition)):
+                        tp = lookups[task]
+                        try:
+                            first_kept = task.result().get(tp, 0)
+                        except Exception as e:
+                            self._logger.debug("Could not look up the first offset of %s; asked for again: %r", tp, e)
+                            continue
+                        offsets = sorted(set(wanted[tp]))
+                        gone.update((tp, offset) for offset in offsets if offset < first_kept)
+                        pending = [offset for offset in offsets if offset >= first_kept]
+                        if pending:
+                            ready[tp] = pending
+                for tp in sorted(ready, key=lambda p: (p.topic, p.partition)):
+                    if deadline is not None and clock() >= deadline:
+                        break
+                    still = await self._read_once(reader, tp, ready[tp], found, gone)
+                    if still:
+                        ready[tp] = still
+                    else:
+                        del ready[tp]
         finally:
-            for task in waiting:
+            for task in looking:
                 task.cancel()
-            await asyncio.gather(*waiting, return_exceptions=True)
-            if waiting:
+            await asyncio.gather(*looking, return_exceptions=True)
+            if looking:
                 self._logger.info(
                     "%d partition(s) did not report their first offset in time; their offsets are asked for again",
-                    len(waiting),
+                    len(looking),
+                )
+            if ready:
+                self._logger.info(
+                    "Fetch-back reached its deadline with %d offset(s) unread on %s; they are asked for again",
+                    sum(len(pending) for pending in ready.values()),
+                    ", ".join(f"{tp.topic}-{tp.partition}" for tp in sorted(ready, key=lambda p: (p.topic, p.partition))),
                 )
         return found, gone
 
-    async def _read_partition(
+    async def _read_once(
         self,
         reader: AIOKafkaConsumer,
         tp: TopicPartition,
-        wanted: list[int],
-        first_kept: int,
+        pending: list[int],
         found: dict[Position, ConsumerRecord],
         gone: set[Position],
-        deadline: float | None,
-        clock: Callable[[], float],
-    ) -> bool:
-        """Read one partition's offsets into ``found`` and ``gone``; False once the deadline has passed."""
-        offsets = sorted(set(wanted))
-        for offset in offsets:
-            if offset < first_kept:
+    ) -> list[int]:
+        """One poll of ``tp`` from its lowest pending offset; the offsets still to read.
+
+        Nothing coming back ends this partition's part of the fetch: what is
+        left is in neither result and is asked for again.
+        """
+        start = pending[0]
+        reader.seek(tp, start)
+        batch = await reader.getmany(
+            tp,
+            timeout_ms=self._poll_timeout_ms,
+            max_records=min(self._MAX_RECORDS_PER_FETCH, pending[-1] - start + 1),
+        )
+        records = batch.get(tp) or []
+        if not records:
+            return []
+        by_offset = {record.offset: record for record in records}
+        last = records[-1].offset
+        still: list[int] = []
+        for offset in pending:
+            if offset in by_offset:
+                found[(tp, offset)] = by_offset[offset]
+            elif offset <= last:
+                # Stepped over: deleted between the retention check and the
+                # fetch, or never there.
                 gone.add((tp, offset))
-        pending = [o for o in offsets if o >= first_kept]
-        while pending:
-            if deadline is not None and clock() >= deadline:
-                return False
-            start = pending[0]
-            reader.seek(tp, start)
-            batch = await reader.getmany(
-                tp,
-                timeout_ms=self._poll_timeout_ms,
-                max_records=min(self._MAX_RECORDS_PER_FETCH, pending[-1] - start + 1),
-            )
-            records = batch.get(tp) or []
-            if not records:
-                break
-            by_offset = {record.offset: record for record in records}
-            last = records[-1].offset
-            still: list[int] = []
-            for offset in pending:
-                if offset in by_offset:
-                    found[(tp, offset)] = by_offset[offset]
-                elif offset <= last:
-                    # Stepped over: deleted between the retention check
-                    # and the fetch, or never there.
-                    gone.add((tp, offset))
-                else:
-                    still.append(offset)
-            pending = still
-        return True
+            else:
+                still.append(offset)
+        return still
 
     async def close(self) -> None:
         consumer, self._consumer = self._consumer, None
