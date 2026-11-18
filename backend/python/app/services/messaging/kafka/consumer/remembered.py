@@ -17,6 +17,7 @@ position.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
@@ -148,23 +149,39 @@ class OffsetFetcher:
                 enable_auto_commit=False,
                 auto_offset_reset="earliest",
             )
-            await consumer.start()
+            try:
+                await consumer.start()
+            except BaseException:
+                # A start cut short (a timeout, a cancel) has already opened a
+                # client; kept nowhere, close() could not stop it, and every
+                # retry would open another.
+                with contextlib.suppress(Exception):
+                    await consumer.stop()
+                raise
             self._consumer = consumer
         return self._consumer
 
     async def fetch(
-        self, wanted: dict[TopicPartition, list[int]]
+        self,
+        wanted: dict[TopicPartition, list[int]],
+        *,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[Position, ConsumerRecord], set[Position]]:
         """The records at these offsets, and the offsets that no longer exist.
 
         An offset below the partition's first retained offset has been deleted
         by retention, and so has one a fetch stepped over. An offset that could
         not be read in time is in neither result and is simply asked for again.
+        With ``timeout_seconds``, reading stops once that has passed and what
+        was read so far is returned, so a slow partition does not cost the
+        results of the others.
         """
         found: dict[Position, ConsumerRecord] = {}
         gone: set[Position] = set()
         if not wanted:
             return found, gone
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout_seconds is None else loop.time() + timeout_seconds
         reader = await self._reader()
         partitions = sorted(wanted, key=lambda tp: (tp.topic, tp.partition))
         reader.assign(partitions)
@@ -177,6 +194,8 @@ class OffsetFetcher:
                     gone.add((tp, offset))
             pending = [o for o in offsets if o >= first_kept]
             while pending:
+                if deadline is not None and loop.time() >= deadline:
+                    return found, gone
                 start = pending[0]
                 reader.seek(tp, start)
                 batch = await reader.getmany(

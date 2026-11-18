@@ -85,7 +85,7 @@ async def _publish(bootstrap: str, topic: str, events: list[tuple[str, int]]) ->
 
 
 def _handler(
-    done: list[tuple[str, int]], hold_first_r: threading.Event, r_running: list[int], overlaps: list[int]
+    done: list[tuple[str, int]], holds: dict[int, threading.Event], r_running: list[int], overlaps: list[int]
 ) -> Callable[..., AsyncIterator]:
     lock = threading.Lock()
 
@@ -100,8 +100,9 @@ def _handler(
                 if len(r_running) > 1:
                     overlaps.append(seq)
             try:
-                if seq == 0:
-                    await asyncio.to_thread(hold_first_r.wait, DRAIN_TIMEOUT_SECONDS)
+                hold = holds.get(seq)
+                if hold is not None:
+                    await asyncio.to_thread(hold.wait, DRAIN_TIMEOUT_SECONDS)
             finally:
                 with lock:
                     r_running.remove(seq)
@@ -156,10 +157,10 @@ async def test_a_long_running_record_holds_back_only_its_own_events(
         ),
     )
     done: list[tuple[str, int]] = []
-    gate = threading.Event()
+    gate, second_gate = threading.Event(), threading.Event()
     r_running: list[int] = []
     overlaps: list[int] = []
-    await consumer.start(_handler(done, gate, r_running, overlaps))
+    await consumer.start(_handler(done, {0: gate, 1: second_gate}, r_running, overlaps))
     try:
         await _wait_for(
             lambda: sum(1 for record, _ in done if record != "R") == _OTHERS,
@@ -172,11 +173,31 @@ async def test_a_long_running_record_holds_back_only_its_own_events(
         committed = await committed_offsets(kafka_available, group, topic)
         assert committed.get(0, 0) <= r_offset, committed
 
+        # R@0 done, R@1 (offset 1) running: the commit reaches offset 1 and must stop there,
+        # though every other record of the connector finished long ago.
         gate.set()
+        await _wait_for(lambda: r_running == [1], "R's next event to start")
+        committed_at: list[int] = []
+
+        async def reached_r1() -> bool:
+            committed_at.append((await committed_offsets(kafka_available, group, topic)).get(0, 0))
+            return committed_at[-1] >= r_offset + 1
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DRAIN_TIMEOUT_SECONDS
+        while not await reached_r1():
+            assert loop.time() < deadline, "the commit never reached R's next event"
+            await asyncio.sleep(0.2)
+        await asyncio.sleep(2.0)
+        committed = await committed_offsets(kafka_available, group, topic)
+        assert committed.get(0, 0) == r_offset + 1, committed
+
+        second_gate.set()
         await _wait_for(lambda: len(done) == total, "R's queued events to run")
         await asyncio.sleep(2.0)
     finally:
         gate.set()
+        second_gate.set()
         await consumer.stop()
 
     assert [seq for record, seq in done if record == "R"] == list(range(_R_EVENTS + 1))
