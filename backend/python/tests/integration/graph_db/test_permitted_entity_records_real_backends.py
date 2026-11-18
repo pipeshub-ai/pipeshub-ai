@@ -475,6 +475,103 @@ class TestPermittedEntityRecords:
         assert out[("record", records["denied"])] == []
 
 
+class TestNeo4jRoleWalkLeftOut:
+    """When every ref's connectors are app-level, Neo4j sends the statement without the
+    permission-role walk: its first UNION branch admits every such row, and the walk is most
+    of the statement's planning time. On a real server both statements must return the same
+    rows, positions and paging metadata for the same parameters."""
+
+    @staticmethod
+    async def _both(
+        provider: Neo4jProvider, org_id: str, ref: dict[str, Any], *, offset: int, window: int, limit: int,
+    ) -> dict[bool, list[str]]:
+        import json
+
+        from app.services.graph_db.common.utils import (
+            ENTITY_CANDIDATE_SCAN_CAP,
+            within_param,
+        )
+
+        entity_type = ref["type"]
+        typed = provider._entity_refs_by_type([ref])[entity_type]
+        params = {
+            "refs": typed, "org_id": org_id, "user_key": _keys(org_id)["user"],
+            "app_level_connector_ids": sorted({c for r in typed for c in r["connectorIds"]}),
+            "record_types": None, "offset": offset, "window": window, "limit": limit,
+            "scan_cap": ENTITY_CANDIDATE_SCAN_CAP, "completed": ProgressStatus.COMPLETED.value,
+            "within": within_param(None),
+        }
+        out: dict[bool, list[str]] = {}
+        for role_test in (True, False):
+            rows = await provider.client.execute_query(
+                provider._permitted_entity_records_cypher(entity_type, role_test=role_test), parameters=params,
+            )
+            out[role_test] = sorted(json.dumps(dict(row), sort_keys=True, default=str) for row in rows or [])
+        return out
+
+    @pytest.mark.parametrize(
+        ("connectors", "offset", "window", "limit"),
+        [
+            ("both", 0, 200, 200),     # every candidate, in one window
+            ("both", 0, 20, 5),        # the walk stops at the limit
+            ("both", 60, 60, 60),      # a later window
+            ("both", 500, 60, 60),     # a window past the last candidate: empty
+            ("app", 0, 200, 200),      # one connector
+            ("none", 0, 200, 200),     # a ref with no connectors: no candidates
+        ],
+    )
+    async def test_a_topic_reads_the_same_with_and_without_the_walk(
+        self, backend, connectors: str, offset: int, window: int, limit: int,
+    ) -> None:
+        provider, org_id = backend
+        if not isinstance(provider, Neo4jProvider):
+            pytest.skip("the role walk is left out of Neo4j's statement only")
+        connector_ids = {"both": [APP_LEVEL, RECORD_LEVEL], "app": [APP_LEVEL], "none": []}[connectors]
+        ref = {"id": _keys(org_id)["topic"], "type": "topic", "connectorIds": connector_ids}
+
+        both = await self._both(provider, org_id, ref, offset=offset, window=window, limit=limit)
+
+        assert both[False] == both[True]
+
+    async def test_a_record_ref_reads_the_same_with_and_without_the_walk(self, backend) -> None:
+        provider, org_id = backend
+        if not isinstance(provider, Neo4jProvider):
+            pytest.skip("the role walk is left out of Neo4j's statement only")
+        ref = {"id": _keys(org_id)["records"]["direct"], "type": "record", "connectorIds": [RECORD_LEVEL]}
+
+        both = await self._both(provider, org_id, ref, offset=0, window=200, limit=200)
+
+        assert both[False] == both[True] and both[True]
+
+    async def test_the_provider_leaves_the_walk_out_and_returns_every_candidate(self, backend) -> None:
+        """The decision itself, through the method: with both connectors app-level every
+        candidate in the window comes back, in order."""
+        provider, org_id = backend
+        if not isinstance(provider, Neo4jProvider):
+            pytest.skip("the role walk is left out of Neo4j's statement only")
+        keys = _keys(org_id)
+        sent: list[str] = []
+        original = provider.client.execute_query
+
+        async def recording(query: str, **kwargs: Any) -> Any:  # noqa: ANN401
+            sent.append(query)
+            return await original(query, **kwargs)
+
+        provider.client.execute_query = recording  # type: ignore[method-assign]
+        try:
+            out = await provider.get_permitted_entity_records(
+                [{"id": keys["topic"], "type": "topic", "connectorIds": [APP_LEVEL, RECORD_LEVEL]}],
+                org_id, keys["user"], app_level_connector_ids=[APP_LEVEL, RECORD_LEVEL],
+                limit_per_entity=200, window=200,
+            )
+        finally:
+            provider.client.execute_query = original  # type: ignore[method-assign]
+
+        rows = out[("topic", keys["topic"])]
+        assert sent and all("permission_role" not in query for query in sent)
+        assert len(rows) == rows.window_size == rows.examined == NOISE + len(READABLE) + len(HIDDEN)
+
+
 class TestThroughThePermissionLayer:
     async def test_search_keeps_an_entity_whose_readable_records_are_old(self, backend) -> None:
         """KG-11: the newest 70 are unreadable; the old probe saw only 60."""
