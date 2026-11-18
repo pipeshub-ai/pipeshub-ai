@@ -501,6 +501,12 @@ record_schema = {
     "message": "Document does not match the record schema.",
 }
 
+# Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
+# collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+RECORD_SCHEMA_GENERATION = 2
+record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
+
 
 # Pipeline stage state: one document per (virtual record, content revision, stage).
 # ``_key`` is ``{virtualRecordId}:{rev}:{stage}``; see app/modules/pipeline/models.py.
@@ -1094,6 +1100,7 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            "accessOnly": {"type": ["boolean", "null"], "default": False},
             # Permission traversal input, as on records: per node, and
             # RESTRICTED never cascades to children.
             "accessRule": {

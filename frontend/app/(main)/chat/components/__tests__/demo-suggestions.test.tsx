@@ -26,6 +26,10 @@ vi.mock('@/app/(main)/workspace/connectors/demo-data/use-restricted-question', (
 }));
 
 const hideDemo = vi.fn();
+// The panel behind "What's in the demo?" has its own tests.
+vi.mock('@/app/(main)/workspace/connectors/demo-data/components', () => ({
+  AboutDemoDataLink: () => null,
+}));
 vi.mock('@/app/(main)/workspace/connectors/demo-data/use-demo-switch', () => ({
   useDemoSwitch: () => ({ hideWithUndo: hideDemo, busy: false }),
 }));

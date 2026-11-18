@@ -47,6 +47,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorType,
 )
 from app.services.parsing.client import ParsingClient, ParsingClientError
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Fakes / factories
@@ -107,6 +108,7 @@ def _make_graph_provider(doc: dict[str, Any]) -> MagicMock:
         return True
 
     graph_provider.update_node = AsyncMock(side_effect=_update_node)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     return graph_provider
 
 

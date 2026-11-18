@@ -63,7 +63,10 @@ class BuiltinFetcher:
 
         if document is None or not document.blocks:
             raise NoText(f"No readable content could be extracted from {redact_url(body.url)}", source=self.id)
-        return WebPage(url=body.url, title=document.title, blocks=tuple(document.blocks), fetched_by=fetched_by)
+        return WebPage(
+            url=body.url, title=document.title, blocks=tuple(document.blocks), fetched_by=fetched_by,
+            images=tuple(document.images),
+        )
 
     async def _rendered(self, url: str, deadline: Deadline) -> tuple[FetchedBody, ParsedDocument] | None:
         """The browser's copy, or None: when the browser fails, the served copy is still an answer."""

@@ -17,7 +17,7 @@ from contextlib import nullcontext
 from logging import Logger
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from neo4j import AsyncGraphDatabase, Query
+from neo4j import AsyncGraphDatabase, NotificationDisabledClassification, Query
 from neo4j.exceptions import (
     ClientError,
     Neo4jError,
@@ -349,6 +349,10 @@ class Neo4jClient:
                 max_connection_pool_size=self._max_connection_pool_size,
                 connection_acquisition_timeout=self._connection_acquisition_timeout,
                 liveness_check_timeout=self._liveness_check_timeout,
+                # A query naming a property, label or relationship type no node has held yet (an optional field most
+                # graphs never set) gets this notification on every run, and the driver logs it with the whole query.
+                # The other classifications (deprecation, performance, hint, ...) are kept.
+                notifications_disabled_classifications=[NotificationDisabledClassification.UNRECOGNIZED],
             )
             with self._drivers_lock:
                 self._drivers[self._current_loop()] = driver

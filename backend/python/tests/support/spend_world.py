@@ -36,9 +36,41 @@ class SimClock:
         self.now_ms += int(seconds * 1000)
 
 
+def _worker_index() -> int:
+    """0 for a plain run, N for the pytest-xdist worker ``gwN``."""
+    name = os.environ.get("PYTEST_XDIST_WORKER", "")
+    return int(name[2:]) if name.startswith("gw") and name[2:].isdigit() else 0
+
+
+def worker_redis_url(url: str) -> str:
+    """The Redis URL with the logical database moved up by this xdist worker's index, so parallel workers never share a
+    keyspace (and one worker's cleanup scan never walks another's keys). A plain run keeps the URL as given. Redis has 16
+    databases by default; a run with more workers than that fails here instead of sharing one."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    from redis.asyncio.connection import parse_url
+
+    index = _worker_index()
+    if not index:
+        return url
+    # The effective database is whatever redis-py will select (``?db=`` over the path, the first non-empty value of a
+    # repeated parameter), read with its own parser so the two can never disagree.
+    base = int(parse_url(url).get("db") or 0)
+    if base + index > 15:
+        raise RuntimeError(f"worker gw{index} needs Redis database {base + index}; use fewer workers or a lower base database")
+    database = str(base + index)
+    parts = urlsplit(url)
+    others = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "db"]
+    if parts.scheme == "unix":
+        # the path is the socket, so the database can only go in the query
+        return urlunsplit(parts._replace(query=urlencode([*others, ("db", database)])))
+    return urlunsplit(parts._replace(path=f"/{database}", query=urlencode(others)))
+
+
 async def _client():  # noqa: ANN202
     url = os.environ.get("SPEND_IT_REDIS_URL")
     if url:
+        url = worker_redis_url(url)
         import redis.asyncio as aioredis
 
         return aioredis.Redis.from_url(url, decode_responses=True), True
@@ -81,7 +113,7 @@ def require_spend_redis() -> str:
 
     url = os.environ.get("SPEND_IT_REDIS_URL")
     if url:
-        return url
+        return worker_redis_url(url)
     if os.environ.get("SPEND_IT_REQUIRE_REDIS") == "1":
         pytest.fail("SPEND_IT_REDIS_URL is not set, and this run requires the real Redis")
     pytest.skip("needs a real Redis: set SPEND_IT_REDIS_URL")

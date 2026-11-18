@@ -13,6 +13,7 @@ import pytest
 
 from app.config.constants.arangodb import EventTypes
 from app.exceptions.indexing_exceptions import IndexingError
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.events.test_events_blob_storage_ordering import (
     _collect_events,
     _make_event_processor,
@@ -64,6 +65,8 @@ async def test_a_failed_empty_write_does_not_complete_the_event() -> None:
         return fields.get("indexingStatus") != "EMPTY"
 
     ep.graph_provider.update_node = AsyncMock(side_effect=update_node)
+
+    ep.graph_provider.write_attempt_start = attempt_start_via(ep.graph_provider)
 
     with pytest.raises(IndexingError):
         await _collect_events(ep, event_type=EventTypes.UPDATE_RECORD.value)

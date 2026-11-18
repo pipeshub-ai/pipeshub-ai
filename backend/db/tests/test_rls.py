@@ -40,7 +40,8 @@ def test_catalog_is_clean_and_covers_every_kind(org_db):
         rows = dict(c.execute("SELECT rel::text, class FROM kernel.rls_registry"))
         conversation = {f"conversation.{t}": "org" for t in ("chat_sessions", "chat_session_members", "chat_messages", "citations", "semantic_searches", "semantic_search_members")}
         retrieval = {f"retrieval.{t}": "org" for t in ("org_spaces", "points", "point_text", "point_groups", "group_members", "point_tombstones", "placement_requests",
-                                                       "postings", "lexical_df_delta", "collection_stats", "member_stats", "space_checks")}
+                                                       "postings", "lexical_df_delta", "collection_stats", "member_stats", "space_checks",
+                                                       "lexical_df", "lexical_term_delta", "lexical_df_pending")}
         retrieval |= {"retrieval.embedding_spaces": "global", "retrieval.collections": "global"}
         stored = {f"graph.{t}": "org" for t in ("nodes", "edges")}      # partitioned: the leaves are not registry rows
         stored |= {f"content.{t}": "org" for t in ("documents", "projects", "project_members")}
