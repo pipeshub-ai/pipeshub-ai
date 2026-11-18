@@ -148,15 +148,27 @@ def _scope(node: ast.AST) -> Iterator[tuple[str, ast.AST]]:
 
 # The same as backend/python/tests/permissions/matrix.py, which this package cannot import (test_cited_line_is_the_matrix_one).
 def cited_line(path: Path, where: str, snippet: str) -> int | None:
-    """The line holding `snippet` inside the def, class or assignment the dotted name `where` names in `path` (a class's
-    decorators included), or None when the name is gone or no longer holds the snippet."""
+    """The line holding `snippet` in the code of the def, class or assignment the dotted name `where` names in `path`, or
+    None when the name is gone or no longer holds it. A class's decorators count; comment lines and the defs and classes
+    nested inside do not (they are another function, cited by their own dotted name)."""
     text = path.read_text(encoding="utf-8")
-    lines, nodes = text.splitlines(), [ast.parse(text)]
+    lines, nodes = text.split("\n"), [ast.parse(text)]  # not splitlines(): ast counts only newlines, not \f or U+2028
     for part in where.split("."):
         nodes = [n for parent in nodes for name, n in _scope(parent) if name == part]
+
+    def span(n: ast.AST) -> range:
+        return range(min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])]), n.end_lineno + 1)
+
     for n in nodes:
-        start = min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])])
-        hit = next((i for i in range(start, n.end_lineno + 1) if snippet in lines[i - 1]), None)
+        if isinstance(n, (ast.Assign, ast.AnnAssign)):
+            segment = ast.get_source_segment(text, n) or ""  # by column: `A = None; B = "key"` is two statements
+            if snippet in segment:
+                return n.lineno + segment[:segment.index(snippet)].count("\n")
+            continue
+        nested = {i for c in ast.walk(n) if c is not n and isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                  for i in span(c)}
+        hit = next((i for i in span(n) if i not in nested and snippet in lines[i - 1]
+                    and not lines[i - 1].lstrip().startswith("#")), None)
         if hit:
             return hit
     return None
@@ -270,12 +282,22 @@ _MOVED = _READER.replace("return await self.config.get_config(config_node_consta
     (_READER.replace("config_node_constants.AI_MODELS.value", "None"), None),
     (_READER.replace("def load", "def load_all"), None),
     (_MOVED, None),
-], ids=["intact", "lines-shifted", "code-deleted", "function-renamed", "moved-to-another-function"])
+    (_READER.replace("        return await", "        async def helper():\n            return await"), None),
+    (_READER.replace("        return await", "        # return await").replace("AI_MODELS.value)\n", "AI_MODELS.value)\n        return None\n"), None),
+], ids=["intact", "lines-shifted", "code-deleted", "function-renamed", "moved-to-another-function", "moved-into-a-nested-function",
+        "commented-out"])
 def test_a_citation_holds_only_while_its_function_names_the_key(tmp_path, source, line):
     path = tmp_path / "store.py"
     path.write_text(source)
     assert cited_line(path, "Store.load", "AI_MODELS") == line
     assert cited_line(path, "FLAG", "/migrations/x") == source.splitlines().index('FLAG = "/migrations/x"') + 1
+
+
+def test_a_constant_citation_is_only_its_own_statement(tmp_path):
+    path = tmp_path / "keys.py"
+    path.write_text('FLAG = None; OTHER = "/migrations/x"\n')
+    assert cited_line(path, "OTHER", "/migrations/x") == 1
+    assert cited_line(path, "FLAG", "/migrations/x") is None
 
 
 def test_cited_line_is_the_matrix_one():

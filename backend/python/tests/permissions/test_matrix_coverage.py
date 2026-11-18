@@ -64,7 +64,13 @@ _SAMPLE = (matrix.Connector("sample", "item-acl", matrix.OVERRIDE, "sample/conne
     (_WRITER.replace("def write", "def write_all"), ["sample"]),
     (_MOVED, ["sample"]),
     (_WRITER.replace("RECORD_LEVEL", "APP_LEVEL"), ["sample_app"]),            # a class's decorators are part of it
-], ids=["intact", "lines-shifted", "code-deleted", "function-renamed", "moved-to-another-function", "decorator-changed"])
+    (_WRITER.replace("        record.inherit_permissions = False",
+                     "        def helper():\n            record.inherit_permissions = False"), ["sample"]),
+    (_WRITER.replace("        record.inherit_permissions = False",
+                     "        # record.inherit_permissions = False\n        pass"), ["sample"]),
+    ("# a comment with a line separator \u2028 in it\n" + _WRITER, []),       # ast counts only \n as a line break
+], ids=["intact", "lines-shifted", "code-deleted", "function-renamed", "moved-to-another-function", "decorator-changed",
+        "moved-into-a-nested-function", "commented-out", "unicode-line-separator"])
 def test_a_citation_holds_only_while_its_function_holds_the_anchor(tmp_path: Path, monkeypatch, source, failing) -> None:
     (tmp_path / "sample").mkdir()
     (tmp_path / "sample" / "connector.py").write_text(source)

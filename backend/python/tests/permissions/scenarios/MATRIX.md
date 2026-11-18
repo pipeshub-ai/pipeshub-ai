@@ -54,7 +54,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py::SalesforceConnector._build_deal_record` | grep, to confirm |
 | `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py::ServiceNowConnector._process_single_article` | grep, to confirm |
 | `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py::ZendeskConnector._ticket_to_record` | grep, to confirm |
-| `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py::ZammadConnector._fetch_kb_answer_attachments` | grep, to confirm |
+| `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py::ZammadConnector._create_answer_with_permissions` | grep, to confirm |
 | `zoom` | item-acl | override | - | `app/connectors/sources/zoom/connector.py::ZoomConnector._build_record_group` | grep, to confirm |
 | `drupal_wiki` | item-acl | override | - | `app/connectors/sources/drupal_wiki/connector.py::DrupalWikiConnector._sync_spaces` | grep, to confirm |
 | `bookstack` | item-acl | override | - | `app/connectors/sources/bookstack/connector.py::BookStackConnector._page_record` | grep, to confirm |

@@ -152,7 +152,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("salesforce", "item-acl", OVERRIDE, "salesforce/connector.py::SalesforceConnector._build_deal_record", "records inherit=False; org grant on product groups (SalesforceConnector._run_sync)", read=False),
     Connector("servicenow/servicenow", "item-acl", OVERRIDE, "servicenow/servicenow/connector.py::ServiceNowConnector._process_single_article", "an article inherits unless it has read criteria: Can Read only is inherit and a grant, Cannot Read or an ownership group computes the users", read=False),
     Connector("zendesk", "item-acl", OVERRIDE, "zendesk/connector.py::ZendeskConnector._ticket_to_record", "ticket folders inherit=False, opened to the requester", read=False),
-    Connector("zammad", "item-acl", OVERRIDE, "zammad/connector.py::ZammadConnector._fetch_kb_answer_attachments", "PUBLIC/ARCHIVED/DRAFT explicit, INTERNAL inherits the category", read=False),
+    Connector("zammad", "item-acl", OVERRIDE, "zammad/connector.py::ZammadConnector._create_answer_with_permissions", "PUBLIC/ARCHIVED/DRAFT explicit, INTERNAL inherits the category", read=False),
     Connector("zoom", "item-acl", OVERRIDE, "zoom/connector.py::ZoomConnector._build_record_group", "per-user groups, inherit=False", read=False),
     Connector("drupal_wiki", "item-acl", OVERRIDE, "drupal_wiki/connector.py::DrupalWikiConnector._sync_spaces", "spaces inherit=False with org, user and group grants", read=False),
     Connector("bookstack", "item-acl", OVERRIDE, "bookstack/connector.py::BookStackConnector._page_record", "each chapter and page carries its own access (inherit=False): BookStack decides it apart from its book's", read=False),
@@ -233,7 +233,7 @@ ANCHORS: dict[str, str] = {
     'salesforce': 'inherit_permissions=False,',
     'servicenow/servicenow': 'article_record.inherit_permissions = inherit',
     'zendesk': 'inherit_permissions=False,',
-    'zammad': '# PUBLIC/ARCHIVED/DRAFT: inherit_permissions=False',
+    'zammad': 'inherit_permissions = visibility == "INTERNAL"',
     'zoom': 'inherit_permissions=False,',
     'drupal_wiki': 'inherit_permissions=False,',
     'bookstack': 'inherit_permissions=False,',
@@ -255,15 +255,27 @@ def _scope(node: ast.AST) -> Iterator[tuple[str, ast.AST]]:
 
 
 def cited_line(path: Path, where: str, snippet: str) -> int | None:
-    """The line holding `snippet` inside the def, class or assignment the dotted name `where` names in `path` (a class's
-    decorators included), or None when the name is gone or no longer holds the snippet."""
+    """The line holding `snippet` in the code of the def, class or assignment the dotted name `where` names in `path`, or
+    None when the name is gone or no longer holds it. A class's decorators count; comment lines and the defs and classes
+    nested inside do not (they are another function, cited by their own dotted name)."""
     text = path.read_text(encoding="utf-8")
-    lines, nodes = text.splitlines(), [ast.parse(text)]
+    lines, nodes = text.split("\n"), [ast.parse(text)]  # not splitlines(): ast counts only newlines, not \f or U+2028
     for part in where.split("."):
         nodes = [n for parent in nodes for name, n in _scope(parent) if name == part]
+
+    def span(n: ast.AST) -> range:
+        return range(min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])]), n.end_lineno + 1)
+
     for n in nodes:
-        start = min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])])
-        hit = next((i for i in range(start, n.end_lineno + 1) if snippet in lines[i - 1]), None)
+        if isinstance(n, (ast.Assign, ast.AnnAssign)):
+            segment = ast.get_source_segment(text, n) or ""  # by column: `A = None; B = "key"` is two statements
+            if snippet in segment:
+                return n.lineno + segment[:segment.index(snippet)].count("\n")
+            continue
+        nested = {i for c in ast.walk(n) if c is not n and isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                  for i in span(c)}
+        hit = next((i for i in span(n) if i not in nested and snippet in lines[i - 1]
+                    and not lines[i - 1].lstrip().startswith("#")), None)
         if hit:
             return hit
     return None
