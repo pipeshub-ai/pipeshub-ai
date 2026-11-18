@@ -222,6 +222,35 @@ export function describeNotificationContract(fx: NotificationFixture): void {
     expect((await repo.counts({ orgId: org, userId: me })).unread).to.equal(1);
   });
 
+  it('an unscheduled row that brings its own createdAt gets updatedAt = createdAt, as stored and as listed', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const given = ago(86_400_000);
+    const one = await repo.insert(mk(org, me, { createdAt: given }));
+    const [two] = await repo.insertMany([mk(org, me, { createdAt: given.toISOString() })]);
+    const listed = await repo.list({ orgId: org, userId: me }, { status: null, limit: 10 });
+    for (const r of [one, two!, ...listed]) {
+      expect(r.createdAt.getTime()).to.equal(given.getTime());
+      expect(r.updatedAt?.getTime()).to.equal(given.getTime());
+    }
+    expect(listed).to.have.length(2);
+  });
+
+  it('concurrent inserts of the same new _id (a message delivered twice at once) store one row and all return it', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    for (let round = 0; round < 5; round++) {
+      const id = fx.newId();
+      const got = await Promise.all(
+        Array.from({ length: 8 }, (_, i) => repo.insertMany([mk(org, me, { _id: id, title: `t${i}` })])),
+      );
+      const rows = got.map((r) => r[0]!);
+      expect(new Set(rows.map((r) => r._id))).to.deep.equal(new Set([id]));
+      expect(new Set(rows.map((r) => r.title)).size, 'every call returns the one stored row').to.equal(1);
+    }
+    expect((await repo.counts({ orgId: org, userId: me })).unread, 'one row per id').to.equal(5);
+  });
+
   describe('scheduled notifications (visibleAt)', function () {
     this.timeout(30_000);
     const ahead = (ms: number) => new Date(Date.now() + ms);

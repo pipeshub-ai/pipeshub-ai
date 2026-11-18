@@ -3,9 +3,16 @@
  * `created_at`, so every statement carries the org and the retention cutoff: both prune partitions and keep an expired or
  * deleted row out of every read and change.
  */
+import { createHash } from 'node:crypto';
 import { retentionCutoff } from '../../../modules/notification/utils/notification-api.utils';
 import { stripNul } from '../strip-nul';
-import { assertOrg, inUnit, newObjectId, oidOf } from '../pg-util';
+import {
+  assertOrg,
+  inUnit,
+  newObjectId,
+  oidOf,
+  registerLockKey,
+} from '../pg-util';
 import type {
   NewNotification,
   NotificationCursor,
@@ -19,6 +26,10 @@ import { importNotificationDocs } from './pg-import';
 import { prepareNotification } from './dates';
 import { kernelTx } from '../pg';
 import type { Tx } from '../uow';
+
+// The table is partitioned by created_at, so no unique index can hold an id alone; a lock per (org, id) makes a second
+// concurrent insert of the same id wait for the first to commit and then find its row
+const ID_LOCK = registerLockKey('notification_id', 7403);
 
 interface Row {
   id: string;
@@ -101,6 +112,18 @@ export class PgNotificationRepository
       const named = ids.filter((_, i) => supplied[i] !== undefined);
       const have = new Map<string, Row>();
       if (named.length > 0) {
+        // ascending, so two batches that share ids take their locks in the same order
+        const keys = [
+          ...new Set(
+            named.map((id) =>
+              createHash('md5')
+                .update(`${k.orgId}/${id}`)
+                .digest()
+                .readInt32BE(0),
+            ),
+          ),
+        ].sort((a, b) => a - b);
+        for (const key of keys) await k.advisoryXactLock(ID_LOCK, key);
         const { rows: found } = await k.query<Row>(
           `/* pipeshub:platform.notification_by_ids */ SELECT ${COLS} FROM platform.notifications n WHERE n.org_id = $1 AND n.id = ANY($2::text[])`,
           [k.orgId, named],
@@ -128,11 +151,12 @@ export class PgNotificationRepository
             ? JSON.stringify(v)
             : (v as string | number | boolean).toString();
         });
+      // updated_at: a scheduled row's visible_at, else its created_at, as MongoDB's timestamps stamp a new document
       const { rows: out } = await k.query<Row>(
         `/* pipeshub:platform.notification_insert */ INSERT INTO platform.notifications AS n
            (org_id, id, created_at, type, title, message, redirect_link, severity, status, origin_service, assigned_to, payload, is_deleted, deleted_by, visible_at, updated_at)
          SELECT $1::text, u.id, COALESCE(u.created_at, $2::timestamptz), u.type, u.title, u.message, u.redirect_link, u.severity, COALESCE(u.status, 'unread'), u.origin_service, u.assigned_to,
-                u.payload::jsonb, COALESCE(u.is_deleted, false), u.deleted_by, u.visible_at, COALESCE(u.visible_at, $2::timestamptz)
+                u.payload::jsonb, COALESCE(u.is_deleted, false), u.deleted_by, u.visible_at, COALESCE(u.visible_at, u.created_at, $2::timestamptz)
            FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::boolean[], $15::timestamptz[], $16::timestamptz[])
              AS u(id, type, title, message, redirect_link, severity, status, origin_service, assigned_to, payload, deleted_by, is_deleted, created_at, visible_at)
          RETURNING ${COLS}`,
