@@ -28,6 +28,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 # log-pii runs from the repository root: one invocation takes both runtimes' paths.
 CWD = {"ruff": "backend/python", "eslint": "backend/nodejs/apps", "log-emoji": "backend/python", "log-pii": "."}
@@ -36,10 +37,10 @@ SCRIPTS = {"log-emoji": os.path.join(_SCRIPTS_DIR, "log_emoji.py"), "log-pii": o
 WARN_ONLY = frozenset({"LOG-PII-OK"})
 
 
-def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
-    """Return (repo-relative file, rule, line) for every finding that fails the build."""
-    cwd = CWD[tool]
-    rel = [os.path.relpath(f, cwd) for f in files]
+def lint(tool: str, files: list[str], tree: str = ".") -> list[tuple[str, str, int]]:
+    """Return (repo-relative file, rule, line) for every finding that fails the build, linting the copies in tree."""
+    cwd = os.path.join(tree, CWD[tool])
+    rel = [os.path.relpath(f, CWD[tool]) for f in files]
     if tool == "ruff":
         cmd = ["ruff", "check", "--output-format=json", "--exit-zero", *rel]
     elif tool in SCRIPTS:
@@ -51,7 +52,7 @@ def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
     if proc.returncode not in (0, 1) or (tool != "eslint" and proc.returncode):
         sys.stderr.write(proc.stderr)
         sys.exit(f"{tool} could not run (exit {proc.returncode})")
-    root = os.getcwd()
+    root = os.path.abspath(tree)
     found = []
     for item in json.loads(proc.stdout or "[]"):
         if tool != "eslint":   # ruff, log-emoji and log-pii print the same shape
@@ -78,14 +79,6 @@ def main() -> None:
     if tool not in CWD or not files:
         sys.exit(__doc__)
 
-    # The baseline run overwrites these files and restores them from HEAD, which would drop uncommitted edits.
-    status = git("status", "--porcelain", "--", *files)
-    if status.returncode:
-        sys.exit(f"git status failed (exit {status.returncode}), so nothing was changed: {status.stderr.decode().strip()}")
-    dirty = status.stdout.decode().strip()
-    if dirty:
-        sys.exit(f"Commit or stash these files first; the check restores them from HEAD:\n{dirty}")
-
     head = lint(tool, files)
 
     # A renamed file is compared with its old path on main, not treated as new.
@@ -102,26 +95,37 @@ def main() -> None:
             i += 2
     main_path = {f: renamed.get(f, f) for f in files}
 
-    # Put each file that exists on main back to its main version, lint it, then restore the pull request's version.
-    # A symlink is never put back: writing through it would overwrite its target, which the restore does not undo.
-    # A path that was a symlink on main is skipped too: git show gives the link text, not source to compare.
+    # Main's versions are written into a throwaway worktree of HEAD, never this checkout: a failed or killed run
+    # must not leave them here to be committed. The worktree keeps the pull request's config and every path.
+    # A path that was a symlink on main is skipped: git show gives the link text, not source to compare.
     on_main = [
         f for f in files
-        if not os.path.islink(f)
-        and not is_symlink_at(base, main_path[f])
+        if not is_symlink_at(base, main_path[f])
         and git("cat-file", "-e", f"{base}:{main_path[f]}").returncode == 0
     ]
-    try:
-        for f in on_main:
-            shown = git("show", f"{base}:{main_path[f]}")
-            if shown.returncode:
-                sys.exit(f"git show {base}:{main_path[f]} failed: {shown.stderr.decode().strip()}")
-            with open(f, "wb") as out:
-                out.write(shown.stdout)
-        main_found = lint(tool, on_main) if on_main else []
-    finally:
-        if on_main:
-            subprocess.run(["git", "checkout", "HEAD", "--", *on_main], check=True)
+    main_found = []
+    if on_main:
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = os.path.join(os.path.realpath(tmp), "tree")
+            added = git("worktree", "add", "--detach", "--quiet", tree, "HEAD")
+            if added.returncode:
+                sys.exit(f"git worktree add failed: {added.stderr.decode().strip()}")
+            try:
+                # A symlink is never written through: its target may be outside the worktree.
+                on_main = [f for f in on_main if not os.path.islink(os.path.join(tree, f))]
+                for f in on_main:
+                    shown = git("show", f"{base}:{main_path[f]}")
+                    if shown.returncode:
+                        sys.exit(f"git show {base}:{main_path[f]} failed: {shown.stderr.decode().strip()}")
+                    os.makedirs(os.path.dirname(os.path.join(tree, f)), exist_ok=True)
+                    with open(os.path.join(tree, f), "wb") as out:
+                        out.write(shown.stdout)
+                if tool == "eslint":   # ESLint loads its plugins from the install, which a fresh worktree lacks
+                    os.symlink(os.path.abspath(os.path.join(CWD[tool], "node_modules")),
+                               os.path.join(tree, CWD[tool], "node_modules"))
+                main_found = lint(tool, on_main, tree) if on_main else []
+            finally:
+                git("worktree", "remove", "--force", tree)
 
     head_count = collections.Counter((f, r) for f, r, _ in head)
     main_count = collections.Counter((f, r) for f, r, _ in main_found)
