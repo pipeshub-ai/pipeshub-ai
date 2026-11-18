@@ -2469,7 +2469,9 @@ class RecordEventHandler(BaseEventService):
                 refresh_org = payload.get("orgId") or record.get("orgId")
                 if refresh_org:
                     paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
-                    event_id = payload.get(replay_set.EVENT_ID_KEY)
+                    # The identity of the refresh across broker requeues: the delivery id a consumer keeps through its
+                    # own re-queues (a republish gets a new envelope event id, so that one names only one delivery).
+                    event_id = payload.get(replay_set.DELIVERY_ID_KEY) or payload.get(replay_set.EVENT_ID_KEY)
                     try:
                         async with paid_cache.refresh_purge(refresh_org, record_id, str(event_id or uuid.uuid4().hex)) as must_purge:
                             if must_purge:

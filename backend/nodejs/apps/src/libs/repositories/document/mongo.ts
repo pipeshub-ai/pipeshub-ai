@@ -112,17 +112,21 @@ async function touchArtifactSet(
     ],
   };
   const touch = async (): Promise<DocumentRow | null> => {
-    const touched = await DocumentModel.findOneAndUpdate(
-      writable as never,
-      // The stamp only moves forward: a touch that was read at an earlier `now` and runs late must not set it back
-      // below what a purge listed, or the purge would claim a revision that was written since.
-      {
-        $max: { updatedAt: now },
-        $unset: { 'artifactSet.retiringAt': 1 },
-      },
+    // The stamp always moves strictly forward, so a purge that listed it earlier can tell a touch happened: to `now`
+    // when that is later than the stored stamp, otherwise one millisecond past it (a touch read at an earlier `now`
+    // that lands late must not leave the stamp a purge listed unchanged).
+    const forward = await DocumentModel.findOneAndUpdate(
+      { ...writable, updatedAt: { $lt: now } } as never,
+      { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
       { new: true, timestamps: false },
     );
-    return touched ? row(touched) : null;
+    if (forward) return row(forward);
+    const bumped = await DocumentModel.findOneAndUpdate(
+      writable as never,
+      { $inc: { updatedAt: 1 }, $unset: { 'artifactSet.retiringAt': 1 } },
+      { new: true, timestamps: false },
+    );
+    return bumped ? row(bumped) : null;
   };
   const touched = await touch();
   if (touched) return touched;

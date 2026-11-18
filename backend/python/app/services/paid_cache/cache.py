@@ -350,55 +350,61 @@ class PaidResultCache:
         backend: LockBackend | None = None
         name = refresh_name(org_id, record_id, event_id)
         must_purge = True
+        # One cleanup scope from the first acquisition on: a cancellation anywhere after the lease was taken (the
+        # marker recheck, the purge, the marker write) still stops the heartbeat and releases the token.
         try:
-            backend = await self._backend()
-            deadline = time.monotonic() + REFRESH_PURGE_WAIT_S
-            while True:
-                if await backend.is_marked(name):
-                    must_purge = False
-                    break
-                token = await backend.acquire(name + ":lease", LOCK_TTL_MS)
-                if token is not None:
-                    held = _Held(backend, name + ":lease", token, self.logger, max_age_s=REFRESH_PURGE_MAX_AGE_S)  # type: ignore[arg-type]
-                    held.start_heartbeat()
-                    if await backend.is_marked(name):      # a holder marked between the check and the acquire
+            try:
+                backend = await self._backend()
+                deadline = time.monotonic() + REFRESH_PURGE_WAIT_S
+                while True:
+                    if await backend.is_marked(name):
                         must_purge = False
-                        await _uninterrupted(held.stop_heartbeat())
-                        await _uninterrupted(held.release())
-                        held = None
-                    break
-                if time.monotonic() > deadline:
-                    raise RefreshPurgeInProgress(f"another delivery of refresh {event_id} is purging {record_id}")
-                await asyncio.sleep(REFRESH_PURGE_POLL_S)
-        except RefreshPurgeInProgress:
-            raise
-        except Exception:
-            self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
-            must_purge = True
-        lease_token = _refresh_lease.set(held if must_purge else None)
-        try:
-            yield must_purge
-            if must_purge and held is not None and backend is not None:
-                lost = held.lost
-                if not lost:
-                    # Ownership and the marker in one atomic step: a lease that lapses between a check and a write
-                    # could let a third delivery start writing while the successor's purge is still to come.
-                    mark_if_owned = getattr(backend, "mark_if_owned", None)
-                    if mark_if_owned is not None and held.token is not None:
-                        lost = not await mark_if_owned(name, DELETED_TTL_MS, name + ":lease", held.token)
-                    else:
-                        lost = not await held.still_owned()
-                        if not lost:
-                            await backend.mark(name, DELETED_TTL_MS)     # only after the purge returned
-                if lost:
-                    # The lease was given up (past its deadline) or taken while the purge ran: another delivery has
-                    # purged or is purging, so this one writes no marker and its caller opens no run.
-                    raise RefreshPurgeInProgress(f"the purge lease of refresh {event_id} was lost; another delivery owns it")
+                        break
+                    token = await backend.acquire(name + ":lease", LOCK_TTL_MS)
+                    if token is not None:
+                        held = _Held(backend, name + ":lease", token, self.logger, max_age_s=REFRESH_PURGE_MAX_AGE_S)  # type: ignore[arg-type]
+                        held.start_heartbeat()
+                        if await backend.is_marked(name):      # a holder marked between the check and the acquire
+                            must_purge = False
+                            await _uninterrupted(_stop_and_release(held))
+                            held = None
+                        break
+                    if time.monotonic() > deadline:
+                        raise RefreshPurgeInProgress(f"another delivery of refresh {event_id} is purging {record_id}")
+                    await asyncio.sleep(REFRESH_PURGE_POLL_S)
+            except RefreshPurgeInProgress:
+                raise
+            except Exception as exc:
+                if writes_enabled():
+                    # Writes on: a purge without the lease could delete what a delivery that took over has stored, and
+                    # nothing here tells. The delivery comes back when the lock backend can be asked.
+                    raise RefreshPurgeInProgress(f"the refresh lease of {record_id} cannot be taken: {exc!r}") from exc
+                self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
+                must_purge = True
+            lease_token = _refresh_lease.set(held if must_purge else None)
+            try:
+                yield must_purge
+                if must_purge and held is not None and backend is not None:
+                    lost = held.lost
+                    if not lost:
+                        # Ownership and the marker in one atomic step: a lease that lapses between a check and a write
+                        # could let a third delivery start writing while the successor's purge is still to come.
+                        mark_if_owned = getattr(backend, "mark_if_owned", None)
+                        if mark_if_owned is not None and held.token is not None:
+                            lost = not await mark_if_owned(name, DELETED_TTL_MS, name + ":lease", held.token)
+                        else:
+                            lost = not await held.still_owned()
+                            if not lost:
+                                await backend.mark(name, DELETED_TTL_MS)     # only after the purge returned
+                    if lost:
+                        # The lease was given up (past its deadline) or taken while the purge ran: another delivery has
+                        # purged or is purging, so this one writes no marker and its caller opens no run.
+                        raise RefreshPurgeInProgress(f"the purge lease of refresh {event_id} was lost; another delivery owns it")
+            finally:
+                _refresh_lease.reset(lease_token)
         finally:
-            _refresh_lease.reset(lease_token)
             if held is not None:
-                await _uninterrupted(held.stop_heartbeat())
-                await _uninterrupted(held.release())
+                await _uninterrupted(_stop_and_release(held))
 
     async def delete_record(self, org_id: str, record_id: str) -> bool:
         """The record is deleted: no writer may store under it again, and what is stored goes.
@@ -628,8 +634,7 @@ class PaidResultCache:
             yield
         finally:
             if held is not None:
-                await _uninterrupted(held.stop_heartbeat())
-                await _uninterrupted(held.release())
+                await _uninterrupted(_stop_and_release(held))
 
     async def _note(self, scope: RunScope | None, key: CacheKey, path: str, *, stored: bool) -> None:
         if scope is None or not writes_enabled():
@@ -751,6 +756,12 @@ class _Held:
             await self._backend.release(self._name, self.token)
         except Exception:
             self._logger.debug("Paid-result lock release failed", exc_info=True)
+
+
+async def _stop_and_release(held: "_Held") -> None:
+    """Stops the heartbeat and gives the token back as one piece of work, so a cancellation between them cannot skip the release."""
+    await held.stop_heartbeat()
+    await held.release()
 
 
 async def _uninterrupted(work: Awaitable[Any]) -> Any:  # noqa: ANN401 - whatever the work returns

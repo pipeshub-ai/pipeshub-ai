@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import itertools
 import json
+import logging
 import secrets
 import time
 import weakref
@@ -52,6 +53,8 @@ class _ManifestStore(Protocol):
 
 #: The replicas' wall clocks may differ: a sibling that completed up to this long before this run started is still adopted
 #: (keeping a result listed only retains it for longer; dropping one would let a sweep delete what a run paid for).
+_log = logging.getLogger(__name__)
+
 COMPLETION_CLOCK_SKEW_MS = 120_000
 
 
@@ -70,6 +73,7 @@ class RunScope:
         #: A retry of a refresh: results the refresh's own earlier attempt stored are reused, not paid for again.
         self.reuse_prior_attempt = reuse_prior_attempt
         self._prior_keys: set[str] | None = None
+        self._prior_load: asyncio.Lock | None = None
         self.run_id = secrets.token_hex(8)
         #: Names the refresh across attempts and services (the event id): what the parsing client sends as its token.
         self.refresh_token = refresh_token or self.run_id
@@ -111,6 +115,9 @@ class RunScope:
             "rev": self.content_rev, "writer": self.writer, "run": self.run_id,
             "startedMs": self.started_ms, "keys": self._keys,
         }
+        if self.refresh:
+            # Which refresh wrote it: a retry reuses only what its own refresh's earlier attempt listed.
+            body["refreshToken"] = self.refresh_token
         if final:
             body["completedMs"] = max(int(self._clock() * 1000), self.started_ms)
             body["seq"] = next(_SEQ)
@@ -138,6 +145,8 @@ class RunScope:
             open_path = open_manifest_path(self.content_rev, self.writer)
             async with _path_lock(self.org_id, self.record_id, open_path), self._guard(open_path):
                 await self._adopt(store, open_path)
+                if self.past_deadline():                  # the waits and reads above may have run past the stage deadline
+                    return
                 body, noted = self._body(), self._unflushed
                 async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
                     await store.replace(self.org_id, self.record_id, open_path, body)
@@ -146,19 +155,32 @@ class RunScope:
             self._last_flush = self._clock()
 
     async def prior_attempt_keys(self, store: _ManifestStore) -> set[str]:
-        """The keys this revision's earlier attempt (open or final manifest of the same writer) listed; read once."""
-        if self._prior_keys is None:
-            keys: set[str] = set()
-            reader = getattr(store, "get", None)
-            if reader is not None:
-                for path in (open_manifest_path(self.content_rev, self.writer), final_manifest_path(self.content_rev, self.writer)):
-                    try:
-                        raw = await reader(self.org_id, self.record_id, path)
-                        listed = json.loads(raw).get("keys", []) if raw else []
-                    except Exception:
-                        continue
-                    keys.update(k for k in listed if isinstance(k, str))
-            self._prior_keys = keys
+        """The keys this refresh's earlier attempt (open or final manifest of the same writer) listed; read once.
+
+        Only a manifest that names this run's refresh counts: an older run's manifest, which the purge's cutoff may
+        have kept, is not an attempt of this refresh. Concurrent callers share the one load.
+        """
+        if self._prior_keys is not None:
+            return self._prior_keys
+        if self._prior_load is None:
+            self._prior_load = asyncio.Lock()
+        async with self._prior_load:
+            if self._prior_keys is None:
+                keys: set[str] = set()
+                reader = getattr(store, "get", None)
+                if reader is not None:
+                    for path in (open_manifest_path(self.content_rev, self.writer), final_manifest_path(self.content_rev, self.writer)):
+                        try:
+                            raw = await reader(self.org_id, self.record_id, path)
+                            body = json.loads(raw) if raw else {}
+                            if self.refresh and body.get("refreshToken") != self.refresh_token:
+                                continue
+                            listed = body.get("keys", [])
+                        except Exception:
+                            continue
+                        if isinstance(listed, list):
+                            keys.update(k for k in listed if isinstance(k, str))
+                self._prior_keys = keys        # published once, complete; a cancelled load leaves it unset for a later caller
         return self._prior_keys
 
     def _guard(self, path: str) -> contextlib.AbstractAsyncContextManager[None]:
@@ -179,7 +201,13 @@ class RunScope:
             return
         async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
             raw = await reader(self.org_id, self.record_id, path)
-        body = json.loads(raw) if raw else {}
+        try:
+            body = json.loads(raw) if raw else {}
+        except ValueError:
+            # Bytes that were read but do not decode (a truncated write): nothing in them can be kept, and refusing to
+            # replace them would wedge every later completion of this revision. A failed read still raises above.
+            _log.warning("Unreadable manifest %s of record %s is replaced", path, self.record_id)
+            body = {}
         if completed_since_ms is not None and isinstance(body, dict):
             completed = body.get("completedMs")
             # A final manifest of an earlier, unrelated completion (another model, another settings) is not a sibling
@@ -215,6 +243,8 @@ class RunScope:
             ):
                 await self._adopt(store, final_path, completed_since_ms=self.started_ms)
                 await self._adopt(store, open_path)
+                if self.past_deadline():                  # the waits and reads above may have run past the stage deadline
+                    return
                 async with asyncio.timeout(lock_limits.WRITE_DEADLINE_S):
                     await store.replace(self.org_id, self.record_id, final_path, self._body(final=True))
                 self.finished = True

@@ -35,13 +35,15 @@ async def test_a_completion_long_before_this_run_is_not_a_sibling() -> None:
     assert await _adopted(started - COMPLETION_CLOCK_SKEW_MS - 60_000) == []
 
 
-def test_a_manifest_lock_that_two_event_loops_contend_for_never_raises() -> None:
+def test_two_event_loops_get_different_locks_for_one_manifest_path_and_never_raise() -> None:
     errors: list[BaseException] = []
+    locks: list[object] = []
     gate = threading.Barrier(2)
 
     def worker() -> None:
         async def contend() -> None:
             lock = _path_lock(ORG, REC, "manifests/rev/w.final.json")
+            locks.append(lock)
             gate.wait(timeout=5)
             for _ in range(200):
                 async with lock:
@@ -52,10 +54,12 @@ def test_a_manifest_lock_that_two_event_loops_contend_for_never_raises() -> None
         except BaseException as exc:  # the test reports whatever a loop raised
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker) for _ in range(2)]
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=30)
 
+    assert not any(t.is_alive() for t in threads)                     # both workers finished
     assert errors == []
+    assert len(locks) == 2 and locks[0] is not locks[1]               # one lock per loop, by construction

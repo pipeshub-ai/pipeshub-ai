@@ -346,17 +346,22 @@ async def test_a_flush_that_lands_between_another_runs_read_and_write_is_not_dro
     store.replace = slow_replace  # type: ignore[method-assign]
     orphan, retry = RunScope(ORG, REC, "r1", "parse"), RunScope(ORG, REC, "r1", "parse")
     a, b = (f"ocr_page/{n * 64}.json" for n in "ab")
-    await orphan.note(store, a, opens=True)
+    await orphan.note(store, a, opens=True)                        # the orphan's A is already in the open manifest
+    c = f"ocr_page/{'c' * 64}.json"
+    orphan._keys.append(c)                                         # a new, unflushed key: both runs now have a flush to make
+    orphan._seen.add(c)
+    orphan._unflushed = 1
     retry._keys.append(b)
     retry._seen.add(b)
     retry._unflushed = 1
     retry._opened = True
 
     await asyncio.gather(retry.flush(store), orphan.flush(store))   # two writers of one open manifest at once
+    assert set(json.loads(store.files[(ORG, REC, "manifests/r1/parse.open.json")][0])["keys"]) == {a, b, c}   # before finish() merges again
     await retry.finish(store)
 
     final = json.loads(store.files[(ORG, REC, "manifests/r1/parse.json")][0])["keys"]
-    assert set(final) == {a, b}
+    assert set(final) == {a, b, c}
 
 
 async def test_two_replicas_writing_one_manifest_through_the_shared_lock_keep_each_others_keys(
@@ -489,18 +494,25 @@ async def test_a_writer_that_never_gets_the_manifest_lock_does_not_write_beside_
 async def test_concurrent_claims_of_one_refresh_token_grant_exactly_one() -> None:
     shared = InProcessLocks()
     replicas = [PaidResultCache(MemoryResultStore(), shared) for _ in range(2)]
-    grants = 0
     for n in range(20):
         results = await asyncio.gather(*(replicas[i % 2].claim_refresh(ORG, REC, f"tok-{n}") for i in range(4)))
-        grants += sum(r is not None for r in results)
-    assert grants == 20                                              # one winner per token, not 80
+        assert "unclaimed" not in results                            # a real claim answered every time
+        winners = [r for r in results if r is not None]
+        assert len(winners) == 1 and results.count(None) == 3        # one lease token and three refusals, for each token
 
 
 async def test_the_refresh_is_marked_purged_only_after_the_purge_returned() -> None:
-    cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
+    store, locks = MemoryResultStore(), InProcessLocks()
+    cache = PaidResultCache(store, locks)
+    store.files[(ORG, REC, "ocr_page/" + "a" * 64 + ".json")] = (b"{}", 1)
     async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
         assert must_purge is True
-    async with cache.refresh_purge(ORG, REC, "evt") as redelivery:     # the purge returned: a redelivery reuses
+        assert not await locks.is_marked(cache_module.refresh_name(ORG, REC, "evt"))     # not before the purge ran
+        await cache.purge_for_refresh(ORG, REC)
+        assert store.paths(ORG, REC) == []
+        assert not await locks.is_marked(cache_module.refresh_name(ORG, REC, "evt"))     # nor before the block ends
+    assert await locks.is_marked(cache_module.refresh_name(ORG, REC, "evt"))             # written once the purge returned
+    async with cache.refresh_purge(ORG, REC, "evt") as redelivery:     # so a redelivery reuses
         assert redelivery is False
 
 
@@ -554,22 +566,37 @@ async def test_a_delivery_that_overlaps_a_purge_waits_for_its_marker_and_never_r
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.01)
-    cache = PaidResultCache(MemoryResultStore(), InProcessLocks())
+    locks = InProcessLocks()
+    cache = PaidResultCache(MemoryResultStore(), locks)
     order: list[str] = []
+
+    holding, contended = asyncio.Event(), asyncio.Event()
+    lease = cache_module.refresh_name(ORG, REC, "evt") + ":lease"
+    real_acquire = locks.acquire
+
+    async def acquire(name: str, ttl_ms: int) -> str | None:
+        token = await real_acquire(name, ttl_ms)
+        if name == lease and token is None:
+            contended.set()                                             # the duplicate found the lease held
+        return token
+
+    locks.acquire = acquire  # type: ignore[method-assign]
 
     async def holder() -> None:
         async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
             assert must_purge is True
-            await asyncio.sleep(0.1)                                    # the purge runs
+            holding.set()
+            await contended.wait()                                      # the purge runs until the duplicate is waiting
             order.append("purged")
 
     async def overlapping() -> None:
-        await asyncio.sleep(0.02)                                       # arrives while the lease is held, no marker yet
+        await holding.wait()
         async with cache.refresh_purge(ORG, REC, "evt") as must_purge:
             order.append(f"reuse={not must_purge}")
             assert must_purge is False
 
-    await asyncio.gather(holder(), overlapping())
+    await asyncio.wait_for(asyncio.gather(holder(), overlapping()), timeout=10)
+
     assert order == ["purged", "reuse=True"]                            # reuse only after the purge returned
 
 
@@ -583,8 +610,8 @@ async def test_a_redelivery_while_a_dead_holders_lease_is_live_is_handed_back_th
     monkeypatch.setattr(cache_module, "REFRESH_PURGE_POLL_S", 0.01)
     locks = InProcessLocks()
     cache = PaidResultCache(MemoryResultStore(), locks)
-    dying = cache.refresh_purge(ORG, REC, "evt")
-    assert await dying.__aenter__() is True                             # the purge starts, then the process is gone
+    # A dead holder: a lease token with no heartbeat (nothing renews it) and no marker.
+    assert await locks.acquire(cache_module.refresh_name(ORG, REC, "evt") + ":lease", 60_000) is not None
 
     with pytest.raises(RefreshPurgeInProgress):                         # handed back for a later delivery, no reuse
         async with cache.refresh_purge(ORG, REC, "evt"):
@@ -593,8 +620,6 @@ async def test_a_redelivery_while_a_dead_holders_lease_is_live_is_handed_back_th
     locks.expire_all()                                                  # the dead holder's lease lapses
     async with cache.refresh_purge(ORG, REC, "evt") as redelivery:
         assert redelivery is True                                       # no marker: this delivery purges
-    with pytest.raises(RefreshPurgeInProgress):                         # the dead holder, resumed, finds its lease lost
-        await dying.__aexit__(None, None, None)
 
 
 async def test_the_refresh_token_of_a_redelivered_event_reaches_the_parse_request() -> None:

@@ -239,6 +239,20 @@ async def test_a_refresh_on_a_storage_without_the_cutoff_route_fails_with_writes
     bulk.assert_not_awaited()                                # the record's embeddings are still there
 
 
+async def test_a_republished_refresh_keeps_its_identity_through_the_delivery_id_and_purges_once(store: MemoryResultStore) -> None:
+    """A broker requeue gives the event a new envelope event id; the delivery id the consumers keep names the refresh."""
+    _seed(store)
+    base = {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True, "_delivery_id": "record-events-0-41"}
+
+    await _events(_handler(), EventTypes.REINDEX_RECORD.value, {**base, "_event_id": "envelope-1"})
+    first = store.ops["purge"]
+    store.files[(ORG, REC, f"ocr_page/{'e' * 64}.json")] = (b"{}", store.now_ms + 5)      # the first delivery's run stored it
+    await _events(_handler(), EventTypes.REINDEX_RECORD.value, {**base, "_event_id": "envelope-2"})
+
+    assert first == 1 and store.ops["purge"] == 1                      # the second delivery reuses; it did not purge again
+    assert (ORG, REC, f"ocr_page/{'e' * 64}.json") in store.files
+
+
 @pytest.mark.parametrize("payload", [{"forceReindex": True}, {"refreshPaidOutputs": "true"}, {"refreshPaidOutputs": False}, {}])
 async def test_anything_but_an_explicit_refresh_keeps_the_stored_set(store: MemoryResultStore, payload: dict) -> None:
     _seed(store)

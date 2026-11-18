@@ -399,7 +399,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       }
     })
 
-    it('a touch of a revision never moves its write stamp backwards, however late it runs', async () => {
+    it('a touch of a revision always moves its write stamp forward, however late it runs, so a purge that listed it sees the touch', async () => {
       const org = fx.newId()
       const base = Date.now() + 1_000_000_000_000
       const set = (): NewDocument =>
@@ -409,10 +409,23 @@ export function describeDocumentContract(fx: DocumentFixture): void {
         })
       await repo.createArtifactSetOnce(set(), fence(base))
       const later = await repo.createArtifactSetOnce(set(), fence(base + 1000))
-      expect(Number(later.updatedAt)).to.equal(base + 1000)
-      // A touch that was read at an earlier instant and lands now: the stamp a purge listed is not set back below.
-      const stale = await repo.createArtifactSetOnce(set(), fence(base))
-      expect(Number(stale.updatedAt)).to.equal(base + 1000)
+      const listed = Number(later.updatedAt)
+      expect(listed).to.equal(base + 1000)
+      // A control: nothing touched it since the listing, so a purge that listed that stamp claims the revision.
+      const control = await repo.claimArtifactSetForDelete(org, later._id, { now: base + 2000, staleMs: STALE, ifUnchangedSince: listed })
+      expect(control).to.not.equal('changed')
+      expect(control).to.not.equal(null)
+      // A second revision: the same, then a touch read at an earlier instant lands after the listing.
+      const other = (): NewDocument =>
+        mk(org, {
+          documentName: 'revision_r8',
+          artifactSet: { virtualRecordId: 'v7', rev: 'r8', root: `${org}/PipesHub/record-revisions/v7/r8` },
+        })
+      await repo.createArtifactSetOnce(other(), fence(base))
+      const second = await repo.createArtifactSetOnce(other(), fence(base + 1000))
+      const stale = await repo.createArtifactSetOnce(other(), fence(base))
+      expect(Number(stale.updatedAt)).to.be.greaterThan(Number(second.updatedAt))
+      expect(await repo.claimArtifactSetForDelete(org, second._id, { now: base + 2000, staleMs: STALE, ifUnchangedSince: Number(second.updatedAt) })).to.equal('changed')
     })
 
     it('createArtifactSetOnce gives each stored write of a revision a row of its own, beside the revision\'s shared row', async () => {

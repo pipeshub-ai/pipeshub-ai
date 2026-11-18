@@ -181,13 +181,12 @@ describe('StorageController artifact sets', () => {
       rows.push(doc)
       return doc
     }) as never)
-    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set?: Row; $max?: Row; $unset?: Row }) =>
+    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set?: Row; $inc?: Row; $unset?: Row }) =>
       query(() => {
         const row = rows.find((r) => matches(r, filter))
         if (!row) return null
         for (const [key, value] of Object.entries(update.$set ?? {})) setAt(row, key, value)
-        // $max: the field only moves forward.
-        for (const [key, value] of Object.entries(update.$max ?? {})) setAt(row, key, Math.max(Number(row[key] ?? 0), Number(value)))
+        for (const [key, value] of Object.entries(update.$inc ?? {})) setAt(row, key, Number(row[key] ?? 0) + Number(value))
         for (const key of Object.keys(update.$unset ?? {})) {
           const parts = key.split('.')
           const last = parts.pop()!
@@ -619,7 +618,7 @@ describe('StorageController artifact sets', () => {
       expect(res.body.documentId).to.equal(String(doc._id))
       expect(doc.updatedAt).to.equal(T)
       const [, update, options] = (DocumentModel.findOneAndUpdate as sinon.SinonStub).firstCall.args
-      expect(update).to.deep.equal({ $max: { updatedAt: T }, $unset: { 'artifactSet.retiringAt': 1 } })
+      expect(update).to.deep.equal({ $set: { updatedAt: T }, $unset: { 'artifactSet.retiringAt': 1 } })
       expect(options).to.include({ timestamps: false })
     })
 
