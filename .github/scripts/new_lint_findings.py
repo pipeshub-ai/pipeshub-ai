@@ -26,6 +26,7 @@ log-pii reports each reviewed exemption (`# log-pii: ok <reason>`) as LOG-PII-OK
 import collections
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -65,8 +66,8 @@ def lint(tool: str, files: list[str], tree: str = ".") -> list[tuple[str, str, i
     return found
 
 
-def git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, check=False)
+def git(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, check=False, env=env)
 
 
 def is_symlink_at(commit: str, path: str) -> bool:
@@ -78,6 +79,9 @@ def main() -> None:
     tool, base, files = sys.argv[1], sys.argv[2], sys.argv[3:]
     if tool not in CWD or not files:
         sys.exit(__doc__)
+    # log_pii.py resolves TS_MODULE from its cwd, which is the worktree on the baseline run.
+    if os.environ.get("TS_MODULE"):
+        os.environ["TS_MODULE"] = os.path.abspath(os.environ["TS_MODULE"])
 
     head = lint(tool, files)
 
@@ -105,14 +109,30 @@ def main() -> None:
     ]
     main_found = []
     if on_main:
+        # Uncommitted and untracked files are copied in too, so both passes read the same config and imports.
+        changed = git("diff", "--name-only", "--no-renames", "-z", "HEAD")
+        untracked = git("ls-files", "-z", "--others", "--exclude-standard")
+        if changed.returncode or untracked.returncode:
+            sys.exit(f"git could not list uncommitted files: {(changed.stderr + untracked.stderr).decode().strip()}")
+        # An entry ending in / is a nested repository, not a file.
+        local = [p for p in (changed.stdout + untracked.stdout).decode().split("\0") if p and not p.endswith("/")]
         with tempfile.TemporaryDirectory() as tmp:
             tree = os.path.join(os.path.realpath(tmp), "tree")
             # No hook directory: a developer's post-checkout hook must not run on, or change, the baseline.
             no_hooks = ("-c", "core.hooksPath=/dev/null")
-            added = git(*no_hooks, "worktree", "add", "--detach", "--quiet", tree, "HEAD")
+            # git commit exports GIT_INDEX_FILE to its hooks; worktree add would reset that index to HEAD.
+            wt_env = {k: v for k, v in os.environ.items() if k != "GIT_INDEX_FILE"}
+            added = git(*no_hooks, "worktree", "add", "--detach", "--quiet", tree, "HEAD", env=wt_env)
             if added.returncode:
                 sys.exit(f"git worktree add failed: {added.stderr.decode().strip()}")
             try:
+                for p in local:
+                    dst = os.path.join(tree, p)
+                    if os.path.lexists(dst):
+                        os.remove(dst)   # unlinks a symlink instead of writing through it
+                    if os.path.lexists(p):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copy2(p, dst, follow_symlinks=False)
                 # A symlink is never written through: its target may be outside the worktree.
                 on_main = [f for f in on_main if not os.path.islink(os.path.join(tree, f))]
                 for f in on_main:
@@ -127,7 +147,7 @@ def main() -> None:
                                os.path.join(tree, CWD[tool], "node_modules"))
                 main_found = lint(tool, on_main, tree) if on_main else []
             finally:
-                git(*no_hooks, "worktree", "remove", "--force", tree)
+                git(*no_hooks, "worktree", "remove", "--force", tree, env=wt_env)
 
     head_count = collections.Counter((f, r) for f, r, _ in head)
     main_count = collections.Counter((f, r) for f, r, _ in main_found)

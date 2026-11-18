@@ -12,18 +12,31 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 NEW_FINDINGS = REPO / ".github" / "scripts" / "new_lint_findings.py"
+TS_MODULE = os.path.abspath(os.environ.get("TS_MODULE") or REPO / "backend" / "nodejs" / "apps" / "node_modules" / "typescript")
 A = "backend/python/app/a.py"
 B = "backend/python/app/b.py"
+CONFIG = "backend/python/pyproject.toml"
+TS = "backend/nodejs/apps/src/m.ts"
 
-# Stands in for ruff: prints no findings, and on the second call (the baseline) kills the check, as a cancelled job would.
+# A caller such as a git hook may export these; the fixture must not write to the caller's repository or index.
+GIT_LOCATION = {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_COMMON_DIR"}
+BASE_ENV = {**{k: v for k, v in os.environ.items() if k not in GIT_LOCATION},
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+# Stands in for ruff: reports every file when the config beside it says "strict", and on the second call (the
+# baseline) can kill the check, as a cancelled job would.
 FAKE_RUFF = f"""#!{sys.executable}
-import os, signal, sys
+import json, os, signal, sys
 calls = os.environ["FAKE_RUFF_CALLS"]
 n = len(open(calls).read()) if os.path.exists(calls) else 0
 open(calls, "a").write("x")
 if n == 1 and os.environ.get("FAKE_RUFF_KILL"):
     os.kill(os.getppid(), signal.SIGKILL)
-print("[]")
+strict = os.path.exists("pyproject.toml") and "strict" in open("pyproject.toml").read()
+files = sys.argv[4:] if strict else []
+print(json.dumps([{{"filename": os.path.abspath(f), "code": "STRICT", "location": {{"row": 1}}}} for f in files]))
 """
 
 
@@ -34,34 +47,40 @@ class TestBaselineLeavesCheckoutAlone(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self._tmp.name) / "repo"
         (self.repo / "backend" / "python" / "app").mkdir(parents=True)
+        (self.repo / "backend" / "nodejs" / "apps" / "src").mkdir(parents=True)
         self._git("init", "-q", "-b", "main")
-        self._commit({A: 'logger.info("✅ one")\n'})
+        self._commit({A: 'logger.info("✅ one")\n', CONFIG: "", TS: "export const a = 1;\n"})
         self._git("checkout", "-q", "-b", "pr")
-        self._commit({A: 'logger.info("✅ one")\nlogger.info("❌ two")\n'})
+        self._commit({A: 'logger.info("✅ one")\nlogger.info("❌ two")\n', TS: "export const a = 2;\n"})
         self._git("checkout", "-q", "main")
-        self._commit({A: "x = 1\n", B: 'logger.info("✅ main only")\n'})
+        self._commit({A: 'x = 1\nlogger.info("✅ one")\n', B: 'logger.info("✅ main only")\n'})
         self.main = self._git("rev-parse", "HEAD").strip()
         self._git("checkout", "-q", "pr")
         (self.repo / "untracked.txt").write_text("keep\n", encoding="utf-8")
-        self.status = self._git("status", "--porcelain", "--untracked-files=all")
+        (self.repo / "staged.txt").write_text("staged\n", encoding="utf-8")
+        self._git("add", "staged.txt")
         self.hook_marker = Path(self._tmp.name) / "hook-ran"
         hook = self.repo / ".git" / "hooks" / "post-checkout"
         hook.write_text(f"#!/bin/sh\ntouch '{self.hook_marker}'\n", encoding="utf-8")
         hook.chmod(0o755)
+        self._git("checkout", "-q", "pr")
+        self.assertTrue(self.hook_marker.exists(), "the fixture's post-checkout hook does not run")
+        self.hook_marker.unlink()
+        self.status = self._git("status", "--porcelain", "--untracked-files=all")
         bin_dir = Path(self._tmp.name) / "bin"
         bin_dir.mkdir()
         (bin_dir / "ruff").write_text(FAKE_RUFF, encoding="utf-8")
         (bin_dir / "ruff").chmod(0o755)
-        self.env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                    "FAKE_RUFF_CALLS": str(Path(self._tmp.name) / "calls"), "TMPDIR": self._tmp.name}
+        # git commit exports GIT_INDEX_FILE to its hooks, which may run this check; the staged file must survive.
+        self.env = {**BASE_ENV, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "FAKE_RUFF_CALLS": str(Path(self._tmp.name) / "calls"), "TMPDIR": self._tmp.name,
+                    "GIT_INDEX_FILE": str(self.repo / ".git" / "index")}
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
     def _git(self, *args: str) -> str:
-        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-               "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
-        return subprocess.run(["git", *args], cwd=self.repo, env=env, capture_output=True, text=True,
+        return subprocess.run(["git", *args], cwd=self.repo, env=BASE_ENV, capture_output=True, text=True,
                               check=True).stdout
 
     def _commit(self, files: dict[str, str]) -> None:
@@ -92,7 +111,20 @@ class TestBaselineLeavesCheckoutAlone(unittest.TestCase):
     def test_new_findings_are_counted_against_the_base(self) -> None:
         result = self._check("log-emoji", A)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f"{A}: 2 new LOG-EMOJI (main has 0, this pull request has 2); lines 1, 2", result.stdout)
+        self.assertIn(f"{A}: 1 new LOG-EMOJI (main has 1, this pull request has 2); lines 1, 2", result.stdout)
+        self._assert_checkout_unchanged()
+
+    def test_an_uncommitted_config_applies_to_both_passes(self) -> None:
+        (self.repo / CONFIG).write_text("strict\n", encoding="utf-8")
+        self.status = self._git("status", "--porcelain", "--untracked-files=all")
+        result = self._check("ruff", A)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("No new ruff findings.", result.stdout)
+        self._assert_checkout_unchanged()
+
+    def test_a_relative_ts_module(self) -> None:
+        result = self._check("log-pii", TS, TS_MODULE=os.path.relpath(TS_MODULE, self.repo))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self._assert_checkout_unchanged()
 
 
