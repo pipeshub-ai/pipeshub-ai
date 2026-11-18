@@ -2874,21 +2874,24 @@ _MODEL_AGREES_IOU = 0.9
 # re-extraction does better.
 _RULED_MIN_VERTICAL_RULES = 3
 _RULED_MIN_VERTICAL_LEN = 10.0
+# pdfplumber's default snap distance for table edges: vertical edges closer than this are one rule.
+_RULE_SNAP = 3.0
 
 
 def _vertical_rule_count(page: "Page", bbox: tuple[float, float, float, float]) -> int:
-    """Distinct vertical rules (by x) the page draws in ``bbox``."""
+    """Distinct vertical rules the page draws in ``bbox``. A filled rectangle yields an edge on
+    each side; edges closer than the table finder's snap distance are one rule."""
     try:
-        xs = {
-            round(float(e["x0"]))
+        xs = sorted(
+            float(e["x0"])
             for e in page.vertical_edges
             if float(e["bottom"]) - float(e["top"]) >= _RULED_MIN_VERTICAL_LEN
             and bbox[0] - _RULE_TOLERANCE <= float(e["x0"]) <= bbox[2] + _RULE_TOLERANCE
             and float(e["top"]) < bbox[3] and float(e["bottom"]) > bbox[1]
-        }
+        )
     except Exception:
         return 0
-    return len(xs)
+    return sum(1 for i, x in enumerate(xs) if i == 0 or x - xs[i - 1] > _RULE_SNAP)
 
 
 def _has_vertical_rules(page: "Page", bbox: tuple[float, float, float, float]) -> bool:
@@ -2904,16 +2907,31 @@ def _is_ruled_grid(page: "Page", bbox: tuple[float, float, float, float], grid: 
 
 
 def _region_bbox(
-    own: Optional[tuple[float, float, float, float]], box: tuple[float, float, float, float],
+    own: Optional[tuple[float, float, float, float]],
+    box: tuple[float, float, float, float],
+    others: Optional[list[tuple[float, float, float, float]]] = None,
 ) -> tuple[float, float, float, float]:
     """The table region for a ruled grid: the grid's own bbox, reaching up to the
-    box's top so that a caption line above the grid stays in the region."""
+    box's top so that a caption line above the grid stays in the region.
+
+    The region is re-extracted later from this box, and the grid's own outer rules
+    (which stick out half their thickness) must fall inside it, so it is padded by
+    the rule tolerance; the padding stops half way to a neighbouring box so two
+    tables a few points apart never overlap."""
     if own is None:
         return box
-    # Padded by the rule tolerance: the region is re-extracted later from this
-    # box, and the grid's own outer rules must fall inside it.
-    pad = _RULE_TOLERANCE
-    return (own[0] - pad, min(own[1], box[1]), own[2] + pad, own[3] + pad)
+    x0, y0, x1, y1 = own[0], min(own[1], box[1]), own[2], own[3]
+    pad = [_RULE_TOLERANCE, 0.0, _RULE_TOLERANCE, _RULE_TOLERANCE]  # left, top, right, bottom (top reaches the box)
+    for ox0, oy0, ox1, oy1 in others or []:
+        v_overlap = ox0 < x1 and ox1 > x0
+        h_overlap = oy0 < y1 and oy1 > y0
+        if h_overlap and ox1 <= x0:
+            pad[0] = min(pad[0], max(0.0, (x0 - ox1) / 2.0))
+        if h_overlap and ox0 >= x1:
+            pad[2] = min(pad[2], max(0.0, (ox0 - x1) / 2.0))
+        if v_overlap and oy0 >= y1:
+            pad[3] = min(pad[3], max(0.0, (oy0 - y1) / 2.0))
+    return (x0 - pad[0], y0 - pad[1], x1 + pad[2], y1 + pad[3])
 
 
 def _may_hold_record_lines(grid: list[list[Optional[str]]]) -> bool:
@@ -2950,6 +2968,10 @@ def _prefer_model_tables(
         if sum(1 for o in boxes if o is not b and _overlap_ratio(o[0], b[0]) >= 0.9) < 2
     ]
     model: list[LayoutRegion] = []
+    pixel_boxes = [
+        _clamp_bbox((fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h), page_w, page_h)
+        for (fx0, fy0, fx1, fy1), _score in boxes
+    ]
     for (fx0, fy0, fx1, fy1), _score in boxes:
         bbox = _clamp_bbox((fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h), page_w, page_h)
         if not _valid_bbox(bbox) or any(_boxes_overlap(bbox, m.bbox) for m in model):
@@ -2977,7 +2999,7 @@ def _prefer_model_tables(
         if not grid or len(grid) < 2 or max(len(r) for r in grid) < 2:
             continue
         model.append(LayoutRegion(
-            type=LayoutRegionType.TABLE, bbox=_region_bbox(own_bbox, bbox), text=_grid_to_text(grid), table_grid=grid,
+            type=LayoutRegionType.TABLE, bbox=_region_bbox(own_bbox, bbox, [b for b in pixel_boxes if b != bbox]), text=_grid_to_text(grid), table_grid=grid,
         ))
     kept = [r for r in rule_tables if not any(_boxes_overlap(r.bbox, m.bbox) for m in model)]
     return kept + model
@@ -3140,8 +3162,6 @@ def _table_grid_by_words(
 
 # --- records inside a ruled row band ---------------------------------------------------
 
-_RECORD_LINE_TOL = 2.0
-
 
 def split_record_bands(
     cell_words: list[list[dict[str, Any]]],
@@ -3164,12 +3184,16 @@ def split_record_bands(
     groups = split_band_records(lines, cols, ruled_cell=True)
     if len(groups) < 2:
         return None
-    tops = [min(ln["top"] for ln in g) for g in groups]
+    record_of = {id(w): gi for gi, g in enumerate(groups) for ln in g for w in ln["w"]}
+    line_cy = [(ln["cy"], gi) for gi, g in enumerate(groups) for ln in g]
     bands: list[list[list[Any]]] = [[[] for _ in cell_words] for _ in groups]
     for ci, ws in enumerate(cell_words):
         for w in ws:
-            cy = (float(w["top"]) + float(w["bottom"])) / 2.0
-            gi = max((j for j, t in enumerate(tops) if t - _RECORD_LINE_TOL <= cy), default=0)
+            gi = record_of.get(id(w))
+            if gi is None:
+                # a space glyph: it goes with the record of the nearest line
+                cy = (float(w["top"]) + float(w["bottom"])) / 2.0
+                gi = min(line_cy, key=lambda t: abs(t[0] - cy))[1]
             bands[gi][ci].extend(w["chars"])
     return bands
 
@@ -3197,12 +3221,15 @@ def _extract_table_by_words(
         # Same pick as pdfplumber's extract_table: most cells, then topmost, leftmost.
         largest = min(tables, key=lambda t: (-len(t.cells), t.bbox[1], t.bbox[0]))
     else:
+        # Candidates must reach the cutoff by their exact IoU; among them the best match wins
+        # (IoU to two places, then most cells, then topmost, leftmost).
+        matching = [t for t in tables if _iou(tuple(t.bbox), target) >= _TARGET_MIN_IOU]
+        if not matching:
+            return None
         largest = min(
-            tables,
+            matching,
             key=lambda t: (-round(_iou(tuple(t.bbox), target), 2), -len(t.cells), t.bbox[1], t.bbox[0]),
         )
-        if _iou(tuple(largest.bbox), target) < _TARGET_MIN_IOU:
-            return None
     if target is not None and info is not None:
         info["bbox"] = tuple(float(v) for v in largest.bbox)
     return _table_grid_by_words(largest, region=page, within=target, split_rows=target is not None)
@@ -4963,13 +4990,23 @@ def _resolve_overlaps(
         if not changed:
             break
 
+    leftover: list[LayoutRegion] = []
     for i, r in enumerate(current):
         if id(r) in dirty:
+            old_bbox = r.bbox
             current[i] = _reextract_region_payload(
                 r, page, all_words, page_w, page_h, gutter_x=gutter_x,
             )
+            if r.type == LayoutRegionType.TABLE and r.bbox != old_bbox and all_words:
+                words = [
+                    w for w in all_words
+                    if _word_center_in_bbox(w, old_bbox) and not _word_center_in_bbox(w, r.bbox)
+                    and str(w.get("fontname", "")) != "_synthetic_bullet"
+                ]
+                if words:
+                    leftover.extend(_text_regions_from_words(words, gutter_x))
 
-    return current
+    return current + leftover
 
 
 def _merge_regions(primary: LayoutRegion, other: LayoutRegion) -> LayoutRegion:
@@ -5019,10 +5056,18 @@ def _reextract_region_payload(
     if region.type == LayoutRegionType.TABLE:
         if page is None:
             return region
-        grid = _reextract_grid_for_bbox(page, region.bbox, page_w, page_h)
+        grid, own_bbox = _reextract_grid_and_bbox(page, region.bbox, page_w, page_h)
         if grid:
             region.table_grid = grid
             region.text = _grid_to_text(grid)
+            if own_bbox is not None:
+                # The ruled grid left out what the overlap resolution had merged into the
+                # region (a note below, text beside): the region shrinks to the grid, and
+                # the caller emits the rest as text. Only then: otherwise the box stays.
+                shrunk = (own_bbox[0], min(own_bbox[1], region.bbox[1]), own_bbox[2], own_bbox[3])
+                if any(_word_center_in_bbox(w, region.bbox) and not _word_center_in_bbox(w, shrunk)
+                       for w in all_words):
+                    region.bbox = shrunk
         return region
 
     if region.type in (LayoutRegionType.TEXT, LayoutRegionType.LIST):

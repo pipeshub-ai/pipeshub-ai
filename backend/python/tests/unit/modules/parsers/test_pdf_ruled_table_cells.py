@@ -20,7 +20,10 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 import app.modules.parsers.pdf.opencv_layout_analyzer as ola
-from app.modules.parsers.pdf.opencv_layout_analyzer import LayoutRegionType
+from app.modules.parsers.pdf.opencv_layout_analyzer import (
+    LayoutRegion,
+    LayoutRegionType,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -221,10 +224,10 @@ def test_agreeing_model_box_keeps_the_rule_table_object() -> None:
         words = page.extract_words()
         rule = ola._detect_tables(page, PAGE_W, PAGE_H, words, stripe_frames=[])
         assert len(rule) == 1 and shape(rule[0].table_grid) == (6, 2)
-        with patch.object(ola, "_reextract_grid_for_bbox") as reextract:
+        with patch.object(ola, "_reextract_grid_and_bbox") as reextract:
             out = ola._prefer_model_tables(page, PAGE_W, PAGE_H, rule, words, [model_box(fx[0].bbox, 1.0)])
         reextract.assert_not_called()
-        assert out == rule
+        assert len(out) == 1 and out[0] is rule[0]
     finally:
         pdf.close()
 
@@ -981,27 +984,32 @@ def test_a_key_line_that_fits_after_the_key_above_starts_a_record_by_its_width()
     assert _groups([("aaaaaaa", 2.0, 10.0), ("Alpha", 62.0, 10.0), ("Domains", 2.0, 19.0), ("Beta", 62.0, 19.0)], cols) == [2]
 
 
-def test_lines_of_other_columns_join_the_record_by_height_within_two_points() -> None:
-    cells = [(0.0, 0.0, 60.0, 60.0), (60.0, 0.0, 160.0, 60.0)]
-    key = [_word("A", 2.0, 10.0), _word("B", 2.0, 19.0)]
-    for w in key:
-        w["chars"] = []
-    early = _word("Alphas", 62.0, 13.5)  # centre 17.5: 1.5 pt above the second key line
-    high = _word("Bravos", 62.0, 7.0)  # centre 11: closer to the first
-    for w in (early, high):
+def test_words_go_to_the_record_of_their_own_line_not_to_the_nearest_top() -> None:
+    """A tall word whose top lies above the previous record's line must not pull that record's words."""
+    cells = [(0.0, 0.0, 60.0, 80.0), (60.0, 0.0, 300.0, 80.0)]
+
+    def word(text: str, x0: float, top: float, size: float = 8.0) -> dict:
+        w = _word(text, x0, top, size)
         w["chars"] = [w]
-    third = _word("Gammas", 62.0, 19.0)
-    third["chars"] = [third]
-    bands = ola.split_record_bands([key, [high, early, third]], cells)
+        return w
+
+    col0 = [word("Alpha", 2.0, 10.0), word("Beta", 2.0, 28.0)]
+    col1 = [word("Selects.", 62.0, 10.0), word("Tall", 62.0, 13.0, 30.0)]  # top 13, centre 28: record B
+    bands = ola.split_record_bands([col0, col1], cells)
     assert bands is not None and len(bands) == 2
-    assert {c["text"] for c in bands[0][1]} == {"Bravos"}
-    assert {c["text"] for c in bands[1][1]} == {"Alphas", "Gammas"}
+    assert [[c["text"] for c in cell] for cell in bands[0]] == [["Alpha"], ["Selects."]]
+    assert [[c["text"] for c in cell] for cell in bands[1]] == [["Beta"], ["Tall"]]
 
 
 def test_region_of_a_ruled_grid_is_the_grid_padded_by_the_rule_tolerance() -> None:
     own = (60.0, 100.0, 300.0, 200.0)
     box = (50.0, 90.0, 310.0, 260.0)
     assert ola._region_bbox(own, box) == (58.0, 90.0, 302.0, 202.0)
+    # half way to a neighbour at most: two tables 3 pt apart do not overlap
+    below = (60.0, 203.0, 300.0, 300.0)
+    left = (10.0, 100.0, 59.0, 200.0)
+    padded = ola._region_bbox(own, box, [below, left])
+    assert padded == (59.5, 90.0, 302.0, 201.5)
     assert ola._region_bbox(None, box) == box
 
 
@@ -1227,9 +1235,8 @@ def test_a_box_shifted_six_points_over_one_line_rows_keeps_every_row() -> None:
         for shift in (0, 3, 6):
             box = ((x0 / PAGE_W, (y0 + shift) / PAGE_H, x1 / PAGE_W, (y1 + shift) / PAGE_H), 0.98)
             tables = tables_with_model(page, [box])
-            rows = [r for t in tables for r in norm(t.table_grid)]
-            assert not any(sum(1 for cell in r if cell.startswith("K")) > 1 or "K0 K1" in " ".join(r) for r in rows), shift
-            assert sum(1 for r in rows if r[0].startswith("K")) >= 5, shift
+            assert len(tables) == 1, shift
+            assert norm(tables[0].table_grid) == fx[0].expected, shift
     finally:
         pdf.close()
 
@@ -1376,14 +1383,24 @@ def test_the_cell_inset_is_capped_at_six_points() -> None:
     assert band(_w("KKK", 21.0, 19.0)) == [2]  # but 12 pt after it does not fit once the inset is not smaller
 
 
-def test_a_word_belongs_to_the_column_holding_its_centre_within_half_a_point() -> None:
+def test_a_word_belongs_to_one_column_the_one_holding_its_centre() -> None:
     cols = [(0.0, 40.0), (40.0, 300.0)]
 
     def band(kx: float) -> list[int]:
         return _fine([_w("Aaa", 2.0, 10.0), _w("Selects.", 52.0, 10.0), _w("K", kx, 19.0), _w("Chooses.", 52.0, 19.0)], cols)
 
-    assert band(38.3) == [1, 1]  # centre 40.3: still the key column
-    assert band(40.5) == [2]  # centre 42.5: the next column
+    assert band(38.3) == [2]  # centre 40.3 is in the second column's range: it is not also a key
+    assert band(35.0) == [1, 1]  # centre 37: the key column
+
+
+def test_a_word_in_a_gap_between_columns_goes_to_the_nearest_within_half_a_point() -> None:
+    cols = [(0.0, 40.0), (41.5, 300.0)]
+
+    def band(kx: float) -> list[int]:
+        return _fine([_w("Aaa", 2.0, 10.0), _w("Selects.", 52.0, 10.0), _w("K", kx, 19.0), _w("Chooses.", 52.0, 19.0)], cols)
+
+    assert band(38.3) == [1, 1]  # centre 40.3: in the gap, nearest the key column, within the slack
+    assert band(40.5) == [2]  # centre 42.5: inside the second column
 
 
 # --- the guards of the continuation and code-run rules, each pinned at its boundary -------
@@ -1436,3 +1453,221 @@ def test_a_continuation_line_is_not_an_orphan_key_for_the_consistency_rule() -> 
              _w("_CONT_1", 2.0, 19.0), _w("then", 92.0, 19.0),
              _w("REG_C1", 2.0, 28.0), _w("Chooses.", 92.0, 28.0)]
     assert _fine(specs, cols) == [2, 1]  # the underscore line continues the first record; the third starts one
+
+
+# --- review findings ---------------------------------------------------------------------
+
+def test_a_thick_filled_border_is_one_rule_not_two() -> None:
+    def draw(c: canvas.Canvas) -> list[Fixture]:
+        c.setFillColorRGB(0, 0, 0)
+        for x in (60.0, 260.0):
+            c.rect(x - 0.75, _top(400), 1.5, 100, stroke=0, fill=1)
+        for y in (300, 400):
+            c.rect(60, _top(y) - 0.75, 200, 1.5, stroke=0, fill=1)
+        return []
+
+    pdf, page, _ = make_page(draw)
+    try:
+        box = (55.0, 295.0, 265.0, 405.0)
+        assert ola._vertical_rule_count(page, box) == 2  # each border has an edge on both sides
+        assert not ola._has_vertical_rules(page, box)
+        assert not ola._is_ruled_grid(page, box, [["a", "b", "c"], ["d", "e", "f"]])
+    finally:
+        pdf.close()
+
+
+class _FakeTable:
+    def __init__(self, bbox: tuple[float, float, float, float], cells: int) -> None:
+        self.bbox = bbox
+        self.cells = [object()] * cells
+
+
+class _FakePage:
+    def __init__(self, tables: list[_FakeTable]) -> None:
+        self._tables = tables
+
+    def find_tables(self, settings: dict | None = None) -> list[_FakeTable]:
+        return self._tables
+
+
+def test_a_candidate_is_matched_by_its_exact_overlap_with_the_box_before_the_cell_count_breaks_ties() -> None:
+    target = (0.0, 0.0, 100.0, 100.0)
+    # IoU 0.501 and 0.496 both round to 0.50; the second has more cells
+    good = _FakeTable((0.0, 0.0, 100.0, 50.1), cells=4)
+    bad = _FakeTable((0.0, 0.0, 100.0, 49.6), cells=40)
+    assert round(ola._iou(good.bbox, target), 2) == round(ola._iou(bad.bbox, target), 2)
+    with patch.object(ola, "_table_grid_by_words", side_effect=lambda t, **kw: [[t]]):
+        grid = ola._extract_table_by_words(_FakePage([bad, good]), None, target)
+    assert grid is not None and grid[0][0] is good
+    with patch.object(ola, "_table_grid_by_words", side_effect=lambda t, **kw: [[t]]):
+        assert ola._extract_table_by_words(_FakePage([bad]), None, target) is None
+
+
+def test_a_new_record_forgets_the_columns_of_the_record_before() -> None:
+    cols = [(0.0, 60.0), (60.0, 110.0), (110.0, 300.0)]
+    specs = [("Alpha", 2.0, 10.0), ("Available", 62.0, 10.0), ("Yes.", 112.0, 10.0),
+             ("Beta", 2.0, 19.0), ("No.", 112.0, 19.0),
+             ("Gamma", 2.0, 28.0), ("normal", 62.0, 28.0), ("Maybe.", 112.0, 28.0)]
+    assert _groups(specs, cols) == [1, 1, 1]
+
+
+def test_a_tall_word_in_another_column_does_not_hide_the_blank_line_between_keys() -> None:
+    cols = [(0.0, 30.0), (30.0, 300.0)]
+    specs = [_w("Alphabet", 2.0, 10.0), _w("Selects.", 32.0, 10.0), ("TALL", 100.0, 5.0, 18.0, 4.0),
+             _w("Betaxyz", 2.0, 27.0), _w("Chooses.", 32.0, 27.0)]
+    assert _fine(specs, cols) == [1, 1]
+
+
+def _table_with_note_page(c: canvas.Canvas) -> list[Fixture]:
+    c.setLineWidth(0.6)
+    top, rows = 300.0, 12
+    for x in (60, 140, 260):
+        c.line(x, _top(top), x, _top(top + 20 * rows))
+    for r in range(rows + 1):
+        c.line(60, _top(top + 20 * r), 260, _top(top + 20 * r))
+    c.setFont("Helvetica", 8)
+    for r in range(rows):
+        c.drawString(64, _top(top + 20 * r + 13), f"K{r}")
+        c.drawString(144, _top(top + 20 * r + 13), f"value {r} text")
+    c.drawString(64, _top(top + 20 * rows + 9), "NOTE ab")  # a short note 1 pt under the last rule
+    return [Fixture((60.0, top, 260.0, top + 20 * rows), [])]
+
+
+def test_a_note_merged_into_the_table_region_is_kept_as_text() -> None:
+    pdf, page, fx = make_page(_table_with_note_page)
+    try:
+        x0, y0, x1, y1 = fx[0].bbox
+        box = ((x0 - 1) / PAGE_W, (y0 - 1) / PAGE_H, (x1 + 1) / PAGE_W, (y1 + 1) / PAGE_H)
+        with patch.object(ola, "_detect_model_boxes", return_value={"table": [(box, 0.98)], "picture": []}):
+            regions = ola.extract_layout_regions(page)
+        tables = [r for r in regions if r.type == LayoutRegionType.TABLE]
+        assert len(tables) == 1 and len(tables[0].table_grid) == 12
+        assert "NOTE" not in tables[0].text
+        assert tables[0].bbox[3] < y1 + 2, "the table region does not reach the note"
+        assert any(r.type == LayoutRegionType.TEXT and "NOTE ab" in r.text for r in regions)
+    finally:
+        pdf.close()
+
+
+# --- pins for the review fixes (each fails when the named guard is removed) ----------------
+
+def test_the_region_padding_stops_half_way_to_a_box_on_the_right() -> None:
+    own = (60.0, 100.0, 300.0, 200.0)
+    box = (50.0, 90.0, 310.0, 260.0)
+    right = (303.0, 100.0, 400.0, 200.0)
+    assert ola._region_bbox(own, box, [right]) == (58.0, 90.0, 301.5, 202.0)
+    far = (330.0, 100.0, 400.0, 200.0)  # farther than the padding: unchanged
+    assert ola._region_bbox(own, box, [far]) == (58.0, 90.0, 302.0, 202.0)
+    above = (60.0, 0.0, 300.0, 80.0)  # a neighbour above never shortens the top (it reaches the box)
+    assert ola._region_bbox(own, box, [above]) == (58.0, 90.0, 302.0, 202.0)
+
+
+def _two_side_by_side_tables(c: canvas.Canvas) -> list[Fixture]:
+    c.setLineWidth(0.6)
+    out = []
+    for left in (60.0, 163.5):  # the second table starts 3.5 pt right of the first one's last rule
+        right = left + 100.0
+        for x in (left, left + 40, right):
+            c.line(x, _top(300), x, _top(360))
+        for r in range(4):
+            c.line(left, _top(300 + 20 * r), right, _top(300 + 20 * r))
+        c.setFont("Helvetica", 8)
+        for r in range(3):
+            c.drawString(left + 4, _top(300 + 20 * r + 13), f"K{r}")
+            c.drawString(left + 44, _top(300 + 20 * r + 13), f"v {r}")
+        out.append(Fixture((left, 300.0, right, 360.0), []))
+    return out
+
+
+def test_two_ruled_tables_a_few_points_apart_never_overlap_in_the_published_regions() -> None:
+    pdf, page, fx = make_page(_two_side_by_side_tables)
+    try:
+        boxes = [model_box((x0 - 0.5, y0 - 0.5, x1 + 0.5, y1 + 0.5)) for x0, y0, x1, y1 in (f.bbox for f in fx)]
+        # rows that may hold several records make the model's box re-extract the grid (the padded region)
+        with patch.object(ola, "_may_hold_record_lines", return_value=True):
+            tables = tables_with_model(page, boxes)
+        tables.sort(key=lambda r: r.bbox[0])
+        assert len(tables) == 2 and all(len(t.table_grid) == 3 for t in tables)
+        assert tables[0].bbox[2] <= tables[1].bbox[0]
+    finally:
+        pdf.close()
+
+
+def test_a_ruled_table_with_nothing_outside_its_grid_keeps_the_padded_region() -> None:
+    """The region is cut back to the grid only when words would be left out of it."""
+    pdf, page, fx = make_page(lambda c: [draw_ruled_table(c, 36, 240)])
+    try:
+        x0, y0, x1, y1 = fx[0].bbox
+        box = ((x0 - 15) / PAGE_W, (y0 - 15) / PAGE_H, (x1 + 15) / PAGE_W, (y1 + 15) / PAGE_H)  # a box 15 pt too big
+        with patch.object(ola, "_detect_model_boxes", return_value={"table": [(box, 0.98)], "picture": []}):
+            regions = ola.extract_layout_regions(page)
+        tables = [r for r in regions if r.type == LayoutRegionType.TABLE]
+        assert len(tables) == 1
+        assert tables[0].bbox[0] < x0 - 1.0 and tables[0].bbox[2] > x1 + 1.0 and tables[0].bbox[3] > y1 + 1.0
+    finally:
+        pdf.close()
+
+
+def test_a_word_centred_exactly_on_the_edge_between_two_columns_belongs_to_the_second() -> None:
+    cols = [(0.0, 40.0), (40.0, 300.0)]
+    specs = [_w("Aaa", 2.0, 10.0), _w("Selects.", 52.0, 10.0), _w("K", 38.0, 19.0), _w("Chooses.", 52.0, 19.0)]
+    assert _fine(specs, cols) == [2]  # "K" spans 38 to 42: its centre, 40.0, opens the second column
+
+
+def test_a_tall_word_beside_a_key_does_not_hide_the_blank_line_above_it() -> None:
+    cols = [(0.0, 30.0), (30.0, 300.0)]
+    specs = [_w("Alphabet", 2.0, 10.0), _w("Selects.", 32.0, 10.0), _w("Betaxyz", 2.0, 27.0),
+             ("Chooses.", 32.0, 22.0, 16.0, 4.0)]  # a 16 pt word on the key's line, its top above the key's
+    assert _fine(specs, cols) == [1, 1]
+
+
+def _stacked_aliases(third_top: float, extra: tuple = ()) -> list[int]:
+    cols = [(0.0, 60.0), (60.0, 140.0)]
+    specs = [_w("POR_XY0", 2.0, 10.0), *[_w(*s[:3]) for s in _flow(["Enables", "the", "buffer"], 62.0, 10.0)]]
+    specs += [_w("POR_XY1", 2.0, 19.0), *[_w(*s[:3]) for s in _flow(["domain", "bit", "when"], 62.0, 19.0)]]
+    specs += [_w("POR_XY2", 2.0, third_top), *[_w(*s[:3]) for s in _flow(["Selects", "one."], 62.0, third_top)]]
+    return _fine(specs + list(extra), cols)
+
+
+def test_stacked_key_lines_are_judged_by_the_key_words_not_by_a_tall_word_beside_them() -> None:
+    assert _stacked_aliases(28.0) == [3]  # each key within a line of the one above: one record
+    assert _stacked_aliases(37.0) == [2, 1]  # a blank line before the third key: it starts a record
+    # a 16 pt word on the third key's line, or on the second's, must not make the gap look closed
+    assert _stacked_aliases(37.0, (("Tall", 118.0, 29.0, 16.0, 4.0),)) == [2, 1]
+    assert _stacked_aliases(37.0, (("Tall", 118.0, 15.0, 16.0, 4.0),)) == [2, 1]
+
+
+def test_a_merged_table_region_is_cut_back_to_the_grid_only_when_words_would_be_left_out() -> None:
+    pdf, page, fx = make_page(lambda c: [draw_ruled_table(c, 36, 240)])
+    try:
+        words = page.extract_words()
+        x0, y0, x1, y1 = fx[0].bbox
+        padded = (x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 2.0)
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=padded, text="")
+        out = ola._reextract_region_payload(region, page, words, PAGE_W, PAGE_H)
+        assert tuple(out.bbox) == padded  # every word of the region is in the grid: the box stays
+        taller = (x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 40.0)  # reaches into the text under the table
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=taller, text="")
+        words_below = [*words, {**words[0], "text": "Footer", "top": y1 + 10.0, "bottom": y1 + 18.0,
+                                "x0": x0 + 4.0, "x1": x0 + 40.0}]
+        out = ola._reextract_region_payload(region, page, words_below, PAGE_W, PAGE_H)
+        assert out.bbox[3] <= y1 + 0.5  # cut back to the grid; the caller keeps the footer as text
+    finally:
+        pdf.close()
+
+
+def test_a_row_whose_first_cell_is_absent_still_splits_by_the_next_column_of_labels() -> None:
+    """The first column's cell spans from the row above (absent here); the labels are one per line in the
+    next column with their values beside them. Treating the row as one record would merge the labels."""
+    cells = [None, (60.0, 0.0, 160.0, 80.0), (160.0, 0.0, 300.0, 80.0)]
+
+    def word(text: str, x0: float, top: float) -> dict:
+        w = _word(text, x0, top)
+        w["chars"] = [w]
+        return w
+
+    labels = [word("Alphabet", 62.0, 10.0), word("Betaxyz", 62.0, 28.0), word("Gammaray", 62.0, 46.0)]
+    values = [word("Selects.", 162.0, 10.0), word("Chooses.", 162.0, 28.0), word("Clears.", 162.0, 46.0)]
+    bands = ola.split_record_bands([[], labels, values], cells)
+    assert bands is not None and len(bands) == 3
+    assert [[c["text"] for c in band[2]] for band in bands] == [["Selects."], ["Chooses."], ["Clears."]]

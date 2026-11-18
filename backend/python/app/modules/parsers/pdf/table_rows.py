@@ -109,8 +109,26 @@ def split_band_records(
     if not lines or not columns:
         return [lines]
 
+    last_col = len(columns) - 1
+
+    def column_of(cx: float) -> int | None:
+        """The one column a word belongs to: the one whose half-open range holds its centre (as the
+        rendered cells do); a centre in a gap between columns goes to the nearest within the slack."""
+        for j, (x0, x1) in enumerate(columns):
+            if x0 <= cx < x1 or (j == last_col and cx == x1):
+                return j
+        near = [(min(abs(cx - x0), abs(cx - x1)), j) for j, (x0, x1) in enumerate(columns)
+                if x0 - COLUMN_SLACK <= cx <= x1 + COLUMN_SLACK]
+        return min(near)[1] if near else None
+
+    col_index = {tuple(c): j for j, c in enumerate(columns)}
+
+    def in_column(w: dict[str, Any], j: int) -> bool:
+        return column_of(_cx(w)) == j
+
     def seg(ln: Line, x0: float, x1: float) -> tuple[float, float, float, str, bool, bool] | None:
-        ws = [w for w in ln["w"] if x0 - COLUMN_SLACK <= _cx(w) <= x1 + COLUMN_SLACK]
+        j = col_index[(x0, x1)]
+        ws = [w for w in ln["w"] if in_column(w, j)]
         if not ws:
             return None
         last = str(max(ws, key=lambda w: float(w["x1"]))["text"]).rstrip()
@@ -121,7 +139,7 @@ def split_band_records(
         )
 
     def n_words(ln: Line, j: int) -> int:
-        return sum(1 for w in ln["w"] if columns[j][0] - COLUMN_SLACK <= _cx(w) <= columns[j][1] + COLUMN_SLACK)
+        return sum(1 for w in ln["w"] if in_column(w, j))
 
     rights: list[float] = []
     lefts: list[float | None] = []
@@ -145,9 +163,7 @@ def split_band_records(
     key_lines = [ln for ln in lines if seg(ln, *columns[0]) is not None]
 
     def key_text(ln: Line) -> str:
-        return " ".join(
-            str(w["text"]) for w in ln["w"] if columns[0][0] - COLUMN_SLACK <= _cx(w) <= columns[0][1] + COLUMN_SLACK
-        ).strip()
+        return " ".join(str(w["text"]) for w in ln["w"] if in_column(w, 0)).strip()
 
     def code(ln: Line) -> bool:
         t = key_text(ln)
@@ -161,6 +177,12 @@ def split_band_records(
         continuation line anyway and never starts a record)."""
         sa = seg(a, *columns[0])
         return sa is not None and (sa[1] - sa[0]) < FILL * (key_w - 2)
+
+    def key_box(ln: Line) -> tuple[float, float]:
+        """Top and bottom of the key words of ``ln`` (a tall word in another column must not
+        move them)."""
+        ws = [w for w in ln["w"] if in_column(w, 0)]
+        return min(float(w["top"]) for w in ws), max(float(w["bottom"]) for w in ws)
 
     runs: set[int] = set()
     two_codes = len(key_lines) == 2 and whole(key_lines[0], key_lines[1])
@@ -211,8 +233,10 @@ def split_band_records(
             a_ = fits and bool(others) and not lower_cont
             b_ = (not k[3][:1].islower() and not key_filled and len(fresh) >= 2 and multiword and centred
                   and not prose_cont)
-            key_gap = ln["top"] - prev_key_bottom if prev_key_bottom is not None else 0.0
-            c_ = bool(others) and key_gap >= ln["h"] and not k[3][:1].islower() and not lower_cont
+            key_top, key_bottom = key_box(ln)
+            key_gap = key_top - prev_key_bottom if prev_key_bottom is not None else 0.0
+            c_ = (bool(others) and key_gap >= max(1.0, key_bottom - key_top)
+                  and not k[3][:1].islower() and not lower_cont)
             d_ = id(ln) in runs and bool(others) and len(fresh) >= 1 and not lower_cont and not prose_wrap
             start = a_ or b_ or c_ or d_
             annotated = bool(ANNOT.match(key_text(ln)))
@@ -245,19 +269,22 @@ def split_band_records(
             orphan_key = True
         if start:
             groups.append([ln])
+            # a new record: what the columns held above belongs to the record before
+            prev[:] = [None] * len(columns)
         else:
             groups[-1].append(ln)
         for j, sj in enumerate(segs):
             if sj is not None:
                 prev[j] = sj
         if k is not None:
-            prev_key_bottom = ln["bottom"]
+            prev_key_bottom = key_box(ln)[1]
             prev_key_text = key_text(ln)
             prev_key_width = k[1] - k[0]
     # A key line that is not a wrap could not start a record. When the key lines are
     # stacked (each within one line height of the one above) the key column is a list
     # inside one record: aliases one per line beside a shared description.
     if (orphan_key and runs and len(groups) > 1
-            and all(b["top"] - a["bottom"] < b["h"] for a, b in zip(key_lines, key_lines[1:]))):
+            and all(key_box(b)[0] - key_box(a)[1] < max(1.0, key_box(b)[1] - key_box(b)[0])
+                    for a, b in zip(key_lines, key_lines[1:]))):
         return [lines]
     return [g for g in groups if g]
