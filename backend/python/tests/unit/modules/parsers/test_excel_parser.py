@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from tests.support.table_model import keyed_answer
 
 from app.modules.parsers.excel.excel_parser import (
     BUILTIN_DATE_FORMATS,
@@ -1496,17 +1497,17 @@ class TestExcelGetRowsText:
     @pytest.mark.asyncio
     async def test_success(self):
         """Rows are converted to natural language text."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         ep = _make_excel_parser()
         ep.llm = AsyncMock()
 
-        mock_response = MagicMock()
-        mock_response.descriptions = ["Alice is 30.", "Bob is 25."]
+        async def answer(_llm, messages, *_a, **_k) -> object:
+            return keyed_answer(messages, ["Alice is 30.", "Bob is 25."])
 
         with patch(
-            "app.modules.parsers.excel.excel_parser.invoke_with_row_descriptions_and_reflection",
-            new_callable=AsyncMock, return_value=mock_response,
+            "app.utils.table_enrichment.invoke_with_structured_output_and_reflection",
+            side_effect=answer,
         ):
             rows = [
                 [{"header": "Name", "value": "Alice", "row": 2, "data_type": "s"},
@@ -1527,7 +1528,7 @@ class TestExcelGetRowsText:
         ep.llm = AsyncMock()
 
         with patch(
-            "app.modules.parsers.excel.excel_parser.invoke_with_row_descriptions_and_reflection",
+            "app.utils.table_enrichment.invoke_with_structured_output_and_reflection",
             new_callable=AsyncMock, return_value=None,
         ):
             rows = [
@@ -1734,14 +1735,22 @@ class TestProcessSheetWithSummariesDeep:
         with patch.object(ep, "get_tables_in_sheet", new_callable=AsyncMock, return_value=[table]):
             with patch.object(ep, "get_table_summary", new_callable=AsyncMock, return_value="Summary"):
                 with patch.dict("os.environ", {"MAX_TABLE_ROWS_FOR_LLM": "2"}):
+                    import logging
+
+                    from app.utils.indexing_metrics import track_indexing_enrichment
+
                     mock_llm = AsyncMock()
                     cumulative = [0]
-                    result = await ep.process_sheet_with_summaries(
-                        mock_llm, "Sheet1", cumulative
-                    )
+                    with track_indexing_enrichment(logging.getLogger("t")) as counters:
+                        result = await ep.process_sheet_with_summaries(
+                            mock_llm, "Sheet1", cumulative
+                        )
                     # 5 rows should be processed
                     assert cumulative[0] == 5
                     assert len(result["tables"][0]["rows"]) == 5
+                    # The cutoff is configuration: counted on its own, not as degraded rows
+                    assert counters.rows_over_row_budget == 5
+                    assert counters.degraded_rows == 0
                     # Should NOT have called get_rows_text since threshold exceeded
 
     @pytest.mark.asyncio
@@ -1770,7 +1779,7 @@ class TestProcessSheetWithSummariesDeep:
 
         get_rows_text_calls = []
 
-        async def mock_get_rows_text(rows, summary):
+        async def mock_get_rows_text(rows, summary, **_kwargs):
             get_rows_text_calls.append(len(rows))
             return [f"text {i}" for i in range(len(rows))]
 
@@ -2562,13 +2571,12 @@ class TestGetRowsText:
             [{"header": "Name", "value": "Alice"}, {"header": "Age", "value": 30}],
         ]
 
-        mock_response = MagicMock()
-        mock_response.descriptions = ["Alice is a 30-year-old person"]
+        async def answer(_llm, messages, *_a, **_k) -> object:
+            return keyed_answer(messages, ["Alice is a 30-year-old person"])
 
         with patch(
-            "app.modules.parsers.excel.excel_parser.invoke_with_row_descriptions_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_response,
+            "app.utils.table_enrichment.invoke_with_structured_output_and_reflection",
+            side_effect=answer,
         ):
             result = await ep.get_rows_text(rows, "Table about people")
 
@@ -2586,7 +2594,7 @@ class TestGetRowsText:
         ]
 
         with patch(
-            "app.modules.parsers.excel.excel_parser.invoke_with_row_descriptions_and_reflection",
+            "app.utils.table_enrichment.invoke_with_structured_output_and_reflection",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -2935,7 +2943,7 @@ class TestGetRowsTextExceptionHandler:
 
         # Pass rows that cause an error in processing (e.g., cell without 'header' key)
         with patch(
-            "app.modules.parsers.excel.excel_parser.format_rows_with_index",
+            "app.utils.table_enrichment.format_rows_with_keys",
             side_effect=RuntimeError("format error"),
         ):
             with pytest.raises(RuntimeError, match="format error"):

@@ -75,6 +75,7 @@ import {
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
+  dynamicClientOrg,
 } from './config';
 import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -1163,7 +1164,11 @@ export class Application {
             });
           }, SCHEDULE_REPAIR_INTERVAL_MS);
           this.scheduleRepairTimer.unref();
-          await migrations.runMigration({ scheduler, appConfig });
+          await migrations.runMigration({
+            scheduler,
+            appConfig,
+            dynamicClientOrg: () => dynamicClientOrg(),
+          });
           this.logger.info('Migration completed successfully');
         } catch (error) {
           this.logger.error('Failed to run migration', {

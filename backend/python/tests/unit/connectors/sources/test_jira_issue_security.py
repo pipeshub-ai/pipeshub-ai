@@ -589,8 +589,8 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     @pytest.mark.parametrize("holder", [{"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_10"}],
                              ids=["assignee", "user_field"])
     def test_an_unleveled_sub_task_gives_its_own_assignee_or_user_field_holder_no_grant(self, holder: dict) -> None:
-        """Jira shows it to them (JSWCLOUD-25762), but an OPEN sub-task would also be read by its parent's own holders
-        (tests/permissions/test_subtask_own_holders.py): it stays STRICT, read with its parent."""
+        """Under its parent an OPEN sub-task would also be read by the parent's own holders (tests/permissions/test_subtask_own_holders.py),
+        so it stays STRICT there; Jira Cloud files one its holders name off its parent instead (JSWCLOUD-25762)."""
         record, grants, _ = self._apply([holder], {"customfield_10": [{"accountId": "acc-7"}]},
                                         record=_record(parent_external_record_id="99"), is_subtask=True,
                                         user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})

@@ -834,11 +834,8 @@ def apply_issue_access_settled(
         # A sub-task is read only with its parent: Atlassian does not document that a sub-task's own Browse holders (its
         # reporter, say) read it without its parent, so it gets no grant of its own until a live check shows they do.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
-        # shortcut: Jira also shows an unleveled sub-task to its own Browse assignee and user-field holders, without its
-        # parent (JSWCLOUD-25762, https://jira.atlassian.com/browse/JSWCLOUD-25762). The read rule cannot grant them: an OPEN
-        # sub-task is read below its parent by the parent's own holders, who may not read it in Jira
-        # (tests/permissions/test_subtask_own_holders.py). It stays STRICT, read with its parent, until the rule can say
-        # "the project, plus its own holders".
+        # A sub-task still under its parent gets no grant here: Jira Cloud files one whose Browse holders name people on it off its
+        # parent (JSWCLOUD-25762), so only unread or empty holders leave it here; Data Center keeps it under its parent.
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
             # reporter grant still opens the issue. An explicit null level is not this: the issue may have
