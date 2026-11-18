@@ -11,6 +11,8 @@ Redis Stack.
 
 import asyncio
 import logging
+import os
+import subprocess
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
@@ -394,6 +396,40 @@ class TestBackfill:
         assert int(_parse_ft_info(await redis_service.client.execute_command("FT.INFO", idx)).get("indexing", 0)) == 1, "the scan must still run"
         await redis_service._note_complete_fields(idx)
         assert await redis_service._complete_fields(idx) == frozenset(), "neither the dropped index nor a running scan vouches for a field"
+
+        with pytest.raises(IndexBackfilling):
+            await redis_service.delete_points(collection, flt)
+        await _alter_settled(redis_service, collection)
+        assert await _count(redis_service, collection, virtualRecordId=TARGET) == 3
+
+    @pytest.mark.skipif(not os.environ.get("REDIS_VECTOR_RESTART_CONTAINER"), reason="needs a Redis container with appendonly yes that the test may restart")
+    async def test_after_a_restart_that_rebuilds_the_index_a_delete_waits_for_the_rebuild(self, redis_service, collection, monkeypatch) -> None:
+        """With AOF the restart replays FT.CREATE after the hashes, so the index reads them again in the background while the server answers.
+
+        Opt-in: REDIS_VECTOR_RESTART_CONTAINER names the docker container behind REDIS_VECTOR_PORT, started with --appendonly yes.
+        """
+        from app.services.vector_db.models import CollectionConfig, DistanceMetric
+        from app.services.vector_db.redis.errors import IndexBackfilling
+        from app.services.vector_db.redis.redis_vector import _parse_ft_info
+
+        monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0")
+        await self._big_collection(redis_service, collection)
+        idx = redis_service._index_name(collection)
+        # FT.CREATE after the hashes in the log, as when an index is built over stored documents.
+        await redis_service.client.execute_command("FT.DROPINDEX", idx)
+        await redis_service.create_collection(collection, CollectionConfig(embedding_size=BACKFILL_DIM, distance_metric=DistanceMetric.COSINE))
+        await _alter_settled(redis_service, collection)
+        flt = await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": TARGET})
+        await redis_service.delete_points(collection, await redis_service.filter_collection(must={"orgId": ORG, "virtualRecordId": "absent"}))
+
+        subprocess.run(["docker", "restart", os.environ["REDIS_VECTOR_RESTART_CONTAINER"]], check=True, capture_output=True)
+        for _ in range(600):
+            try:
+                info = _parse_ft_info(await redis_service.client.execute_command("FT.INFO", idx))
+                break
+            except Exception:  # connection refused, then LOADING
+                await asyncio.sleep(0.1)
+        assert int(info.get("indexing", 0)) == 1, "the restart must still be rebuilding the index"
 
         with pytest.raises(IndexBackfilling):
             await redis_service.delete_points(collection, flt)

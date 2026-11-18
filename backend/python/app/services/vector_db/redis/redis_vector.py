@@ -164,9 +164,12 @@ _DIALECT = ("DIALECT", "2")
 _BACKFILL_WAIT_ENV = "REDIS_VECTOR_BACKFILL_WAIT_SECONDS"
 _DEFAULT_BACKFILL_WAIT_SECONDS = 600.0
 _BACKFILL_POLL_SECONDS = 1.0
-# KEYS[1] the set of complete fields, ARGV[1] the index: adds every schema attribute when FT.INFO says no scan is running.
-# Lua sees FT.INFO's simple-string replies as {ok = "..."} tables.
-_NOTE_COMPLETE_FIELDS = """
+# The set holds the run id of the server that recorded it: a restart that replays FT.CREATE or FT.ALTER from the AOF rebuilds the
+# index in the background while the server answers, and the set, persisted with the data, must not vouch for that rebuild.
+_THIS_RUN = "local run = 'run:' .. string.match(redis.call('INFO', 'server'), 'run_id:(%x+)')\n"
+# KEYS[1] the set of complete fields, ARGV[1] the index: when FT.INFO says no scan is running, the set becomes the schema of that
+# reply and this run. Lua sees FT.INFO's simple-string replies as {ok = "..."} tables.
+_NOTE_COMPLETE_FIELDS = _THIS_RUN + """
 local function str(v) if type(v) == 'table' then return v.ok end return v end
 local info = redis.call('FT.INFO', ARGV[1])
 local indexing, percent, names = nil, nil, {}
@@ -183,10 +186,16 @@ for i = 1, #info - 1, 2 do
   end
 end
 if indexing == 0 and percent == 1 and #names > 0 then
-  redis.call('SADD', KEYS[1], unpack(names))
+  redis.call('DEL', KEYS[1])
+  redis.call('SADD', KEYS[1], run, unpack(names))
   return 1
 end
 return 0
+"""
+# KEYS[1] the set of complete fields: its members when this server run recorded it, else none.
+_COMPLETE_FIELDS = _THIS_RUN + """
+if redis.call('SISMEMBER', KEYS[1], run) == 1 then return redis.call('SMEMBERS', KEYS[1]) end
+return {}
 """
 # How long a key lookup waits for documents written just before it to show up in the index (0.75 s in all).
 _SETTLE_ATTEMPTS = 5
@@ -1626,12 +1635,13 @@ class RedisVectorService(IVectorDBService):
 
     async def _note_complete_fields(self, idx: str) -> None:
         """An idle FT.INFO reply proves every field in its schema fully indexed. Read and recorded in one script, so a drop and
-        re-create of the index in between cannot make the old schema vouch for the new index. Only ever added to: a field does not
-        become incomplete again until the index is dropped (create_collection and delete_collection clear the set)."""
+        re-create of the index in between cannot make the old schema vouch for the new index. A field does not become incomplete
+        again until the index is dropped (create_collection and delete_collection clear the set) or the server restarts (the set
+        is only read back in the run that recorded it)."""
         await self.client.execute_command("EVAL", _NOTE_COMPLETE_FIELDS, "1", self._complete_key(idx), idx)  # type: ignore
 
     async def _complete_fields(self, idx: str) -> frozenset[str]:
-        raw = await self.client.execute_command("SMEMBERS", self._complete_key(idx))  # type: ignore
+        raw = await self.client.execute_command("EVAL", _COMPLETE_FIELDS, "1", self._complete_key(idx))  # type: ignore
         return frozenset(m.decode() if isinstance(m, bytes) else str(m) for m in raw or ())
 
     async def _require_settled(self, idx: str, query: str) -> None:

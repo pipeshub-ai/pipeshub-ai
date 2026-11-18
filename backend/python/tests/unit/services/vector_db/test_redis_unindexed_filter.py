@@ -240,6 +240,7 @@ class _Server:
         self.fields = list(fields)
         self.scan_polls = 0
         self.sets: dict[str, set[str]] = {}
+        self.run_id = 1
         self.calls: list[tuple] = []
 
     async def execute(self, *args: object) -> object:
@@ -255,13 +256,14 @@ class _Server:
             self.fields.append(str(args[4]))
             self.scan_polls = 10**6
             return b"OK"
+        if cmd == "EVAL" and "SISMEMBER" in str(args[1]):  # the script that reads the fields recorded in this server run
+            members = self.sets.get(str(args[3]), set())
+            return [m.encode() for m in members] if f"run:{self.run_id}" in members else []
         if cmd == "EVAL":  # the script that records the schema of an idle index as complete
             if self.scan_polls > 0:
                 return 0
-            self.sets.setdefault(str(args[3]), set()).update(self.fields)
+            self.sets[str(args[3])] = {*self.fields, f"run:{self.run_id}"}
             return 1
-        if cmd == "SMEMBERS":
-            return [m.encode() for m in self.sets.get(str(args[1]), set())]
         if cmd == "DEL":
             self.sets.pop(str(args[1]), None)
             return 1
@@ -271,6 +273,12 @@ class _Server:
 
     def finish_scan(self) -> None:
         self.scan_polls = 0
+
+    def restart(self) -> None:
+        """A restart with AOF persistence: the data and every set come back, FT.CREATE / FT.ALTER replayed from the log read the hashes
+        again in the background while the server already answers, and the server has a new run id."""
+        self.run_id += 1
+        self.scan_polls = 10**6
 
     def stall(
         self, svc: RedisVectorService, *, alter_waits_for: asyncio.Event | None = None, applied: asyncio.Event | None = None,
@@ -385,7 +393,7 @@ class TestBackfill:
         await b.create_index("col", "metadata.virtualRecordId", {"type": "keyword"})
         server.finish_scan()
         await a.delete_points("col", self._record_filter())  # sees the index idle
-        assert server.sets["col_idx:complete_fields"] == {"metadata_orgId", "metadata_virtualRecordId"}
+        assert server.sets["col_idx:complete_fields"] == {"metadata_orgId", "metadata_virtualRecordId", "run:1"}
         await a.create_index("col", "metadata.blockId", {"type": "keyword"})  # another scan starts
         await b.delete_points("col", self._record_filter())
         assert sum(c[0] == "FT.SEARCH" for c in server.calls) == 2
@@ -475,6 +483,20 @@ class TestBackfill:
         finally:
             a_done.set()
             await task
+
+    async def test_a_restart_that_rebuilds_the_index_does_not_inherit_the_fields_seen_complete_before_it(self) -> None:
+        server = _Server(*self.FIELDS)
+        svc = server.store()
+        await svc.delete_points("col", self._record_filter())  # idle: the fields are recorded
+        server.restart()
+        with pytest.raises(IndexBackfilling):
+            await svc.delete_points("col", self._record_filter())
+        assert sum(c[0] == "FT.SEARCH" for c in server.calls) == 1
+        server.finish_scan()
+        await svc.delete_points("col", self._record_filter())
+        server.scan_polls = 10**6  # another scan in the same run: the fields seen since the restart hold
+        await svc.delete_points("col", self._record_filter())
+        assert sum(c[0] == "FT.SEARCH" for c in server.calls) == 3
 
     async def test_fields_created_with_the_index_wait_while_it_reads_the_documents_already_stored(self) -> None:
         """FT.CREATE over hashes already under the prefix scans them too: no field of the index is complete until it ends."""
