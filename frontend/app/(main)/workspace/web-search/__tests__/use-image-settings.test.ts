@@ -65,6 +65,22 @@ describe('useImageSettings — a reload never puts older settings back over a sa
     expect(hook.result.current.settings).toEqual(SAVED);
   });
 
+  it('a load that begins and ends while a save is pending is ignored: the switch never flickers back', async () => {
+    const { hook, put } = setup();
+    let saving!: Promise<void>;
+    act(() => {
+      saving = hook.result.current.update(SAVED, 'saved');
+    });
+    const startedAt = hook.result.current.beginLoad();
+    act(() => hook.result.current.applyLoaded(STALE, startedAt));
+    expect(hook.result.current.settings).toEqual(SAVED);
+    await act(async () => {
+      put.resolve(SAVED);
+      await saving;
+    });
+    expect(hook.result.current.settings).toEqual(SAVED);
+  });
+
   it('a load that began after the save settled applies again', async () => {
     const { hook, put } = setup();
     let saving!: Promise<void>;
@@ -79,6 +95,25 @@ describe('useImageSettings — a reload never puts older settings back over a sa
     const startedAt = hook.result.current.beginLoad();
     act(() => hook.result.current.applyLoaded(fresh, startedAt));
     expect(hook.result.current.settings).toEqual(fresh);
+  });
+});
+
+describe('useImageSettings — a failed read', () => {
+  it('nothing is editable until a read succeeds', () => {
+    const { hook } = setup();
+    expect(hook.result.current.hasLoaded).toBe(false);
+    act(() => hook.result.current.applyLoaded(undefined, hook.result.current.beginLoad()));
+    expect(hook.result.current.hasLoaded).toBe(false);
+    act(() => hook.result.current.applyLoaded(SAVED, hook.result.current.beginLoad()));
+    expect(hook.result.current.hasLoaded).toBe(true);
+  });
+
+  it('a failed refresh keeps the last confirmed settings, never defaults', () => {
+    const { hook } = setup();
+    act(() => hook.result.current.applyLoaded(SAVED, hook.result.current.beginLoad()));
+    act(() => hook.result.current.applyLoaded(undefined, hook.result.current.beginLoad()));
+    expect(hook.result.current.settings).toEqual(SAVED);
+    expect(hook.result.current.hasLoaded).toBe(true);
   });
 });
 

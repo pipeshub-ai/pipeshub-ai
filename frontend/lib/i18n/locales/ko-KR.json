@@ -4314,6 +4314,7 @@
       "maxImagesHelp": "1에서 50 사이의 정수입니다. 이미지를 지원하는 모델에만 전송됩니다.",
       "maxImagesInvalid": "1에서 50 사이의 정수를 입력하세요",
       "imagesCostWarning": "이미지마다 페이지를 읽는 비용과 시간이 늘어납니다.",
+      "imageSettingsUnavailable": "이미지 설정을 불러오지 못해 아직 변경할 수 없습니다.",
       "toasts": {
         "providerAdded": "{{label}}이(가) 추가되었습니다",
         "providerAddedDescription": "웹 검색이 성공적으로 구성되었습니다. {{label}}을(를) 사용하려면 다른 웹 검색 방식을 비활성화하세요",

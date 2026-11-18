@@ -4018,6 +4018,7 @@
       "maxImagesHelp": "1 से 50 तक की कोई पूर्ण संख्या। चित्र केवल उन मॉडलों को भेजे जाते हैं जो चित्र स्वीकार करते हैं।",
       "maxImagesInvalid": "1 से 50 तक की कोई पूर्ण संख्या दर्ज करें",
       "imagesCostWarning": "हर चित्र किसी पेज को पढ़ने की लागत और समय बढ़ाता है।",
+      "imageSettingsUnavailable": "चित्र सेटिंग लोड नहीं हो सकीं, इसलिए अभी उन्हें बदला नहीं जा सकता।",
       "toasts": {
         "providerAdded": "{{label}} is added",
         "providerAddedDescription": "Web search configured successfully. To use {{label}}, toggle off any other web search methods",

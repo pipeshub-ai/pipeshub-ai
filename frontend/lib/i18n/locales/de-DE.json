@@ -4023,6 +4023,7 @@
       "maxImagesHelp": "Eine ganze Zahl von 1 bis 50. Nur Modelle, die Bilder verarbeiten, erhalten sie.",
       "maxImagesInvalid": "Geben Sie eine ganze Zahl von 1 bis 50 ein",
       "imagesCostWarning": "Jedes Bild erhöht Kosten und Dauer beim Lesen einer Seite.",
+      "imageSettingsUnavailable": "Die Bildeinstellungen konnten nicht geladen werden und lassen sich daher noch nicht ändern.",
       "toasts": {
         "providerAdded": "{{label}} wurde hinzugefügt",
         "providerAddedDescription": "Websuche erfolgreich konfiguriert. Um {{label}} zu verwenden, deaktivieren Sie alle anderen Websuche-Methoden",

@@ -3,6 +3,7 @@ import io
 import math
 import os
 import re
+from enum import Enum
 from urllib.parse import unquote, urlparse
 
 from app.config import file_types
@@ -73,37 +74,51 @@ def get_mime_type_from_base64(b64: str) -> str | None:
 MAX_DECODED_PIXELS = 4096 * 4096
 
 
-def decodes_fully(content: bytes) -> bool:
-    """Whether ``content`` is an image that decodes in full, within ``MAX_DECODED_PIXELS``.
+class ImageCheck(str, Enum):
+    """Whether an image can be sent to a model, and if not, why (the value reads in a note)."""
+
+    OK = "ok"
+    UNREADABLE = "unreadable image data"
+    TOO_LARGE = "image too large"
+    ANIMATED = "animated image"
+
+
+def check_image(content: bytes, *, max_pixels: int | None = MAX_DECODED_PIXELS) -> ImageCheck:
+    """Whether ``content`` is a still image that decodes in full.
 
     A format signature or a readable header proves neither: a truncated or corrupt body passes
-    both, and a provider refuses the whole model request over one such image. The pixel count
-    is read from the header (Pillow decodes nothing until ``load()``), so an oversized image is
-    refused before any pixel is decoded. CPU-bound: run it off the event loop.
+    both, and a provider refuses the whole model request over one such image. An animated image
+    is refused: ``load()`` decodes only its first frame, so a damaged later frame would pass, and
+    models read still images. ``max_pixels`` (None: only Pillow's own decompression-bomb guard)
+    is checked against the header before any pixel is decoded. CPU-bound: run it off the event loop.
     """
     from PIL import Image
 
     try:
         with Image.open(io.BytesIO(content)) as image:
+            if getattr(image, "is_animated", False):
+                return ImageCheck.ANIMATED
             width, height = image.size
-            if width * height > MAX_DECODED_PIXELS:
-                return False
+            if max_pixels is not None and width * height > max_pixels:
+                return ImageCheck.TOO_LARGE
             image.load()
-    except Exception:  # Pillow raises many types (OSError, SyntaxError, DecompressionBombError, ...)
-        return False
-    return True
+    except Image.DecompressionBombError:
+        return ImageCheck.TOO_LARGE
+    except Exception:  # Pillow raises many types (OSError, SyntaxError, ValueError, ...)
+        return ImageCheck.UNREADABLE
+    return ImageCheck.OK
 
 
-def data_uri_decodes_fully(image_uri: str) -> bool:
-    """``decodes_fully`` for a base64 ``data:`` URI; False when it holds no base64 payload."""
+def check_data_uri(image_uri: str, *, max_pixels: int | None = MAX_DECODED_PIXELS) -> ImageCheck:
+    """``check_image`` for a base64 ``data:`` URI; UNREADABLE when it holds no base64 payload."""
     b64 = normalize_image_to_base64(image_uri)
     if not b64:
-        return False
+        return ImageCheck.UNREADABLE
     try:
         content = base64.b64decode(b64, validate=False)
     except Exception:
-        return False
-    return decodes_fully(content)
+        return ImageCheck.UNREADABLE
+    return check_image(content, max_pixels=max_pixels)
 
 
 def read_image_dimensions(image_uri: str | None) -> tuple[int, int] | None:

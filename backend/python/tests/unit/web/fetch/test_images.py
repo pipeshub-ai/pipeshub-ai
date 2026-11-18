@@ -8,7 +8,7 @@ from PIL import Image
 from web_behaviour_fakes import INTRANET_HOST, FakeWeb, Page
 
 from app.connectors.sources.web.address_guard import ALLOWED_HOSTS_ENV
-from app.utils.image_utils import decodes_fully as decodes
+from app.utils.image_utils import ImageCheck, check_image
 from app.web.deadline import Deadline
 from app.web.errors import TooLarge, UnsafeUrl, UnsupportedContent, WebError
 from app.web.fetch.images import MAX_IMAGE_MB, fetch_image_data_uri, image_media_type
@@ -67,7 +67,7 @@ async def test_a_damaged_image_with_a_valid_signature_is_refused(fake_web: FakeW
     """A provider refuses the whole request over one image that does not decode."""
     fake_web.add(f"{SITE}/cut.png", _image(PNG[: len(PNG) // 2]))
 
-    with pytest.raises(UnsupportedContent, match="damaged"):
+    with pytest.raises(UnsupportedContent, match="unreadable image data"):
         await fetch_image_data_uri(f"{SITE}/cut.png", _deadline())
 
 
@@ -129,19 +129,41 @@ def test_image_media_type(content: bytes, expected: str | None) -> None:
     assert image_media_type(content) == expected
 
 
-def test_an_image_that_would_decode_to_too_many_pixels_is_refused_before_decoding(monkeypatch: pytest.MonkeyPatch) -> None:
+def _animated_webp() -> bytes:
+    out = io.BytesIO()
+    frames = [Image.new("RGB", (4, 4), colour) for colour in ((255, 0, 0), (0, 255, 0))]
+    frames[0].save(out, format="WEBP", save_all=True, append_images=frames[1:], duration=100, loop=0)
+    return out.getvalue()
+
+
+def test_an_image_over_the_pixel_limit_is_refused_before_decoding(monkeypatch: pytest.MonkeyPatch) -> None:
     """A small, highly compressible file can decode to hundreds of MB: the size is read from the
     header and the pixels are never decoded."""
-    from app.utils import image_utils
-
     out = io.BytesIO()
     Image.new("L", (300, 300)).save(out, format="PNG")
-    monkeypatch.setattr(image_utils, "MAX_DECODED_PIXELS", 300 * 300 - 1)
     loaded: list[bool] = []
     monkeypatch.setattr(Image.Image, "load", lambda self: loaded.append(True))
 
-    assert decodes(out.getvalue()) is False
+    assert check_image(out.getvalue(), max_pixels=300 * 300 - 1) is ImageCheck.TOO_LARGE
     assert loaded == []
+
+
+def test_without_a_pixel_limit_a_large_valid_image_passes() -> None:
+    out = io.BytesIO()
+    Image.new("L", (300, 300)).save(out, format="PNG")
+    assert check_image(out.getvalue(), max_pixels=None) is ImageCheck.OK
+
+
+def test_an_animated_image_is_refused() -> None:
+    """``load()`` decodes only the first frame, so a damaged later frame would pass."""
+    assert check_image(_animated_webp()) is ImageCheck.ANIMATED
+
+
+async def test_an_animated_image_on_a_page_is_not_read(fake_web: FakeWeb) -> None:
+    fake_web.add(f"{SITE}/anim.webp", _image(_animated_webp(), "image/webp"))
+
+    with pytest.raises(UnsupportedContent, match="animated image"):
+        await fetch_image_data_uri(f"{SITE}/anim.webp", _deadline())
 
 
 async def test_a_slow_check_is_bounded_by_the_images_deadline(fake_web: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,7 +173,7 @@ async def test_a_slow_check_is_bounded_by_the_images_deadline(fake_web: FakeWeb,
     from app.web.fetch import images
 
     fake_web.add(f"{SITE}/slow.png", _image(PNG))
-    monkeypatch.setattr(images, "decodes_fully", lambda content: time.sleep(2) or True)
+    monkeypatch.setattr(images, "check_image", lambda content: time.sleep(2) or ImageCheck.OK)
 
     with pytest.raises(TimedOut):
         await fetch_image_data_uri(f"{SITE}/slow.png", Deadline.after(0.5))
@@ -159,8 +181,12 @@ async def test_a_slow_check_is_bounded_by_the_images_deadline(fake_web: FakeWeb,
 
 @pytest.mark.parametrize(
     ("content", "expected"),
-    [(PNG, True), (JPEG, True), (WEBP, True), (PNG[:40], False), (b"\x89PNG\r\n\x1a\n" + b"\0" * 64, False), (b"", False)],
+    [
+        (PNG, ImageCheck.OK), (JPEG, ImageCheck.OK), (WEBP, ImageCheck.OK),
+        (PNG[:40], ImageCheck.UNREADABLE), (b"\x89PNG\r\n\x1a\n" + b"\0" * 64, ImageCheck.UNREADABLE),
+        (b"", ImageCheck.UNREADABLE),
+    ],
     ids=["png", "jpeg", "webp", "truncated png", "signature only", "empty"],
 )
-def test_decodes(content: bytes, expected: bool) -> None:
-    assert decodes(content) is expected
+def test_check_image(content: bytes, expected: ImageCheck) -> None:
+    assert check_image(content) is expected

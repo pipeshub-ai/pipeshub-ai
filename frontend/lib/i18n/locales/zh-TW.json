@@ -4314,6 +4314,7 @@
       "maxImagesHelp": "1 到 50 之間的整數。只有支援圖片的模型才會收到圖片。",
       "maxImagesInvalid": "請輸入 1 到 50 之間的整數",
       "imagesCostWarning": "每張圖片都會增加讀取網頁的成本和時間。",
+      "imageSettingsUnavailable": "無法載入圖片設定，因此暫時無法變更。",
       "toasts": {
         "providerAdded": "已新增 {{label}}",
         "providerAddedDescription": "網頁搜尋設定成功。若要使用 {{label}}，請關閉其他網頁搜尋方式",

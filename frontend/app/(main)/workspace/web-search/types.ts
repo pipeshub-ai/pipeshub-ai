@@ -36,7 +36,8 @@ export interface WebSearchConfigData {
   providers: ConfiguredWebSearchProvider[];
   /** A provider that can search is the default. Left out when the settings could not be read. */
   configured?: boolean;
-  settings: WebSearchSettings;
+  /** Left out when the settings could not be read: a default would then be editable and saved over the stored value. */
+  settings?: WebSearchSettings;
   inherited?: boolean;
 }
 

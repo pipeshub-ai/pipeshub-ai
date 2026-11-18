@@ -21,9 +21,10 @@ async def admitted_image_parts(
     """One part per ``data:`` URI, in order: an ``ImagePart`` when admitted, otherwise a
     text note ``[image <source> not shown: <why>]`` so the model knows one was left out.
 
-    An image that does not decode in full is left out: one such image makes a provider refuse
-    the whole request. ``verified``: the caller already decoded every image (web page images
-    are checked as they are read), so they are not decoded twice."""
+    An image that does not decode in full, or is animated, is left out: one such image makes a
+    provider refuse the whole request. A large but valid image goes on to admission, which
+    downscales it. ``verified``: the caller already checked every image (web page images are
+    checked as they are read), so they are not decoded twice."""
     if context is None or not context.is_multimodal_llm:
         return [TextPart(text=f"[image {source} not shown: this model does not accept images]") for _ in image_uris]
 
@@ -37,13 +38,13 @@ async def admitted_image_parts(
     parts: dict[int, Part] = {}
     readable = list(range(len(image_uris)))
     if not verified:
-        from app.utils.image_utils import data_uri_decodes_fully
+        from app.utils.image_utils import ImageCheck, check_data_uri
 
-        decodes = await asyncio.to_thread(lambda: [data_uri_decodes_fully(uri) for uri in image_uris])
-        for index, ok in enumerate(decodes):
-            if not ok:
-                parts[index] = TextPart(text=f"[image {source} not shown: unreadable image data]")
-        readable = [index for index, ok in enumerate(decodes) if ok]
+        checks = await asyncio.to_thread(lambda: [check_data_uri(uri, max_pixels=None) for uri in image_uris])
+        for index, check in enumerate(checks):
+            if check is not ImageCheck.OK:
+                parts[index] = TextPart(text=f"[image {source} not shown: {check.value}]")
+        readable = [index for index, check in enumerate(checks) if check is ImageCheck.OK]
 
     admission = admission_from_state(context.tool_state)
     await admission.warm([image_uris[index] for index in readable])

@@ -4064,6 +4064,7 @@
       "maxImagesHelp": "Un número entero del 1 al 50. Solo los modelos que aceptan imágenes las reciben.",
       "maxImagesInvalid": "Introduce un número entero del 1 al 50",
       "imagesCostWarning": "Cada imagen aumenta el coste y el tiempo de lectura de una página.",
+      "imageSettingsUnavailable": "No se pudieron cargar los ajustes de imagen, así que aún no se pueden cambiar.",
       "toasts": {
         "providerAdded": "{{label}} is added",
         "providerAddedDescription": "Web search configured successfully. To use {{label}}, toggle off any other web search methods",

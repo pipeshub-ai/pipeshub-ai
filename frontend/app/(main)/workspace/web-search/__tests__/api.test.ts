@@ -10,6 +10,25 @@ beforeEach(() => {
   client.get.mockReset();
 });
 
+describe('WebSearchApi — a failed read or save', () => {
+  it('a read that fails gives no settings, so defaults are never offered for editing', async () => {
+    client.get.mockRejectedValue(new Error('Network Error'));
+    expect((await WebSearchApi.getConfig()).settings).toBeUndefined();
+  });
+
+  it('an unsuccessful read gives no settings either', async () => {
+    client.get.mockResolvedValue({ data: { status: 'error', message: 'nope' } });
+    expect((await WebSearchApi.getConfig()).settings).toBeUndefined();
+  });
+
+  it('a refused save carries the server message, or none for the page to translate', async () => {
+    client.put.mockResolvedValue({ data: { status: 'error', message: 'Only admins can change this' } });
+    await expect(WebSearchApi.updateSettings({ includeImages: true, maxImages: 3 })).rejects.toThrow('Only admins can change this');
+    client.put.mockResolvedValue({ data: { status: 'error' } });
+    await expect(WebSearchApi.updateSettings({ includeImages: true, maxImages: 3 })).rejects.toThrow(/^$/);
+  });
+});
+
 describe('WebSearchApi.getConfig — image settings', () => {
   it.each([
     [{ includeImages: true, maxImages: 7 }, { includeImages: true, maxImages: 7 }],

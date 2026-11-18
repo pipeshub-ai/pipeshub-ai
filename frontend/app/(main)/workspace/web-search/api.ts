@@ -84,9 +84,9 @@ export const WebSearchApi = {
           inherited: !!data?.inherited || false,
         };
       }
-      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS, inherited: false };
+      return { providers: [], inherited: false };
     } catch {
-      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS, inherited: false };
+      return { providers: [], inherited: false };
     }
   },
 
@@ -95,7 +95,8 @@ export const WebSearchApi = {
     if (data.status === 'success') {
       return normalizeWebSearchSettings(data.settings);
     }
-    throw new Error(data.message || 'Failed to update web search settings');
+    // No English fallback: the page shows a translated description when the server gives none.
+    throw new Error(data.message || '');
   },
 
   async addProvider(providerData: WebSearchProviderData): Promise<unknown> {

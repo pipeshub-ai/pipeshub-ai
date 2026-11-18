@@ -7,7 +7,7 @@ public, and the caller's ``allow_hop`` (the web access gate) must accept every r
 import asyncio
 import base64
 
-from app.utils.image_utils import decodes_fully, supported_mime_types
+from app.utils.image_utils import ImageCheck, check_image, supported_mime_types
 from app.utils.url_redaction import redact_url
 from app.web.deadline import Deadline
 from app.web.errors import TimedOut, UnsupportedContent
@@ -44,9 +44,9 @@ async def fetch_image_data_uri(url: str, deadline: Deadline, *, allow_hop: HopCh
     if media_type is None or media_type not in supported_mime_types:
         raise UnsupportedContent(f"{redact_url(url)} is not a PNG, JPEG or WebP image")
     try:
-        decoded = await asyncio.wait_for(asyncio.to_thread(decodes_fully, body.content), timeout=deadline.remaining())
+        check = await asyncio.wait_for(asyncio.to_thread(check_image, body.content), timeout=deadline.remaining())
     except TimeoutError as e:
         raise TimedOut(f"{redact_url(url)} could not be checked in time") from e
-    if not decoded:
-        raise UnsupportedContent(f"{redact_url(url)} is a damaged or oversized image")
+    if check is not ImageCheck.OK:
+        raise UnsupportedContent(f"{redact_url(url)} is not sent: {check.value}")
     return f"data:{media_type};base64,{base64.b64encode(body.content).decode('ascii')}"

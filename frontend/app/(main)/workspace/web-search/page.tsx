@@ -84,7 +84,7 @@ export default function WebSearchPage() {
       addToast({
         variant: 'error',
         title: t('workspace.webSearch.toasts.updateError'),
-        description: error instanceof Error ? error.message : undefined,
+        description: (error instanceof Error && error.message) || t('message.tryAgain'),
         duration: 5000,
       }),
     [addToast, t],
@@ -449,12 +449,25 @@ export default function WebSearchPage() {
             <Box style={{ height: 1, background: 'var(--olive-3)' }} />
           </Box>
           <Box style={{ padding: '12px 14px' }}>
+            {!isLoading && !imageSettings.hasLoaded && (
+              <Callout.Root color="amber" size="1" role="status" style={{ marginBottom: 'var(--space-3)' }}>
+                <Callout.Icon>
+                  <MaterialIcon name="info" size={16} color="var(--amber-11)" />
+                </Callout.Icon>
+                <Callout.Text>
+                  {t('workspace.webSearch.imageSettingsUnavailable')}{' '}
+                  <Button variant="ghost" size="1" onClick={() => loadData(false)} style={{ cursor: 'pointer' }}>
+                    {t('action.tryAgain')}
+                  </Button>
+                </Callout.Text>
+              </Callout.Root>
+            )}
             <SendImagesRow
               enabled={settings.includeImages}
               maxImages={settings.maxImages}
               onToggle={handleSendImagesToggle}
               onMaxImagesCommit={handleMaxImagesCommit}
-              disabled={isLoading || imageSettings.isSaving || inherited}
+              disabled={isLoading || imageSettings.isSaving || inherited || !imageSettings.hasLoaded}
             />
           </Box>
         </Flex>
