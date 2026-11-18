@@ -81,6 +81,7 @@ async def _redis_locks_of(config_service: "ConfigurationService") -> RedisLocks:
 def _redis_locks(config_service: "ConfigurationService", logger: logging.Logger) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
     clients: LoopLocal[Any] = LoopLocal(lambda: {})
     fallback = InProcessLocks()
+    fallback.degraded = True
 
     async def backend() -> LockBackend:
         holder = clients.get()

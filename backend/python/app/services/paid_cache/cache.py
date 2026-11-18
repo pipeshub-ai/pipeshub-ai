@@ -77,6 +77,14 @@ class RefreshPurgeInProgress(ConnectionError):
 _refresh_lease: ContextVar[Any] = ContextVar("paid_cache_refresh_lease", default=None)
 
 
+class RefreshLockUnavailable(ConnectionError):
+    """The refresh lease cannot be taken safely (the lock backend failed, or is process-local) while writes are on.
+
+    An ordinary, counted failure: the delivery is retried under the normal attempt limit and ends as failed, rather
+    than being handed back for ever. Hand-backs are for confirmed contention or a lost lease.
+    """
+
+
 class PurgeCutoffUnavailable(ConnectionError):
     """The storage service has no purge-cutoff route (an earlier release) while paid-result writes are on.
 
@@ -355,6 +363,10 @@ class PaidResultCache:
         try:
             try:
                 backend = await self._backend()
+                if writes_enabled() and getattr(backend, "degraded", False):
+                    # The process-local stand-in for an unreachable Redis cannot see another worker's marker or lease: a retry here could purge
+                    # what the first delivery already paid for.
+                    raise RefreshLockUnavailable("the paid-result lock backend is this process only (Redis unreachable); a refresh needs the shared one")
                 deadline = time.monotonic() + REFRESH_PURGE_WAIT_S
                 while True:
                     if await backend.is_marked(name):
@@ -372,13 +384,13 @@ class PaidResultCache:
                     if time.monotonic() > deadline:
                         raise RefreshPurgeInProgress(f"another delivery of refresh {event_id} is purging {record_id}")
                     await asyncio.sleep(REFRESH_PURGE_POLL_S)
-            except RefreshPurgeInProgress:
+            except (RefreshPurgeInProgress, RefreshLockUnavailable):
                 raise
             except Exception as exc:
                 if writes_enabled():
                     # Writes on: a purge without the lease could delete what a delivery that took over has stored, and
-                    # nothing here tells. The delivery comes back when the lock backend can be asked.
-                    raise RefreshPurgeInProgress(f"the refresh lease of {record_id} cannot be taken: {exc!r}") from exc
+                    # nothing here tells. A counted failure: retried, then terminal, never an endless hand-back.
+                    raise RefreshLockUnavailable(f"the refresh lease of {record_id} cannot be taken: {exc!r}") from exc
                 self.logger.debug("Paid-result refresh claim unavailable", exc_info=True)
                 must_purge = True
             lease_token = _refresh_lease.set(held if must_purge else None)
@@ -598,6 +610,8 @@ class PaidResultCache:
             if overwrite:
                 # This key only: a refresh run's result, or what replaces bytes that cannot be read.
                 await self._store.overwrite(key.org_id, key.record_id, path, _encode(key, value))
+                if scope is not None:
+                    scope.confirm(path)          # a write of this refresh's own: a retry may reuse it
             else:
                 await self._store.put(key.org_id, key.record_id, path, _encode(key, value))
             self._count(key, "stored")

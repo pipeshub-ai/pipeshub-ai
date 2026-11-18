@@ -231,6 +231,9 @@ class InProcessLocks:
     """The same contract inside one process: tests, and a deployment whose Redis cannot be reached."""
 
     shared = False
+    #: True only for the stand-in a deployment uses when its Redis cannot be reached: what a refresh with paid-result
+    #: writes on refuses, because no other worker can see its markers or leases. Tests use the plain object.
+    degraded = False
 
     def __init__(self) -> None:
         self._held: dict[str, tuple[str, float]] = {}

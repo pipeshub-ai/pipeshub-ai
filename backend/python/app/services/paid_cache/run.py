@@ -74,6 +74,9 @@ class RunScope:
         self.reuse_prior_attempt = reuse_prior_attempt
         self._prior_keys: set[str] | None = None
         self._prior_load: asyncio.Lock | None = None
+        #: Keys this refresh itself stored (a confirmed write) or adopted from a manifest of the same refresh: the only
+        #: ones a retry may reuse. ``keys`` stays the retention list and holds more (adopted and pre-write entries).
+        self._own: set[str] = set()
         self.run_id = secrets.token_hex(8)
         #: Names the refresh across attempts and services (the event id): what the parsing client sends as its token.
         self.refresh_token = refresh_token or self.run_id
@@ -118,10 +121,18 @@ class RunScope:
         if self.refresh:
             # Which refresh wrote it: a retry reuses only what its own refresh's earlier attempt listed.
             body["refreshToken"] = self.refresh_token
+            body["ownKeys"] = sorted(self._own)
         if final:
             body["completedMs"] = max(int(self._clock() * 1000), self.started_ms)
             body["seq"] = next(_SEQ)
         return json.dumps(body, separators=(",", ":")).encode()
+
+    def confirm(self, path: str) -> None:
+        """This refresh's own write of ``path`` succeeded: a retry of the refresh may reuse it. Listed in the next
+        manifest write; before that the key is only a retention reference."""
+        if self.refresh and path not in self._own:
+            self._own.add(path)
+            self._unflushed += 1
 
     async def note(self, store: _ManifestStore, path: str, *, opens: bool) -> None:
         """Records a key the run used. Opens the manifest before the run's first object."""
@@ -175,11 +186,12 @@ class RunScope:
                             body = json.loads(raw) if raw else {}
                             if self.refresh and body.get("refreshToken") != self.refresh_token:
                                 continue
-                            listed = body.get("keys", [])
+                            listed = body.get("ownKeys", []) if self.refresh else body.get("keys", [])
                         except Exception:
                             continue
                         if isinstance(listed, list):
                             keys.update(k for k in listed if isinstance(k, str))
+                self._own.update(keys)         # a retry's manifests keep listing what its refresh already stored
                 self._prior_keys = keys        # published once, complete; a cancelled load leaves it unset for a later caller
         return self._prior_keys
 
@@ -217,6 +229,10 @@ class RunScope:
                 or completed < completed_since_ms - COMPLETION_CLOCK_SKEW_MS
             ):
                 return
+        if self.refresh and isinstance(body, dict) and body.get("refreshToken") == self.refresh_token:
+            own = body.get("ownKeys", [])
+            if isinstance(own, list):
+                self._own.update(k for k in own if isinstance(k, str))
         previous = body.get("keys", []) if isinstance(body, dict) else []
         for key in previous if isinstance(previous, list) else []:
             if isinstance(key, str) and key not in self._seen:
