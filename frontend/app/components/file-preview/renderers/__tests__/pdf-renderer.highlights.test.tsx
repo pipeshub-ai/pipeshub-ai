@@ -6,9 +6,12 @@ import { Theme } from '@radix-ui/themes';
 // What PDFRenderer hands PdfHighlighter, render by render.
 const highlighterProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
-vi.mock('react-pdf-highlighter', () => ({
-  PdfLoader: ({ children }: { children: (doc: unknown) => React.ReactNode }) =>
+vi.mock('../owned-pdf-loader', () => ({
+  OwnedPdfLoader: ({ children }: { children: (doc: unknown) => React.ReactNode }) =>
     children({ numPages: 4 }),
+}));
+
+vi.mock('react-pdf-highlighter', () => ({
   PdfHighlighter: (props: Record<string, unknown>) => {
     highlighterProps.push(props);
     return null;

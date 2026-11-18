@@ -241,6 +241,7 @@ describe('UserGroupController', () => {
       ];
 
       sinon.stub(UserGroups, 'find').returns({
+        sort: sinon.stub().returnsThis(),
         skip: sinon.stub().returns({
           limit: sinon.stub().returns({
             lean: sinon.stub().returns({
@@ -266,6 +267,7 @@ describe('UserGroupController', () => {
 
     it('should filter groups by search query', async () => {
       sinon.stub(UserGroups, 'find').returns({
+        sort: sinon.stub().returnsThis(),
         skip: sinon.stub().returns({
           limit: sinon.stub().returns({
             lean: sinon.stub().returns({
@@ -288,6 +290,7 @@ describe('UserGroupController', () => {
 
     it('escapes regex metacharacters in the group search query (OT-9)', async () => {
       sinon.stub(UserGroups, 'find').returns({
+        sort: sinon.stub().returnsThis(),
         skip: sinon.stub().returns({
           limit: sinon.stub().returns({
             lean: sinon.stub().returns({
@@ -1127,7 +1130,7 @@ describe('UserGroupController', () => {
       ];
 
       sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves(mockGroups),
+        select: sinon.stub().returns({ sort: sinon.stub().resolves(mockGroups) }),
       } as any);
 
       await controller.getGroupsForUser(req, res);

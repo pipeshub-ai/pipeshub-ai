@@ -214,6 +214,7 @@ class TestAbstractMethodInventory:
         "delete_nodes",
         "update_node",
         "update_node_if_match",
+        "write_attempt_start",
         # Edge operations
         "batch_create_edges",
         "batch_create_entity_relations",

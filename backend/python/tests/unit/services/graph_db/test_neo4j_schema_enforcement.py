@@ -218,7 +218,7 @@ CLASSIFICATION: dict[str, str] = {
     "batch_upsert_records": _UP, "batch_upsert_user_groups": _UP, "upsert_person_by_email": _UP, "upsert_person_by_source_key": _UP,
     "upsert_record_under_parent": _UP, "upsert_sync_point": _UP, "store_page_token": _UP,
     # ---- node updates (partial)
-    "update_node": _U, "batch_update_nodes": _U, "update_node_fields_if_match": _U,
+    "update_node": _U, "batch_update_nodes": _U, "update_node_fields_if_match": _U, "write_attempt_start": _U, "update_node_if_unchanged": _U,
     "update_node_fields_if": _U, "update_nodes_fields_if_match": _U, "set_record_properties": _U,
     "update_agent": _U, "update_agent_template": _U, "update_knowledge_base": _U,
     "update_sync_point_if": _U, "stage_state_compare_and_set": _U, "add_taxonomy_aliases": _U,
@@ -1014,6 +1014,8 @@ COVERAGE_GAPS: dict[str, str] = {
         (("batch_upsert_records", "upsert_record_under_parent", "batch_upsert_people", "upsert_person_by_email", "upsert_person_by_source_key",
           "batch_upsert_app_roles", "batch_upsert_app_users", "batch_upsert_orgs", "batch_upsert_record_groups",
           "batch_upsert_user_groups"), "typed model in, delegates to batch_upsert_nodes; pin through the T3 converters"),
+        (("write_attempt_start",), "records only; pinned in test_write_attempt_start.py"),
+        (("update_node_if_unchanged",), "delegates to update_node_fields_if_match on Neo4j, which is driven above"),
         (("upsert_sync_point", "update_sync_point_if", "store_page_token"), "schema-less collections today"),
         (("stamp_external_org_parents",), "stamps parentOrgId from its org_id argument, which is a plain string no caller can make invalid; it validates {parentOrgId: org_id}"),
         (("update_agent", "update_agent_template", "update_knowledge_base", "clone_agent_template"),

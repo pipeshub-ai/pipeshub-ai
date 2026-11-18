@@ -172,6 +172,12 @@ export interface ChatPreviewFile {
    * not the first citation on the target page.
    */
   initialCitationId?: string;
+  /** Which stream the content came from: the original file or its PDF conversion. */
+  variant?: 'original' | 'pdf';
+  /** Increments on every jump within the shown record, so the same citation twice re-scrolls. */
+  jumpSeq?: number;
+  /** Hold on the cached content behind `url`/`blob`; released when the preview is replaced or closed. */
+  lease?: { release(): void };
   /**
    * External URL for the record (e.g. Jira ticket, Confluence page).
    * Used by UnknownPreview to open the source in a new browser tab.
@@ -1617,7 +1623,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Settings actions ─────────────────────────────────────────────
 
-  setPreviewFile: (file) => set({ previewFile: file }),
+  setPreviewFile: (file) =>
+    set((state) => {
+      const held = state.previewFile?.lease;
+      if (held && held !== file?.lease) held.release();
+      return { previewFile: file };
+    }),
 
   setPreviewMode: (mode) => set({ previewMode: mode }),
 
@@ -1625,8 +1636,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearPreview: () =>
     set((state) => {
-      // Revoke blob URL if present
-      if (state.previewFile?.url?.startsWith('blob:')) {
+      if (state.previewFile?.lease) {
+        state.previewFile.lease.release();
+      } else if (state.previewFile?.url?.startsWith('blob:')) {
         URL.revokeObjectURL(state.previewFile.url);
       }
       return { previewFile: null, previewMode: 'sidebar' };
@@ -1776,6 +1788,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     for (const slot of Object.values(slots)) {
       slot.abortController?.abort();
     }
+    get().previewFile?.lease?.release();
     unreadOwnerId = null;
     // The capability toggles are a device setting kept in localStorage; the
     // snapshot taken at module load may be older than what was chosen since.

@@ -280,8 +280,9 @@ MIN_ISSUE_PAGE_SIZE: int = 10
 INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 # Stored in a project's checkpoint once its issues are filed the way _extract_issue_data
 # files them. A project without it was synced under another rule (every story under its
-# epic, or none), and has every stored issue re-read once so they move.
-ISSUE_PLACEMENT: str = "stories-under-readable-epic"
+# epic, or none; every sub-task under its parent), and has every stored issue re-read once
+# so they move.
+ISSUE_PLACEMENT: str = "issues-under-readable-parent"
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
 SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
@@ -355,11 +356,10 @@ def _issue_type_of(fields: dict[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], issue_type) if isinstance(issue_type, dict) else {}
 
 
-def _may_parent_a_story(fields: dict[str, Any]) -> bool:
-    """Epics and the levels above them. A story or task is only ever a sub-task's parent."""
+def _may_parent_an_issue(fields: dict[str, Any]) -> bool:
+    """Any issue but a sub-task: an epic (or higher) parents stories, a story or task parents sub-tasks."""
     issue_type = _issue_type_of(fields)
-    level = issue_type.get("hierarchyLevel")
-    return not issue_type.get("subtask") and not (isinstance(level, int) and level <= 0)
+    return not issue_type.get("subtask") and issue_type.get("hierarchyLevel") != -1
 
 
 @ConnectorBuilder("Jira")\
@@ -1384,6 +1384,8 @@ class JiraConnector(BaseConnector):
         parent_external_id = issue_data["parent_external_id"]
         if issue_data["parent_unread"] and stub.parent_external_record_id == issue_data["parent_unread"]:
             parent_external_id = issue_data["parent_unread"]
+        if issue_data["subtask_unplaced"]:
+            parent_external_id = stub.parent_external_record_id
         issue_key = issue_data["issue_key"]
         atlassian_domain = self.site_url or ""
 
@@ -4559,8 +4561,8 @@ class JiraConnector(BaseConnector):
             failures_before = self._issue_build_failures
             if not is_new_project and reread != "project":
                 self.logger.info(
-                    f"Re-reading every stored issue of {project_key} once, to file each story "
-                    "under its epic where everyone who can read the story can read the epic"
+                    f"Re-reading every stored issue of {project_key} once, to file each story and sub-task "
+                    "under its parent where everyone who can read it can read the parent"
                 )
                 await self._reread_leveled_issues(project_key, project_id, jira_users, stats, None, every_issue=True)
                 placement_reread = True
@@ -4575,7 +4577,7 @@ class JiraConnector(BaseConnector):
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
             self.logger.warning(
-                f"Could not read {len(self._parents_to_retry)} epic(s) of {project_key}; "
+                f"Could not read {len(self._parents_to_retry)} parent issue(s) of {project_key}; "
                 "their stories are placed again next sync"
             )
             unsettled_parents = await self._save_parents_to_retry(project_key, unsettled_parents)
@@ -5176,10 +5178,10 @@ class JiraConnector(BaseConnector):
         return bool(parent_project) and parent_project != project_key and parent_project not in self._synced_project_keys
 
     def _remember_parent_levels(self, issues: list[dict[str, Any]]) -> None:
-        """Note the level of each epic (or higher) read, for placing the stories under it."""
+        """Note the level of each issue read that may parent another, for placing its children under it."""
         for issue in issues:
             fields = (issue or {}).get("fields") if isinstance(issue, dict) else None
-            if not isinstance(fields, dict) or not issue.get("id") or not _may_parent_a_story(fields):
+            if not isinstance(fields, dict) or not issue.get("id") or not _may_parent_an_issue(fields):
                 continue
             present, level_id = read_security_level(fields)
             project_id = self._issue_project_id(issue)
@@ -5188,12 +5190,16 @@ class JiraConnector(BaseConnector):
             self._parent_levels[str(issue["id"])] = _ParentLevel(project_id, level_id) if usable else None
             self._parent_level_failures.discard(str(issue["id"]))
 
-    async def _learn_parent_levels(self, issues: list[dict[str, Any]], *, refresh: bool = False) -> None:
-        """Read the level of each story's parent this sync has not read yet.
+    async def _learn_parent_levels(
+        self, issues: list[dict[str, Any]], *, refresh: bool = False, security: IssueSecurityContext | None = None,
+    ) -> None:
+        """Read the level of each story's or sub-task's parent this sync has not read yet.
 
-        Jira's ``parent`` field does not carry it. Only a parent in the story's own project
-        can hold the story, so others are not asked for. ``refresh`` asks again for parents
-        already read: the reindex path runs between syncs. A parent Jira does not return is
+        Jira's ``parent`` field does not carry it. Only a parent in the issue's own project
+        can hold the issue, so others are not asked for. ``refresh`` asks again for parents
+        already read: the reindex path runs between syncs. A sub-task's parent is read only
+        where levels are enforced, the one place its placement weighs it; ``security`` is that
+        project's context when this sync has not loaded it (a reindex). A parent Jira does not return is
         unknown; one whose read failed is noted in ``_parent_level_failures``.
         """
         wanted: dict[str, None] = {}
@@ -5201,10 +5207,14 @@ class JiraConnector(BaseConnector):
             fields = (issue or {}).get("fields") if isinstance(issue, dict) else None
             if not isinstance(fields, dict):
                 continue
-            issue_type = _issue_type_of(fields)
             parent = fields.get("parent")
-            if issue_type.get("subtask") or issue_type.get("hierarchyLevel") == -1 or not isinstance(parent, dict):
+            if not isinstance(parent, dict):
                 continue
+            issue_type = _issue_type_of(fields)
+            if issue_type.get("subtask") or issue_type.get("hierarchyLevel") == -1:
+                context = security or self._issue_security.get(self._issue_project_id(issue))
+                if context is None or not context.enforce:
+                    continue
             parent_id = str(parent.get("id") or "")
             parent_key = str(parent.get("key") or "")
             project = fields.get("project")
@@ -5220,7 +5230,7 @@ class JiraConnector(BaseConnector):
         chunks = [ids[i:i + PLACEHOLDER_SWEEP_BATCH] for i in range(0, len(ids), PLACEHOLDER_SWEEP_BATCH)]
 
         async def fetch_chunk(chunk: list[str]) -> tuple[list[str], list[dict[str, Any]] | None]:
-            ctx = f"reading the level of {len(chunk)} epic(s)"
+            ctx = f"reading the level of {len(chunk)} parent issue(s)"
             try:
                 response = await self._call_with_retry(
                     lambda ds: ds.bulk_fetch_issues(issueIdsOrKeys=chunk, fields=PARENT_LEVEL_FIELDS),
@@ -5279,6 +5289,38 @@ class JiraConnector(BaseConnector):
             security, parent.level_id
         )
 
+    def _subtask_files_under_parent(
+        self, fields: dict[str, Any], parent_id: str, security: IssueSecurityContext | None,
+    ) -> bool | None:
+        """``_files_under_parent`` for a sub-task, which Jira gives its parent's level.
+
+        A holder naming people on each issue (reporter, assignee, a user field), in the level or
+        in the project's Browse holders, grants the sub-task's own people, who need not read the
+        parent: such a sub-task hangs off its project. One read with no level, or whose level cannot
+        be applied, stays under its parent. Otherwise it stays only under a parent read with the same
+        level, one that grants the same people on every issue. None when that is not known this time.
+        """
+        if security is None or not security.enforce:
+            return True
+        if security.browse_holders is None:
+            return None
+        if security.browse_holders:
+            return False
+        present, level_id = read_security_level(fields)
+        if not present or level_id is None or not security.members_readable:
+            # No level read means a payload behind its parent's (Jira gives a sub-task the
+            # parent's level), and an unreadable level closes it anywhere: under the parent
+            # it is never read wider than Jira shows it.
+            return True
+        if not level_reads_alike(security, level_id):
+            return False
+        if parent_id in self._parent_level_failures:
+            return None
+        parent = self._parent_levels.get(parent_id)
+        return parent is not None and parent.level_id == level_id and parent.project_id == self._issue_project_id(
+            {"fields": fields}
+        )
+
     def _extract_issue_data(
         self,
         issue: dict[str, Any],
@@ -5306,13 +5348,20 @@ class JiraConnector(BaseConnector):
         parent_external_id = parent_obj.get("id") if parent_obj else None
         parent_unread = None
         is_subtask = bool(issue_type_obj.get("subtask")) or issue_type_obj.get("hierarchyLevel") == -1
-        if parent_external_id and not is_subtask:
+        subtask_unplaced = False
+        if parent_external_id:
             if security is None:
                 security = self._issue_security.get(self._issue_project_id(issue))
-            filed = self._files_under_parent(fields, str(parent_external_id), security)
-            if filed is None:
+            filed = (
+                self._subtask_files_under_parent(fields, str(parent_external_id), security) if is_subtask
+                else self._files_under_parent(fields, str(parent_external_id), security)
+            )
+            if filed is None and is_subtask:
+                # Not known: a new sub-task stays under its parent, the narrower place; a stored one stays put.
+                subtask_unplaced = True
+            elif filed is None:
                 parent_unread = str(parent_external_id)
-            if not filed:
+            if filed is False or (filed is None and not is_subtask):
                 parent_external_id = None
         if parent_external_id and self._parent_outside_synced_projects(fields):
             # A parent that never syncs stays a placeholder, which hides the issue under it;
@@ -5351,6 +5400,7 @@ class JiraConnector(BaseConnector):
             "issue_type": issue_type,
             "parent_external_id": parent_external_id,
             "parent_unread": parent_unread,
+            "subtask_unplaced": subtask_unplaced,
             "is_subtask": is_subtask,
             "status": status,
             # Jira's own name ("Backlog"); `status` is the normalised value (NEW).
@@ -5529,6 +5579,9 @@ class JiraConnector(BaseConnector):
             self._parents_to_retry.add(issue_data["parent_unread"])
             if existing_record is not None and existing_record.parent_external_record_id == issue_data["parent_unread"]:
                 parent_external_id = issue_data["parent_unread"]
+        if issue_data["subtask_unplaced"] and existing_record is not None:
+            # Kept where the last sync filed it until the project's Browse holders are read again.
+            parent_external_id = existing_record.parent_external_record_id
 
         # Record group is always the project. The parent ticket link follows Jira's parent
         # field where _extract_issue_data files the issue under its parent.
@@ -7413,16 +7466,17 @@ class JiraConnector(BaseConnector):
                     security_by_project[project_ref] = security
 
             # The epic's level may have changed since the last sync read it.
-            await self._learn_parent_levels([issue], refresh=True)
+            await self._learn_parent_levels([issue], refresh=True, security=security)
             issue_data = self._extract_issue_data(issue, user_by_account_id, security=security)
 
             parent_external_id = issue_data.get("parent_external_id")
             if issue_data["parent_unread"] and getattr(record, "parent_external_record_id", None) == issue_data["parent_unread"]:
                 parent_external_id = issue_data["parent_unread"]
+            if issue_data["subtask_unplaced"]:
+                parent_external_id = getattr(record, "parent_external_record_id", None)
             parent_key = str((fields.get("parent") or {}).get("key") or "")
             if (
                 parent_external_id and not getattr(record, "parent_external_record_id", None)
-                and not issue_data["is_subtask"]  # a sub-task always follows its parent, whatever the stored copy had
                 and "-" in parent_key and parent_key.rsplit("-", 1)[0] != str(project.get("key") or "")
             ):
                 # The sync left this parent out (its project is not synced); keep it that way.
