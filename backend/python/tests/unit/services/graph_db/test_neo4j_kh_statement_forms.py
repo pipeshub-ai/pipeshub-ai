@@ -46,9 +46,8 @@ def test_a_grant_test_is_read_from_the_node() -> None:
         "MATCH (ca) WHERE (((ca:Record OR ca:RecordGroup) AND ca.connectorId = $kh_conn"
         " AND NOT coalesce(ca.isDeleted, false)"
         " AND EXISTS { (ca)<-[kh_gp0:PERMISSION]-(kh_gr0)"
-        " WHERE (kh_gr0:User OR kh_gr0:SourceAccount OR kh_gr0:Group OR kh_gr0:Role OR kh_gr0:Teams"
-        " OR (kh_gr0:Organization AND kh_gp0.type IN ['ORG', 'ORGANIZATION']))"
-        " AND (CASE WHEN kh_gr0:SourceAccount THEN 'sourceAccounts/' + kh_gr0.id ELSE kh_gr0.id END) IN $kh_grantees })" + _CROSS_CA + ") RETURN ca"
+        " WHERE (kh_gr0:User|SourceAccount|Group|Role|Teams OR (kh_gr0:Organization AND kh_gp0.type IN ['ORG', 'ORGANIZATION']))"
+        " AND kh_gr0.id IN $kh_grantees })" + _CROSS_CA + ") RETURN ca"
     )
 
 
@@ -84,9 +83,9 @@ def test_each_grant_test_takes_its_own_grantee_variable() -> None:
     )
     assert "$grantedIds" not in out
     for i, node in enumerate(("a", "b", "start")):
-        assert f"({node})<-[kh_gp{i}:PERMISSION]-(kh_gr{i}) WHERE (kh_gr{i}:User OR kh_gr{i}:SourceAccount OR" in out
+        assert f"({node})<-[kh_gp{i}:PERMISSION]-(kh_gr{i}) WHERE (kh_gr{i}:User|SourceAccount|Group|Role|Teams OR" in out
         assert f"OR (kh_gr{i}:Organization AND kh_gp{i}.type IN {ORG_SHARE_TYPES}))" in out
-        assert f"AND (CASE WHEN kh_gr{i}:SourceAccount THEN 'sourceAccounts/' + kh_gr{i}.id ELSE kh_gr{i}.id END) IN $kh_grantees" in out
+        assert f"AND kh_gr{i}.id IN $kh_grantees" in out
 
 
 def test_a_grant_test_of_another_shape_is_refused_not_dropped() -> None:
