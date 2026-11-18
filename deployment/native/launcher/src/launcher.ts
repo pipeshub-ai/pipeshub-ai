@@ -337,7 +337,9 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   const previous = readState(dataDir);
   const state: State = {
     pid: process.pid, pidId: procIdentity(process.pid), bootId: bootId(), phase: "starting", startedAt: t0, bundle, dataDir,
-    url: "", ports: {} as Ports, services: {}, serviceIds: {}, leftover: previous,
+    url: "", ports: {} as Ports, services: {}, serviceIds: {},
+    // A previous start that failed before running anything of its own adds no work: keep only what it still held.
+    leftover: previous && !previous.step && !Object.keys(previous.services ?? {}).length ? previous.leftover : previous,
   };
   const save = () => writeJson(statePath(dataDir), state);
   // Nothing is started yet: free the lock and let the caller report it. A failed write leaves the old state file whole.
@@ -405,7 +407,8 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     const raw = readJson<unknown>(join(dataDir, "ports.json"));
     const saved = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Partial<Ports>) : undefined;
     // Without the saved web port an existing database would get a new one its stored addresses do not match.
-    if (!Number.isInteger(saved?.api) && existsSync(join(lay.pgData, "PG_VERSION"))) {
+    const hasCluster = existsSync(join(lay.pgData, "PG_VERSION"));
+    if (hasCluster && !(Number.isInteger(saved?.api) && saved!.api! >= 1 && saved!.api! <= 65535)) {
       throw new Error(`${join(dataDir, "ports.json")} has no web port, which the existing database's stored addresses use. Restore it from a backup.`);
     }
     secrets = loadSecrets(dataDir, nonEmpty(lay.pgData));
@@ -413,8 +416,8 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     // The API's address is stored in the database's settings on its first start (auth, storage and other endpoints), so it
     // must not move for the life of the data folder: a taken port is reported instead of quietly replaced. Decided from the
     // same probe that picked the ports, before ports.json is written.
-    if (saved?.api && existsSync(join(lay.pgData, "PG_VERSION")) && ports.api !== saved.api) {
-      throw new StartError("port_in_use", `port ${saved.api} on 127.0.0.1 is in use by another program; PipesHub's stored addresses use it. Stop that program and start again.`);
+    if (hasCluster && ports.api !== saved!.api) {
+      throw new StartError("port_in_use", `port ${saved!.api} on 127.0.0.1 is in use by another program; PipesHub's stored addresses use it. Stop that program and start again.`);
     }
     writeJson(join(dataDir, "ports.json"), ports);
     const c: Ctx = { layout: lay, ports, secrets };

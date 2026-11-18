@@ -633,18 +633,36 @@ describe("launcher", () => {
   test("leftovers this start could not end stay on record after it stops", async () => {
     const b = fakeBundle(), d = join(root, "data keepleftover");
     // a group whose only member is a zombie nobody reaps: it answers kill(-pgid, 0) after SIGKILL, so it cannot be proven gone
-    const holder = spawn("python3", ["-c", "import os, time\npid = os.fork()\nif pid == 0:\n    os.setpgid(0, 0); os._exit(0)\nprint(pid, flush=True); time.sleep(30)"], { stdio: ["ignore", "pipe", "ignore"] });
+    // SIGTERM makes the holder reap its zombie itself, so nothing is left for whoever adopts it
+    const holder = spawn("python3", ["-c", "import os, signal, sys, time\npid = os.fork()\nif pid == 0:\n    os.setpgid(0, 0); os._exit(0)\nsignal.signal(signal.SIGTERM, lambda *a: (os.waitpid(pid, 0), sys.exit(0)))\nprint(pid, flush=True); time.sleep(60)"], { stdio: ["ignore", "pipe", "ignore"] });
     live.push(holder);
-    const zpid = Number(await new Promise<string>((r) => holder.stdout!.once("data", (c) => r(String(c)))));
-    mkdirSync(d, { recursive: true });
-    writeFileSync(join(d, "launcher.json"), JSON.stringify({ pid: spawnSync("true").pid, phase: "ready", services: { query: zpid }, ports: {} }));
-    const l = launch(b, d, "start");
-    const code = await l.exited;
-    holder.kill("SIGKILL");
-    assert.equal(code, 1);
-    assert.match(l.events.find((e) => e.event === "error")?.message ?? "", /still running after SIGKILL/);
-    const kept = existsSync(join(d, "launcher.json")) ? JSON.parse(readFileSync(join(d, "launcher.json"), "utf8")) : undefined;
-    assert.equal(kept?.leftover?.services?.query, zpid, "the record of the group it could not end was deleted");
+    const closed = new Promise((r) => holder.once("close", r));
+    try {
+      const zpid = Number(await new Promise<string>((r) => holder.stdout!.once("data", (c) => r(String(c)))));
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, "launcher.json"), JSON.stringify({ pid: spawnSync("true").pid, phase: "ready", services: { query: zpid }, ports: {} }));
+      // twice: a retry that fails the same way keeps the record without wrapping it again
+      for (let round = 0; round < 2; round++) {
+        const l = launch(b, d, "start");
+        assert.equal(await l.exited, 1);
+        assert.match(l.events.find((e) => e.event === "error")?.message ?? "", /still running after SIGKILL/);
+        const kept = existsSync(join(d, "launcher.json")) ? JSON.parse(readFileSync(join(d, "launcher.json"), "utf8")) : undefined;
+        assert.equal(kept?.leftover?.services?.query, zpid, "the record of the group it could not end was deleted");
+        assert.equal(kept?.leftover?.leftover, undefined, `round ${round}: the record was wrapped again`);
+      }
+    } finally { holder.kill("SIGTERM"); await closed; }
+  });
+
+  test("an existing database whose saved web port is not a port: refused, not given a new one", async () => {
+    const b = fakeBundle(), d = join(root, "data apizero");
+    const a = launch(b, d, "start"); await a.until("ready");
+    await cli(b, d, "stop"); await a.exited;
+    const ports = JSON.parse(readFileSync(join(d, "ports.json"), "utf8"));
+    writeFileSync(join(d, "ports.json"), JSON.stringify({ ...ports, api: 0 }));
+    const w = launch(b, d, "start");
+    assert.equal(await w.exited, 1);
+    assert.match(w.events.find((e) => e.event === "error")?.message ?? "", /ports\.json has no web port/);
+    assert.equal(JSON.parse(readFileSync(join(d, "ports.json"), "utf8")).api, 0, "ports.json was rewritten");
   });
 
   test("a dead launcher whose lock is still held a moment: stop waits for it and ends the leftovers", async () => {
