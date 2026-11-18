@@ -139,12 +139,18 @@ describe('follow: deleting a document and what the stream asks for', () => {
         const { log, k } = recordWith([storedRow(hex)])
         const rt = { jobs: async (fn: (tx: unknown, k: unknown) => Promise<void>) => fn({ pgTx: { kernel: k } }, k) } as never
         await replaceDocs(rt, mapping('outbox_events'), [outboxDoc(hex, status)])
-        return outboxDeletes(log)
+        const del = log.findIndex((l) => /DELETE FROM platform\.outbox/.test(l.sql))
+        const ins = log.findIndex((l) => /INSERT INTO platform\.outbox/.test(l.sql))
+        return { deletes: outboxDeletes(log), del, ins }
       }
+      // the event's own row goes first in every case; only an event the copy still holds is written again, after that
       const published = await run('published')
-      expect(published).to.have.length(1)
-      expect(published[0]!.params).to.deep.equal([[ORG], [outboxTableId(hex)]])
-      expect(await run('pending')).to.have.length(0)
+      expect(published.deletes).to.have.length(1)
+      expect(published.deletes[0]!.params).to.deep.equal([[ORG], [outboxTableId(hex)]])
+      expect(published.ins, 'a published event is not written again').to.equal(-1)
+      const pending = await run('pending')
+      expect(pending.deletes).to.have.length(1)
+      expect(pending.ins, 'a pending event is written again after its row was removed').to.be.greaterThan(pending.del)
     } finally {
       setOutboxRepository()
     }

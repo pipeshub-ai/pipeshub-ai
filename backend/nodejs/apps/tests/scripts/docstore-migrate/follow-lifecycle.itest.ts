@@ -165,6 +165,23 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect((await follow(w.rt, js, { untilIdleMs: 1500, log })).applied, 'the position was saved').to.equal(0);
       });
 
+      it('an event published and a new one of the same organisation and folded key inserted before one follow: the old row goes before the new one is stored', async () => {
+        const js = await JobState.attach(w.rt);
+        await followStart(w.rt, js);
+        await bulk(w.rt, js, { log });
+        const events = w.mongo.client.db(DB).collection('outbox_events');
+        const { a, b } = foldedPair();
+        await events.insertOne({ ...outboxEvent(a, ORG_A, 'pending'), key: 'published-one' } as never);
+        await follow(w.rt, js, { untilIdleMs: 1500, log });
+        await events.updateOne({ _id: a } as never, { $set: { status: 'published', publishedAt: new Date() } });
+        await events.insertOne({ ...outboxEvent(b, ORG_A, 'pending'), key: 'new-one' } as never);
+        const r = await follow(w.rt, js, { untilIdleMs: 1500, log });
+        expect(r.applied).to.equal(2);
+        const keys = (await sql("SELECT msg_key FROM platform.outbox WHERE topic = 'fold-probe'")).map((x) => x.msg_key);
+        expect(keys, 'the published event\'s row went, the new event is stored').to.deep.equal(['new-one']);
+        expect((await follow(w.rt, js, { untilIdleMs: 1500, log })).applied, 'the position was saved').to.equal(0);
+      });
+
       it('a delete event does not remove another organisation\'s row under the same folded key while that event is still in MongoDB', async () => {
         const js = await JobState.attach(w.rt);
         await followStart(w.rt, js);

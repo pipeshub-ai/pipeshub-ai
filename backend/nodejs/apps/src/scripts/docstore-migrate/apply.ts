@@ -254,21 +254,22 @@ export async function replaceDocs(
   const repo = repositoryFor(m);
   const write = async (inPlace: boolean): Promise<void> => {
     await rt.jobs(async (tx: Tx, k) => {
-      if (inPlace) await deleteChildren(k, m, ids);
-      else if (folds(m)) await deleteEventRows(k, m, events(ids));
+      // a folded table: each document's own row goes first and the copied ones are written again, so a row the copy now skips (an
+      // event published since it was copied) is gone before another event of the batch is checked against its folded id
+      if (folds(m)) await deleteEventRows(k, m, events(ids));
+      else if (inPlace) await deleteChildren(k, m, ids);
       else await deleteDocs(k, m, ids);
       const stats = await withUpsert(inPlace ? [m.table] : [], () =>
         repo.importBatch(m.collection, docs, tx),
       );
       followUps = stats.followUps;
-      // a document the copy skips now (an outbox event published since it was copied) must not keep the row of its earlier state;
-      // a skipped part of a document (a project member) is reported under another id and is not a document to remove
+      // a document the copy skips now must not keep the row of its earlier state; a skipped part of a document (a project member)
+      // is reported under another id and is not a document to remove
       const skipped = stats.skipped
         .map((s) => s.id)
         .filter((id) => ids.includes(id));
-      if (inPlace && skipped.length)
-        if (folds(m)) await deleteEventRows(k, m, events(skipped));
-        else await deleteDocs(k, m, skipped);
+      if (inPlace && skipped.length && !folds(m))
+        await deleteDocs(k, m, skipped);
     });
   };
   try {
