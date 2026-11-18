@@ -34,6 +34,7 @@ from app.services.messaging.consumer_concurrency import (
     backstop_give_up_reason,
 )
 from app.services.messaging.error_classifier import is_expected_outcome
+from tests.unit.attempt_start import attempt_start_via
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -59,6 +60,9 @@ class _World:
         graph = AsyncMock()
         graph.get_document = AsyncMock(side_effect=lambda *_a, **_k: dict(self.state))
         graph.update_node = AsyncMock(side_effect=self._write)
+        # A revision write goes through the store's own conditional statements (the count rule), not ``update_node``.
+        graph.write_attempt_start = attempt_start_via(graph)
+        graph.update_node_fields_if_match = AsyncMock(side_effect=self._write_if_match)
         graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
         self.graph = graph
         processor = MagicMock()
@@ -79,6 +83,12 @@ class _World:
         self.ep._rewrite_or_delete_vrid_vectors = AsyncMock()
 
     async def _write(self, _key: str, _collection: str, fields: dict[str, Any]) -> bool:
+        self.state.update(fields)
+        return True
+
+    async def _write_if_match(self, _key: str, _collection: str, fields: dict[str, Any], match: dict[str, Any]) -> bool:
+        if any(self.state.get(name) != value for name, value in match.items()):
+            return False
         self.state.update(fields)
         return True
 
