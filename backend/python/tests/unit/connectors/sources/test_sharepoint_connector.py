@@ -2672,7 +2672,7 @@ class TestHandleWebhookNotification:
 
         mock_site = MagicMock()
         connector._safe_api_call = AsyncMock(return_value=mock_site)
-        connector.run_sync = AsyncMock()
+        connector.request_sync = AsyncMock()
 
         notification = {
             "resource": "sites/site-123/drives/drive-1",
@@ -2680,7 +2680,7 @@ class TestHandleWebhookNotification:
         }
         await connector.handle_webhook_notification(notification)
         # A notification for a site runs a sync, which reads every library's changes since its delta token.
-        connector.run_sync.assert_awaited_once()
+        connector.request_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_non_site_notification(self):
