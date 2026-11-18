@@ -69,17 +69,17 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (18, 11), "platform": (8, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (5, 0), "platform_data": (5, 0),
+HEADS = {"kernel": (18, 11), "platform": (8, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (5, 0), "platform_data": (6, 5),
          "graph": (13, 0), "kg": (18, 17), "retrieval": (6, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0008", "identity_0005", "content_0003", "oauth_0005", "platform_data_0005", "kg_0018", "retrieval_0006", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0008", "identity_0005", "content_0003", "oauth_0005", "platform_data_0006", "kg_0018", "retrieval_0006", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=18 min_code=11" in r.stdout and "epoch platform_data=5 min_code=0" in r.stdout
+    assert "epoch kernel=18 min_code=11" in r.stdout and "epoch platform_data=6 min_code=5" in r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
@@ -215,6 +215,19 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
     assert epochs(cluster, name)["probe"] == (2, 0)
     with connect(cluster, name) as c:
         assert c.execute("SELECT to_regclass('probe.t2') IS NOT NULL").fetchone()[0]
+
+
+def test_a_build_before_scheduled_notifications_is_refused_on_the_new_schema(db):
+    """platform_data_0006 is a contract: a build that does not read `visible_at` (code epoch 4) must not run on the schema."""
+    from db import boot_assert
+    cluster, name = db
+    r = run_migrate(cluster.url(name, MIGRATE))
+    assert r.returncode == 0, r.stdout + r.stderr
+    rows = epochs(cluster, name)
+    assert rows["platform_data"] == (6, 5)
+    old = boot_assert.schema_problems(rows, {"platform_data": {"requires": 4, "code": 4}})
+    assert old == ["schema platform_data min_code_epoch 5 > code 4"]
+    assert boot_assert.schema_problems(rows, {"platform_data": {"requires": 5, "code": 5}}) == []
 
 
 def test_contract_epochs_and_dev_downgrade(db, tmp_path):
