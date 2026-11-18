@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -91,3 +92,43 @@ async def test_the_listing_pages_through_more_files_than_one_page(store: NodePai
     assert len(await store.list_files(org, "rec-p")) == 7
     assert [f.path for f in await store.list_files(org, "rec-p", "ocr_page/")] == [f"ocr_page/{i:064x}.json" for i in range(7)]
     assert await store.list_files(org, "rec-p", "classify/") == []
+
+
+@pytest.mark.parametrize("skew_s", [30, -30, 120, -120])
+async def test_a_purge_cutoff_is_the_stores_clock_whatever_the_callers_clock_says(store: NodePaidResultStore, skew_s: int) -> None:
+    """The cutoff comes from the store: a caller whose clock is fast or slow still purges the stale and spares the new."""
+    import asyncio
+    import time
+    from unittest import mock
+
+    org, rec = new_org(), str(uuid.uuid4())
+    old, new = f"ocr_page/{'a' * 64}.json", f"ocr_page/{'b' * 64}.json"
+    real_time = time.time
+    try:
+        assert await store.put(org, rec, old, b"{}") is True
+        await asyncio.sleep(2.5)                                       # past the whole-second stamps of S3 and Azure
+        with mock.patch("time.time", lambda: real_time() + skew_s):    # the caller's clock is wrong; nothing reads it
+            cutoff = await store.purge_cutoff(org, rec)
+            await asyncio.sleep(2.5)
+            assert await store.put(org, rec, new, b"{}") is True       # stored by the delivery that took over
+            await store.purge_record(org, rec, before_ms=cutoff)       # the late DELETE lands
+            assert [f.path for f in await store.list_files(org, rec)] == [new]
+            await store.purge_record(org, rec, before_ms=cutoff)       # and again: the same cutoff, the same outcome
+            assert [f.path for f in await store.list_files(org, rec)] == [new]
+    finally:
+        await store.purge_org(org)
+
+
+async def test_a_purge_cutoff_in_the_future_is_refused_and_removes_nothing(store: NodePaidResultStore) -> None:
+    import time
+
+    org, rec = new_org(), str(uuid.uuid4())
+    path = f"ocr_page/{'a' * 64}.json"
+    try:
+        assert await store.put(org, rec, path, b"{}") is True
+        for ahead_s in (1800, 7200):
+            with pytest.raises(Exception, match="400|before"):
+                await store.purge_record(org, rec, before_ms=int((time.time() + ahead_s) * 1000))
+        assert [f.path for f in await store.list_files(org, rec)] == [path]
+    finally:
+        await store.purge_org(org)

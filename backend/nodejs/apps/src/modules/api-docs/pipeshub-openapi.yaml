@@ -8055,11 +8055,21 @@ components:
     ReindexRecordRequestBody:
       type: object
       description: |
-        Optional body for single-record reindex. Only `depth` and `statusFilters` are read;
-        any other field is dropped by the validator before the handler runs (there is no
-        `force` option: the handler always sends `force: false`). No body, an empty object
-        or an empty `statusFilters` list mean depth `0` and no status filter.
+        Optional body for single-record reindex. Only `depth`, `statusFilters` and `force` are read;
+        any other field is dropped by the validator before the handler runs. Each default applies on its
+        own: an omitted `depth` is `0`, an omitted `force` is `false`, and an empty `statusFilters` list
+        (or an omitted one) turns status filtering off. `{"depth":2,"statusFilters":[],"force":true}` keeps
+        depth 2, has no status filter and forces.
       properties:
+        force:
+          type: boolean
+          default: false
+          description: |
+            `true` is a Force reindex: the record is parsed and indexed again from scratch, and no
+            stored result (parse, OCR, image and table descriptions, classification, entities, embeddings)
+            is reused from earlier runs, so every model call is paid for again. A retry of the same request can
+            reuse the results that request already stored. Only the literal `true` forces; a plain reindex
+            reuses what is stored.
         depth:
           type: integer
           minimum: -1
@@ -38439,10 +38449,24 @@ paths:
       summary: Remove every cached model output of one record (service-to-service)
       description: |
         Removes the record's whole folder, manifests included. Safe to repeat: nothing stored
-        is a success.
+        is a success. With `before` only objects last written before that instant are removed, so a
+        purge that lands late leaves what a newer run stored since. `before` must be an instant the
+        storage service itself returned from `purge-cutoff` (an upper bound on what may go): one in
+        the future by more than 15 minutes (a store clock may differ a little from this host's) is
+        refused with 400. The guarantee covers objects as they were when the purge listed them: an object
+        replaced after it was listed and before the delete ran is removed with the old one, because no
+        storage adapter offers a delete conditional on the object's version.
       operationId: internalPurgeRecordPaidResults
       security:
         - scopedToken: []
+      parameters:
+        - name: before
+          in: query
+          required: false
+          description: Milliseconds since the epoch, as returned by `purge-cutoff`; not more than 15 minutes ahead of this service's clock.
+          schema:
+            type: integer
+            minimum: 1
       responses:
         '200':
           description: The folder is gone.
@@ -38456,7 +38480,7 @@ paths:
                   purged:
                     type: boolean
         '400':
-          description: The record id is not valid (`VALIDATION_ERROR`).
+          description: The record id or `before` is not valid, or `before` is more than 15 minutes in the future (`VALIDATION_ERROR`).
           content:
             application/json:
               schema:
@@ -38469,6 +38493,57 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/{recordId}/purge-cutoff:
+    post:
+      tags:
+        - Internal Storage
+      summary: The object store's current time, as the cutoff of a record purge (service-to-service)
+      description: |
+        Returns the object store's own clock (the last-modified stamp of a sentinel object written to
+        and removed from the record's folder), so that no caller's clock decides what a purge removes.
+        Take it once per purge and send it as `before` on every DELETE of that purge.
+        S3 and Azure Blob stamp whole seconds, so the cutoff is a whole second there and an object
+        written in that same second is not removed by the purge.
+      operationId: internalPaidResultsPurgeCutoff
+      security:
+        - scopedToken: []
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The cutoff.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - cutoff
+                properties:
+                  cutoff:
+                    type: integer
+                    description: Milliseconds since the epoch, by the store's clock.
+        '400':
+          description: The record id is not valid (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The store did not stamp the sentinel.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/paid-results/{recordId}/delete:
     parameters:
       - $ref: '#/components/parameters/PaidResultRecordId'
@@ -42136,8 +42211,9 @@ paths:
         For a connector record, read access to the record is enough. A record of a disabled
         connector is refused with `409`, a record in the trash with `400`.
 
-        **Request:** only `depth` and `statusFilters` are read; other body fields (`force`
-        included) and any query parameter are ignored. The body is optional.
+        **Request:** only `depth`, `statusFilters` and `force` are read; other body fields and any
+        query parameter are ignored. The body is optional. `force: true` re-parses and re-indexes the
+        record without reusing any stored result.
       operationId: reindexRecord
       x-pipeshub-sdk: true
       security:
