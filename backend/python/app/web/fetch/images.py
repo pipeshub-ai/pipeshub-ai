@@ -6,11 +6,8 @@ public, and the caller's ``allow_hop`` (the web access gate) must accept every r
 
 import asyncio
 import base64
-import io
 
-from PIL import Image
-
-from app.utils.image_utils import supported_mime_types
+from app.utils.image_utils import decodes_fully, supported_mime_types
 from app.utils.url_redaction import redact_url
 from app.web.deadline import Deadline
 from app.web.errors import TimedOut, UnsupportedContent
@@ -19,9 +16,6 @@ from app.web.ports import HopCheck
 
 # Larger images cost the model as much as a page of text and are rarely the point of one.
 MAX_IMAGE_MB = 5
-# Decoded size, which MAX_IMAGE_MB does not bound: a small, highly compressible file can decode
-# to hundreds of MB. Models are sent at most ~1.6k px a side, so a larger image buys nothing.
-MAX_IMAGE_PIXELS = 4096 * 4096
 
 # The bytes decide, not the header: a server that answers an image URL with an HTML error
 # page often still labels it image/*.
@@ -29,21 +23,6 @@ _SIGNATURES: tuple[tuple[bytes, str], ...] = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
     (b"\xff\xd8\xff", "image/jpeg"),
 )
-
-
-def decodes(content: bytes) -> bool:
-    """Whether ``content`` decodes in full. The signature only names a format: a truncated or
-    corrupt body passes it, and a provider refuses the whole request over one such image."""
-    try:
-        with Image.open(io.BytesIO(content)) as image:
-            # Read from the header: Image.open decodes no pixels until load().
-            width, height = image.size
-            if width * height > MAX_IMAGE_PIXELS:
-                return False
-            image.load()
-    except Exception:  # Pillow raises many types (OSError, SyntaxError, DecompressionBombError, ...)
-        return False
-    return True
 
 
 def image_media_type(content: bytes) -> str | None:
@@ -65,7 +44,7 @@ async def fetch_image_data_uri(url: str, deadline: Deadline, *, allow_hop: HopCh
     if media_type is None or media_type not in supported_mime_types:
         raise UnsupportedContent(f"{redact_url(url)} is not a PNG, JPEG or WebP image")
     try:
-        decoded = await asyncio.wait_for(asyncio.to_thread(decodes, body.content), timeout=deadline.remaining())
+        decoded = await asyncio.wait_for(asyncio.to_thread(decodes_fully, body.content), timeout=deadline.remaining())
     except TimeoutError as e:
         raise TimedOut(f"{redact_url(url)} could not be checked in time") from e
     if not decoded:

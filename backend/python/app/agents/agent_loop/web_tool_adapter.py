@@ -206,4 +206,5 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
         except Exception:
             logger.warning("WebToolAdapter: page images could not be read for %s", self.name, exc_info=True)
             return []
-        return await admitted_image_parts(uris, self._context, source="on the page") if uris else []
+        # Already decoded in full as they were read (`fetch_image_data_uri`).
+        return await admitted_image_parts(uris, self._context, source="on the page", verified=True) if uris else []

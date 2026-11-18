@@ -1,4 +1,5 @@
 import base64
+import io
 import math
 import os
 import re
@@ -66,6 +67,44 @@ def get_mime_type_from_base64(b64: str) -> str | None:
         return 'image/x-icon'
 
     return None
+
+# Decoded size, which a byte cap does not bound: a small, highly compressible file can decode to
+# hundreds of MB. Models are sent at most ~1.6k px a side, so a larger image buys nothing.
+MAX_DECODED_PIXELS = 4096 * 4096
+
+
+def decodes_fully(content: bytes) -> bool:
+    """Whether ``content`` is an image that decodes in full, within ``MAX_DECODED_PIXELS``.
+
+    A format signature or a readable header proves neither: a truncated or corrupt body passes
+    both, and a provider refuses the whole model request over one such image. The pixel count
+    is read from the header (Pillow decodes nothing until ``load()``), so an oversized image is
+    refused before any pixel is decoded. CPU-bound: run it off the event loop.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            width, height = image.size
+            if width * height > MAX_DECODED_PIXELS:
+                return False
+            image.load()
+    except Exception:  # Pillow raises many types (OSError, SyntaxError, DecompressionBombError, ...)
+        return False
+    return True
+
+
+def data_uri_decodes_fully(image_uri: str) -> bool:
+    """``decodes_fully`` for a base64 ``data:`` URI; False when it holds no base64 payload."""
+    b64 = normalize_image_to_base64(image_uri)
+    if not b64:
+        return False
+    try:
+        content = base64.b64decode(b64, validate=False)
+    except Exception:
+        return False
+    return decodes_fully(content)
+
 
 def read_image_dimensions(image_uri: str | None) -> tuple[int, int] | None:
     """`(width, height)` of an image, read from its header bytes alone.

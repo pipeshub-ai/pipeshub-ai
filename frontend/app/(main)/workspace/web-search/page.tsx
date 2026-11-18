@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslation } from 'react-i18next';
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Box, Callout, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -21,8 +21,8 @@ import {
   type ConfiguredWebSearchProvider,
   type WebSearchProviderAgentUsage,
   type WebSearchProviderType,
-  type WebSearchSettings,
 } from './types';
+import { useImageSettings } from './use-image-settings';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 import { SWR_NS, revalidateSwrNamespace } from '@/lib/api/swr-cache';
 
@@ -75,11 +75,26 @@ export default function WebSearchPage() {
   const [isCheckingUsage, setIsCheckingUsage] = useState(false);
 
   // Images on fetched pages ("Send images to LLM"); off until an admin turns them on.
-  const [settings, setSettings] = useState<WebSearchSettings>({ includeImages: false, maxImages: 3 });
-  const [isSettingsSaving, setIsSettingsSaving] = useState(false);
-  // Bumped when an image-settings save starts: a reload that began before it must not put the
-  // server's older settings back over the admin's change.
-  const settingsRevision = useRef(0);
+  const onImageSettingsSaved = useCallback(
+    (title: string) => addToast({ variant: 'success', title, duration: 3000 }),
+    [addToast],
+  );
+  const onImageSettingsFailed = useCallback(
+    (error: unknown) =>
+      addToast({
+        variant: 'error',
+        title: t('workspace.webSearch.toasts.updateError'),
+        description: error instanceof Error ? error.message : undefined,
+        duration: 5000,
+      }),
+    [addToast, t],
+  );
+  const imageSettings = useImageSettings({
+    save: WebSearchApi.updateSettings,
+    onSaved: onImageSettingsSaved,
+    onFailed: onImageSettingsFailed,
+  });
+  const { settings, beginLoad, applyLoaded, update: updateImageSettings } = imageSettings;
 
   const anyActionInProgress = isLoading || settingDefaultType !== null || isDeleting;
 
@@ -99,13 +114,13 @@ export default function WebSearchPage() {
   const loadData = useCallback(
     async (showLoading = true) => {
       if (showLoading) setIsLoading(true);
-      const revisionAtStart = settingsRevision.current;
+      const loadStartedAt = beginLoad();
       try {
         const config = await WebSearchApi.getConfig();
         setConfiguredProviders(config.providers);
         setInherited(config?.inherited ?? false);
         setIsSetUp(config.configured);
-        if (settingsRevision.current === revisionAtStart) setSettings(config.settings);
+        applyLoaded(config.settings, loadStartedAt);
         // Chat reads the same setting to decide whether its web search switch can be turned on.
         revalidateSwrNamespace(SWR_NS.webSearchConfig);
 
@@ -121,47 +136,23 @@ export default function WebSearchPage() {
         if (showLoading) setIsLoading(false);
       }
     },
-    [addToast],
+    [addToast, beginLoad, applyLoaded],
   );
 
   // ── Handlers: images on fetched pages ─────────────────────
-  const saveSettings = useCallback(
-    async (next: WebSearchSettings, successMessage: string) => {
-      settingsRevision.current += 1;
-      setIsSettingsSaving(true);
-      const previous = settings;
-      setSettings(next);
-      try {
-        setSettings(await WebSearchApi.updateSettings(next));
-        addToast({ variant: 'success', title: successMessage, duration: 3000 });
-      } catch (err) {
-        setSettings(previous);
-        addToast({
-          variant: 'error',
-          title: t('workspace.webSearch.toasts.updateError'),
-          description: err instanceof Error ? err.message : undefined,
-          duration: 5000,
-        });
-      } finally {
-        setIsSettingsSaving(false);
-      }
-    },
-    [settings, addToast, t],
-  );
-
   const handleSendImagesToggle = useCallback(
     (includeImages: boolean) =>
-      saveSettings(
+      updateImageSettings(
         { ...settings, includeImages },
         t(includeImages ? 'workspace.webSearch.toasts.imagesEnabled' : 'workspace.webSearch.toasts.imagesDisabled'),
       ),
-    [settings, saveSettings, t],
+    [settings, updateImageSettings, t],
   );
 
   const handleMaxImagesCommit = useCallback(
     (maxImages: number) =>
-      saveSettings({ ...settings, maxImages }, t('workspace.webSearch.toasts.maxImagesUpdated', { count: maxImages })),
-    [settings, saveSettings, t],
+      updateImageSettings({ ...settings, maxImages }, t('workspace.webSearch.toasts.maxImagesUpdated', { count: maxImages })),
+    [settings, updateImageSettings, t],
   );
 
   useEffect(() => {
@@ -463,7 +454,7 @@ export default function WebSearchPage() {
               maxImages={settings.maxImages}
               onToggle={handleSendImagesToggle}
               onMaxImagesCommit={handleMaxImagesCommit}
-              disabled={isLoading || isSettingsSaving || inherited}
+              disabled={isLoading || imageSettings.isSaving || inherited}
             />
           </Box>
         </Flex>
