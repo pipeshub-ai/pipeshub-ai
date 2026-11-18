@@ -266,8 +266,7 @@ class PageListing:
     stored: dict[int, dict[int, list[str]]] = field(default_factory=dict)
     # pages stored with grants of their own (written shared): the graph's record of shares
     stored_shared: set[int] = field(default_factory=set)
-    # page -> external ids of its stored attachments, and every attachment listed this run
-    stored_attachments: dict[int, set[str]] = field(default_factory=dict)
+    # every attachment listed this run
     attachments_listed: set[str] = field(default_factory=set)
     # pages saved this run, and the grants digest each page record was saved with
     written: set[int] = field(default_factory=set)
@@ -276,13 +275,16 @@ class PageListing:
     # again whatever their date, this run's and the earlier runs'
     incomplete: set[int] = field(default_factory=set)
     owed_before: set[int] = field(default_factory=set)
+    # pages the removal pass found gone this run
+    removed: set[int] = field(default_factory=set)
     # page -> spaces that list it as shared into them
     shared: dict[int, set[int]] = field(default_factory=dict)
     # pages written in the form they are stored in (``_share_unconfirmed``), not ``STRICT``
     kept: set[int] = field(default_factory=set)
     # spaces each of whose pages has been written ``STRICT`` (it has a checkpoint)
     settled: set[int] = field(default_factory=set)
-    # what each shared page was written with on the runs before: page id -> spaces, grants
+    # what each shared page was written with on the runs before: page id -> spaces, grants, and
+    # the open spaces that gave the grant
     shares_before: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -1139,9 +1141,13 @@ class DrupalWikiConnector(BaseConnector):
             await self._run_phase("shared pages", self._sync_shares(listing))
             await self._run_phase("removed pages", self._remove_pages_gone(listing))
         finally:
-            await self.record_sync_point.update_sync_point(
-                self._owed_sync_point_key(), {"pages": sorted(self._pages_owed(listing))}
-            )
+            try:
+                await self.record_sync_point.update_sync_point(
+                    self._owed_sync_point_key(), {"pages": sorted(self._pages_owed(listing))}
+                )
+            except Exception as e:
+                # Reported, not raised: raised here it would replace a rejected token unwinding.
+                self._fail(f"Could not save which Drupal Wiki pages are still owed a write: {describe_exception(e)}")
 
     @staticmethod
     def _owed_sync_point_key() -> str:
@@ -1149,14 +1155,9 @@ class DrupalWikiConnector(BaseConnector):
 
     @staticmethod
     def _pages_owed(listing: PageListing) -> set[int]:
-        """This run's unfinished pages, and the earlier runs' not finished yet. One its space
-        listed in full no longer has there is owed nothing."""
-        owed = set(listing.incomplete)
-        for page_id in listing.owed_before - listing.written:
-            space = next((s for s, pages in listing.stored.items() if page_id in pages), None)
-            if space is None or page_id in listing.home[space]:
-                owed.add(page_id)
-        return owed
+        """This run's unfinished pages, and the earlier runs' not written or removed yet: one a
+        listing skipped and a lookup could not confirm gone is still owed."""
+        return listing.incomplete | (listing.owed_before - listing.written - listing.removed)
 
     async def _sync_space_pages(self, space_id: int, space_name: str, listing: PageListing) -> None:
         """List one space in full, write its pages that changed or are not stored under it,
@@ -1299,7 +1300,6 @@ class DrupalWikiConnector(BaseConnector):
                         listing.stored_shared.add(page_id)
                 elif (page_id := source_id_from_external(record.parent_external_record_id or "", PAGE_ID_PREFIX)) is not None:
                     attachments.setdefault(page_id, []).append(record.id)
-                    listing.stored_attachments.setdefault(page_id, set()).add(record.external_record_id)
             if len(records) < STORED_PAGE_READ_SIZE:
                 break
             after = records[-1].id
@@ -1371,7 +1371,7 @@ class DrupalWikiConnector(BaseConnector):
                     if had:
                         now[str(page_id)] = had
                     continue
-                shares, permissions = self._page_access(page_id, home, listing)
+                shares, opening, permissions = self._page_access(page_id, home, listing)
                 written = _grants_digest(permissions)
                 # The stored rule wins over the memory, whose save may have failed: a page stored
                 # plain was written plain; one stored with grants of its own that the memory lost,
@@ -1405,16 +1405,17 @@ class DrupalWikiConnector(BaseConnector):
                     now[str(page_id)] = had
                 continue
             if shares:
-                now[str(page_id)] = {"spaces": sorted(shares), "grants": written}
+                now[str(page_id)] = {"spaces": sorted(shares), "grants": written, "open": sorted(opening) if written else []}
         await self.record_sync_point.update_sync_point(
             self._shares_sync_point_key(), {"pages": json.dumps(now, sort_keys=True)}
         )
 
     def _page_access(
         self, page_id: int, home: int | None, listing: PageListing
-    ) -> tuple[set[int], list[Permission] | None]:
-        """The spaces a page is shared into, as far as this run knows them, and the grants
-        it carries of its own: None for a plain page, which inherits its home space.
+    ) -> tuple[set[int], set[int], list[Permission] | None]:
+        """The spaces a page is shared into, as far as this run knows them, the open ones among
+        them that give it the org, and the grants it carries of its own: None for a plain page,
+        which inherits its home space.
 
         Every page write takes its access from here, so a later write never undoes a
         share. Members of a space a page is shared into may see it
@@ -1423,10 +1424,11 @@ class DrupalWikiConnector(BaseConnector):
         Only an open space has readers PipesHub can name (``_build_space_permissions``), so a
         page of a protected space shared into an open one is granted to the org; any other
         page is plain. A space this run did not list (yet, or in full) keeps the shares the
-        page had into it, which keep the grant the page holds but never add one; so does a space
-        the space listing may have left out as a row without an id (``_space_unknown``). A
-        space no longer synced or gone loses them. Until every page of its home space is
-        ``STRICT``, a page gets no grants of its own.
+        page had into it, and so does a space the space listing may have left out as a row
+        without an id (``_space_unknown``); such a share keeps the grant the page holds only if
+        it was one that gave it (remembered as ``open``), and never adds one. A space no longer
+        synced or gone loses them. Until every page of its home space is ``STRICT``, a page gets
+        no grants of its own.
         """
         had = listing.shares_before.get(str(page_id)) or {}
         listed = listing.shared.get(page_id, set()) - {home}
@@ -1434,18 +1436,20 @@ class DrupalWikiConnector(BaseConnector):
         known = {space for space in remembered if space in self._space_status and space not in listing.home}
         unknown = {space for space in remembered if self._space_unknown(space)}
         shares = known | unknown | listed
-        holds_grant = bool(had.get("grants")) and page_id in listing.stored_shared
-        opens = any(self._space_status.get(space) in OPEN_SPACE_ACCESS_STATUSES for space in listed) or (
-            holds_grant and (bool(unknown) or any(
-                self._space_status.get(space) in OPEN_SPACE_ACCESS_STATUSES for space in known
-            ))
-        )
+        opening = {space for space in listed if self._space_status.get(space) in OPEN_SPACE_ACCESS_STATUSES}
+        if had.get("grants") and page_id in listing.stored_shared:
+            gave = {_as_int(s) for s in had.get("open") or []}
+            opening |= gave & unknown | {
+                space for space in gave & known if self._space_status.get(space) in OPEN_SPACE_ACCESS_STATUSES
+            }
         if (
-            not opens or home not in listing.settled
+            not opening or home not in listing.settled
             or self._space_status.get(home) in OPEN_SPACE_ACCESS_STATUSES
         ):
-            return shares, None
-        return shares, [Permission(external_id=None, email=None, type=PermissionType.READ, entity_type=EntityType.ORG)]
+            return shares, opening, None
+        return shares, opening, [
+            Permission(external_id=None, email=None, type=PermissionType.READ, entity_type=EntityType.ORG)
+        ]
 
     def _space_unknown(self, space: int | None) -> bool:
         """A space this run neither synced nor saw named, while the space listing had a row
@@ -1518,7 +1522,7 @@ class DrupalWikiConnector(BaseConnector):
         for page_id, space_id in candidates:
             if page_id in missing_before:
                 try:
-                    await self._delete_page_stored_under(page_id, space_id)
+                    await self._delete_page_stored_under(page_id, space_id, listing)
                 except Exception as e:
                     self._fail(f"Could not remove the Drupal Wiki page {page_id}, which its space no longer lists: "
                                f"{describe_exception(e)}")
@@ -1535,7 +1539,7 @@ class DrupalWikiConnector(BaseConnector):
                     if records := await self._build_page_records(page, None, listing):
                         await self.data_entities_processor.on_new_records(records)
                     continue
-                await self._delete_page_stored_under(page_id, space_id)
+                await self._delete_page_stored_under(page_id, space_id, listing)
             except DrupalWikiAuthError:
                 raise
             except Exception as e:
@@ -1557,18 +1561,22 @@ class DrupalWikiConnector(BaseConnector):
 
     async def _remove_attachments_gone(self, page_id: int, listing: PageListing) -> None:
         """Remove the stored attachments of a page that its complete attachment listing no longer
-        has. One listed under another page this run (moved) stays."""
-        for external_id in sorted(listing.stored_attachments.get(page_id, set()) - listing.attachments_listed):
-            try:
+        has, wherever they are stored (a moved page's may still be under its old space). One
+        listed under another page this run (moved) stays."""
+        try:
+            stored = await self.data_entities_processor.get_records_by_parent(
+                self.connector_id, page_external_id(page_id), RecordType.FILE.value
+            )
+            for external_id in sorted({r.external_record_id for r in stored} - listing.attachments_listed):
                 await self.data_entities_processor.delete_record_by_external_id(self.connector_id, external_id)
-            except Exception as e:
-                self._fail(
-                    f"Could not remove the Drupal Wiki attachment {external_id}, which page {page_id} no longer "
-                    f"has: {describe_exception(e)}"
-                )
-                listing.incomplete.add(page_id)
+        except Exception as e:
+            self._fail(
+                f"Could not remove the attachments page {page_id} no longer has from Drupal Wiki: "
+                f"{describe_exception(e)}"
+            )
+            listing.incomplete.add(page_id)
 
-    async def _delete_page_stored_under(self, page_id: int, space_id: int) -> None:
+    async def _delete_page_stored_under(self, page_id: int, space_id: int, listing: PageListing) -> None:
         """Delete a page the listing of ``space_id`` no longer has, if it is still stored there.
         A move whose save committed before the batch failed has already put it elsewhere, and
         that copy is the page's current one."""
@@ -1577,6 +1585,9 @@ class DrupalWikiConnector(BaseConnector):
             await self.data_entities_processor.delete_record_by_external_id(
                 self.connector_id, page_external_id(page_id)
             )
+            listing.removed.add(page_id)
+        elif record is None:
+            listing.removed.add(page_id)
 
     async def _build_page_records(
         self,
@@ -1593,7 +1604,7 @@ class DrupalWikiConnector(BaseConnector):
         # ``GET /attachment`` answers with a bare array rather than the envelope every
         # other listing uses, so a page shorter than the one asked for ends the walk.
         source_attachments: list[dict[str, Any]] = []
-        listed_in_full = False
+        listed_in_full = unidentified = False
         try:
             index = 0
             while True:
@@ -1603,14 +1614,15 @@ class DrupalWikiConnector(BaseConnector):
                     ),
                     f"reading the attachments of page {page_id}",
                 )
-                source_attachments.extend(batch)
+                # AttachmentExcerptDTO.id is required; a row without one may be a stored
+                # attachment, and would be saved as "attachment:None".
+                identified = [a for a in batch if _as_int(a.get("id")) is not None]
+                unidentified = unidentified or len(identified) < len(batch)
+                source_attachments.extend(identified)
                 if len(batch) < PAGE_SIZE:
                     break
                 index += 1
-            # AttachmentExcerptDTO.id is required; a row without one may be a stored attachment,
-            # and would be saved as "attachment:None".
-            if any(_as_int(a.get("id")) is None for a in source_attachments):
-                source_attachments = [a for a in source_attachments if _as_int(a.get("id")) is not None]
+            if unidentified:
                 raise DrupalWikiSyncError(f"Drupal Wiki listed an attachment of page {page_id} without an id")
             listed_in_full = True
         except DrupalWikiSyncError as e:
@@ -1645,7 +1657,7 @@ class DrupalWikiConnector(BaseConnector):
             record.parent_record_type = RecordType.WEBPAGE
 
         home = _as_int(page.get("homeSpace"))
-        _, permissions = self._page_access(page_id, home, listing)
+        _, _, permissions = self._page_access(page_id, home, listing)
         records: list[tuple[Record, list[Permission]]] = []
         if permissions is None and self._share_unconfirmed(page_id, home, listing):
             # Written in the form it is stored in, its grants and inherit edge left as they are

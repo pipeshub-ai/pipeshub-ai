@@ -127,6 +127,7 @@ def processor() -> MagicMock:
     proc.get_nodes_by_filters = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.get_records_by_parent = AsyncMock(return_value=[])
     proc.get_all_app_users = AsyncMock(return_value=[])
     proc.withdraw_app_user_access = AsyncMock()
     proc.delete_record_by_external_id = AsyncMock()
@@ -930,9 +931,14 @@ class TestMovesAndDeletions:
         processor.get_records_in_record_group = AsyncMock(side_effect=lambda _c, space, *_a, **_k: [
             stored_record(1), attachment_record(88, page_id=1), attachment_record(89, page_id=1),
         ] if space == "12" else [])
+        processor.get_records_by_parent = AsyncMock(
+            return_value=[attachment_record(88, page_id=1), attachment_record(89, page_id=1)]
+        )
         checkpoints = TestMovesAndDeletions.remembered(connector)
         checkpoints.update({"WEBPAGE/space_pages/12": checkpoint} if checkpoint else {})
-        connector.data_source.list_attachments = AsyncMock(return_value=attachments)
+        connector.data_source.list_attachments = AsyncMock(
+            **({"side_effect": attachments} if isinstance(attachments, list) else {"return_value": attachments})
+        )
 
     @pytest.mark.parametrize(("checkpoint", "last_modified"), [
         ({}, 1000),  # a full sync: no checkpoint, so every page and its attachments are listed
@@ -967,6 +973,71 @@ class TestMovesAndDeletions:
         assert connector.record_sync_point.update_sync_point.await_args_list[-1].args == (
             "owed/space/all", {"pages": [1]},
         )
+
+    @pytest.mark.asyncio
+    async def test_a_row_without_an_id_is_not_written_when_a_later_window_fails(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        full_window = [{"id": 1000 + i, "fileName": f"f{i}.pdf", "lastModified": 1000} for i in range(PAGE_SIZE - 1)]
+        full_window.append({"fileName": "no-id.pdf", "lastModified": 1000})
+        self.page_with_attachments(connector, processor, {}, 1000, [response(full_window), response(status=500)])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        written = [r.external_record_id for c in processor.on_new_records.await_args_list for r, _ in c.args[0]]
+        assert "attachment:None" not in written
+        assert len(written) == PAGE_SIZE  # the page and the rows that have an id
+        processor.delete_record_by_external_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_left_under_a_moved_pages_old_space_is_found_and_removed(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Page 2 moved from 12 to 13, and attachment 89 was deleted. 13 is listed first, before
+        # the read of 12's stored records: the page's stored attachments are read by the page.
+        self.wiki(connector, processor, {13: [page_payload(2, space_id=13)], 12: []}, {12: [2]})
+        processor.get_records_by_parent = AsyncMock(side_effect=lambda _c, parent, *_a, **_k: [
+            attachment_record(88, page_id=2), attachment_record(89, page_id=2),
+        ] if parent == "page:2" else [])
+        connector.data_source.list_attachments = AsyncMock(return_value=response([
+            {"id": 88, "fileName": "a.pdf", "lastModified": 1000},
+        ]))
+
+        await connector._sync_pages({13: {"id": 13}, 12: {"id": 12}})
+
+        assert [c.args for c in processor.delete_record_by_external_id.await_args_list] == [("conn-1", "attachment:89")]
+
+    @pytest.mark.parametrize(("lookup", "owed_after"), [
+        (response(status=500), [2]),  # not confirmed: still owed
+        (response(status=404), []),  # confirmed gone
+    ])
+    @pytest.mark.asyncio
+    async def test_an_owed_page_the_listing_skipped_stays_owed_until_written_or_removed(
+        self, connector: DrupalWikiConnector, processor: MagicMock, lookup: MagicMock, owed_after: list
+    ) -> None:
+        self.wiki(connector, processor, {12: []}, {12: [2]})
+        checkpoints = self.remembered(connector)
+        checkpoints.update({"WEBPAGE/space_pages/12": {"last_modified": 5000}, "owed/space/all": {"pages": [2]}})
+        connector.data_source.get_page = AsyncMock(return_value=lookup)
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert checkpoints["owed/space/all"] == {"pages": owed_after}
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_token_is_not_replaced_by_a_failed_owed_save(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self.wiki(connector, processor, {}, {12: [1]})
+        connector.data_source.list_pages = AsyncMock(return_value=response(status=401))
+        connector.record_sync_point.update_sync_point = AsyncMock(
+            side_effect=lambda key, _data: (_ for _ in ()).throw(RuntimeError("store down")) if key.startswith("owed/") else None
+        )
+
+        with pytest.raises(DrupalWikiAuthError):
+            await connector._sync_pages({12: {"id": 12}})
+
+        assert any("store down" in failure for failure in connector._failures)
 
     @pytest.mark.asyncio
     async def test_a_looked_up_page_without_an_id_is_written_under_the_id_asked_for(
@@ -2633,7 +2704,7 @@ class TestSharedPages:
         await connector._sync_pages(self.SPACES)
 
         assert self.rewrites(processor) == []
-        assert self.memory(checkpoints)["1"] == {"spaces": [14], "grants": ""}
+        assert self.memory(checkpoints)["1"] == {"spaces": [14], "grants": "", "open": []}
 
     @pytest.mark.asyncio
     async def test_an_unchanged_share_is_not_written_again_whoever_its_spaces_members_are(
@@ -2665,7 +2736,7 @@ class TestSharedPages:
     ) -> None:
         # Unsharing need not change lastModified; the wiki says it only by no longer
         # listing the page in that space.
-        had = {"spaces": [13], "grants": _grants_digest([ORG_GRANT])}
+        had = {"spaces": [13], "grants": _grants_digest([ORG_GRANT]), "open": [13]}
         checkpoints = self.wiki(
             connector, processor, {12: [self.PAGE], 13: [], 14: [], 15: []}, shares={"1": had}, stored_open=True,
         )
@@ -2768,7 +2839,7 @@ class TestSharedPages:
     async def test_a_share_into_a_space_that_did_not_list_stays(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
-        had = {"spaces": [13], "grants": _grants_digest([ORG_GRANT])}
+        had = {"spaces": [13], "grants": _grants_digest([ORG_GRANT]), "open": [13]}
         checkpoints = self.wiki(
             connector, processor, {12: [self.PAGE], 13: response(status=500), 14: [], 15: []}, shares={"1": had},
             stored_open=True,
@@ -2835,7 +2906,7 @@ class TestSharedPages:
         # and must not write it plain, or nothing would put the other space's readers back.
         changed = page_payload(1, space_id=12, last_modified=9000)
         self.wiki(connector, processor, {12: [changed], 13: [changed], 14: [], 15: []},
-                  shares={"1": {"spaces": [13], "grants": _grants_digest([ORG_GRANT])}}, stored_open=True)
+                  shares={"1": {"spaces": [13], "grants": _grants_digest([ORG_GRANT]), "open": [13]}}, stored_open=True)
 
         await connector._sync_pages(self.SPACES)
 
@@ -2937,7 +3008,7 @@ class TestSharedPages:
         # org grant. The wiki shares it into open 13 again without editing it.
         self.wiki(
             connector, processor, {12: [self.PAGE], 13: [self.PAGE], 14: [], 15: []},
-            shares={"1": {"spaces": [13], "grants": _grants_digest([ORG_GRANT])}},
+            shares={"1": {"spaces": [13], "grants": _grants_digest([ORG_GRANT]), "open": [13]}},
         )
 
         await connector._sync_pages(self.SPACES)
@@ -2950,7 +3021,7 @@ class TestSharedPages:
     ) -> None:
         # Space 17 came back as a row without an id: it may still share the page, so the grant
         # the page holds stays. With a listing that named every space, 17 is gone and it goes.
-        had = {"spaces": [17], "grants": _grants_digest([ORG_GRANT])}
+        had = {"spaces": [17], "grants": _grants_digest([ORG_GRANT]), "open": [17]}
         checkpoints = self.wiki(connector, processor, {12: [self.PAGE], 13: [], 14: [], 15: []},
                                 shares={"1": had}, stored_open=True)
         connector._space_listing_complete = False
@@ -2967,12 +3038,28 @@ class TestSharedPages:
         assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
 
     @pytest.mark.asyncio
+    async def test_an_unidentified_space_keeps_only_a_grant_it_justified(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Shared into open 13 (which gave the grant) and protected 14. 13 lists it no more, and
+        # 14 came back as a row without an id: 14 never gave the grant, so it does not keep it.
+        had = {"spaces": [13, 14], "grants": _grants_digest([ORG_GRANT]), "open": [13]}
+        self.wiki(connector, processor, {12: [self.PAGE], 13: [], 15: []}, shares={"1": had}, stored_open=True)
+        del connector._space_status[14]
+        connector._space_listing_complete = False
+        connector._spaces_named = {12, 13, 15}
+
+        await connector._sync_pages({12: {"id": 12}, 13: {"id": 13}, 15: {"id": 15}})
+
+        assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
+
+    @pytest.mark.asyncio
     async def test_a_page_whose_home_space_the_listing_could_not_identify_is_left_as_it_is(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
         # Page 1 is stored under 18, which came back as a row without an id; its space pass
         # did not run, so nothing decides its access this run.
-        had = {"spaces": [13], "grants": _grants_digest([ORG_GRANT])}
+        had = {"spaces": [13], "grants": _grants_digest([ORG_GRANT]), "open": [13]}
         checkpoints = self.wiki(connector, processor, {12: [], 13: [], 14: [], 15: []}, shares={"1": had})
         moved = stored_record(1, space_id=18)
         moved.access_rule = AccessRule.OPEN

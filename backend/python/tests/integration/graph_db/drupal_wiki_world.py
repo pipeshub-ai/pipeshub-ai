@@ -314,6 +314,7 @@ async def a_deleted_attachment_goes_on_the_next_sync_that_lists_its_page(world: 
     world.wiki.pages[OPEN_PAGE]["modified"] = 2000
     await world.sync()
     await world.check("attachment deleted and the page edited")
+    assert await world.processor.get_record_by_external_id(world.connector_id, f"attachment:{DELETED_ATTACHMENT}") is None
     world.wiki.attachments[OPEN_PAGE] = []
     await world.graph.delete_sync_points_by_connector_id(connector_id=world.connector_id)  # what a full sync does first
     await world.sync()
