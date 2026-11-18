@@ -32,6 +32,8 @@ from app.services.graph_db.common.utils import (
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _doc, _j
 from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg import trash as kg_trash
 from app.services.graph_db.postgres.records import _rec, _uniq
 from app.services.graph_db.push_claim import (
     KB_DELETING_STATUS,
@@ -165,11 +167,15 @@ class TrashMixin(PgBase):
     async def list_trashed_records(self, connector_id: str, org_id: str, *, skip: int = 0, limit: int = 25, single_file_batches_only: bool = False,
                                    after: tuple[int, str] | None = None, count_cap: int | None = None,
                                    transaction: str | None = None) -> dict[str, Any]:
-        """One row per delete batch of a connector's trash (a batch restores whole), newest first."""
+        """One row per delete batch of a connector's trash (a batch restores whole), newest first. Paged from the typed graph for a connector it serves
+        (``kg.trash.page``), else walked."""
         if not connector_id or not org_id or limit <= 0:
             return {"items": [], "total": 0}
         org = current_org_id()
-        rows = await self._qrows("""/* pipeshub:graph.list_trashed_records */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
+        cap = None if count_cap is None else count_cap + 1
+
+        async def walk(tx: Tx) -> tuple[list[dict], int]:
+            rows = await tx.fetch("""/* pipeshub:graph.list_trashed_records */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
               WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
@@ -196,8 +202,8 @@ class TrashMixin(PgBase):
     WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
             LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.deleted_by
             ORDER BY page.deleted_at DESC, page.batch DESC""", org, connector_id, org_id, single_file_batches_only, max(skip, 0), limit,
-                                TRASH_LIST_OTHER_ROOT_NAMES, *(after or (None, None)), transaction=transaction)
-        total = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.list_trashed_records_total */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
+                                  TRASH_LIST_OTHER_ROOT_NAMES, *(after or (None, None)))
+            total = await tx.fetchval("""/* pipeshub:graph.list_trashed_records_total */ WITH tr AS MATERIALIZED (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND coalesce((n.doc->>'isDeleted')::boolean, false)),
             cnt AS (SELECT doc->>'deleteBatchId' AS batch, count(*) AS c FROM tr GROUP BY 1),
             roots AS (SELECT r.id, r.doc->>'deleteBatchId' AS batch, (r.doc->>'deletedAtTimestamp')::bigint AS ts, r.doc->>'recordName' AS name FROM tr r
               WHERE r.doc->>'connectorId' = $2 AND r.doc->>'deletedAtTimestamp' IS NOT NULL AND r.doc->>'orgId' = $3 AND r.doc->>'deleteBatchId' IS NOT NULL
@@ -206,8 +212,11 @@ class TrashMixin(PgBase):
                                       AND e.to_id = r.id AND p.doc->>'deleteBatchId' = r.doc->>'deleteBatchId') THEN false
                          ELSE NOT $4 OR EXISTS (SELECT 1 FROM graph.edges ie JOIN graph.nodes t ON t.org_id = ie.org_id AND t.coll = ie.to_coll AND t.id = ie.to_id
                                                 WHERE ie.org_id = $1 AND ie.coll = 'isOfType' AND ie.from_id = r.id AND t.doc->>'isFile' = 'true') END)
-            SELECT count(*) FROM (SELECT DISTINCT batch FROM roots LIMIT $5::bigint) b""",
-                                                      org, connector_id, org_id, single_file_batches_only, None if count_cap is None else count_cap + 1), transaction)
+            SELECT count(*) FROM (SELECT DISTINCT batch FROM roots LIMIT $5::bigint) b""", org, connector_id, org_id, single_file_batches_only, cap)
+            return [dict(r) for r in rows], total
+        got = await kg_hier.answer(self, "trash", transaction, lambda tx: kg_trash.page(tx, org, connector_id, org_id, files_only=single_file_batches_only,
+                                                                                       skip=max(skip, 0), limit=limit, after=after, count_cap=count_cap), walk=walk)
+        rows, total = got if got is not None else await self._q(walk, transaction)
         items = [{"record": _rec(r["rec"]), "parentId": r["parent_id"], "parentName": r["parent_name"],
                   "parentIsDeleted": (r["parent_deleted"] == "true") if r["parent_id"] else None,
                   "isFile": None if r["is_file"] is None else r["is_file"] == "true", "fileMimeType": r["file_mime"],
