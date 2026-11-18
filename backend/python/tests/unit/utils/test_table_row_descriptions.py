@@ -1241,14 +1241,22 @@ def _stops_on(where: str) -> object:
 async def test_a_non_retryable_error_propagates_out_of_the_table_enrichment_unchanged(where: str) -> None:
     """The request can never succeed as sent: no plain-text fallback, no 'enriched' table."""
     from app.exceptions.non_retryable import NonRetryableError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
 
+    stop = NonRetryableError("the request can never succeed as sent")
     if where == "summary":  # the follow-up is only asked for when the first reply has no summary
-        model = FakeTableModel(_stops_on("summary"), summary="")  # type: ignore[arg-type]
+        model = FakeTableModel(_stops_on("summary"), summary="", stop=stop)  # type: ignore[arg-type]
     else:
-        model = FakeTableModel(_stops_on(where))  # type: ignore[arg-type]
+        model = FakeTableModel(_stops_on(where), stop=stop)  # type: ignore[arg-type]
 
-    with pytest.raises(NonRetryableError, match="can never succeed"):
+    with pytest.raises(NonRetryableError) as raised:
         await enrich(model)
+
+    assert raised.value is stop, "the model's own exception, not a copy or a wrapper"
+    assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
 
 
 @pytest.mark.asyncio
@@ -1282,24 +1290,35 @@ async def test_a_non_retryable_error_cancels_the_sibling_batches_and_leaves_no_t
     from app.exceptions.non_retryable import NonRetryableError
 
     finished: list[str] = []
+    cleaned: list[str] = []
+    sibling_started = asyncio.Event()
 
     class Slow(FakeTableModel):
         async def ainvoke(self, messages: list, **kwargs: object) -> object:
             ids = [rid for _, rid in self._rows(messages[-1].content)]
             if ids and ids[0] == "REG50":
+                await sibling_started.wait()  # the refusal arrives while a sibling is inside its call
                 raise NonRetryableError("refused")
             if ids and ids[0] not in ("HDR", "REG0"):
-                await asyncio.sleep(0.2)
+                sibling_started.set()
+                try:
+                    await asyncio.sleep(5)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.05)  # cancellation cleanup that itself has to be awaited
+                    cleaned.append(ids[0])
+                    raise
                 finished.append(ids[0])
             return await super().ainvoke(messages, **kwargs)
 
     before = asyncio.all_tasks()
     with pytest.raises(NonRetryableError):
         await enrich(Slow(), [HEAD, *make_rows(400)])
-    await asyncio.sleep(0.4)
-
-    assert finished == [], "batches still running when the stop arrived must not complete"
+    # Looked at the moment the error reaches the caller, with no extra wait.
+    assert cleaned, "a cancelled sibling's cleanup must have finished before the error left"
     assert asyncio.all_tasks() - before == set()
+
+    await asyncio.sleep(0.2)
+    assert finished == [], "batches still running when the stop arrived must not complete"
 
 
 @pytest.mark.asyncio
@@ -1385,3 +1404,49 @@ async def test_a_queued_job_is_not_started_after_a_stop() -> None:
 
     assert started == [0]
     assert asyncio.all_tasks() - before == set()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_in_one_tables_row_batch_keeps_the_records_queued_tables_from_starting() -> None:
+    """While table A's row batches are still being cancelled, table B finishes and frees a slot of the
+    record's run: queued table C must not start its call then."""
+    import asyncio
+
+    from app.exceptions.non_retryable import NonRetryableError
+
+    a_sibling_started = asyncio.Event()
+    refused = asyncio.Event()
+    started: list[str] = []
+
+    class Model(FakeTableModel):
+        async def ainvoke(self, messages: list, **kwargs: object) -> object:
+            ids = [rid for _, rid in self._rows(messages[-1].content)]
+            first = ids[0] if ids else ""
+            started.append(first)
+            if first == "REG50":
+                await a_sibling_started.wait()
+                refused.set()
+                raise NonRetryableError("refused")
+            if first == "REG100":
+                a_sibling_started.set()
+                try:
+                    await asyncio.sleep(5)
+                except asyncio.CancelledError:
+                    await asyncio.sleep(0.2)  # slow cleanup: table B finishes meanwhile
+                    raise
+            if first == "REG1000":
+                await refused.wait()
+            return await super().ainvoke(messages, **kwargs)
+
+    table_a = [HEAD, *make_rows(120)]
+    table_b = [HEAD, *[[f"REG{1000 + i}", "0x000", "0"] for i in range(3)]]
+    table_c = [HEAD, *[[f"REG{2000 + i}", "0x000", "0"] for i in range(3)]]
+
+    with pytest.raises(NonRetryableError):
+        await table_enrichment.enrich_tables(
+            Model(), [table_a, table_b, table_c], logger=LOG,  # type: ignore[arg-type]
+            known_header_row_counts=[1, 1, 1], max_concurrent=2,
+        )
+
+    assert "REG1000" in started, "table B ran alongside table A"
+    assert "REG2000" not in started, "a queued table must not start once a row batch has stopped the record"

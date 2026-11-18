@@ -488,6 +488,36 @@ class TestProcessPdfWithDoclingEvents:
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
 
+    @pytest.mark.asyncio
+    async def test_a_non_retryable_error_while_building_blocks_passes_through_unchanged(self) -> None:
+        """A table model call refused for good is not a Docling failure: as DOCLING_FAILED after
+        PARSING_COMPLETE it became a retryable 'Docling failed after parsing completed'."""
+        from app.exceptions.non_retryable import NonRetryableError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        stop = NonRetryableError("refused for good")
+        proc, _, _gp, _ = _make_processor()
+        proc.docling_client = AsyncMock()
+        proc.docling_client.parse_pdf_batched.return_value = MagicMock()
+        proc.docling_processor = AsyncMock()
+        proc.docling_processor.create_blocks.side_effect = stop
+
+        events = proc.process_pdf_with_docling(
+            recordName="test.pdf",
+            recordId="rec-1",
+            pdf_binary=b"pdf-content",
+            virtual_record_id="vr-1",
+        )
+        assert (await events.__anext__()).event == "parsing_complete"
+        with pytest.raises(NonRetryableError) as raised:
+            await events.__anext__()  # the stop itself, not a docling_failed event
+
+        assert raised.value is stop
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
+
 
 # ===========================================================================
 # Processor.process_pdf_with_pdf_plumber

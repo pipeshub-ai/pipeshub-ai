@@ -42,8 +42,11 @@ class FakeTableModel:
         describe: Callable[[str], str] | None = None,
         identify: Callable[[Any], str] | None = None,
         summary: str = "Register map",
+        stop: BaseException | None = None,
     ) -> None:
         self.summary = summary
+        #: Raised as is for a "nonretryable" behaviour, so a test can check it is the very exception the caller sees.
+        self.stop = stop
         self.identify = identify
         self.describe = describe or (lambda rid: f"desc of {rid}")
         self.behave = behave or (lambda _kind, _ids, _n: "ok")
@@ -148,7 +151,7 @@ class FakeTableModel:
         if behavior == "nonretryable":
             from app.exceptions.non_retryable import NonRetryableError
 
-            raise NonRetryableError("the request can never succeed as sent")
+            raise self.stop or NonRetryableError("the request can never succeed as sent")
         payload: dict[str, object] = {}
         if kind == "summary":
             if behavior == "malformed":

@@ -30,6 +30,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from logging import Logger
 from typing import Any, Optional
@@ -395,6 +396,9 @@ async def _call_row_batch(
                 cacheable=lambda answer: _complete(align_by_key(answer.descriptions, keys)),
                 config_service=run.config_service,
             )
+        except NonRetryableError:
+            _publish_stop()
+            raise
         except run.propagate:
             raise
         except Exception as e:
@@ -402,6 +406,27 @@ async def _call_row_batch(
     if parsed is None:
         return None
     return align_by_key(parsed.descriptions, keys)
+
+
+class _Stop:
+    """Set once a job of one ``_gather_limited`` run raised a ``NonRetryableError``."""
+
+    __slots__ = ("stopped",)
+
+    def __init__(self) -> None:
+        self.stopped = False
+
+
+#: The stop flags of every ``_gather_limited`` run the current task is inside, outermost first.
+#: A stop is published to all of them when it is raised, not when it reaches each run: while a
+#: table's row batches are still being cancelled, another table may free a slot of the record's
+#: run, and the queued table must not start then.
+_STOPS: ContextVar[tuple[_Stop, ...]] = ContextVar("table_enrichment_stops", default=())
+
+
+def _publish_stop() -> None:
+    for stop in _STOPS.get():
+        stop.stopped = True
 
 
 async def gather_or_cancel(*coros: Any) -> list[Any]:  # noqa: ANN401
@@ -414,7 +439,9 @@ async def gather_or_cancel(*coros: Any) -> list[Any]:  # noqa: ANN401
     tasks = [spawn_in_request(c) for c in coros]
     try:
         return list(await asyncio.gather(*tasks))
-    except BaseException:
+    except BaseException as exc:
+        if isinstance(exc, NonRetryableError):
+            _publish_stop()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -426,25 +453,31 @@ async def _gather_limited(limit: int, jobs: Sequence[Callable[[], Any]]) -> list
 
     An exception that is an ordinary failure becomes that job's result, for the caller to turn
     into a fallback. A ``NonRetryableError`` is a deliberate stop: the request can never succeed,
-    so it is raised unchanged after the jobs still running are cancelled and awaited.
+    so it is raised unchanged after the jobs still running are cancelled and awaited. The stop
+    holds for every enclosing run too (a row batch's stop ends the record's queued tables).
     """
     semaphore = asyncio.Semaphore(max(1, limit))
-    stopped = False
+    stops = (*_STOPS.get(), _Stop())
 
     async def run(job: Callable[[], Any]) -> Any:  # noqa: ANN401
-        nonlocal stopped
         async with semaphore:
-            if stopped:  # woken by the slot the stopping job released: its call must not start
+            # Woken by a slot freed after a stop (here or in a nested run): its call must not start.
+            if any(stop.stopped for stop in stops):
                 return None
             try:
                 return await job()
             except NonRetryableError:
-                stopped = True
+                _publish_stop()
                 raise
             except Exception as e:
                 return e
 
-    return await gather_or_cancel(*(run(job) for job in jobs))
+    token = _STOPS.set(stops)
+    try:
+        # The jobs' tasks are created here, so each one sees these stop flags.
+        return await gather_or_cancel(*(run(job) for job in jobs))
+    finally:
+        _STOPS.reset(token)
 
 
 async def _resolve_batch(
@@ -1138,11 +1171,12 @@ async def get_rows_text(
     llm, table_data: dict, table_summary: str, column_headers: list[str]
 ) -> tuple[list[str], list[list[dict]]]:
     """Describe the rows of ``table_data["grid"]`` (minus the header row when ``column_headers``
-    is given), one keyed call per chunk of at most ``MAX_KEYED_ROWS`` rows.
+    is given), in chunks of at most ``MAX_KEYED_ROWS`` rows.
 
     A row the model left out, or a chunk whose answer cannot be parsed, gets plain ``column:
     value`` text for that row alone: never another row's description and never a dict repr.
-    There is no split or retry here (``enrich_table_grid`` and ``describe_row_dicts`` add
+    Each chunk gets one call, plus one structured-output reflection when its answer does not
+    parse, and is never split or retried (``enrich_table_grid`` and ``describe_row_dicts`` add
     that). A failed call raises, and nothing is returned for the chunks that had already
     finished: the caller gets all the texts or the error, never a partial list.
     """

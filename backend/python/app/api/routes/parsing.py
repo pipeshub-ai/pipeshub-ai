@@ -37,6 +37,7 @@ from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
     PasswordProtectedError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.pipeline.fingerprint import content_revision
 from app.services.model_identity.propagation import scope_from_claims
@@ -523,6 +524,24 @@ async def _parse_file(
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
+            )
+        except NonRetryableError as exc:
+            # A deliberate stop (a model call refused for good, say): sending the file again gets the same answer.
+            # As a 500 the client retried it and counted it against the parsing circuit breaker.
+            logger.warning(
+                "Parse stopped: record='%s' provider=%s by %s, which a retry would repeat",
+                record_name, provider_enum.value, type(exc).__name__,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_FAILED.value,
+                        "message": "Parsing was stopped by an error that a retry would repeat",
+                        "details": {"requestId": message_id, "error_type": type(exc).__name__},
+                    },
+                },
             )
         except LaneWaitTimeout:
             # A local conversion found no CPU lane in time: retryable, like a full gate.

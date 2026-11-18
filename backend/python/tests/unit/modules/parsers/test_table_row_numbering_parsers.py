@@ -385,14 +385,22 @@ async def test_no_model_call_completes_after_a_stop_in_a_csv_table() -> None:
     from app.modules.parsers.excel.prompt_template import CSVHeaderDetection
 
     finished: list[str] = []
+    cleaned: list[str] = []
+    sibling_started = asyncio.Event()
 
     class Slow(FakeTableModel):
         async def ainvoke(self, messages: list, **kwargs: object) -> object:
             ids = [rid for _, rid in self._rows(messages[-1].content)]
             if ids[0] == "REG50":
-                await asyncio.sleep(0.05)
+                await sibling_started.wait()  # the refusal arrives while a sibling is inside its call
                 raise NonRetryableError("refused")
-            await asyncio.sleep(0.3)
+            sibling_started.set()
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)  # cancellation cleanup that itself has to be awaited
+                cleaned.append(ids[0])
+                raise
             finished.append(ids[0])
             return await super().ainvoke(messages, **kwargs)
 
@@ -402,15 +410,16 @@ async def test_no_model_call_completes_after_a_stop_in_a_csv_table() -> None:
     )
     parser.get_table_summary = AsyncMock(return_value="S")  # type: ignore[method-assign]
     table = {"raw_rows": [["Name"], *[[f"REG{i}"] for i in range(300)]], "start_row": 1}
-    from app.exceptions.non_retryable import NonRetryableError as Stop
 
     before = asyncio.all_tasks()
-    with pytest.raises(Stop):
+    with pytest.raises(NonRetryableError):
         await parser.get_blocks_from_csv_with_multiple_tables([table], Slow())
-    await asyncio.sleep(0.5)
-
-    assert finished == []
+    # Looked at the moment the error leaves the parser, with no extra wait.
+    assert cleaned, "a cancelled sibling's cleanup must have finished before the error left"
     assert asyncio.all_tasks() - before == set()
+
+    await asyncio.sleep(0.2)
+    assert finished == [], "cancelled batches never finish normally"
 
 
 @pytest.mark.asyncio
