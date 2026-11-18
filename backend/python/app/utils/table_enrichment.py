@@ -164,7 +164,7 @@ _KEY_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"  # base32: no 0/1/8/9, so no 
 KEY_CHARS = 4  # 20 bits: unique within a batch by construction, and short enough to copy
 
 
-def _batch_seed(rows: Sequence[Any]) -> str:  # noqa: ANN401
+def _batch_seed(rows: Sequence[Any]) -> str:
     return hashlib.sha256(
         json.dumps(rows, sort_keys=True, default=str, ensure_ascii=False).encode()
     ).hexdigest()
@@ -183,7 +183,7 @@ def _within_one_character(key: str) -> list[str]:
     return near
 
 
-def row_keys(rows: Sequence[Any]) -> list[str]:  # noqa: ANN401
+def row_keys(rows: Sequence[Any]) -> list[str]:
     """One opaque key per row of a batch: four base32 characters, at least two apart from each other.
 
     The keys come from a hash of the batch's content, so they carry nothing of the row's
@@ -206,7 +206,7 @@ def row_keys(rows: Sequence[Any]) -> list[str]:  # noqa: ANN401
 
 
 def format_rows_with_keys(
-    rows: Sequence[Any], keys: Sequence[str], *, numbered: bool = False  # noqa: ANN401
+    rows: Sequence[Any], keys: Sequence[str], *, numbered: bool = False
 ) -> str:
     """The rows as the prompt shows them: ``[KEY]: {json}``, or ``Row n [KEY]: {json}``.
 

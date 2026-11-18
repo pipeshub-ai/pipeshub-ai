@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from logging import Logger
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from logging import Logger
 
 #: Why a table or row fell back to plain ``column: value`` text.
 #: ``count``: the model answered but left rows out. ``parse``: no usable answer. ``error``: the
