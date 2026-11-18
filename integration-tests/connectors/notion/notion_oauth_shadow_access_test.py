@@ -22,6 +22,7 @@ import pytest_asyncio
 import requests
 from dotenv import load_dotenv
 
+from app.models.entities import RecordType
 from connectors.notion.constants import (
     GRAPH_CLEANUP_TIMEOUT,
     NOTION_API_VERSION,
@@ -32,7 +33,7 @@ from connectors.notion.constants import (
 from helper.authenticated_identity import assert_authenticated_identity_link
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.oauth_token_helper import authenticate_connector_with_refresh_token, inject_access_token
-from helper.shadow_access_e2e import _access_paths, _resolve_link
+from helper.shadow_access_e2e import _access_paths, _live_records, _resolve_link
 from helper.source_credentials import source_unavailable
 
 logger = logging.getLogger("notion-oauth-shadow-access")
@@ -140,6 +141,12 @@ class TestNotionOAuthShadowAccess:
         self, approved_notion_connector: dict[str, Any], graph_provider,
     ) -> None:
         link = await _resolve_link(graph_provider, approved_notion_connector["connector_id"])
+        # Reaching nothing proves something only with a page to reach and the app link to reach it by
+        pages = [r for r in (await _live_records(graph_provider, link.connector_id)).values()
+                 if r.get("recordType") == RecordType.WEBPAGE.value]
+        assert pages, f"connector {link.connector_id} synced no Notion page, so there is nothing to be refused"
+        relation = await graph_provider.principal_app_relation(link.connector_id, link.source_email)
+        assert relation, f"{link.source_email} is not linked to the Notion app, so the app path goes unchecked"
         reachable = await _access_paths(graph_provider, link.source_key, link.connector_id, with_org=False)
         assert not reachable, (
             f"{link.source.get('email')} reaches {len(reachable)} Notion record(s) through the "

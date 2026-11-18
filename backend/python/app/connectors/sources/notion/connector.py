@@ -922,8 +922,7 @@ class NotionConnector(BaseConnector):
             # The token's own workspace, every run: a token swapped for one from another
             # workspace must not keep writing under the old workspace group.
             await self._ensure_workspace_from_bot(refresh=True)
-            if self.workspace_id:
-                await self._create_workspace_record_group()
+            await self._create_workspace_record_group()
 
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -5085,18 +5084,18 @@ class NotionConnector(BaseConnector):
         so a workspace stored while it still inherited the app loses that edge and
         that declaration; so is every other workspace this connector stored, which an
         earlier token reached and an earlier version may have opened to the app.
+        The stored ones are closed even when the token's workspace could not be read.
         """
         try:
             if not self.workspace_id:
-                self.logger.warning("Cannot create workspace record group: missing workspace info")
-                return
+                self.logger.warning("Notion workspace unknown this run; closing the stored workspaces only")
             self.workspace_name = self.workspace_name or self._DEFAULT_WORKSPACE_NAME
 
             async with self.data_store_provider.transaction() as tx_store:
                 record_group = await tx_store.get_record_group_by_external_id(
                     connector_id=self.connector_id,
                     external_id=self.workspace_id,
-                )
+                ) if self.workspace_id else None
                 earlier = [
                     RecordGroup.from_arango_base_record_group(doc)
                     for doc in await tx_store.get_nodes_by_filters(
@@ -5106,7 +5105,7 @@ class NotionConnector(BaseConnector):
                     )
                     if doc.get("externalGroupId") != self.workspace_id
                 ]
-            if not record_group:
+            if not record_group and self.workspace_id:
                 record_group = RecordGroup(
                     org_id=self.data_entities_processor.org_id,
                     name=self.workspace_name,
@@ -5117,14 +5116,15 @@ class NotionConnector(BaseConnector):
                     created_at=get_epoch_timestamp_in_ms(),
                     updated_at=get_epoch_timestamp_in_ms(),
                 )
-            for group in (record_group, *earlier):
+            groups = [group for group in (record_group, *earlier) if group]
+            if not groups:
+                return
+            for group in groups:
                 group.inherit_permissions = False
                 group.permission_model = None
 
             # [] clears any grant an earlier version wrote on the workspace.
-            await self.data_entities_processor.on_new_record_groups(
-                [(group, []) for group in (record_group, *earlier)]
-            )
+            await self.data_entities_processor.on_new_record_groups([(group, []) for group in groups])
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create workspace record group: {e}", exc_info=True)

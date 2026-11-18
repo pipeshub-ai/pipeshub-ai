@@ -66,10 +66,14 @@ from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressSt
 from app.models.blocks import BlockSubType, BlockType, GroupSubType  # noqa: E402
 from app.models.entities import RecordType  # noqa: E402
 from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
+from helper.clients.kb_client import KBClient  # noqa: E402
 from helper.connector_service import connector_service_url  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
+from helper.kb_notes import delete_kb  # noqa: E402
+from helper.kb_sharing import grant  # noqa: E402
 from helper.second_user import SecondUser  # noqa: E402
 from helper.source_credentials import source_unavailable  # noqa: E402
+from messaging.test_e2e_record_pipeline import _extract_kb_id, _extract_record_id  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from validation.graph_entity_validator import (  # noqa: E402
     assert_graph_entity_matches,
@@ -153,6 +157,22 @@ def _member_stream_status(reader: SecondUser, record_id: str) -> int:
         headers=reader.headers,
         timeout=_STREAM_TIMEOUT_SECONDS,
     ).status_code
+
+
+def _shared_record_stream_status(client: PipeshubClient, reader: SecondUser) -> int:
+    """The status ``reader`` gets streaming a record shared with them, through the same route.
+
+    The route answers 404 for a record the reader may not open, and also when it is not
+    mounted at all, so a refusal counts only once this control streams.
+    """
+    kb_client = KBClient(client)
+    kb_id = _extract_kb_id(kb_client.create_kb(name=f"notion-it-control-{uuid.uuid4().hex[:8]}"))
+    try:
+        record_id = _extract_record_id(kb_client.upload_file(kb_id, "control.txt", b"shared with the reader"))
+        grant(client, kb_id, user_ids=[reader.user_id])
+        return _member_stream_status(reader, record_id)
+    finally:
+        delete_kb(client, kb_id)
 
 
 def _stream_for_indexing(client: PipeshubClient, record_id: str) -> requests.Response:
@@ -520,6 +540,7 @@ class TestNotionFullSync:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         notion_reader: SecondUser,
+        pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-ACCESS-001: a workspace member, linked to the app by the user sync, is refused
@@ -529,6 +550,11 @@ class TestNotionFullSync:
         relation = await graph_provider.principal_app_relation(connector_id, notion_reader.email)
         assert relation == {"label": "User", "isExternalUser": False}, (
             f"{notion_reader.email} is not linked to the Notion app as a user of this org: {relation}"
+        )
+        control = await asyncio.to_thread(_shared_record_stream_status, pipeshub_client, notion_reader)
+        assert control == 200, (
+            f"{notion_reader.email} could not stream a record shared with them (HTTP {control}), "
+            "so a refusal of a Notion record would prove nothing"
         )
         targets = {
             "page": notion_seed.rich_page_id,

@@ -75,6 +75,12 @@ WITH u, r,
             <-[:INHERIT_PERMISSIONS*1..5]-(r)
       WHERE (g:Group OR g:Role) AND p.type IN ['GROUP', 'ROLE']
     } THEN 'group-record-group'
+    // A user linked to the app, directly or through a team, reaches whatever inherits from it.
+    // 50 is ACCESS_WALK_MAX_DEPTH, how far the product walks.
+    WHEN EXISTS { (r)-[:INHERIT_PERMISSIONS*1..50]->(:App {id: $connector_id}) }
+      AND (EXISTS { (u)-[:USER_APP_RELATION]->(:App {id: $connector_id}) }
+           OR EXISTS { (u)-[:PERMISSION {type: 'USER'}]->(:Teams)-[:USER_APP_RELATION]->(:App {id: $connector_id}) })
+    THEN 'app'
     WHEN $with_org AND EXISTS { (u)-[:BELONGS_TO]->(:Organization)-[:PERMISSION]->(r) } THEN 'org'
     WHEN $with_org AND EXISTS {
       (u)-[:BELONGS_TO]->(:Organization)-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS*1..2]-(r)
@@ -103,6 +109,12 @@ LET group_rgs = (
   RETURN p._to
 )
 LET via_group_rg = (FOR rg IN group_rgs FOR v IN 1..5 INBOUND rg @@inherit RETURN v._id)
+LET app_id = CONCAT(@apps, '/', @connector_id)
+LET user_teams = (FOR t IN own FILTER IS_SAME_COLLECTION(@teams, t) RETURN t)
+LET app_linked = LENGTH(
+  FOR e IN @@user_app FILTER (e._from == u OR e._from IN user_teams) AND e._to == app_id LIMIT 1 RETURN 1
+) > 0
+LET via_app = app_linked ? (FOR v IN 1..50 INBOUND app_id @@inherit RETURN v._id) : []
 LET orgs = @with_org ? (
   FOR b IN @@belongs_to FILTER b._from == u AND IS_SAME_COLLECTION(@orgs, b._to) RETURN b._to
 ) : []
@@ -116,6 +128,7 @@ FOR r IN @@records
     : POSITION(via_group, r._id) ? 'group'
     : POSITION(via_rg, r._id) ? 'record-group'
     : POSITION(via_group_rg, r._id) ? 'group-record-group'
+    : POSITION(via_app, r._id) ? 'app'
     : POSITION(via_org, r._id) ? 'org'
     : POSITION(via_org_rg, r._id) ? 'org-record-group'
     : null
@@ -357,6 +370,9 @@ async def _access_paths(
             "roles": CollectionNames.ROLES.value,
             "record_groups": CollectionNames.RECORD_GROUPS.value,
             "orgs": CollectionNames.ORGS.value,
+            "apps": CollectionNames.APPS.value,
+            "teams": CollectionNames.TEAMS.value,
+            "@user_app": CollectionNames.USER_APP_RELATION.value,
             "@permission": CollectionNames.PERMISSION.value,
             "@inherit": CollectionNames.INHERIT_PERMISSIONS.value,
             "@belongs_to": CollectionNames.BELONGS_TO.value,
