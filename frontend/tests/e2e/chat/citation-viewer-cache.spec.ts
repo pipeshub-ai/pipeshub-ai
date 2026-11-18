@@ -27,7 +27,9 @@ import {
   isInView,
   jumpTo,
   logoutViaUi,
+  previewFrame,
   rendererNode,
+  scrollDocumentOf,
   scrollViewer,
   visiblePdfPage,
   type Cite,
@@ -155,9 +157,10 @@ test.describe('Citation viewer cache', () => {
       { record: docx, claim: 'Docx claim', content: 'PARA-80', blockNum: [80] },
     ]);
     await jumpTo(page, 1);
-    const para = rendererNode(page).getByText('PARA-80', { exact: false }).first();
+    // The docx preview draws its document inside a sandboxed frame, which scrolls on its own.
+    const para = previewFrame(page).getByText('PARA-80', { exact: false }).first();
     await expect(para).toBeVisible({ timeout: 60_000 });
-    await scrollViewer(page, 'top');
+    await scrollDocumentOf(para, 'top');
     await expect.poll(() => isInView(para), { timeout: 10_000 }).toBe(false);
     const before = log.calls.length;
     await jumpTo(page, 1);

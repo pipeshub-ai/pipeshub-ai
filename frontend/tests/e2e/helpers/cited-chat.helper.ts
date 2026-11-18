@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from '@playwright/test';
+import { expect, type FrameLocator, type Locator, type Page } from '@playwright/test';
 import { buildAguiConversation } from '../chat/agui-sse-builder';
 
 /**
@@ -120,6 +120,25 @@ export async function jumpTo(page: Page, n: number): Promise<void> {
 /** The viewer's renderer node. The test fails, not skips, when the preview has not mounted one. */
 export function rendererNode(page: Page): Locator {
   return page.locator('[data-preview-renderer]').first();
+}
+
+/**
+ * The document a docx or HTML preview draws inside its sandboxed frame. The frame's origin is opaque, so
+ * the page's own scripts cannot reach it; its text is found and scrolled through the frame instead.
+ */
+export function previewFrame(page: Page): FrameLocator {
+  return rendererNode(page).locator('iframe').first().contentFrame();
+}
+
+/** Scrolls every scrollable part of the document `locator` lives in to its top or bottom. */
+export async function scrollDocumentOf(locator: Locator, to: 'top' | 'bottom'): Promise<void> {
+  await locator.evaluate((el, where) => {
+    const doc = el.ownerDocument;
+    const nodes = [doc.scrollingElement, ...Array.from(doc.querySelectorAll('*'))].filter(Boolean) as HTMLElement[];
+    for (const node of nodes) {
+      if (node.scrollHeight > node.clientHeight + 5) node.scrollTop = where === 'top' ? 0 : node.scrollHeight;
+    }
+  }, to);
 }
 
 /**
