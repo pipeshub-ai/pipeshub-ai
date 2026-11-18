@@ -4311,8 +4311,8 @@
       "imageSettingsTitle": "圖片",
       "imageSettingsDescription": "助理讀取網頁時可看到的圖片",
       "maxImages": "每頁最多圖片數",
-      "maxImagesHelp": "1 到 500 之間的整數。只有支援圖片的模型才會收到圖片。",
-      "maxImagesInvalid": "請輸入 1 到 500 之間的整數",
+      "maxImagesHelp": "1 到 50 之間的整數。只有支援圖片的模型才會收到圖片。",
+      "maxImagesInvalid": "請輸入 1 到 50 之間的整數",
       "imagesCostWarning": "每張圖片都會增加讀取網頁的成本和時間。",
       "toasts": {
         "providerAdded": "已新增 {{label}}",

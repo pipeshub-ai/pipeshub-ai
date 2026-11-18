@@ -6,12 +6,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from email.message import Message
 from email.utils import collapse_rfc2231_value
+from urllib.parse import urlsplit
 
 import pypdfium2 as pdfium
 from bs4 import BeautifulSoup
 from charset_normalizer import from_bytes
 
+from app.config.file_types import by_extension
 from app.utils.html_to_blocks import ImageBlock, TextBlock, html_to_blocks
+from app.utils.image_utils import supported_mime_types
+from app.web.config import MAX_IMAGES_PER_PAGE
 from app.web.errors import NoText, UnsupportedContent
 from app.web.models import WebImage
 
@@ -21,10 +25,8 @@ _HTML = "text/html"
 _PDF = "application/pdf"
 _TEXT = "text/plain"
 _MAX_TITLE_CHARS = 300
-# Images kept per page: a gallery page lists thousands, and only the first few are ever sent.
-MAX_PAGE_IMAGES = 50
-# Drawn, animated or icon formats: no model reads them, and they are rarely the content.
-_SKIPPED_IMAGE_SUFFIXES = (".svg", ".gif", ".ico")
+# Images kept per page: a gallery page lists thousands, and no more than this are ever read.
+MAX_PAGE_IMAGES = MAX_IMAGES_PER_PAGE
 # Headers that say nothing about the body; the bytes decide instead.
 _GENERIC_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream", "application/unknown"})
 
@@ -36,17 +38,28 @@ class ParsedDocument:
     images: list[WebImage] = field(default_factory=list)
 
 
+def _model_cannot_read(url: str) -> bool:
+    """Whether ``url`` names, by its extension, an image type no model reads (an SVG logo, a
+    GIF, an icon): skipped here so it does not take one of the page's few image slots. An
+    address with no extension, an unknown one or a non-image one (``/image.php?id=7``) is kept;
+    its bytes decide when it is read."""
+    name = urlsplit(url).path.rsplit("/", 1)[-1]
+    file_type = by_extension(name.rsplit(".", 1)[-1]) if "." in name else None
+    if file_type is None or not any(m.startswith("image/") for m in file_type.mimes):
+        return False
+    return not any(m in supported_mime_types for m in file_type.mimes)
+
+
 def _page_images(blocks: list[object]) -> list[WebImage]:
     """The page's http(s) images in reading order, each address once, skipping
-    the formats no model reads."""
+    the image types no model reads."""
     seen: set[str] = set()
     images: list[WebImage] = []
     for block in blocks:
         if not isinstance(block, ImageBlock):
             continue
         url = block.url.strip()
-        path = url.split("?", 1)[0].split("#", 1)[0].lower()
-        if not url.lower().startswith(("http://", "https://")) or path.endswith(_SKIPPED_IMAGE_SUFFIXES) or url in seen:
+        if not url.lower().startswith(("http://", "https://")) or url in seen or _model_cannot_read(url):
             continue
         seen.add(url)
         images.append(WebImage(url=url, alt=" ".join(block.alt.split())))

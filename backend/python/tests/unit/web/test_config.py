@@ -118,7 +118,10 @@ class TestImageSettings:
             ({"includeImages": "yes", "maxImages": 5}, {"includeImages": False, "maxImages": 5}),
             ({"includeImages": True, "maxImages": "5"}, {"includeImages": True, "maxImages": 5}),
             ({"includeImages": True, "maxImages": 5.0}, {"includeImages": True, "maxImages": 5}),
-            ({"includeImages": True, "maxImages": 500}, {"includeImages": True, "maxImages": 500}),
+            ({"includeImages": True, "maxImages": 50}, {"includeImages": True, "maxImages": 50}),
+            # Stored up to 500 by the Node API; no more than 50 are read from one page.
+            ({"includeImages": True, "maxImages": 51}, {"includeImages": True, "maxImages": 50}),
+            ({"includeImages": True, "maxImages": 500}, {"includeImages": True, "maxImages": 50}),
             ({"includeImages": True, "maxImages": 501}, {"includeImages": True, "maxImages": 3}),
             ({"includeImages": True, "maxImages": 0}, {"includeImages": True, "maxImages": 3}),
             ({"includeImages": True, "maxImages": 2.5}, {"includeImages": True, "maxImages": 3}),

@@ -480,6 +480,23 @@ class TestHtmlToBlocks:
         text_blocks = [b for b in blocks if isinstance(b, TextBlock)]
         assert any("Item" in b.content for b in text_blocks)
 
+    @pytest.mark.parametrize(
+        "img",
+        ['<img srcset="/chart.png 1x" alt="Chart">', '<img src="/thumb.png" srcset="/chart.png 2x" alt="Chart">'],
+        ids=["srcset only", "srcset beside src"],
+    )
+    def test_an_image_inside_a_paragraph_follows_the_same_source_rule(self, img: str) -> None:
+        """An image inside a block was read by its ``src`` alone, so one given only by
+        ``srcset`` was lost and one with both got the thumbnail."""
+        html = f"<html><body><p>Quarterly revenue rose. {img}</p></body></html>"
+        blocks = html_to_blocks(html, base_url="https://example.com", use_trafilatura=False)
+        assert [b.url for b in blocks if isinstance(b, ImageBlock)] == ["https://example.com/chart.png"]
+
+    def test_an_empty_srcset_falls_back_to_src(self) -> None:
+        html = '<html><body><p>Text <img src="/a.png" srcset="  "></p></body></html>'
+        blocks = html_to_blocks(html, base_url="https://example.com", use_trafilatura=False)
+        assert [b.url for b in blocks if isinstance(b, ImageBlock)] == ["https://example.com/a.png"]
+
     def test_img_srcset_resolved(self) -> None:
         html = (
             '<html><body>'

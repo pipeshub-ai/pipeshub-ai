@@ -177,14 +177,17 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
 
         sources = [Source(url=rec.get("url"), title=rec.get("title")) for rec in records if rec.get("url")]
         text = "\n".join(text_parts)
+        images = await self._page_images(payload)
+        if any(isinstance(part, ImagePart) for part in images):
+            data: str | list[Part] = [TextPart(text=text), *images]
+        else:
+            # Every image refused (or none sent): one string, with the reasons.
+            data = "\n".join([text, *(part.text for part in images if isinstance(part, TextPart))])
         view = web_view(payload)
         if view is not None:
-            self._views[text] = view
-        images = await self._page_images(payload)
-        if not any(isinstance(part, ImagePart) for part in images):
-            notes = [part.text for part in images if isinstance(part, TextPart)]
-            return ToolOutput(success=True, data="\n".join([text, *notes]), sources=sources)
-        return ToolOutput(success=True, data=[TextPart(text=text), *images], sources=sources)
+            # `result_view` finds the card by the returned string, or a list's first text part.
+            self._views[data if isinstance(data, str) else text] = view
+        return ToolOutput(success=True, data=data, sources=sources)
 
     async def _page_images(self, payload: dict[str, Any]) -> list["Part"]:
         """The page's first images as parts after the image admission check, for a model that

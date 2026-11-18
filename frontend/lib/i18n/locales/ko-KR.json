@@ -4311,8 +4311,8 @@
       "imageSettingsTitle": "이미지",
       "imageSettingsDescription": "어시스턴트가 읽는 웹 페이지의 이미지 중 무엇을 볼지",
       "maxImages": "페이지당 최대 이미지 수",
-      "maxImagesHelp": "1에서 500 사이의 정수입니다. 이미지를 지원하는 모델에만 전송됩니다.",
-      "maxImagesInvalid": "1에서 500 사이의 정수를 입력하세요",
+      "maxImagesHelp": "1에서 50 사이의 정수입니다. 이미지를 지원하는 모델에만 전송됩니다.",
+      "maxImagesInvalid": "1에서 50 사이의 정수를 입력하세요",
       "imagesCostWarning": "이미지마다 페이지를 읽는 비용과 시간이 늘어납니다.",
       "toasts": {
         "providerAdded": "{{label}}이(가) 추가되었습니다",

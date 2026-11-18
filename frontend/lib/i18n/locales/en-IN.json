@@ -4011,8 +4011,8 @@
       "imageSettingsTitle": "Images",
       "imageSettingsDescription": "What an assistant sees of the images on the web pages it reads",
       "maxImages": "Most images per page",
-      "maxImagesHelp": "A whole number from 1 to 500. Only models that accept images are sent them.",
-      "maxImagesInvalid": "Enter a whole number from 1 to 500",
+      "maxImagesHelp": "A whole number from 1 to 50. Only models that accept images are sent them.",
+      "maxImagesInvalid": "Enter a whole number from 1 to 50",
       "imagesCostWarning": "Each image adds to the cost and time of reading a page.",
       "toasts": {
         "providerAdded": "{{label}} is added",

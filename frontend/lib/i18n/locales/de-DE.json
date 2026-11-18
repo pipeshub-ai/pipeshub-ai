@@ -4020,8 +4020,8 @@
       "imageSettingsTitle": "Bilder",
       "imageSettingsDescription": "Was ein Assistent von den Bildern auf gelesenen Webseiten sieht",
       "maxImages": "Höchstzahl Bilder pro Seite",
-      "maxImagesHelp": "Eine ganze Zahl von 1 bis 500. Nur Modelle, die Bilder verarbeiten, erhalten sie.",
-      "maxImagesInvalid": "Geben Sie eine ganze Zahl von 1 bis 500 ein",
+      "maxImagesHelp": "Eine ganze Zahl von 1 bis 50. Nur Modelle, die Bilder verarbeiten, erhalten sie.",
+      "maxImagesInvalid": "Geben Sie eine ganze Zahl von 1 bis 50 ein",
       "imagesCostWarning": "Jedes Bild erhöht Kosten und Dauer beim Lesen einer Seite.",
       "toasts": {
         "providerAdded": "{{label}} wurde hinzugefügt",

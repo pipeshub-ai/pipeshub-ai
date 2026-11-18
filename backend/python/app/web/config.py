@@ -16,17 +16,24 @@ def _normalized(provider: object) -> str:
 DEFAULT_SEND_IMAGES = False
 DEFAULT_MAX_IMAGES = 3
 MAX_IMAGES_LIMIT = 500
+# Images read from one page. The Node API stores up to MAX_IMAGES_LIMIT; past this a page's
+# images cost more than its text and slow every read, so a larger stored count is read as this.
+MAX_IMAGES_PER_PAGE = 50
 
 
 def image_settings(stored: object) -> dict[str, Any]:
     """``{"includeImages", "maxImages"}`` from the stored ``settings``, each
-    replaced by its default when missing or out of range, as the Node API reads them."""
+    replaced by its default when missing or out of range, as the Node API reads them;
+    ``maxImages`` is then at most ``MAX_IMAGES_PER_PAGE``."""
     settings = stored if isinstance(stored, dict) else {}
     include = settings.get("includeImages")
     max_images = _whole_number(settings.get("maxImages"))
     if max_images is None or not 1 <= max_images <= MAX_IMAGES_LIMIT:
         max_images = DEFAULT_MAX_IMAGES
-    return {"includeImages": include if isinstance(include, bool) else DEFAULT_SEND_IMAGES, "maxImages": max_images}
+    return {
+        "includeImages": include if isinstance(include, bool) else DEFAULT_SEND_IMAGES,
+        "maxImages": min(max_images, MAX_IMAGES_PER_PAGE),
+    }
 
 
 def _whole_number(value: object) -> int | None:

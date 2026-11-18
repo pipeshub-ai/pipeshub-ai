@@ -4,7 +4,11 @@ Every download goes through ``fetch_public``: the address and each redirect must
 public, and the caller's ``allow_hop`` (the web access gate) must accept every redirect.
 """
 
+import asyncio
 import base64
+import io
+
+from PIL import Image
 
 from app.utils.image_utils import supported_mime_types
 from app.utils.url_redaction import redact_url
@@ -24,6 +28,17 @@ _SIGNATURES: tuple[tuple[bytes, str], ...] = (
 )
 
 
+def decodes(content: bytes) -> bool:
+    """Whether ``content`` decodes in full. The signature only names a format: a truncated or
+    corrupt body passes it, and a provider refuses the whole request over one such image."""
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image.load()
+    except Exception:  # Pillow raises many types (OSError, SyntaxError, DecompressionBombError, ...)
+        return False
+    return True
+
+
 def image_media_type(content: bytes) -> str | None:
     """The type of ``content`` among those models read (PNG, JPEG, WebP), from its bytes."""
     for signature, media_type in _SIGNATURES:
@@ -36,10 +51,12 @@ def image_media_type(content: bytes) -> str | None:
 
 async def fetch_image_data_uri(url: str, deadline: Deadline, *, allow_hop: HopCheck | None = None) -> str:
     """``url`` as a ``data:`` URI. Raises a ``WebError``: ``UnsupportedContent`` when the
-    body is not a PNG, JPEG or WebP image, ``TooLarge`` past ``MAX_IMAGE_MB``."""
+    body is not a PNG, JPEG or WebP image that decodes, ``TooLarge`` past ``MAX_IMAGE_MB``."""
     body = await fetch_public(url, deadline, allow_hop=allow_hop, max_size_mb=MAX_IMAGE_MB)
     check_page_status(body)
     media_type = image_media_type(body.content or b"")
     if media_type is None or media_type not in supported_mime_types:
         raise UnsupportedContent(f"{redact_url(url)} is not a PNG, JPEG or WebP image")
+    if not await asyncio.to_thread(decodes, body.content):
+        raise UnsupportedContent(f"{redact_url(url)} is a damaged image")
     return f"data:{media_type};base64,{base64.b64encode(body.content).decode('ascii')}"

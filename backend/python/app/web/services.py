@@ -21,6 +21,8 @@ FETCH_DEADLINE_S = 20.0
 FETCH_ATTEMPT_S = 15.0
 # Shared by every image of one page: past it the page is answered without the rest.
 IMAGES_DEADLINE_S = 10.0
+# Images of one page read at once: each may be MAX_IMAGE_MB, held in memory until it is sent.
+IMAGES_IN_FLIGHT = 4
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +139,7 @@ class WebFetchService(_Guarded):
         it cannot be read (not an image, too large, unreachable, out of time). The gate is asked
         about every image and every redirect, as for a page. Never raises: an image is extra."""
         deadline = Deadline.after(IMAGES_DEADLINE_S, self._clock)
+        gate = asyncio.Semaphore(IMAGES_IN_FLIGHT)
 
         async def allow_hop(target: str) -> bool:
             return await self._allowed(target, caller)
@@ -145,7 +148,8 @@ class WebFetchService(_Guarded):
             try:
                 if not await self._allowed(url, caller):
                     return None
-                return await fetch_image_data_uri(url, deadline, allow_hop=allow_hop)
+                async with gate:
+                    return await fetch_image_data_uri(url, deadline, allow_hop=allow_hop)
             except WebError as e:
                 logger.info("Page image not read (%s): %s", e.error_type, e.message)
             except Exception:

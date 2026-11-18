@@ -286,14 +286,16 @@ def _page_image_options(web_search_config: dict, fetch_service: "WebFetchService
     """``WebToolAdapter`` options that send a fetched page's images to the model: none unless an
     admin turned "Send images to LLM" on (``settings.includeImages``), then up to
     ``settings.maxImages`` per page, read through the run's gated fetch service."""
-    settings = web_search_config.get("settings") or {}
-    if settings.get("includeImages") is not True:
+    from app.web.config import image_settings
+
+    settings = image_settings(web_search_config.get("settings"))
+    if not settings["includeImages"]:
         return {}
 
     async def load(urls: list[str]) -> list[str | None]:
         return await fetch_service.fetch_images(urls, caller)
 
-    return {"image_loader": load, "max_images": int(settings.get("maxImages") or 0)}
+    return {"image_loader": load, "max_images": settings["maxImages"]}
 
 
 def _normalized_toolset_name(toolset: dict) -> str:

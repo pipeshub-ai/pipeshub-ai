@@ -366,6 +366,22 @@ class TestSendPageImages:
         assert sum(isinstance(part, ImagePart) for part in output.data) == 1
         assert "[image on the page not shown: duplicate]" in [p.text for p in output.data if isinstance(p, TextPart)]
 
+    async def test_the_step_card_view_survives_every_image_being_refused(self) -> None:
+        """The request's image cap is already spent: the text comes back with the reasons, and
+        the card must still find its view under that string."""
+        from app.agent_loop_lib.core.types import ToolResult
+        from app.utils.image_admission import ImageAdmission
+        from app.utils.image_policy import permissive_policy
+
+        adapter = self._adapter(_Loader({"https://example.com/a.png": _PNG_A}), max_images=1)
+        adapter._context.tool_state["image_admission"] = ImageAdmission(permissive_policy(0))
+
+        output = await adapter.execute(url="https://example.com/report")
+
+        assert isinstance(output.data, str) and "[image on the page not shown:" in output.data
+        view = adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__fetch_url", content=output.data))
+        assert view is not None and view["fields"][0]["label"] == "Page"
+
     async def test_the_step_card_view_survives_a_page_sent_with_images(self) -> None:
         from app.agent_loop_lib.core.types import ToolResult
 

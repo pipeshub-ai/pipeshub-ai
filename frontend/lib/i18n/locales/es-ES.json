@@ -4061,8 +4061,8 @@
       "imageSettingsTitle": "Imágenes",
       "imageSettingsDescription": "Lo que un asistente ve de las imágenes de las páginas web que lee",
       "maxImages": "Máximo de imágenes por página",
-      "maxImagesHelp": "Un número entero del 1 al 500. Solo los modelos que aceptan imágenes las reciben.",
-      "maxImagesInvalid": "Introduce un número entero del 1 al 500",
+      "maxImagesHelp": "Un número entero del 1 al 50. Solo los modelos que aceptan imágenes las reciben.",
+      "maxImagesInvalid": "Introduce un número entero del 1 al 50",
       "imagesCostWarning": "Cada imagen aumenta el coste y el tiempo de lectura de una página.",
       "toasts": {
         "providerAdded": "{{label}} is added",

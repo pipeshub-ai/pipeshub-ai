@@ -84,6 +84,18 @@ class TestBuildDynamicToolsWebAdapterWiring:
         assert urls == ["https://example.com/a.png"]
         assert (caller.org_id, caller.user_id) == ("org-1", "user-1")
 
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [({"includeImages": True, "maxImages": "many"}, 3), ({"includeImages": True, "maxImages": 200}, 50)],
+        ids=["not a number", "past the per-page limit"],
+    )
+    def test_a_bad_or_large_count_never_costs_the_turn_its_web_tools(self, settings: dict, expected: int) -> None:
+        """Building the options sits inside the web tools' try: a raise there dropped web search
+        and fetch_url for the whole turn."""
+        adapters = self._web_adapters(settings)
+        assert set(adapters) == {"dynamic__web_search", "dynamic__fetch_url"}
+        assert adapters["dynamic__fetch_url"]._max_images == expected
+
     def test_no_web_search_config_yields_no_dynamic_web_tools(self) -> None:
         context = _make_context()
         context.tool_state["web_search_config"] = None

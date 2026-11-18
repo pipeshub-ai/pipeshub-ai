@@ -6,7 +6,8 @@ import { Flex, Box, Text, Switch, TextField, Callout } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 export const MIN_IMAGES = 1;
-export const MAX_IMAGES = 500;
+// The most images the server reads from one page (`MAX_IMAGES_PER_PAGE`); a larger stored count is read as this.
+export const MAX_IMAGES = 50;
 
 interface SendImagesRowProps {
   enabled: boolean;

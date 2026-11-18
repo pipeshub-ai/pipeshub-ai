@@ -120,7 +120,17 @@ class TestFetch:
 
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
+def _real_png() -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(out, format="PNG")
+    return out.getvalue()
+
+
+PNG = _real_png()
 IMG = "http://site.test"
 
 
@@ -159,6 +169,28 @@ class TestFetchImages:
 
         assert await self._service(gate).fetch_images([f"{IMG}/a.png"], CALLER) == [None]
         assert fake_web.gets("http://elsewhere.test/b.png") == 0
+
+    async def test_a_pages_images_are_read_a_few_at_a_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each image may be several MB and is held until it is sent: never a whole gallery at once."""
+        import asyncio
+
+        from app.web import services
+
+        in_flight = peak = 0
+
+        async def slow_read(url: str, deadline: object, *, allow_hop: object = None) -> str:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return "data:image/png;base64,AA=="
+
+        monkeypatch.setattr(services, "fetch_image_data_uri", slow_read)
+        uris = await self._service(RecordingGate()).fetch_images([f"{IMG}/{i}.png" for i in range(12)], CALLER)
+
+        assert len(uris) == 12 and all(uris)
+        assert peak == services.IMAGES_IN_FLIGHT
 
     async def test_no_images_asks_nothing(self) -> None:
         gate = RecordingGate()

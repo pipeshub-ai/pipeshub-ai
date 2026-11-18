@@ -154,6 +154,23 @@ class TestPageImages:
             <img src="data:image/png;base64,AAAA"><img src="/kept.webp"></body></html>"""
         assert [url for url, _ in self._images(html)] == ["https://site.test/kept.webp"]
 
+    @pytest.mark.parametrize(
+        ("src", "kept"),
+        [
+            ("/a.png", True), ("/a.JPG", True), ("/a.jpeg?w=800", True), ("/a.webp#top", True),
+            # No extension, an unknown one, or a non-image one: the bytes decide when it is read.
+            ("/images/12345", True), ("/a.heroimg", True), ("/image.php?id=7", True),
+            # Registered image types no model reads, the old hand list's three and more.
+            ("/logo.svg", False), ("/spin.gif", False), ("/favicon.ico", False),
+            ("/scan.bmp", False), ("/photo.avif", False), ("/fax.TIFF", False),
+            # A dot in a directory name is not an extension.
+            ("/v1.2/images/chart", True),
+        ],
+    )
+    def test_only_image_types_a_model_reads_are_kept_by_the_registry(self, src: str, kept: bool) -> None:
+        html = f'<html><body><p>Text.</p><img src="{src}"></body></html>'
+        assert bool(self._images(html)) is kept
+
     def test_an_image_shown_twice_is_kept_once(self) -> None:
         html = '<html><body><p>Text.</p><img src="/a.png"><img src="/a.png" alt="again"></body></html>'
         assert self._images(html) == [("https://site.test/a.png", "")]

@@ -48,7 +48,7 @@ describe('SendImagesRow — "Send images to LLM"', () => {
     expect(onMaxImagesCommit).not.toHaveBeenCalled();
   });
 
-  it.each(['0', '501', '2.5', '', 'abc'])('%j is refused, said so, and the saved count is put back', (value) => {
+  it.each(['0', '51', '2.5', '', 'abc'])('%j is refused, said so, and the saved count is put back', (value) => {
     const { input, onMaxImagesCommit } = row();
     fireEvent.change(input!, { target: { value } });
     fireEvent.blur(input!);
@@ -67,7 +67,7 @@ describe('SendImagesRow — "Send images to LLM"', () => {
 
 describe('parseMaxImages', () => {
   it.each([
-    ['1', 1], ['500', 500], [' 7 ', 7], ['0', null], ['501', null], ['2.5', null], ['', null], ['x', null],
+    ['1', 1], ['50', 50], [' 7 ', 7], ['0', null], ['51', null], ['500', null], ['2.5', null], ['', null], ['x', null],
   ])('%j → %j', (text, expected) => {
     expect(parseMaxImages(text)).toBe(expected);
   });
