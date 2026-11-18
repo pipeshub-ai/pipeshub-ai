@@ -160,10 +160,7 @@ async def test_query_shutdown_survives_a_failing_live_limit_and_ledger() -> None
         patch("app.services.sandbox_alerts.loop.run_sandbox_alert_loop", _no_alerts),
         patch("app.agent_loop_lib.sandbox.live_limit.get_live_limit", return_value=live_limit),
         patch("app.agent_loop_lib.sandbox.load_ledger.peek_default_load_ledger", return_value=ledger),
-        patch.dict("sys.modules", {
-            "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
-            "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
-        }),
+        patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
     ):
         async with lifespan(app):
             pass
