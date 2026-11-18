@@ -68,22 +68,54 @@ GRAPH_CHECKED = {   # the last record of a virtual record, or a connector, went 
 ENTITY_FILES = {"modules/transformers/entity_vectorstore.py"}   # the entity index, keyed by entity: not the points of a record
 
 
-def _all_delete_sites() -> set[tuple[str, str]]:
+DELETE_NAMES = {"delete_points", "delete_collection"}
+# Not the vector store: the graph database has collections of its own.
+NOT_VECTOR = ("services/graph_db",)
+
+
+def _delete_references(tree: ast.AST) -> set[tuple[str, str]]:
+    """(function, name) of every reference to a delete of the vector store in *tree*: a called attribute, the attribute taken without
+    a call (an alias: ``f = service.delete_points``), and a name given as a string (``getattr(service, "delete_points")``)."""
+    found: set[tuple[str, str]] = set()
+
+    def walk(node: ast.AST, function: str) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function = node.name
+        if isinstance(node, ast.Attribute) and node.attr in DELETE_NAMES:
+            found.add((function, node.attr))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in DELETE_NAMES:
+            found.add((function, node.value))
+        for child in ast.iter_child_nodes(node):
+            walk(child, function)
+
+    walk(tree, "<module>")
+    return found
+
+
+def _all_delete_sites(names: set[str] = DELETE_NAMES) -> set[tuple[str, str]]:
     sites: set[tuple[str, str]] = set()
     for path in APP.rglob("*.py"):
         relative = path.relative_to(APP).as_posix()
-        if relative.startswith(VECTOR_PROVIDERS) or "delete_points" not in path.read_text(encoding="utf-8"):
+        text = path.read_text(encoding="utf-8")
+        if relative.startswith((*VECTOR_PROVIDERS, *NOT_VECTOR)) or not any(n in text for n in names):
             continue
-        for function in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for node in ast.walk(function):
-                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "delete_points":
-                        sites.add((relative, function.name))
+        sites.update((relative, function) for function, name in _delete_references(ast.parse(text)) if name in names)
     return sites
 
 
+# Every reference to ``delete_collection`` (a whole collection, not a record's points) outside the vector providers.
+# Each drops a whole collection, never the points of one virtual record: a connector's scope proven exclusively its own, the entity
+# index under its own lock, or the registry's drop that both go through. A new one fails the test until it is listed with its reason.
+COLLECTION_SITES = {
+    ("modules/indexing/run.py", "_drop_scope_collections"),
+    ("modules/indexing/run.py", "purge_connector_by_virtual_record_ids"),
+    ("modules/transformers/entity_vectorstore.py", "_drop_and_create_under_lock"),
+    ("services/vector_db/collection_registry.py", "_drop"),
+}
+
+
 def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writing_ones_are_fenced() -> None:
-    sites = _all_delete_sites()
+    sites = _all_delete_sites({"delete_points"})
     unlisted = {s for s in sites if s not in FENCED | SWEEP | GRAPH_CHECKED and s[0] not in ENTITY_FILES}
     assert not unlisted, f"a delete of vector points that is not listed (fence it, or list it with its reason): {sorted(unlisted)}"
     assert FENCED <= sites and SWEEP <= sites, "a listed fenced site no longer exists"
@@ -93,6 +125,21 @@ def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writ
         node = next(n for n in ast.walk(ast.parse(text)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function)
         assert "_fenced(" in ast.get_source_segment(text, node) or "fenced_delete(" in ast.get_source_segment(text, node), f"{file}:{function}"
     assert fenced_calls >= {"delete_blocks_by_ids", "delete_embeddings", "_fence_and_verify"}
+
+
+def test_every_collection_drop_in_the_application_is_listed() -> None:
+    sites = _all_delete_sites({"delete_collection"})
+    assert sites == COLLECTION_SITES, f"a drop of a vector collection that is not listed (or a listed one that is gone): {sorted(sites ^ COLLECTION_SITES)}"
+
+
+@pytest.mark.parametrize("source", [
+    "async def f(svc, col, flt):\n    drop = svc.delete_points\n    await drop(col, flt)\n",
+    "async def f(svc, col, flt):\n    await getattr(svc, 'delete_points')(col, flt)\n",
+    "async def f(svc, col):\n    await svc.delete_collection(col)\n",
+    "async def f(svc, col):\n    fn = getattr(svc, 'delete_collection', None)\n    await fn(col)\n",
+])
+def test_the_scan_sees_a_delete_taken_by_alias_or_by_name(source: str) -> None:
+    assert _delete_references(ast.parse(source)), source
 
 
 def test_every_release_of_an_orphaned_virtual_record_confirms_the_lease() -> None:
@@ -269,3 +316,36 @@ async def test_renewals_that_keep_failing_cancel_the_delete_in_flight(db, manage
         async with store._vrid_lease("t", ORG, VRID):
             await store.delete_embeddings(VRID, COLL, org_id=ORG)
     assert landed == []
+
+
+async def test_a_lease_store_error_at_the_confirm_is_asked_once_more(db, manager, monkeypatch) -> None:
+    """QA-S7e-29: one error from the lease store at a delete's confirm does not hand the delivery back; the confirm is asked again."""
+    monkeypatch.setattr(leases_mod, "_MIN_RENEW_S", 60.0)  # the renewer stays out of the way: only the confirm asks the store
+    monkeypatch.setattr(leases_mod, "messaging_env", SimpleNamespace(concurrency_lease_seconds=180.0, record_lease_wait_seconds=1.0))
+    store = make_store(db)
+    async with store._vrid_lease("t", ORG, VRID):
+        manager.errors = 1       # the next renewal (this confirm) raises, the retry answers
+        await store.delete_embeddings(VRID, COLL, org_id=ORG)
+    assert manager.errors == 0
+
+
+async def test_two_lease_store_errors_in_a_row_at_the_confirm_count_as_not_ours(db, manager, monkeypatch) -> None:
+    monkeypatch.setattr(leases_mod, "_MIN_RENEW_S", 60.0)
+    monkeypatch.setattr(leases_mod, "messaging_env", SimpleNamespace(concurrency_lease_seconds=180.0, record_lease_wait_seconds=1.0))
+    store = make_store(db)
+    async with store._vrid_lease("t", ORG, VRID):
+        handle = vs_mod._HELD_LEASE.get()
+        manager.errors = 1
+        assert await handle.confirm() is True, "one error is asked again"
+        manager.errors = 2
+        assert await handle.confirm() is False, "a second error in a row hands the delivery back"
+        manager.errors = 0
+
+
+async def test_a_confirm_answered_not_ours_is_not_retried(db, manager) -> None:
+    store = make_store(db)
+    manager.renews = False
+    with pytest.raises(VirtualRecordBusy):
+        async with store._vrid_lease("t", ORG, VRID):
+            manager.errors = 0
+            await store.delete_embeddings(VRID, COLL, org_id=ORG)

@@ -110,6 +110,7 @@ jobs:
             tests/integration/vector_db/test_pgvector_writes.py
             tests/integration/vector_db/test_pgvector_rekey.py
             tests/integration/vector_db/test_pgvector_rekey_property.py
+            tests/integration/vector_db/test_pgvector_pointed_blocks.py
             tests/integration/vector_db/test_pgvector_reads.py
             tests/integration/vector_db/test_pgvector_search.py
             tests/integration/vector_db/test_pgvector_scope_filter.py

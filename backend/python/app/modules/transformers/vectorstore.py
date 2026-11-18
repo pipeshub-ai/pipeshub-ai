@@ -25,7 +25,7 @@ import math
 import os
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Tuple
@@ -1047,9 +1047,37 @@ class VirtualRecordBusy(IndexingError, RecordLeaseHeld):
         IndexingError.__init__(self, message)
 
 
-# The block ids the stray sweep found points for in this ``apply`` (set by the sweep when it listed the record whole), to be recorded in
-# the record's reconciliation metadata.
-_POINTED: contextvars.ContextVar["set[str] | None"] = contextvars.ContextVar("pointed_blocks", default=None)
+class _PointLog:
+    """What this ``apply`` knows about the record's points, to be recorded in its reconciliation metadata (``pointedBlocks``).
+
+    Only what the writers did is recorded, never what the store lists: *wrote* holds the block id of every point a writer stored (or
+    moved, or found already stored by an interrupted run of the same revision) in this run; *carried* the blocks the previous record
+    had a point for and this run left alone. A listing is used to find a carried block whose point is gone (it is then written
+    again), never to shrink the set. *recordable* is False when nothing says which unchanged blocks have a point (a record with no
+    recorded set, changed in part): the set is then left unrecorded.
+    """
+
+    __slots__ = ("wrote", "carried", "recordable")
+
+    def __init__(self) -> None:
+        self.wrote: set[str] = set()
+        self.carried: set[str] = set()
+        self.recordable = True
+
+    def note(self, points: "Iterable[VectorPoint]") -> None:
+        for point in points:
+            block_id = ((point.payload or {}).get("metadata") or {}).get("blockId")
+            if block_id:
+                self.wrote.add(block_id)
+
+
+_POINTED: contextvars.ContextVar["_PointLog | None"] = contextvars.ContextVar("pointed_blocks", default=None)
+
+
+def _note_points(points: "Iterable[VectorPoint]") -> None:
+    log = _POINTED.get()
+    if log is not None:
+        log.note(points)
 
 # The lease on the virtual record held by the ``apply`` this task is running in (None: no lease is bound, nothing to confirm).
 _HELD_LEASE: contextvars.ContextVar["LeaseHandle | None"] = contextvars.ContextVar("vrid_lease", default=None)
@@ -1357,7 +1385,7 @@ class VectorStore(Transformer):
     async def apply(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
         async with self._vrid_lease(f"index:{record.id}", record.org_id, record.virtual_record_id):
-            token = _POINTED.set(None)
+            token = _POINTED.set(_PointLog())
             try:
                 result = await self._apply_locked(ctx)
                 self._record_pointed_blocks(ctx)
@@ -1366,15 +1394,39 @@ class VectorStore(Transformer):
                 _POINTED.reset(token)
 
     def _record_pointed_blocks(self, ctx: TransformContext) -> None:
-        """Write the ids of the blocks that really have a point (as the sweep listed them) into the metadata saved with the record, so
-        a later verification expects exactly those and never a block the writers gave no point (a provider-skipped image, code with no
-        unit of its own). Not recorded when the sweep did not list the record whole."""
-        seen, rc = _POINTED.get(), ctx.reconciliation_context
-        if seen is None or rc is None or not isinstance(rc.new_metadata, dict) or not rc.new_metadata:
+        """Write the ids of the blocks that have a point into the metadata saved with the record, so a later verification expects exactly
+        those and never a block the writers gave no point (a provider-skipped image, code with no unit of its own).
+
+        The set is what the writers wrote this run plus what the previous set held for the blocks this run left alone, limited to the
+        blocks the record still has. It is never read back from the store: a point lost since stays in the set, so it is expected (and
+        written again) rather than forgotten."""
+        log, rc = _POINTED.get(), ctx.reconciliation_context
+        if log is None or rc is None or not log.recordable or not isinstance(rc.new_metadata, dict) or not rc.new_metadata:
             return
         container = ctx.record.block_containers
         ids = {b.id for b in container.blocks} | {g.id for g in container.block_groups}
-        rc.new_metadata["pointedBlocks"] = sorted(seen & ids)
+        rc.new_metadata["pointedBlocks"] = sorted((log.wrote | log.carried) & ids)
+
+    async def _heal_lost_points(
+        self, record: "Record", seen: "frozenset[str] | None", log: _PointLog | None, titles: "dict[int, str] | None", member_blocks: "list | None",
+    ) -> None:
+        """Write again the blocks the record had a point for whose point the sweep's whole listing did not find. A listing that is not
+        whole (it hit its bound, or resumes) finds nothing missing: it never changes what is recorded."""
+        if seen is None or log is None or not log.carried:
+            return
+        missing = log.carried - seen
+        if not missing:
+            return
+        container = record.block_containers
+        redo = BlocksContainer(
+            blocks=[b for b in container.blocks if b.id in missing],
+            block_groups=[g for g in container.block_groups if g.id in missing],
+        )
+        self.logger.warning(f"Record {record.id}: {len(missing)} recorded block(s) have no point in the store, embedding them again")
+        await self.index_documents(
+            redo, record.org_id, record.id, record.virtual_record_id, is_reconciliation=True,
+            record=record, titles=titles, member_blocks=member_blocks,
+        )
 
     async def _apply_locked(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
@@ -1387,6 +1439,7 @@ class VectorStore(Transformer):
         # A changed row's heading, or a re-indexed class's members, may be unchanged blocks left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
         member_blocks = block_containers.blocks
+        log = _POINTED.get()
 
         if (
             ctx.reconciliation_context
@@ -1396,12 +1449,19 @@ class VectorStore(Transformer):
             blocks_to_index_ids = ctx.reconciliation_context.blocks_to_index_ids
             block_ids_to_delete = ctx.reconciliation_context.block_ids_to_delete or set()
             rekey_ids = ctx.reconciliation_context.rekey_ids or {}
+            recorded = ctx.reconciliation_context.recorded_points
+            if log is not None and not rekey_ids:
+                # Blocks this run leaves alone keep the point the previous run recorded for them; with no previous set, nothing says.
+                log.recordable = recorded is not None
 
             if not blocks_to_index_ids and not block_ids_to_delete and not rekey_ids:
                 self.logger.info(
                     f"Reconciliation: No changes detected for record {record_id}"
                 )
-                await self._sweep_stray_points(record, block_containers)
+                if log is not None and recorded is not None:
+                    log.carried = set(recorded) & ({b.id for b in block_containers.blocks} | {g.id for g in block_containers.block_groups})
+                await self._heal_lost_points(
+                    record, await self._sweep_stray_points(record, block_containers), log, titles, member_blocks)
                 return True
 
             # Shallow copy with only blocks/block_groups that need indexing
@@ -1423,6 +1483,9 @@ class VectorStore(Transformer):
                         await self._resync_membership_after_write(virtual_record_id, record_id)
                     await self._sweep_stray_points(record, record.block_containers)
                     return True
+            if log is not None and not rekey_ids and recorded is not None:
+                log.carried = {i for i in recorded if i not in blocks_to_index_ids} & (
+                    {b.id for b in record.block_containers.blocks} | {g.id for g in record.block_containers.block_groups})
             block_containers = BlocksContainer(
                 blocks=[b for b in block_containers.blocks if b.id in blocks_to_index_ids],
                 block_groups=[
@@ -1442,7 +1505,8 @@ class VectorStore(Transformer):
             titles=titles,
             member_blocks=member_blocks,
         )
-        await self._sweep_stray_points(record, record.block_containers)
+        await self._heal_lost_points(
+            record, await self._sweep_stray_points(record, record.block_containers), log, titles, member_blocks)
         return indexed
 
     async def _move_points_to_new_ids(
@@ -1567,6 +1631,9 @@ class VectorStore(Transformer):
         for start in range(0, len(old_ids), _REKEY_PAGE):
             await self.delete_blocks_by_ids(set(old_ids[start:start + _REKEY_PAGE]), vrid, collection_name, org_id=org_id)
         rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(old_ids)))
+        log = _POINTED.get()
+        if log is not None:  # the points now under their new ids are the ones this move wrote (or an earlier try of it did)
+            log.wrote.update(new_by_old[o] for o in anchors)
         return blocks_to_index_ids, block_ids_to_delete
 
     async def _code_unit_ids(self, record: "Record") -> frozenset[str]:
@@ -1632,19 +1699,20 @@ class VectorStore(Transformer):
         run_md5 = record.md5_hash if isinstance(record.md5_hash, str) else None
         return bool(current_md5 and run_md5 and current_md5 != run_md5)
 
-    async def _sweep_stray_points(self, record: "Record", revision: BlocksContainer | None) -> None:
+    async def _sweep_stray_points(self, record: "Record", revision: BlocksContainer | None) -> "frozenset[str] | None":
         """Drop the record's points that *revision* (its whole current container) does not reference.
-        Best effort: the record is already searchable, so a failure here is logged and not raised."""
+        Best effort: the record is already searchable, so a failure here is logged and not raised. Returns the kept blocks the listing
+        found a point for when it listed the record whole, else None."""
         if not sweep_enabled() or revision is None or not record.org_id or not record.virtual_record_id:
-            return
+            return None
         vrid = record.virtual_record_id
         try:
             if await self._run_superseded(record):
                 self.logger.info(f"Stray point sweep of {vrid} skipped: the record is on another revision now")
-                return
+                return None
         except Exception as e:  # cannot tell: a backstop that cannot tell does not delete
             self.logger.warning(f"Stray point sweep of {vrid} skipped, the record could not be read: {e}")
-            return
+            return None
         keep = {b.id for b in revision.blocks} | {g.id for g in revision.block_groups}
         keep |= {self.record_summary_block_id(vrid), code_residue_block_id(vrid)}
         try:
@@ -1660,16 +1728,16 @@ class VectorStore(Transformer):
                 may_delete=lambda: self._still_current(record),
                 fence=lambda: _fenced("the stray sweep"),
             )
-            if result.seen_blocks is not None:
-                _POINTED.set(set(result.seen_blocks))
             if result.next_offset is not None:
                 self._sweep_resume[where] = result.next_offset
                 while len(self._sweep_resume) > _SWEEP_RESUME_RECORDS:
                     self._sweep_resume.pop(next(iter(self._sweep_resume)))
+            return result.seen_blocks
         except LeaseLost:
             raise
         except Exception as e:  # a backstop must not fail an indexed record
             self.logger.warning(f"Stray point sweep of {vrid} failed: {e}")
+        return None
 
     # ------------------------------------------------------------------
     # Record summary helpers
@@ -2482,6 +2550,7 @@ class VectorStore(Transformer):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points[i:i + batch_size]
             )
+            _note_points(points[i:i + batch_size])
         self.logger.info(
             f"✅ Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
         )
@@ -2719,6 +2788,7 @@ class VectorStore(Transformer):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points
             )
+        _note_points(points)
         progress = current_progress()
         if progress is not None:
             progress.beat(len(points))
@@ -2906,6 +2976,9 @@ class VectorStore(Transformer):
 
         if todo:
             await self._process_document_chunks(todo, record_id, collection_name)
+        log = _POINTED.get()
+        if present and log is not None:  # kept from the interrupted run of this same revision: they are this run's points too
+            log.wrote.update(d.metadata["blockId"] for d, pid in zip(documents, point_ids) if pid in present and d.metadata.get("blockId"))
         if progress is not None:
             progress.finish()
 

@@ -16,6 +16,9 @@ from app.services.messaging.config import messaging_env
 _POLL_S = 1.0
 # Shortest renewal interval for a held lease (a third of its term otherwise).
 _MIN_RENEW_S = 1.0
+# A confirm whose lease store errors is asked once more, after this pause.
+_CONFIRM_TRIES = 2
+_CONFIRM_RETRY_PAUSE_S = 0.2
 
 
 class RevisionSuperseded(Exception):
@@ -39,13 +42,18 @@ class LeaseHandle:
 
     async def confirm(self) -> bool:
         """Compare-and-renew on the holder's own token: True only when the manager still has this holder as the owner (and the term is
-        extended, so the write that follows is not overtaken while it takes less than a term). An error counts as not ours."""
+        extended, so the write that follows is not overtaken while it takes less than a term). An answer of "not ours" is final. A
+        store that errors is asked once more after a short pause, so one blip does not hand the delivery back; a second error counts
+        as not ours."""
         if self._manager is None:
             return True
-        try:
-            return bool(await self._manager.renew(self._pool, self._holder, self._lease_s))
-        except Exception:
-            return False
+        for attempt in range(_CONFIRM_TRIES):
+            try:
+                return bool(await self._manager.renew(self._pool, self._holder, self._lease_s))
+            except Exception:
+                if attempt + 1 < _CONFIRM_TRIES:
+                    await asyncio.sleep(_CONFIRM_RETRY_PAUSE_S)
+        return False
 
 
 class RecordLeases:

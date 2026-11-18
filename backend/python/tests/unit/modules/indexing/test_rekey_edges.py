@@ -539,7 +539,7 @@ async def _legacy_with_record(db: InMemoryVectorDBService, container: BlocksCont
 
 
 async def test_the_index_records_which_blocks_got_a_point(db) -> None:
-    """The sweep lists the record whole after the write: the ids it found are saved with the record's reconciliation metadata."""
+    """The blocks the writers gave a point are saved with the record's reconciliation metadata (see test_pointed_blocks.py)."""
     blob = Blob()
     container = _image_record(True)
     await run(make_store(db), blob, container, "newRecord")

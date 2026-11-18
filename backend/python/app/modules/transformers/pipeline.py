@@ -112,6 +112,7 @@ class IndexingPipeline:
                         new_metadata=new_metadata.to_dict(),
                         blocks_to_index_ids=blocks_to_index_ids,
                         block_ids_to_delete=block_ids_to_delete,
+                        recorded_points=old_metadata.pointed_blocks,
                     )
                 attempt = current_attempt()
                 if attempt is not None and attempt.resume:
