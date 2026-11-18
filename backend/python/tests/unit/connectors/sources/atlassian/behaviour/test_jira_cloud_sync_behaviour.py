@@ -321,7 +321,11 @@ class TestRateLimits:
         eng_attempts = [b for b in search.bodies if '"ENG"' in b["jql"]]
         assert len(eng_attempts) == 4, "gives up after the retry cap"
         assert len(backoff_sleeps) == 3 and all(0 < s <= 60 for s in backoff_sleeps)
-        assert checkpoints.values_for("project_ENG") is None
+        # No cursor is saved, so the next sync reads the project from the start; the holders it could not read are
+        # marked unknown before the walk.
+        saved = checkpoints.values_for("project_ENG")
+        assert saved["last_sync_time"] is None and saved["last_issue_updated"] is None
+        assert saved["browse_holders"] == "?"
 
     async def test_a_failure_part_way_resumes_from_the_last_saved_page(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")], "nextPageToken": "T2"})
