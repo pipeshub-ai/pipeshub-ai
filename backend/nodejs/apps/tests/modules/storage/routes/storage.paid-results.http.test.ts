@@ -283,8 +283,22 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect(filesOnDisk().filter((f) => f.includes('purge-cutoff'))).to.deep.equal([])
     })
 
+    it('accepts a `before` a few minutes ahead of this clock (the store\'s clock may differ), and purges by it', async () => {
+      expect((await call('DELETE', `/internal/paid-results/${REC}?before=${Date.now() + 5 * 60_000}`)).status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort())
+    })
+
+    it('purge-cutoff still answers when over a thousand leftover sentinels sit in the folder', async () => {
+      const dir = path.join(home, PLATFORM_DIR, MOUNT, onDisk(ORG_A, REC, 'purge-cutoff'))
+      fs.mkdirSync(dir, { recursive: true })
+      for (let i = 0; i < 1100; i++) fs.writeFileSync(path.join(dir, `-${String(i).padStart(5, '0')}.json`), '{}')
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      expect(cut.status).to.equal(200)
+      expect(cut.body.cutoff).to.be.a('number')
+    })
+
     it('refuses a `before` in the future and removes nothing', async () => {
-      for (const aheadMs of [120_000, 600_000]) {
+      for (const aheadMs of [20 * 60_000, 3_600_000]) {
         expect((await call('DELETE', `/internal/paid-results/${REC}?before=${Date.now() + aheadMs}`)).status, String(aheadMs)).to.equal(400)
       }
       expect(filesOnDisk()).to.have.length(5)

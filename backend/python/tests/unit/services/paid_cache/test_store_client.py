@@ -89,11 +89,16 @@ async def test_an_org_sees_only_its_own_files(storage: FakePaidResultStorage) ->
     assert [f.path for f in await store.list_files("org-1", "rec-1")] == [PATH]
 
 
-async def test_a_storage_without_the_cutoff_route_is_not_a_cache_that_is_off(storage: FakePaidResultStorage) -> None:
-    """A 404 from purge-cutoff (a storage of an earlier release) leaves the routes on and reports no cutoff."""
+async def test_a_storage_without_the_cutoff_route_is_not_a_cache_that_is_off(
+    storage: FakePaidResultStorage, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 404 from purge-cutoff (a storage of an earlier release) leaves the routes on and reports no cutoff, with one warning."""
     store = _store(storage)
 
-    assert await store.purge_cutoff("org-1", "rec-1") is None
+    with caplog.at_level(logging.WARNING, logger="paid-store-test"):
+        assert await store.purge_cutoff("org-1", "rec-1") is None
+        assert await store.purge_cutoff("org-1", "rec-2") is None
+    assert len([r for r in caplog.records if "no purge-cutoff route" in r.message]) == 1
 
     assert store_module.PAID_RESULT_ROUTES.available
     # The purge then goes without a cutoff, and the rest of the cache still works.

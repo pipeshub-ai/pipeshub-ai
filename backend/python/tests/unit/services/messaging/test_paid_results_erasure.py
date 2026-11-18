@@ -193,7 +193,8 @@ async def test_a_refresh_whose_purge_fails_fails_the_event_so_it_is_retried(stor
 async def test_a_refresh_on_a_storage_without_the_cutoff_route_purges_without_a_cutoff_not_before_zero(
     store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No purge-cutoff route (an earlier storage release): the purge goes without ``before``, never ``before=0``."""
+    """No purge-cutoff route (an earlier storage release), paid-result writes off: no ``before``, never ``before=0``."""
+    monkeypatch.delenv("PAID_CACHE_WRITE", raising=False)
     async def no_route(org: str, rec: str) -> None:
         return None
 
@@ -212,6 +213,26 @@ async def test_a_refresh_on_a_storage_without_the_cutoff_route_purges_without_a_
 
     assert sent == [None]
     assert store.paths(ORG, REC) == []
+
+
+async def test_a_refresh_on_a_storage_without_the_cutoff_route_is_handed_back_while_writes_are_on(
+    store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With writes on, a purge without a cutoff could remove what a delivery that took over stored: wait for the update."""
+    from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
+
+    async def no_route(org: str, rec: str) -> None:
+        return None
+
+    monkeypatch.setenv("PAID_CACHE_WRITE", "on")
+    monkeypatch.setattr(store, "purge_cutoff", no_route)
+    _seed(store)
+
+    with pytest.raises(RefreshPurgeHeld):
+        await _events(_handler(), EventTypes.REINDEX_RECORD.value, {"recordId": REC, "orgId": ORG, "refreshPaidOutputs": True})
+
+    assert store.paths(ORG, REC) != []                       # nothing purged; the delivery comes back later
+    assert "purge" not in store.ops
 
 
 @pytest.mark.parametrize("payload", [{"forceReindex": True}, {"refreshPaidOutputs": "true"}, {"refreshPaidOutputs": False}, {}])

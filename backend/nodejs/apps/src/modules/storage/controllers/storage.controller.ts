@@ -221,8 +221,13 @@ function virtualRecordIdOf(
 let storageConfig:
   AzureBlobStorageConfig | LocalStorageConfig | S3StorageConfig | null = null;
 
-/** How far past this service's clock a purge cutoff may lie before it is refused (the object store's clock may differ a little). */
-const PURGE_CUTOFF_FUTURE_SLACK_MS = 60_000;
+/**
+ * How far past this service's clock a purge cutoff may lie before it is refused. The cutoff is the object store's clock,
+ * which may differ from this host's, so the bound is one only a bug would exceed; a cutoff past the warning mark is
+ * accepted and logged.
+ */
+const PURGE_CUTOFF_FUTURE_LIMIT_MS = 15 * 60_000;
+const PURGE_CUTOFF_FUTURE_WARN_MS = 60_000;
 /** The record folder's sentinel area: listings leave it out and the purge that follows it removes it with the folder. */
 const PURGE_CUTOFF_FOLDER = 'purge-cutoff';
 
@@ -1458,11 +1463,17 @@ export class StorageController {
       const adapter = await this.initializeStorageAdapter(req);
       const root = paidResultsRecordRoot(orgId, recordParam);
       // The cutoff is an instant the store's own clock returned (`purge-cutoff`): one in the future is not one.
-      if (
-        beforeQuery !== undefined &&
-        Number(beforeQuery) > Date.now() + PURGE_CUTOFF_FUTURE_SLACK_MS
-      ) {
-        throw new BadRequestError('before is in the future');
+      if (beforeQuery !== undefined) {
+        const aheadMs = Number(beforeQuery) - Date.now();
+        if (aheadMs > PURGE_CUTOFF_FUTURE_LIMIT_MS) {
+          throw new BadRequestError('before is in the future');
+        }
+        if (aheadMs > PURGE_CUTOFF_FUTURE_WARN_MS) {
+          this.logger.warn(
+            'Paid-result purge cutoff is ahead of this service clock',
+            { aheadMs },
+          );
+        }
       }
       if (beforeQuery === undefined) {
         await adapter.deleteTree(root);
@@ -1529,8 +1540,9 @@ export class StorageController {
       }
       const adapter = await this.initializeStorageAdapter(req);
       const root = paidResultsRecordRoot(orgId, recordParam);
-      const folder = `${root}/${PURGE_CUTOFF_FOLDER}/`;
-      const key = `${folder}${randomUUID()}.json`;
+      // A folder of its own, so the lookup never depends on how many other sentinels a crash left beside it.
+      const folder = `${root}/${PURGE_CUTOFF_FOLDER}/${randomUUID()}/`;
+      const key = `${folder}stamp.json`;
       await adapter.uploadDocumentToStorageService({
         buffer: Buffer.from('{}'),
         documentPath: key,

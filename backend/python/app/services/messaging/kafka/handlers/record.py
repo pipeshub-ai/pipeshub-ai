@@ -127,6 +127,7 @@ from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
 from app.services.paid_cache.cache import RefreshPurgeInProgress
+from app.services.paid_cache.cache import writes_enabled as paid_cache_writes_enabled
 from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
@@ -2353,6 +2354,10 @@ class RecordEventHandler(BaseEventService):
                                 # (never this process's): a DELETE that lands after this delivery lost its lease leaves
                                 # what the delivery that took over has stored since.
                                 cutoff_ms = await paid_cache.purge_cutoff(refresh_org, record_id)
+                                if cutoff_ms is None and paid_cache_writes_enabled():
+                                    # A storage service of an earlier release cannot name a cutoff, and a purge without
+                                    # one could remove what a delivery that took over has stored: wait for the update.
+                                    raise RefreshPurgeInProgress("storage cannot yet give a purge cutoff")
                                 await paid_cache.purge_record(refresh_org, record_id, before_ms=cutoff_ms)
                     except RefreshPurgeInProgress as exc:
                         # Nothing has been written for this delivery: the bookkeeping below skips it, as for a

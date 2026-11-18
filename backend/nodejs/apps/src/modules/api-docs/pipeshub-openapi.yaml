@@ -38413,7 +38413,8 @@ paths:
         is a success. With `before` only objects last written before that instant are removed, so a
         purge that lands late leaves what a newer run stored since. `before` must be an instant the
         storage service itself returned from `purge-cutoff` (an upper bound on what may go): one in
-        the future is refused with 400.
+        the future by more than 15 minutes (a store clock may differ a little from this host's) is
+        refused with 400.
       operationId: internalPurgeRecordPaidResults
       security:
         - scopedToken: []
@@ -38421,7 +38422,7 @@ paths:
         - name: before
           in: query
           required: false
-          description: Milliseconds since the epoch, as returned by `purge-cutoff`; not in the future.
+          description: Milliseconds since the epoch, as returned by `purge-cutoff`; not more than 15 minutes ahead of this service's clock.
           schema:
             type: integer
             minimum: 1
@@ -38438,7 +38439,7 @@ paths:
                   purged:
                     type: boolean
         '400':
-          description: The record id or `before` is not valid, or `before` is in the future (`VALIDATION_ERROR`).
+          description: The record id or `before` is not valid, or `before` is more than 15 minutes in the future (`VALIDATION_ERROR`).
           content:
             application/json:
               schema:

@@ -87,6 +87,7 @@ class NodePaidResultStore:
     def __init__(self, blob_storage: "BlobStorage", logger: logging.Logger | None = None) -> None:
         self._blob_storage = blob_storage
         self.logger = logger or logging.getLogger(__name__)
+        self._cutoff_route_warned = False
         # Reuses the artifact client's reply handling and its URL transfer helpers.
         self._artifacts = NodeArtifactStore(blob_storage, self.logger)
 
@@ -201,7 +202,13 @@ class NodePaidResultStore:
             body = await self._call(
                 org_id, "POST", Routes.STORAGE_PAID_RESULTS_PURGE_CUTOFF.value.format(recordId=record_id), latch=False,
             )
-        except ArtifactRoutesUnavailable:
+        except ArtifactRoutesUnavailable as exc:
+            if not self._cutoff_route_warned:
+                self._cutoff_route_warned = True
+                self.logger.warning(
+                    "Storage has no purge-cutoff route (HTTP %d): a refresh purge goes without a cutoff there, or is "
+                    "handed back while paid-result writes are on; update the storage service", exc.status,
+                )
             return None
         return int(body["cutoff"])
 

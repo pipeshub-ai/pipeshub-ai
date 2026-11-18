@@ -126,7 +126,7 @@ async def test_a_purge_cutoff_in_the_future_is_refused_and_removes_nothing(store
     path = f"ocr_page/{'a' * 64}.json"
     try:
         assert await store.put(org, rec, path, b"{}") is True
-        for ahead_s in (120, 600):
+        for ahead_s in (1800, 7200):
             with pytest.raises(Exception, match="400|before"):
                 await store.purge_record(org, rec, before_ms=int((time.time() + ahead_s) * 1000))
         assert [f.path for f in await store.list_files(org, rec)] == [path]
