@@ -31,6 +31,7 @@ import {
   rendererNode,
   scrollDocumentOf,
   scrollViewer,
+  waitForPreviewFrameLoad,
   waitForScrollToSettle,
   visiblePdfPage,
   type Cite,
@@ -159,10 +160,11 @@ test.describe('Citation viewer cache', () => {
     ]);
     await jumpTo(page, 1);
     // The docx preview draws its document inside a sandboxed frame, which scrolls on its own. The first
-    // jump's smooth scroll (sent again when the frame loads) has to finish before scrolling away, or it
-    // would bring the paragraph back and the second click would not be what is tested.
+    // jump's scrolls, including the one the viewer sends again when the frame loads, have to finish before
+    // scrolling away, or one would bring the paragraph back and the second click would not be what is tested.
     const para = previewFrame(page).getByText('PARA-80', { exact: false }).first();
     await expect(para).toBeVisible({ timeout: 60_000 });
+    await waitForPreviewFrameLoad(page);
     await expect.poll(() => isInView(para), { timeout: 15_000 }).toBe(true);
     await waitForScrollToSettle(para);
     await scrollDocumentOf(para, 'top');

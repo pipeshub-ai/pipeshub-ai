@@ -141,6 +141,17 @@ export async function scrollDocumentOf(locator: Locator, to: 'top' | 'bottom'): 
   }, to);
 }
 
+/**
+ * Waits for the preview's frame to finish loading. The viewer sends the active citation to the frame again
+ * on `load`, and the frame scrolls to it, so a scroll started before then can be followed by another.
+ */
+export async function waitForPreviewFrameLoad(page: Page): Promise<void> {
+  const handle = await rendererNode(page).locator('iframe').first().elementHandle();
+  const frame = await handle?.contentFrame();
+  if (!frame) throw new Error('the preview shows no frame');
+  await frame.waitForLoadState('load');
+}
+
 /** Waits until the document `locator` lives in stops scrolling: a smooth scroll still running would move it later. */
 export async function waitForScrollToSettle(locator: Locator): Promise<void> {
   let last: number | null = null;
