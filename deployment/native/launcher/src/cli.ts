@@ -3,7 +3,7 @@
 //                                {"event":"progress","stage","message"} ... {"event":"ready","url","ports","healthy_after_s","pid","data_dir"}
 //                                then {"event":"stopping"} {"event":"stopped"} on TERM/INT. Exit 0 stopped on request, 1 start-up failed,
 //                                3 a service died. --detach returns after "ready" and leaves the launcher running.
-//   pipeshub-native stop   [--data-dir D] [--json]               stops a running launcher and everything under it (exit 0 also if none runs)
+//   pipeshub-native stop   [--data-dir D] [--json]               stops a running launcher and everything under it (exit 0 also if none runs, 1 stop_failed)
 //   pipeshub-native status [--data-dir D] [--json]               {"running":bool,"phase","pid","url","ports","services"...}; exit 0 running, 3 not
 //   pipeshub-native health [--data-dir D] [--json]               {"healthy":bool,"checks":{...}}; exit 0 healthy, 1 not
 // Every JSON object has an "event" field. Other options: --bundle D (default: the folder above the launcher's), --port-base N.
