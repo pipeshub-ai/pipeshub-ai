@@ -379,8 +379,8 @@ services:
       # All interfaces of this container, which is only on the internal
       # sandbox-control network (the proxy itself defaults to loopback).
       - DOCKER_PROXY_HOST=0.0.0.0
-      # Names this stack on the containers it creates. Blank: the Compose project.
-      - DOCKER_PROXY_INSTANCE=${DOCKER_PROXY_INSTANCE:-}
+      # Names this stack on the containers it creates. Blank: the Compose project (compose:<project>).
+      - DOCKER_PROXY_INSTANCE=${DOCKER_PROXY_INSTANCE:-compose:${COMPOSE_PROJECT_NAME}}
       # Also remove leftover sandbox containers that carry no stack name (from a
       # proxy before this one). Off: another stack on the daemon may still run one.
       - DOCKER_PROXY_REAP_UNLABELED=${DOCKER_PROXY_REAP_UNLABELED:-false}

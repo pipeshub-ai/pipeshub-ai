@@ -26,7 +26,7 @@ FILES=(
 # variable|default|override|where ("app", "proxy" or "app proxy")
 VARS=(
   "SANDBOX_MAX_RUN_TIMEOUT_S|300|900|app proxy"
-  "DOCKER_PROXY_INSTANCE||stack-a|proxy"
+  "DOCKER_PROXY_INSTANCE|compose:sandbox-env-test|stack-a|proxy"
   "DOCKER_PROXY_REAP_UNLABELED|false|true|proxy"
   "SANDBOX_MAX_TOTAL||7|app"
   "SANDBOX_MAX_PER_ORG||3|app"
@@ -72,13 +72,14 @@ VARS=(
   "SANDBOX_DEPS_MAX_TOTAL_BYTES||100000000|app"
 )
 
-# render <compose-file> <out.json> [VAR=value...]: every profile, an empty environment plus the given variables.
+# render <compose-file> <out.json> [VAR=value...]: every profile, an empty environment plus the given variables,
+# under a fixed project name so defaults derived from it are known.
 render() {
   local file="$1" out="$2"; shift 2
   local envf="$TMP/render.env"
   : > "$envf"
   (( $# )) && printf '%s\n' "$@" > "$envf"
-  env -i PATH="$PATH" HOME="$HOME" $DOCKER compose -f "$COMPOSE_DIR/$file" \
+  env -i PATH="$PATH" HOME="$HOME" $DOCKER compose -p sandbox-env-test -f "$COMPOSE_DIR/$file" \
     --env-file "$envf" --profile '*' config --format json > "$out"
 }
 
