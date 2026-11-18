@@ -31,6 +31,13 @@ export function getUserIdFromToken(): string | null {
   return (payload?.userId as string) || null;
 }
 
+export function getOrgIdFromToken(): string | null {
+  const token = useAuthStore.getState().accessToken;
+  if (!token) return null;
+  const payload = decodeJwtPayload(token);
+  return (payload?.orgId as string) || null;
+}
+
 export function getUserEmailFromToken(): string | null {
   const token = useAuthStore.getState().accessToken;
   if (!token) return null;

@@ -294,40 +294,32 @@ def test_a_local_memory_incident_outlasts_the_shared_ramp(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_a_slow_ledger_step_does_not_stall_the_event_loop_or_an_incident_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The step (a ledger lock held by a slow process) does not return until an incident report has run to the end
+    meanwhile, which needs both the event loop and the state lock free during the step. Shown by order, not by the
+    loop's longest gap, which a busy runner stretches."""
     import asyncio
-    import time
+    import threading
 
     g = _governor(tmp_path, monkeypatch, auto=True)
     real_step = g._container.step
-    release = {"at": 0.0}
+    step_started, incident_done = threading.Event(), threading.Event()
+    seen: dict[str, bool] = {}
 
     def slow_step(**kw: object) -> object:
-        time.sleep(0.4)  # a ledger lock held by a slow process
-        release["at"] = time.monotonic()
+        step_started.set()
+        seen["incident during the step"] = incident_done.wait(10)
         return real_step(**kw)
 
     monkeypatch.setattr(g._container, "step", slow_step)
-    gaps: list[float] = []
-
-    async def ticker() -> None:
-        last = time.monotonic()
-        while not release["at"]:
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
-
-    incident_took: list[float] = []
 
     async def incident() -> None:
-        await asyncio.sleep(0.1)  # while the step runs
-        started = time.monotonic()
+        assert await asyncio.to_thread(step_started.wait, 10)
         await asyncio.to_thread(g.report_memory_incident, "test")
-        incident_took.append(time.monotonic() - started)
+        incident_done.set()
 
-    await asyncio.gather(g._sample_once(), ticker(), incident())
-    assert max(gaps) < 0.2, max(gaps)  # the loop kept running during the 0.4 s step
-    assert incident_took[0] < 0.2  # the state lock was not held across the step
+    await asyncio.wait_for(asyncio.gather(g._sample_once(), incident()), 30)
+    # False if the step ran on the loop (the incident could not run) or held the state lock (the report waited for it)
+    assert seen == {"incident during the step": True}
     # the incident's state stands after the step's result is applied
     assert g._state.get(Pool.HEAVY_PARSE).cooldown_until > 0
 

@@ -321,7 +321,7 @@ access token (never `client_credentials` through DCR).
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `PIPESHUB_ENABLE_DCR` | off (only `true` enables it) | `POST /api/v1/oauth2/register` |
+| `PIPESHUB_ENABLE_DCR` | on (`false` disables it) | `POST /api/v1/oauth2/register` |
 | `PIPESHUB_ENABLE_DEVICE_GRANT` | on | `POST /api/v1/oauth2/device_authorization` and the device `grant_type` |
 | `PIPESHUB_ENABLE_CIMD` | on (`false` disables it) | An https URL that serves an OAuth Client ID Metadata Document is accepted as `client_id` |
 | `MCP_ALLOWED_ORIGINS` | none | Extra browser origins (comma-separated) allowed to call `/mcp`, e.g. a browser-based MCP inspector |
@@ -351,9 +351,9 @@ flow. It is hidden from Developer Settings. Public clients that
 self-register still use `token_endpoint_auth_method: none`. Request
 `urn:ietf:params:oauth:grant-type:device_code` in `grant_types` if a
 *self-registered* agent will poll the device grant. The user completes
-consent at `/oauth/device`. Unauthenticated DCR is off by default so a
-stock instance cannot be used for consent phishing. Operators who want
-agents to self-register set `PIPESHUB_ENABLE_DCR=true`. The consent screen
+consent at `/oauth/device`. DCR is on by default so MCP clients can
+register themselves. Operators who do not want unauthenticated
+self-registration set `PIPESHUB_ENABLE_DCR=false`. The consent screen
 warns when the app registered itself (`isDynamic`) rather than being the
 official agent app or created by an administrator.
 

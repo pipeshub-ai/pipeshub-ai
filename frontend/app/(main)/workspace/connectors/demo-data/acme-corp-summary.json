@@ -1,0 +1,138 @@
+{
+  "company": "Acme Corp",
+  "recordCount": 65,
+  "tools": [
+    {
+      "name": "GitHub",
+      "places": 2,
+      "records": 14
+    },
+    {
+      "name": "Jira",
+      "places": 3,
+      "records": 8
+    },
+    {
+      "name": "Slack",
+      "places": 7,
+      "records": 15
+    },
+    {
+      "name": "Google Drive",
+      "places": 11,
+      "records": 22
+    },
+    {
+      "name": "ServiceNow",
+      "places": 2,
+      "records": 6
+    }
+  ],
+  "people": [
+    {
+      "name": "Alice Chen",
+      "title": "Senior engineer, Payments",
+      "email": "alice@acme-demo.example",
+      "signIn": true
+    },
+    {
+      "name": "Bob Okafor",
+      "title": "Support lead",
+      "email": "bob@acme-demo.example",
+      "signIn": true
+    },
+    {
+      "name": "Priya Natarajan",
+      "title": "Engineer, Payments",
+      "signIn": false
+    },
+    {
+      "name": "Marcus Webb",
+      "title": "Engineering manager, Payments",
+      "signIn": false
+    },
+    {
+      "name": "Dana Okafor",
+      "title": "Staff engineer, Platform",
+      "signIn": false
+    },
+    {
+      "name": "Sam Reyes",
+      "title": "Support engineer",
+      "signIn": false
+    },
+    {
+      "name": "Lena Fischer",
+      "title": "VP Sales",
+      "signIn": false
+    },
+    {
+      "name": "Omar Haddad",
+      "title": "Account executive",
+      "signIn": false
+    },
+    {
+      "name": "Nina Park",
+      "title": "Product marketing manager",
+      "signIn": false
+    },
+    {
+      "name": "Ingrid Larsen",
+      "title": "Finance controller",
+      "signIn": false
+    },
+    {
+      "name": "Tomás Rivera",
+      "title": "People partner",
+      "signIn": false
+    }
+  ],
+  "restricted": [
+    {
+      "group": "Pricing committee",
+      "records": [
+        "Enterprise pricing strategy 2026",
+        "#pricing-committee thread: 2026 enterprise pricing draft (2026-04-02)"
+      ],
+      "signInReaders": [
+        "Bob Okafor"
+      ]
+    },
+    {
+      "group": "Deal desk",
+      "records": [
+        "Deal desk decision — Northwind Traders renewal"
+      ],
+      "signInReaders": [
+        "Bob Okafor"
+      ]
+    },
+    {
+      "group": "Launch core team",
+      "records": [
+        "Next launch — embargoed brief"
+      ],
+      "signInReaders": [
+        "Alice Chen"
+      ]
+    },
+    {
+      "group": "Payments contract readers",
+      "records": [
+        "Payment processing agreement 2026"
+      ],
+      "signInReaders": [
+        "Alice Chen"
+      ]
+    },
+    {
+      "group": "People managers",
+      "records": [
+        "Compensation bands 2026"
+      ],
+      "signInReaders": [
+        "Bob Okafor"
+      ]
+    }
+  ]
+}

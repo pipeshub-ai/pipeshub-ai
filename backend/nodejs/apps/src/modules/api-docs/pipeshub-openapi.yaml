@@ -144,7 +144,7 @@ tags:
         It's shown exactly once, at creation.
 
       **Expiry and scopes**
-      - `expiryDays`: `30` (default), `90`, `365`, or `never`.
+      - `expiryDays`: `7`, `30` (default), `90`, or `365`.
       - Scopes default to the org's full configured `MCP_SCOPES` set if none
         are requested; `GET /personal-access-tokens/scopes` lists what's
         available.
@@ -3282,7 +3282,7 @@ components:
         registration_endpoint:
           type: string
           format: uri
-          description: Dynamic client registration endpoint (RFC 7591). Present only when dynamic client registration is enabled (`PIPESHUB_ENABLE_DCR=true`).
+          description: Dynamic client registration endpoint (RFC 7591). Present unless dynamic client registration is disabled (`PIPESHUB_ENABLE_DCR=false`).
         client_id_metadata_document_supported:
           type: boolean
           description: "`true` when a client may use an https URL that serves its OAuth Client ID Metadata Document as its `client_id`, without registering first. The document is fetched at authorization time. Omitted when `PIPESHUB_ENABLE_CIMD=false`."
@@ -4072,18 +4072,13 @@ components:
           example: ["kb:read", "semantic:write"]
           maxItems: 100
         expiryDays:
-          oneOf:
-            - type: integer
-              enum: [30, 90, 365]
-            - type: string
-              enum: ["never"]
+          type: integer
+          enum: [7, 30, 90, 365]
           description: |
-            Token lifetime. Defaults to `30` if omitted — a token minted
-            without an explicit choice shouldn't default to the longest
-            lifetime. `"never"` is stored as a ~100-year expiry (the
-            underlying schema field is required and TTL-indexed, so there's
-            no literal null option). Any other value, including `null` and the
-            string `"30"`, is a `400` validation error.
+            Token lifetime in days. Defaults to `30` if omitted. Any other
+            value, including `"never"`, `null` and the string `"30"`, is a
+            `400` validation error. Tokens created earlier keep the
+            expiry they were issued with.
           default: 30
           example: 30
         knowledgeLimit:
@@ -18703,7 +18698,8 @@ components:
             Unique feature flag key. Current keys: ENABLE_MCP, ENABLE_API_TOOLSETS, ENABLE_ACTIONS,
             ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_CHAT_COMPARE, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
             ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_ARTIFACT_WRITE,
-            ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
+            ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_RECORD_PREVIEW_CACHE,
+            ENABLE_KH_SCOPE_LISTING.
             ENABLE_BETA_CONNECTORS is hidden and never listed here.
           example: "ENABLE_MCP"
         label:
@@ -24973,6 +24969,16 @@ components:
         message:
           type: string
           description: Set when nothing matched.
+        incomplete:
+          type: boolean
+          description: >-
+            Present (true) when the search ran out of time before every match could be checked against
+            the caller's access, so an entity the caller can reach may be missing. Every listed result
+            was checked; search again for the rest. Absent when the search finished. A search that
+            checked nothing at all fails with 503 instead.
+        incompleteNote:
+          type: string
+          description: Set with `incomplete`; says what it means for the results.
         results:
           type: array
           items:
@@ -28555,7 +28561,7 @@ paths:
           description: |
             Invalid request: a `VALIDATION_ERROR` from the body validator (missing,
             empty or over-long `name`, `scopes` not a non-empty list, `expiryDays`
-            other than 30, 90, 365 or "never", a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that is not a UUID, or no id at all or more than 50 once duplicates are dropped), or a requested scope that isn't in
+            other than 7, 30, 90 or 365, a `knowledgeLimit` with a key other than `apps`, `recordGroups` and `records`, an id that is not a UUID, or no id at all or more than 50 once duplicates are dropped), or a requested scope that isn't in
             the org's configured `MCP_SCOPES` (refused by the service, code
             `OAUTH_INVALID_SCOPE`).
 
@@ -40144,6 +40150,11 @@ paths:
 
         A record that does not exist, one the caller has no access to and one that is in the
         trash all answer `404` with the same message, so a record's existence is not revealed.
+
+        **Opening content.** A request that carries the header `X-Record-Content-Open: 1` is
+        the first call of a content open. For a record from a connected source it also refuses
+        what the content route would refuse: `404` when the connector no longer exists and
+        `409` when it is disabled. Without the header the answer is unchanged.
       operationId: getRecordById
       x-pipeshub-sdk: true
       security:
@@ -40852,6 +40863,27 @@ paths:
         itself (`400`, `401`, scope `403`, malformed body `500`) use `ErrorResponse`.
 
         **Request:** unknown query parameters are ignored.
+
+        **Caching and ranges.** A request without `If-None-Match` and without the header
+        `X-Record-Content-Open: 1` is answered as it always was, whatever other headers it
+        carries (a bare `Range` or `If-Range` is ignored and the whole file is sent). A request that carries
+        `If-None-Match` or that header gets `Cache-Control: private, no-store`, and for a file
+        stored in the platform's own storage an `ETag` that changes when the stored file changes
+        (a converted PDF has a weak `ETag`). A client may send that value back in
+        `If-None-Match`; if the file is unchanged and the caller may read it, the answer is `304`
+        with no body. Every refusal is evaluated first, so a caller without access gets the
+        refusal even with a valid `If-None-Match`, and a refusal never carries an `ETag`.
+        Content from a connected source and artifact content carry no `ETag` and never answer
+        `304`.
+
+        The original bytes of a stored file can be read in parts, on a request that also carries
+        `If-None-Match` or `X-Record-Content-Open: 1`: a request with one range,
+        `Range: bytes=a-b` or `bytes=a-`, of at most 8 MiB is answered `206` with `Content-Range`,
+        and `Accept-Ranges: bytes` says so. A range that starts at or after the end of the file is
+        answered `416` with `Content-Range: bytes */<length>`. Any other `Range` (a suffix, several
+        ranges, a larger span, a malformed value) is ignored and the whole file is sent. A request
+        with `If-Range` is answered with a range only while the value is the current strong
+        `ETag`; otherwise the whole file is sent. A converted PDF is never answered in parts.
       operationId: streamRecordBuffer
       x-pipeshub-sdk: true
       security:
@@ -74687,8 +74719,8 @@ paths:
         Lets a client register itself without a signed-in user. The client is bound to the
         instance's organization and is hidden from the `/oauth-clients` management routes.
 
-        **Disabled by default.** Unless the server runs with `PIPESHUB_ENABLE_DCR=true`, every
-        request that passes schema validation is answered with `403 access_denied`. When it is
+        **Enabled by default.** When the server runs with `PIPESHUB_ENABLE_DCR=false`, every
+        request that passes schema validation is answered with `403 access_denied`. While it is
         enabled, `/.well-known/openid-configuration` advertises this route as `registration_endpoint`.
 
         **Limits on what can be registered:**

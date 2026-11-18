@@ -1624,6 +1624,8 @@ class Processor:
             status_update["reason"] = ""
         elif reason is not None:
             status_update["reason"] = reason
+        if indexing_status == ProgressStatus.FAILED:
+            status_update["failedAt"] = timestamp
         # The parsing-service path writes parsingStatus=IN_PROGRESS before it
         # dispatches. Left there with processingStartedAt cleared, the record
         # reads as a crashed parse and stale recovery republishes it for ever.

@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     AppGroups,
     CollectionNames,
     Connectors,
@@ -280,14 +281,17 @@ MIN_ISSUE_PAGE_SIZE: int = 10
 INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 # Stored in a project's checkpoint once its issues are filed the way _extract_issue_data
 # files them. A project without it was synced under another rule (every story under its
-# epic, or none), and has every stored issue re-read once so they move.
-ISSUE_PLACEMENT: str = "stories-under-readable-epic"
+# epic, or none; every sub-task under its parent), and has every stored issue re-read once
+# so they move.
+ISSUE_PLACEMENT: str = "issues-under-readable-parent"
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
 SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
 PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
+# The linked accounts with a hidden email the directory held at the last sync that knew product access.
+ADMITTED_WITHOUT_EMAIL_KEY: str = "admitted_without_email"
 # An Atlassian account id ("557058:f58131cb-...", "5b10ac8d82e05b22cc7d4ef5"), safe to quote in JQL.
 JIRA_ACCOUNT_ID = re.compile(r"[A-Za-z0-9:_-]{1,128}")
 # What _files_under_parent needs to know about a parent, which Jira's `parent` field does
@@ -355,11 +359,10 @@ def _issue_type_of(fields: dict[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], issue_type) if isinstance(issue_type, dict) else {}
 
 
-def _may_parent_a_story(fields: dict[str, Any]) -> bool:
-    """Epics and the levels above them. A story or task is only ever a sub-task's parent."""
+def _may_parent_an_issue(fields: dict[str, Any]) -> bool:
+    """Any issue but a sub-task: an epic (or higher) parents stories, a story or task parents sub-tasks."""
     issue_type = _issue_type_of(fields)
-    level = issue_type.get("hierarchyLevel")
-    return not issue_type.get("subtask") and not (isinstance(level, int) and level <= 0)
+    return not issue_type.get("subtask") and issue_type.get("hierarchyLevel") != -1
 
 
 @ConnectorBuilder("Jira")\
@@ -536,6 +539,9 @@ class JiraConnector(BaseConnector):
         # 5xx, a network error, an unparseable body). Projects granted through an application
         # role then keep their stored access this sync instead of losing those groups.
         self._app_roles_unread: bool = False
+        # True when a 200 list of readable roles came back, each granting product access only through its
+        # groups: then the product groups' members are everyone with Jira product access.
+        self._app_roles_read: bool = False
         # Keys of the projects whose scheme grants an application role the unread role list
         # could not map: their access list may be partial this sync.
         self._projects_naming_unread_roles: set[str] = set()
@@ -992,7 +998,7 @@ class JiraConnector(BaseConnector):
                 )
             self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
             licensed_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
-            unlicensed_ids = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+            unlicensed_ids = self._unlicensed_ids(jira_users, licensed_users)
             jira_users = licensed_users
             # Their issues were written without their own grants (or lost them when withdrawn).
             self._newly_listed_account_ids = await self._note_newly_listed(jira_users)
@@ -1384,6 +1390,8 @@ class JiraConnector(BaseConnector):
         parent_external_id = issue_data["parent_external_id"]
         if issue_data["parent_unread"] and stub.parent_external_record_id == issue_data["parent_unread"]:
             parent_external_id = issue_data["parent_unread"]
+        if issue_data["subtask_unplaced"]:
+            parent_external_id = stub.parent_external_record_id
         issue_key = issue_data["issue_key"]
         atlassian_domain = self.site_url or ""
 
@@ -2253,7 +2261,7 @@ class JiraConnector(BaseConnector):
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
         "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles", "_app_roles_mapping",
-        "_licensed_account_ids",
+        "_licensed_account_ids", "_app_roles_read",
     )
     user_link_steps = ("_link_users_groups_and_roles",)
 
@@ -2641,9 +2649,13 @@ class JiraConnector(BaseConnector):
         Always fetches fresh data from the API so that group membership
         changes in Jira are picked up on every sync.
         """
+        # GET /rest/api/3/applicationrole: "Permissions required: Administer Jira global permission"; 403: "Returned if
+        # the user is not an administrator". Any answer but a 200 list leaves product access unknown.
+        # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/)
         mapping: dict[str, list[dict[str, str]]] = {}
         self._app_roles_forbidden = False
         self._app_roles_unread = False
+        self._app_roles_read = False
         self._projects_naming_unread_roles = set()
 
         try:
@@ -2691,6 +2703,7 @@ class JiraConnector(BaseConnector):
                 self._app_roles_unread = True
                 return {}
 
+            access_outside_groups = False
             for role in roles_data:
                 role_key = role.get("key") if isinstance(role, dict) else None
                 if not role_key:
@@ -2699,8 +2712,25 @@ class JiraConnector(BaseConnector):
                     self._app_roles_unread = True
                     continue
                 group_details = role.get("groupDetails", [])
+                role_outside_groups = False
+                if not group_details and isinstance(role.get("userCount"), int) and role["userCount"] > 0:
+                    # Users count against this role's licence, but no group grants it: who they are is not read here.
+                    # ApplicationRole.userCount: "The number of users counting against your license."; groupDetails:
+                    # "The groups associated with the application role." The docs name no other source of product
+                    # access, so a role with users and no group leaves access unknown (fail closed).
+                    # (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json)
+                    role_outside_groups = True
+                named = role.get("groups") if isinstance(role.get("groups"), list) else []
+                identified = [g for g in group_details if isinstance(g, dict) and g.get("groupId")]
+                if len(identified) < max(len(named), len(group_details)):
+                    # ApplicationRole.groups: "The groups associated with the application role. As a group's name can
+                    # change, use of `groupDetails` is recommended to identify a groups." A group the role names but its
+                    # groupDetails do not identify by id licenses people this read cannot name (fail closed).
+                    role_outside_groups = True
+                # Not mapped: a grant to it reads as unread (stored access kept), not as the groups that were read.
+                access_outside_groups = access_outside_groups or role_outside_groups
 
-                if role_key and group_details:
+                if role_key and group_details and not role_outside_groups:
                     mapping[role_key] = [
                         {"groupId": g.get("groupId"), "name": g.get("name")}
                         for g in group_details
@@ -2710,6 +2740,11 @@ class JiraConnector(BaseConnector):
 
             if self._app_roles_unread:
                 self.logger.warning("⚠️ Application roles response has an entry that is not a readable role")
+            self._app_roles_read = bool(roles_data) and not self._app_roles_unread and not access_outside_groups
+            if access_outside_groups:
+                # A role licenses people its groups do not show: a Browse grant to it is unread, not the groups read,
+                # so the projects that name it keep their stored access.
+                self._app_roles_unread = True
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -2727,29 +2762,17 @@ class JiraConnector(BaseConnector):
     ) -> list[AppUser]:
         """The users with access to a Jira product: members of a group of some application role.
 
-        Jira treats any other account as anonymous, so its group, role and user grants never
-        reach it. When the roles or a role group's members can't be read, every user is kept.
+        Jira treats any other account as anonymous, so its group, role and user grants never reach it. When
+        product access can't be read in full (roles refused or unread, a role licensing users outside its
+        groups, a product group's members unread), the accounts already linked and the connector's own keep
+        the connector, and no other account is linked. Roles read in full with no group license nobody.
         """
         self._licensed_account_ids = None
-        if self._app_roles_unread:
-            # Some roles are missing from the mapping, so their members are unknown, not unlicensed.
-            self.logger.warning("⚠️ Not every application role could be read; keeping every Jira user")
-            return jira_users
-        role_groups = {
-            g["name"]: g["groupId"]
-            for groups in app_roles_mapping.values() for g in groups if g.get("name")
-        }
-        if not role_groups:
-            return jira_users
-        licensed: set[str] = set()
-        for name, group_id in role_groups.items():
-            members, ok = await self._fetch_group_members(group_id, name)
-            if not ok:
-                self.logger.warning(
-                    "⚠️ Could not read the members of product group %s; keeping every Jira user", name
-                )
-                return jira_users
-            licensed.update(members)
+        licensed = await self._read_licensed_ids(app_roles_mapping)
+        if licensed is None:
+            keep = {u.source_user_id for u in self._stored_app_users} | {self._authenticated_jira_account_id}
+            self.logger.warning("⚠️ Jira product access could not be read; linking no new Jira user this sync")
+            return [u for u in jira_users if u.source_user_id in keep]
         kept = [u for u in jira_users if u.source_user_id in licensed]
         self._licensed_account_ids = licensed
         if len(kept) < len(jira_users):
@@ -2757,6 +2780,23 @@ class JiraConnector(BaseConnector):
                 f"👥 {len(jira_users) - len(kept)} Jira user(s) without Jira product access left out"
             )
         return kept
+
+    async def _read_licensed_ids(self, app_roles_mapping: dict[str, list[dict[str, str]]]) -> set[str] | None:
+        """The account ids with Jira product access, or None when they can't be read in full."""
+        if not self._app_roles_read:
+            return None
+        licensed: set[str] = set()
+        # By id: GroupName.groupId "uniquely identifies the group across all Atlassian products" and its name is
+        # optional (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json); /group/member reads by id.
+        role_groups = {g["groupId"]: g.get("name") or g["groupId"]
+                       for groups in app_roles_mapping.values() for g in groups if g.get("groupId")}
+        for group_id, name in role_groups.items():
+            members, ok = await self._fetch_group_members(group_id, name)
+            if not ok:
+                self.logger.warning("⚠️ Could not read the members of product group %s", name)
+                return None
+            licensed.update(members)
+        return licensed
 
     async def _withdraw_ineligible_app_users(self, jira_users: list[AppUser], ineligible_ids: set[str]) -> None:
         """Take the connector away from stored users whose account Jira reports deactivated or
@@ -2810,10 +2850,35 @@ class JiraConnector(BaseConnector):
             return []
         return [u for u in self._stored_app_users if u.source_user_id not in self._seen_account_ids]
 
+    def _unlicensed_ids(self, jira_users: list[AppUser], licensed_users: list[AppUser]) -> set[str]:
+        """The listed accounts without product access: those the directory read dropped, and the linked accounts the list
+        shows active whose email is hidden (``_fetch_users`` keeps a cached account only with an email, so they are not in
+        ``jira_users``). None of the latter while product access is unknown."""
+        dropped = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+        licensed = self._licensed_account_ids
+        if licensed is None:
+            return dropped
+        return dropped | {u.source_user_id for u in self._stored_app_users if u.source_user_id and not u.email
+                          and u.source_user_id in self._listed_account_ids and u.source_user_id not in licensed}
+
+    def _listed_without_email(self) -> list[AppUser]:
+        """The linked accounts the user list shows active and with product access whose email is hidden: synced, yet
+        left out of the directory a sync builds (it keeps a cached account only with an email), so held by account."""
+        licensed = self._licensed_account_ids
+        if licensed is None:
+            return []  # product access unknown: no one is granted (``_keep_licensed_users``)
+        return [u for u in self._stored_app_users
+                if u.source_user_id and not u.email and u.source_user_id in self._listed_account_ids and u.source_user_id in licensed]
+
+    def _directory_extra(self) -> list[AppUser]:
+        """The linked accounts an issue's people also resolve against: on a user list not read in full, those it did not
+        show (the last complete state); and those it listed whose email the directory does not hold."""
+        return [*self._linked_not_read(), *self._listed_without_email()]
+
     def _grant_directory(self, user_by_account_id: dict[str, AppUser]) -> dict[str, AppUser]:
-        """The accounts an issue's people resolve against: the synced directory and, on a user list not read in full,
-        the linked accounts it did not show (the last complete state, as ``_directory_grants`` counts them)."""
-        linked = self._linked_not_read()
+        """The accounts an issue's people resolve against: the synced directory and the linked accounts
+        ``_directory_extra`` adds (as ``_directory_grants`` counts them)."""
+        linked = self._directory_extra()
         return {**{u.source_user_id: u for u in linked if u.source_user_id}, **user_by_account_id} if linked else user_by_account_id
 
     def _directory_grants(self, permissions: list[Permission], user_by_account_id: dict[str, AppUser]) -> list[Permission]:
@@ -2826,7 +2891,7 @@ class JiraConnector(BaseConnector):
             self._listed_emails = (user_by_account_id, {u.email.lower() for u in user_by_account_id.values() if u.email})
         listed = self._listed_emails[1]
         accounts = set(user_by_account_id)
-        if linked := self._linked_not_read():
+        if linked := self._directory_extra():
             listed = listed | {u.email.lower() for u in linked if u.email}
             accounts |= {u.source_user_id for u in linked if u.source_user_id}
         # A grant by account (the directory holds no email for it) is kept when that account is listed.
@@ -3179,8 +3244,9 @@ class JiraConnector(BaseConnector):
                 self.logger.debug(f"  {project_key}: User permission skipped - account '{holder_param}' is inactive")
                 return grant_permissions
             elif (
+                # Product access unknown (None) is not access: the project's stored access is kept instead.
                 user_email and self._user_read_unfinished
-                and (self._licensed_account_ids is None or holder_param in self._licensed_account_ids)
+                and self._licensed_account_ids is not None and holder_param in self._licensed_account_ids
                 and user_data.get("accountType", "atlassian") == "atlassian"
             ):
                 # Only a user list cut short leaves out a licensed account. After a complete read,
@@ -3544,9 +3610,12 @@ class JiraConnector(BaseConnector):
 
         while True:
             try:
+                # "As a group's name can change, use of groupId is recommended to identify a group."
+                # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-groups/)
                 response = await self._call_with_retry(
                     lambda ds: ds.get_users_from_group(
-                        groupname=group_name,
+                        groupId=group_id or None,
+                        groupname=None if group_id else group_name,
                         includeInactiveUsers=False,
                         startAt=start_at,
                         maxResults=max_results,
@@ -3566,7 +3635,13 @@ class JiraConnector(BaseConnector):
                     break
 
                 members_data = response.json()
-                batch_members = members_data.get("values", [])
+                batch_members = members_data.get("values")
+                if not isinstance(batch_members, list):
+                    # Not an empty group: read as one, product access from it would withdraw every account.
+                    self.logger.warning(f"Members of group {group_name} came back without a member list")
+                    self._note_unread(None)
+                    ok = False
+                    break
 
                 if not batch_members:
                     break
@@ -4412,15 +4487,18 @@ class JiraConnector(BaseConnector):
         )
         # A change of who the Browse holders name on each issue moves no issue's `updated`.
         stored_browse = (project_sync_data or {}).get("browse_holders") or ""
-        if security.browse_holders is None and not stored_browse:
-            security.browse_holders = []  # nothing was granted this way before, so nothing is lost
+        if security.browse_holders is None and not stored_browse and not is_new_project:
+            # Synced before the holders were tracked: nothing was granted this way, so nothing is lost. A project
+            # with no checkpoint (never synced, or cleared by a full resync) may have stored issues they grant.
+            security.browse_holders = []
         browse = security.browse_fingerprint()
         if not is_new_project and browse not in ("?", stored_browse):
             reread, changed_levels = "project", None
-        browse_to_save = browse if browse != "?" or stored_browse else stored_browse
-        if browse == "?" and stored_browse not in ("", "?"):
-            # Saved before the walk, as the level marker is: issues written meanwhile keep their
-            # stored grants, and only this marker makes the next sync that reads them re-read.
+        browse_to_save = browse
+        if browse == "?" and stored_browse != "?":
+            # Saved before the walk, as the level marker is: issues written meanwhile keep their stored grants, and
+            # only this marker makes the next sync that reads them re-read. On a project with no checkpoint too: an
+            # issue that fails to build still moves the cursor, and the next sync must not read the holders as none.
             await self._update_project_sync_checkpoint(project_key, browse_holders="?")
             stored_browse = "?"
         if levels_to_save.get("*") == "held":
@@ -4554,8 +4632,8 @@ class JiraConnector(BaseConnector):
             failures_before = self._issue_build_failures
             if not is_new_project and reread != "project":
                 self.logger.info(
-                    f"Re-reading every stored issue of {project_key} once, to file each story "
-                    "under its epic where everyone who can read the story can read the epic"
+                    f"Re-reading every stored issue of {project_key} once, to file each story and sub-task "
+                    "under its parent where everyone who can read it can read the parent"
                 )
                 await self._reread_leveled_issues(project_key, project_id, jira_users, stats, None, every_issue=True)
                 placement_reread = True
@@ -4570,7 +4648,7 @@ class JiraConnector(BaseConnector):
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
             self.logger.warning(
-                f"Could not read {len(self._parents_to_retry)} epic(s) of {project_key}; "
+                f"Could not read {len(self._parents_to_retry)} parent issue(s) of {project_key}; "
                 "their stories are placed again next sync"
             )
             unsettled_parents = await self._save_parents_to_retry(project_key, unsettled_parents)
@@ -4722,9 +4800,25 @@ class JiraConnector(BaseConnector):
                 await self._process_new_records(batch, project_key, stats)
 
     async def _note_newly_listed(self, jira_users: list[AppUser]) -> list[str]:
-        """``_note_people_to_reread`` for the listed accounts no stored link names yet."""
+        """``_note_people_to_reread`` for the listed accounts no stored link names yet, and for the linked accounts with a
+        hidden email the directory now holds that it did not before (``_listed_without_email``: an issue written while
+        product access was unknown, or before they were listed, left out their grants)."""
         linked_before = {u.source_user_id for u in self._stored_app_users}
-        return await self._note_people_to_reread({u.source_user_id for u in jira_users if u.source_user_id} - linked_before)
+        newly = {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
+        try:
+            held = set(json.loads(
+                ((await self.issues_sync_point.read_sync_point(ADMITTED_WITHOUT_EMAIL_KEY)) or {}).get("accounts") or "[]"))
+        except (TypeError, ValueError):
+            held = set()
+        # Product access unknown: the directory holds none of them and issues written now leave their grants out, so
+        # none is held and the next sync that knows reads them all again.
+        admitted = {u.source_user_id for u in self._listed_without_email()}
+        newly |= admitted - held
+        pending = await self._note_people_to_reread(newly)
+        if admitted != held:
+            # After the accounts to re-read are saved: a sync that fails in between re-reads them, never forgets them.
+            await self.issues_sync_point.update_sync_point(ADMITTED_WITHOUT_EMAIL_KEY, {"accounts": json.dumps(sorted(admitted))})
+        return pending
 
     async def _note_people_to_reread(self, newly_listed: set[str]) -> list[str]:
         """The accounts whose issues need reading again: these, and those an earlier sync saved but did not
@@ -5031,7 +5125,9 @@ class JiraConnector(BaseConnector):
             new_count = 0
             edge_rebuild_count = 0
             for record, record_permissions, content_changed in batch:
-                if record.version == 0:
+                # Version 0 is also an issue unchanged since its first sync (content_changed False), which has
+                # stored grants as much as any other: only a new issue or a promoted placeholder has none to keep.
+                if record.version == 0 and (content_changed or not self._keeps_stored_grants(record)):
                     to_upsert.append((record, record_permissions))
                     new_count += 1
                 elif content_changed or self._keeps_stored_grants(record):
@@ -5171,10 +5267,10 @@ class JiraConnector(BaseConnector):
         return bool(parent_project) and parent_project != project_key and parent_project not in self._synced_project_keys
 
     def _remember_parent_levels(self, issues: list[dict[str, Any]]) -> None:
-        """Note the level of each epic (or higher) read, for placing the stories under it."""
+        """Note the level of each issue read that may parent another, for placing its children under it."""
         for issue in issues:
             fields = (issue or {}).get("fields") if isinstance(issue, dict) else None
-            if not isinstance(fields, dict) or not issue.get("id") or not _may_parent_a_story(fields):
+            if not isinstance(fields, dict) or not issue.get("id") or not _may_parent_an_issue(fields):
                 continue
             present, level_id = read_security_level(fields)
             project_id = self._issue_project_id(issue)
@@ -5183,12 +5279,16 @@ class JiraConnector(BaseConnector):
             self._parent_levels[str(issue["id"])] = _ParentLevel(project_id, level_id) if usable else None
             self._parent_level_failures.discard(str(issue["id"]))
 
-    async def _learn_parent_levels(self, issues: list[dict[str, Any]], *, refresh: bool = False) -> None:
-        """Read the level of each story's parent this sync has not read yet.
+    async def _learn_parent_levels(
+        self, issues: list[dict[str, Any]], *, refresh: bool = False, security: IssueSecurityContext | None = None,
+    ) -> None:
+        """Read the level of each story's or sub-task's parent this sync has not read yet.
 
-        Jira's ``parent`` field does not carry it. Only a parent in the story's own project
-        can hold the story, so others are not asked for. ``refresh`` asks again for parents
-        already read: the reindex path runs between syncs. A parent Jira does not return is
+        Jira's ``parent`` field does not carry it. Only a parent in the issue's own project
+        can hold the issue, so others are not asked for. ``refresh`` asks again for parents
+        already read: the reindex path runs between syncs. A sub-task's parent is read only
+        where levels are enforced, the one place its placement weighs it; ``security`` is that
+        project's context when this sync has not loaded it (a reindex). A parent Jira does not return is
         unknown; one whose read failed is noted in ``_parent_level_failures``.
         """
         wanted: dict[str, None] = {}
@@ -5196,10 +5296,14 @@ class JiraConnector(BaseConnector):
             fields = (issue or {}).get("fields") if isinstance(issue, dict) else None
             if not isinstance(fields, dict):
                 continue
-            issue_type = _issue_type_of(fields)
             parent = fields.get("parent")
-            if issue_type.get("subtask") or issue_type.get("hierarchyLevel") == -1 or not isinstance(parent, dict):
+            if not isinstance(parent, dict):
                 continue
+            issue_type = _issue_type_of(fields)
+            if issue_type.get("subtask") or issue_type.get("hierarchyLevel") == -1:
+                context = security or self._issue_security.get(self._issue_project_id(issue))
+                if context is None or not context.enforce:
+                    continue
             parent_id = str(parent.get("id") or "")
             parent_key = str(parent.get("key") or "")
             project = fields.get("project")
@@ -5215,7 +5319,7 @@ class JiraConnector(BaseConnector):
         chunks = [ids[i:i + PLACEHOLDER_SWEEP_BATCH] for i in range(0, len(ids), PLACEHOLDER_SWEEP_BATCH)]
 
         async def fetch_chunk(chunk: list[str]) -> tuple[list[str], list[dict[str, Any]] | None]:
-            ctx = f"reading the level of {len(chunk)} epic(s)"
+            ctx = f"reading the level of {len(chunk)} parent issue(s)"
             try:
                 response = await self._call_with_retry(
                     lambda ds: ds.bulk_fetch_issues(issueIdsOrKeys=chunk, fields=PARENT_LEVEL_FIELDS),
@@ -5274,6 +5378,38 @@ class JiraConnector(BaseConnector):
             security, parent.level_id
         )
 
+    def _subtask_files_under_parent(
+        self, fields: dict[str, Any], parent_id: str, security: IssueSecurityContext | None,
+    ) -> bool | None:
+        """``_files_under_parent`` for a sub-task, which Jira gives its parent's level.
+
+        A holder naming people on each issue (reporter, assignee, a user field), in the level or
+        in the project's Browse holders, grants the sub-task's own people, who need not read the
+        parent: such a sub-task hangs off its project. One read with no level, or whose level cannot
+        be applied, stays under its parent. Otherwise it stays only under a parent read with the same
+        level, one that grants the same people on every issue. None when that is not known this time.
+        """
+        if security is None or not security.enforce:
+            return True
+        if security.browse_holders is None:
+            return None
+        if security.browse_holders:
+            return False
+        present, level_id = read_security_level(fields)
+        if not present or level_id is None or not security.members_readable:
+            # No level read means a payload behind its parent's (Jira gives a sub-task the
+            # parent's level), and an unreadable level closes it anywhere: under the parent
+            # it is never read wider than Jira shows it.
+            return True
+        if not level_reads_alike(security, level_id):
+            return False
+        if parent_id in self._parent_level_failures:
+            return None
+        parent = self._parent_levels.get(parent_id)
+        return parent is not None and parent.level_id == level_id and parent.project_id == self._issue_project_id(
+            {"fields": fields}
+        )
+
     def _extract_issue_data(
         self,
         issue: dict[str, Any],
@@ -5301,13 +5437,20 @@ class JiraConnector(BaseConnector):
         parent_external_id = parent_obj.get("id") if parent_obj else None
         parent_unread = None
         is_subtask = bool(issue_type_obj.get("subtask")) or issue_type_obj.get("hierarchyLevel") == -1
-        if parent_external_id and not is_subtask:
+        subtask_unplaced = False
+        if parent_external_id:
             if security is None:
                 security = self._issue_security.get(self._issue_project_id(issue))
-            filed = self._files_under_parent(fields, str(parent_external_id), security)
-            if filed is None:
+            filed = (
+                self._subtask_files_under_parent(fields, str(parent_external_id), security) if is_subtask
+                else self._files_under_parent(fields, str(parent_external_id), security)
+            )
+            if filed is None and is_subtask:
+                # Not known: a new sub-task stays under its parent, the narrower place; a stored one stays put.
+                subtask_unplaced = True
+            elif filed is None:
                 parent_unread = str(parent_external_id)
-            if not filed:
+            if filed is False or (filed is None and not is_subtask):
                 parent_external_id = None
         if parent_external_id and self._parent_outside_synced_projects(fields):
             # A parent that never syncs stays a placeholder, which hides the issue under it;
@@ -5346,6 +5489,7 @@ class JiraConnector(BaseConnector):
             "issue_type": issue_type,
             "parent_external_id": parent_external_id,
             "parent_unread": parent_unread,
+            "subtask_unplaced": subtask_unplaced,
             "is_subtask": is_subtask,
             "status": status,
             # Jira's own name ("Backlog"); `status` is the normalised value (NEW).
@@ -5524,6 +5668,9 @@ class JiraConnector(BaseConnector):
             self._parents_to_retry.add(issue_data["parent_unread"])
             if existing_record is not None and existing_record.parent_external_record_id == issue_data["parent_unread"]:
                 parent_external_id = issue_data["parent_unread"]
+        if issue_data["subtask_unplaced"] and existing_record is not None:
+            # Kept where the last sync filed it until the project's Browse holders are read again.
+            parent_external_id = existing_record.parent_external_record_id
 
         # Record group is always the project. The parent ticket link follows Jira's parent
         # field where _extract_issue_data files the issue under its parent.
@@ -5597,6 +5744,9 @@ class JiraConnector(BaseConnector):
                 app_roles_mapping=self._app_roles_mapping,
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
+                unchanged_stored_rule=None if is_issue_changed or existing_record is None else next(
+                    (r for r in AccessRule if r.value == getattr(existing_record.access_rule, "value",
+                                                                 existing_record.access_rule)), None),
             )
             permissions = self._directory_grants(permissions, user_by_account_id)
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
@@ -7408,16 +7558,17 @@ class JiraConnector(BaseConnector):
                     security_by_project[project_ref] = security
 
             # The epic's level may have changed since the last sync read it.
-            await self._learn_parent_levels([issue], refresh=True)
+            await self._learn_parent_levels([issue], refresh=True, security=security)
             issue_data = self._extract_issue_data(issue, user_by_account_id, security=security)
 
             parent_external_id = issue_data.get("parent_external_id")
             if issue_data["parent_unread"] and getattr(record, "parent_external_record_id", None) == issue_data["parent_unread"]:
                 parent_external_id = issue_data["parent_unread"]
+            if issue_data["subtask_unplaced"]:
+                parent_external_id = getattr(record, "parent_external_record_id", None)
             parent_key = str((fields.get("parent") or {}).get("key") or "")
             if (
                 parent_external_id and not getattr(record, "parent_external_record_id", None)
-                and not issue_data["is_subtask"]  # a sub-task always follows its parent, whatever the stored copy had
                 and "-" in parent_key and parent_key.rsplit("-", 1)[0] != str(project.get("key") or "")
             ):
                 # The sync left this parent out (its project is not synced); keep it that way.

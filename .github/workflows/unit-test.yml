@@ -282,6 +282,18 @@ jobs:
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
 
+      # The key-value access map cites the app code that reads each key. db-migrations.yml runs it only for
+      # backend/db changes, so an app change that renamed or dropped a cited read broke main unseen. Its tests that
+      # need no PostgreSQL run here; the ones marked postgres run in db-migrations.yml.
+      - name: Key-value access map citations match the app
+        if: ${{ matrix.shard == 'core' }}
+        working-directory: backend/db
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/backend/db
+        run: |
+          uv pip install --system -r requirements.txt
+          pytest -p no:cacheprovider tests/test_kv_access_map.py -m "not postgres" --timeout=300 -q
+
       # The real odt and rtf conversions run again with a report of their own, so a LibreOffice the
       # runner lost fails the build instead of skipping them.
       - name: LibreOffice conversion suite ran in full

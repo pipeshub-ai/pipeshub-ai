@@ -370,10 +370,13 @@ class CommentsHelper:
         except Exception:
             self.logger.warning("No code checkpoint readable for project %s; MR %s not linked to its files",
                                 project_id, mr_url, exc_info=True)
-            project_path = None
-        if project_path:
-            await link_changed_files(c.data_entities_processor, record, block_groups,
-                                     lambda path: _code_blob_web_path(project_path, path))
+        else:
+            if project_path:
+                await link_changed_files(c.data_entities_processor, record, block_groups,
+                                         lambda path: _code_blob_web_path(project_path, path))
+            elif any(g.file_change_metadata for g in block_groups):
+                self.logger.info("Project %s has no code walked yet; MR %s not linked to the files it changed",
+                                 project_id, mr_url)
         return block_groups, list_remaining_attachments
 
     async def _inline_file_content(self, file_obj: object, file_path: str) -> tuple[str | None, int | None]:
