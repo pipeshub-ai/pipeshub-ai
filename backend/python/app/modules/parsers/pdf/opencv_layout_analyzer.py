@@ -1707,6 +1707,12 @@ def extract_layout_regions(
         (fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h)
         for (fx0, fy0, fx1, fy1), _s in (model_boxes or {}).get("caption", [])
     ])
+    # After every grid is chosen: the choices prefer more columns, and the sign
+    # columns this removes would otherwise count.
+    for region in ordered:
+        if region.type == LayoutRegionType.TABLE and region.table_grid:
+            region.table_grid = _merge_currency_columns(region.table_grid)
+            region.text = _grid_to_text(region.table_grid)
     return _inject_hyperlinks_into_regions(ordered, page, all_words)
 
 
@@ -3712,6 +3718,48 @@ def _trim_empty_rows_cols(grid):
     if not keep_cols:
         return []
     return [[row[ci] for ci in keep_cols] for row in rows]
+
+
+_CURRENCY_SIGNS = "$€£¥"
+_AMOUNT_RE = re.compile(r"\(?[-−]?[\d,]*\d(?:\.\d+)?\)?%?")
+_YEAR_RE = re.compile(r"(?:19|20)\d\d")
+
+
+def _is_amount(token: str) -> bool:
+    return bool(_AMOUNT_RE.fullmatch(token)) and not _YEAR_RE.fullmatch(token)
+
+
+def _merge_currency_columns(grid: list[list[str | None]]) -> list[list[str | None]]:
+    """Join each column of bare currency signs to the amounts on its right.
+
+    Statements that print "$" before the first figure in a row get a column for
+    the sign, and the year header above it lands there too, one column from its
+    figures: "2022" over "$", and "34,229" under nothing.
+    """
+    def text(cell: str | None) -> str:
+        return str(cell).strip() if cell is not None else ""
+
+    def holds_amount(cell: str | None) -> bool:
+        return any(_is_amount(t) for t in text(cell).split())
+
+    ci = 0
+    while ci < (len(grid[0]) if grid else 0) - 1:
+        col = [text(r[ci]) for r in grid]
+        signs = sum(1 for c in col if c in _CURRENCY_SIGNS and c)
+        # In the rows that hold figures the sign's cell holds no figure of its
+        # own; header rows ("52 Weeks Ended August 29, 2021") are free.
+        sign_only = all(
+            not holds_amount(c.strip(_CURRENCY_SIGNS + " \n"))
+            for c, r in zip(col, grid)
+            if holds_amount(r[ci + 1])
+        )
+        if signs and sign_only and any(holds_amount(r[ci + 1]) for r in grid):
+            for r in grid:
+                parts = [text(r[ci]), text(r[ci + 1])]
+                r[ci:ci + 2] = [" ".join(p for p in parts if p) or r[ci + 1]]
+            continue
+        ci += 1
+    return grid
 
 
 def _is_plausible_table(

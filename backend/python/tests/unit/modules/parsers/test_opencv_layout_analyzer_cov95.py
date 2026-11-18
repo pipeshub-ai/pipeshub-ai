@@ -57,6 +57,7 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _is_plausible_table,
     _line_side,
     _link_captions,
+    _merge_currency_columns,
     _merge_regions,
     _merge_row_tables,
     _merge_small_text_regions,
@@ -3269,6 +3270,33 @@ class TestCoveragePush95Phase2:
     def test_trim_empty_rows_cols_all_empty(self):
         grid = [[None, ""], ["", None]]
         assert _trim_empty_rows_cols(grid) == []
+
+    def test_currency_sign_columns_join_their_figures(self) -> None:
+        # As pdfplumber splits a 10-K statement: the year sits over the "$".
+        grid = [
+            ["", "2015", "", "2016", ""],
+            ["Net product sales", "$", "79,268", "$", "94,665"],
+            ["Net service sales", "", "27,738", "", "41,322"],
+        ]
+        assert _merge_currency_columns(grid) == [
+            ["", "2015", "2016"],
+            ["Net product sales", "$ 79,268", "$ 94,665"],
+            ["Net service sales", "27,738", "41,322"],
+        ]
+
+    def test_a_header_with_numbers_does_not_stop_the_join(self) -> None:
+        grid = [
+            ["", "52 Weeks Ended\nAugust 29, 2021", "", "52 Weeks Ended\nAugust 30, 2020", ""],
+            ["Net income", "$", "5,079", "$", "4,059"],
+        ]
+        assert _merge_currency_columns(grid) == [
+            ["", "52 Weeks Ended\nAugust 29, 2021", "52 Weeks Ended\nAugust 30, 2020"],
+            ["Net income", "$ 5,079", "$ 4,059"],
+        ]
+
+    def test_columns_holding_figures_are_kept(self) -> None:
+        grid = [["", "2022", "2021"], ["Cash", "$ 4,835", "$ 2,535"], ["Goodwill", "$", "289"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
 
 
 class TestCoveragePush95Phase3:
