@@ -421,6 +421,29 @@ class TestNetworkAccess:
         assert result.stdout == "1\n"
         assert "Network access is unavailable" in result.stderr
 
+    async def test_unsafe_egress_network_runs_offline(self, tmp_path) -> None:
+        """An egress bridge that allows inter-container traffic and cannot be
+        replaced keeps the run off it, but the run itself still goes ahead
+        with no network, as when the bridge's subnets can't be read."""
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"), allow_network=True, egress_network="my-egress")
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = _fake_container(exit_code=0, stdout=b"1\n")
+        _with_egress_network(fake_client, "my-egress")
+        network = fake_client.networks.get.return_value
+        network.attrs["Options"] = {}
+        network.attrs["Containers"] = {"c" * 64: {}}
+
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.execute(CodeRequest(code="print(1)", language="python", allow_network=True))
+
+        network.remove.assert_not_called()
+        kwargs = fake_client.containers.create.call_args.kwargs
+        assert kwargs["network_mode"] == "none"
+        assert "network" not in kwargs
+        assert result.exit_code == 0
+        assert result.stdout == "1\n"
+        assert "Network access is unavailable" in result.stderr
+
     async def test_program_faking_the_firewall_signal_is_not_rerun(self, tmp_path) -> None:
         """The program can print the marker and exit 222 but can't know the
         container's token, so it can't get itself run a second time."""

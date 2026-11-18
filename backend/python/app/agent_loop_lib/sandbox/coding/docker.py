@@ -46,6 +46,7 @@ from app.agent_loop_lib.sandbox.coding.docker_client import (
 )
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     CONTAINER_HARDENING,
+    EgressNetworkUnsafe,
     create_sandbox_container,
     deadline_command,
     firewall_unavailable,
@@ -871,9 +872,14 @@ class DockerCodingSandbox(CodingSandboxBackend):
         network_note = ""
         if network_enabled:
             egress_network = self._egress_network
-            egress_cidrs = await self._provider.egress_network_cidrs(egress_network)
+            try:
+                egress_cidrs = await self._provider.egress_network_cidrs(egress_network)
+                if not egress_cidrs:
+                    logger.error("egress network %s has no readable IPv4 subnet", egress_network)
+            except EgressNetworkUnsafe as exc:
+                # The run goes offline; an install on that network still refuses.
+                logger.error("%s", exc)
             if not egress_cidrs:
-                logger.error("egress network %s has no readable IPv4 subnet", egress_network)
                 network_enabled, egress_network = False, None
                 network_note = _NETWORK_UNAVAILABLE_NOTE
         handle = _RunHandle()
