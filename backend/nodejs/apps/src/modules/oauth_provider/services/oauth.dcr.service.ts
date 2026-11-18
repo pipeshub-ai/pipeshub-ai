@@ -11,7 +11,11 @@ import {
   OAuthAppService,
 } from './oauth.app.service'
 import { ScopeValidatorService } from './scope.validator.service'
-import { AgentMcpScopes, McpToolScopes, mcpDiscoveryScopes } from '../config/scopes.config';
+import {
+  AgentMcpScopes,
+  McpToolScopes,
+  mcpDiscoveryScopes,
+} from '../config/scopes.config';
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   getOAuthAppRepository,
@@ -319,7 +323,7 @@ export class OAuthDcrService {
       ? this.scopeValidatorService.parseScopes(scope)
       : [...new Set<string>([...McpToolScopes, ...AgentMcpScopes])].filter(
           (s) => memberAllowed.has(s) && (mcp.size === 0 || mcp.has(s)),
-        )
+        );
 
     const granted: string[] = []
     for (const s of requested) {
