@@ -434,3 +434,18 @@ def test_the_startup_warning_is_logged_when_the_setting_is_on(monkeypatch: pytes
     monkeypatch.delenv("RECORD_DEFERRAL_FIELDS_WRITE")
     warn_if_deferral_fields_write(logger)
     logger.warning.assert_not_called()
+
+
+@pytest.mark.parametrize("final", [False, True])
+async def test_a_wait_on_the_virtual_records_lease_is_not_a_failure_even_on_the_last_delivery(final: bool) -> None:
+    """A sibling record of the same virtual record is still writing: the record goes back in line (QUEUED), never FAILED,
+    and its next-queued duplicate is not triggered by a failure that was not one."""
+    from app.modules.transformers.vectorstore import VirtualRecordBusy
+
+    harness = Harness(_record(indexingStatus="IN_PROGRESS", processingStartedAt=1_000, parsingStatus="IN_PROGRESS"))
+    harness.fail_with = VirtualRecordBusy("another record of the virtual record is writing")
+    with pytest.raises(VirtualRecordBusy):
+        await harness.run(_payload(parseNow=False, is_final_failure=final))
+    assert all(w.get("indexingStatus") != "FAILED" for w in harness.writes())
+    queued = [w for w in harness.writes() if w.get("indexingStatus") == "QUEUED"]
+    assert queued and queued[-1]["processingStartedAt"] is None
