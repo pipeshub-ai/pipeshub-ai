@@ -64,7 +64,7 @@ describe("secrets, damaged", () => {
   test("the error never quotes the file's text", () => {
     const d = tmp();
     writeFileSync(join(d, "secrets.json"), '{"pg_admin": abcd1234secret}', { mode: 0o600 });
-    assert.throws(() => loadSecrets(d), (e: Error) => /secrets\.json/.test(e.message) && !e.message.includes("abcd1234secret"));
+    assert.throws(() => loadSecrets(d), (e: Error) => /secrets\.json/.test(e.message) && !e.message.includes("abcd1234"));   // Node quotes about 10 characters around the error
   });
   test("once the database exists, a missing administrator password is never generated", () => {
     const d = tmp();
