@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Starts a built bundle for real into a fresh data folder: PostgreSQL, the schema steps, every service, the API's health.
 # Checks that each of the launcher's ports is served on 127.0.0.1 and that nothing new listens beyond loopback, then status,
-# health and stop, and that nothing it started is left running.
+# health and stop, a warm start and stop, and that nothing it started is left running.
 #   smoke.sh <bundle-dir>
 set -euo pipefail
 b=$(cd "$1" && pwd); d=$(mktemp -d)
@@ -53,6 +53,10 @@ wide=$(comm -13 <(echo "$before") <(listeners | sort -u) | grep -v '^127\.0\.0\.
 [ -z "$wide" ] || { echo "smoke: new listeners beyond loopback: $(echo $wide)"; exit 1; }
 echo "smoke: every port on 127.0.0.1 only: $(echo $ports)"
 
+run stop
+# A warm start on the same folder: every login now exists, and the createdb step sets its password from secrets.json again.
+if ! run start --detach; then tail -n 50 "$d"/logs/*.log >&2 || true; exit 1; fi
+run health || { tail -n 50 "$d"/logs/*.log >&2; exit 1; }
 run stop
 left=$(ps -eo pid=,args= | grep -F "$d" | grep -v grep || true)
 [ -z "$left" ] || { echo "left running after stop:"; echo "$left"; exit 1; }

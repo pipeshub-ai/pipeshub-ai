@@ -58,7 +58,7 @@ stored in its settings), so if another program has taken it the start fails with
 
 ```
 deployment/native/bundle.sh <out>/pipeshub-native --archive <out>/pipeshub-native-<platform>.tar.gz
-deployment/native/smoke.sh <out>/pipeshub-native      # start for real into a fresh data folder, health, stop, nothing left
+deployment/native/smoke.sh <out>/pipeshub-native      # start for real into a fresh data folder, health, stop, start again, stop, nothing left
 ```
 
 `bundle.sh` runs three steps, each of which can also run on its own:
