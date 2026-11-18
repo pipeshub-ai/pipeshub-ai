@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import os
 import time
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -129,6 +130,8 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
+from app.services.paid_cache.cache import RefreshPurgeInProgress
+from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
 from app.services.vector_db.membership import mark_scope_stale
@@ -230,8 +233,26 @@ _PARSE_NOW_NO_ACCESS = "the requesting user cannot access the record"
 _DISABLED_TYPES_TTL_SECONDS = 60.0
 
 
+#: How long the broker holds a refresh event handed back because another delivery is purging.
+REFRESH_HANDBACK_DELAY_S = 30.0
+
 # What a record shows while the membership sync of its update waits for its repair.
 MEMBERSHIP_SYNC_PENDING = "Access scope update pending: the vector store could not be updated; a background sync is queued"
+
+
+#: Added to the reason of a record whose Force reindex failed on every attempt: that run removes the record's earlier
+#: index before it indexes again, so the record may have no vectors until a reindex succeeds.
+FORCE_REINDEX_FAILED_NOTE = (
+    "This was a Force reindex, which removes the record's earlier index before it indexes again: "
+    "the record may not be searchable until a reindex succeeds."
+)
+
+
+def with_force_reindex_note(reason: str | None, payload: dict | None) -> str | None:
+    """``reason`` for a record, with the Force reindex note when the failed event was a user's Force reindex."""
+    if not paid_cache_run.refresh_requested(payload):
+        return reason
+    return f"{reason} {FORCE_REINDEX_FAILED_NOTE}" if reason else FORCE_REINDEX_FAILED_NOTE
 
 
 def requeue_updates(current: dict | None, *, store_only: bool) -> dict:
@@ -1863,6 +1884,7 @@ class RecordEventHandler(BaseEventService):
         handed_back = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
+        held_for_refresh = False
         # A same-bytes update handed back: the record is indexed and nothing of it is written.
         skip_pending = False
         record = None
@@ -2462,14 +2484,30 @@ class RecordEventHandler(BaseEventService):
                 refresh_org = payload.get("orgId") or record.get("orgId")
                 if refresh_org:
                     paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
-                    event_id = payload.get(replay_set.EVENT_ID_KEY)
-                    if not event_id or await paid_cache.refresh_purge_needed(refresh_org, record_id, str(event_id)):
-                        await paid_cache.purge_record(refresh_org, record_id)
-                        if event_id:
-                            await paid_cache.mark_refresh_purged(refresh_org, record_id, str(event_id))
-                        paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
-                    # A redelivery of the same event already purged: what its first delivery paid for and stored is
-                    # reused by an ordinary run, not deleted and paid for again.
+                    # The identity of the refresh across broker requeues: the delivery id a consumer keeps through its
+                    # own re-queues (a republish gets a new envelope event id, so that one names only one delivery).
+                    event_id = payload.get(replay_set.DELIVERY_ID_KEY) or payload.get(replay_set.EVENT_ID_KEY)
+                    try:
+                        async with paid_cache.refresh_purge(refresh_org, record_id, str(event_id or uuid.uuid4().hex)) as must_purge:
+                            if must_purge:
+                                # A failure raises out of the block: no marker is written, and the redelivery purges.
+                                # Only what existed before this purge started goes, by the object store's own clock
+                                # (never this process's): a DELETE that lands after this delivery lost its lease leaves
+                                # what the delivery that took over has stored since.
+                                await paid_cache.purge_for_refresh(refresh_org, record_id)
+                    except RefreshPurgeInProgress as exc:
+                        # Nothing has been written for this delivery: the bookkeeping below skips it, as for a
+                        # record held for its connector's delete (no FAILED, no queued duplicate, no status rewrite).
+                        held_for_refresh = True
+                        # Queue time, not a failure: handed back after a delay without counting an attempt.
+                        raise RefreshPurgeHeld(str(exc), delay_s=REFRESH_HANDBACK_DELAY_S) from exc
+                    # A redelivery of the same event (must_purge False) still refreshes: it reuses only what its first
+                    # delivery stored, as that delivery's manifest lists it, and pays for the rest. The event id names
+                    # the refresh for the parsing service too.
+                    paid_cache_run.begin_run(
+                        refresh_org, record_id, None, "index", refresh=True, reuse_prior_attempt=not must_purge,
+                        refresh_token=str(event_id) if event_id else None,
+                    )
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
@@ -2765,6 +2803,9 @@ class RecordEventHandler(BaseEventService):
             # Not a failure: the consumer hands the message back, and nothing is written for it.
             self.logger.info(f"Record {record_id} held: its connector is being deleted")
             raise
+        except RefreshPurgeHeld:
+            self.logger.info(f"Record {record_id} held: another delivery of its refresh is purging")
+            raise
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
@@ -2796,7 +2837,7 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if stage_redrive or held_for_delete or skip_pending:
+            if stage_redrive or held_for_delete or held_for_refresh or skip_pending:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
                 # A held event has done nothing yet, and its record is the delete's.
@@ -2876,6 +2917,7 @@ class RecordEventHandler(BaseEventService):
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     user_reason = to_user_reason(last_exception, record=record, source=source_name)
+                    user_reason = with_force_reindex_note(user_reason, payload)
                     # Chosen from the exception's type, not its text (see is_password_protected).
                     terminal_status = (
                         ProgressStatus.PASSWORD_PROTECTED
@@ -3000,7 +3042,7 @@ class RecordEventHandler(BaseEventService):
             # stays IN_PROGRESS for redelivery, so the repo is not drained and
             # this would be graph I/O during an unwind. Skipped for a record in
             # the trash too, which is drained like a missing one.
-            if not cancelled and not held_for_delete and not skip_pending and not in_trash and not parse_now_refused and not store_only:
+            if not cancelled and not held_for_delete and not held_for_refresh and not skip_pending and not in_trash and not parse_now_refused and not store_only:
                 await self._request_code_edge_build_if_repo_drained(record_id, record)
 
             # Last, so every status write above is shaped by the run.

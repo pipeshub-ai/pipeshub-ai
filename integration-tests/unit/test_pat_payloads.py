@@ -60,7 +60,8 @@ def test_the_guard_reads_every_spelling() -> None:
 def test_expiry_days_literals_are_allowed_values() -> None:
     bad = []
     for path in ROOT.rglob("*.py"):
-        if path == Path(__file__).resolve() or "venv" in path.parts:
+        # CI installs into integration-tests/.venv; third-party files there need not be UTF-8.
+        if path == Path(__file__).resolve() or {"venv", ".venv"} & set(path.relative_to(ROOT).parts):
             continue
         for value in _bad_values(path.read_text(encoding="utf-8")):
             bad.append(f"{path.relative_to(ROOT)}: expiryDays={value}")

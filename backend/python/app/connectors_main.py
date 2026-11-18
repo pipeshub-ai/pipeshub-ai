@@ -1729,7 +1729,7 @@ if knowledge_hub_service_factory is not None:
     app.dependency_overrides[get_knowledge_hub_service] = knowledge_hub_service_factory
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, workers: int | None = None, reload: bool = True) -> None:
     """Run the application.
 
     ``workers`` comes from the edition seam: this build always answers 1,
@@ -1749,8 +1749,14 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
             workers = 1
     if reload and workers > 1:
         workers = 1
-    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+    from app.utils.env_utils import (
+        bind_host,
+        bind_port,
+        uvicorn_worker_healthcheck_timeout,
+    )
 
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8088)
     uvicorn.run(
         "app.connectors_main:app",
         host=host,
