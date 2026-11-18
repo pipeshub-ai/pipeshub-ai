@@ -729,6 +729,7 @@ def apply_issue_access_settled(
     reporter_email: str | None = None,
     assignee_email: str | None = None,
     project_id: str | None = None,
+    unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str], bool]:
     """Set the issue's access rule and return the grants to write, the holder types
     skipped, and whether the result is settled. Settled means the level (or its
@@ -739,7 +740,8 @@ def apply_issue_access_settled(
     issue, whose level Jira copies onto it; a story under its epic only when everyone who
     reads the story reads the epic; any other issue under its project. A parent in another
     project is handled by the processor, which keeps the child on its own project.
-    Attachments are handled separately and stay empty.
+    Attachments are handled separately and stay empty. ``unchanged_stored_rule`` is the
+    stored record's access rule when the issue has not changed since it was stored.
 
     With ``project_id``, a leveled issue other than a sub-task takes its access from its
     level's record group (``level_group_external_id``), which holds the holders that name
@@ -808,6 +810,12 @@ def apply_issue_access_settled(
             # reporter grant still opens the issue. An explicit null level is not this: the issue may have
             # been RESTRICTED, and its old level members must lose it (OPEN would accept their grant alone).
             record.access_rule = AccessRule.OPEN
+            record.rewrite_permissions = False
+            return [], [], True
+        if top_level and context.browse_holders is None and unchanged_stored_rule in (AccessRule.OPEN, AccessRule.STRICT):
+            # Holders unread, no level now and none when it was stored, and the issue unchanged since: its stored
+            # grants are the holders' grants for the same people, so they and its stored rule stay.
+            record.access_rule = unchanged_stored_rule
             record.rewrite_permissions = False
             return [], [], True
         grants = browse_holder_grants(
@@ -915,6 +923,7 @@ def apply_issue_access(
     reporter_email: str | None = None,
     assignee_email: str | None = None,
     project_id: str | None = None,
+    unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str]]:
     """``apply_issue_access_settled`` without the settled flag: the grants to write
     and the holder types skipped."""
@@ -922,6 +931,7 @@ def apply_issue_access(
         record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
         user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
         reporter_email=reporter_email, assignee_email=assignee_email, project_id=project_id,
+        unchanged_stored_rule=unchanged_stored_rule,
     )
     return grants, skipped
 
