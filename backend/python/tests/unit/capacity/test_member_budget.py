@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import multiprocessing as mp
 import os
 import signal
@@ -21,6 +23,7 @@ from tests.support import ledger_procs as lp
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from types import FrameType
 
 GIB = 1 << 30
 POLICY = AdmissionPolicy()
@@ -383,35 +386,47 @@ def _skip_on_small_hosts() -> None:
         pytest.skip(f"{_cpus()} CPUs cannot run 16 contending processes; set LEDGER_MIN_PAIRS_PER_S to run it on a smaller host")
 
 
-def _pair_cost(budget: MemberBudget) -> tuple[int, int, Counter[str]]:
-    """The Python calls, builtin calls and system calls (by name) of one reserve+release pair, after a warm-up pair."""
+def _pair_cost(budget: MemberBudget) -> tuple[int, int, int, Counter[str]]:
+    """The Python calls, builtin calls, bytecode instructions and system calls (by name) of one reserve+release pair."""
 
     def pair() -> None:
         permit = budget.try_reserve(Demand(Family.EMBED, 2, 0, "small"))
         assert permit is not None
         permit.release()
 
-    pair()
-    python = builtin = 0
+    work: Counter[str] = Counter()
     system: Counter[str] = Counter()
 
-    def count(_frame: object, event: str, arg: object) -> None:
-        nonlocal python, builtin
-        if event == "call":
-            python += 1
-        elif event == "c_call":
-            builtin += 1
+    def profile(_frame: object, event: str, arg: object) -> None:
+        work[event] += 1
+        if event == "c_call":
             name = f"{getattr(arg, '__module__', None) or ''}.{getattr(arg, '__name__', '?')}"
-            if name.startswith(("posix.", "os.", "fcntl.", "time.", "select.")):
+            if name.startswith(("posix.", "os.", "_io.", "fcntl.", "time.", "select.")):
                 system[name] += 1
 
-    previous = sys.getprofile()
-    sys.setprofile(count)
-    try:
-        pair()
-    finally:
-        sys.setprofile(previous)
-    return python, builtin, system
+    def trace(frame: FrameType, event: str, _arg: object) -> object:
+        if event == "call":
+            frame.f_trace_opcodes = True
+        elif event == "opcode":
+            work["opcode"] += 1  # a loop over the process table that makes no call still shows here
+        return trace
+
+    pair()
+    for _ in range(2):  # Python 3.12 counts a code object's instructions from the run after it was first traced
+        work.clear()
+        system.clear()
+        previous_profile, previous_trace, collecting = sys.getprofile(), sys.gettrace(), gc.isenabled()
+        gc.disable()  # a collection inside one measured pair would run weak-reference callbacks in that pair only
+        sys.setprofile(profile)
+        sys.settrace(trace)
+        try:
+            pair()
+        finally:
+            sys.settrace(previous_trace)
+            sys.setprofile(previous_profile)
+            if collecting:
+                gc.enable()
+    return work["call"], work["c_call"], work["opcode"], system
 
 
 def test_ledger_throughput(ledger: Path) -> None:
@@ -420,20 +435,19 @@ def test_ledger_throughput(ledger: Path) -> None:
 
     Counted, not timed: a pairs-per-second floor across 16 processes failed on a busy runner (4668 < 5000) with
     nothing slow in the ledger."""
-    one = open_budget(ledger, service="one")
-    alone = _pair_cost(one)
-    others = [open_budget(ledger, service=f"p{i}") for i in range(63)]
-    try:
+    with contextlib.ExitStack() as handles:
+        one = open_budget(ledger, service="one")
+        handles.callback(one.close)
+        alone = _pair_cost(one)
+        for i in range(63):
+            handles.callback(open_budget(ledger, service=f"p{i}").close)
         assert one.snapshot()["processes"] == 64
         crowded = _pair_cost(one)
         print(f"pair alone {alone}\npair with 64 attached {crowded}")
         assert crowded == alone, "a reserve+release pair costs more with more processes attached"
-        _, _, system = crowded
+        system = crowded[3]
         assert system["fcntl.flock"] == 4, "one ledger lock and unlock per reserve and per release"
-        assert not system["posix.open"] and not system["posix.fsync"] and not system["time.sleep"], system
-    finally:
-        for b in (one, *others):
-            b.close()
+        assert not (system["posix.open"] or system["_io.open"] or system["posix.fsync"] or system["time.sleep"]), system
 
 
 def test_no_sample_shows_more_than_c_held(ledger: Path) -> None:

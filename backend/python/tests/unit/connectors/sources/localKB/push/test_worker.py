@@ -591,8 +591,8 @@ async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool, 
     real_poll = Connection.poll
 
     def poll(self: Connection, timeout: float | None = 0.0) -> bool:
-        if timeout is None or timeout > budget_s:
-            return real_poll(self, timeout)  # the fresh process's start-up handshake has its own timeout
+        if self is not w._conn:
+            return real_poll(self, timeout)  # a fresh process's start-up handshake: the worker takes its pipe after it
         attempts.append(timeout)
         if len(attempts) > 1:
             return real_poll(self, timeout)
