@@ -8,7 +8,10 @@ code that has to cut a band into records calls it.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Lines are dicts: "w" (the line's words, left to right, each with x0, x1, top,
 # bottom and text), "top", "bottom", "cy" (centre height) and "h" (height).
@@ -22,7 +25,6 @@ CENTRE_TOL = 0.12  # share of the cell width a centred key may be off the cell c
 CENTRE_MIN_INSET = 6.0  # a centred key starts more than this far inside its cell, pt
 EDGE_TOL = 3.0  # a segment starts at its column's left text edge, pt
 RUN_MIN = 3  # one-word code keys needed for branch (d)
-COLUMN_SLACK = 0.5  # pt: a word belongs to the column holding its centre, give or take
 
 ANNOT = re.compile(r"^\s*(\(|See\b|Note\b|NOTE\b|—)")
 CODE = re.compile(r"^[A-Z0-9_][A-Z0-9_.:\[\]]*$")
@@ -48,14 +50,30 @@ def band_lines(words: list[dict[str, Any]]) -> list[Line]:
     return lines
 
 
+def column_for(cx: float, columns: list[tuple[float, float]]) -> int | None:
+    """The column that holds a word centred at ``cx``: the one whose half-open range contains it
+    (the last column also holds its right edge), else the nearest one, the first on a tie. This
+    is the rule the rendered cells use, and the only one: the band analysis and the cell text
+    must agree on which cell a word is in."""
+    if not columns:
+        return None
+    for j, (x0, x1) in enumerate(columns):
+        if x0 <= cx < x1 or (j == len(columns) - 1 and cx == x1):
+            return j
+    return min(range(len(columns)), key=lambda j: (min(abs(cx - columns[j][0]), abs(cx - columns[j][1])), j))
+
+
 def split_band_records(
     lines: list[Line], columns: list[tuple[float, float]], *, ruled_cell: bool,
+    column_of_word: Callable[[dict[str, Any]], int | None] | None = None,
 ) -> list[list[Line]]:
     """Records inside one band.
 
     ``lines``: the band's text lines, top to bottom. ``columns``: the column
     x-ranges, key column first. ``ruled_cell``: the columns are ruled cells (the
     text area is the cell minus the left inset, mirrored on the right).
+    ``column_of_word``: the column index of a word when the caller already knows it (the cell the
+    word was rendered into); by default ``column_for`` decides, with the same rule.
     Returns the lines grouped into records, top to bottom. One group means "no
     clear record start": keep the band as one row.
 
@@ -109,22 +127,12 @@ def split_band_records(
     if not lines or not columns:
         return [lines]
 
-    last_col = len(columns) - 1
-
-    def column_of(cx: float) -> int | None:
-        """The one column a word belongs to: the one whose half-open range holds its centre (as the
-        rendered cells do); a centre in a gap between columns goes to the nearest within the slack."""
-        for j, (x0, x1) in enumerate(columns):
-            if x0 <= cx < x1 or (j == last_col and cx == x1):
-                return j
-        near = [(min(abs(cx - x0), abs(cx - x1)), j) for j, (x0, x1) in enumerate(columns)
-                if x0 - COLUMN_SLACK <= cx <= x1 + COLUMN_SLACK]
-        return min(near)[1] if near else None
-
     col_index = {tuple(c): j for j, c in enumerate(columns)}
 
     def in_column(w: dict[str, Any], j: int) -> bool:
-        return column_of(_cx(w)) == j
+        if column_of_word is not None:
+            return column_of_word(w) == j
+        return column_for(_cx(w), columns) == j
 
     def seg(ln: Line, x0: float, x1: float) -> tuple[float, float, float, str, bool, bool] | None:
         j = col_index[(x0, x1)]

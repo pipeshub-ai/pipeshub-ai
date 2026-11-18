@@ -3186,7 +3186,9 @@ def split_record_bands(
     if len(lines) < 2:
         return None
     cols = [(row_cells[i][0], row_cells[i][2]) for i in idx]
-    groups = split_band_records(lines, cols, ruled_cell=True)
+    # A word's column is the cell it was put in: the band analysis never re-decides it.
+    column_of = {id(w): j for j, i in enumerate(idx) for w in cell_words[i]}
+    groups = split_band_records(lines, cols, ruled_cell=True, column_of_word=lambda w: column_of.get(id(w)))
     if len(groups) < 2:
         return None
     record_of = {id(w): gi for gi, g in enumerate(groups) for ln in g for w in ln["w"]}
@@ -5063,7 +5065,7 @@ def _resolve_overlaps(
         if not changed:
             break
 
-    leftover: list[LayoutRegion] = []
+    cut_back: list[tuple[LayoutRegion, tuple[float, float, float, float]]] = []
     for i, r in enumerate(current):
         if id(r) in dirty:
             old_bbox = r.bbox
@@ -5071,13 +5073,21 @@ def _resolve_overlaps(
                 r, page, all_words, page_w, page_h, gutter_x=gutter_x,
             )
             if r.type == LayoutRegionType.TABLE and r.bbox != old_bbox and all_words:
-                words = [
-                    w for w in all_words
-                    if _word_center_in_bbox(w, old_bbox) and not _word_center_in_bbox(w, r.bbox)
-                    and str(w.get("fontname", "")) != "_synthetic_bullet"
-                ]
-                if words:
-                    leftover.extend(_text_regions_from_words(words, gutter_x))
+                cut_back.append((r, old_bbox))
+
+    # Words the table had absorbed and the grid does not hold become text again. Words that a
+    # region still in the list owns (a list kept apart from the table) stay with that region.
+    leftover: list[LayoutRegion] = []
+    for table, old_bbox in cut_back:
+        owners = [o.bbox for o in current if o is not table]
+        words = [
+            w for w in all_words
+            if _word_center_in_bbox(w, old_bbox) and not _word_center_in_bbox(w, table.bbox)
+            and not any(_word_center_in_bbox(w, ob) for ob in owners)
+            and str(w.get("fontname", "")) != "_synthetic_bullet"
+        ]
+        if words:
+            leftover.extend(_text_regions_from_words(words, gutter_x))
 
     return current + leftover
 
@@ -5138,8 +5148,8 @@ def _reextract_region_payload(
                 # region (a note below, text beside): the region shrinks to the grid, and
                 # the caller emits the rest as text. Only then: otherwise the box stays.
                 shrunk = (own_bbox[0], min(own_bbox[1], region.bbox[1]), own_bbox[2], own_bbox[3])
-                if any(_word_center_in_bbox(w, region.bbox) and not _word_center_in_bbox(w, shrunk)
-                       for w in all_words):
+                if all_words and any(_word_center_in_bbox(w, region.bbox) and not _word_center_in_bbox(w, shrunk)
+                                     for w in all_words):
                     region.bbox = shrunk
         return region
 
