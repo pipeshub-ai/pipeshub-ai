@@ -19,7 +19,7 @@ import time
 import traceback
 import unicodedata
 import uuid
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Collection, Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -121,6 +121,8 @@ from app.modules.code_graph.build_state import (
     SYNC_POINT_SUFFIX as CODE_EDGE_BUILD_SUFFIX,
 )
 from app.modules.code_graph.edge_build_trigger import is_code_record
+from app.modules.indexing.record_diagnostics import WriteKind, cypher_parts
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import (
     NamedEntityGraphMixin,
     named_entity_neo4j_indexes,
@@ -2429,6 +2431,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
+
+    async def write_attempt_start(
+        self,
+        record_id: str,
+        fields: dict[str, Any],
+        now: int | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.write_attempt_start`."""
+        collection = CollectionNames.RECORDS.value
+        self.validator.validate_node_update(collection, fields)
+        updates = self._arango_to_neo4j_node(fields, collection)
+        rev = fields.get("contentRev")
+        run_with, run_patch = cypher_parts("n", WriteKind.ATTEMPT_START, rev="$rev" if rev is not None else None)
+        parameters: dict[str, Any] = {
+            "key": record_id, "updates": updates, "now": now if now is not None else get_epoch_timestamp_in_ms(),
+        }
+        if rev is not None:
+            parameters["rev"] = rev
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{collection_to_label(collection)} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            {run_with}
+            SET n += {run_patch}, n += $updates
+            RETURN n.id AS id
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
 
     async def update_node_if_match(
         self,
@@ -6675,8 +6709,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
-        """Get all users in an organization"""
+        """Get all users in an organization. ``raise_on_error`` raises a failed query instead of returning ``[]``."""
         try:
             query = """
             MATCH (u:User)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(o:Organization {id: $org_id})
@@ -6698,6 +6733,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get users failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(
@@ -8104,6 +8141,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
+                    **run_reference({}, WriteKind.STATUS_VAR, current_timestamp, status=new_indexing_status),
                 }
                 if reason:
                     update_doc["reason"] = reason
@@ -11401,6 +11439,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         results = await self.client.execute_query(
             query, parameters={"user_id": user_id, "connector_id": connector_id}, txn_id=transaction
         )
+        return int((results or [{}])[0].get("removed") or 0)
+
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when the user has no USER_APP_RELATION edge to the connector, checked in the same statement."""
+        query = """
+        MATCH (u:User)-[p:PERMISSION]->(n)
+        WHERE (n:Record OR n:RecordGroup OR n:Group OR n:Role) AND n.connectorId = $connector_id
+          AND NOT EXISTS { MATCH (u)-[:USER_APP_RELATION]->(:App {id: $connector_id}) }
+        DELETE p
+        RETURN count(p) AS removed
+        """
+        results = await self.client.execute_query(query, parameters={"connector_id": connector_id}, txn_id=transaction)
         return int((results or [{}])[0].get("removed") or 0)
 
     # ==================== Connector Deletion Helper Methods ====================
@@ -15607,7 +15662,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH found
             UNWIND found AS row
             WITH row.r AS r, row.fields AS fields
-            SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now
+            SET r.isDeleted = false, {cleared}, r.updatedAtTimestamp = $now, r.firstQueuedAt = CASE WHEN fields.restoredAtTimestamp >= $now THEN fields.restoredAtTimestamp + 1 ELSE $now END, r.indexingAttempts = 0
             SET r += fields
             {_cypher_kh_node_state("r")}
             RETURN r.id AS id
@@ -16566,37 +16621,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             self.validator.validate_node_update(coll, {"indexingStatus": status})
             label = collection_to_label(coll)
-            query = f"""
-            MATCH (n:{label})
-            WHERE n.id IN $ids
-            RETURN n
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"ids": unique_ids},
+            run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$status")
+            # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
+            await self.client.execute_query(
+                f"""
+                MATCH (n:{label})
+                WHERE n.id IN $ids AND coalesce(n.isInternal, false) = false AND coalesce(n.isPlaceholder, false) = false
+                SET n.{_MATCH_LOCK} = true
+                REMOVE n.{_MATCH_LOCK}
+                {run_with}
+                SET n.indexingStatus = $status, n += {run_patch}
+                """,
+                parameters={"ids": unique_ids, "status": status, "now": get_epoch_timestamp_in_ms()},
                 txn_id=None,
             )
-            if not results:
-                return
-
-            to_upsert: list[dict] = []
-            for row in results:
-                node_data = dict(row["n"])
-                record = self._neo4j_to_arango_node(node_data, coll)
-                rid = record.get("id") or record.get("_key")
-                if not rid:
-                    continue
-                if record.get("isInternal"):
-                    continue
-                if record.get("isPlaceholder"):
-                    continue
-                to_upsert.append({"id": rid, "indexingStatus": status})
-
-            if to_upsert:
-                await self.batch_update_nodes(to_upsert, coll)
-                self.logger.debug(
-                    "✅ Updated %s record(s) indexing status to %s", len(to_upsert), status
-                )
         except SchemaValidationError:
             raise
         except Exception as e:
@@ -16637,17 +16675,29 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 else f"AND {cypher_record_visibility('n', visibility)}"
             )
             reason_clause = ", n.reason = $reason" if reason is not None else ""
+            run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$status")
+            # Filtered, locked (only the records that pass the filters), then filtered again, before the run fields are read: a status or an attempt count another writer committed while
+            # this waited for the lock is the one the rule reads (the earlier-read lost-update pattern of the other status writers).
             query = f"""
             MATCH (n:{label})
             WHERE n.connectorId = $connector_id
             {exclude_clause}
             {include_clause}
             {visibility_clause}
-            SET n.indexingStatus = $status{reason_clause}
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE n.connectorId = $connector_id
+            {exclude_clause}
+            {include_clause}
+            {visibility_clause}
+            {run_with}
+            SET n.indexingStatus = $status{reason_clause}, n += {run_patch}
             """
             parameters: dict = {
                 "connector_id": connector_id,
                 "status": status,
+                "now": get_epoch_timestamp_in_ms(),
             }
             if excluded:
                 parameters["exclude_statuses"] = excluded
@@ -16804,6 +16854,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if new_status == ProgressStatus.QUEUED.value
                 else ""
             )
+            run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$new_status")
             # The lock comes first so the check reads a status the indexing service
             # committed while this waited (Neo4j's lost-update pattern). Checked
             # before the lock, a folder it finished in 10 ms was set back to QUEUED,
@@ -16815,7 +16866,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             REMOVE n.{_MATCH_LOCK}
             WITH n
             WHERE n.indexingStatus = $expected
-            SET n.indexingStatus = $new_status{queued_stamp}
+            {run_with}
+            SET n.indexingStatus = $new_status{queued_stamp}, n += {run_patch}
             RETURN n.id AS id
             """
             results = await self.client.execute_query(
@@ -16892,6 +16944,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             written["queuedAtTimestamp"] = now
         self.validator.validate_node_update(CollectionNames.RECORDS.value, written)
         stamp = ", n.queuedAtTimestamp = $now" if to_status == ProgressStatus.QUEUED.value else ""
+        run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$to")
         # Locked before the status is read, as compare_and_set_indexing_status does, so a status the
         # indexing service committed while this waited is the one compared.
         rows = await self.client.execute_query(
@@ -16902,7 +16955,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             REMOVE n.{_MATCH_LOCK}
             WITH n
             WHERE n.indexingStatus = $expected AND {cypher_live_record("n")}
-            SET n.indexingStatus = $to, n.reason = null{stamp}
+            {run_with}
+            SET n.indexingStatus = $to, n.reason = null{stamp}, n += {run_patch}
             RETURN n.id AS id
             """,
             parameters={
@@ -17220,6 +17274,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # COMPLETED sets hasIndexedCopy and EMPTY clears it, as every indexingStatus write does.
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
         label = collection_to_label(CollectionNames.RECORDS.value)
+        # With no status in the fields the status variable is null: the patch is empty.
+        run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$status")
         # The lock comes first so the revision check reads a write that committed
         # while this waited (the same guard as update_nodes_fields_if_match).
         rows = await self._stage_cypher(
@@ -17230,11 +17286,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             REMOVE n.{_MATCH_LOCK}
             WITH n
             WHERE n.contentRev = $rev
-            SET n += $fields
+            {run_with}
+            SET n += {run_patch}, n += $fields
             {_cypher_kh_node_state("n")}
             RETURN n.id AS id
             """,
-            {"keys": keys, "rev": content_rev, "fields": fields},
+            {"keys": keys, "rev": content_rev, "fields": fields, "status": fields.get("indexingStatus"), "now": get_epoch_timestamp_in_ms()},
         )
         return [row["id"] for row in rows if row.get("id")]
 
@@ -20840,11 +20897,81 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self._KH_LISTS: {k: parameters[k] for k in read},
             }
         try:
-            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+            return await self._kh_run(query, parameters, txn_id)
+        except KnowledgeHubListingBusy:
+            raise
         except Exception as e:
             # Transaction memory is one pool: any listing statement can be the one that finds it spent.
             if self._kh_out_of_memory(e):
                 raise KnowledgeHubListingBusy(out_of_memory=True) from e
+            if str(getattr(e, "code", "")).startswith("Neo.ClientError.Transaction.TransactionTimedOut"):
+                raise KnowledgeHubListingBusy() from e
+            raise
+
+    # A listing statement whose plan is not cached takes Neo4j minutes of CPU to plan on a small server, and
+    # milliseconds to run once it is. So one request per statement text plans it, and the others with the same text
+    # wait for that plan instead of each planning a copy. A waiter past the browser's patience is answered as busy;
+    # the planner runs on, under its own limit, so that the plan is cached for the next request.
+    _KH_PLAN_WAIT_S = env_seconds("NEO4J_KH_PLAN_WAIT", 60.0)
+    _KH_QUERY_TIMEOUT_S = env_seconds("NEO4J_KH_QUERY_TIMEOUT", 600.0)
+    _KH_PLANNED_MAX = 4096
+
+    def _kh_plans(self) -> tuple[dict[str, asyncio.Task], set[str]]:
+        """The statements being planned by a request of this process, and those that have run once."""
+        return vars(self).setdefault("_kh_planning", {}), vars(self).setdefault("_kh_planned_texts", set())
+
+    def _kh_planned(self, key: str, task: asyncio.Task) -> None:
+        planning, planned = self._kh_plans()
+        if planning.get(key) is task:
+            del planning[key]
+        if not task.cancelled() and task.exception() is None:
+            if len(planned) >= self._KH_PLANNED_MAX:
+                planned.clear()
+            planned.add(key)
+
+    async def _kh_run(self, query: str, parameters: dict[str, Any], txn_id: str | None) -> list[dict]:
+        if txn_id is not None:
+            # Inside a transaction the statement shares that transaction's session and limit.
+            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        planning, planned = self._kh_plans()
+        # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
+        types = sorted((k, type(v).__name__) for k, v in parameters.items())
+        key = hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
+        # One wait budget per request, even when a failed planner hands the planning on.
+        deadline = time.monotonic() + self._KH_PLAN_WAIT_S
+        # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
+        # by every request at once (bounded by the query timeout). Track evictions if that shows up again.
+        while key not in planned:
+            task = planning.get(key)
+            if task is None or task.done():
+                task = spawn_in_request(
+                    self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
+                    name="kh-plan",
+                )
+                planning[key] = task
+                task.add_done_callback(lambda t, key=key: self._kh_planned(key, t))
+                # The planner's own request waits for it: giving up would free nothing, since the planning runs on.
+                return await self._kh_timed(asyncio.shield(task))
+            try:
+                await asyncio.wait_for(asyncio.shield(task), max(deadline - time.monotonic(), 0))
+            except TimeoutError:
+                raise KnowledgeHubListingBusy() from None
+            except Exception:
+                # The planner's own request reports its failure; this one plans the statement itself.
+                continue
+        return await self._kh_timed(
+            self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
+        )
+
+    async def _kh_timed(self, run: Awaitable[list[dict]]) -> list[dict]:
+        """``run``, with an out-of-memory failure timed from here: a wait for the plan before it says nothing about
+        the statement's size (``_kh_walk_refusal``)."""
+        started = time.monotonic()
+        try:
+            return await run
+        except Exception as e:
+            if self._kh_out_of_memory(e):
+                raise KnowledgeHubListingBusy(out_of_memory=True, ran_s=time.monotonic() - started) from e
             raise
 
     # The global flatten lets each connector's page read its own grants.
@@ -22789,6 +22916,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 rows = await self._kh_query(scope_query, parameters=scope_params, txn_id=transaction)
             except Exception as e:
+                if isinstance(e, KnowledgeHubListingBusy) and not e.out_of_memory:
+                    # Waiting on a cold plan or past its limit: the full query is heavier still to plan.
+                    raise
                 # The enrichment is the full query's own tail; should it fail on the scope page, answer from the
                 # full query rather than failing the request.
                 self.logger.warning(f"kh scope page enrichment failed for {app_id}, using the full query: {e}")
@@ -22800,7 +22930,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             except KnowledgeHubListingBusy as busy:
                 if not (flatten and busy.out_of_memory):
                     raise
-                elapsed = time.monotonic() - walk_started
+                elapsed = busy.ran_s if busy.ran_s is not None else time.monotonic() - walk_started
                 self.logger.warning(f"kh listing for {app_id} ran out of transaction memory after {elapsed:.1f}s")
                 raise self._kh_walk_refusal(elapsed) from busy
             except Exception as e:

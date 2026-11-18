@@ -193,6 +193,7 @@ services:
       - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
       - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - INDEXING_TABLE_ROW_BATCH_SIZE=${INDEXING_TABLE_ROW_BATCH_SIZE:-50}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
@@ -407,6 +408,7 @@ services:
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
       - NEO4J_dbms_memory_heap_initial__size=1G
       - NEO4J_dbms_memory_heap_max__size=2G
+      - NEO4J_dbms_cypher_min__replan__interval=30m
       - NEO4J_dbms_memory_pagecache_size=1G
     volumes:
       - neo4j_data:/data

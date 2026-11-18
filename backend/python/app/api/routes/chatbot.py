@@ -656,6 +656,35 @@ async def upload_chat_attachments(
         return await _upload_chat_attachments(request, graph_provider, config_service)
 
 
+
+def attachment_record_doc(*, record_id: str, org_id: str, item: Any, external_record_id: str, virtual_record_id: str, now: int) -> dict[str, Any]:  # noqa: ANN401
+    """The record written for an uploaded chat attachment: a new record, so it starts its indexing run at ``now``."""
+    return {
+        "_key": record_id,
+        "id": record_id,
+        "orgId": org_id,
+        "recordName": item.fileName,
+        "externalRecordId": external_record_id,
+        "recordType": "FILE",
+        "origin": "UPLOAD",
+        "connectorId": f"attachments_{org_id}",
+        "connectorName": Connectors.ATTACHMENTS.value,
+        "createdAtTimestamp": now,
+        "updatedAtTimestamp": now,
+        "sourceCreatedAtTimestamp": now,
+        "sourceLastModifiedTimestamp": now,
+        "isDeleted": False,
+        "isArchived": False,
+        "indexingStatus": "NOT_STARTED",
+        "extractionStatus": "NOT_STARTED",
+        "firstQueuedAt": now,
+        "indexingAttempts": 0,
+        "version": 1,
+        "mimeType": item.mimeType,
+        "sizeInBytes": item.size,
+        "virtualRecordId": virtual_record_id,
+    }
+
 async def _upload_chat_attachments(
     request: Request,
     graph_provider: IGraphDBProvider,
@@ -741,29 +770,10 @@ async def _upload_chat_attachments(
         )
         external_record_id = storage_doc_id if storage_doc_id else record_id
 
-        record_doc = {
-            "_key": record_id,
-            "id": record_id,
-            "orgId": org_id,
-            "recordName": item.fileName,
-            "externalRecordId": external_record_id,
-            "recordType": "FILE",
-            "origin": "UPLOAD",
-            "connectorId": f"attachments_{org_id}",
-            "connectorName": Connectors.ATTACHMENTS.value,
-            "createdAtTimestamp": now,
-            "updatedAtTimestamp": now,
-            "sourceCreatedAtTimestamp": now,
-            "sourceLastModifiedTimestamp": now,
-            "isDeleted": False,
-            "isArchived": False,
-            "indexingStatus": "NOT_STARTED",
-            "extractionStatus": "NOT_STARTED",
-            "version": 1,
-            "mimeType": item.mimeType,
-            "sizeInBytes": item.size,
-            "virtualRecordId": virtual_record_id,
-        }
+        record_doc = attachment_record_doc(
+            record_id=record_id, org_id=org_id, item=item, external_record_id=external_record_id,
+            virtual_record_id=virtual_record_id, now=now,
+        )
 
         needs_ocr = False
         parse_mode = "pdfplumber"

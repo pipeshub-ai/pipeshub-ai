@@ -562,8 +562,8 @@ async def test_a_refresh_run_tells_the_parsing_service_to_bypass_its_stored_outp
             clear_run()
 
     sent = [call.kwargs["data"] for call in post.await_args_list]
-    assert "refresh_paid_outputs" not in sent[0]
-    assert sent[1]["refresh_paid_outputs"] == "true"
+    assert "refresh_paid_outputs" not in sent[0] and "refresh_token" not in sent[0]
+    assert sent[1]["refresh_paid_outputs"] == "true" and sent[1]["refresh_token"]
 
 
 @pytest.mark.asyncio

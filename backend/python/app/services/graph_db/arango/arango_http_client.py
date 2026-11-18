@@ -22,7 +22,12 @@ from typing import Any, Dict, List, Optional, TypeVar, Union, cast
 import aiohttp
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.exceptions.graph_db_exceptions import GraphQueryError
+from app.core.org_context import spawn_detached
+from app.exceptions.graph_db_exceptions import GraphQueryError, RecordSchemaNarrowError
+from app.services.graph_db.arango.record_schema_guard import (
+    RecordSchemaGuard,
+    is_record_schema_error,
+)
 from app.utils import error_class
 from app.utils.db_query_log import query_ended, query_logged
 
@@ -134,6 +139,72 @@ def _logged(op: str):  # noqa: ANN202
     return query_logged("arango", op, describe=describe_arango_error, skip=_SKIP)
 
 
+
+def _sends_per_item(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
+    """Marks a batch write whose items land one by one: the guard never sends such a batch again whole (the items that landed would be
+    written twice, and a newer write by someone else undone). The write itself sends again only the items the records schema refused."""
+    write.sends_per_item = True  # type: ignore[attr-defined]
+    return write
+
+
+def _record_schema_guarded(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
+    """A write that may touch ``records``: a refusal by the records schema (errorNum 1620) is handled here.
+
+    Inside a stream transaction the transaction is aborted before any caller code runs (a 1620 does not abort it
+    on the server, and a handler that logs and goes on would commit the statements around it), and
+    ``RecordSchemaNarrowError`` is raised for the owner of the transaction to run it again. Outside one the
+    statement wrote nothing, so the schema is widened and the statement is sent once more.
+    """
+    signature = inspect.signature(write)
+    per_item = bool(getattr(write, "sends_per_item", False))
+
+    @functools.wraps(write)
+    async def run(self: "ArangoHTTPClient", *args: object, **kwargs: object) -> _W:
+        guard = self.record_guard
+        if guard is None:
+            return await write(self, *args, **kwargs)
+        txn = signature.bind(self, *args, **kwargs).arguments.get("txn_id")
+        guard.check_usable(txn)
+        try:
+            return await write(self, *args, **kwargs)
+        except Exception as error:
+            if not is_record_schema_error(error):
+                raise
+            if txn:
+                # Aborted first, whatever the schema says now: the server leaves the transaction open on a 1620, and a
+                # schema change does not wait for a transaction whose first records write was the refused one, so another
+                # process may have widened it between the refusal and the check below.
+                await self._abort_record_schema_refused_transaction(txn)
+                # Always the rerun error: a wide schema now cannot tell a bad value from a narrow schema widened since.
+                # A bad value is refused again on the rerun, whose attempts are bounded, and stays the cause of this error.
+                if not await guard.is_wide():
+                    guard.note_narrow()
+                    self._widen_records_schema_in_background()
+                raise RecordSchemaNarrowError(f"the records schema refused a write in transaction {txn}; it was aborted") from error
+            # Outside a transaction the statement wrote nothing. Whatever the schema says now (another process may have widened
+            # it between the refusal and this check), it is sent once more; a data error fails again and is raised.
+            guard.note_narrow()
+            mode = signature.bind(self, *args, **kwargs).arguments.get("overwrite_mode", "update")
+            await guard.ensure_wide("1620")
+            if per_item:
+                # The write already sent the refused items again after the widening; a refusal that is left is the data's, or the schema is still narrow.
+                if await guard.is_wide():
+                    raise
+                raise RecordSchemaNarrowError("the records schema still refuses items of a batch after it was widened") from error
+            if mode not in ("update", "replace"):
+                if await guard.is_wide():
+                    raise
+                raise RecordSchemaNarrowError("the records schema refused a write that cannot be sent again") from error
+        try:
+            return await write(self, *args, **kwargs)
+        except Exception as error:
+            if is_record_schema_error(error) and not await guard.is_wide():
+                raise RecordSchemaNarrowError("the records schema still refuses the write after it was widened") from error
+            raise
+
+    return run
+
+
 def _retries_write_conflicts(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
     """Run a write outside a transaction again when it fails with errorNum 1200.
 
@@ -230,6 +301,8 @@ class ArangoHTTPClient:
         self._sessions_lock = threading.Lock()
         self.pool_limit = pool_limit
         self.logger = logger
+        # Set by the provider that knows the records schema; None leaves every write as it was.
+        self.record_guard: RecordSchemaGuard | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -400,6 +473,10 @@ class ArangoHTTPClient:
         Returns:
             str: Transaction ID
         """
+        guard = self.record_guard
+        if guard is not None and guard.narrowed:
+            # a run of a transaction that was aborted by a schema refusal: give the widening up to 5 s to land
+            await guard.wait_wide()
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/begin"
 
         payload = {
@@ -432,6 +509,8 @@ class ArangoHTTPClient:
         Args:
             txn_id: Transaction ID returned by begin_transaction
         """
+        if self.record_guard is not None:
+            self.record_guard.check_usable(txn_id)
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
 
         session = await self._get_session()
@@ -451,15 +530,52 @@ class ArangoHTTPClient:
         Args:
             txn_id: Transaction ID returned by begin_transaction
         """
+        if self.record_guard is not None and self.record_guard.is_abort_confirmed(txn_id):
+            return  # the server confirmed the abort a schema refusal made; one that did not is sent again here
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
 
         session = await self._get_session()
         async with session.delete(url) as resp:
-            if resp.status not in [200, 204]:
+            if resp.status not in [200, 204, HttpStatusCode.NOT_FOUND.value]:  # 404: already gone
                 error = await resp.text()
                 raise Exception(f"Failed to abort transaction: {error}")
 
+            if self.record_guard is not None:
+                self.record_guard.mark_abort_confirmed(txn_id)
             self.logger.debug(f"Transaction aborted: {txn_id}")
+
+
+    async def _abort_record_schema_refused_transaction(self, txn_id: str) -> None:
+        """Abort ``txn_id`` and remember it, so a caller that catches the error and goes on can neither write nor commit."""
+        guard = self.record_guard
+        assert guard is not None
+        guard.mark_aborted(txn_id)  # first: whatever the server answers, nothing more is written or committed in it
+        try:
+            url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
+            session = await self._get_session()
+            async with session.delete(url) as resp:
+                if resp.status in [200, 204, HttpStatusCode.NOT_FOUND.value]:
+                    guard.mark_abort_confirmed(txn_id)
+                else:
+                    self.logger.warning("could not abort transaction %s: %s", txn_id, await resp.text())
+        except Exception as exc:  # the caller gets RecordSchemaNarrowError; its owner's clean-up sends the abort again
+            self.logger.warning("could not abort transaction %s: %s", txn_id, exc)
+
+    def _widen_records_schema_in_background(self) -> None:
+        """Widen the schema in a task of its own, never inside the transaction that was refused."""
+        guard = self.record_guard
+        assert guard is not None
+        task = spawn_detached(guard.ensure_wide("1620"), name="record-schema-widen")
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+    async def list_running_transactions(self) -> list[dict[str, Any]]:
+        """The stream transactions running now (``GET /_api/transaction``; per database)."""
+        url = f"{self.base_url}/_db/{self.database}/_api/transaction"
+        session = await self._get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status != HttpStatusCode.OK.value:
+                raise RuntimeError(f"could not list transactions (HTTP {resp.status})")
+            return list((await resp.json()).get("transactions") or [])
 
 
     # ==================== Document Operations ====================
@@ -573,6 +689,7 @@ class ArangoHTTPClient:
                 raise Exception(f"Failed to create document (status={resp.status}): {error}")
 
 
+    @_record_schema_guarded
     @_logged("update_document")
     @_retries_write_conflicts
     async def update_document(
@@ -611,6 +728,32 @@ class ArangoHTTPClient:
                 error = await resp.text()
                 raise Exception(f"Failed to update document (status={resp.status}): {error}")
 
+
+    @_record_schema_guarded
+    async def patch_document_if_match(
+        self,
+        collection: str,
+        key: str,
+        updates: dict[str, Any],
+        revision: str,
+        txn_id: Optional[str] = None,
+    ) -> bool:
+        """Update a document with a plain ``PATCH`` that the server applies only while the document is still at ``revision``
+        (``If-Match``). False when it has changed since (412); no AQL, so no query to plan. A write conflict is not
+        retried here: the caller decides what a changed document means."""
+        url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}/{key}"
+        headers = {"If-Match": revision}
+        if txn_id:
+            headers["x-arango-trx-id"] = txn_id
+        session = await self._get_session()
+        async with session.patch(url, json=updates, headers=headers) as resp:
+            if resp.status in (HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value):
+                self._check_response_for_errors(await resp.json(), "Conditional update document")
+                return True
+            error = await resp.text()
+            if resp.status == 412 or is_write_conflict(error):
+                return False
+            raise Exception(f"Failed to update document (status={resp.status}): {error}")
 
     @_logged("delete_document")
     @_retries_write_conflicts
@@ -656,6 +799,7 @@ class ArangoHTTPClient:
 
     # ==================== Query Operations ====================
 
+    @_record_schema_guarded
     @_logged("execute_aql")
     @_retries_write_conflicts
     async def execute_aql(
@@ -732,6 +876,8 @@ class ArangoHTTPClient:
 
     # ==================== Batch Operations ====================
 
+    @_record_schema_guarded
+    @_sends_per_item
     @_logged("batch_insert_documents")
     async def batch_insert_documents(
     self,
@@ -789,6 +935,17 @@ class ArangoHTTPClient:
                 raise Exception(f"Batch insert failed (status={resp.status}): {error}")
 
         result = await _send_until_landed(documents, txn_id, send)
+        guard = self.record_guard
+        if guard is not None and not txn_id and isinstance(result, list):
+            # Items land one by one: the ones the records schema refused did not, the others did. Widen, then send only the refused ones.
+            refused = [i for i, answer in enumerate(result) if is_record_schema_error(str(answer)) and isinstance(answer, dict) and answer.get("error")]
+            if refused:
+                guard.note_narrow()
+                await guard.ensure_wide("1620")
+                again = await _send_until_landed([documents[i] for i in refused], txn_id, send)
+                if isinstance(again, list) and len(again) == len(refused):
+                    for i, answer in zip(refused, again):
+                        result[i] = answer
 
         # Check for errors in response
         self._check_response_for_errors(result, "Batch insert")
@@ -1123,10 +1280,12 @@ class ArangoHTTPClient:
     async def update_collection_schema(
         self,
         name: str,
-        schema: Optional[Dict[str, Any]] = None
+        schema: Optional[Dict[str, Any]] = None,
+        timeout: float | None = None,
     ) -> bool:
         """
-        Update the schema validation for an existing collection.
+        Update the schema validation for an existing collection. ``timeout`` (seconds) bounds the client's wait; the
+        server may still apply the change later.
 
         Args:
             name: Collection name
@@ -1146,7 +1305,8 @@ class ArangoHTTPClient:
 
         try:
             session = await self._get_session()
-            async with session.put(url, json=payload) as resp:
+            request_timeout = aiohttp.ClientTimeout(total=timeout) if timeout is not None else aiohttp.helpers.sentinel
+            async with session.put(url, json=payload, timeout=request_timeout) as resp:
                 if resp.status == HttpStatusCode.OK.value:
                     self.logger.info(f"Schema updated for collection '{name}'")
                     return True

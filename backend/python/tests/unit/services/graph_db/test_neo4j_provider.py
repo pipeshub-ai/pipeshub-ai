@@ -2448,6 +2448,16 @@ class TestUserAndOrganizationLookups:
         assert "n.reason" not in query
 
     @pytest.mark.asyncio
+    async def test_reset_indexing_status_locks_each_record_before_it_reads_the_run_fields(self, neo4j_provider: Neo4jProvider) -> None:
+        """The run fields (attempt count, first queued) are read after the write lock is held, and the status filters are checked again then."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector("app-1", "NOT_STARTED", exclude_statuses=["IN_PROGRESS"])
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        lock = query.index("SET n.matchLock = true")
+        assert lock < query.index("n.indexingStatus AS _st") < query.index("SET n.indexingStatus = $status")
+        assert query.index("NOT coalesce(n.indexingStatus, '') IN $exclude_statuses", lock) > lock
+
+    @pytest.mark.asyncio
     async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.reset_indexing_status_for_connector(

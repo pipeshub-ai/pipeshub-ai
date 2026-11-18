@@ -211,6 +211,7 @@ services:
       # How long a delete waits for a running sync to stop.
       - CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=${CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC:-15}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - INDEXING_TABLE_ROW_BATCH_SIZE=${INDEXING_TABLE_ROW_BATCH_SIZE:-50}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
@@ -395,6 +396,8 @@ services:
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
       - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
       - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_MAX:-2G}
+      # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
+      - NEO4J_dbms_cypher_min__replan__interval=${NEO4J_MIN_REPLAN_INTERVAL:-30m}
       - NEO4J_dbms_memory_pagecache_size=${NEO4J_PAGECACHE:-1G}
     volumes:
       - neo4j_data:/data

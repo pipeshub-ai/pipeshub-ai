@@ -587,8 +587,8 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     @pytest.mark.parametrize("holder", [{"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_10"}],
                              ids=["assignee", "user_field"])
     def test_an_unleveled_sub_task_gives_its_own_assignee_or_user_field_holder_no_grant(self, holder: dict) -> None:
-        """Jira shows it to them (JSWCLOUD-25762), but an OPEN sub-task would also be read by its parent's own holders
-        (tests/permissions/test_subtask_own_holders.py): it stays STRICT, read with its parent."""
+        """Under its parent an OPEN sub-task would also be read by the parent's own holders (tests/permissions/test_subtask_own_holders.py),
+        so it stays STRICT there; Jira Cloud files one its holders name off its parent instead (JSWCLOUD-25762)."""
         record, grants, _ = self._apply([holder], {"customfield_10": [{"accountId": "acc-7"}]},
                                         record=_record(parent_external_record_id="99"), is_subtask=True,
                                         user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
@@ -644,6 +644,20 @@ class TestBrowseHoldersNamingPeoplePerIssue:
             "customfield_10": [{"accountId": "acc-7"}], "customfield_11": {"groupId": "g-9"},
         }, user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
         assert grants == {(EntityType.USER, "rep@ex.com"), (EntityType.USER, "seven@ex.com"), (EntityType.GROUP, "g-9")}
+
+    def test_a_deactivated_reporter_or_assignee_is_not_granted_whatever_their_email(self) -> None:
+        gone = {"key": "k", "active": False, "emailAddress": "rep@ex.com"}
+        # A person the payload names resolves through the directory, never by the payload's email.
+        _, grants, _ = self._apply([{"type": "reporter"}, {"type": "assignee"}],
+                                   {"reporter": gone, "assignee": {"accountId": "a-1", "active": True}},
+                                   user_by_account_id={"a-1": type("U", (), {"email": "asg@ex.com"})()})
+        assert grants == {(EntityType.USER, "asg@ex.com")}
+        record = _record()
+        level, _ = apply_issue_access(
+            record, {"security": {"id": "20"}, "assignee": {"active": False}}, is_subtask=False, project_key="PROJ",
+            context=_present(members={"20": [{"type": "assignee"}]}), assignee_email="asg@ex.com",
+        )
+        assert level == [] and record.access_rule == AccessRule.RESTRICTED
 
     def test_the_same_person_in_two_roles_is_granted_once(self) -> None:
         _, grants, _ = self._apply([{"type": "reporter"}, {"type": "assignee"}], assignee_email="rep@ex.com")

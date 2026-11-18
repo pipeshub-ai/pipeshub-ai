@@ -21,6 +21,7 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
     RecordStatusUpdateError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -456,7 +457,9 @@ class Processor:
 
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
             return
-        except IndexingError:
+        except (IndexingError, NonRetryableError):
+            # A deliberate stop (a table model call refused for good) is not a Docling failure: reported as one after
+            # PARSING_COMPLETE, it became a retryable error and the classifier never saw the stop.
             raise
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
@@ -1624,6 +1627,8 @@ class Processor:
             status_update["reason"] = ""
         elif reason is not None:
             status_update["reason"] = reason
+        if indexing_status == ProgressStatus.FAILED:
+            status_update["failedAt"] = timestamp
         # The parsing-service path writes parsingStatus=IN_PROGRESS before it
         # dispatches. Left there with processingStartedAt cleared, the record
         # reads as a crashed parse and stale recovery republishes it for ever.

@@ -91,8 +91,10 @@ class KnowledgeHubListingBusy(GraphDBError):
     """The listing could not get what it needs right now: a walk waited too long for a turn, or the database ran
     out of transaction memory because other requests held it. Nothing is wrong with the request; retry."""
 
-    def __init__(self, *, out_of_memory: bool = False) -> None:
+    def __init__(self, *, out_of_memory: bool = False, ran_s: float | None = None) -> None:
         self.out_of_memory = out_of_memory
+        # How long the statement itself ran before the database gave up, when that excludes a wait for its plan.
+        self.ran_s = ran_s
         super().__init__("The listing is busy right now. Please try again in a few seconds.")
 
 
@@ -123,3 +125,15 @@ def is_graph_memory_refusal(exc: BaseException) -> bool:
     error that carries one of the pool's status codes (a statement not marked as bulk keeps the
     driver's error)."""
     return isinstance(exc, GraphMemoryLimitError) or getattr(exc, "code", None) in MEMORY_LIMIT_CODES
+
+
+class RecordSchemaNarrowError(GraphDBError):
+    """A write to ``records`` was refused because the live collection schema is narrower than this process's.
+
+    Transient: the schema is widened outside any transaction, and the owner of the transaction that was aborted
+    runs it again. Nothing the transaction wrote was kept. A handler that logs a failure and goes on must let this
+    one through (``_must_propagate``).
+    """
+
+    # Retried like a lost write conflict: nothing the aborted transaction wrote was kept.
+    log_error_class = "conflict"

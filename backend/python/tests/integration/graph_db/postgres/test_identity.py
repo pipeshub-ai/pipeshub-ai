@@ -71,6 +71,21 @@ async def test_users_listed_for_an_org_are_its_members_by_edge_and_active_unless
     assert await w.p.get_users(_org()) == []                                      # another org's id reads nothing
 
 
+async def test_a_failed_user_read_is_no_users_unless_asked_to_raise(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller that must not read a failure as an empty org (the org gate's cleanup, a connector's ACL targets) asks to raise."""
+    await member(w, "on", userId="a", isActive=True, email="on@x.com")
+    rows = w.p._id_rows
+
+    async def users_down(sql: str, *a: object, **k: object) -> list:
+        if "pipeshub:graph.get_users" in sql:
+            raise RuntimeError("store down")
+        return await rows(sql, *a, **k)
+    monkeypatch.setattr(w.p, "_id_rows", users_down)
+    assert await w.p.get_users(w.org) == []
+    with pytest.raises(RuntimeError):
+        await w.p.get_users(w.org, raise_on_error=True)
+
+
 async def test_organization_users_page_search_count_and_leave_out_service_accounts(w: World) -> None:
     for i, name in enumerate(["Cara", "Abe", "Bea", "Dan"]):
         await member(w, f"u{i}", userId=f"id{i}", fullName=name, email=f"{name.lower()}@x.com", isActive=True)
@@ -449,6 +464,45 @@ async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the
     assert await w.allowed("k", "kept") == {"kept"}
     targets = {(e["_to"]) for e in await w.p.get_edges_from_node("users/m", "permission")}
     assert targets == {"records/elsewhere", f"teams/all_{w.org}"}
+
+
+async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_unlinked_users(w: World) -> None:
+    """``open_app_to_org_team``: an org user the connector does not link loses the grants still naming them before
+    the All team passes the gate (they would read through it otherwise); a linked user keeps theirs; a grant left
+    on an unlinked user after the gate opened goes with the next call."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    await member(w, "m", userId="um", email="m@x.com", isActive=True)
+    await member(w, "s", userId="us", email="s@x.com", isActive=True)
+    await w.nodes("records", rec("hers"), rec("left"))
+    await w.edge("permission", ("users", "m"), ("records", "hers"), type="USER", role="READER")
+    await w.edge("permission", ("users", "s"), ("records", "left"), type="USER", role="READER")
+    await w.nodes("teams", {"_key": f"all_{w.org}"})
+    for who in ("m", "s"):
+        await w.member(who, f"all_{w.org}", coll="teams")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("m@x.com", "m")])
+
+    await processor.open_app_to_org_team(APP)
+    assert await w.allowed("m", "hers") == {"hers"}
+    assert await w.allowed("s", "left") == set()                           # through the team, but the stale grant went
+    assert await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
+
+    await w.edge("permission", ("users", "s"), ("records", "left"), type="USER", role="READER")
+    await processor.open_app_to_org_team(APP)                                # already open: the stale grant still goes
+    assert await w.allowed("s", "left") == set()
+    assert await w.allowed("m", "hers") == {"hers"}
+    await processor.withdraw_team_app_edge(APP)
+    assert not await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
+    assert await w.allowed("m", "hers") == {"hers"}
 
 
 async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:
