@@ -4482,10 +4482,10 @@
         "errorNameRequired": "Enter a name for this token.",
         "errorCreateTitle": "Failed to create token",
         "expiryHeading": "Expiry",
+        "expiry7Days": "7 days",
         "expiry30Days": "30 days",
         "expiry90Days": "90 days",
         "expiry365Days": "365 days",
-        "expiryNever": "Never",
         "permissionsHeading": "Scopes",
         "errorScopeRequired": "Select at least one scope.",
         "selectAllScopes": "Select all",
@@ -5744,6 +5744,55 @@
       "offDescription": "It's out of everyone's answers, search and records, and the sample accounts can't sign in. Turn it back on in Profile → Demo data.",
       "onTitle": "Demo data turned back on for everyone",
       "errorTitle": "Couldn't change the demo data for everyone"
+    },
+    "about": {
+      "open": "What's in the demo?",
+      "title": "About the Acme Corp demo",
+      "description": "Acme Corp is a fictional software company. The Demo connector loads its records so you can try PipesHub without connecting your own tools. Nothing outside PipesHub is contacted, and none of it is your company's data.",
+      "status": {
+        "shown": "It's in your answers, search and records now. Demo results carry a Demo label.",
+        "hiddenRealData": "It's hidden from your answers because your organization has its own data now. Nobody sees it unless they turn it on for themselves.",
+        "hiddenByChoice": "It's hidden from your answers because you turned it off.",
+        "offForEveryone": "An admin turned it off for everyone, so it isn't in anyone's answers and the sample accounts can't sign in.",
+        "show": "Show it in my answers"
+      },
+      "tools": {
+        "title": "What's in it",
+        "tool": "Tool",
+        "places": "Places",
+        "records": "Records",
+        "total": "Total"
+      },
+      "people": {
+        "title": "People",
+        "description": "Sample employees. Their names appear as the authors of the records; only two of them can sign in.",
+        "canSignIn": "Can sign in"
+      },
+      "restricted": {
+        "title": "Who can see what",
+        "description": "The person who added the Demo connector can read most of it, and Alice and Bob can read what their teams can. Nobody else in your organization can read any of it; showing the demo in your answers doesn't give access. Each record below is readable only by members of its group, so the same question gets a different answer depending on who asks.",
+        "readers": "Can open these: {{names}}",
+        "noReaders": "Neither sample account can open these."
+      },
+      "questions": {
+        "title": "Try asking"
+      },
+      "accounts": {
+        "title": "Sample sign-in accounts",
+        "description": "Sign in as Alice or Bob in another browser to see the same question answered with different permissions.",
+        "state": {
+          "checking": "Checking…",
+          "active": "Can sign in",
+          "off": "Sign-in turned off",
+          "missing": "Not created",
+          "unknown": "Couldn't check"
+        },
+        "password": "They use the starting password chosen when PipesHub was installed (PIPESHUB_DEMO_PASSWORD). PipesHub keeps only a scrambled form of it, so it can't be shown here.",
+        "lostPassword": "If nobody has it, Forgot password won't help, because .example addresses can't receive email. Whoever runs the server can print a link to choose a new password by running this in the PipesHub container:",
+        "missing": "Sample accounts are only created at install, when PIPESHUB_DEMO_PERSONAS=1 is set. The demo works without them; you just can't sign in as Alice or Bob.",
+        "retry": "Try again"
+      },
+      "close": "Close"
     }
   },
   "collections": {
