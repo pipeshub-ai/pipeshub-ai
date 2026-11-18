@@ -39,6 +39,12 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
 )
 from app.models.entities import Record
+from app.modules.indexing import replay_set
+from app.modules.indexing.connector_off_events import (
+    SAME_BYTES_SKIP_RETRY_DELAY_S,
+    SameBytesSkipPending,
+    enrichment_cut_short,
+)
 from app.modules.indexing.embed_resume import (
     DELIVERY_ID_KEY,
     EMBED_DELIVERY_ID,
@@ -199,7 +205,7 @@ class EventProcessor:
         """
         return getattr(self.processor, "indexing_pipeline", None)
 
-    async def sync_vector_membership(self, virtual_record_id: str) -> None:
+    async def sync_vector_membership(self, virtual_record_id: str, *, log_failure: bool = True) -> None:
         """Recompute a VRID's connector/group arrays from graph. Never deletes."""
         if not virtual_record_id or not isinstance(virtual_record_id, str):
             return
@@ -223,10 +229,94 @@ class EventProcessor:
             # record attached to the VRID with its connectorId missing from the
             # points and nothing to repair it; both callers are event handlers,
             # and re-running a duplicate attach is idempotent.
-            self.logger.error(
-                "Failed to sync vector membership for %s: %s", virtual_record_id, e
-            )
+            if log_failure:
+                self.logger.error(
+                    "Failed to sync vector membership for %s: %s", virtual_record_id, e
+                )
             raise
+
+    @staticmethod
+    def _is_same_bytes_update(
+        event_type: str,
+        event_data: Mapping[str, Any],
+        record: Mapping[str, Any],
+        content_rev: str,
+        *,
+        store_only: bool,
+        is_code: bool,
+        is_sql: bool,
+    ) -> bool:
+        """Whether an update carries the very bytes the record is already indexed from.
+
+        Plain updates only: a forced reindex, a vector-store rebuild and a named-stage re-run each
+        ask for work. Code and SQL kinds are never skipped: their projection and stored blocks are
+        not the whole content, so the bytes alone do not show the record is current. The record must
+        be COMPLETED at this very content revision with an indexed copy, enrichment must not have
+        been cut short, and nothing that is not a full index (a parse-now run, a store-only run) is
+        in play. Anything unknown fails closed, to the full run.
+        """
+        return (
+            event_type == EventTypes.UPDATE_RECORD.value
+            and not event_data.get("forceReindex")
+            and not event_data.get("vectorDbOnly")
+            and not event_data.get("stages")
+            and not store_only
+            and current_run() is None
+            and not is_code
+            and not is_sql
+            and record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and record.get("hasIndexedCopy") is True
+            and not enrichment_cut_short(record)
+            and bool(record.get("virtualRecordId"))
+            and bool(content_rev)
+            and record.get("contentRev") == content_rev
+        )
+
+    async def _skip_same_bytes(self, record: Mapping[str, Any], record_id: str) -> bool:
+        """Settle a same-bytes update without parsing or embedding; False when it must run in full.
+
+        1. The membership sync: a full update ends in one, and the update may be the sign that the
+           record's connector, groups or permissions changed under the same bytes.
+        2. An unforced redrive of the stages after embed that did not finish (failed or paused). A
+           finished stage is not claimed, so statuses and `reason` stay; the claim never resets the
+           revision's pause budget (only a forced one does).
+        3. The delivery is remembered in the replay set, as the record's COMPLETED write would.
+
+        A revision the stage runtime never saw (a lost hand-off, or content indexed before it existed)
+        is not skipped: the full run dispatches every stage. A sync, redrive or state read that fails
+        raises ``SameBytesSkipPending``: the record is left untouched and the delivery handed back.
+        """
+        ingress = self.stage_ingress
+        if ingress is None:
+            return False
+        vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
+        try:
+            if await ingress.handoff_lost(record):
+                return False
+            await self.sync_vector_membership(vrid, log_failure=False)
+            dispatched = await ingress.redrive_unchanged(vrid, rev, record)
+        except Exception as exc:
+            # The record is indexed and stays as it is: no status is written and nothing is re-indexed
+            # (a full run of a type not reconciled block by block replaces its vrid and takes its points
+            # out before it parses). The delivery is handed back instead; the broker's backstop bounds it.
+            self.logger.warning(
+                "Record %s: the same-bytes skip could not finish (%s); handing the update back, record untouched",
+                record_id, type(exc).__name__,
+            )
+            raise SameBytesSkipPending(
+                f"{record_id}: same-bytes skip could not finish: {type(exc).__name__}",
+                delay_s=SAME_BYTES_SKIP_RETRY_DELAY_S,
+            ) from exc
+        if dispatched is None:
+            return False
+        self.logger.info(
+            "Record %s: same content as its indexed revision %s; parse and embed skipped, %d stage(s) re-dispatched",
+            record_id, rev, len(dispatched),
+        )
+        completed_at = record.get("lastIndexTimestamp")
+        if isinstance(completed_at, int):
+            await replay_set.note_record_completed(record_id, completed_at, self.logger)
+        return True
 
     async def _rewrite_or_delete_vrid_vectors(self, virtual_record_id: str) -> None:
         if not virtual_record_id or not isinstance(virtual_record_id, str):
@@ -839,9 +929,9 @@ class EventProcessor:
     ) -> None:
         """An update that leaves a record empty must not leave its old content searchable.
 
-        Types not reconciled block by block lost their vectors before this
-        event ran; reconciled ones still hold them. A VRID another record also
-        holds is that record's content, so it is left alone.
+        Every type still holds its vectors when this runs: nothing is taken out
+        ahead of the work. A VRID another record also holds is that record's
+        content, so it is left alone.
         """
         if not virtual_record_id or event_type not in (
             EventTypes.UPDATE_RECORD.value,
@@ -1632,16 +1722,6 @@ class EventProcessor:
             # (status, revision) before the vrid is chosen, so a marker read from it would match any event.
             embed_marker = marker_of(record)
 
-            # A successful attempt never clears `reason` (the status writer only
-            # sets it when non-empty), so drop the previous failure text here or
-            # it outlives a good reindex.
-            if doc.get("reason") and not store_only:
-                self._require_persisted(
-                    await self.update_record_fields(doc, {"reason": None}),
-                    "Failed to clear the previous failure reason for record",
-                    doc,
-                )
-
             # Extract necessary data
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
@@ -1700,6 +1780,30 @@ class EventProcessor:
             scans_for_secrets = self._scans_for_secrets(
                 record_type, reads_as_code_file=reads_as_code_file
             )
+
+            # The same bytes again (an update re-delivered, or queued behind one that already indexed
+            # them): nothing to parse or embed. Decided before anything is written, so `reason` and the
+            # statuses stay as they are.
+            if self._is_same_bytes_update(
+                event_type, event_data, record, content_rev, store_only=store_only,
+                is_code=is_code or reads_as_code_file or record_type == RecordTypes.CODE_FILE.value,
+                is_sql=mime_type in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
+                or (dispatch is not None and dispatch.route in (Route.SQL_TABLE, Route.SQL_VIEW)),
+            ) and await self._skip_same_bytes(record, record_id):
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+
+            # A successful attempt never clears `reason` (the status writer only
+            # sets it when non-empty), so drop the previous failure text here or
+            # it outlives a good reindex.
+            if doc.get("reason") and not store_only:
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"reason": None}),
+                    "Failed to clear the previous failure reason for record",
+                    doc,
+                )
+
 
             # The blob and the vectors are shared through the duplicate's
             # virtualRecordId, but block nodes are keyed by record, so a deduped
@@ -1943,10 +2047,11 @@ class EventProcessor:
             # Persist the vrid this attempt will index under *before* parsing
             # starts. If this attempt fails partway through (after vectors are
             # written but before indexingStatus=COMPLETED), the retry re-reads
-            # this same vrid from the record instead of minting a fresh one —
-            # so record.py's bulk_delete_embeddings (for non-reconciliation
-            # types) or the reconciliation diff (for reconciliation-enabled
-            # types) targets the orphaned vectors instead of abandoning them.
+            # this same vrid from the record instead of minting a fresh one
+            # (an interrupted embedding resumes under it; a reconciliation-enabled
+            # type diffs against its stored blocks) so the orphaned vectors are
+            # not abandoned. A type that is not reconciled block by block and
+            # is not resuming mints a new vrid below, and its old one is cleaned.
             if virtual_record_id != doc.get("virtualRecordId"):
                 await self.update_record_fields(
                     doc, {"virtualRecordId": virtual_record_id}
