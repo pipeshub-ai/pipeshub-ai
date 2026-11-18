@@ -20,7 +20,7 @@ def _race(state: str, barrier, results, hold_s: float) -> None:
     from pathlib import Path
 
     leader = AlertLeader(Path(state))
-    barrier.wait()
+    barrier.wait(timeout=30)  # a peer that never arrives breaks it, not hangs it
     won = leader.try_acquire()
     results.put((os.getpid(), won))
     time.sleep(hold_s)
@@ -31,11 +31,18 @@ def test_processes_racing_for_the_lock_elect_exactly_one(tmp_path: Path) -> None
     barrier = _CTX.Barrier(n)
     results = _CTX.Queue()
     procs = [_CTX.Process(target=_race, args=(str(tmp_path), barrier, results, 1.0)) for _ in range(n)]
-    for p in procs:
-        p.start()
-    outcomes = [results.get(timeout=30) for _ in range(n)]
-    for p in procs:
-        p.join(timeout=30)
+    try:
+        for p in procs:
+            p.start()
+        outcomes = [results.get(timeout=30) for _ in range(n)]
+        for p in procs:
+            p.join(timeout=30)
+    finally:
+        for p in procs:
+            if p.is_alive():
+                p.kill()
+            if p.pid is not None:
+                p.join(timeout=5)
     assert sum(won for _, won in outcomes) == 1
 
 
