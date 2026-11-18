@@ -31,8 +31,10 @@ logger = create_logger("sparse_embeddings")
 _MODEL_NAME = "Qdrant/bm25"
 
 
+from huggingface_hub.constants import HF_HUB_OFFLINE
+
 def _hf_hub_offline_enabled() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {"1", "true", "yes"}
+    return HF_HUB_OFFLINE
 
 
 class SparseEmbedder:
