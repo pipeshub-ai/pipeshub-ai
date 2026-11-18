@@ -290,6 +290,8 @@ SUBTASK_REREAD_CHUNK: int = 50
 PEOPLE_REREAD_CHUNK: int = 20  # kept small: a clause's argument limit is not published
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
+# The linked accounts with a hidden email the directory held at the last sync that knew product access.
+ADMITTED_WITHOUT_EMAIL_KEY: str = "admitted_without_email"
 # An Atlassian account id ("557058:f58131cb-...", "5b10ac8d82e05b22cc7d4ef5"), safe to quote in JQL.
 JIRA_ACCOUNT_ID = re.compile(r"[A-Za-z0-9:_-]{1,128}")
 # What _files_under_parent needs to know about a parent, which Jira's `parent` field does
@@ -537,6 +539,9 @@ class JiraConnector(BaseConnector):
         # 5xx, a network error, an unparseable body). Projects granted through an application
         # role then keep their stored access this sync instead of losing those groups.
         self._app_roles_unread: bool = False
+        # True when a 200 list of readable roles came back, each granting product access only through its
+        # groups: then the product groups' members are everyone with Jira product access.
+        self._app_roles_read: bool = False
         # Keys of the projects whose scheme grants an application role the unread role list
         # could not map: their access list may be partial this sync.
         self._projects_naming_unread_roles: set[str] = set()
@@ -993,7 +998,7 @@ class JiraConnector(BaseConnector):
                 )
             self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
             licensed_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
-            unlicensed_ids = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+            unlicensed_ids = self._unlicensed_ids(jira_users, licensed_users)
             jira_users = licensed_users
             # Their issues were written without their own grants (or lost them when withdrawn).
             self._newly_listed_account_ids = await self._note_newly_listed(jira_users)
@@ -2256,7 +2261,7 @@ class JiraConnector(BaseConnector):
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
         "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles", "_app_roles_mapping",
-        "_licensed_account_ids",
+        "_licensed_account_ids", "_app_roles_read",
     )
     user_link_steps = ("_link_users_groups_and_roles",)
 
@@ -2644,9 +2649,13 @@ class JiraConnector(BaseConnector):
         Always fetches fresh data from the API so that group membership
         changes in Jira are picked up on every sync.
         """
+        # GET /rest/api/3/applicationrole: "Permissions required: Administer Jira global permission"; 403: "Returned if
+        # the user is not an administrator". Any answer but a 200 list leaves product access unknown.
+        # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/)
         mapping: dict[str, list[dict[str, str]]] = {}
         self._app_roles_forbidden = False
         self._app_roles_unread = False
+        self._app_roles_read = False
         self._projects_naming_unread_roles = set()
 
         try:
@@ -2694,6 +2703,7 @@ class JiraConnector(BaseConnector):
                 self._app_roles_unread = True
                 return {}
 
+            access_outside_groups = False
             for role in roles_data:
                 role_key = role.get("key") if isinstance(role, dict) else None
                 if not role_key:
@@ -2702,8 +2712,25 @@ class JiraConnector(BaseConnector):
                     self._app_roles_unread = True
                     continue
                 group_details = role.get("groupDetails", [])
+                role_outside_groups = False
+                if not group_details and isinstance(role.get("userCount"), int) and role["userCount"] > 0:
+                    # Users count against this role's licence, but no group grants it: who they are is not read here.
+                    # ApplicationRole.userCount: "The number of users counting against your license."; groupDetails:
+                    # "The groups associated with the application role." The docs name no other source of product
+                    # access, so a role with users and no group leaves access unknown (fail closed).
+                    # (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json)
+                    role_outside_groups = True
+                named = role.get("groups") if isinstance(role.get("groups"), list) else []
+                identified = [g for g in group_details if isinstance(g, dict) and g.get("groupId")]
+                if len(identified) < max(len(named), len(group_details)):
+                    # ApplicationRole.groups: "The groups associated with the application role. As a group's name can
+                    # change, use of `groupDetails` is recommended to identify a groups." A group the role names but its
+                    # groupDetails do not identify by id licenses people this read cannot name (fail closed).
+                    role_outside_groups = True
+                # Not mapped: a grant to it reads as unread (stored access kept), not as the groups that were read.
+                access_outside_groups = access_outside_groups or role_outside_groups
 
-                if role_key and group_details:
+                if role_key and group_details and not role_outside_groups:
                     mapping[role_key] = [
                         {"groupId": g.get("groupId"), "name": g.get("name")}
                         for g in group_details
@@ -2713,6 +2740,11 @@ class JiraConnector(BaseConnector):
 
             if self._app_roles_unread:
                 self.logger.warning("⚠️ Application roles response has an entry that is not a readable role")
+            self._app_roles_read = bool(roles_data) and not self._app_roles_unread and not access_outside_groups
+            if access_outside_groups:
+                # A role licenses people its groups do not show: a Browse grant to it is unread, not the groups read,
+                # so the projects that name it keep their stored access.
+                self._app_roles_unread = True
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -2730,29 +2762,17 @@ class JiraConnector(BaseConnector):
     ) -> list[AppUser]:
         """The users with access to a Jira product: members of a group of some application role.
 
-        Jira treats any other account as anonymous, so its group, role and user grants never
-        reach it. When the roles or a role group's members can't be read, every user is kept.
+        Jira treats any other account as anonymous, so its group, role and user grants never reach it. When
+        product access can't be read in full (roles refused or unread, a role licensing users outside its
+        groups, a product group's members unread), the accounts already linked and the connector's own keep
+        the connector, and no other account is linked. Roles read in full with no group license nobody.
         """
         self._licensed_account_ids = None
-        if self._app_roles_unread:
-            # Some roles are missing from the mapping, so their members are unknown, not unlicensed.
-            self.logger.warning("⚠️ Not every application role could be read; keeping every Jira user")
-            return jira_users
-        role_groups = {
-            g["name"]: g["groupId"]
-            for groups in app_roles_mapping.values() for g in groups if g.get("name")
-        }
-        if not role_groups:
-            return jira_users
-        licensed: set[str] = set()
-        for name, group_id in role_groups.items():
-            members, ok = await self._fetch_group_members(group_id, name)
-            if not ok:
-                self.logger.warning(
-                    "⚠️ Could not read the members of product group %s; keeping every Jira user", name
-                )
-                return jira_users
-            licensed.update(members)
+        licensed = await self._read_licensed_ids(app_roles_mapping)
+        if licensed is None:
+            keep = {u.source_user_id for u in self._stored_app_users} | {self._authenticated_jira_account_id}
+            self.logger.warning("⚠️ Jira product access could not be read; linking no new Jira user this sync")
+            return [u for u in jira_users if u.source_user_id in keep]
         kept = [u for u in jira_users if u.source_user_id in licensed]
         self._licensed_account_ids = licensed
         if len(kept) < len(jira_users):
@@ -2760,6 +2780,23 @@ class JiraConnector(BaseConnector):
                 f"👥 {len(jira_users) - len(kept)} Jira user(s) without Jira product access left out"
             )
         return kept
+
+    async def _read_licensed_ids(self, app_roles_mapping: dict[str, list[dict[str, str]]]) -> set[str] | None:
+        """The account ids with Jira product access, or None when they can't be read in full."""
+        if not self._app_roles_read:
+            return None
+        licensed: set[str] = set()
+        # By id: GroupName.groupId "uniquely identifies the group across all Atlassian products" and its name is
+        # optional (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json); /group/member reads by id.
+        role_groups = {g["groupId"]: g.get("name") or g["groupId"]
+                       for groups in app_roles_mapping.values() for g in groups if g.get("groupId")}
+        for group_id, name in role_groups.items():
+            members, ok = await self._fetch_group_members(group_id, name)
+            if not ok:
+                self.logger.warning("⚠️ Could not read the members of product group %s", name)
+                return None
+            licensed.update(members)
+        return licensed
 
     async def _withdraw_ineligible_app_users(self, jira_users: list[AppUser], ineligible_ids: set[str]) -> None:
         """Take the connector away from stored users whose account Jira reports deactivated or
@@ -2813,10 +2850,35 @@ class JiraConnector(BaseConnector):
             return []
         return [u for u in self._stored_app_users if u.source_user_id not in self._seen_account_ids]
 
+    def _unlicensed_ids(self, jira_users: list[AppUser], licensed_users: list[AppUser]) -> set[str]:
+        """The listed accounts without product access: those the directory read dropped, and the linked accounts the list
+        shows active whose email is hidden (``_fetch_users`` keeps a cached account only with an email, so they are not in
+        ``jira_users``). None of the latter while product access is unknown."""
+        dropped = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+        licensed = self._licensed_account_ids
+        if licensed is None:
+            return dropped
+        return dropped | {u.source_user_id for u in self._stored_app_users if u.source_user_id and not u.email
+                          and u.source_user_id in self._listed_account_ids and u.source_user_id not in licensed}
+
+    def _listed_without_email(self) -> list[AppUser]:
+        """The linked accounts the user list shows active and with product access whose email is hidden: synced, yet
+        left out of the directory a sync builds (it keeps a cached account only with an email), so held by account."""
+        licensed = self._licensed_account_ids
+        if licensed is None:
+            return []  # product access unknown: no one is granted (``_keep_licensed_users``)
+        return [u for u in self._stored_app_users
+                if u.source_user_id and not u.email and u.source_user_id in self._listed_account_ids and u.source_user_id in licensed]
+
+    def _directory_extra(self) -> list[AppUser]:
+        """The linked accounts an issue's people also resolve against: on a user list not read in full, those it did not
+        show (the last complete state); and those it listed whose email the directory does not hold."""
+        return [*self._linked_not_read(), *self._listed_without_email()]
+
     def _grant_directory(self, user_by_account_id: dict[str, AppUser]) -> dict[str, AppUser]:
-        """The accounts an issue's people resolve against: the synced directory and, on a user list not read in full,
-        the linked accounts it did not show (the last complete state, as ``_directory_grants`` counts them)."""
-        linked = self._linked_not_read()
+        """The accounts an issue's people resolve against: the synced directory and the linked accounts
+        ``_directory_extra`` adds (as ``_directory_grants`` counts them)."""
+        linked = self._directory_extra()
         return {**{u.source_user_id: u for u in linked if u.source_user_id}, **user_by_account_id} if linked else user_by_account_id
 
     def _directory_grants(self, permissions: list[Permission], user_by_account_id: dict[str, AppUser]) -> list[Permission]:
@@ -2829,7 +2891,7 @@ class JiraConnector(BaseConnector):
             self._listed_emails = (user_by_account_id, {u.email.lower() for u in user_by_account_id.values() if u.email})
         listed = self._listed_emails[1]
         accounts = set(user_by_account_id)
-        if linked := self._linked_not_read():
+        if linked := self._directory_extra():
             listed = listed | {u.email.lower() for u in linked if u.email}
             accounts |= {u.source_user_id for u in linked if u.source_user_id}
         # A grant by account (the directory holds no email for it) is kept when that account is listed.
@@ -3182,8 +3244,9 @@ class JiraConnector(BaseConnector):
                 self.logger.debug(f"  {project_key}: User permission skipped - account '{holder_param}' is inactive")
                 return grant_permissions
             elif (
+                # Product access unknown (None) is not access: the project's stored access is kept instead.
                 user_email and self._user_read_unfinished
-                and (self._licensed_account_ids is None or holder_param in self._licensed_account_ids)
+                and self._licensed_account_ids is not None and holder_param in self._licensed_account_ids
                 and user_data.get("accountType", "atlassian") == "atlassian"
             ):
                 # Only a user list cut short leaves out a licensed account. After a complete read,
@@ -3547,9 +3610,12 @@ class JiraConnector(BaseConnector):
 
         while True:
             try:
+                # "As a group's name can change, use of groupId is recommended to identify a group."
+                # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-groups/)
                 response = await self._call_with_retry(
                     lambda ds: ds.get_users_from_group(
-                        groupname=group_name,
+                        groupId=group_id or None,
+                        groupname=None if group_id else group_name,
                         includeInactiveUsers=False,
                         startAt=start_at,
                         maxResults=max_results,
@@ -3569,7 +3635,13 @@ class JiraConnector(BaseConnector):
                     break
 
                 members_data = response.json()
-                batch_members = members_data.get("values", [])
+                batch_members = members_data.get("values")
+                if not isinstance(batch_members, list):
+                    # Not an empty group: read as one, product access from it would withdraw every account.
+                    self.logger.warning(f"Members of group {group_name} came back without a member list")
+                    self._note_unread(None)
+                    ok = False
+                    break
 
                 if not batch_members:
                     break
@@ -4728,9 +4800,25 @@ class JiraConnector(BaseConnector):
                 await self._process_new_records(batch, project_key, stats)
 
     async def _note_newly_listed(self, jira_users: list[AppUser]) -> list[str]:
-        """``_note_people_to_reread`` for the listed accounts no stored link names yet."""
+        """``_note_people_to_reread`` for the listed accounts no stored link names yet, and for the linked accounts with a
+        hidden email the directory now holds that it did not before (``_listed_without_email``: an issue written while
+        product access was unknown, or before they were listed, left out their grants)."""
         linked_before = {u.source_user_id for u in self._stored_app_users}
-        return await self._note_people_to_reread({u.source_user_id for u in jira_users if u.source_user_id} - linked_before)
+        newly = {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
+        try:
+            held = set(json.loads(
+                ((await self.issues_sync_point.read_sync_point(ADMITTED_WITHOUT_EMAIL_KEY)) or {}).get("accounts") or "[]"))
+        except (TypeError, ValueError):
+            held = set()
+        # Product access unknown: the directory holds none of them and issues written now leave their grants out, so
+        # none is held and the next sync that knows reads them all again.
+        admitted = {u.source_user_id for u in self._listed_without_email()}
+        newly |= admitted - held
+        pending = await self._note_people_to_reread(newly)
+        if admitted != held:
+            # After the accounts to re-read are saved: a sync that fails in between re-reads them, never forgets them.
+            await self.issues_sync_point.update_sync_point(ADMITTED_WITHOUT_EMAIL_KEY, {"accounts": json.dumps(sorted(admitted))})
+        return pending
 
     async def _note_people_to_reread(self, newly_listed: set[str]) -> list[str]:
         """The accounts whose issues need reading again: these, and those an earlier sync saved but did not
