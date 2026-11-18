@@ -760,6 +760,11 @@ def apply_issue_access_settled(
         # also read by the people the project's Browse holders name on it (its reporter, say),
         # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
         top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
+        # shortcut: Jira also shows an unleveled sub-task to its own Browse assignee and user-field holders, without its
+        # parent (JSWCLOUD-25762, https://jira.atlassian.com/browse/JSWCLOUD-25762). The read rule cannot grant them: an OPEN
+        # sub-task is read below its parent by the parent's own holders, who may not read it in Jira
+        # (tests/permissions/test_subtask_own_holders.py). It stays STRICT, read with its parent, until the rule can say
+        # "the project, plus its own holders".
         if top_level and context.browse_holders is None and not present:
             # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
             # reporter grant still opens the issue. An explicit null level is not this: the issue may have
