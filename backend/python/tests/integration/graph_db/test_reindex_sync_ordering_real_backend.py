@@ -27,13 +27,17 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.connector import connector_service
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
-from app.connectors.core.sync.sync_runner import write_app_status
+from app.connectors.core.sync import sync_dispatcher
+from app.connectors.core.sync.sync_dispatcher import SubmitResult
+from app.connectors.core.sync.sync_runner import run_sync_task, write_app_status
 from app.connectors.services.event_service import EventService
+from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.core.org_context import for_org
 from app.models.entities import FileRecord, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
@@ -169,6 +173,47 @@ async def test_a_sync_that_takes_access_away_during_a_reindex_keeps_it_away(worl
             await world.processor.on_new_records([(world.record(), read)], replace_permissions=True)
 
     await world.reindex(Connector())
+
+    assert await world.readers() == {world.users["alice"]}
+
+
+async def test_a_sync_a_webhook_starts_during_a_reindex_keeps_the_access_it_took_away(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The webhook's sync goes through the sync start path (here run directly, as the sync-events consumer runs it), so
+    the reindex sees it, as it sees a scheduled one."""
+    await world.write("alice")
+    synced = asyncio.Event()
+
+    async def run_sync() -> None:
+        with for_org(world.org, job="test"):
+            await world.write("alice")  # the source after bob lost access again
+        synced.set()
+
+    webhook = object.__new__(DropboxConnector)
+    webhook.logger, webhook.connector_id, webhook.connector_name = logger, world.conn, Connectors.DROPBOX
+    webhook.data_entities_processor, webhook.data_store_provider = world.processor, world.processor.data_store_provider
+    webhook.last_sync_summary = webhook.last_action_items = None
+    webhook.run_sync = run_sync
+
+    async def submit(spec: object) -> SubmitResult:
+        with for_org(world.org, job="test"):
+            await run_sync_task(webhook, world.conn, world.graph, logger)
+        return SubmitResult.ACCEPTED
+
+    monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", SimpleNamespace(submit=submit), raising=False)
+
+    class Connector:
+        async def reindex_records(self, records: list) -> None:
+            assert [r.id for r in records] == [world.record().id]
+            read = world.grants("alice", "bob")
+            # Delivered by the webhook route, outside this reindex.
+            contextvars.Context().run(webhook.handle_webhook_notification, {})
+            await synced.wait()
+            await world.processor.on_new_records([(world.record(), read)], replace_permissions=True)
+
+    await world.reindex(Connector())
+    await asyncio.gather(*getattr(connector_service, "_SYNC_REQUESTS", ()))
 
     assert await world.readers() == {world.users["alice"]}
 

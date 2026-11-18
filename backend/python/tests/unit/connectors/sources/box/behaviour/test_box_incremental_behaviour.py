@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from box_behaviour_fakes import (
@@ -20,7 +21,13 @@ from box_behaviour_fakes import (
     ready_connector,
 )
 
+from app.connectors.core.sync import sync_dispatcher
+from app.connectors.core.sync.sync_dispatcher import SubmitResult
+
 if TYPE_CHECKING:
+    import pytest
+
+    from app.connectors.core.sync.sync_dispatcher import SyncSpec
     from app.connectors.sources.box.connector import BoxConnector
 
 ALICE, BOB = "u-alice", "u-bob"
@@ -564,16 +571,29 @@ class TestSharingEvents:
 
 
 class TestOverlappingRuns:
-    async def test_webhooks_during_a_sync_queue_one_follow_up_run_after_it(self, box_api, db, checkpoints) -> None:
+    @staticmethod
+    def start_path(monkeypatch: pytest.MonkeyPatch, connector: BoxConnector) -> list[SyncSpec]:
+        """A webhook asks the sync start path for a run, which then runs ``run_sync`` (here at once, as run_sync_task would)."""
+        requests: list[SyncSpec] = []
+
+        async def submit(spec: SyncSpec) -> SubmitResult:
+            requests.append(spec)
+            await connector.run_sync()
+            return SubmitResult.ACCEPTED
+
+        monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", SimpleNamespace(submit=submit))
+        return requests
+
+    async def test_a_webhook_during_a_sync_runs_one_follow_up_after_it(self, box_api, db, checkpoints, monkeypatch) -> None:
         enterprise(box_api, db)
         box_api.add_file("file-1", "plan.pdf", ALICE)
         connector = await ready_connector(db, checkpoints)
+        requests = self.start_path(monkeypatch, connector)
         reached, release = box_api.hold("GET", "/2.0/users")
         full_sync = asyncio.create_task(connector.run_sync())
         await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
 
-        for _ in range(3):
-            connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
         for _ in range(5):
             await asyncio.sleep(0)
         release.set()
@@ -581,12 +601,13 @@ class TestOverlappingRuns:
         others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         await asyncio.gather(*others)
 
+        assert [r.connector_id for r in requests] == [connector.connector_id]
         polls = [r.query["stream_position"] for r in box_api.calls("GET", "/2.0/events")
                  if r.query.get("stream_type") == "admin_logs_streaming" and r.query.get("limit") == "500"]
         assert polls == ["0"]
         assert len(box_api.calls("GET", "/2.0/users")) == 2
 
-    async def test_a_webhook_after_an_incomplete_full_sync_resumes_the_history(self, box_api, db, checkpoints) -> None:
+    async def test_a_webhook_after_an_incomplete_full_sync_resumes_the_history(self, box_api, db, checkpoints, monkeypatch) -> None:
         enterprise(box_api, db)
         box_api.page_cap["/2.0/events"] = 1
         for _ in range(200):
@@ -598,11 +619,11 @@ class TestOverlappingRuns:
             created_by=by(ALICE, box_api), additional_details={"collab_id": collab_id},
         )
         connector = await ready_connector(db, checkpoints)
+        self.start_path(monkeypatch, connector)
         reached, release = box_api.hold("GET", "/2.0/events", {"stream_type": "admin_logs", "stream_position": "5"})
         full_sync = asyncio.create_task(connector.run_sync())
         await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
 
-        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
         connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
         release.set()
         await full_sync
@@ -613,10 +634,11 @@ class TestOverlappingRuns:
         assert db.records["file-1"].shared_with_me_record_group_ids == [f"0S:{BOB_EMAIL}"]
         assert len(box_api.calls("GET", "/2.0/users")) == 2
 
-    async def test_a_webhook_after_an_incomplete_full_sync_leaves_a_stale_cursor_stale(self, box_api, db, checkpoints) -> None:
+    async def test_a_webhook_after_an_incomplete_full_sync_leaves_a_stale_cursor_stale(self, box_api, db, checkpoints, monkeypatch) -> None:
         enterprise(box_api, db)
         box_api.add_file("file-a", "a.txt", ALICE)
         connector = await synced_connector(box_api, db, checkpoints)
+        self.start_path(monkeypatch, connector)
         old = int((datetime.now(timezone.utc) - timedelta(days=15)).timestamp() * 1000)
         checkpoints.cursor()["cursor_updated_at"] = old
         box_api.fail("GET", "/2.0/folders/0/items", 503, times=1000, as_user=ALICE)
