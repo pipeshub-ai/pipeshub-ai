@@ -2274,10 +2274,10 @@
         "errorNameRequired": "Zadejte název tohoto tokenu.",
         "errorCreateTitle": "Token se nepodařilo vytvořit",
         "expiryHeading": "Platnost",
+        "expiry7Days": "7 dní",
         "expiry30Days": "30 dní",
         "expiry90Days": "90 dní",
         "expiry365Days": "365 dní",
-        "expiryNever": "Nikdy",
         "permissionsHeading": "Rozsahy",
         "errorScopeRequired": "Vyberte alespoň jeden rozsah.",
         "selectAllScopes": "Vybrat vše",
@@ -6115,6 +6115,55 @@
       "offDescription": "Nejsou v ničích odpovědích, vyhledávání ani záznamech a ukázkové účty se nemohou přihlásit. Znovu je zapnete v části Profil → Ukázková data.",
       "onTitle": "Ukázková data znovu zapnuta pro všechny",
       "errorTitle": "Ukázková data se nepodařilo změnit pro všechny"
+    },
+    "about": {
+      "open": "Co je v ukázce?",
+      "title": "O ukázce Acme Corp",
+      "description": "Acme Corp je smyšlená softwarová firma. Konektor Demo načte její záznamy, abyste si PipesHub mohli vyzkoušet bez připojení vlastních nástrojů. Nic mimo PipesHub se nekontaktuje a nejde o data vaší firmy.",
+      "status": {
+        "shown": "Teď se objevuje ve vašich odpovědích, vyhledávání a záznamech. Výsledky z ukázky nesou štítek Demo.",
+        "hiddenRealData": "Ve vašich odpovědích je skrytá, protože vaše organizace už má vlastní data. Nikdo ji nevidí, dokud si ji sám nezapne.",
+        "hiddenByChoice": "Ve vašich odpovědích je skrytá, protože jste ji vypnuli.",
+        "offForEveryone": "Správce ji vypnul pro všechny, takže není v ničích odpovědích a ukázkové účty se nemohou přihlásit.",
+        "show": "Zobrazit v mých odpovědích"
+      },
+      "tools": {
+        "title": "Co obsahuje",
+        "tool": "Nástroj",
+        "places": "Místa",
+        "records": "Záznamy",
+        "total": "Celkem"
+      },
+      "people": {
+        "title": "Lidé",
+        "description": "Ukázkoví zaměstnanci. Jejich jména jsou uvedena jako autoři záznamů; přihlásit se mohou jen dva z nich.",
+        "canSignIn": "Může se přihlásit"
+      },
+      "restricted": {
+        "title": "Kdo co vidí",
+        "description": "Kdo přidal konektor Demo, může číst většinu z ní, a Alice s Bobem mohou číst to, co jejich týmy. Nikdo další ve vaší organizaci z ní nemůže číst nic; zobrazení ukázky ve vašich odpovědích přístup nedává. Každý záznam níže mohou číst jen členové jeho skupiny, takže stejná otázka dostane jinou odpověď podle toho, kdo se ptá.",
+        "readers": "Mohou je otevřít: {{names}}",
+        "noReaders": "Žádný ukázkový účet je nemůže otevřít."
+      },
+      "questions": {
+        "title": "Zkuste se zeptat"
+      },
+      "accounts": {
+        "title": "Ukázkové přihlašovací účty",
+        "description": "Přihlaste se v jiném prohlížeči jako Alice nebo Bob a uvidíte stejnou otázku zodpovězenou s jinými oprávněními.",
+        "state": {
+          "checking": "Ověřuje se…",
+          "active": "Může se přihlásit",
+          "off": "Přihlášení vypnuto",
+          "missing": "Nevytvořen",
+          "unknown": "Nelze ověřit"
+        },
+        "password": "Používají počáteční heslo zvolené při instalaci PipesHub (PIPESHUB_DEMO_PASSWORD). PipesHub uchovává jen jeho zašifrovanou podobu, takže ho zde nelze zobrazit.",
+        "lostPassword": "Pokud ho nikdo nemá, Zapomenuté heslo nepomůže, protože adresy .example nemohou přijímat e-maily. Kdo spravuje server, může spuštěním tohoto příkazu v kontejneru PipesHub vypsat odkaz pro nastavení nového hesla:",
+        "missing": "Ukázkové účty se vytvářejí jen při instalaci, pokud je nastaveno PIPESHUB_DEMO_PERSONAS=1. Ukázka funguje i bez nich; jen se nemůžete přihlásit jako Alice nebo Bob.",
+        "retry": "Zkusit znovu"
+      },
+      "close": "Zavřít"
     }
   },
   "graph": {

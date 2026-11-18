@@ -4532,10 +4532,10 @@
         "errorNameRequired": "Introduzca un nombre para este token.",
         "errorCreateTitle": "No se ha podido crear el token",
         "expiryHeading": "Caducidad",
+        "expiry7Days": "7 días",
         "expiry30Days": "30 días",
         "expiry90Days": "90 días",
         "expiry365Days": "365 días",
-        "expiryNever": "Nunca",
         "permissionsHeading": "Ámbitos",
         "errorScopeRequired": "Seleccione al menos un ámbito.",
         "selectAllScopes": "Seleccionar todo",
@@ -6040,6 +6040,55 @@
       "offDescription": "Han desaparecido de las respuestas, las búsquedas y los registros de todo el mundo, y las cuentas de ejemplo no pueden iniciar sesión. Vuelva a activarlos en Perfil → Datos de demostración.",
       "onTitle": "Datos de demostración reactivados para todos",
       "errorTitle": "No se han podido cambiar los datos de demostración para todos"
+    },
+    "about": {
+      "open": "¿Qué incluye la demo?",
+      "title": "Acerca de la demo de Acme Corp",
+      "description": "Acme Corp es una empresa de software ficticia. El conector Demo carga sus registros para que puedas probar PipesHub sin conectar tus propias herramientas. No se contacta con nada fuera de PipesHub y nada de esto son datos de tu empresa.",
+      "status": {
+        "shown": "Ahora aparece en tus respuestas, búsquedas y registros. Los resultados de la demo llevan la etiqueta Demo.",
+        "hiddenRealData": "Está oculta en tus respuestas porque tu organización ya tiene sus propios datos. Nadie la ve salvo que la active para sí.",
+        "hiddenByChoice": "Está oculta en tus respuestas porque la desactivaste.",
+        "offForEveryone": "Un administrador la desactivó para todos, así que no aparece en las respuestas de nadie y las cuentas de ejemplo no pueden iniciar sesión.",
+        "show": "Mostrarla en mis respuestas"
+      },
+      "tools": {
+        "title": "Qué incluye",
+        "tool": "Herramienta",
+        "places": "Lugares",
+        "records": "Registros",
+        "total": "Total"
+      },
+      "people": {
+        "title": "Personas",
+        "description": "Empleados de ejemplo. Sus nombres figuran como autores de los registros; solo dos pueden iniciar sesión.",
+        "canSignIn": "Puede iniciar sesión"
+      },
+      "restricted": {
+        "title": "Quién ve qué",
+        "description": "Quien añadió el conector Demo puede leer casi todo, y Alice y Bob pueden leer lo que sus equipos pueden leer. Nadie más en tu organización puede leer nada; mostrar la demo en tus respuestas no da acceso. Cada registro siguiente solo lo pueden leer los miembros de su grupo, así que la misma pregunta recibe otra respuesta según quién la haga.",
+        "readers": "Pueden abrirlos: {{names}}",
+        "noReaders": "Ninguna cuenta de ejemplo puede abrirlos."
+      },
+      "questions": {
+        "title": "Prueba a preguntar"
+      },
+      "accounts": {
+        "title": "Cuentas de ejemplo para iniciar sesión",
+        "description": "Inicia sesión como Alice o Bob en otro navegador para ver la misma pregunta respondida con otros permisos.",
+        "state": {
+          "checking": "Comprobando…",
+          "active": "Puede iniciar sesión",
+          "off": "Inicio de sesión desactivado",
+          "missing": "No creada",
+          "unknown": "No se pudo comprobar"
+        },
+        "password": "Usan la contraseña inicial elegida al instalar PipesHub (PIPESHUB_DEMO_PASSWORD). PipesHub solo guarda una versión cifrada, así que no se puede mostrar aquí.",
+        "lostPassword": "Si nadie la tiene, ¿Olvidaste tu contraseña? no sirve, porque las direcciones .example no reciben correo. Quien administra el servidor puede obtener un enlace para elegir una contraseña nueva ejecutando esto en el contenedor de PipesHub:",
+        "missing": "Las cuentas de ejemplo solo se crean al instalar, cuando se define PIPESHUB_DEMO_PERSONAS=1. La demo funciona sin ellas; simplemente no puedes iniciar sesión como Alice o Bob.",
+        "retry": "Reintentar"
+      },
+      "close": "Cerrar"
     }
   },
   "graph": {
