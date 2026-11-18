@@ -1146,3 +1146,48 @@ async def test_a_reset_after_the_drop_that_keeps_failing_is_raised_after_the_dro
     assert graph.reset_indexing_status_for_connector.await_count == 4
     assert redis.store[CLEANUP_PHASE_KEY] == PHASE_READY  # the drop succeeded and is not reported as failed
     assert JOB_LOCK_KEY not in redis.store
+
+
+@pytest.mark.asyncio
+async def test_a_record_retried_after_the_first_epoch_move_and_completed_before_the_drop_is_queued_again() -> None:
+    """The schedule: the first epoch move makes a token current; a record that was embedding gets FenceMoved and is retried; the
+    retry is read before the delete event, captures that token, writes into the old collection, confirms and is marked COMPLETED;
+    then the drop deletes those points. The cleanup must leave the record not indexed instead of COMPLETED with no points."""
+    from app.connectors.services import vector_store_rebuild as rebuild
+
+    config = await _config_with("records")
+    epochs = CollectionEpochs(config, logging.getLogger("rebuild-test"))
+    first_batch = await epochs.capture("records")  # the record's first attempt, accepted before the cleanup
+    statuses = {"rec": "IN_PROGRESS"}
+    seen: dict = {}
+
+    async def reset(connector_id, to, exclude_statuses=None):  # noqa: ANN001, ANN202
+        for key, value in statuses.items():
+            if value not in (exclude_statuses or []):
+                statuses[key] = to
+
+    redis = FakeRedis()
+    lock = RebuildJobLock(redis, token="cleanup")
+    await lock.try_acquire()
+    graph = AsyncMock()
+    graph.get_records_by_status = AsyncMock(return_value=[])
+    graph.reset_indexing_status_for_connector = AsyncMock(side_effect=reset)
+    kafka = AsyncMock()
+
+    async def publish(topic, event) -> bool:  # noqa: ANN001
+        seen["first_attempt_fenced"] = await epochs.moved(first_batch)  # FenceMoved: it is retried
+        retry = await epochs.capture("records")  # the retry is read before the delete event and takes the token now current
+        seen["retry_confirms"] = not await epochs.moved(retry)  # the old collection still exists, so it writes and confirms
+        statuses["rec"] = "COMPLETED"
+        ticket = await epochs.begin_reset("records")  # then the drop: a new token, the delete (its points go), confirmed
+        await epochs.confirm_reset(ticket)
+        redis.store[CLEANUP_PHASE_KEY] = PHASE_READY
+        return True
+
+    kafka.publish_event = AsyncMock(side_effect=publish)
+    await rebuild.start_vector_store_cleanup(
+        logger=MagicMock(), config_service=config, graph_provider=graph, kafka_service=kafka, lock=lock,
+        redis=redis, org_id="org-1", user_id="user-1", apps=[("org-1", "app-1")],
+    )
+    assert seen == {"first_attempt_fenced": True, "retry_confirms": True}
+    assert statuses["rec"] == "NOT_STARTED"  # not COMPLETED with its points gone
