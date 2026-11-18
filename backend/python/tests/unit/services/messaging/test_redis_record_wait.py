@@ -11,6 +11,7 @@ against an in-memory Redis.
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 import random
@@ -34,6 +35,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
+from app.telemetry.modules import scheduling_metrics
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
@@ -655,13 +657,19 @@ class TestReleaseCost:
             assert not consumer._claim_record_or_wait(record_id, LANE, f"{i}-0")
         assert len(consumer._record_waits) == 10_000
 
-        started = time.perf_counter()
+        class NoWalk(dict):
+            """A release that walked every wait (10^8 steps for 10,000
+            releases) would iterate this; looking one up is allowed."""
+
+            def _walk(self, *_args: Any) -> Any:  # noqa: ANN401
+                raise AssertionError("a release walked every wait")
+
+            __iter__ = items = values = keys = _walk  # type: ignore[assignment]
+
+        consumer._record_waits = NoWalk(consumer._record_waits)
         for i in range(10_000):
             consumer._release_record(f"r{i}")
-        elapsed = time.perf_counter() - started
 
-        # Walking every wait on each release is 10^8 steps, minutes in Python.
-        assert elapsed < 2.0
         assert all(not consumer._is_waiting_for_record(f"{i}-0", LANE) for i in range(0, 10_000, 997))
 
 
@@ -690,7 +698,7 @@ class TestReviewOfTheWaits:
     ) -> None:
         consumer = harness.consumer
         consumer._wait_for_record_lease("r1", LANE, "1-0")
-        consumer._record_waits[(LANE, "1-0")].parks = 5_000
+        consumer._record_waits[(LANE, "1-0")].lease_losses = 5_000
 
         consumer._wait_for_record_lease("r1", LANE, "1-0")
 
@@ -720,26 +728,28 @@ class TestReviewOfTheWaits:
         self, harness: Harness, gauge: MagicMock
     ) -> None:
         """A worker records a wait; the main loop ends it. Each publishes the
-        count it saw. Published outside the state change, the worker's 1 could
-        land after the main loop's 0 and stay there."""
+        count it saw. Published outside the lock that changes the waits, the
+        worker's 1 could land after the main loop's 0 and stay there. The
+        worker is paused before the metrics module, so the metrics lock alone
+        cannot hide the race."""
         consumer = harness.consumer
         assert consumer._claim_record("r1")
         main_published = threading.Event()
+        worker_publishing = threading.Event()
+        real = scheduling_metrics.record_record_waits
 
-        def slow_set(*_args: Any, value: float, **_kwargs: Any) -> None:  # noqa: ANN401
-            if value == 1 and threading.current_thread().name == "worker":
+        def paused(*args: Any) -> None:  # noqa: ANN401
+            if threading.current_thread().name == "worker" and args[-1] == 1:
+                worker_publishing.set()
                 main_published.wait(timeout=0.5)
-            _RECORD_WAITS_SET(value=value)
+            real(*args)
 
-        with patch("app.telemetry.modules.scheduling_metrics.RECORD_WAITS.set", slow_set):
+        with patch(f"{_MODULE}.metrics.record_record_waits", paused):
             worker = threading.Thread(
                 target=consumer._claim_record_or_wait, args=("r1", LANE, "1-0"), name="worker"
             )
             worker.start()
-            for _ in range(200):
-                if consumer._record_waits:
-                    break
-                time.sleep(0.001)
+            assert worker_publishing.wait(timeout=5)
             consumer._end_record_wait(LANE, "1-0")
             main_published.set()
             worker.join()
@@ -866,3 +876,125 @@ class TestReviewOfTheWaits:
 
         assert not consumer._is_waiting_for_record(first, LANE)
         assert consumer._is_waiting_for_record(second, LANE)
+
+
+@pytest.mark.asyncio
+class TestReviewOfTheWaitsRoundTwo:
+    async def test_a_lease_wait_keeps_its_back_off_across_a_local_wait(self, harness: Harness) -> None:
+        consumer = harness.consumer
+        base = messaging_env.record_lease_wait_seconds
+        consumer._wait_for_record_lease("r1", LANE, "1-0")
+        # Due again, but a sibling in this process holds the record now.
+        assert consumer._claim_record("r1")
+        assert not consumer._claim_record_or_wait("r1", LANE, "1-0")
+        consumer._release_record("r1")
+        assert consumer._claim_record_or_wait("r1", LANE, "1-0")
+
+        consumer._wait_for_record_lease("r1", LANE, "1-0")
+
+        wait = consumer._record_waits[(LANE, "1-0")]
+        assert wait.due_at - wait.parked_at == pytest.approx(min(2 * base, 300.0))
+
+    async def test_a_lease_wait_is_not_offered_while_this_process_holds_its_record(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        consumer._wait_for_record_lease("r1", LANE, "1-0")
+        _expire(consumer)
+        assert consumer._claim_record("r1")
+
+        assert consumer._is_waiting_for_record("1-0", LANE)
+        consumer._release_record("r1")
+        assert not consumer._is_waiting_for_record("1-0", LANE)
+
+    async def test_a_consumer_dropped_without_a_stop_leaves_the_gauge(
+        self, provider: FakeRedisConnectionProvider, gauge: MagicMock
+    ) -> None:
+        kept = _make(provider)
+        dropped = _make(provider)
+        assert kept._claim_record("k") and dropped._claim_record("d")
+        assert not kept._claim_record_or_wait("k", LANE, "1-0")
+        assert not dropped._claim_record_or_wait("d", LANE, "2-0")
+        assert _gauge_values()[-1] == 2
+
+        del dropped
+        gc.collect()
+
+        assert _gauge_values()[-1] == 1
+
+    async def test_an_entry_in_flight_while_it_waits_on_a_lease_is_counted_once(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        await consumer.redis.xadd(LANE, _fields("r1"))
+        await consumer.redis.xadd(LANE, _fields("r9"))
+        parked, other = [
+            i for _s, entries in await consumer.redis.xreadgroup(
+                GROUP, consumer.consumer_name, {LANE: ">"}, count=10
+            ) for i, _f in entries
+        ]
+        # Its run lost the lease and parked it; the run's cleanup is not done,
+        # so it is still in flight.
+        consumer._mark_in_flight(parked, LANE)
+        consumer._wait_for_record_lease("r1", LANE, parked)
+
+        await harness.recover()
+
+        assert (LANE, other) in consumer._held_entries
+
+    async def test_a_buffered_waiter_whose_record_was_taken_again_is_counted_once(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        first, _second = await _park(harness, 2)
+        consumer._release_record("r1")
+        # The woken waiter is buffered, then an older delivery takes the
+        # record before it is dispatched: it is held and waiting at once.
+        await harness.recover()
+        assert (LANE, first) in consumer._held_entries
+        assert consumer._claim_record("r1")
+        await consumer.redis.xadd(LANE, _fields("r9"))
+        (other,) = [
+            i for _s, entries in await consumer.redis.xreadgroup(
+                GROUP, consumer.consumer_name, {LANE: ">"}, count=10
+            ) for i, _f in entries
+        ]
+
+        await harness.recover()
+
+        assert (LANE, other) in consumer._held_entries
+
+
+class TestTheGaugeUnderCollection:
+    def test_a_collection_inside_a_publication_does_not_deadlock(self) -> None:
+        """A consumer dropped without a stop is forgotten by its finalizer,
+        which a collection can run anywhere, including inside a publication
+        on the same thread."""
+
+        class Owner:
+            def __init__(self) -> None:
+                self.cycle = self  # freed only by a collection
+
+        real_finalize = scheduling_metrics.weakref.finalize
+        gc.disable()
+        try:
+            dropped = Owner()
+            scheduling_metrics.record_record_waits("test", dropped, 1)
+            del dropped
+
+            def collecting(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+                handle = real_finalize(*args, **kwargs)
+                gc.collect()  # runs the dropped owner's finalizer, inside the lock
+                return handle
+
+            kept = Owner()
+            with patch.object(scheduling_metrics.weakref, "finalize", collecting):
+                worker = threading.Thread(
+                    target=scheduling_metrics.record_record_waits, args=("test", kept, 2), daemon=True
+                )
+                worker.start()
+                worker.join(timeout=5)
+            assert not worker.is_alive(), "a finalizer run inside the publication deadlocked"
+            assert scheduling_metrics._record_waits_by_owner["test"] == {id(kept): 2}
+        finally:
+            gc.enable()

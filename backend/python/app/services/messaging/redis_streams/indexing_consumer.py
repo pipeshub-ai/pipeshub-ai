@@ -263,6 +263,10 @@ class _RecordWait:
     due_at: float
     parked_at: float
     parks: int = 1
+    # Leases lost in a row. Apart from parks, which a wait on a sibling in
+    # this process resets: the back-off would otherwise drop to its base
+    # every time a local sibling came between two lost leases.
+    lease_losses: int = 0
     # Woken by its record's release: the one waiter recovery may offer.
     woken: bool = False
     # Its run holds the record and is on the way to the lease; in flight.
@@ -1266,9 +1270,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         wait.running = False
         self.__reindex_wait_locked(key, wait)
         if on_lease:
+            wait.lease_losses += 1
             # The exponent is capped before the power: a float times 2**1024
             # raises OverflowError before min() can cap the product.
-            exponent = min(wait.parks - 1, _RECORD_LEASE_BACKOFF_MAX_EXPONENT)
+            exponent = min(wait.lease_losses - 1, _RECORD_LEASE_BACKOFF_MAX_EXPONENT)
             delay = min(
                 messaging_env.record_lease_wait_seconds * 2 ** exponent,
                 _RECORD_LEASE_RETRY_MAX_SECONDS,
@@ -1402,10 +1407,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """
         if wait.running:
             return False
+        if wait.record_key in self._in_flight_record_ids:
+            # A lease wait too: offered now, it would only wait on the
+            # sibling, then try the lease again from the start.
+            return False
         if wait.on_lease:
             return wait.due_at <= now
-        if wait.record_key in self._in_flight_record_ids:
-            return False
         if wait.woken:
             return True
         if wait.due_at > now or self.__has_active_waiter_locked(wait.record_key):
@@ -1427,6 +1434,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 key[1] == message_id and not wait.running and not self.__wait_is_due_locked(key, wait, now)
                 for key, wait in self._record_waits.items()
             )
+
+    def _tracked_ids_by_stream(self) -> dict[str, set[str]]:
+        """In-flight entries and those still waiting, by stream, from one
+        snapshot: taken apart, an entry moving between the two in between
+        would be counted in both."""
+        now = time.monotonic()
+        with self._in_flight_lock:
+            tracked: dict[str, set[str]] = {}
+            for stream, message_id in self._in_flight_message_ids:
+                if stream:
+                    tracked.setdefault(stream, set()).add(message_id)
+            for key, wait in self._record_waits.items():
+                if not wait.running and not self.__wait_is_due_locked(key, wait, now):
+                    tracked.setdefault(key[0], set()).add(key[1])
+            return tracked
 
     def _record_waits_by_stream(self, *, not_due_only: bool) -> dict[str, list[str]]:
         """Every waiting entry id by stream, or only those still waiting: not
@@ -2275,13 +2297,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         held_by_stream = self.__held_count_by_stream()
         in_flight = self._in_flight_count_by_stream()
-        # A lane whose only unheld entries wait for their records has nothing
-        # to recover; counted as unheld, a full buffer would give up a held
-        # entry of another lane for room nothing then uses.
-        waiting = {
-            stream: len(ids)
-            for stream, ids in self._record_waits_by_stream(not_due_only=True).items()
-        }
+        # Distinct ids, not a sum of counts: one entry can be in two of these
+        # at once (buffered or in flight while it waits), and subtracted twice
+        # it hides the lane's one unheld entry. A lane whose only unheld
+        # entries wait for their records has nothing to recover; counted as
+        # unheld, a full buffer would give up a held entry of another lane for
+        # room nothing then uses.
+        tracked = self._tracked_ids_by_stream()
+        for stream, message_id in self._held_entries:
+            tracked.setdefault(stream, set()).add(message_id)
         unheld: set[str] = set()
         for topic in topics:
             try:
@@ -2290,7 +2314,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.debug("Could not summarise pending list of %s: %s", topic, e)
                 continue
             own, _others = self.__pending_by_owner(summary)
-            if own - held_by_stream.get(topic, 0) - in_flight.get(topic, 0) - waiting.get(topic, 0) > 0:
+            if own - len(tracked.get(topic, ())) > 0:
                 unheld.add(topic)
         if not unheld:
             return

@@ -141,22 +141,32 @@ def record_lanes_paused(broker: str, count: int) -> None:
 
 # Several consumers of one broker wait in one process (the record and the
 # priority consumers): the gauge is their total, kept here because no one
-# consumer can see the others'. Held weakly, so a consumer dropped without
-# a stop does not count for ever.
-_record_waits_lock = threading.Lock()
-_record_waits_by_owner: dict[str, weakref.WeakKeyDictionary[object, int]] = {}
+# consumer can see the others'. A consumer dropped without a stop is taken
+# out of the total when it is collected, and the total published again.
+# Re-entrant: a collection can run that finalizer on a thread already inside
+# this lock (any allocation below can trigger one), and with a plain lock
+# that thread would wait on itself for ever.
+_record_waits_lock = threading.RLock()
+_record_waits_by_owner: dict[str, dict[int, int]] = {}
 
 
 def record_record_waits(broker: str, owner: object, count: int) -> None:
     with _record_waits_lock:
-        _record_waits_by_owner.setdefault(broker, weakref.WeakKeyDictionary())[owner] = count
-        RECORD_WAITS.set(broker, value=sum(_record_waits_by_owner[broker].values()))
+        owners = _record_waits_by_owner.setdefault(broker, {})
+        if id(owner) not in owners:
+            weakref.finalize(owner, _forget_owner, broker, id(owner))
+        owners[id(owner)] = count
+        RECORD_WAITS.set(broker, value=sum(owners.values()))
 
 
 def forget_record_waits(broker: str, owner: object) -> None:
+    _forget_owner(broker, id(owner))
+
+
+def _forget_owner(broker: str, owner_id: int) -> None:
     with _record_waits_lock:
-        owners = _record_waits_by_owner.setdefault(broker, weakref.WeakKeyDictionary())
-        owners.pop(owner, None)
+        owners = _record_waits_by_owner.setdefault(broker, {})
+        owners.pop(owner_id, None)
         RECORD_WAITS.set(broker, value=sum(owners.values()))
 
 

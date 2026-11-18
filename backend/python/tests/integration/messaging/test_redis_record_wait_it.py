@@ -109,8 +109,10 @@ class TestALongRunHoldsItsRecord:
             if seq == 0:
                 main_loop.call_soon_threadsafe(long_run_started.set)
                 # The handler runs on the consumer's worker loop, not this
-                # test's, so it waits on a thread event, off that loop.
-                await asyncio.to_thread(release_long_run.wait, DRAIN_TIMEOUT_SECONDS)
+                # test's, so it waits on a thread event, off that loop. No
+                # timeout: one could end the run before the checks it must
+                # outlast; the test's finally releases it on any failure.
+                await asyncio.to_thread(release_long_run.wait)
                 main_loop.call_soon_threadsafe(long_run_ended.set)
             done.append((record_id, seq))
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
