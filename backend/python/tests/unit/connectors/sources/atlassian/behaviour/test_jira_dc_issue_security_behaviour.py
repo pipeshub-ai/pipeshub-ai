@@ -1096,6 +1096,52 @@ class TestWithdrawnAccounts:
         await sync(connector, jql_search, recent=[])
         assert ("USER", "frank-key") in readers(db, "2")
 
+    async def test_a_project_back_whose_stub_sweep_failed_is_read_and_swept_again(self, jira, db, store, jql_search) -> None:
+        """ENG comes back after frank was admitted and its leveled issues are read again, but the stub sweep is skipped:
+        nothing else owes ENG a re-read, so it keeps the older generation and is read and swept again next sync."""
+        stub_site(jira, jql_search)
+        jira.on("GET", f"{API}/user/list", json_response({"values": [
+            user("alice-key", "alice", "alice@example.com"), user("frank-key", "frank", None)], "isLast": True}))
+        serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        projects = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/project"))
+        jira.on("GET", f"{API}/project", json_response([]))
+        db.cached_app_users.append(AppUser(app_name="JIRA DATA CENTER", connector_id="jira-dc-1", source_user_id="frank-key",
+                                           org_id="org-1", email="", full_name="Frank", is_active=True))
+        await sync(connector, jql_search, recent=[])
+
+        jira.on("GET", f"{API}/project", projects)
+        real_sweep = connector._sweep_placeholder_records
+        connector._sweep_placeholder_records = AsyncMock(return_value=None)
+        await sync(connector, jql_search, recent=[])
+        connector._sweep_placeholder_records = AsyncMock(side_effect=real_sweep)
+        await sync(connector, jql_search, recent=[])
+        assert connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"] == {"10000"}
+
+        await sync(connector, jql_search, recent=[])
+        assert connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"] == set()
+
+    async def test_an_issue_given_up_on_is_tried_again_once_for_a_newly_admitted_account(self, jira, db, store, jql_search) -> None:
+        """ENG-2 was given up on (it kept failing, say on its parent's read) and has not changed since. frank is admitted:
+        the walk for him tries it again rather than skipping it, so he reads it once it builds."""
+        stub_site(jira, jql_search)
+        jira.on("GET", f"{API}/user/list", json_response({"values": [
+            user("alice-key", "alice", "alice@example.com"), user("frank-key", "frank", None)], "isLast": True}))
+        serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]})
+        leveled = sec_issue("2", "ENG-2", level=SECRET)
+        jql_search.put(leveled)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[leveled])
+        checkpoint = store.values_for("project_ENG")
+        checkpoint["given_up_issues"] = json.dumps({"2": leveled["fields"]["updated"]})
+
+        db.cached_app_users.append(AppUser(app_name="JIRA DATA CENTER", connector_id="jira-dc-1", source_user_id="frank-key",
+                                           org_id="org-1", email="", full_name="Frank", is_active=True))
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "frank-key") in readers(db, "2")
+
     async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
         self, jira, db, store, jql_search,
     ) -> None:

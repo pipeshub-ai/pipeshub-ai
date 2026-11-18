@@ -580,8 +580,13 @@ class JiraConnector(BaseConnector):
         # A placeholder sweep's read of an ancestor failed (not "Jira has no such issue"), this sweep.
         self._ancestor_read_failed = False
         self._newly_listed_account_ids: list[str] = []
-        # Bumped each time accounts are owed a re-read; a project saves the one its last clean pass covered.
-        self._people_generation: str = "0"
+        # The people re-read: ``generation`` goes up with each sync that admits accounts, ``base`` is the generation the
+        # queue was last emptied at, so the queue names every account admitted after it. A project saves the generation
+        # it covered (``people_read``) once its pass and the stub sweep after it went through; those due this sync wait
+        # in ``_people_read_due`` for the sweep.
+        self._people_generation = 0
+        self._people_base = 0
+        self._people_read_due: list[str] = []
         self._listed_account_ids: set[str] = set()
         # Every account the user list showed, active or not.
         self._seen_account_ids: set[str] = set()
@@ -1649,7 +1654,7 @@ class JiraConnector(BaseConnector):
         subtask_parents: str | None = None,
         browse_holders: str | None = None,
         people_reread: str | None = None,
-        people_read: str | None = None,
+        people_read: int | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -2265,7 +2270,7 @@ class JiraConnector(BaseConnector):
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
         "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles", "_app_roles_mapping",
-        "_licensed_account_ids", "_app_roles_read", "_people_generation",
+        "_licensed_account_ids", "_app_roles_read",
     )
     user_link_steps = ("_link_users_groups_and_roles",)
 
@@ -4337,6 +4342,7 @@ class JiraConnector(BaseConnector):
         failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
         leveled_reread_project_ids: set[str] = set()
+        self._people_read_due = []
         self._unreadable_security = {}
         self._never_tightened_security = set()
         self._skipped_holders_logged = set()
@@ -4831,25 +4837,34 @@ class JiraConnector(BaseConnector):
         try:
             point = (await self.issues_sync_point.read_sync_point(PEOPLE_REREAD_KEY)) or {}
             saved = set(json.loads(point.get("accounts") or "[]"))
-            generation = int(point.get("generation") or 0)
+            # A queue saved before generations were kept is owed to every project.
+            generation = int(point.get("generation") or (1 if saved else 0))
+            base = int(point.get("base") or 0)
         except (TypeError, ValueError):
-            saved, generation = set(), 0
+            saved, generation, base = set(), 0, 0
         pending = sorted(saved | newly_listed)
-        if set(pending) != saved:
+        if newly_listed:
+            # Each admission is new work, for an account still queued too: it may have lost its grants since.
             generation += 1
             await self.issues_sync_point.update_sync_point(
-                PEOPLE_REREAD_KEY, {"accounts": json.dumps(pending), "generation": str(generation)})
-        self._people_generation = str(generation)
+                PEOPLE_REREAD_KEY, {"accounts": json.dumps(pending), "generation": generation, "base": base})
+        self._people_generation, self._people_base = generation, base
         return pending
 
     async def _people_to_reread_handed_on(self, sync_stats: dict[str, Any], *, swept: bool) -> None:
         """Clear the saved accounts once every project holds them in its own checkpoint, or did not need them: no
         project failed its issue pass, none was left out of it because it could not be built or its selected key
-        could not be looked up, and the placeholder sweep that re-secures the re-read projects' stubs ran."""
-        if (self._newly_listed_account_ids and swept and not sync_stats.get("failed_project_keys")
+        could not be looked up, and the placeholder sweep that re-secures the re-read projects' stubs ran. Each project
+        whose pass went through saves the generation it covered only then: one whose stubs the sweep could not
+        re-secure is owed the pass and the sweep again."""
+        if not swept:
+            return
+        for key in self._people_read_due:
+            await self._update_project_sync_checkpoint(key, people_read=self._people_generation)
+        if (self._newly_listed_account_ids and not sync_stats.get("failed_project_keys")
                 and not self._skipped_project_keys and not self._unresolved_selected_keys):
             await self.issues_sync_point.update_sync_point(
-                PEOPLE_REREAD_KEY, {"accounts": "[]", "generation": self._people_generation})
+                PEOPLE_REREAD_KEY, {"accounts": "[]", "generation": self._people_generation, "base": self._people_generation})
 
     async def _reread_for_newly_listed(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
@@ -4857,35 +4872,37 @@ class JiraConnector(BaseConnector):
     ) -> bool:
         """An issue's own grants name only listed accounts, and a withdrawn account loses them, so an
         account listed again (or for the first time) gets them back only when its issues are read again.
-        The accounts are saved before the pass and cleared after it, so a pass that fails is repeated. A project
-        missing from the project list when the accounts were handed on has an older generation and does not know
-        which accounts it missed, so every stored issue is read again.
+        The accounts are saved before the pass and cleared after it, so a pass that fails is repeated. A project is
+        owed the pass while the generation it covered is below the connector's. When it covered the generation the
+        queue was last emptied at, the queue names every account it missed and only their issues are read; one that
+        missed an emptied queue (it was missing from the project list) has every stored issue read again.
         True when the pass ran, so the project's stubs are re-secured by the placeholder sweep."""
         try:
-            pending = set(json.loads((checkpoint or {}).get("people_reread") or "[]"))
+            own = set(json.loads((checkpoint or {}).get("people_reread") or "[]"))
         except (TypeError, ValueError):
-            pending = set()
-        pending |= set(self._newly_listed_account_ids)
-        people_read = (checkpoint or {}).get("people_read") or "0"
-        stale = people_read != self._people_generation
+            own = set()
+        people_read = (checkpoint or {}).get("people_read")
+        people_read = int(people_read) if str(people_read).isdigit() else 0
+        pending = own | set(self._newly_listed_account_ids) if people_read < self._people_generation else own
         names_people = security.browse_holders is None or security.browse_holders or security.members_by_level
-        if covered or not security.enforce or not names_people or not (pending or stale):
-            if pending - set(self._newly_listed_account_ids):
+        if covered or not security.enforce or not names_people or not (pending or people_read < self._people_generation):
+            if own:
                 await self._update_project_sync_checkpoint(project_key, people_reread="[]")
             if not self._issue_build_failures and people_read != self._people_generation:
-                await self._update_project_sync_checkpoint(project_key, people_read=self._people_generation)
+                self._people_read_due.append(project_key)
             return False
         if pending:
             await self._update_project_sync_checkpoint(project_key, people_reread=json.dumps(sorted(pending)))
         if security.browse_holders is None:
             return False  # holders unknown: an issue read now keeps its stored grants; the next sync that reads them re-reads
         failures_before = self._issue_build_failures
-        if stale:
+        if people_read < self._people_base or not pending:
             await self._reread_leveled_issues(project_key, project_id, users, stats, None, every_issue=True)
         else:
             await self._reread_issues_naming(project_key, project_id, users, stats, sorted(pending), security)
         if self._issue_build_failures == failures_before:
-            await self._update_project_sync_checkpoint(project_key, people_reread="[]", people_read=self._people_generation)
+            await self._update_project_sync_checkpoint(project_key, people_reread="[]")
+            self._people_read_due.append(project_key)
         return True
 
     async def _reread_issues_naming(
