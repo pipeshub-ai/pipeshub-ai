@@ -33,7 +33,7 @@ These are appended to the existing navigation params (`view`, `nodeType`, `nodeI
 
 **Example URL:**
 ```
-/knowledge-base?nodeType=kb&nodeId=abc123&recordTypes=FILE,WEBPAGE&indexingStatus=COMPLETED&page=2&sortField=name&sortOrder=asc
+/knowledge-base?nodeType=app&nodeId=abc123&recordTypes=FILE,WEBPAGE&indexingStatus=COMPLETED&page=2&sortField=name&sortOrder=asc
 ```
 
 ---
