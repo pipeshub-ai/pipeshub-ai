@@ -116,4 +116,8 @@ export const selectSoftDeleteEnabled = (s: FeatureFlagsStore) =>
 export const selectUserContextEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_USER_CONTEXT !== false;
 
+/** Reusing previewed record content defaults to enabled; admins opt out from Labs. */
+export const selectRecordPreviewCacheEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_RECORD_PREVIEW_CACHE !== false;
+
 export type FeatureFlagGate = 'mcp' | 'actions' | 'skills';

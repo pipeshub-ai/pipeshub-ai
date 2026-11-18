@@ -5,6 +5,7 @@ Needs no service; every port is asked of the kernel (`tests/support/free_port.py
 """
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import logging
@@ -659,4 +660,50 @@ def test_a_silent_client_is_told_503_exactly_once_by_the_reaper(tmp_path: Path, 
         assert data.count(b"HTTP/1.1 503") == 1 and data.count(b"HTTP/1.") == 1, data
         assert len(sent) == 1, f"the refusal was attempted {len(sent)} times"
     finally:
+        _close(exporter)
+
+
+# -- a legitimate scrape under a flood of idle connections ---------------------
+
+
+def test_a_legitimate_scrape_is_answered_under_a_flood_of_idle_connections_that_stay_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An idle flood that keeps every connection open must not blind the port: a scrape, which sends at once, is
+    answered, not refused. Known limit: such a flood can get a client that connects and waits an early 503."""
+    monkeypatch.setattr(ox, "REQUEST_DEADLINE_S", 2.0)
+    exporter = _exporter(tmp_path)
+    server = exporter._server
+    assert server is not None
+    server._max = 4
+    stop = threading.Event()
+    held: list[socket.socket] = []
+
+    def flood() -> None:
+        while not stop.is_set():
+            with contextlib.suppress(OSError):
+                held.append(socket.create_connection((HOST, exporter._port), timeout=2))
+            stop.wait(0.02)
+
+    thread = threading.Thread(target=flood, daemon=True)
+    try:
+        thread.start()
+        time.sleep(1.2)  # every slot is full of idle clients, the queue is busy
+        heads = []
+        for _ in range(5):
+            # A 503 from a full admission queue is permitted overload behaviour, so each scrape waits for headroom in
+            # it; a flood that is never evicted from (the regression this guards) keeps the queue full and fails here.
+            assert _wait_until(lambda: len(server._queue) <= ox.ADMIT_QUEUE_MAX - 4, 5), "the idle flood kept the admission queue full"
+            with socket.create_connection((HOST, exporter._port), timeout=10) as client:
+                client.sendall(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+                data = b""
+                while chunk := client.recv(65536):
+                    data += chunk
+            heads.append(data[:12])
+        assert all(h.startswith(b"HTTP/1.0 200") for h in heads), heads
+    finally:
+        stop.set()
+        thread.join(5)
+        for s in held:
+            s.close()
         _close(exporter)

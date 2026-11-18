@@ -431,7 +431,7 @@ async def _search_answer(hits: list, *, named: bool = False, **body) -> tuple[di
 
 
 async def test_the_search_answer_is_exactly_what_the_published_schema_documents() -> None:
-    from app.modules.retrieval.entity_permissions import EntityHit
+    from app.modules.retrieval.entity_permissions import EntityHit, EntitySearchHits
 
     row = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}
     found, _ = await _search_answer([
@@ -440,12 +440,15 @@ async def test_the_search_answer_is_exactly_what_the_published_schema_documents(
         EntityHit(RID, "record", "Acme plan", 0.7, [row], False, indexing_status="QUEUED", indexed=False),
     ])
     empty, _ = await _search_answer([])
-    for payload in (found, empty):
+    cut_short, _ = await _search_answer(EntitySearchHits([EntityHit("o1", "organization", "Acme", 0.8, [row], False)],
+                                                         incomplete=True))
+    for payload in (found, empty, cut_short):
         _validate("EntitySearchResponse", payload)
     schema = openapi_spec()["components"]["schemas"]["EntitySearchResponse"]
     item = schema["properties"]["results"]["items"]["properties"]
     # every field the route writes is documented, and every documented field is one the route writes
-    assert set(found) | set(empty) == set(schema["properties"])
+    assert set(found) | set(empty) | set(cut_short) == set(schema["properties"])
+    assert cut_short["incomplete"] is True and "incomplete" not in found
     assert {k for r in found["results"] for k in r} == set(item)
     # the route never limits the search to part of the caller's sources, so it never says it did
     assert "scopeNote" not in empty

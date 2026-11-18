@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.core import org_context
 from app.core.org_context import current_or_system, current_org_id
+from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 from app.services.graph_db.postgres.base import (
@@ -28,6 +29,7 @@ from app.services.graph_db.postgres.base import (
     _field,
     _j,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -716,11 +718,13 @@ class CodeGraphMixin(PgBase):
         if "indexingStatus" in fields:
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
         _VALIDATOR.validate_node_update("records", fields)
+        # The run rule reads the stored document in this statement; with no status in the fields the status is null and the patch is empty.
+        run = sql_patch("n.doc", WriteKind.STATUS_VAR, now="$6::bigint", status="$5::text")
         # Locks are taken in id order, and the revision is read after the lock.
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_record_fields */ WITH l AS (SELECT id FROM graph.nodes
+        rows = await self._q(lambda tx: tx.fetch(with_run_patch("""/* pipeshub:graph.compare_and_set_record_fields */ WITH l AS (SELECT id FROM graph.nodes
             WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'contentRev' = $3 ORDER BY id FOR UPDATE)
-            UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM l WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = l.id RETURNING n.id""",
-                                                  org, keys, content_rev, _j(fields)), None, write=True)
+            UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || {RUN_PATCH} || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM l WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = l.id RETURNING n.id""", run),
+                                                  org, keys, content_rev, _j(fields), fields.get("indexingStatus"), get_epoch_timestamp_in_ms()), None, write=True)
         return [r["id"] for r in rows]
 
     # ---- stage states --------------------------------------------------------------------------------------------

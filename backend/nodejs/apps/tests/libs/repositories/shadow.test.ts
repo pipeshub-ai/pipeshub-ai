@@ -85,6 +85,40 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     expect(counts['document:diff']).to.equal(1);
   });
 
+  it('a credential read compares the credential without its id and version: PostgreSQL keys a credential by the account', async () => {
+    const cred = { userId: 'u', orgId: 'o', hashedPassword: 'h', wrongCredentialCount: 0, isBlocked: false, isDeleted: false };
+    const repo = shadowWrap(
+      'identity',
+      { find: async () => ({ ...cred, _id: 'credential-doc-id', __v: 0 }) },
+      () => ({ find: async () => ({ ...cred, _id: 'u' }) }),
+      runPg,
+    );
+    await repo.find();
+    await wait(100);
+    expect(counts['identity:equal']).to.equal(1);
+    const other = shadowWrap(
+      'identity',
+      { find: async () => ({ ...cred, _id: 'x', isBlocked: true }) },
+      () => ({ find: async () => ({ ...cred, _id: 'u' }) }),
+      runPg,
+    );
+    await other.find();
+    await wait(100);
+    expect(counts['identity:diff']).to.equal(1);
+  });
+
+  it('a find of another repository still compares the id', async () => {
+    const repo = shadowWrap(
+      'connectors-config',
+      { find: async () => ({ _id: 'a', name: 'n' }) },
+      () => ({ find: async () => ({ _id: 'b', name: 'n' }) }),
+      runPg,
+    );
+    await repo.find();
+    await wait(100);
+    expect(counts['connectors-config:diff']).to.equal(1);
+  });
+
   it('every repository method that looks like a read is classified (a new one must be added to the list or named so it is not one)', () => {
     const root = join(__dirname, '../../../src/libs/repositories');
     const looksRead = /^(find|get|list|count|exists?|search|lookup|has|resolve|read|fetch|load|query|check|select|stats|page)/;
