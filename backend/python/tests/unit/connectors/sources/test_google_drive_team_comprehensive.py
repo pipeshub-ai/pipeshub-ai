@@ -153,6 +153,7 @@ def connector():
         dep.on_new_user_groups = AsyncMock()
         dep.inheritance_when_unreadable = AsyncMock(return_value=False)
         dep.add_permission_to_record = AsyncMock()
+        dep.get_roles_on_record = AsyncMock(return_value=({}, {}))
         yield c
 
 
