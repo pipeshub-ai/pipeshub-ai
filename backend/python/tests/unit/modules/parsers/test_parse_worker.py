@@ -1,13 +1,13 @@
 """The parse worker process on its own: what it does between jobs and when its parent dies."""
 from __future__ import annotations
 
+import contextlib
 import os
 import pickle
 import select
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,8 +20,20 @@ def _alive(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat") as f:
             return f.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):  # reaped before the open, or between the open and the read
         return False
+
+
+def _exited_within(pid: int, timeout_s: float) -> bool:
+    """Wait for ``pid`` to exit, up to ``timeout_s``: its pidfd turns readable at the exit."""
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return True  # already exited and reaped
+    try:
+        return bool(select.select([fd], [], [], timeout_s)[0])
+    finally:
+        os.close(fd)
 
 
 def test_trims_the_heap_after_each_job() -> None:
@@ -104,10 +116,8 @@ def test_a_worker_mid_job_exits_when_its_parent_is_killed() -> None:
         parent.stdout.close()
 
     try:
-        deadline = time.monotonic() + 10
-        while _alive(worker_pid) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        assert not _alive(worker_pid)
+        assert _exited_within(worker_pid, 10), "the worker outlived its parent"
     finally:
         if _alive(worker_pid):  # a regression must not leave it sleeping for ten minutes
-            os.kill(worker_pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError):  # it may exit between the check and the kill
+                os.kill(worker_pid, signal.SIGKILL)
