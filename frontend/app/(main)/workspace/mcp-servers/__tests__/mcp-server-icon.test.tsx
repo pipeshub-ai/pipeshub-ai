@@ -93,6 +93,26 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="Egnyte MCP" />)).toBe('egnyte icon');
   });
 
+  it("shows Intercom's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="intercom" name="Intercom" />)).toBe('intercom icon');
+    expect(logo(<McpServerIcon typeId={null} name="Intercom MCP" />)).toBe('intercom icon');
+  });
+
+  it("shows Granola's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="granola" name="Granola" />)).toBe('granola icon');
+    expect(logo(<McpServerIcon typeId={null} name="Granola MCP" />)).toBe('granola icon');
+  });
+
+  it("shows Fireflies's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="fireflies" name="Fireflies" />)).toBe('fireflies icon');
+    expect(logo(<McpServerIcon typeId={null} name="Fireflies MCP" />)).toBe('fireflies icon');
+  });
+
+  it("shows Fathom's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="fathom" name="Fathom" />)).toBe('fathom icon');
+    expect(logo(<McpServerIcon typeId={null} name="Fathom MCP" />)).toBe('fathom icon');
+  });
+
   it("shows Hugging Face's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="huggingface" name="Hugging Face" />)).toBe('huggingface icon');
     expect(logo(<McpServerIcon typeId={null} name="Hugging Face" />)).toBe('huggingface icon');

@@ -106,6 +106,10 @@ export type ConnectorType =
   | 'trello'
   | 'cloudflare'
   | 'egnyte'
+  | 'intercom'
+  | 'granola'
+  | 'fireflies'
+  | 'fathom'
   | 'lucid'
   // Generic / Fallback
   | 'web'
@@ -217,6 +221,11 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'trello': { svg: svg('trello'), fallback: 'view_kanban' },
   'cloudflare': { svg: svg('cloudflare'), fallback: 'cloud' },
   'egnyte': { svg: svg('egnyte'), fallback: 'folder_shared', needDarkModeInvert: true },
+  'intercom': { svg: svg('intercom'), fallback: 'support_agent', needDarkModeInvert: true },
+  'granola': { svg: svg('granola'), fallback: 'sticky_note_2' },
+  // Fireflies publishes its logomark as a PNG only
+  'fireflies': { svg: `${CONNECTOR_ICONS_BASE_PATH}/fireflies.png`, fallback: 'graphic_eq' },
+  'fathom': { svg: svg('fathom'), fallback: 'videocam' },
   'lucid': { svg: svg('lucid'), fallback: 'schema', needDarkModeInvert: true },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
@@ -291,6 +300,10 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['trello', 'trello'],
   ['cloudflare', 'cloudflare'],
   ['egnyte', 'egnyte'],
+  ['intercom', 'intercom'],
+  ['granola', 'granola'],
+  ['fireflies', 'fireflies'],
+  ['fathom', 'fathom'],
   ['lucid', 'lucid'],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.

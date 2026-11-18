@@ -17,6 +17,10 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('gitlab')).toBe('gitlab');
     expect(resolveConnectorType('GitLab')).toBe('gitlab');
     expect(resolveConnectorType('egnyte')).toBe('egnyte');
+    expect(resolveConnectorType('intercom')).toBe('intercom');
+    expect(resolveConnectorType('granola')).toBe('granola');
+    expect(resolveConnectorType('fireflies')).toBe('fireflies');
+    expect(resolveConnectorType('fathom')).toBe('fathom');
   });
 
   it('maps the bare Google toolset slugs to their logos', () => {
