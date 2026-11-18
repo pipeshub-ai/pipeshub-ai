@@ -218,7 +218,7 @@ def is_expected_outcome(exc: BaseException | None) -> bool:
     """Whether ``exc`` ends a record the way nobody needs to act on (the source
     refused it, or it was deleted while it was being indexed): logged once below
     error level by the handler, not as a fault."""
-    return is_source_refusal(exc) or is_record_deleted(exc)
+    return is_source_refusal(exc) or is_record_deleted(exc) or bool(getattr(exc, "expected_outcome", False))
 
 
 def _classify_aiohttp_transport_error(exc: Exception) -> Optional[str]:
