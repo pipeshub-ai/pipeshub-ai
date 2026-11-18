@@ -3414,4 +3414,6 @@ class TestBrowseHolders:
         searched = len(search.jql)
         await connector.run_sync()
         assert ("EntityType.USER", None, "bob@example.com") in grants(db, "1001")
-        assert all("updated" in jql for jql in search.jql[searched:]), "the incremental pass alone, no project re-read"
+        project_searches = [jql for jql in search.jql[searched:] if 'project = "ENG"' in jql]
+        assert project_searches and all("updated >=" in jql for jql in project_searches), (
+            "the incremental pass alone (its date predicate), no project re-read")
