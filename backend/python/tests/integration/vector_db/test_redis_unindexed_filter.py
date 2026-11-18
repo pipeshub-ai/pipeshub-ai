@@ -425,6 +425,9 @@ class TestBackfill:
         from app.services.vector_db.redis.redis_vector import _parse_ft_info
 
         monkeypatch.setenv("REDIS_VECTOR_BACKFILL_WAIT_SECONDS", "0")
+        # An automatic AOF rewrite would fold the index into the log's RDB base, which a restart loads with the index already
+        # built (no window to test). The restart puts the setting back to the server's default.
+        await redis_service.client.execute_command("CONFIG", "SET", "auto-aof-rewrite-percentage", "0")
         await self._big_collection(redis_service, collection)
         idx = redis_service._index_name(collection)
         # FT.CREATE after the hashes in the log, as when an index is built over stored documents.
