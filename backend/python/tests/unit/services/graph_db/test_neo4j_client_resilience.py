@@ -275,6 +275,8 @@ class TestDriverSettings:
         assert kwargs["max_connection_lifetime"] == 240.0
         # Zero is the driver's "check every time", not "off".
         assert kwargs["liveness_check_timeout"] == 0.0
+        # Only the "does not exist" names are filtered; deprecations and the rest still reach the log.
+        assert kwargs["notifications_disabled_classifications"] == ["UNRECOGNIZED"]
 
     def test_default_lifetime_retires_connections_before_a_nat_idle_timeout(self) -> None:
         # A NAT gateway drops a flow idle for 350s and resets the next packet

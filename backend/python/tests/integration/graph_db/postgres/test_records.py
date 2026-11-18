@@ -51,6 +51,7 @@ CALLS = {
     "get_typed_records_batch": (["r"],), "get_virtual_record_ids_for_record_ids": (["r"],), "get_virtual_record_ids_in_use": (["v"],),
     "get_virtual_record_holders": (["v"], "o"),
     "batch_upsert_records": ([plain("o", "r")],), "create_record_relation": ("a", "b", "BOOKMARK"),
+    "write_attempt_start": ("r", {"indexingStatus": "IN_PROGRESS"}),
     "compare_and_set_indexing_status": (["r"], "QUEUED", "COMPLETED"), "update_indexing_status_for_record_ids": (["r"], "QUEUED"),
     "has_records_indexed_since": ("c1", 0), "get_sync_point": ("k", "syncPoints"), "upsert_sync_point": ("k", {}, "syncPoints"),
     "remove_sync_point": ("k", "syncPoints"), "_delete_records_with_their_types": (["r"],),

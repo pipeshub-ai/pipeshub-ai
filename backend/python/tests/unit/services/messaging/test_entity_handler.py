@@ -19,6 +19,7 @@ from app.connectors.core.sync.sync_runner import _run_sync_alone
 from app.exceptions.non_retryable import NonRetryableError
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.logger import log_record_fields
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -791,6 +792,7 @@ class TestAppDisabled:
             }
         )
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -824,6 +826,7 @@ class TestAppDisabled:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"_key": "conn-1", "name": "Legacy"})
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
         svc = _make_entity_service(graph_provider=graph_provider)
 
         with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc:
