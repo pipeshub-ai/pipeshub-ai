@@ -25,7 +25,6 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.file_types import Route
-from app.services.paid_cache.run import refresh_requested
 from app.events.dedup import (
     DedupDecision,
     DuplicateMatch,
@@ -117,6 +116,7 @@ from app.services.messaging.config import (
 from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.paid_cache.run import current_run as current_paid_run
+from app.services.paid_cache.run import refresh_requested
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled

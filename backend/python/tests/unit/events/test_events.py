@@ -2271,7 +2271,7 @@ class TestOnEventDuplicate:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_a_users_force_reindex_is_not_settled_by_attaching_to_a_finished_twin(self):
+    async def test_a_users_force_reindex_is_not_settled_by_attaching_to_a_finished_twin(self) -> None:
         """D-180: a forced refresh parses and indexes; a plain event for the same record attaches to the twin."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
