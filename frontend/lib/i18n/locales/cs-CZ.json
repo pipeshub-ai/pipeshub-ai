@@ -1995,6 +1995,33 @@
         "empty": "Zatím nejsou definována žádná oprávnění."
       }
     },
+    "enterprise": {
+      "contact": "Kontaktujte nás",
+      "scim": {
+        "heading": "Zřizování SCIM je k dispozici v edici Enterprise",
+        "message": "Nechte Okta nebo Microsoft Entra ID automaticky přidávat, aktualizovat a vypínat lidi ve vašem pracovním prostoru."
+      },
+      "auditLogs": {
+        "heading": "Protokoly auditu jsou k dispozici v edici Enterprise",
+        "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy."
+      },
+      "usage": {
+        "heading": "Využití a náklady AI jsou k dispozici v edici Enterprise",
+        "message": "Zjistěte, kolik AI vaši organizaci stojí, podle osob, agentů, konektorů a modelů."
+      },
+      "credits": {
+        "heading": "Kredity jsou k dispozici v edici Enterprise",
+        "message": "Sledujte zůstatek kreditů vaší organizace a kolik spotřebuje každá osoba."
+      },
+      "billing": {
+        "heading": "Fakturace je k dispozici v edici Enterprise",
+        "message": "Spravujte tarif, licence, platební metodu a faktury na jednom místě."
+      },
+      "creditSettings": {
+        "heading": "Nastavení kreditů je k dispozici v edici Enterprise",
+        "message": "Dostaňte upozornění dřív, než vaší organizaci dojdou kredity."
+      }
+    },
     "teams": {
       "title": "Týmy",
       "subtitle": "Vytvářejte týmy pro spolupráci, sdílení a společnou práci",
@@ -2575,6 +2602,8 @@
       "sections": {
         "overview": "Přehled",
         "workspace": "Pracovní prostor",
+        "security": "Zabezpečení",
+        "usageAndCredits": "Využití a kredity",
         "personal": "Osobní",
         "people": "Lidé",
         "developerSettings": "Nastavení pro vývojáře"
@@ -2604,6 +2633,12 @@
         "archivedChats": "Archivované chaty",
         "users": "Uživatelé",
         "groups": "Skupiny",
+        "scim": "Zřizování SCIM",
+        "auditLogs": "Protokoly auditu",
+        "usage": "Využití",
+        "credits": "Kredity",
+        "billing": "Fakturace",
+        "creditSettings": "Nastavení kreditů",
         "teams": "Týmy",
         "webSearch": "Vyhledávání na webu",
         "tenants": "Tenanti",

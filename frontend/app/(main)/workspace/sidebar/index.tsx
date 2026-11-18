@@ -22,8 +22,10 @@ import {
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { ENTERPRISE_FEATURES } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -92,6 +94,15 @@ const PERSONAL_ITEMS: NavItem[] = [
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
 
+const ENTERPRISE_SECTIONS = ['security', 'usageAndCredits'] as const;
+
+/** Marks an Enterprise Edition page. Hidden from the link's name, so it still reads "Groups". */
+const ENTERPRISE_LOCK = (
+  <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+    <MaterialIcon name="lock" size={14} color="var(--slate-9)" />
+  </span>
+);
+
 // ========================================
 // Component
 // ========================================
@@ -109,6 +120,7 @@ export default function WorkspaceSidebar() {
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  const showEnterprise = useEnterprisePrompt();
   const isMobile = useIsMobile();
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
@@ -215,12 +227,13 @@ export default function WorkspaceSidebar() {
             </CollapsibleSection>
           )}
 
-          {isAdmin && (
+          {showEnterprise && (
             <WorkspaceSidebarItem
               icon={<MaterialIcon name={GROUPS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
               label={t(GROUPS_NAV_ITEM.labelKey)}
               href={`${GROUPS_NAV_ITEM.route}/`}
               isActive={isActive(GROUPS_NAV_ITEM.route)}
+              rightSlot={ENTERPRISE_LOCK}
             />
           )}
         </Flex>
@@ -240,6 +253,27 @@ export default function WorkspaceSidebar() {
             ))}
           </Flex>
         )}
+
+        {/* ── Security, then Usage & credits: Enterprise Edition pages, shown locked ── */}
+        {showEnterprise &&
+          ENTERPRISE_SECTIONS.map((section) => (
+            <Flex key={section} direction="column" gap="1">
+              <SectionHeader title={t(`workspace.sidebar.sections.${section}`)} />
+              {Object.values(ENTERPRISE_FEATURES)
+                .filter((item) => item.section === section)
+                .map((item) => (
+                  <WorkspaceSidebarItem
+                    key={item.route}
+                    icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+                    label={t(item.labelKey)}
+                    href={`${item.route}/`}
+                    isActive={isActive(item.route)}
+                    rightSlot={ENTERPRISE_LOCK}
+                  />
+                ))}
+            </Flex>
+          ))}
+
         <Flex direction="column" gap="1">
           <SectionHeader title={t('workspace.sidebar.sections.developerSettings')} />
           {DEVELOPER_SETTINGS_ITEMS.map((item) => (

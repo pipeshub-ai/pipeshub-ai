@@ -1887,6 +1887,33 @@
         "empty": "尚未定義任何權限。"
       }
     },
+    "enterprise": {
+      "contact": "聯絡我們",
+      "scim": {
+        "heading": "SCIM 佈建功能僅在企業版中提供",
+        "message": "讓 Okta 或 Microsoft Entra ID 自動新增、更新和停用工作區中的成員。"
+      },
+      "auditLogs": {
+        "heading": "稽核記錄功能僅在企業版中提供",
+        "message": "查看工作區中誰在何時做了什麼。"
+      },
+      "usage": {
+        "heading": "AI 用量與成本功能僅在企業版中提供",
+        "message": "依人員、代理程式、連接器和模型查看組織的 AI 成本。"
+      },
+      "credits": {
+        "heading": "AI 額度功能僅在企業版中提供",
+        "message": "追蹤組織的額度餘額以及每個人的用量。"
+      },
+      "billing": {
+        "heading": "帳單功能僅在企業版中提供",
+        "message": "在同一處管理方案、席位、付款方式和發票。"
+      },
+      "creditSettings": {
+        "heading": "用量設定功能僅在企業版中提供",
+        "message": "在組織額度不足之前收到提醒。"
+      }
+    },
     "teams": {
       "title": "團隊",
       "subtitle": "建立團隊以進行協作、分享與共同工作",
@@ -2459,6 +2486,8 @@
       "sections": {
         "overview": "總覽",
         "workspace": "工作區",
+        "security": "安全性",
+        "usageAndCredits": "用量與額度",
         "personal": "個人",
         "people": "成員",
         "developerSettings": "開發人員設定"
@@ -2488,6 +2517,12 @@
         "archivedChats": "已封存的對話",
         "users": "使用者",
         "groups": "群組",
+        "scim": "SCIM 佈建",
+        "auditLogs": "稽核記錄",
+        "usage": "用量",
+        "credits": "AI 額度",
+        "billing": "帳單",
+        "creditSettings": "用量設定",
         "teams": "團隊",
         "webSearch": "網頁搜尋",
         "tenants": "租戶",

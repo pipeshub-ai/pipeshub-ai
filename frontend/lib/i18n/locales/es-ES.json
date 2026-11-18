@@ -1848,6 +1848,33 @@
         "empty": "Aún no se ha definido ningún permiso."
       }
     },
+    "enterprise": {
+      "contact": "Contáctanos",
+      "scim": {
+        "heading": "El aprovisionamiento SCIM está disponible en la Enterprise Edition",
+        "message": "Deje que Okta o Microsoft Entra ID añadan, actualicen y desactiven personas en su espacio de trabajo automáticamente."
+      },
+      "auditLogs": {
+        "heading": "Los registros de auditoría están disponibles en la Enterprise Edition",
+        "message": "Vea quién hizo qué en su espacio de trabajo y cuándo."
+      },
+      "usage": {
+        "heading": "El uso y el coste de la IA están disponibles en la Enterprise Edition",
+        "message": "Vea cuánto cuesta la IA a su organización, por persona, agente, conector y modelo."
+      },
+      "credits": {
+        "heading": "Los créditos de IA están disponibles en la Enterprise Edition",
+        "message": "Controle el saldo de créditos de su organización y cuánto usa cada persona."
+      },
+      "billing": {
+        "heading": "La facturación está disponible en la Enterprise Edition",
+        "message": "Gestione su plan, puestos, método de pago y facturas en un solo lugar."
+      },
+      "creditSettings": {
+        "heading": "La configuración de consumo está disponible en la Enterprise Edition",
+        "message": "Reciba un aviso antes de que su organización se quede sin créditos."
+      }
+    },
     "teams": {
       "title": "Equipos",
       "subtitle": "Crea equipos para colaborar, compartir y trabajar juntos",
@@ -2348,6 +2375,8 @@
       "sections": {
         "overview": "Resumen",
         "workspace": "Espacio de trabajo",
+        "security": "Seguridad",
+        "usageAndCredits": "Uso y créditos",
         "personal": "Personal",
         "people": "Personas",
         "developerSettings": "Configuración de desarrollador"
@@ -2377,6 +2406,12 @@
         "archivedChats": "Chats archivados",
         "users": "Usuarios",
         "groups": "Grupos",
+        "scim": "Aprovisionamiento SCIM",
+        "auditLogs": "Registros de auditoría",
+        "usage": "Uso",
+        "credits": "Créditos de IA",
+        "billing": "Facturación",
+        "creditSettings": "Configuración de consumo",
         "teams": "Equipos",
         "webSearch": "Búsqueda Web",
         "tenants": "Inquilinos",

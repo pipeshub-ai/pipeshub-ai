@@ -1903,6 +1903,33 @@
         "empty": "No permissions are defined yet."
       }
     },
+    "enterprise": {
+      "contact": "Contact us",
+      "scim": {
+        "heading": "SCIM provisioning is available in the Enterprise Edition",
+        "message": "Let Okta or Microsoft Entra ID add, update and switch off people in your workspace automatically."
+      },
+      "auditLogs": {
+        "heading": "Audit logs are available in the Enterprise Edition",
+        "message": "See who did what in your workspace, and when."
+      },
+      "usage": {
+        "heading": "AI usage and cost are available in the Enterprise Edition",
+        "message": "See what AI costs your organization, by person, agent, connector and model."
+      },
+      "credits": {
+        "heading": "Credits are available in the Enterprise Edition",
+        "message": "Track your organization's credit balance and how much each person uses."
+      },
+      "billing": {
+        "heading": "Billing is available in the Enterprise Edition",
+        "message": "Manage your plan, seats, payment method and invoices in one place."
+      },
+      "creditSettings": {
+        "heading": "Credit settings are available in the Enterprise Edition",
+        "message": "Get an alert before your organization runs low on credits."
+      }
+    },
     "teams": {
       "title": "Teams",
       "subtitle": "Create teams to collaborate, share, and work together",
@@ -2477,6 +2504,8 @@
       "sections": {
         "overview": "Overview",
         "workspace": "Workspace",
+        "security": "Security",
+        "usageAndCredits": "Usage & credits",
         "personal": "Personal",
         "people": "People",
         "developerSettings": "Developer settings"
@@ -2506,6 +2535,12 @@
         "archivedChats": "Archived chats",
         "users": "Users",
         "groups": "Groups",
+        "scim": "SCIM provisioning",
+        "auditLogs": "Audit logs",
+        "usage": "Usage",
+        "credits": "Credits",
+        "billing": "Billing",
+        "creditSettings": "Credit settings",
         "teams": "Teams",
         "webSearch": "Web search",
         "tenants": "Tenants",

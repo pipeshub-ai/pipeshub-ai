@@ -238,4 +238,12 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       'Store, for each connector, who can see which of its records and how they sort, refreshed after every sync, and build the All Records page from that instead of working out access on every request. The page shows the same records either way. The page is built the usual way for a connector that is syncing or cannot use the cache (permissions set on whole groups, items in several places), and for a search, a filter other than source or connector, or sorting by size or type. Neo4j only. Disable to always build the page on each request.',
     defaultEnabled: false,
   },
+  {
+    key: 'SHOW_ENTERPRISE_PROMPTS',
+    label: 'Show Enterprise Edition Features',
+    description:
+      'Show admins where Enterprise Edition features would appear (such as Groups, Usage and Billing in the settings sidebar), with a way to contact us. People who are not admins never see them. Disable to hide these notices everywhere.',
+    defaultEnabled: true,
+    advanced: true,
+  },
 ];

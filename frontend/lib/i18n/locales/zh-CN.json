@@ -1887,6 +1887,33 @@
         "empty": "尚未定义任何权限。"
       }
     },
+    "enterprise": {
+      "contact": "联系我们",
+      "scim": {
+        "heading": "SCIM 预配功能仅在企业版中提供",
+        "message": "让 Okta 或 Microsoft Entra ID 自动添加、更新和停用工作区中的成员。"
+      },
+      "auditLogs": {
+        "heading": "审计日志功能仅在企业版中提供",
+        "message": "查看工作区中谁在何时做了什么。"
+      },
+      "usage": {
+        "heading": "AI 用量与成本功能仅在企业版中提供",
+        "message": "按人员、智能体、连接器和模型查看组织的 AI 成本。"
+      },
+      "credits": {
+        "heading": "AI 额度功能仅在企业版中提供",
+        "message": "跟踪组织的额度余额以及每个人的用量。"
+      },
+      "billing": {
+        "heading": "账单功能仅在企业版中提供",
+        "message": "在一个地方管理套餐、席位、付款方式和发票。"
+      },
+      "creditSettings": {
+        "heading": "消费设置功能仅在企业版中提供",
+        "message": "在组织额度不足之前收到提醒。"
+      }
+    },
     "teams": {
       "title": "团队",
       "subtitle": "创建团队以协作、共享和共同工作",
@@ -2459,6 +2486,8 @@
       "sections": {
         "overview": "概览",
         "workspace": "工作区",
+        "security": "安全",
+        "usageAndCredits": "用量与额度",
         "personal": "个人",
         "people": "成员",
         "developerSettings": "开发者设置"
@@ -2488,6 +2517,12 @@
         "archivedChats": "已归档的对话",
         "users": "用户",
         "groups": "群组",
+        "scim": "SCIM 预配",
+        "auditLogs": "审计日志",
+        "usage": "用量",
+        "credits": "AI 额度",
+        "billing": "账单",
+        "creditSettings": "消费设置",
         "teams": "团队",
         "webSearch": "网络搜索",
         "tenants": "租户",

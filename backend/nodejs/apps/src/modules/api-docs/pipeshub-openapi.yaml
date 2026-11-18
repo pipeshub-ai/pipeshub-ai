@@ -17969,6 +17969,7 @@ components:
             - ENABLE_ARTIFACT_READ_SHADOW (advanced): Also read those files when a record is read and compare them with the stored record; answers still come from the stored record (default: false)
             - ENABLE_ARTIFACT_READ (advanced): Read those files instead of the stored record, falling back to the stored record (default: false)
             - ENABLE_KH_SCOPE_LISTING (Labs: All Records Cache): Build the All Records listing from per-connector visibility stored after each sync (Neo4j only; default: false)
+            - SHOW_ENTERPRISE_PROMPTS (advanced): Show admins where Enterprise Edition features would appear, such as Groups, Usage and Billing in the settings sidebar (default: true)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -18716,7 +18717,7 @@ components:
             ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_CHAT_COMPARE, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
             ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_ARTIFACT_WRITE,
             ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_RECORD_PREVIEW_CACHE,
-            ENABLE_KH_SCOPE_LISTING.
+            ENABLE_KH_SCOPE_LISTING, SHOW_ENTERPRISE_PROMPTS.
             ENABLE_BETA_CONNECTORS is hidden and never listed here.
           example: "ENABLE_MCP"
         label:

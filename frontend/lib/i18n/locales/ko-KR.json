@@ -1887,6 +1887,33 @@
         "empty": "아직 정의된 권한이 없습니다."
       }
     },
+    "enterprise": {
+      "contact": "문의하기",
+      "scim": {
+        "heading": "SCIM 프로비저닝은 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "Okta 또는 Microsoft Entra ID가 워크스페이스 사용자를 자동으로 추가, 업데이트, 비활성화하도록 하세요."
+      },
+      "auditLogs": {
+        "heading": "감사 로그는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요."
+      },
+      "usage": {
+        "heading": "AI 사용량 및 비용은 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "사람, 에이전트, 커넥터, 모델별로 조직의 AI 비용을 확인하세요."
+      },
+      "credits": {
+        "heading": "AI 크레딧은 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "조직의 크레딧 잔액과 사용자별 사용량을 추적하세요."
+      },
+      "billing": {
+        "heading": "결제는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "요금제, 좌석, 결제 수단, 청구서를 한곳에서 관리하세요."
+      },
+      "creditSettings": {
+        "heading": "사용량 설정은 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "조직의 크레딧이 부족해지기 전에 알림을 받으세요."
+      }
+    },
     "teams": {
       "title": "팀",
       "subtitle": "협업하고 공유하며 함께 일할 팀을 만들어 보세요",
@@ -2459,6 +2486,8 @@
       "sections": {
         "overview": "개요",
         "workspace": "워크스페이스",
+        "security": "보안",
+        "usageAndCredits": "사용량 및 크레딧",
         "personal": "개인",
         "people": "구성원",
         "developerSettings": "개발자 설정"
@@ -2488,6 +2517,12 @@
         "archivedChats": "보관된 채팅",
         "users": "사용자",
         "groups": "그룹",
+        "scim": "SCIM 프로비저닝",
+        "auditLogs": "감사 로그",
+        "usage": "사용량",
+        "credits": "AI 크레딧",
+        "billing": "결제",
+        "creditSettings": "사용량 설정",
         "teams": "팀",
         "webSearch": "웹 검색",
         "tenants": "테넌트",
