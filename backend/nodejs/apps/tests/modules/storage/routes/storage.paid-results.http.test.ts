@@ -250,6 +250,18 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       )
     })
 
+    it('purge-cutoff answers 503 and leaves no sentinel when the store gives the sentinel no usable stamp', async () => {
+      const real = StorageServiceAdapter.prototype.listObjects
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'listObjects').callsFake(async function (this: any, prefix: string, opts: any) {
+        const page = await real.call(this, prefix, opts)
+        return prefix.includes('/purge-cutoff/') ? { ...page, objects: page.objects.map((o: any) => ({ ...o, lastModifiedMs: 0 })) } : page
+      })
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      stub.restore()
+      expect(cut.status).to.equal(503)
+      expect(filesOnDisk().filter((f) => f.includes('purge-cutoff'))).to.deep.equal([])
+    })
+
     it('purge-cutoff refuses a record id that is not a valid one', async () => {
       for (const bad of ['a%2Fb', '.hidden', 'x'.repeat(300)]) {
         expect((await call('POST', `/internal/paid-results/${bad}/purge-cutoff`)).status, bad).to.equal(400)

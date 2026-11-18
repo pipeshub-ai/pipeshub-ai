@@ -1555,7 +1555,8 @@ export class StorageController {
           limit: PAID_RESULT_LIST_PAGE,
         });
         const written = page.objects.find((o) => o.key === key);
-        if (written === undefined) {
+        // A stamp that is not a positive number (an S3 object listed without LastModified reads as 0) is no stamp.
+        if (written === undefined || !(written.lastModifiedMs > 0)) {
           throw new ServiceUnavailableError(
             'The store did not stamp the cutoff',
           );
