@@ -24975,7 +24975,9 @@ components:
           example: success
         message:
           type: string
-          description: Set when nothing matched.
+          description: >-
+            Set when nothing matched; when `otherTypeMatches` is set, says that only the requested
+            `entityTypes` came up empty.
         incomplete:
           type: boolean
           description: >-
@@ -24986,48 +24988,73 @@ components:
         incompleteNote:
           type: string
           description: Set with `incomplete`; says what it means for the results.
+        otherTypeMatches:
+          type: array
+          description: >-
+            Set when the search was limited to `entityTypes` and none of those matched the query by
+            name: entities of other types whose names do match, each one the caller can access.
+          items:
+            $ref: '#/components/schemas/EntitySearchResult'
+        otherTypeNote:
+          type: string
+          description: >-
+            Set with `otherTypeMatches` (why they are listed), or alone when no name matched the
+            requested `entityTypes` and entities of other types could not be searched.
+        ignoredEntityTypes:
+          type: array
+          description: Requested `entityTypes` that are not entity types and were not searched.
+          items:
+            type: string
+        entityTypesNote:
+          type: string
+          description: >-
+            Set with `ignoredEntityTypes`: says they were not searched and, where known, which
+            entity type holds each.
         results:
           type: array
           items:
-            type: object
-            properties:
-              entityId:
-                type: string
-              entityType:
-                $ref: '#/components/schemas/EntitySearchResultType'
-              name:
-                type: string
-              indexingStatus:
-                type: string
-                description: >-
-                  On a `record` result whose content is not indexed yet: its indexing status,
-                  such as `QUEUED` or `FAILED`. Absent once the record is searchable.
-              note:
-                type: string
-                description: On a `record` result that carries `indexingStatus`, what that means for reading it.
-              apps:
-                type: array
-                description: Connectors whose records carry the entity.
-                items:
-                  type: string
-              records:
-                type: array
-                description: A few readable records, for the first entities only.
-                items:
-                  allOf:
-                    - $ref: '#/components/schemas/EntityRecordDate'
-                    - type: object
-                      properties:
-                        recordId:
-                          type: string
-                        name:
-                          type: string
-                        type:
-                          type: string
-                        app:
-                          type: string
-              moreRecords:
-                type: boolean
+            $ref: '#/components/schemas/EntitySearchResult'
+    EntitySearchResult:
+      description: One entity found by `POST /search/entities`.
+      type: object
+      properties:
+        entityId:
+          type: string
+        entityType:
+          $ref: '#/components/schemas/EntitySearchResultType'
+        name:
+          type: string
+        indexingStatus:
+          type: string
+          description: >-
+            On a `record` result whose content is not indexed yet: its indexing status,
+            such as `QUEUED` or `FAILED`. Absent once the record is searchable.
+        note:
+          type: string
+          description: On a `record` result that carries `indexingStatus`, what that means for reading it.
+        apps:
+          type: array
+          description: Connectors whose records carry the entity.
+          items:
+            type: string
+        records:
+          type: array
+          description: A few readable records, for the first entities only.
+          items:
+            allOf:
+              - $ref: '#/components/schemas/EntityRecordDate'
+              - type: object
+                properties:
+                  recordId:
+                    type: string
+                  name:
+                    type: string
+                  type:
+                    type: string
+                  app:
+                    type: string
+        moreRecords:
+          type: boolean
     EntityNeighborsRequest:
       type: object
       description: Request body for `POST /search/entities/neighbors`.
