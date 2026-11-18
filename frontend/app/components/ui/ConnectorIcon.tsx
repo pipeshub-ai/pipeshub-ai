@@ -111,6 +111,7 @@ export type ConnectorType =
   | 'fireflies'
   | 'fathom'
   | 'lucid'
+  | 'miro'
   // Generic / Fallback
   | 'web'
   | 'api'
@@ -227,6 +228,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'fireflies': { svg: `${CONNECTOR_ICONS_BASE_PATH}/fireflies.png`, fallback: 'graphic_eq' },
   'fathom': { svg: svg('fathom'), fallback: 'videocam' },
   'lucid': { svg: svg('lucid'), fallback: 'schema', needDarkModeInvert: true },
+  'miro': { svg: svg('miro'), fallback: 'dashboard', needDarkModeInvert: true },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   // API toolsets (admin-uploaded OpenAPI specs)
@@ -306,6 +308,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['fireflies', 'fireflies', true],
   ['fathom', 'fathom', true],
   ['lucid', 'lucid'],
+  ['miro', 'miro'],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
   ['docs', 'google-docs'], ['sheets', 'google-sheets'],
