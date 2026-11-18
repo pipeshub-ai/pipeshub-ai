@@ -47,7 +47,9 @@ from app.services.messaging.error_classifier import (
     is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
+from app.services.messaging.membership import register_group
 from app.services.messaging.postgres.queue import Delivery, PgQueue
+from app.services.messaging.storage_protocol import tagged
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
 from app.utils import error_class
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
@@ -111,6 +113,10 @@ class PgMessagingConsumer(IMessagingConsumer):
         self.logger = logger
         self.config = config
         self.indexing = indexing
+        # The name its claims are taken under, which the indexing membership check reads (``membership.PgClaimCheck``).
+        self.consumer_name = tagged(config.client_id) if indexing else config.client_id
+        if indexing:
+            register_group(config.group_id, list(config.topics))
         self.disposition_sink = disposition_sink
         self.queue = queue or PgQueue()
         self.running = False
@@ -257,7 +263,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                 batch = await self.queue.claim(
                     self.config.group_id,
                     self.config.topics,
-                    self.config.client_id,
+                    self.consumer_name,
                     min(free, max(self.config.batch_size, 1))
                     if self.indexing
                     else max(self.config.batch_size, 1),

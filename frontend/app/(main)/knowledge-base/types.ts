@@ -571,6 +571,8 @@ export interface RecordDetailsResponse {
     orgId: string;
     recordName: string;
     externalRecordId: string;
+    externalRevisionId?: string | null;
+    contentRev?: string | null;
     recordType: RecordType;
     origin: 'UPLOAD' | 'CONNECTOR';
     createdAtTimestamp: number;

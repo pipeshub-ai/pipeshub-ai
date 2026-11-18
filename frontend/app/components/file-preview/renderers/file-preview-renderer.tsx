@@ -18,35 +18,35 @@ import { getRendererType } from '../utils';
 import type { FilePreviewRendererProps } from '../types';
 import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
 
-function FilePreviewRendererInner({ fileUrl, fileName, fileType, fileBlob, pagination, highlightBox, highlightPage, citations, activeCitationId, citationClickVersion, onHighlightClick, webUrl, previewRenderable }: FilePreviewRendererProps) {
+function FilePreviewRendererInner({ fileUrl, fileName, fileType, fileBlob, rangeTransport, pagination, highlightBox, highlightPage, citations, activeCitationId, citationClickVersion, onHighlightClick, webUrl, previewRenderable }: FilePreviewRendererProps) {
   const rendererType = getRendererType(fileType || '', fileName);
 
   // Callers skip the stream for non-previewable records, so there is no content to
   // hand a renderer. Without this the type-matched renderer reports "File URL not
   // available" instead of the fallback panel with its "Open in Browser" link.
-  if (previewRenderable === false && !fileUrl?.trim() && !fileBlob) {
+  if (previewRenderable === false && !fileUrl?.trim() && !fileBlob && !rangeTransport) {
     return <UnknownPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} webUrl={webUrl} previewRenderable={previewRenderable} />;
   }
 
   switch (rendererType) {
     case 'pdf':
       // PDFs support pagination
-      return <PDFRenderer fileUrl={fileUrl} fileName={fileName} pagination={pagination} highlightBox={highlightBox} highlightPage={highlightPage} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
+      return <PDFRenderer fileUrl={fileUrl} fileName={fileName} rangeTransport={rangeTransport} pagination={pagination} highlightBox={highlightBox} highlightPage={highlightPage} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
     case 'image':
-      return <ImageRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <ImageRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
     case 'markdown':
-      return <MarkdownRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <MarkdownRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
     case 'html':
-      return <HtmlRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <HtmlRenderer fileUrl={fileUrl} fileName={fileName} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
     case 'text':
       // Text files could support chunked pagination in the future
-      return <TextRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <TextRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
     case 'media':
       return <MediaRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType || ''} />;
     case 'spreadsheet':
-      return <SpreadsheetRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <SpreadsheetRenderer fileUrl={fileUrl} fileName={fileName} fileType={fileType} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
     case 'docx':
-      return <DocxRenderer fileUrl={fileUrl} fileName={fileName} fileBlob={fileBlob} citations={citations} activeCitationId={activeCitationId} onHighlightClick={onHighlightClick} />;
+      return <DocxRenderer fileUrl={fileUrl} fileName={fileName} fileBlob={fileBlob} citations={citations} activeCitationId={activeCitationId} citationClickVersion={citationClickVersion} onHighlightClick={onHighlightClick} />;
     case 'document':
       return <DocumentPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} fileBlob={fileBlob} />;
     default:
@@ -57,10 +57,12 @@ function FilePreviewRendererInner({ fileUrl, fileName, fileType, fileBlob, pagin
 export function FilePreviewRenderer(props: FilePreviewRendererProps) {
   return (
     <ErrorBoundary
-      resetKeys={[props.fileUrl, props.fileName]}
+      resetKeys={[props.fileUrl, props.fileName, props.rangeTransport]}
       fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
     >
-      <FilePreviewRendererInner {...props} />
+      <div data-preview-renderer style={{ display: 'contents' }}>
+        <FilePreviewRendererInner {...props} />
+      </div>
     </ErrorBoundary>
   );
 }

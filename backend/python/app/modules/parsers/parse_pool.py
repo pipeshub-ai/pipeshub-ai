@@ -452,7 +452,9 @@ def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
 
     demand = wiring.lane_demand(kind, class_pools.current_class()) if wiring.classes_enabled() else Demand(Family.PARSE, 1)
     memory = lane_charge_bytes(kind, size) if isinstance(kind, ParseKind) else 0
-    return dataclasses.replace(demand, mem_bytes=memory) if memory else demand
+    # A demand that already carries its own memory (an inspection's designed 0.1 GiB) keeps it: the kind's lane charge
+    # is added only where nothing else holds that memory (an Excel load), never over a figure chosen for the demand.
+    return dataclasses.replace(demand, mem_bytes=memory) if memory and not demand.mem_bytes else demand
 
 
 class _EventToken:

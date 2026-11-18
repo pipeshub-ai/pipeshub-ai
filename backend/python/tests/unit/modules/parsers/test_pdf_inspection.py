@@ -27,6 +27,7 @@ from tests.support.pdf_samples import (
     blank_pdf,
     broken_xref_pdf,
     garbage_tail_pdf,
+    no_pages_pdf,
     owner_password_pdf,
     password_protected_pdf,
     text_pdf,
@@ -391,6 +392,16 @@ class TestRepairPdf:
     def test_a_password_protected_file_is_refused_as_such(self) -> None:
         with pytest.raises(PasswordProtectedError):
             repair_pdf(password_protected_pdf())
+
+    def test_a_file_with_no_pages_after_a_locked_one_is_not_called_password_protected(self) -> None:
+        # Both run on one parse-worker thread; pdfium refuses the second file without an error of its own.
+        with pytest.raises(PasswordProtectedError):
+            repair_pdf(password_protected_pdf())
+
+        with pytest.raises(PdfiumError) as raised:
+            repair_pdf(no_pages_pdf())
+
+        assert not isinstance(raised.value, PasswordProtectedError)
 
     @pytest.mark.parametrize(
         "content", [*NOT_PDFS.values(), truncated_pdf()], ids=[*NOT_PDFS, "truncated"]

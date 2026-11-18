@@ -36,6 +36,7 @@ export function FilePreviewSidebar({
   highlightBox,
   citations,
   initialCitationId,
+  jumpSeq,
   hideFileDetails,
   showDownload,
   onDownload,
@@ -106,6 +107,7 @@ export function FilePreviewSidebar({
         highlightBox={highlightBox}
         citations={citations}
         initialCitationId={initialCitationId}
+        jumpSeq={jumpSeq}
         hideFileDetails={hideFileDetails}
         showDownload={showDownload}
         onDownload={onDownload}
@@ -163,6 +165,7 @@ export function FilePreviewSidebar({
           highlightBox={highlightBox}
           citations={citations}
           initialCitationId={initialCitationId}
+          jumpSeq={jumpSeq}
           hideFileDetails={hideFileDetails}
           showDownload={showDownload}
           onDownload={onDownload}
