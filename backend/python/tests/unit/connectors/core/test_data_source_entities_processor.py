@@ -233,7 +233,8 @@ class TestPlaceholdersAreRestricted:
     @pytest.mark.parametrize("open_already", [True, False])
     async def test_the_org_team_is_let_in_only_after_unlinked_users_lose_their_grants(self, open_already: bool) -> None:
         """Every call removes the grants left on unlinked users, the gate open or not: a pass that missed some (a
-        user read that came back short) is made good by the next one."""
+        user read that came back short) is made good by the next one. A deactivated user loses them too: made
+        active again, they would be in the All team with the grant still naming them."""
         from types import SimpleNamespace
 
         proc, tx_store = _make_processor(), _make_tx_store()
@@ -242,14 +243,19 @@ class TestPlaceholdersAreRestricted:
         tx_store.get_edge = AsyncMock(return_value={"_key": "e"} if open_already else None)
         tx_store.remove_user_access_to_connector = AsyncMock(side_effect=lambda c, u: calls.append(("drop", u)))
         tx_store.ensure_team_app_edge = AsyncMock(side_effect=lambda c, o: calls.append(("open", o)))
-        tx_store.get_users = AsyncMock(return_value=[SimpleNamespace(id="linked"), SimpleNamespace(id="stale")])
+
+        async def get_users(org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list:
+            users = [SimpleNamespace(id="linked"), SimpleNamespace(id="stale")]
+            return users if active else [*users, SimpleNamespace(id="deactivated")]
+
+        tx_store.get_users = AsyncMock(side_effect=get_users)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
         proc.get_app_user_links = AsyncMock(return_value=[SimpleNamespace(id="linked", source_user_id="a")])
 
         await proc.open_app_to_org_team("conn-1")
 
-        tx_store.get_users.assert_awaited_once_with("org-1", active=True, raise_on_error=True)
-        assert calls == [("drop", "stale"), ("open", "org-1")]
+        tx_store.get_users.assert_awaited_once_with("org-1", active=False, raise_on_error=True)
+        assert calls == [("drop", "stale"), ("drop", "deactivated"), ("open", "org-1")]
 
     @pytest.mark.asyncio
     async def test_a_failed_user_read_leaves_the_org_team_out(self) -> None:

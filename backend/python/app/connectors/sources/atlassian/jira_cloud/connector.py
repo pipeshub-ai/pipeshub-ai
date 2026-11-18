@@ -2925,24 +2925,31 @@ class JiraConnector(BaseConnector):
         connector writes on a project."""
         if self.scope != ConnectorScope.TEAM.value:
             return
+        # A selected project left out (its key not looked up, or not built) keeps its stored grants unasked.
+        written_in_full = written_in_full and not self._unresolved_selected_keys and not self._skipped_project_keys
         public = [group for group, perms in projects if any(p.entity_type == EntityType.ORG for p in perms or [])]
         answers = [await self._read_anonymously(group.short_name) for group in public] if written_in_full else []
         now = get_epoch_timestamp_in_ms()
-        confirmed_at = int(((await self.issues_sync_point.read_sync_point(ANONYMOUS_GATE_KEY)) or {}).get("confirmed_at")
-                           or 0)
+        state = (await self.issues_sync_point.read_sync_point(ANONYMOUS_GATE_KEY)) or {}
+        confirmed_at = int(state.get("confirmed_at") or 0)
+        confirmed = set(json.loads(state.get("projects") or "[]"))
         if written_in_full and public and answers and all(a is True for a in answers):
             await self.data_entities_processor.open_app_to_org_team(self.connector_id)
-            await self.issues_sync_point.update_sync_point(ANONYMOUS_GATE_KEY, {"confirmed_at": now})
+            await self.issues_sync_point.update_sync_point(ANONYMOUS_GATE_KEY, {
+                "confirmed_at": now, "projects": json.dumps(sorted(str(g.external_group_id) for g in public))})
             return
-        if written_in_full and public and False not in answers and now - confirmed_at <= ANONYMOUS_GATE_MAX_AGE_MS:
+        # Only a project shown public now or at the last confirmation may keep the gate open without an answer.
+        covered = all(a is True or str(g.external_group_id) in confirmed for g, a in zip(public, answers))
+        if (written_in_full and public and False not in answers and covered
+                and now - confirmed_at <= ANONYMOUS_GATE_MAX_AGE_MS):
             # A search with no answer is not proof either way: an open gate stays open, a closed one closed.
             self.logger.warning("Could not tell whether every public Jira project is public; org access kept as is")
             return
         await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
         if not confirmed_at:
             return
-        await self.issues_sync_point.update_sync_point(ANONYMOUS_GATE_KEY, {"confirmed_at": 0})
-        if written_in_full and public and False not in answers:
+        await self.issues_sync_point.update_sync_point(ANONYMOUS_GATE_KEY, {"confirmed_at": 0, "projects": "[]"})
+        if written_in_full and public and False not in answers and covered:
             # Unanswered for a day: a project made private meanwhile must not stay open to the whole org.
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,

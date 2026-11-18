@@ -7269,9 +7269,11 @@ class DataSourceEntitiesProcessor:
         the gate alone kept every org user the connector does not link away from grants still naming them (left
         from before withdrawals took them), so those grants go first. Every call removes them again, gate open or
         not, so a pass that missed some is made good. A failed read of the links or the users raises and leaves
-        the gate as it was."""
+        the gate as it was. Deactivated users are included: made active again, they are in the All team."""
         linked = {u.id for u in await self.get_app_user_links(connector_id)}
-        unlinked = [u.id for u in await self.get_all_active_users(raise_on_error=True) if u.id and u.id not in linked]
+        async with self.data_store_provider.transaction() as tx_store:
+            users = await tx_store.get_users(self.org_id, active=False, raise_on_error=True)
+        unlinked = [u.id for u in users if u.id and u.id not in linked]
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             for user_id in unlinked:
                 await tx_store.remove_user_access_to_connector(connector_id, user_id)

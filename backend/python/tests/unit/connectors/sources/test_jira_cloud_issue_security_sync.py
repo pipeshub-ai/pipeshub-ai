@@ -2069,9 +2069,9 @@ class TestAnonymousBrowseReachesEveryone:
     switched off in Atlassian Administration, not blocked by a "Prevent anonymous access" policy). The org's All
     team passes the gate only while every project granting `anyone` answers a search made with no credentials."""
 
-    PUBLIC = [(MagicMock(short_name="PUB"), [Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated",
+    PUBLIC = [(MagicMock(short_name="PUB", external_group_id="10001"), [Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated",
                                                         type=PermissionType.READ)])]
-    PRIVATE = [(MagicMock(short_name="PRV"), [Permission(entity_type=EntityType.GROUP, external_id="g-1",
+    PRIVATE = [(MagicMock(short_name="PRV", external_group_id="10002"), [Permission(entity_type=EntityType.GROUP, external_id="g-1",
                                                          type=PermissionType.READ)])]
 
     @staticmethod
@@ -2085,7 +2085,8 @@ class TestAnonymousBrowseReachesEveryone:
         c.notify = AsyncMock()
         c.stored = {}
         if confirmed_hours_ago is not None:
-            c.stored[ANONYMOUS_GATE_KEY] = {"confirmed_at": int(time.time() * 1000 - confirmed_hours_ago * 3_600_000)}
+            c.stored[ANONYMOUS_GATE_KEY] = {"confirmed_at": int(time.time() * 1000 - confirmed_hours_ago * 3_600_000),
+                                            "projects": json.dumps(["10001"])}
         c.issues_sync_point = MagicMock()
         c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: c.stored.get(k))
         c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: c.stored.__setitem__(k, v))
@@ -2120,6 +2121,35 @@ class TestAnonymousBrowseReachesEveryone:
         c.data_entities_processor.withdraw_team_app_edge.reset_mock()
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_answer_keeps_the_gate_only_for_the_projects_last_confirmed(self) -> None:
+        """A project granting `anyone` since the last confirmation was never shown public: a "Prevent anonymous
+        access" policy may cover it alone. With no answer for it the gate closes; the owner is told nothing, since
+        Jira has not gone a day unanswered."""
+        c = self._gated(readable=None, confirmed_hours_ago=1)
+        new = [(MagicMock(short_name="NEW", external_group_id="10003"), self.PUBLIC[0][1])]
+        await c._admit_everyone_to_public_projects(self.PUBLIC + new, written_in_full=True)
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        c.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_confirmation_records_the_projects_it_covers(self) -> None:
+        c = self._gated()
+        await c._admit_everyone_to_public_projects(self.PRIVATE + self.PUBLIC, written_in_full=True)
+        assert json.loads(c.stored[ANONYMOUS_GATE_KEY]["projects"]) == ["10001"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("left_out", ["_unresolved_selected_keys", "_skipped_project_keys"])
+    async def test_a_selected_project_this_sync_left_out_keeps_the_gate_closed(self, left_out: str) -> None:
+        """A selected project whose key could not be looked up, or that could not be built, keeps its stored grants,
+        `anyone` among them, without being asked: opening the gate would open it to the org unchecked."""
+        c = self._gated()
+        setattr(c, left_out, {"OLD"} if left_out == "_unresolved_selected_keys" else ["OLD"])
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
 
     @pytest.mark.asyncio
     async def test_a_project_a_signed_out_search_reads_opens_the_gate_to_the_org(self) -> None:
