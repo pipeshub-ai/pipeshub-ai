@@ -7,6 +7,7 @@ connector and tier until the first finished.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -29,11 +30,13 @@ TP = TopicPartition("record-events", 0)
 LOGGER = "test_kafka_record_busy_hol"
 
 
-def _message(offset: int, record_id: str, extension: str = "txt", tp: TopicPartition = TP) -> MagicMock:
+def _message(
+    offset: int, record_id: str, extension: str = "txt", tp: TopicPartition = TP, connector: str = "c1"
+) -> MagicMock:
     payload = {
         "recordId": record_id,
         "orgId": "org-1",
-        "connectorId": "c1",
+        "connectorId": connector,
         "extension": extension,
         "mimeType": "application/pdf" if extension == "pdf" else "text/plain",
     }
@@ -291,9 +294,10 @@ async def test_shutdown_discards_waiting_events_without_committing_them(
     assert consumer._records_released == set()
 
 
+
 @pytest.mark.asyncio
-async def test_waiting_events_count_against_the_buffer_budget() -> None:
-    consumer = _consumer(max_buffered_messages=5)
+async def test_waiting_payloads_count_against_the_buffer_budget() -> None:
+    consumer = _consumer(max_buffered_messages=11)
     consumer._in_flight_records.add("R")
     for offset, record in ((0, "R"), (1, "R"), (2, "A")):
         await _enqueue(consumer, _message(offset, record))
@@ -303,18 +307,174 @@ async def test_waiting_events_count_against_the_buffer_budget() -> None:
 
     await consumer._IndexingKafkaConsumer__read_phase()
 
-    # Two events wait for R, so a read may take only the three places left.
-    assert consumer.consumer.getmany.await_args.kwargs["max_records"] == 3
+    # Two events wait for R with their payloads, so a read may take only the places left.
+    assert consumer.consumer.getmany.await_args.kwargs["max_records"] == 9
+
+
+class _Fetcher:
+    """Stands in for the record fetch-back reader: serves each offset as an event for ``record``."""
+
+    def __init__(self, consumer: IndexingKafkaConsumer, record: str, gone: frozenset[int] = frozenset()) -> None:
+        self.consumer = consumer
+        self.record = record
+        self.gone = gone
+        self.calls: list[tuple[list[int], bool]] = []
+
+    async def fetch(self, wanted: dict) -> tuple[dict, set]:
+        offsets = sorted(o for offsets in wanted.values() for o in offsets)
+        self.calls.append((offsets, self.record in self.consumer._in_flight_records))
+        found = {(tp, o): _message(o, self.record, tp=tp) for tp, os in wanted.items() for o in os if o not in self.gone}
+        gone = {(tp, o) for tp, os in wanted.items() for o in os if o in self.gone}
+        return found, gone
+
+    async def close(self) -> None:
+        return None
+
+
+async def _burst(consumer: IndexingKafkaConsumer, record: str, offsets: range) -> None:
+    """Read a burst for ``record`` in buffer-sized batches, dispatching between them as the consume loop does."""
+    capacity = consumer.fair_scheduler_config.max_buffered_messages
+    batch: list[int] = []
+    for offset in offsets:
+        batch.append(offset)
+        if len(batch) == capacity:
+            for o in batch:
+                await _enqueue(consumer, _message(o, record))
+            await _dispatch(consumer)
+            batch = []
+    for o in batch:
+        await _enqueue(consumer, _message(o, record))
+    await _dispatch(consumer)
+
+
+async def _settle(consumer: IndexingKafkaConsumer) -> None:
+    """One consume-loop pass, with the background read-back given time to finish."""
+    await consumer._IndexingKafkaConsumer__read_phase()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    await consumer._IndexingKafkaConsumer__read_phase()
+    await _dispatch(consumer)
 
 
 @pytest.mark.asyncio
-async def test_a_buffer_full_of_waiting_events_stops_reads() -> None:
-    consumer = _consumer(max_buffered_messages=3)
+async def test_a_burst_for_one_busy_record_does_not_stop_reads_for_another_connector() -> None:
+    consumer = _consumer(max_buffered_messages=8)
     consumer._in_flight_records.add("R")
-    for offset in range(3):
-        await _enqueue(consumer, _message(offset, "R"))
-    await _dispatch(consumer)
 
-    assert consumer._scheduler.pending_count == 0
-    assert consumer._record_waiting_count == 3
-    assert not consumer._IndexingKafkaConsumer__buffer_has_room()
+    await _burst(consumer, "R", range(30))
+
+    # Reads pause for every lane when the buffer has no room.
+    assert consumer._IndexingKafkaConsumer__buffer_has_room()
+    # A quarter of the buffer keeps payloads; the rest wait by offset only.
+    assert consumer._record_waiting_count == 2
+    assert consumer._record_waiting_positions == 28
+    await _enqueue(consumer, _message(100, "X", connector="c2"))
+    await _dispatch(consumer)
+    assert consumer.started == [(100, "X")]
+
+
+@pytest.mark.asyncio
+async def test_events_kept_by_offset_run_in_order_after_release_and_are_read_back_only_then() -> None:
+    consumer = _consumer(max_buffered_messages=8)
+    fetcher = _Fetcher(consumer, "R")
+    consumer._waiting_fetcher = fetcher
+    consumer._in_flight_records.add("R")
+    await _burst(consumer, "R", range(12))
+    await _settle(consumer)
+    assert fetcher.calls == []
+
+    for _ in range(40):
+        _finish(consumer, "R")
+        await _settle(consumer)
+
+    assert consumer.started == [(o, "R") for o in range(12)]
+    assert fetcher.calls
+    assert all(not busy for _, busy in fetcher.calls)
+    read_back = [o for offsets, _ in fetcher.calls for o in offsets]
+    assert read_back == sorted(read_back)
+    assert consumer._record_waiting == {}
+    assert consumer._record_waiting_count == consumer._record_waiting_positions == 0
+
+
+@pytest.mark.asyncio
+async def test_overflow_and_read_back_are_logged_with_the_record_and_offset(caplog: pytest.LogCaptureFixture) -> None:
+    consumer = _consumer(max_buffered_messages=4)
+    consumer._waiting_fetcher = _Fetcher(consumer, "R")
+    consumer._in_flight_records.add("R")
+    await _enqueue(consumer, _message(0, "R"))
+    await _enqueue(consumer, _message(1, "R"))
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        await _dispatch(consumer)
+        _finish(consumer, "R")
+        await _dispatch(consumer)  # R@0 runs
+        _finish(consumer, "R")
+        await _settle(consumer)
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert (
+        "Record R is busy: event record-events-0-1 waits for it by offset only, its payload "
+        "to be read back when the record is free (2 waiting for this record)"
+    ) in messages
+    assert "Record R is free: reading back 1 event(s) that waited for it by offset only, from record-events-0-1" in messages
+    assert "Record R: read back its waiting event record-events-0-1" in messages
+    assert consumer.started == [(0, "R"), (1, "R")]
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_committed_past_an_event_kept_by_offset() -> None:
+    consumer = _consumer(max_buffered_messages=4)
+    consumer._in_flight_records.update({"R", "S"})
+    for offset, record in ((0, "S"), (1, "R"), (2, "A")):
+        await _enqueue(consumer, _message(offset, record))
+    await _dispatch(consumer)
+    assert consumer.started == [(2, "A")]
+    assert consumer._record_waiting_positions == 1  # R@1: the one held payload is S@0's
+
+    tracker = consumer._offset_tracker
+    watermarks = [tracker.mark_done(TP, offset) for offset in (0, 2)]
+
+    assert all(w is None or w <= 1 for w in watermarks)
+    assert tracker.stale_offsets(0.0) == []
+
+
+@pytest.mark.asyncio
+async def test_revocation_drops_events_kept_by_offset_and_ignores_a_late_read_back() -> None:
+    consumer = _consumer(max_buffered_messages=4)
+    fetcher = _Fetcher(consumer, "R")
+    consumer._waiting_fetcher = fetcher
+    consumer._in_flight_records.add("R")
+    await _burst(consumer, "R", range(6))
+    assert consumer._record_waiting_positions == 5
+    _finish(consumer, "R")
+    await _dispatch(consumer)  # R@0 runs
+    _finish(consumer, "R")
+    await consumer._IndexingKafkaConsumer__read_phase()  # starts reading back R@1..
+    assert consumer._waiting_fetch_task is not None
+
+    await consumer._on_partitions_revoked([TP])
+    assert consumer._record_waiting == {}
+    assert consumer._record_waiting_positions == 0
+    await _settle(consumer)
+
+    assert consumer.started == [(0, "R")]
+    assert consumer._record_waiting_count == consumer._record_waiting_positions == 0
+    consumer.consumer.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_event_deleted_by_retention_before_read_back_is_resolved_not_stuck() -> None:
+    consumer = _consumer(max_buffered_messages=4)
+    consumer._waiting_fetcher = _Fetcher(consumer, "R", gone=frozenset({1}))
+    consumer._in_flight_records.add("R")
+    await _burst(consumer, "R", range(3))
+    _finish(consumer, "R")
+    await _dispatch(consumer)  # R@0 runs
+    consumer._offset_tracker.mark_done(TP, 0)
+    _finish(consumer, "R")
+    for _ in range(4):
+        await _settle(consumer)
+        _finish(consumer, "R")
+
+    assert consumer.started == [(0, "R"), (2, "R")]
+    consumer.consumer.commit.assert_awaited()

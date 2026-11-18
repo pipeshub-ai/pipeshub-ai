@@ -37,14 +37,14 @@ def test_the_kafka_indexing_consumer_connects_tagged() -> None:
 
 
 def test_every_client_id_the_indexing_consumers_set_is_tagged() -> None:
-    """The backlog probe and the fetch-back consumer derive their ids from the tagged one."""
+    """The backlog probe and both fetch-back readers derive their ids from the tagged one."""
     source = inspect.getsource(kafka_indexing)
     ids = [
         node for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and node.slice.value == "client_id"
     ]
-    assert len(ids) == 2
-    assert source.count("tagged(self.kafka_config.client_id)") == 2
+    assert len(ids) == 3
+    assert source.count("tagged(self.kafka_config.client_id)") == 3
     assert "'client_id': tagged(kafka_config.client_id)" in source
 
 
