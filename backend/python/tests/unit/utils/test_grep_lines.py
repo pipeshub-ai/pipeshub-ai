@@ -101,9 +101,8 @@ def test_a_passed_deadline_reads_nothing_and_says_so() -> None:
 
 def test_a_slow_pattern_does_not_stall_the_event_loop() -> None:
     """A slow line is searched with ``concurrent=True``, which lets the event loop's thread run while the search does.
-    Checked as the arguments each search got, not by the loop's longest gap, which a busy runner stretches."""
-    import time
-
+    Checked as the arguments each search got, not by the loop's longest gap, which a busy runner stretches. No
+    deadline: a runner pause could pass it before the first search (``MAX_LINE_TIMEOUTS`` still ends the scan)."""
     from app.utils import grep_lines
 
     line = ",".join(f"v{j}" for j in range(60))
@@ -118,7 +117,7 @@ def test_a_slow_pattern_does_not_stall_the_event_loop() -> None:
             searches.append((kwargs.get("timeout"), bool(kwargs.get("concurrent"))))  # type: ignore[arg-type]
             return compiled.search(text, **kwargs)
 
-    find_matches(blocks, Recording(), context_lines=0, max_matches=5, deadline=time.monotonic() + 0.5)  # type: ignore[arg-type]
+    find_matches(blocks, Recording(), context_lines=0, max_matches=5)  # type: ignore[arg-type]
     slow = [concurrent for timeout, concurrent in searches if timeout is not None and timeout > grep_lines._QUICK_SECS]
     assert slow, f"no slow line was searched: {searches}"
     assert all(slow), f"a slow line was searched holding the GIL: {searches}"
