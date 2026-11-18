@@ -17,6 +17,7 @@
       - {id: f1, kind: record, connector: A, rule: OPEN, parents: [{id: st, rel: ATTACHMENT}], inherits: [st], belongs: [P]}
       - {id: s2, kind: record, connector: A, rule: STRICT_OR_GRANT, parents: [st], inherits: [st], belongs: [P]}
       - {id: s3, kind: record, connector: A, rule: STRICT_OR_GRANT, parents: [i1], belongs: [P]}
+      - {id: f3, kind: record, connector: A, rule: OPEN, parents: [{id: s3, rel: ATTACHMENT}], inherits: [s3], belongs: [P]}
     grants:
       - [alice, P]
       - [dave, i1]
@@ -24,6 +25,7 @@
       - [sam, i1]
       - [g:field, st]
       - [gina, s2]
+      - [alice, s3]
     memberships:
       - [gina, g:field]
     gates:
@@ -35,8 +37,8 @@
     - {kind: grant_removed, ref: sam, node: st}
   expect:
     before:
-      alice: {P: admit, i1: admit, st: admit, f1: admit, s2: admit, s3: deny}
-      dave: {i1: admit, st: deny, f1: deny, s2: deny, s3: deny, P: deny}
+      alice: {P: admit, i1: admit, st: admit, f1: admit, s2: admit, s3: admit, f3: deny}
+      dave: {i1: admit, st: deny, f1: deny, s2: deny, s3: deny, f3: deny, P: deny}
       sam: {i1: admit, st: admit, f1: deny, s2: deny, P: deny}
       gina: {st: admit, s2: admit, f1: deny, i1: deny, P: deny}
     verdicts:
@@ -47,5 +49,6 @@
     P (the project) neither inherits from the App nor is granted to dave, so dave reads the issue i1 only as a seed (his own grant). The
     sub-task st is STRICT_OR_GRANT: alice reads it from the App, as a STRICT node; dave does not, as no seed opens it; sam (its assignee,
     who also holds the issue) and gina (by a group on a user field) read it by its own grant. Its own grant opens nothing below it: f1
-    (OPEN, inheriting st) and s2 stay closed to sam, and gina reads s2 only by s2's own grant. s3 does not inherit and has no grant, so no
-    one reads it. Withdrawing sam's grant on st hides st from him though he still reads its issue.
+    (OPEN, inheriting st) and s2 stay closed to sam, and gina reads s2 only by s2's own grant. s3 does not inherit: alice, who reads its parent i1 from the
+    App, reads s3 by its own grant alone, and not f3, which inherits s3 (an own grant never stands in for inheritance on the walk).
+    Withdrawing sam's grant on st hides st from him though he still reads its issue.

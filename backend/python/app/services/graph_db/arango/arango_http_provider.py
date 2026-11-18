@@ -501,11 +501,12 @@ def _aql_inherits(child: str, parent: str, tag: str) -> str:
 def _aql_granted_hop(child: str, parent: str, tag: str, *, navigation: bool) -> str:
     """One hop of the v3 rule, as Neo4j's ``_kh_v3_granted_hop``; ``kh_opens``
     and ``@granted`` must be in scope. RESTRICTED and PARENT_AND_GRANT need
-    inheritance and their own grant, STRICT, OPEN or STRICT_OR_GRANT either, any other value nothing.
+    inheritance and their own grant, STRICT or OPEN either, STRICT_OR_GRANT inheritance (its own grant admits it alone, never the walk
+    through it), any other value nothing.
     ``hideChildren`` is navigation only."""
     rule = _aql_access_rule(child)
     hide = f" AND {parent}.hideChildren != true" if navigation else ""
-    granted_open = f'({rule} IN ["STRICT", "OPEN", "STRICT_OR_GRANT"] AND HAS(@granted, {child}._key))'
+    granted_open = f'({rule} IN ["STRICT", "OPEN"] AND HAS(@granted, {child}._key))'
     return (f"({child}.isDeleted != true{hide} AND (kh_opens ? true : ({_aql_passes_vertex(child)}"
             f" ? ({granted_open} ? true : {_aql_inherits(child, parent, tag)}) : false)))")
 

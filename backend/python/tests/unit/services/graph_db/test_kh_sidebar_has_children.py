@@ -151,6 +151,6 @@ async def test_neo4j_reads_the_hiding_group_test_once_per_copy_of_the_rule() -> 
     statement holds it once per copy of the rule (for every arm but the walk's hop), once for the undecided children, and once for the arrow's
     own declared scope; a stub's way is read once."""
     rule = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="f", opens="o", state=True)
-    assert rule.count("kh_q <>") == 1 and "WHERE (kh_hp AND f)" in rule
+    assert rule.count("kh_q <>") == 1 and "any(kh_fa IN [f AND " in rule and "WHERE (kh_hp AND kh_fa)" in rule
     browse = await _browse_statement(None)
     assert browse.count("kh_q <>") == browse.count("any(kh_hp IN") + 2

@@ -129,8 +129,10 @@ def _hop_failure(f: _Facts, c: StampNode, p: str) -> tuple[_Why, str] | None:
     if f.opens:
         return None
     rule, grant, inherits = _rule(c), c.id in f.granted, p in c.inherits
-    if rule in ("OPEN", "STRICT", "STRICT_OR_GRANT"):
+    if rule in ("OPEN", "STRICT"):
         return None if inherits or grant else ("restricted", c.id)
+    if rule == "STRICT_OR_GRANT":   # its own grant admits it alone, never the walk through it
+        return None if inherits else ("restricted", c.id)
     if rule in ("RESTRICTED", "PARENT_AND_GRANT"):
         return None if inherits and grant else ("restricted", c.id)
     return "unknown_rule", c.id

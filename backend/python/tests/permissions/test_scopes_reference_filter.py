@@ -157,6 +157,8 @@ def refused(world: World, node_id: str) -> bool:
     compute: record-group-level groups in the app or on the path, several parents on the path, a seed above it."""
     f = facts_of(world)
     node = world.node(node_id)
+    if _strict_or_grant_above(world, node_id):
+        return True  # the projector leaves such a record to the walk (`projector._own_grant_only`)
     flags = {"record_group_level_on_path": node.connector in f.rgl_apps or bool(f.paths[node_id] & f.rgl_groups),
              "multi_parent_on_path": f.multi_parent(node_id),
              "below_seed_on_path": below_seed(f.ancestors(node_id)),
@@ -168,6 +170,22 @@ def refused(world: World, node_id: str) -> bool:
             assert_may_stamp(Rule.INTERSECTION, world.node(node.connector).app_type, **flags)
     except RuleNotAllowed:
         return True
+    return False
+
+
+def _strict_or_grant_above(world: World, node_id: str) -> bool:
+    """A STRICT_OR_GRANT node on the record's hierarchy path or record-group chains, itself included: its own grant reads it alone, which no
+    stamp says."""
+    seen, stack = set(), [node_id]
+    while stack:
+        i = stack.pop()
+        if i in seen:
+            continue
+        seen.add(i)
+        n = world.node(i)
+        if n.rule == "STRICT_OR_GRANT":
+            return True
+        stack += [p.id for p in n.parents] + list(n.belongs)
     return False
 
 
@@ -277,7 +295,8 @@ async def test_generated_intersection_beside_record_group_level_groups_never_ove
     over, left_out = [], 0
     for world in generated():
         stamped = derive_stamps(world)
-        over += [m for m in await mismatches(stamped, skip_refused=False) if m[3]]
+        # A record with a STRICT_OR_GRANT node above it is never stamped (`projector._own_grant_only`): the filter does not decide it.
+        over += [m for m in await mismatches(stamped, skip_refused=False) if m[3] and not _strict_or_grant_above(stamped, m[1])]
         for v in world.users():
             left_out += bool((await OracleScopeLayer().viewer_scopes(world, v)).legacy_apps)
     assert over == [], over[:5]

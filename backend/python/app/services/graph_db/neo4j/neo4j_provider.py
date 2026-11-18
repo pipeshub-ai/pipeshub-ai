@@ -21472,8 +21472,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # an Expand(Into) over INHERIT_PERMISSIONS. With R = accessRule, I = the
         # probe, G = the grant test:
         #   (I AND (R IN ['STRICT','STRICT_OR_GRANT','OPEN'] OR (R IN ['RESTRICTED','PARENT_AND_GRANT'] AND G)))
-        #   OR (R IN ['STRICT','STRICT_OR_GRANT','OPEN'] AND G)
-        # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/STRICT_OR_GRANT/OPEN: I OR G; any other value: false. Keep
+        #   OR (R IN ['STRICT','OPEN'] AND G)
+        # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; STRICT_OR_GRANT: I (its own grant admits it alone, never the
+        # walk through it); any other value: false. Keep
         # the three branches: a shorter form admits an unknown accessRule value.
         # `hideChildren` is navigation only: access checks drop it.
         hide = f"\n              AND NOT {self._kh_hides(parent, state=state)}" if navigation else ""
@@ -21481,22 +21482,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # When the grant is tested from the node (`_kh_grants_by_probe`) it is
             # the costly term (every PERMISSION edge into the node), so the grant
             # is spelled once here and inheritance twice. With I, G, R as above:
-            #   (I AND R IN ['STRICT','STRICT_OR_GRANT','OPEN']) OR (G AND ((I AND R IN ['RESTRICTED','PARENT_AND_GRANT']) OR R IN ['STRICT','STRICT_OR_GRANT','OPEN']))
-            # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/STRICT_OR_GRANT/OPEN: I OR G; any other value: false.
+            #   (I AND R IN ['STRICT','STRICT_OR_GRANT','OPEN']) OR (G AND ((I AND R IN ['RESTRICTED','PARENT_AND_GRANT']) OR R IN ['STRICT','OPEN']))
+            # RESTRICTED/PARENT_AND_GRANT: I AND G; STRICT/OPEN: I OR G; STRICT_OR_GRANT: I; any other value: false.
             rule = f"coalesce({child}.accessRule, 'OPEN')"
             inherits = self._kh_inherits(child, parent, state=state)
             return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
                 OR ({inherits} AND {rule} IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN'])
                 OR ({child}.id IN $grantedIds
-                    AND (({inherits} AND {rule} IN ['RESTRICTED', 'PARENT_AND_GRANT']) OR {rule} IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN'])))"""
+                    AND (({inherits} AND {rule} IN ['RESTRICTED', 'PARENT_AND_GRANT']) OR {rule} IN ['STRICT', 'OPEN'])))"""
         return f"""NOT {self._kh_deleted(child, state=state)}{hide}
               AND ({opens}
                 OR ({self._kh_inherits(child, parent, state=state)}
                     AND (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN']
                       OR (coalesce({child}.accessRule, 'OPEN') IN ['RESTRICTED', 'PARENT_AND_GRANT']
                           AND {child}.id IN $grantedIds)))
-                OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'STRICT_OR_GRANT', 'OPEN']
+                OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
                     AND {child}.id IN $grantedIds))"""
 
     def _kh_v3_seed_hop(self, c: str, p: str, *, state: bool) -> str:
@@ -21563,10 +21564,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # written once per rule (each copy costs the statement's plan): the hop's answer is bound (`kh_hp`), and only where the walk from the App
         # reaches the parent does it stand without the test.
         visible = f"NOT {self._kh_v3_hidden_elsewhere(c, p, state=state)}"
-        return f"""{_cypher_read_by_app(c)} AND any(kh_hp IN [({from_app} OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member}]
-              WHERE (kh_hp AND {from_app})
+        # ``from_app`` is the start's (a flatten carries it to every depth). Below a STRICT_OR_GRANT parent it holds only where that parent
+        # inherits from every hierarchy parent it has: then the hop into it was a walk from the App, never its own grant alone, which opens
+        # nothing below it. (One that inherits only some of its parents lists its children by the other arms, as a browse of it does.)
+        uninherited = (f"EXISTS {{ MATCH (kh_sgq)-[kh_sgr:NODE_RELATION]->({p}) WHERE kh_sgr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']"
+                       f" AND NOT EXISTS {{ ({p})-[:INHERIT_PERMISSIONS]->(kh_sgq) }} }}")
+        if state:
+            uninherited = f"(NOT {p}:KhInherits OR ({p}:KhMultiParent AND {uninherited}))"
+        walkable = f"(coalesce({p}.accessRule, 'OPEN') <> 'STRICT_OR_GRANT' OR NOT {uninherited})"
+        return f"""{_cypher_read_by_app(c)} AND any(kh_fa IN [{from_app} AND {walkable}]
+              WHERE any(kh_hp IN [(kh_fa OR {member_of_open_app}) AND ({hop}) AND {walk} AND {below_member}]
+              WHERE (kh_hp AND kh_fa)
               OR ((kh_hp
-                OR (NOT {from_app} AND NOT {member_of_open_app}
+                OR (NOT kh_fa AND NOT {member_of_open_app}
                   AND NOT {hides(p, state=state)}
                   AND {self._kh_v3_seed_hop(c, p, state=state)} AND {walk_seeded} AND {below_member_seeded} AND {below_own_grant})
                 OR (NOT {hides(p, state=state)} AND {own_grant})
@@ -21576,7 +21586,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                        OR ({c}:Record AND EXISTS {{
                            ({c})-[:BELONGS_TO]->(sg:RecordGroup) WHERE sg.id IN $declaredScope
                        }}))))
-                AND {visible}))"""
+                AND {visible})))"""
 
     def _kh_v3_hidden_elsewhere(self, c: str, p: str, *, state: bool = False) -> str:
         """Whether a group that hides its children lies above ``c``, a child of ``p`` that ``p`` is opened to list. ``p`` is open, so only another

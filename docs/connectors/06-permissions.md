@@ -30,7 +30,7 @@ A user can read a node when all of these hold:
 | `STRICT` | it inherits from a readable parent, or the user has a grant on it, **and** every ancestor up to the App is readable. A direct grant does not open it on its own. |
 | `RESTRICTED` | it inherits from a readable parent **and** the user has a grant on it. |
 | `PARENT_AND_GRANT` | it inherits from its parent, the parent is readable (by its own rule, so a parent opened only by a direct grant counts), **and** the user has a grant on it. |
-| `STRICT_OR_GRANT` | it is readable as `STRICT`, **or** the user has a grant on it. That grant opens only this node: nothing below it, and a direct grant on an ancestor never opens it. |
+| `STRICT_OR_GRANT` | it inherits from a readable parent **and** every ancestor up to the App is readable, **or** the user has a grant on it. That grant opens only this node: nothing below it, and a direct grant on an ancestor never opens it. |
 
 A missing `access_rule` reads as `OPEN`. An unrecognised value hides the node. A `RESTRICTED` node with `inherit_permissions=False` is never readable. Below a node opened only by a direct grant, only `OPEN` descendants are readable, and `PARENT_AND_GRANT` ones with their own grant.
 

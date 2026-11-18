@@ -530,9 +530,10 @@ async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_
 async def test_a_strict_or_grant_record_is_read_from_the_app_or_by_its_own_grant_and_opens_nothing_below(kh_layer: KhPgLayer) -> None:
     """SOGSUB: the STRICT_OR_GRANT sub-task st under the issue i1. alice reads it from the App, and what is below it; dave reads i1 only by his own grant
     and not st; sam and gina read st by its own grant, and neither the file f1 nor the sub-task s2 below it through that grant (gina reads s2 by s2's own
-    grant). Copied into kg and served from it ("current"), or answered by the walk ("not_current")."""
-    expected = {"alice": {"P", "i1", "st", "f1", "s2"}, "dave": {"i1"}, "sam": {"i1", "st"}, "gina": {"st", "s2"}}
-    asked = ["P", "i1", "st", "f1", "s2", "s3"]
+    grant). alice reads s3, which does not inherit, by its own grant alone, and not the file f3 that inherits it. Copied into kg and served
+    from it ("current"), or answered by the walk ("not_current")."""
+    expected = {"alice": {"P", "i1", "st", "f1", "s2", "s3"}, "dave": {"i1"}, "sam": {"i1", "st"}, "gina": {"st", "s2"}}
+    asked = ["P", "i1", "st", "f1", "s2", "s3", "f3"]
     await kh_layer.preload([SOGSUB])
     done, total = kh_layer.copies[SOGSUB]
     assert total > 0 and done == total, (kh_layer.name, done, total)
@@ -541,7 +542,7 @@ async def test_a_strict_or_grant_record_is_read_from_the_app_or_by_its_own_grant
         for who, want in expected.items():
             found = await kh_layer._provider.check_access(ns.id(who), ns.org, node_ids=[ns.id(n) for n in asked])
             assert {ns.local(n) for n in found.node_ids - found.placeholder_ids} == want, (kh_layer.name, who)
-        assert await children_of(kh_layer, SOGSUB, "alice", "i1", "record") == {"st": True}, kh_layer.name
+        assert await children_of(kh_layer, SOGSUB, "alice", "i1", "record") == {"st": True, "s3": False}, kh_layer.name
         assert await children_of(kh_layer, SOGSUB, "dave", "i1", "record") == {}, kh_layer.name
         assert await children_of(kh_layer, SOGSUB, "sam", "i1", "record") == {"st": False}, kh_layer.name
         assert await children_of(kh_layer, SOGSUB, "gina", "st", "record") == {"s2": False}, kh_layer.name

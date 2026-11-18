@@ -356,7 +356,9 @@ def test_an_app_that_opens_everything_opens_only_its_own_members_below_a_node_th
     cypher = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="FROM", opens="OPENS", state=False)
     # A record only, as the check's member arm: a group is read by its hops.
     member = "(OPENS AND c:Record AND EXISTS { (c)-[:BELONGS_TO]->(app) })"
-    assert f"(FROM OR {member})" in cypher and f"NOT FROM AND NOT {member}" in cypher and "FROM OR OPENS" not in cypher
+    # ``from_app`` is bound once (``kh_fa``, with the STRICT_OR_GRANT parent test) and read through it.
+    assert "any(kh_fa IN [FROM AND " in cypher and f"(kh_fa OR {member})" in cypher and f"NOT kh_fa AND NOT {member}" in cypher
+    assert "FROM OR OPENS" not in cypher
     aql = _aql_browse_child("c", "p", "t", "FROM")
     record = 'IS_SAME_COLLECTION("records", c)'
     assert f"(FROM OR (kh_opens AND {record} AND LENGTH(FOR kh_ma IN (kh_opens AND {record} ? [1] : [])" in aql

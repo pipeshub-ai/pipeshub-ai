@@ -7,7 +7,7 @@ reason code naming the rule or hop that decided it.
 
 Rules: R1 principals, R2 access rule (absent reads OPEN, unknown fails closed; PARENT_AND_GRANT hops as
 RESTRICTED and passes below a seed as OPEN does, with its own grant required; STRICT_OR_GRANT hops as STRICT, never passes below a
-seed, and is also read by its own grant alone, R9's own-grant arm, which opens nothing below it),
+seed, passes the walk only by inheriting, and is also read by its own grant alone, R9's own-grant arm, which opens nothing below it),
 R3 grant edges, R4 gate, R5 granted set, R6 hop, R7 walk up the hierarchy,
 R8 declared record-group-level arm, R9 seed, R10 below a seed, R11 target
 guards, R12 open apps (APP_LEVEL / KB), R13 unattached uploads. Inheritance
@@ -156,8 +156,11 @@ def hop_failure(s: Store, v: Viewer, c: str, p: str, opens: bool) -> str | None:
     if opens:
         return None
     r, g, i = _rule(s, c), c in v.granted, _inherits(s, c, p)
-    if r in ("OPEN", "STRICT", SOG):
+    if r in ("OPEN", "STRICT"):
         return None if i or g else f"R6:{r}-no-inherit-no-grant@{c}"
+    if r == SOG:
+        # Its own grant admits it alone (R9 own grant), never the walk through it to what hangs below.
+        return None if i else f"R6:STRICT_OR_GRANT-no-inherit@{c}"
     if r == "RESTRICTED":
         if i and g:
             return None

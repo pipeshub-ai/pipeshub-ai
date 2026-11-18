@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 MAX_HOPS = 50  # ACCESS_WALK_MAX_DEPTH of the interface
 PAG = "PARENT_AND_GRANT"
-SOG = "STRICT_OR_GRANT"   # hops from the App as STRICT; its own grant admits it alone (never a seed)
+SOG = "STRICT_OR_GRANT"   # hops from the App only by inheriting; its own grant admits it alone (never a seed)
 # The nodes a PERMISSION edge can come from and grant to a user: Neo4j matches a grantee by these labels, so an edge out of any other node is not one.
 PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
@@ -89,8 +89,9 @@ async def granted_targets(tx: Tx, org: str, from_ids: list[str], org_types: list
 def _walk_app(*, opens: bool, granted: set[str]) -> Callable[[str, bool, dict[str, Any]], bool]:
     def ok(cid: str, inh: bool, info: dict[str, Any]) -> bool:
         rule = info["rule"]
+        # STRICT_OR_GRANT passes only by inheriting: its own grant admits it alone (``_is_seed``), never the walk through it.
         return not info["deleted"] and (opens or (inh and rule in ("STRICT", "OPEN", SOG))
-                                        or (cid in granted and ((inh and rule in ("RESTRICTED", PAG)) or rule in ("STRICT", "OPEN", SOG))))
+                                        or (cid in granted and ((inh and rule in ("RESTRICTED", PAG)) or rule in ("STRICT", "OPEN"))))
     return ok
 
 
@@ -257,7 +258,7 @@ async def _down(tx: Tx, org: str, starts: list[Node], mode: str, granted_l: list
                       AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)
                       AND CASE $4 WHEN 'app' THEN (i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN', 'STRICT_OR_GRANT'))
                                     OR (n.id = ANY($5::text[]) AND ((i.from_id IS NOT NULL AND coalesce(n.doc->>'accessRule', 'OPEN') IN ('RESTRICTED', 'PARENT_AND_GRANT'))
-                                                                     OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN', 'STRICT_OR_GRANT')))
+                                                                     OR coalesce(n.doc->>'accessRule', 'OPEN') IN ('STRICT', 'OPEN')))
                                   WHEN 'seed' THEN (coalesce(n.doc->>'accessRule', 'OPEN') = 'OPEN' AND (i.from_id IS NOT NULL OR n.id = ANY($5::text[])))
                                     OR (n.doc->>'accessRule' = 'PARENT_AND_GRANT' AND i.from_id IS NOT NULL AND n.id = ANY($5::text[]))
                                   ELSE e.to_coll = 'recordGroups' END""", org, ids[k:k + _CHUNK], _HIER_TYPES, mode, granted_l, sorted({c for c, _ in frontier}))

@@ -8,7 +8,8 @@ request, the open scopes come from the scope tree and the user's grants, and the
 What the walk does, per hop from parent p to child c (``_kh_v3_granted_hop`` plus the flatten's declared stop):
 - dead:  c deleted, p hides its children, or p is a RECORD_GROUP_LEVEL group of this App;
 - free:  c inherits from p and its rule is STRICT/STRICT_OR_GRANT/OPEN;
-- gate:  c is STRICT/STRICT_OR_GRANT/OPEN without inheriting, or RESTRICTED/PARENT_AND_GRANT and inheriting;
+- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED/PARENT_AND_GRANT and inheriting (a STRICT_OR_GRANT node that does not inherit
+         is a block: its own grant lists it alone, by the own-grant arm);
 - block: anything else.
 The walk stops after ``MAX_DEPTH`` hops from the App, so a node deeper than that is never in a scope.
 
@@ -324,7 +325,8 @@ def _classify(c: tuple, p: tuple) -> str:
     inherits, rule = c[INH], c[RULE]
     if inherits and rule in ("STRICT", "STRICT_OR_GRANT", "OPEN"):
         return "free"
-    if (not inherits and rule in ("STRICT", "STRICT_OR_GRANT", "OPEN")) or (inherits and rule in ("RESTRICTED", "PARENT_AND_GRANT")):
+    # A STRICT_OR_GRANT node that does not inherit is no gate: its own grant admits it alone (the SEEDS arm), never what is below it.
+    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule in ("RESTRICTED", "PARENT_AND_GRANT")):
         return "gate"
     return "block"
 
