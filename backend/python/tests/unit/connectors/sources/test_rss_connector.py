@@ -127,9 +127,14 @@ class TestRSSApp:
 # ===================================================================
 
 class TestRSSConnectorInit:
-    @pytest.mark.asyncio
-    async def test_init_success(self):
+    @pytest.fixture
+    async def connector(self):
         connector = _make_connector()
+        yield connector
+        await connector.cleanup()  # a successful init opens a real HTTP session; left open, its finaliser logs later
+
+    @pytest.mark.asyncio
+    async def test_init_success(self, connector):
         connector.config_service.get_config = AsyncMock(
             return_value=_rss_config()
         )
@@ -165,8 +170,7 @@ class TestRSSConnectorInit:
             await connector.init()
 
     @pytest.mark.asyncio
-    async def test_init_fetch_full_content_string_true(self):
-        connector = _make_connector()
+    async def test_init_fetch_full_content_string_true(self, connector):
         connector.config_service.get_config = AsyncMock(
             return_value=_rss_config(fetch_full="true")
         )
@@ -175,8 +179,7 @@ class TestRSSConnectorInit:
         assert connector.fetch_full_content is True
 
     @pytest.mark.asyncio
-    async def test_init_fetch_full_content_string_false(self):
-        connector = _make_connector()
+    async def test_init_fetch_full_content_string_false(self, connector):
         connector.config_service.get_config = AsyncMock(
             return_value=_rss_config(fetch_full="false")
         )
