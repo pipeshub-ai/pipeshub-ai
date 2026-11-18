@@ -185,6 +185,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.get_users_with_permission_to_node = AsyncMock(
             return_value=[user_with_permission] if user_with_permission is not None else []
         )
+        dep.get_groups_with_permission_to_node = AsyncMock(return_value=[])
 
         ds_provider = _make_mock_data_store_provider(existing_record, user_with_permission, user_by_id)
         config_service = AsyncMock()

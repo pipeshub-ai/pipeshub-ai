@@ -42,6 +42,8 @@ export const ANSWER_UNCONFIRMED = {
 const ANSWER_LOST_TEXT = 'This answer used content you can no longer access.';
 const ANSWER_UNCONFIRMED_TEXT = "We couldn't confirm your access. Try again.";
 const ACCESS_CHECK_BATCH = 500;
+/** `metadata.origin` of a citation that is a web page found by web search. */
+const WEB_SEARCH_ORIGIN = 'WEB_SEARCH';
 
 type Viewer = { userId: string; orgId: string };
 
@@ -169,10 +171,16 @@ export const readableRecordIds = async (
   }
 };
 
-/** A cited document: populated, or just an id. Only the record id is read. */
+/** What a check reads of a cited document's metadata. */
+interface CitedMeta {
+  recordId?: string;
+  webUrl?: string;
+  origin?: string;
+}
+/** A cited document: populated, or just an id. Only its metadata is read. */
 interface CitedDoc {
   _id?: { toString: () => string };
-  metadata?: { recordId?: string };
+  metadata?: CitedMeta;
 }
 interface CitationEntry {
   citationId?: CitedDoc | string | null;
@@ -335,34 +343,36 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       if (typeof d === 'string') bare.add(d);
     }
   }
-  const docOfCitation = new Map<
-    string,
-    { recordId?: string; webUrl?: string }
-  >();
+  const docOfCitation = new Map<string, CitedMeta>();
   if (bare.size > 0) {
     const docs = await getConversationRepository().getCitations(
       [...bare],
       viewer.orgId,
     );
     for (const d of docs) {
-      const meta = d.metadata as
-        { recordId?: string; webUrl?: string } | undefined;
+      const meta = d.metadata as CitedMeta | undefined;
       if (d._id) docOfCitation.set(d._id, meta ?? {});
     }
   }
-  const metaOf = (
-    c: CitationEntry | null,
-  ): { recordId?: string; webUrl?: string } | undefined => {
+  const metaOf = (c: CitationEntry | null): CitedMeta | undefined => {
     const d = citedDoc(c);
     return typeof d === 'string' ? docOfCitation.get(d) : d?.metadata;
   };
+  // A web search result stores its page address as `recordId`: that names no record.
   const recordIdOf = (c: CitationEntry | null): string | undefined => {
-    const id = metaOf(c)?.recordId;
+    const meta = metaOf(c);
+    if (meta?.origin === WEB_SEARCH_ORIGIN) return undefined;
+    const id = meta?.recordId;
     return id === undefined || id === '' ? undefined : id;
   };
-  // A web citation names an address instead of a record.
+  // A web citation names an address instead of a record. A web search result is checked by its
+  // page address (its `webUrl` adds a text fragment no stored record matches); `webUrl` is shown.
   const webUrlOf = (c: CitationEntry | null): string | undefined => {
-    const url = metaOf(c)?.webUrl;
+    const meta = metaOf(c);
+    const url =
+      meta?.origin === WEB_SEARCH_ORIGIN && (meta.recordId ?? '') !== ''
+        ? meta.recordId
+        : meta?.webUrl;
     return recordIdOf(c) === undefined && url !== undefined && url !== ''
       ? url
       : undefined;
@@ -498,9 +508,11 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     if (!isOthers(m)) return m;
     const view: Record<string, unknown> = { ...(m as object) };
     if (m.citations)
-      view.citations = m.citations.map((c) =>
-        ok(recordIdOf(c)) ? c : { ...REDACTED },
-      );
+      view.citations = m.citations.map((c) => {
+        const id = recordIdOf(c);
+        const visible = id !== undefined ? ok(id) : okUrl(webUrlOf(c));
+        return visible ? c : { ...REDACTED };
+      });
     // Dropped, not replaced: the chat UI renders every attachment as a file chip.
     if (m.attachments)
       view.attachments = m.attachments.filter((a) => ok(a?.recordId));

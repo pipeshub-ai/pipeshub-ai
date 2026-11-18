@@ -642,6 +642,11 @@ def provider_error_code(exc: BaseException) -> str:
     return _provider_code(list(_chain(exc)))
 
 
+def provider_response_status(exc: BaseException) -> int | None:
+    """The HTTP status of the response an AI provider sent, or ``None`` when no response arrived."""
+    return next((status for e in _chain(exc) if not _ours(e) and (status := _status_code(e)) is not None), None)
+
+
 def _llm_not_configured(exc: BaseException) -> bool:
     try:
         from app.utils.llm import LLMNotConfiguredError
