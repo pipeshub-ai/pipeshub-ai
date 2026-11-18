@@ -5,27 +5,49 @@ summary, the column headers and the row descriptions together. Larger tables spe
 first call on the summary plus the first batch, then fan the remaining batches out in
 parallel using the summary as context.
 
-Enrichment is best-effort. Any failure degrades a table to ``generate_simple_row_text``
+Rows are addressed by an opaque key. Each row is sent with a short random key and the model
+answers ``[{"key": "...", "description": ...}]`` copying the keys; descriptions are matched
+back by key. A key cannot be counted or shifted, so a skipped, merged, duplicated or reordered
+row can only lose its own description, never hand it to another row. A row with no usable
+description gets ``generate_simple_row_text`` alone.
+
+A batch that comes back with too few usable rows (or no parsable answer) is split in half and
+retried, down to ``MIN_SPLIT_ROWS`` rows, within a per-table budget of retry calls. A first
+call whose rows fail still keeps its summary and headers (or asks for them on their own), so
+only a table whose summary and headers also fail falls back as a whole.
+
+Enrichment is best-effort. Any failure degrades rows or a table to ``generate_simple_row_text``
 rather than failing the record, because the blocks themselves are already correct - only
 the natural-language text quality is lost. With no model set up at all, every table gets
 that plain text, so the record still indexes and is searchable.
 """
 
+import asyncio
+import hashlib
 import json
+import logging
+import re
+from collections import Counter
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from logging import Logger
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import summary_with_captions
 from app.modules.parsers.excel.prompt_template import (
-    RowDescriptions,
+    KeyedRowDescription,
+    KeyedRowDescriptions,
     TableEnrichment,
-    row_text_prompt,
-    row_text_prompt_for_csv,
+    TableSummaryHeaders,
+    keyed_row_text_prompt,
     table_enrichment_prompt,
+    table_summary_headers_prompt,
 )
+from app.services.model_identity.call_context import peek_call_context
 from app.services.paid_cache.access import cached_model_call, remember_cache
 from app.services.paid_cache.keys import KIND_TABLE_ROWS, KIND_TABLE_SUMMARY
 
@@ -37,17 +59,66 @@ from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.concurrency import (
     MAX_CONCURRENT_ROW_BATCHES,
     MAX_CONCURRENT_TABLES,
-    TABLE_ROW_BATCH_SIZE,
     gather_with_concurrency,
     max_table_rows_for_llm,
+    table_row_batch_size,
 )
-from app.utils.indexing_metrics import note_table_result, track_indexing_enrichment
+from app.utils.indexing_metrics import (
+    note_degraded_rows,
+    note_rows_over_budget,
+    note_table_result,
+    track_indexing_enrichment,
+)
 from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
-from app.utils.streaming import (
-    invoke_with_count_validation_and_reflection,
-    invoke_with_row_descriptions_and_reflection,
-    invoke_with_structured_output_and_reflection,
-)
+from app.utils.streaming import invoke_with_structured_output_and_reflection
+
+# Flow tags in the paid-cache params. The keyed answer shape is a different flow from the
+# positional ("count_validated" / "structured") and the numbered ("numbered_v2") shapes that
+# earlier versions cached, and the prompts differ too, so none of those entries is ever a hit.
+_FLOW_COMBINED = "keyed_v3"
+_FLOW_SUMMARY = "summary_headers_v2"
+_FLOW_ROWS = "keyed_v3"
+
+#: A batch may lose this fraction of its rows (those rows alone fall back) before it is split and
+#: retried: one dropped row in fifty is not worth two more calls. Below 10 rows nothing is tolerated.
+ROW_MISS_TOLERANCE = 0.1
+#: A failed batch is split in half down to this many rows; smaller pieces cost a call each and the
+#: model rarely fails a batch this small, so a batch under twice this is never split.
+MIN_SPLIT_ROWS = 5
+#: Rows sent when only the summary and headers are asked for: enough to name the columns and the
+#: topic, and a fraction of a full batch's prompt.
+SUMMARY_SAMPLE_ROWS = 20
+#: Floor of a table's retry calls, so a small table can still split once or twice.
+MIN_RETRY_CALLS = 4
+#: One reflection per call, for an answer that did not parse; the old count reflection is gone
+#: because keys make a wrong count harmless.
+_REFLECTIONS = 1
+
+
+class _ModelCallFailed(Exception):
+    """The model call itself failed (as opposed to building its prompt, which is a bug to surface)."""
+
+
+class RetryBudget:
+    """The retry calls a table may spend splitting failed batches (two per split).
+
+    It bounds the cost of a failing provider to about twice the nominal row calls instead of
+    letting every batch halve down to the floor.
+    """
+
+    def __init__(self, calls: int) -> None:
+        self.calls = calls
+
+    @classmethod
+    def for_batches(cls, batches: int) -> "RetryBudget":
+        return cls(max(MIN_RETRY_CALLS, batches + 1))
+
+    def take(self, calls: int) -> bool:
+        # No await between the check and the decrement: tasks on one loop cannot interleave.
+        if self.calls >= calls:
+            self.calls -= calls
+            return True
+        return False
 
 
 @dataclass
@@ -55,9 +126,9 @@ class TableEnrichmentResult:
     """Enrichment for one table. ``descriptions`` aligns with the data rows."""
 
     summary: str = ""
-    headers: List[str] = field(default_factory=list)
+    headers: list[str] = field(default_factory=list)
     header_row_count: int = 0
-    descriptions: List[str] = field(default_factory=list)
+    descriptions: list[str] = field(default_factory=list)
     degraded: bool = False
 
 
@@ -68,42 +139,345 @@ def cell_text(cell: Any) -> str:  # noqa: ANN401
     return "" if cell is None else str(cell)
 
 
-def normalize_grid(grid: Sequence[Sequence[Any]]) -> List[List[str]]:
+def normalize_grid(grid: Sequence[Sequence[Any]]) -> list[list[str]]:
     return [[cell_text(cell) for cell in row] for row in grid]
 
 
-def _row_dict(row: Sequence[str], headers: Sequence[str]) -> Dict[str, str]:
+def _row_dict(row: Sequence[str], headers: Sequence[str]) -> dict[str, str]:
     return {
         (headers[i] if i < len(headers) and headers[i] else f"Column_{i + 1}"): value
         for i, value in enumerate(row)
     }
 
 
-def _simple_texts(rows: Sequence[Sequence[str]], headers: Sequence[str]) -> List[str]:
+def _simple_texts(rows: Sequence[Sequence[str]], headers: Sequence[str]) -> list[str]:
     return [
         indexing_helpers.generate_simple_row_text(_row_dict(row, headers)) for row in rows
     ]
 
 
+def _usable(text: Optional[str]) -> bool:
+    return text is not None and bool(text.strip())
+
+
+_KEY_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"  # base32: no 0/1/8/9, so no O/0 or I/1 mix-ups
+KEY_CHARS = 4  # 20 bits: unique within a batch by construction, and short enough to copy
+
+
+def _batch_seed(rows: Sequence[Any]) -> str:  # noqa: ANN401
+    return hashlib.sha256(
+        json.dumps(rows, sort_keys=True, default=str, ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def _raw_key(seed: str, counter: int) -> str:
+    value = int.from_bytes(hashlib.sha256(f"{seed}:{counter}".encode()).digest()[:3], "big")
+    return "".join(_KEY_ALPHABET[(value >> (5 * i)) & 31] for i in range(KEY_CHARS))
+
+
+def _within_one_character(key: str) -> list[str]:
+    """*key* itself and every key one character away from it."""
+    near = [key]
+    for i in range(KEY_CHARS):
+        near.extend(key[:i] + c + key[i + 1 :] for c in _KEY_ALPHABET if c != key[i])
+    return near
+
+
+def row_keys(rows: Sequence[Any]) -> list[str]:  # noqa: ANN401
+    """One opaque key per row of a batch: four base32 characters, at least two apart from each other.
+
+    The keys come from a hash of the batch's content, so they carry nothing of the row's
+    position (they cannot be counted or shifted) and the same batch always gets the same keys,
+    which keeps its prompt, and so its paid-cache entry, stable across retries. A drawn key that
+    equals, or is one character away from, a key already in the batch is redrawn, so a single
+    copy typo never turns one row's key into another's.
+    """
+    seed = _batch_seed(rows)
+    keys: list[str] = []
+    blocked: set[str] = set()
+    counter = 0
+    while len(keys) < len(rows):
+        key = _raw_key(seed, counter)
+        counter += 1
+        if key not in blocked:
+            keys.append(key)
+            blocked.update(_within_one_character(key))
+    return keys
+
+
+def format_rows_with_keys(
+    rows: Sequence[Any], keys: Sequence[str], *, numbered: bool = False  # noqa: ANN401
+) -> str:
+    """The rows as the prompt shows them: ``[KEY]: {json}``, or ``Row n [KEY]: {json}``.
+
+    The number is only for the combined prompt, where the model must say whether Row 1 is a
+    header; descriptions are always matched by key.
+    """
+    return "\n".join(
+        f"{f'Row {i} ' if numbered else ''}[{key}]: {json.dumps(row, indent=2, ensure_ascii=False)}"
+        for i, (row, key) in enumerate(zip(rows, keys), 1)
+    )
+
+
+def _normal_key(key: str) -> str:
+    """A copied key made comparable: models add brackets or quotes and change case."""
+    return key.strip().strip("[]\"'` ").upper()
+
+
+# The two echo habits tolerated beyond a bare key: the key in brackets inside a longer label
+# ("Row 3 [ab2c]"), and the key after a "key:" label. Nothing looser: a word that merely looks like a key is not one.
+_ECHOED_KEY = re.compile(r"\[\s*([A-Za-z2-7]{4})\s*\]|\bkey\s*[:=]\s*([A-Za-z2-7]{4})\b", re.IGNORECASE)
+
+
+def _row_of_key(index: dict[str, int], copied: str) -> Optional[int]:
+    """The row a copied key names: the key itself, else a bracketed or labelled key inside it."""
+    row = index.get(_normal_key(copied))
+    if row is not None:
+        return row
+    for match in _ECHOED_KEY.finditer(copied):
+        row = index.get((match.group(1) or match.group(2)).upper())
+        if row is not None:
+            return row
+    return None
+
+
+def align_by_key(
+    descriptions: Sequence[KeyedRowDescription], keys: Sequence[str]
+) -> list[Optional[str]]:
+    """Per row (in the order of *keys*), the description the model gave its key, or ``None``.
+
+    The first entry for a key wins; keys the batch never had and blank descriptions are
+    ignored. The answer's length and order play no part, so a short, long or reordered answer
+    never moves a description onto another row.
+    """
+    index = {key: i for i, key in enumerate(keys)}
+    aligned: list[Optional[str]] = [None] * len(keys)
+    seen: set[int] = set()
+    for entry in descriptions:
+        i = _row_of_key(index, entry.key)
+        if i is None or i in seen:
+            continue
+        seen.add(i)
+        text = (entry.description or "").strip()
+        if text:
+            aligned[i] = text
+    return aligned
+
+
+def _complete(aligned: Sequence[Optional[str]]) -> bool:
+    return all(_usable(a) for a in aligned)
+
+
+def _strict_decode_keyed(model: Any):  # noqa: ANN401, ANN202
+    """Decode a stored answer, refusing the positional and numbered shapes older versions stored.
+
+    The tolerant model validator would drop such a description list to ``[]``, turning an old
+    cached answer into an empty keyed one. A stored value must instead be a miss, so every
+    description has to be an object with a ``key``.
+    """
+    def decode(raw: Any):  # noqa: ANN401, ANN202
+        entries = raw.get("descriptions") if isinstance(raw, dict) else None
+        if not isinstance(entries, list) or any(
+            not isinstance(e, dict) or "key" not in e for e in entries
+        ):
+            raise ValueError("stored table answer is not keyed")
+        return model.model_validate(raw)
+
+    return decode
+
+
+def _record_id() -> str:
+    ctx = peek_call_context()
+    return (ctx.record_id if ctx is not None and ctx.record_id else "-")
+
+
+class _Run:
+    """State of one table's (or one parser batch's) row descriptions: model, summary, retry
+    budget, and what degraded by reason.
+
+    ``prompt_guard`` wraps the rows put into a prompt (a parser's output-budget accounting and
+    value cutting); ``propagate`` lists exceptions that must reach the caller instead of
+    degrading the batch.
+    """
+
+    def __init__(
+        self,
+        llm: BaseChatModel,
+        summary: str,
+        logger: Logger,
+        budget: RetryBudget,
+        *,
+        config_service: Any = None,  # noqa: ANN401
+        prompt_guard: Optional[Callable[[list[dict]], Any]] = None,
+        propagate: tuple[type, ...] = (),
+    ) -> None:
+        self.llm = llm
+        self.summary = summary
+        self.logger = logger
+        self.budget = budget
+        self.config_service = config_service
+        self.prompt_guard = prompt_guard
+        self.propagate = (NonRetryableError, *propagate)
+        self.rows_by_reason: Counter = Counter()
+        self.record_id = _record_id()
+
+    def note_degraded(self, reason: str, rows: int, described: int, missing: int) -> None:
+        self.rows_by_reason[reason] += missing
+        # Counts and the record id only: a row's text is never logged.
+        self.logger.warning(
+            "Table row batch degraded: record=%s reason=%s rows=%d described=%d fallback=%d",
+            self.record_id, reason, rows, described, missing,
+        )
+
+
+async def _call_row_batch(
+    run: _Run, rows_data: Sequence[dict]
+) -> Optional[list[Optional[str]]]:
+    """One keyed-description call for *rows_data* (one dict per row).
+
+    Returns the descriptions aligned to the rows (``None`` per unanswered row), or ``None`` when
+    no parsable answer came back. A failed call raises.
+    """
+    keys = row_keys(rows_data)
+    guard = run.prompt_guard(list(rows_data)) if run.prompt_guard else nullcontext(list(rows_data))
+    with guard as prompt_rows:
+        messages = keyed_row_text_prompt.format_messages(
+            table_summary=run.summary,
+            row_count=len(rows_data),
+            keyed_rows_data=format_rows_with_keys(prompt_rows, keys),
+        )
+        try:
+            parsed = await cached_model_call(
+                KIND_TABLE_ROWS,
+                llm=run.llm,
+                template=keyed_row_text_prompt,
+                rendered=_rendered(messages),
+                params={"flow": _FLOW_ROWS},
+                call=lambda: invoke_with_structured_output_and_reflection(
+                    run.llm, messages, KeyedRowDescriptions, _REFLECTIONS, raise_call_errors=True
+                ),
+                encode=lambda answer: answer.model_dump(),
+                decode=_strict_decode_keyed(KeyedRowDescriptions),
+                cacheable=lambda answer: _complete(align_by_key(answer.descriptions, keys)),
+                config_service=run.config_service,
+            )
+        except run.propagate:
+            raise
+        except Exception as e:
+            raise _ModelCallFailed(str(e)) from e
+    if parsed is None:
+        return None
+    return align_by_key(parsed.descriptions, keys)
+
+
+async def _gather_or_cancel(*coros: Any) -> list[Any]:  # noqa: ANN401
+    """``asyncio.gather``, but when one raises the others are cancelled and awaited first.
+
+    A bare gather leaves the siblings running after the error ended the load: they would finish
+    their model calls, and could split again and spend more.
+    """
+    tasks = [asyncio.ensure_future(c) for c in coros]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+async def _resolve_batch(
+    run: _Run,
+    rows_data: Sequence[dict],
+    answer: Optional[list[Optional[str]]],
+    salvage: Optional[list[Optional[str]]] = None,
+) -> list[Optional[str]]:
+    """Settle a batch from the answer it got: keep it, or split it and ask again.
+
+    Returns a description per row, ``None`` where the row must fall back. A description a
+    failed attempt already gave a row (*salvage*) is kept if the retry does not improve it.
+    """
+    n = len(rows_data)
+    reason = "count" if answer is not None else "parse"
+    best: list[Optional[str]] = list(answer) if answer is not None else [None] * n
+    if salvage is not None:
+        best = [b if _usable(b) else (salvage[i] if _usable(salvage[i]) else None)
+                for i, b in enumerate(best)]
+    missing = sum(1 for b in best if b is None)
+    if missing == 0:
+        return best
+    if missing <= int(n * ROW_MISS_TOLERANCE):
+        run.note_degraded(reason, n, n - missing, missing)
+        return best
+
+    can_split = n >= 2 * MIN_SPLIT_ROWS
+    if can_split and run.budget.take(2):
+        mid = n // 2
+        left, right = await _gather_or_cancel(
+            _describe_batch(run, rows_data[:mid], best[:mid]),
+            _describe_batch(run, rows_data[mid:], best[mid:]),
+        )
+        return left + right
+    run.note_degraded("budget" if can_split else reason, n, n - missing, missing)
+    return best
+
+
 async def _describe_batch(
-    rows: Sequence[Sequence[str]],
-    headers: Sequence[str],
-    summary: str,
-    llm
-) -> List[str]:
-    # get_rows_text skips row 0 only when headers is truthy — never prepend [].
-    grid = [list(headers), *rows] if headers else list(rows)
-    descriptions, _ = await get_rows_text(llm, {"grid": grid}, summary, list(headers))
-    if len(descriptions) < len(rows):
-        descriptions = list(descriptions) + _simple_texts(rows[len(descriptions) :], headers)
-    return descriptions[: len(rows)]
+    run: _Run,
+    rows_data: Sequence[dict],
+    salvage: Optional[list[Optional[str]]] = None,
+) -> list[Optional[str]]:
+    """Describe *rows_data* with one call, splitting it on a poor answer. ``None`` = fall back."""
+    try:
+        answer = await _call_row_batch(run, rows_data)
+    except _ModelCallFailed as e:  # a failed call is not retried: a split would only add load
+        run.logger.warning("Table row batch call failed: %s", type(e.__cause__).__name__)
+        n = len(rows_data)
+        best = list(salvage) if salvage is not None else [None] * n
+        missing = sum(1 for b in best if not _usable(b))
+        if missing:
+            run.note_degraded("error", n, n - missing, missing)
+        return [b if _usable(b) else None for b in best]
+    return await _resolve_batch(run, rows_data, answer, salvage)
+
+
+async def describe_row_dicts(
+    llm: BaseChatModel,
+    rows_data: Sequence[dict],
+    table_summary: str,
+    logger: Logger,
+    *,
+    budget: Optional[RetryBudget] = None,
+    config_service: Any = None,  # noqa: ANN401
+    prompt_guard: Optional[Callable[[list[dict]], Any]] = None,
+    propagate: tuple[type, ...] = (),
+) -> list[str]:
+    """Describe one batch of rows (one dict per row) by row key, for the CSV and Excel parsers.
+
+    The same rules as ``enrich_table_grid``: a row the model leaves out gets plain ``column:
+    value`` text alone, a short or unparsable batch is split and retried within *budget* (share
+    one across a table's batches; the default allows one split or two), and degraded rows are
+    counted by reason. Exceptions in *propagate* (and ``NonRetryableError``) are raised.
+    """
+    run = _Run(
+        llm, table_summary, logger, budget or RetryBudget(MIN_RETRY_CALLS),
+        config_service=config_service, prompt_guard=prompt_guard, propagate=propagate,
+    )
+    texts = await _describe_batch(run, rows_data)
+    for reason, count in run.rows_by_reason.items():
+        note_degraded_rows(reason, count)
+    return [
+        t if _usable(t) else indexing_helpers.generate_simple_row_text(rows_data[i])
+        for i, t in enumerate(texts)
+    ]
+
 
 def _rendered(messages: Sequence[Any]) -> str:
     """The prompt as sent: the template filled with this table's rows."""
     return "\n".join(str(getattr(m, "content", m)) for m in messages)
 
 
-def _header_context(known_headers: Optional[List[str]]) -> str:
+def _header_context(known_headers: Optional[list[str]]) -> str:
     if known_headers is None:
         return ""
     if known_headers:
@@ -155,6 +529,59 @@ def simple_table_enrichment(grid: Sequence[Sequence[Any]]) -> TableEnrichmentRes
     return TableEnrichmentResult(descriptions=_simple_texts(rows, []))
 
 
+async def _first_call(
+    llm: BaseChatModel,
+    send_batch: Sequence[Sequence[str]],
+    keys: Sequence[str],
+    known_headers: Optional[list[str]],
+) -> Optional[TableEnrichment]:
+    """Summary, headers and the first batch's descriptions in one call. Raises if the call fails."""
+    messages = table_enrichment_prompt.format_messages(
+        row_count=len(send_batch),
+        keyed_rows_data=format_rows_with_keys(list(send_batch), keys, numbered=True),
+        header_context=_header_context(known_headers),
+    )
+    return await cached_model_call(
+        KIND_TABLE_SUMMARY,
+        llm=llm,
+        template=table_enrichment_prompt,
+        rendered=_rendered(messages),
+        params={"flow": _FLOW_COMBINED, "count": len(send_batch)},
+        call=lambda: invoke_with_structured_output_and_reflection(
+            llm, messages, TableEnrichment, _REFLECTIONS, raise_call_errors=True
+        ),
+        encode=lambda enrichment: enrichment.model_dump(),
+        decode=_strict_decode_keyed(TableEnrichment),
+        # Rows the model left out must be asked for again, not replayed from the cache.
+        cacheable=lambda enrichment: _complete(align_by_key(enrichment.descriptions, keys)),
+    )
+
+
+async def _summary_and_headers_call(
+    llm: BaseChatModel, send_batch: Sequence[Sequence[str]], known_headers: Optional[list[str]]
+) -> Optional[TableSummaryHeaders]:
+    """Summary and headers alone, for a first call that did not give them. Raises if the call fails."""
+    sample = list(send_batch[:SUMMARY_SAMPLE_ROWS])
+    messages = table_summary_headers_prompt.format_messages(
+        row_count=len(sample),
+        numbered_rows_data=indexing_helpers.format_rows_with_index(sample),
+        header_context=_header_context(known_headers),
+    )
+    return await cached_model_call(
+        KIND_TABLE_SUMMARY,
+        llm=llm,
+        template=table_summary_headers_prompt,
+        rendered=_rendered(messages),
+        params={"flow": _FLOW_SUMMARY, "count": len(sample)},
+        call=lambda: invoke_with_structured_output_and_reflection(
+            llm, messages, TableSummaryHeaders, _REFLECTIONS, raise_call_errors=True
+        ),
+        encode=lambda answer: answer.model_dump(),
+        decode=TableSummaryHeaders.model_validate,
+        cacheable=lambda answer: bool((answer.summary or "").strip()),
+    )
+
+
 async def enrich_table_grid(
     llm: Optional[BaseChatModel],
     grid: Sequence[Sequence[Any]],
@@ -162,7 +589,7 @@ async def enrich_table_grid(
     logger: Logger,
     known_header_row_count: Optional[int] = None,
     describe_rows: bool = True,
-    batch_size: int = TABLE_ROW_BATCH_SIZE,
+    batch_size: Optional[int] = None,
 ) -> TableEnrichmentResult:
     """Enrich one table.
 
@@ -174,14 +601,16 @@ async def enrich_table_grid(
             which is the only case where the returned ``header_row_count`` can be 1.
         describe_rows: When False the LLM is still used for the summary and headers but
             rows fall back to ``generate_simple_row_text`` (the MAX_TABLE_ROWS_FOR_LLM
-            cutoff).
+            cutoff). That cutoff is configuration, not a degradation, and is not counted.
+        batch_size: Rows per description call; defaults to ``INDEXING_TABLE_ROW_BATCH_SIZE``.
     """
     rows = normalize_grid(grid)
     if not rows:
         return TableEnrichmentResult()
+    batch_size = batch_size or table_row_batch_size()
 
     known = known_header_row_count is not None
-    known_headers: Optional[List[str]] = None
+    known_headers: Optional[list[str]] = None
     if known:
         header_rows = 1 if known_header_row_count else 0
         known_headers = list(rows[0]) if header_rows else []
@@ -191,7 +620,6 @@ async def enrich_table_grid(
         send_rows = rows
 
     first_batch = send_rows[:batch_size]
-    remaining = send_rows[batch_size:]
 
     if not first_batch:
         return TableEnrichmentResult(headers=known_headers or [], header_row_count=header_rows)
@@ -199,48 +627,55 @@ async def enrich_table_grid(
     if llm is None:
         return _plain_enrichment(rows, header_rows, known_headers or [], degraded=False)
 
-    messages = table_enrichment_prompt.format_messages(
-        row_count=len(first_batch),
-        numbered_rows_data=indexing_helpers.format_rows_with_index(first_batch),
-        header_context=_header_context(known_headers),
-    )
-
-    parsed: Optional[TableEnrichment] = None
-    try:
-        parsed = await cached_model_call(
-            KIND_TABLE_SUMMARY,
-            llm=llm,
-            template=table_enrichment_prompt,
-            rendered=_rendered(messages),
-            params={"flow": "count_validated", "count": len(first_batch)},
-            call=lambda: invoke_with_count_validation_and_reflection(
-                llm, messages, TableEnrichment, "descriptions", len(first_batch)
-            ),
-            encode=lambda enrichment: enrichment.model_dump(),
-            decode=TableEnrichment.model_validate,
-            cacheable=lambda enrichment: len(enrichment.descriptions) == len(first_batch),
-        )
-    except Exception as e:
-        logger.warning(f"Table enrichment call failed: {e}")
-
-    if parsed is None:
-        note_table_result(succeeded=False, degraded=True)
+    def whole_table_fallback(reason: str) -> TableEnrichmentResult:
+        # The unknown-header path has no header row to trust here: summary and headers
+        # are exactly what failed.
+        note_table_result(succeeded=False, degraded=True, reason=reason)
+        note_degraded_rows(reason, len(rows) - header_rows)
         return _plain_enrichment(rows, header_rows, known_headers or [], degraded=True)
 
-    summary = parsed.summary or ""
-    if known:
-        headers = known_headers or list(parsed.headers or [])
-    else:
-        header_rows = 1 if parsed.header_row_count == 1 and len(rows) > 1 else 0
-        headers = list(parsed.headers or [])
+    first_keys = row_keys(first_batch)
+    parsed: Optional[TableEnrichment] = None
+    try:
+        parsed = await _first_call(llm, first_batch, first_keys, known_headers)
+    except Exception as e:
+        logger.warning(f"Table enrichment call failed: {e}")
+        return whole_table_fallback("error")
 
-    # On the unknown-header path the LLM was sent the header row and described it;
-    # drop that leading description so they align with the data rows. On the known
-    # path the header was never sent, so descriptions are already data-only.
-    first_descriptions = list(parsed.descriptions)[0 if known else header_rows :]
+    summary = ((parsed.summary if parsed else "") or "").strip()
+    llm_headers = list(parsed.headers) if parsed and parsed.headers else []
+    llm_header_rows = parsed.header_row_count if parsed else 0
+    # The first call is complete when it gave the summary and the headers this table still needs.
+    complete = bool(summary) and (known or bool(llm_headers))
+
+    if not complete:
+        # The rows of the combined call are lost, but the summary and headers it did give
+        # are kept; ask for the rest on its own.
+        try:
+            extra = await _summary_and_headers_call(llm, first_batch, known_headers)
+        except Exception as e:
+            logger.warning(f"Table summary call failed: {e}")
+            return whole_table_fallback("error")
+        if extra is not None:
+            if not summary:
+                summary = (extra.summary or "").strip()
+            if not known and not llm_headers:
+                llm_headers = list(extra.headers or [])
+                llm_header_rows = extra.header_row_count
+        if not summary or not (known or llm_headers):
+            return whole_table_fallback("parse")
+
+    if known:
+        headers = known_headers or list(llm_headers)
+    else:
+        header_rows = 1 if llm_header_rows == 1 and len(rows) > 1 else 0
+        headers = list(llm_headers)
+
     data_rows = rows[header_rows:]
 
     if not describe_rows:
+        # The MAX_TABLE_ROWS_FOR_LLM cutoff is configuration, not a degradation.
+        note_rows_over_budget(len(data_rows))
         result = TableEnrichmentResult(
             summary=summary,
             headers=headers,
@@ -250,38 +685,64 @@ async def enrich_table_grid(
         note_table_result(succeeded=True)
         return result
 
-    descriptions = first_descriptions
-    degraded = False
-    if remaining:
-        batches = [
-            remaining[i : i + batch_size] for i in range(0, len(remaining), batch_size)
-        ]
-        results = await gather_with_concurrency(
-            MAX_CONCURRENT_ROW_BATCHES,
-            *(_describe_batch( batch, headers, summary,llm) for batch in batches),
-            return_exceptions=True,
-        )
-        for batch, result in zip(batches, results):
-            if isinstance(result, BaseException):
-                logger.warning(f"Row batch failed, using simple text: {result}")
-                descriptions.extend(_simple_texts(batch, headers))
-                degraded = True
-            else:
-                descriptions.extend(result)
+    # Batches: the first call's own rows when it answered completely, then the rest.
+    data_dicts = [_row_dict(row, headers) for row in data_rows]
+    first_data_rows = 0
+    first_answer: Optional[list[Optional[str]]] = None
+    if parsed is not None:
+        # Keys tie each description to its row whatever else the call got wrong.
+        # On the unknown path the sent rows start with the header row, which is not data.
+        sent = align_by_key(parsed.descriptions, first_keys)
+        first_answer = sent[0 if known else header_rows :]
+        first_data_rows = len(first_answer)
 
-    # Never let a short response desynchronize descriptions from rows.
-    if len(descriptions) < len(data_rows):
-        descriptions.extend(_simple_texts(data_rows[len(descriptions):], headers))
-        degraded = True
+    rest = data_dicts[first_data_rows:]
+    batches = [rest[i : i + batch_size] for i in range(0, len(rest), batch_size)]
+    run = _Run(llm, summary, logger, RetryBudget.for_batches(len(batches) + 1))
 
+    texts: list[Optional[str]] = []
+    jobs = []
+    spans: list[int] = []
+    if first_answer is not None and first_data_rows:
+        jobs.append(_resolve_batch(run, data_dicts[:first_data_rows], first_answer))
+        spans.append(first_data_rows)
+    for batch in batches:
+        jobs.append(_describe_batch(run, batch))
+        spans.append(len(batch))
+
+    results = await gather_with_concurrency(
+        MAX_CONCURRENT_ROW_BATCHES, *jobs, return_exceptions=True
+    )
+    for span, result in zip(spans, results):
+        if isinstance(result, BaseException):
+            logger.warning("Row batch failed, using simple text: %s", type(result).__name__)
+            run.note_degraded("error", span, 0, span)
+            texts.extend([None] * span)
+        else:
+            texts.extend(result)
+
+    fallback = _simple_texts(data_rows, headers)
+    descriptions = [
+        t if _usable(t) else fallback[i] for i, t in enumerate(texts[: len(data_rows)])
+    ]
+    # Never let a short list desynchronize descriptions from rows.
+    descriptions.extend(fallback[len(descriptions) :])
+
+    degraded = bool(run.rows_by_reason)
+    for reason, count in run.rows_by_reason.items():
+        note_degraded_rows(reason, count)
     result = TableEnrichmentResult(
         summary=summary,
         headers=headers,
         header_row_count=header_rows,
-        descriptions=descriptions[: len(data_rows)],
+        descriptions=descriptions,
         degraded=degraded,
     )
-    note_table_result(succeeded=not degraded, degraded=degraded)
+    note_table_result(
+        succeeded=not degraded,
+        degraded=degraded,
+        reason=run.rows_by_reason.most_common(1)[0][0] if degraded else None,
+    )
     return result
 
 
@@ -308,7 +769,7 @@ async def enrich_tables(
     known_header_row_counts: Optional[Sequence[Optional[int]]] = None,
     describe_rows: Optional[Sequence[bool]] = None,
     max_concurrent: int = MAX_CONCURRENT_TABLES,
-) -> List[TableEnrichmentResult]:
+) -> list[TableEnrichmentResult]:
     """Enrich several tables concurrently. Results are in input order.
 
     ``describe_rows`` defaults to the record's row budget over *grids*, in order.
@@ -333,7 +794,7 @@ async def enrich_tables(
 
     results = await gather_with_concurrency(max_concurrent, *coros, return_exceptions=True)
 
-    enriched: List[TableEnrichmentResult] = []
+    enriched: list[TableEnrichmentResult] = []
     for grid, result in zip(grids, results):
         if isinstance(result, BaseException):
             logger.warning(f"Table enrichment failed, using simple text: {result}")
@@ -344,7 +805,8 @@ async def enrich_tables(
                 )
             )
             # enrich_table_grid already noted success/failure; gather exceptions did not.
-            note_table_result(succeeded=False, degraded=True)
+            note_table_result(succeeded=False, degraded=True, reason="error")
+            note_degraded_rows("error", len(rows))
         else:
             enriched.append(result)
     return enriched
@@ -359,11 +821,11 @@ class TableEnhancementStats:
 
 def _collect_table_row_blocks(
     block_containers: Any, table_group: Any  # noqa: ANN401
-) -> List[Any]:
+) -> list[Any]:
     """TABLE_ROW blocks belonging to *table_group*, in child order."""
     from app.models.blocks import BlockContainerIndex, BlockGroupChildren, BlockType
 
-    row_blocks: List[Any] = []
+    row_blocks: list[Any] = []
     children = table_group.children
     if not children:
         return row_blocks
@@ -594,58 +1056,30 @@ async def enhance_tables_with_llm(
 
 async def get_rows_text(
     llm, table_data: dict, table_summary: str, column_headers: list[str]
-) -> Tuple[List[str], List[List[dict]]]:
-    """Convert multiple rows into natural language text using context from summaries in a single prompt"""
+) -> tuple[list[str], list[list[dict]]]:
+    """Describe the rows of ``table_data["grid"]`` (minus the header row when ``column_headers``
+    is given) in one keyed call.
+
+    A row the model left out, or an answer that cannot be parsed, gets plain ``column: value``
+    text for that row alone: never another row's description and never a dict repr. A failed
+    call raises. This is a single call; ``enrich_table_grid`` adds the split-and-retry.
+    """
     table = table_data.get("grid")
-    if table:
-        try:
-            # Skip first row if column_headers provided (first row is header)
-            if column_headers:
-                table_rows = table[1:]
-            else:
-                table_rows = table
-
-            rows_data = [
-                {
-                    column_headers[i] if column_headers and i<len(column_headers) else f"Column_{i+1}": (
-                        cell.get("text", "") if isinstance(cell, dict) else cell
-                    )
-                    for i, cell in enumerate(row)
-                }
-                for row in table_rows
-            ]
-
-            # Get natural language text from LLM with retry
-            messages = row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2, ensure_ascii=False)
-            )
-
-            # Default to string representations of rows
-            descriptions = [str(row) for row in rows_data]
-
-            # Use centralized utility with reflection
-            parsed_response = await cached_model_call(
-                KIND_TABLE_ROWS,
-                llm=llm,
-                template=row_text_prompt,
-                rendered=_rendered(messages),
-                params={"flow": "structured"},
-                call=lambda: invoke_with_structured_output_and_reflection(
-                    llm, messages, RowDescriptions
-                ),
-                encode=lambda parsed: parsed.model_dump(),
-                decode=RowDescriptions.model_validate,
-                cacheable=lambda parsed: len(parsed.descriptions) == len(rows_data),
-            )
-
-            if parsed_response is not None and parsed_response.descriptions:
-                descriptions = parsed_response.descriptions
-
-            return descriptions, table_rows
-        except Exception:
-            raise
-    else:
+    if not table:
         return [], []
+    # Skip first row if column_headers provided (first row is header)
+    table_rows = table[1:] if column_headers else table
+    rows = [[cell_text(cell) for cell in row] for row in table_rows]
+    run = _Run(llm, table_summary, logging.getLogger(__name__), RetryBudget(0))
+    rows_data = [_row_dict(row, column_headers) for row in rows]
+    try:
+        answer = await _call_row_batch(run, rows_data)
+    except _ModelCallFailed as e:
+        raise (e.__cause__ or e) from None
+    fallback = _simple_texts(rows, column_headers)
+    if answer is None:
+        return fallback, table_rows
+    return [a if _usable(a) else fallback[i] for i, a in enumerate(answer)], table_rows
 
 
 def fallback_table_summary(headers: "Sequence[object]", row_count: int) -> str:
