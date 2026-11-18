@@ -18538,7 +18538,8 @@ components:
           minimum: 1
           maximum: 500
           description: |
-            Most images sent from each page read. Required when `includeImages` is `true`; when
+            Most images sent from each page read; at most 50 are read from a page, so a larger
+            value acts as 50. Required when `includeImages` is `true`; when
             left out otherwise, the stored value is kept.
       anyOf:
         - properties:
@@ -18619,7 +18620,9 @@ components:
           type: integer
           minimum: 1
           maximum: 500
-          description: Most images sent from each page read when includeImages is true
+          description: >-
+            Most images sent from each page read when includeImages is true; at most 50 are read
+            from a page, so a larger value acts as 50
     WebSearchProvidersResponse:
       type: object
       additionalProperties: false
