@@ -669,9 +669,9 @@ class TestSecuredSubtasks:
     async def test_a_sub_task_with_no_level_stays_under_a_parent_with_none(self) -> None:
         assert (await self._placed(None)).parent_external_record_id == "1"
 
-    async def test_a_sub_task_with_no_level_does_not_go_under_a_leveled_parent(self) -> None:
-        """Under it, it would need the parent's level members too, though Jira opens it to the project."""
-        assert (await self._placed("7")).parent_external_record_id is None
+    async def test_a_sub_task_read_with_no_level_stays_under_a_leveled_parent(self) -> None:
+        """Jira gives a sub-task its parent's level, so a null is a payload behind it, never read wider than the parent."""
+        assert (await self._placed("7")).parent_external_record_id == "1"
 
 
 

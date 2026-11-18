@@ -1230,12 +1230,13 @@ class TestStoriesUnderTheirEpic:
         c._get_fresh_datasource.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_sub_task_with_no_level_does_not_go_under_a_leveled_parent(self) -> None:
-        """Under it, the sub-task would need the parent's level members too, though Jira opens it to the project."""
+    async def test_a_sub_task_read_with_no_level_stays_under_a_leveled_parent(self) -> None:
+        """Jira gives a sub-task its parent's level, so a null is a payload behind it: off the parent it would be
+        read by the whole project."""
         sub = _story()
         sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
         parent = _issue(LEVEL, key="PROJ-9", issue_id="2001")
-        assert (await _story_record(_connector(), [parent, sub])).parent_external_record_id is None
+        assert (await _story_record(_connector(), [parent, sub])).parent_external_record_id == "2001"
 
     @pytest.mark.asyncio
     async def test_a_malformed_issue_in_the_page_does_not_stop_the_others(self) -> None:

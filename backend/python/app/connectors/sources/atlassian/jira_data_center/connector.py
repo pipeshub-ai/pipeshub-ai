@@ -3562,9 +3562,11 @@ class JiraDataCenterConnector(BaseConnector):
             and (project_sync_data or {}).get("no_level_read") != NO_LEVEL_READ
         ):
             failures_before = self._issue_build_failures
-            if not is_new_project and reread != "project":
+            if not is_new_project and reread != "project" and stored_levels is not None:
                 # Stored before Data Center's missing key was read as "no level", and closed; an
                 # unchanged issue is not read again by the incremental pass, so they are read once here.
+                # A checkpoint with no level digest was written before levels were applied at all,
+                # when an issue with no level was stored open: there is nothing to open.
                 self.logger.info(f"Reading every stored issue of project {project_key} once, to open those with no level")
                 await self._reread_stored_issues(project_key, project_id, jira_users, stats, None, every_issue=True)
                 reread = "project"
@@ -4850,11 +4852,9 @@ class JiraDataCenterConnector(BaseConnector):
             return True
         if is_subtask:
             present, level_id = read_security_level(fields)
-            if not present or (level_id is None and fields.get("security") is not None) or (
-                level_id is not None and not security.members_readable
-            ):
-                return True
-            if level_id is not None and not level_reads_alike(security, level_id):
+            if not present or level_id is None or not security.members_readable:
+                return True  # no level read is a payload behind its parent's; never read wider than Jira
+            if not level_reads_alike(security, level_id):
                 return False  # its own people, whom the level names on it, need not read the parent
         if security.knowledge == SchemeKnowledge.NONE:
             parent_key = self._issue_id_to_key_cache.get(str(parent_id), "")

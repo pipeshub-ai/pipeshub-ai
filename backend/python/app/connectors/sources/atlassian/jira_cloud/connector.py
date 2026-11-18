@@ -5291,10 +5291,9 @@ class JiraConnector(BaseConnector):
 
         A holder naming people on each issue (reporter, assignee, a user field), in the level or
         in the project's Browse holders, grants the sub-task's own people, who need not read the
-        parent: such a sub-task hangs off its project. One whose level cannot be applied is closed
-        wherever it is filed and stays under its parent. Otherwise it stays only under a parent read
-        with the same level (none, or one that grants the same people on every issue). None when
-        that is not known this time.
+        parent: such a sub-task hangs off its project. One read with no level, or whose level cannot
+        be applied, stays under its parent. Otherwise it stays only under a parent read with the same
+        level, one that grants the same people on every issue. None when that is not known this time.
         """
         if security is None or not security.enforce:
             return True
@@ -5303,11 +5302,12 @@ class JiraConnector(BaseConnector):
         if security.browse_holders:
             return False
         present, level_id = read_security_level(fields)
-        if not present or (level_id is None and fields.get("security") is not None):
+        if not present or level_id is None or not security.members_readable:
+            # No level read means a payload behind its parent's (Jira gives a sub-task the
+            # parent's level), and an unreadable level closes it anywhere: under the parent
+            # it is never read wider than Jira shows it.
             return True
-        if level_id is not None and not security.members_readable:
-            return True
-        if level_id is not None and not level_reads_alike(security, level_id):
+        if not level_reads_alike(security, level_id):
             return False
         if parent_id in self._parent_level_failures:
             return None
