@@ -170,7 +170,7 @@ _WAITING_POSITIONS_BUDGET = 100_000
 class _WaitingEvent:
     """An event waiting for its record. ``item`` is None when only the offset is kept."""
 
-    __slots__ = ("tp", "offset", "item", "key", "alive")
+    __slots__ = ("tp", "offset", "item", "key", "alive", "not_before")
 
     def __init__(
         self,
@@ -178,6 +178,7 @@ class _WaitingEvent:
         offset: int,
         item: "tuple[TopicPartition, ConsumerRecord, StreamMessage] | None",
         key: "FairnessKey | None",
+        not_before: float | None = None,
     ) -> None:
         self.tp = tp
         self.offset = offset
@@ -186,6 +187,9 @@ class _WaitingEvent:
         # False once out of its record's queue, so a read-back planned
         # against it can tell without searching the queue.
         self.alive = True
+        # A retry's backoff, which lives in the payload: kept here for an
+        # event held by offset only, and stamped back on when it is read back.
+        self.not_before = not_before
 
 
 def _arrived_before(event: _WaitingEvent, tp: "TopicPartition", offset: int) -> bool:
@@ -200,16 +204,15 @@ def _insertion_point(waiting: "deque[_WaitingEvent]", tp: "TopicPartition", offs
     without a key), so the scan steps over other partitions' events rather
     than stopping at them, and stops at the first earlier event of its own.
     A new event is usually the latest, which finds its place at once.
+    Walked with an iterator: indexing a deque away from its ends is linear,
+    which would make a scan over a long queue quadratic on the consume loop.
     """
     position = len(waiting)
-    index = len(waiting) - 1
-    while index >= 0:
-        entry = waiting[index]
+    for index, entry in zip(range(len(waiting) - 1, -1, -1), reversed(waiting), strict=True):
         if entry.tp == tp:
             if entry.offset < offset:
                 break
             position = index
-        index -= 1
     return position
 
 
@@ -1252,6 +1255,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         entry = _WaitingEvent(tp, message.offset, item, key)
         by_offset = not self.__may_hold_waiting_payload(record_key)
         if by_offset:
+            # A re-buffered retry's backoff is stamped on the payload in memory, not in the bytes read back.
+            entry.not_before = self.__retry_not_before(item[2])
             entry.item = entry.key = None
         waiting.insert(_insertion_point(waiting, tp, message.offset), entry)
         self.__count_waiting(record_key, entry, 1)
@@ -1270,6 +1275,34 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 "Record %s is busy: event %s-%s-%s waits for it, not for its connector (%d waiting for this record)",
                 record_key, tp.topic, tp.partition, message.offset, len(waiting),
             )
+        return True
+
+    def __wait_by_offset(self, message: ConsumerRecord, parsed: StreamMessage) -> bool:
+        """Keep a failed hand-back for its record by offset only, when the buffer has no room for its payload.
+
+        Its record is still in flight (the hand-back runs inside its delivery),
+        so it is read back when that delivery ends, like any event kept by
+        offset. Its offset stays tracked, so the watermark floors at it. False
+        when parallel dispatch is off or the offset budget is spent, and the
+        caller holds the payload as before.
+        """
+        if not self.__parallel_dispatch() or self._record_waiting_positions >= _WAITING_POSITIONS_BUDGET:
+            return False
+        record_key = self.__record_key(message, parsed)
+        tp = TopicPartition(message.topic, message.partition)
+        entry = _WaitingEvent(tp, message.offset, None, None, self.__retry_not_before(parsed))
+        waiting = self._record_waiting.setdefault(record_key, deque())
+        waiting.insert(_insertion_point(waiting, tp, message.offset), entry)
+        self.__count_waiting(record_key, entry, 1)
+        with self._partition_lock:
+            busy = record_key in self._in_flight_records
+        if not busy and record_key not in self._record_offered:
+            self._records_released.add(record_key)
+        self.logger.info(
+            "Record %s: its retry %s-%s-%s, which could not be re-published, waits by offset only, "
+            "the buffer being full (%d waiting for this record)",
+            record_key, tp.topic, tp.partition, message.offset, len(waiting),
+        )
         return True
 
     def __may_hold_waiting_payload(self, record_key: str) -> bool:
@@ -1374,6 +1407,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     dropped += 1
             if kept:
                 self._record_waiting[record_key] = kept
+                # What held this record back (an older event in the scheduler,
+                # an offered one) may have gone with the revoked partitions,
+                # and nothing else would release it; the re-offer checks again.
+                self._records_released.add(record_key)
             else:
                 self.__drop_waiting(record_key)
         for record_key, item in list(self._record_offered.items()):
@@ -1483,6 +1520,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 return 0
             if entry.item is not None:
                 self.__count_waiting(record_key, entry, -1)
+                entry.not_before = self.__retry_not_before(entry.item[2])
                 entry.item = entry.key = None
                 self.__count_waiting(record_key, entry, 1)
                 self.logger.info(
@@ -1557,6 +1595,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 parsed = parsed_at.get(position)
                 if parsed is None:
                     continue
+                if entry.not_before is not None:
+                    parsed.payload["_retry_not_before"] = entry.not_before
                 self.__count_waiting(record_key, entry, -1)
                 entry.item = (tp, found[position], parsed)
                 entry.key = self.key_extractor.extract(parsed)
@@ -1590,10 +1630,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     ) -> None:
         """Settle read-back events that no longer parse, as poison.
 
-        Each is told to the disposition sink first, as a fresh poison read is;
-        one the sink cannot take stays queued and is tried again on a later
-        pass. Those told are then marked done together, before the one commit,
-        so a failed commit strands none of them: the next commit carries them.
+        Each is reported to the disposition sink first, as a fresh poison read
+        is. That report is best effort: ``notify_abandoned`` logs a failing
+        sink and carries on, so a sink failure does not keep the event. Only
+        an unexpected error on the way keeps it queued, to be tried again on a
+        later pass. Those reported are then marked done together, before the
+        one commit, so a failed broker commit strands none of them: the next
+        commit carries them.
         """
         settled: list[tuple[TopicPartition, int]] = []
         for record_key, entry in unparseable:
@@ -2636,6 +2679,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             ):
                 return
             self._offset_tracker.track(tp, message.offset)
+            if not self.__buffer_has_room() and self.__wait_by_offset(message, parsed):
+                return
             key = self.key_extractor.extract(parsed)
             accepted = self.__schedule(key, (tp, message, parsed), self.__retry_not_before(parsed))
             if accepted != EnqueueResult.ACCEPTED:

@@ -85,8 +85,18 @@ async def _publish(bootstrap: str, topic: str, events: list[tuple[str, int]]) ->
 
 
 def _handler(
-    done: list[tuple[str, int]], holds: dict[int, threading.Event], r_running: list[int], overlaps: list[int]
+    done: list[tuple[str, int]],
+    holds: dict[int, threading.Event],
+    r_running: list[int],
+    overlaps: list[int],
+    timed_out: list[int],
 ) -> Callable[..., AsyncIterator]:
+    """Hold each event in ``holds`` until its gate opens, never less.
+
+    A gate that is still shut when the wait times out is recorded and waited
+    on again, so a slow broker query cannot let an event finish early and the
+    commit pass it before the test has looked.
+    """
     lock = threading.Lock()
 
     async def handle(parsed_message) -> AsyncIterator:
@@ -101,8 +111,8 @@ def _handler(
                     overlaps.append(seq)
             try:
                 hold = holds.get(seq)
-                if hold is not None:
-                    await asyncio.to_thread(hold.wait, DRAIN_TIMEOUT_SECONDS)
+                while hold is not None and not await asyncio.to_thread(hold.wait, DRAIN_TIMEOUT_SECONDS):
+                    timed_out.append(seq)
             finally:
                 with lock:
                     r_running.remove(seq)
@@ -160,7 +170,8 @@ async def test_a_long_running_record_holds_back_only_its_own_events(
     gate, second_gate = threading.Event(), threading.Event()
     r_running: list[int] = []
     overlaps: list[int] = []
-    await consumer.start(_handler(done, {0: gate, 1: second_gate}, r_running, overlaps))
+    timed_out: list[int] = []
+    await consumer.start(_handler(done, {0: gate, 1: second_gate}, r_running, overlaps, timed_out))
     try:
         await _wait_for(
             lambda: sum(1 for record, _ in done if record != "R") == _OTHERS,
@@ -191,6 +202,7 @@ async def test_a_long_running_record_holds_back_only_its_own_events(
         await asyncio.sleep(2.0)
         committed = await committed_offsets(kafka_available, group, topic)
         assert committed.get(0, 0) == r_offset + 1, committed
+        assert timed_out == [], f"a gate outlasted its wait while the test was still checking: {timed_out}"
 
         second_gate.set()
         await _wait_for(lambda: len(done) == total, "R's queued events to run")
@@ -202,5 +214,6 @@ async def test_a_long_running_record_holds_back_only_its_own_events(
 
     assert [seq for record, seq in done if record == "R"] == list(range(_R_EVENTS + 1))
     assert overlaps == []
+    assert timed_out == []
     committed = await committed_offsets(kafka_available, group, topic)
     assert committed.get(0) == total

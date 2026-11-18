@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,7 +25,9 @@ from app.services.messaging.kafka.consumer import (
 from app.services.messaging.kafka.consumer import remembered as remembered_module
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
+    _insertion_point,
     _ReadOutcome,
+    _WaitingEvent,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.services.resource_governor.models import ParseTier
@@ -87,9 +90,12 @@ def _consumer(**fair: object) -> IndexingKafkaConsumer:
         message: MagicMock, parsed: StreamMessage, *_: object, **__: object
     ) -> None:
         started.append((message.offset, parsed.payload["recordId"]))
+        payloads.append(dict(parsed.payload))
 
+    payloads: list[dict] = []
     consumer._IndexingKafkaConsumer__start_processing_task = AsyncMock(side_effect=start)
     consumer.started = started
+    consumer.payloads = payloads
     return consumer
 
 
@@ -713,12 +719,35 @@ async def test_a_failed_commit_while_settling_unparseable_events_strands_none_of
     assert tracker.mark_done(TP, 3) == 4
 
 
-class _Reader:
-    """A fake ``AIOKafkaConsumer`` for ``OffsetFetcher``."""
+class _Clock:
+    """A clock the test moves by hand."""
 
-    def __init__(self, *, start_error: BaseException | None = None, slow: frozenset[int] = frozenset()) -> None:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _Reader:
+    """A fake ``AIOKafkaConsumer`` for ``OffsetFetcher``.
+
+    A ``slow`` partition hands back one record a poll and moves ``clock`` on a
+    second each time; a ``slow_lookup`` partition never answers its first-offset lookup.
+    """
+
+    def __init__(
+        self,
+        *,
+        start_error: BaseException | None = None,
+        slow: frozenset[int] = frozenset(),
+        slow_lookup: frozenset[int] = frozenset(),
+        clock: _Clock | None = None,
+    ) -> None:
         self.start_error = start_error
         self.slow = slow
+        self.slow_lookup = slow_lookup
+        self.clock = clock
         self.stopped = 0
         self.positions: dict[TopicPartition, int] = {}
 
@@ -736,6 +765,8 @@ class _Reader:
         return None
 
     async def beginning_offsets(self, partitions: list) -> dict:
+        if any(tp.partition in self.slow_lookup for tp in partitions):
+            await asyncio.Event().wait()
         return dict.fromkeys(partitions, 0)
 
     def seek(self, tp: TopicPartition, offset: int) -> None:
@@ -744,8 +775,8 @@ class _Reader:
     async def getmany(self, tp: TopicPartition, timeout_ms: int = 0, max_records: int = 1) -> dict:
         offset = self.positions[tp]
         if tp.partition in self.slow:
-            # One record a poll, slowly: this partition alone outlasts the deadline.
-            await asyncio.sleep(0.02)
+            assert self.clock is not None
+            self.clock.now += 1.0
             self.positions[tp] = offset + 1
             return {tp: [_message(offset, "R", tp=tp)]}
         records = [_message(o, "R", tp=tp) for o in range(offset, offset + max_records)]
@@ -772,13 +803,30 @@ async def test_a_reader_whose_start_is_interrupted_is_stopped(
 @pytest.mark.asyncio
 async def test_a_fetch_that_runs_out_of_time_keeps_what_it_read(monkeypatch: pytest.MonkeyPatch) -> None:
     fast, slow = TP, TopicPartition(TP.topic, 1)
-    monkeypatch.setattr(remembered_module, "AIOKafkaConsumer", _Reader(slow=frozenset({1})))
+    clock = _Clock()
+    monkeypatch.setattr(remembered_module, "AIOKafkaConsumer", _Reader(slow=frozenset({1}), clock=clock))
+    fetcher = remembered_module.OffsetFetcher({}, logging.getLogger(LOGGER), clock=clock)
+
+    found, gone = await fetcher.fetch({fast: [0, 1], slow: list(range(200))}, timeout_seconds=3.0)
+
+    # Three slow polls fit before the deadline; the rest are neither found nor gone, so they are asked for again.
+    assert set(found) == {(fast, 0), (fast, 1), (slow, 0), (slow, 1), (slow, 2)}
+    assert gone == set()
+
+
+@pytest.mark.asyncio
+async def test_a_partition_whose_first_offset_lookup_hangs_does_not_hold_back_the_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fast, slow = TP, TopicPartition(TP.topic, 1)
+    monkeypatch.setattr(remembered_module, "AIOKafkaConsumer", _Reader(slow_lookup=frozenset({1})))
     fetcher = remembered_module.OffsetFetcher({}, logging.getLogger(LOGGER))
 
-    found, gone = await fetcher.fetch({fast: [0, 1], slow: list(range(200))}, timeout_seconds=0.1)
+    found, gone = await asyncio.wait_for(
+        fetcher.fetch({fast: [0, 1], slow: [0, 1]}, timeout_seconds=0.5), timeout=5.0
+    )
 
-    assert {(fast, 0), (fast, 1)} <= set(found)
-    assert len([p for p in found if p[0] == slow]) < 200
+    assert set(found) == {(fast, 0), (fast, 1)}
     assert gone == set()
 
 
@@ -804,3 +852,87 @@ async def test_a_remembered_fetch_back_never_buffers_past_the_combined_budget() 
     # The room was measured when the fetch was planned; one place is the waiting payload's.
     assert _held(consumer) == 4
     assert consumer._remembered.count(entity) == 1
+
+
+class _CountingDeque(deque):
+    """Counts indexed reads: one away from the ends is linear in a deque."""
+
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
+        self.indexed = 0
+
+    def __getitem__(self, index: int) -> object:
+        self.indexed += 1
+        return super().__getitem__(index)
+
+
+def test_finding_where_an_event_waits_walks_the_queue_without_indexing_it() -> None:
+    other = TopicPartition(TP.topic, 1)
+    waiting = _CountingDeque(_WaitingEvent(TP, offset, None, None) for offset in range(2000))
+
+    position = _insertion_point(waiting, other, 0)
+    middle = _insertion_point(waiting, TP, 999)
+
+    assert (position, middle) == (2000, 999)
+    assert waiting.indexed == 0
+
+
+@pytest.mark.asyncio
+async def test_a_record_held_back_only_by_a_revoked_partition_is_released_for_its_other_partition() -> None:
+    other = TopicPartition(TP.topic, 1)
+    consumer = _consumer()
+    consumer.governor = make_test_governor()
+    ceiling = concurrency.dispatch_budget(consumer).tiers[ParseTier.HEAVY].ceiling
+    heavy = [concurrency.GateWaiterToken(consumer, ParseTier.HEAVY) for _ in range(ceiling)]
+    consumer._in_flight_records.add("R")
+    await _enqueue(consumer, _message(10, "R", extension="pdf"))  # held: its tier is at its ceiling
+    await _enqueue(consumer, _message(11, "R"))
+    await _enqueue(consumer, _message(20, "R", tp=other), tp=other)
+    await _dispatch(consumer)
+    _finish(consumer, "R")
+    await _dispatch(consumer)
+    # R@11 waits for R@10, which is still in the scheduler, and R@20 waits behind R@11.
+    assert consumer.started == []
+
+    await consumer._on_partitions_revoked([TP])
+    for _ in range(3):
+        await _dispatch(consumer)
+
+    assert consumer.started == [(20, "R")]
+    for token in heavy:
+        token.release()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_hand_back_waits_by_offset_when_the_buffer_is_full(caplog: pytest.LogCaptureFixture) -> None:
+    consumer = _consumer(max_buffered_messages=4)
+    consumer._waiting_fetcher = _Fetcher(consumer, "R")
+    consumer._in_flight_records.add("R")
+    for offset in range(1, 5):
+        await _enqueue(consumer, _message(offset, f"B{offset}", connector="c2"))
+    message = _message(0, "R")
+    consumer._offset_tracker.track(TP, 0)
+    parsed = await consumer._IndexingKafkaConsumer__parse_message(message)
+
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        await consumer._IndexingKafkaConsumer__rebuffer_after_failed_handback(
+            message, parsed, indexing_consumer_module._InFlightOffset(TP, 0), 0.0
+        )
+
+    assert _held(consumer) == 4
+    assert consumer._record_waiting_positions == 1
+    assert any(
+        "Record R: its retry record-events-0-0, which could not be re-published, waits by offset only" in r.getMessage()
+        for r in caplog.records
+    )
+    # The watermark floors at it while it waits.
+    assert all(consumer._offset_tracker.mark_done(TP, offset) in (None, 0) for offset in range(1, 5))
+
+    await _dispatch(consumer)  # the other connector's four run, freeing the buffer
+    for _ in range(4):
+        _finish(consumer, "R")
+        await _settle(consumer)
+
+    assert (0, "R") in consumer.started
+    waited = next(p for p in consumer.payloads if p["recordId"] == "R")
+    assert "_retry_not_before" in waited
