@@ -194,6 +194,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.render_budget import FETCH_MAX_CHARS
 from app.utils.egress_ips import get_egress_ips
+from app.utils.error_class import log_failure
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.utils.not_indexed import not_indexed_note
@@ -8435,7 +8436,7 @@ async def _build_and_store_connector(
             # Connector surfaced a specific, actionable reason (e.g. multi-site OAuth
             # ambiguity). Show it to the user instead of the generic message.
             error_msg = str(init_error)  # user-written message
-            logger.error(f"❌ {error_msg}")
+            log_failure(logger, "connector.init_failed", init_error, connector_id=connector_id)
             with contextlib.suppress(Exception):
                 await dispose_connector(connector)
             raise HTTPException(
