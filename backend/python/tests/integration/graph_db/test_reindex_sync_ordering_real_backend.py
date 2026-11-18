@@ -34,7 +34,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync import sync_dispatcher
-from app.connectors.core.sync.sync_dispatcher import SubmitResult
+from app.connectors.core.sync.sync_dispatcher import SubmitResult, SyncSpec
 from app.connectors.core.sync.sync_runner import run_sync_task, write_app_status
 from app.connectors.services.event_service import EventService
 from app.connectors.sources.dropbox.connector import DropboxConnector
@@ -196,7 +196,8 @@ async def test_a_sync_a_webhook_starts_during_a_reindex_keeps_the_access_it_took
     webhook.last_sync_summary = webhook.last_action_items = None
     webhook.run_sync = run_sync
 
-    async def submit(spec: object) -> SubmitResult:
+    async def submit(spec: SyncSpec) -> SubmitResult:
+        assert (spec.connector_id, spec.connector_name, spec.org_id) == (world.conn, Connectors.DROPBOX.value, world.org)
         with for_org(world.org, job="test"):
             await run_sync_task(webhook, world.conn, world.graph, logger)
         return SubmitResult.ACCEPTED
@@ -210,10 +211,13 @@ async def test_a_sync_a_webhook_starts_during_a_reindex_keeps_the_access_it_took
             # Delivered by the webhook route, outside this reindex.
             contextvars.Context().run(webhook.handle_webhook_notification, {})
             await synced.wait()
+            # The whole run, through its end status, and any failure of it.
+            await asyncio.gather(*getattr(connector_service, "_SYNC_REQUESTS", ()))
+            app = await world.graph.get_document(world.conn, APPS)
+            assert app["status"] == AppStatus.IDLE.value and app.get(ConnectorStateKeys.LAST_SYNC_STARTED_AT)
             await world.processor.on_new_records([(world.record(), read)], replace_permissions=True)
 
     await world.reindex(Connector())
-    await asyncio.gather(*getattr(connector_service, "_SYNC_REQUESTS", ()))
 
     assert await world.readers() == {world.users["alice"]}
 
@@ -231,10 +235,46 @@ async def test_without_a_sync_the_reindex_writes_what_it_read(world: _World) -> 
     assert await world.readers() == {world.users["alice"], world.users["bob"]}
 
 
+async def test_a_sync_queued_for_a_slot_does_not_refuse_the_reindex_write(world: _World) -> None:
+    """A sync waiting for a slot has read nothing yet; its start moves the start time when it runs."""
+    await world.write("alice")
+
+    class Connector:
+        async def reindex_records(self, records: list) -> None:
+            await write_app_status(world.graph, logger, world.conn, AppStatus.QUEUED.value)
+            await world.processor.on_new_records([(world.record(), world.grants("alice", "bob"))], replace_permissions=True)
+
+    await world.reindex(Connector())
+
+    assert await world.readers() == {world.users["alice"], world.users["bob"]}
+
+
+async def test_a_sync_whose_start_was_not_recorded_is_seen_by_its_end(world: _World) -> None:
+    """Its start status write failed, in another process; the end it recorded still refuses the older write."""
+    await world.write("alice")
+
+    async def sync_elsewhere() -> None:
+        with for_org(world.org, job="test"):
+            await world.write("alice")
+            await world.graph.update_node(world.conn, APPS, {
+                "status": AppStatus.IDLE.value, ConnectorStateKeys.LAST_SYNC_FINISHED_AT: 7, "updatedAtTimestamp": 7,
+            })
+
+    class Connector:
+        async def reindex_records(self, records: list) -> None:
+            read = world.grants("alice", "bob")
+            await asyncio.create_task(sync_elsewhere(), context=contextvars.Context())
+            await world.processor.on_new_records([(world.record(), read)], replace_permissions=True)
+
+    await world.reindex(Connector())
+
+    assert await world.readers() == {world.users["alice"]}
+
+
 async def test_the_app_document_check_holds_only_while_no_sync_started(world: _World) -> None:
     store = GraphDataStore(logger, world.graph)
-    # Never synced: the start time is absent, which matches None.
-    idle = {ConnectorStateKeys.LAST_SYNC_STARTED_AT: None, "status": AppStatus.IDLE.value}
+    # Never synced: the start and end times are absent, which matches None.
+    idle = {ConnectorStateKeys.LAST_SYNC_STARTED_AT: None, ConnectorStateKeys.LAST_SYNC_FINISHED_AT: None}
     async with store.transaction(explicit=True) as tx:
         assert await tx.lock_app_if_unchanged(world.conn, idle)
 

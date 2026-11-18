@@ -1614,8 +1614,13 @@ class EventService:
                     if not stamp.tripped:
                         raise
             if stamp.tripped:
-                # Whatever it did not write is left NOT_STARTED, which the next sync or the stranded-record sweep answers.
                 self.logger.info(f"A sync of {connector_id} ran during this reindex batch; its newer writes stand over the batch's")
+                # A refused write can stop the connector before it publishes the rest of the batch: what is still
+                # NOT_STARTED is reindexed as stored, which is the sync's newer state.
+                stored = await self.graph_provider.get_typed_records_batch([r.id for r in records], raise_on_error=True)
+                left = [r for r in stored.values() if r is not None and r.indexing_status == ProgressStatus.NOT_STARTED.value]
+                if left:
+                    await connector.data_entities_processor.reindex_existing_records(left)
 
             total_processed += len(records)
 

@@ -572,31 +572,39 @@ class TestSharingEvents:
 
 class TestOverlappingRuns:
     @staticmethod
-    def start_path(monkeypatch: pytest.MonkeyPatch, connector: BoxConnector) -> list[SyncSpec]:
+    async def until_requested(requested: asyncio.Event) -> None:
+        """The webhook's request reached the start path while the first sync is still held."""
+        async with asyncio.timeout(10):
+            await requested.wait()
+
+    @staticmethod
+    def start_path(monkeypatch: pytest.MonkeyPatch, connector: BoxConnector) -> tuple[list[SyncSpec], asyncio.Event]:
         """A webhook asks the sync start path for a run, which then runs ``run_sync`` (here at once, as run_sync_task would)."""
         requests: list[SyncSpec] = []
+        requested = asyncio.Event()
 
         async def submit(spec: SyncSpec) -> SubmitResult:
             requests.append(spec)
+            requested.set()
             await connector.run_sync()
             return SubmitResult.ACCEPTED
 
         monkeypatch.setattr(sync_dispatcher._Registry, "dispatcher", SimpleNamespace(submit=submit))
-        return requests
+        return requests, requested
 
     async def test_a_webhook_during_a_sync_runs_one_follow_up_after_it(self, box_api, db, checkpoints, monkeypatch) -> None:
         enterprise(box_api, db)
         box_api.add_file("file-1", "plan.pdf", ALICE)
         connector = await ready_connector(db, checkpoints)
-        requests = self.start_path(monkeypatch, connector)
+        requests, requested = self.start_path(monkeypatch, connector)
         reached, release = box_api.hold("GET", "/2.0/users")
         full_sync = asyncio.create_task(connector.run_sync())
-        await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
-
-        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
-        for _ in range(5):
-            await asyncio.sleep(0)
-        release.set()
+        try:
+            assert await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
+            connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+            await self.until_requested(requested)
+        finally:
+            release.set()
         await full_sync
         others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         await asyncio.gather(*others)
@@ -619,13 +627,15 @@ class TestOverlappingRuns:
             created_by=by(ALICE, box_api), additional_details={"collab_id": collab_id},
         )
         connector = await ready_connector(db, checkpoints)
-        self.start_path(monkeypatch, connector)
+        requests, requested = self.start_path(monkeypatch, connector)
         reached, release = box_api.hold("GET", "/2.0/events", {"stream_type": "admin_logs", "stream_position": "5"})
         full_sync = asyncio.create_task(connector.run_sync())
-        await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
-
-        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
-        release.set()
+        try:
+            assert await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
+            connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+            await self.until_requested(requested)
+        finally:
+            release.set()
         await full_sync
         await asyncio.gather(*[t for t in asyncio.all_tasks() if t is not asyncio.current_task()])
 
@@ -638,17 +648,22 @@ class TestOverlappingRuns:
         enterprise(box_api, db)
         box_api.add_file("file-a", "a.txt", ALICE)
         connector = await synced_connector(box_api, db, checkpoints)
-        self.start_path(monkeypatch, connector)
+        requests, requested = self.start_path(monkeypatch, connector)
         old = int((datetime.now(timezone.utc) - timedelta(days=15)).timestamp() * 1000)
         checkpoints.cursor()["cursor_updated_at"] = old
         box_api.fail("GET", "/2.0/folders/0/items", 503, times=1000, as_user=ALICE)
+        users_before = len(box_api.calls("GET", "/2.0/users"))
         reached, release = box_api.hold("GET", "/2.0/users")
         full_sync = asyncio.create_task(connector.run_sync())
-        await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
-
-        connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
-        release.set()
+        try:
+            assert await asyncio.get_running_loop().run_in_executor(None, reached.wait, 10)
+            connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+            await self.until_requested(requested)
+        finally:
+            release.set()
         await full_sync
         await asyncio.gather(*[t for t in asyncio.all_tasks() if t is not asyncio.current_task()])
 
+        # The held full sync and the webhook's follow-up both ran a full sync, and neither moved the stale cursor.
+        assert len(box_api.calls("GET", "/2.0/users")) - users_before == 2
         assert checkpoints.cursor()["cursor_updated_at"] == old

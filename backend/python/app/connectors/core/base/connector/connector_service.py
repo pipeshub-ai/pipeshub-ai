@@ -133,6 +133,18 @@ _SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValu
 # Strong references to the tasks request_sync starts: the loop keeps only weak ones.
 _SYNC_REQUESTS: "set[asyncio.Task[None]]" = set()
 
+# Syncs started per connector in this process. A reindex compares it, so a sync it overlapped is seen even when the
+# sync's status writes to the store failed.
+_SYNCS_STARTED: dict[str, int] = {}
+
+
+def note_sync_started(connector_id: str) -> None:
+    _SYNCS_STARTED[connector_id] = _SYNCS_STARTED.get(connector_id, 0) + 1
+
+
+def syncs_started(connector_id: str) -> int:
+    return _SYNCS_STARTED.get(connector_id, 0)
+
 
 def connector_sync_lock(connector_id: str) -> asyncio.Lock:
     lock = _SYNC_LOCKS.get(connector_id)
@@ -421,7 +433,9 @@ class BaseConnector(ABC):
         """Ask for a sync of this connector the way a schedule does, for a connector that learns of a change itself
         (a webhook). Never call ``run_sync`` directly for that: only the sync start path takes the connector's lease and
         lock and writes the status and start time a running reindex checks before it writes."""
-        task = asyncio.get_running_loop().create_task(self._request_sync())
+        from app.core.org_context import spawn_in_request
+
+        task = spawn_in_request(self._request_sync(), name=f"request_sync_{self.connector_id}")
         _SYNC_REQUESTS.add(task)
         task.add_done_callback(_SYNC_REQUESTS.discard)
         return task
@@ -438,17 +452,22 @@ class BaseConnector(ABC):
         if dispatcher is None:
             self.logger.warning(f"No sync dispatcher configured; cannot request a sync of {self.connector_id}")
             return
-        result = await dispatcher.submit(SyncSpec(
+        spec = SyncSpec(
             connector_id=self.connector_id,
             connector_name=self.connector_name.value,
             org_id=self.data_entities_processor.org_id or "",
-        ))
+        )
+        result = await dispatcher.submit(spec)
         if result is SubmitResult.DECLINED_RUNNING:
             # The running sync may have read the source before this change; its finalizer re-issues the request.
             await self.data_store_provider.graph_provider.update_node(
                 self.connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
             )
-        elif result is SubmitResult.FAILED:
+            # The finalizer reads the flag after it releases the lease: if that sync ended before the flag landed,
+            # nothing re-issues it, so ask again.
+            if not await dispatcher.is_running(self.connector_id):
+                result = await dispatcher.submit(spec)
+        if result is SubmitResult.FAILED:
             self.logger.error(f"Could not request a sync of {self.connector_id}")
 
     # Names of the zero-argument steps of this connector's own sync that create the user,

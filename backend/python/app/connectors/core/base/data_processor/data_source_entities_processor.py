@@ -161,19 +161,23 @@ class SyncStamp:
     """The connector's sync state when a reindex began: its writes commit only while it still holds (see :func:`unless_synced_since`)."""
 
     connector_id: str
-    #: The app document's fields a sync start moves; None when a sync was already running, so nothing the reindex read is safe to write.
+    #: The app document's fields a sync's start and end move; None when a sync was already running, so nothing the reindex
+    #: read is safe to write.
     expected: dict[str, Any] | None
+    #: Syncs started in this process: a fence no failed status write can lose.
+    started_here: int = 0
     tripped: bool = False
 
     async def check(self, tx_store: TransactionStore) -> None:
         from app.connectors.core.base.connector.connector_service import (
             connector_sync_lock,
+            syncs_started,
         )
 
-        # The in-process lock as well: a sync whose start status could not be written still holds it.
         if (
             self.expected is None
             or connector_sync_lock(self.connector_id).locked()
+            or syncs_started(self.connector_id) != self.started_here
             or not await tx_store.lock_app_if_unchanged(self.connector_id, self.expected)
         ):
             self.tripped = True
@@ -193,18 +197,22 @@ async def unless_synced_since(graph_provider: IGraphDBProvider, connector_id: st
     """
     from app.connectors.core.base.connector.connector_service import (
         connector_sync_lock,
+        syncs_started,
     )
 
-    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    started_here = syncs_started(connector_id)
+    # A failed read is an error, not a sign that a sync ran.
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
     running = (
         not app
         or connector_sync_lock(connector_id).locked()
         or app.get("status") in (AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value)
     )
+    # Not the status: a sync queued for a slot has not read the source, and its start moves the start time.
     stamp = SyncStamp(connector_id, None if running else {
         ConnectorStateKeys.LAST_SYNC_STARTED_AT: app.get(ConnectorStateKeys.LAST_SYNC_STARTED_AT),
-        "status": app.get("status"),
-    })
+        ConnectorStateKeys.LAST_SYNC_FINISHED_AT: app.get(ConnectorStateKeys.LAST_SYNC_FINISHED_AT),
+    }, started_here)
     token = _REINDEX_STAMP.set(stamp)
     try:
         yield stamp
@@ -7347,7 +7355,8 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
-        async with self.data_store_provider.transaction() as tx_store:
+        # _sync_transaction: a reindex's path rewrite (Dropbox's moved folders) is checked against its stamp too.
+        async with self._sync_transaction() as tx_store:
             return await tx_store.batch_update_nodes(nodes, collection)
 
     @retry_on_deadlock()
