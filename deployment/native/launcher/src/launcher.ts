@@ -64,7 +64,8 @@ export const alive = (pid: number | undefined): boolean => {
   try { process.kill(pid, 0); } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
   return !zombie(pid);
 };
-const group = (pid: number, signal: NodeJS.Signals) => { try { process.kill(-pid, signal); } catch { /* already gone */ } };
+// pid 1 or 0 would make -pid every process of this user, or this launcher's own group: never from a state file.
+const group = (pid: number, signal: NodeJS.Signals) => { if (pid > 1) try { process.kill(-pid, signal); } catch { /* already gone */ } };
 
 /** This boot's id: Linux's boot_id, macOS's boot time. */
 export function bootId(): string | undefined {
@@ -91,8 +92,18 @@ export const sameProcess = (pid: number | undefined, id: string | undefined): bo
 
 /** A process group still has a member. Only ESRCH proves it is gone; any other answer counts as alive. */
 export const groupAlive = (pgid: number): boolean => {
+  if (pgid <= 1) return false;
   try { process.kill(-pgid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; }
 };
+
+/** SIGKILL is not proof of exit (a process in an uninterruptible wait outlives it): wait until each group is gone, or throw. */
+async function killGroups(pgids: number[], waitMs = 10_000): Promise<void> {
+  pgids.forEach((p) => group(p, "SIGKILL"));
+  const until = Date.now() + waitMs;
+  while (pgids.some(groupAlive) && Date.now() < until) await sleep(100);
+  const left = pgids.filter(groupAlive);
+  if (left.length) throw new Error(`process groups ${left.join(", ")} are still running after SIGKILL`);
+}
 
 /**
  * A group this launcher started is still there. While the group exists its leader's pid cannot be handed to another
@@ -148,7 +159,8 @@ export async function acquireLock(dataDir: string, python: string): Promise<Lock
     let buf = "";
     p.stdout!.on("data", (c) => { buf += c; const i = buf.indexOf("\n"); if (i >= 0) res(buf.slice(0, i)); });
     p.once("error", (e) => res(`error ${e.message}`));
-    p.once("exit", (code) => res(buf.split("\n")[0] || `error the lock helper exited (${code}) ${err.trim()}`));
+    // close, not exit: by then the helper's "busy" line has been read
+    p.once("close", (code) => res(buf.split("\n")[0] || `error the lock helper exited (${code}) ${err.trim()}`));
   });
   if (first === "locked") return { release: () => { p.stdin!.end(); }, lost: exited };
   if (first === "busy") return "busy";
@@ -182,9 +194,10 @@ function runStep(c: Ctx, steps: Steps, name: string, cmd: string, args: string[]
   return new Promise((res, rej) => {
     const p = spawn(cmd, args, { cwd, env, detached: true, stdio: ["ignore", fd, fd] });
     steps.current = p;
-    steps.onSpawn?.(name, p.pid);
+    let recordErr: Error | undefined;
     const done = (err?: Error) => {
       closeSync(fd);
+      err ??= recordErr;
       if (steps.current === p) {
         steps.current = undefined;
         // Thrown here it would escape the exit callback and leave the promise (and the shutdown waiting on it) unsettled.
@@ -197,6 +210,9 @@ function runStep(c: Ctx, steps: Steps, name: string, cmd: string, args: string[]
       if (steps.cancelled) return done(new Cancelled());
       done(code === 0 ? undefined : new Error(redact(`${name} failed (${code ?? sig}); see ${log}\n${tail(log)}`, c.secrets)));
     });
+    // Recorded once the handlers are in place: if the record fails, the step is still awaited (a pg_ctl start's server must be
+    // up and in postmaster.pid before the shutdown looks for it) and its failure comes after.
+    try { steps.onSpawn?.(name, p.pid); } catch (e) { recordErr = e as Error; }
   });
 }
 
@@ -324,7 +340,8 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     url: "", ports: {} as Ports, services: {}, serviceIds: {}, leftover: previous,
   };
   const save = () => writeJson(statePath(dataDir), state);
-  save();
+  // Nothing is started yet: free the lock and let the caller report it. A failed write leaves the old state file whole.
+  try { save(); } catch (e) { held.release(); throw e; }
   let secrets: Secrets | undefined;
   const mask = (text: string) => (secrets ? redact(text, secrets) : text);
 
@@ -386,13 +403,14 @@ export async function start(o: Options, emit: Emit): Promise<number> {
     delete state.leftover; save();
     if (stopping) throw new Cancelled();
     const saved = readJson<Ports>(join(dataDir, "ports.json"));
-    // The API's address is stored in the database's settings on its first start (auth, storage and other endpoints), so it
-    // must not move for the life of the data folder: a taken port is reported instead of quietly replaced.
-    if (saved?.api && existsSync(join(lay.pgData, "PG_VERSION")) && !(await isFree(saved.api))) {
-      throw new StartError("port_in_use", `port ${saved.api} on 127.0.0.1 is in use by another program; PipesHub's stored addresses use it. Stop that program and start again.`);
-    }
     secrets = loadSecrets(dataDir, nonEmpty(lay.pgData));
     const ports = await pickPorts(saved, o.portBase);
+    // The API's address is stored in the database's settings on its first start (auth, storage and other endpoints), so it
+    // must not move for the life of the data folder: a taken port is reported instead of quietly replaced. Decided from the
+    // same probe that picked the ports, before ports.json is written.
+    if (saved?.api && existsSync(join(lay.pgData, "PG_VERSION")) && ports.api !== saved.api) {
+      throw new StartError("port_in_use", `port ${saved.api} on 127.0.0.1 is in use by another program; PipesHub's stored addresses use it. Stop that program and start again.`);
+    }
     writeJson(join(dataDir, "ports.json"), ports);
     const c: Ctx = { layout: lay, ports, secrets };
     state.ports = ports; state.url = apiUrl(c); save();
@@ -426,14 +444,12 @@ export async function start(o: Options, emit: Emit): Promise<number> {
   pids.forEach((p) => group(p, "SIGTERM"));
   const until = Date.now() + (o.stopWaitS ?? 30) * 1000;
   while (Date.now() < until && pids.some((p) => alive(p))) await sleep(200);
-  pids.forEach((p) => group(p, "SIGKILL"));
-  try {
-    await stopPostgres(lay);
-    rmSync(statePath(dataDir), { force: true });
-  } catch (e) {
-    // The state stays, so the next start or stop ends this server.
-    emit({ event: "error", code: "stop_failed", message: (e as Error).message }); exitCode = 1;
-  }
+  let failed: Error | undefined;
+  try { await killGroups(pids); } catch (e) { failed = e as Error; }
+  try { await stopPostgres(lay); } catch (e) { failed ??= e as Error; }
+  // On failure the state stays, so the next start or stop ends what is left.
+  if (failed) { emit({ event: "error", code: "stop_failed", message: failed.message }); exitCode = 1; }
+  else rmSync(statePath(dataDir), { force: true });
   stopping = true;
   held.release();
   process.off("SIGTERM", onSignal); process.off("SIGINT", onSignal);
@@ -459,11 +475,11 @@ export async function reapLeftovers(dataDir: string, lay: Layout, s: State | und
     if (!pgCtl) group(step.pid, "SIGTERM");
     const until = Date.now() + (pgCtl ? 70_000 : 10_000);
     while (groupAlive(step.pid) && Date.now() < until) await sleep(100);
-    group(step.pid, "SIGKILL");
+    await killGroups([step.pid]);
   }
   // A service's leader may have exited while its workers live on: the group is what counts.
-  if (sameBoot) for (const [name, pid] of Object.entries(s?.services ?? {})) {
-    if (pid && ownGroupAlive(pid, s?.serviceIds?.[name as ProcessName])) group(pid, "SIGKILL");
+  if (sameBoot) {
+    await killGroups(Object.entries(s?.services ?? {}).filter(([name, pid]) => pid && ownGroupAlive(pid, s?.serviceIds?.[name as ProcessName])).map(([, pid]) => pid!));
   }
   // The server is not one of the services: pg_ctl started it, so it outlives a killed launcher.
   await stopPostgres(lay);
@@ -505,13 +521,24 @@ async function stopPid(pid: number, dataDir: string, lay: Layout, o: Options, em
   while (alive(pid) && Date.now() < until) await sleep(200);
   if (alive(pid)) { emit({ event: "error", code: "stop_failed", message: `launcher ${pid} did not stop` }); return 1; }
   // If the launcher died rather than stopped, its step or server may still be up. Under the lock, and only if no new start
-  // has taken it meanwhile: that start owns the data folder now.
-  let lock: Lock | "busy" | undefined;
-  try { lock = await acquireLock(dataDir, lay.python); } catch { /* the launcher stopped; nothing more can be done without the lock */ }
-  if (lock && lock !== "busy") {
-    try { await reapLeftovers(dataDir, lay); } catch (e) {
+  // has taken it meanwhile: that start owns the data folder now. The dead launcher's lock helper can hold the lock a moment
+  // longer, so "busy" alone proves neither.
+  const lockUntil = Date.now() + 15_000;
+  for (;;) {
+    let lock: Lock | "busy";
+    try { lock = await acquireLock(dataDir, lay.python); } catch (e) {
       emit({ event: "error", code: "stop_failed", message: (e as Error).message }); return 1;
-    } finally { lock.release(); }
+    }
+    if (lock !== "busy") {
+      try { await reapLeftovers(dataDir, lay); } catch (e) {
+        emit({ event: "error", code: "stop_failed", message: (e as Error).message }); return 1;
+      } finally { lock.release(); }
+      break;
+    }
+    const next = running(dataDir);
+    if (next && next.pid !== pid) break;
+    if (Date.now() > lockUntil) { emit({ event: "error", code: "stop_failed", message: `launcher ${pid} stopped, but ${lockPath(dataDir)} is still held` }); return 1; }
+    await sleep(200);
   }
   emit({ event: "stopped", was_running: true });
   return 0;
@@ -554,6 +581,7 @@ export async function startDetached(o: Options, emit: Emit, args: string[], self
   p.unref(); closeSync(fd);
   const until = Date.now() + ((o.healthTimeoutS ?? 300) + 120) * 1000;
   let exited = false; p.once("exit", () => { exited = true; });
+  p.once("error", () => { exited = true; });   // could not run at all: without a listener this would throw
   for (;;) {
     const s = readState(dataDir);
     if (s && s.pid === p.pid && s.phase === "ready") { emit({ event: "ready", url: s.url, ports: s.ports, healthy_after_s: s.healthyAfterS, pid: s.pid, data_dir: dataDir }); return 0; }

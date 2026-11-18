@@ -2,7 +2,7 @@
 // environment each process gets. The environment follows docker-compose.postgres-only.yml and process_monitor.sh (one login
 // per service), with every address on loopback. Pure functions where possible, so the unit tests can pin them.
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -85,9 +85,11 @@ export async function pickPorts(saved: Partial<Ports> = {}, base?: number, isFre
   const ports = {} as Ports;
   for (const name of SERVICES) {
     let port = saved[name];
+    // A hand-edited or damaged ports.json: an out-of-range port would make the probe throw on every start.
+    if (!Number.isInteger(port) || port! < 1 || port! > 65535) port = undefined;
     if (!port || used.has(port) || !(await isFreeFn(port))) {
       port = undefined;
-      if (base) for (let p = base; p < 65535 && !port; p++) if (!used.has(p) && (await isFreeFn(p))) port = p;
+      if (base) for (let p = base; p <= 65535 && !port; p++) if (!used.has(p) && (await isFreeFn(p))) port = p;
       // The OS may hand back a port it gave earlier in this run: those listeners were closed again.
       for (let tries = 0; port === undefined && tries < 100; tries++) {
         const p = await freePortFn();
@@ -111,9 +113,13 @@ export type Secrets = Record<`pg_${(typeof PG_LOGINS)[number]}` | (typeof APP_SE
 export function writeJson(path: string, value: unknown, mode = 0o600): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2), { mode });
-  chmodSync(tmp, mode);
-  renameSync(tmp, path);
+  // Created afresh (wx: never through a leftover file or a symlink at that name), so the secrets are 0600 from the first byte.
+  rmSync(tmp, { force: true });
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2), { mode, flag: "wx" });
+    chmodSync(tmp, mode);
+    renameSync(tmp, path);
+  } catch (e) { rmSync(tmp, { force: true }); throw e; }
 }
 
 export function readJson<T>(path: string): T | undefined {
@@ -244,7 +250,8 @@ export function socketDir(c: Ctx, platform = process.platform): string {
   return max && Buffer.byteLength(`${c.layout.run}/.s.PGSQL.${c.ports.pg}`) <= max ? c.layout.run : "";
 }
 
-const quote = (v: string) => `'${v.replace(/'/g, "''")}'`;
+// The settings file reads backslash escapes inside quotes, so a literal backslash is doubled first.
+const quote = (v: string) => `'${v.replace(/\\/g, "\\\\").replace(/'/g, "''")}'`;
 // unix_socket_directories is a comma-separated list: one double-quoted entry keeps a folder with a comma whole.
 const listEntry = (dir: string) => (dir ? `"${dir.replace(/"/g, '""')}"` : "");
 

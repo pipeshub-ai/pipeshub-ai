@@ -16,6 +16,12 @@ describe("parse", () => {
     assert.throws(() => parse(["start", "--nope"]), /unknown option/);
     assert.throws(() => parse(["start", "--data-dir"]), /needs a value/);
     assert.throws(() => parse(["start", "--port-base", "abc"]), /between 1024 and 65000/);
+    // an empty folder would be the current one; an option is not a folder; a second command is not silently dropped
+    assert.throws(() => parse(["stop", "--data-dir", ""]), /needs a value/);
+    assert.throws(() => parse(["stop", "--data-dir="]), /needs a value/);
+    assert.throws(() => parse(["stop", "--data-dir", "--json"]), /needs a value/);
+    assert.throws(() => parse(["stop", "now"]), /unexpected argument/);
+    assert.equal(parse(["stop", "--data-dir", "./--x"]).opts.dataDir, "./--x");
   });
 });
 

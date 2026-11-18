@@ -42,10 +42,10 @@ replaced: the start stops and says so, because the database already uses those p
 
 | Command | Behaviour | Exit |
 |---|---|---|
-| `start [--data-dir D] [--json] [--detach]` | the steps above; stays in the foreground until TERM/INT or a service dies; `--detach` returns after `ready` | 0 stopped on request, 1 start-up failed, 3 a service died |
+| `start [--data-dir D] [--json] [--detach]` | the steps above; stays in the foreground until TERM/INT or a service dies; `--detach` returns after `ready` | 0 stopped on request (with `--detach`: ready, and still running), 1 start-up failed, 3 a service died |
 | `stop [--data-dir D] [--json]` | stops a running launcher and everything under it; also ends leftovers of a crashed launcher | 0 stopped (also when none runs), 1 `stop_failed` |
-| `status [--data-dir D] [--json]` | `{"running","phase","pid","url","ports","services":{name:{pid,alive}}}` | 0 running, 3 not |
-| `health [--data-dir D] [--json]` | `{"healthy","checks":{api,pg,...}}` | 0 healthy, 1 not |
+| `status [--data-dir D] [--json]` | `{"running","phase","pid","url","ports","services":{name:{pid,alive}}}`; when none runs, `{"running":false,"data_dir"}` | 0 running, 3 not |
+| `health [--data-dir D] [--json]` | `{"healthy","checks":{api,pg,...}}`; when none runs, `{"healthy":false,"reason":"not running"}` | 0 healthy, 1 not |
 
 `--json` prints one object per line, each with an `event` field: `progress` (`stage`: initdb, postgres, schema, services, health;
 `message`: the same for people), `ready` (`url`, `ports`, `healthy_after_s`, `pid`, `data_dir`), `service_exited` (`service`, `code`,
