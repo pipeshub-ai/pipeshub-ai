@@ -96,19 +96,18 @@ class TestHandleInitException:
 
     @pytest.mark.asyncio
     async def test_init_general_exception(self, service):
-        """Lines 209-211: exception during init logs error with org_id."""
+        """An exception during init reaches the consumer, which logs it once (F27)."""
         service.graph_provider.get_document = AsyncMock(
             return_value={"_key": "c1", "scope": "personal", "createdBy": "u1"}
         )
         with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
              patch("app.connectors.services.event_service.GraphDataStore"):
             mock_factory.create_connector = AsyncMock(side_effect=Exception("unexpected error"))
-            result = await service._handle_init("gmail", {
-                "orgId": "org1", "connectorId": "c1"
-            })
-            assert result is False
-            # Verify the error was logged (the format uses %s for org_id and exception)
-            service.logger.error.assert_called()
+            with pytest.raises(Exception, match="unexpected error"):
+                await service._handle_init("gmail", {
+                    "orgId": "org1", "connectorId": "c1"
+                })
+            service.logger.error.assert_not_called()
 
 
 # ===========================================================================
