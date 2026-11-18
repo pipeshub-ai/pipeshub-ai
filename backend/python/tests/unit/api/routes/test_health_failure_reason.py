@@ -141,3 +141,69 @@ async def test_provider_text_naming_internals_is_dropped() -> None:
     ):
         _, body = await _check(_openai_error(openai.InternalServerError, 500, leaked))
         assert "said:" not in body["message"], leaked
+
+
+class _StatuslessProviderError(Exception):
+    pass
+
+
+_StatuslessProviderError.__module__ = "anthropic"
+
+
+async def test_a_quota_named_only_in_the_text_gets_the_billing_advice() -> None:
+    text = "Your credit balance is too low to access the Anthropic API."
+    response = await _model_setup_failed_response(  # type: ignore[arg-type]
+        "chat model", {"provider": "anthropic", "configuration": {"model": "claude"}}, "claude",
+        _StatuslessProviderError(text),
+    )
+    body = json.loads(response.body)
+    assert response.status_code == 400
+    assert body["details"]["error_code"] == "quota_exceeded"
+    assert "exhausted quota" in body["message"]
+    assert body["message"].endswith(f'said: "{text}"')
+
+
+async def test_a_provider_5xx_that_mentions_a_refused_connection_is_not_an_unreachable_endpoint() -> None:
+    status, body = await _check(_openai_error(openai.InternalServerError, 502, "upstream connection refused"))
+    assert status == 502
+    assert body["details"]["error_code"] == "provider_error"
+    assert "Check the endpoint address" not in body["message"]
+
+
+async def _check_with(provider: str, endpoint: str) -> dict:
+    config = {"provider": provider, "configuration": {"model": "gpt-6-luna", "apiKey": _KEY, "endpoint": endpoint}}
+    error = _openai_error(openai.RateLimitError, 429, "Rate limit reached for requests.")
+    response = await _model_setup_failed_response("chat model", config, "gpt-6-luna", error)  # type: ignore[arg-type]
+    return json.loads(response.body)
+
+
+async def test_an_openai_provider_pointed_at_another_server_keeps_that_server_text_in_the_log() -> None:
+    for provider, endpoint in (
+        ("openAI", "https://llm-gateway.example.com/v1"),
+        ("azureOpenAI", "https://apim.example.com/openai"),
+        ("azureAI", "https://models.example.net/v1"),
+    ):
+        body = await _check_with(provider, endpoint)
+        assert "said:" not in body["message"], provider
+
+
+async def test_the_vendor_own_endpoints_still_quote_the_reason() -> None:
+    for provider, endpoint in (
+        ("openAI", "https://us.api.openai.com/v1"),
+        ("azureOpenAI", "https://team.openai.azure.com/"),
+        ("azureAI", "https://team.services.ai.azure.com/models"),
+    ):
+        body = await _check_with(provider, endpoint)
+        assert body["message"].endswith('said: "Rate limit reached for requests."'), provider
+
+
+async def test_provider_text_naming_a_private_ipv6_address_is_dropped() -> None:
+    for leaked in ("upstream [fd00::1]:8080 refused", "peer ::1 closed", "fe80::1%eth0 is down"):
+        _, body = await _check(_openai_error(openai.InternalServerError, 500, leaked))
+        assert "said:" not in body["message"], leaked
+
+
+async def test_provider_text_with_a_public_address_or_a_time_is_kept() -> None:
+    reason = "Retry after 12:30:45 UTC; status page at 2606:4700::1111."
+    _, body = await _check(_openai_error(openai.InternalServerError, 500, reason))
+    assert body["message"].endswith(f'said: "{reason}"')

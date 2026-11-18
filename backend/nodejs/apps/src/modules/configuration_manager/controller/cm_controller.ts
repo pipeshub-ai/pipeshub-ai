@@ -3350,14 +3350,19 @@ const healthCheckFailureMessage = (data: unknown, fallback: string): string => {
       value !== null && typeof value === 'object'
         ? (value as { message?: unknown }).message
         : value;
-    return typeof text === 'string' && text.trim() !== '' ? text.trim() : undefined;
+    return typeof text === 'string' && text.trim() !== ''
+      ? text.trim()
+      : undefined;
   };
   if (data === null || typeof data !== 'object') {
     return textOf(data) ?? fallback;
   }
   const body = data as { message?: unknown; error?: unknown; detail?: unknown };
   return (
-    textOf(body.message) ?? textOf(body.error) ?? textOf(body.detail) ?? fallback
+    textOf(body.message) ??
+    textOf(body.error) ??
+    textOf(body.detail) ??
+    fallback
   );
 };
 
