@@ -1197,7 +1197,9 @@ class TestProcessMessageWrapper:
                 return_value=0.01,
             ),
         ):
-            await asyncio.wait_for(two_started.wait(), timeout=1)
+            # No wall-clock bound: a busy runner stalled this loop 1.5 s with both records admitted (pytest's
+            # --timeout still catches a hang).
+            await two_started.wait()
             await asyncio.sleep(0.05)
             assert len(started) == 2
             assert manager.max_active["indexing"] == 2
