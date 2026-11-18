@@ -358,8 +358,12 @@ def step(
         )
 
     grow_band = (
-        util < profile.cpu_brake - GROW_UTIL_MARGIN
-        and (profile.cpu_psi_brake is None or psi < profile.cpu_psi_brake - GROW_PSI_MARGIN)
+        # The margins shrink with a low brake, so an idle CPU can still grow.
+        util < profile.cpu_brake - min(GROW_UTIL_MARGIN, profile.cpu_brake / 2)
+        and (
+            profile.cpu_psi_brake is None
+            or psi < profile.cpu_psi_brake - min(GROW_PSI_MARGIN, profile.cpu_psi_brake / 2)
+        )
         and (profile.cpu_throttle_brake is None or throttled < profile.cpu_throttle_brake / GROW_THROTTLE_DIVISOR)
     )
     new, slow_step = limit, rec.slow_start_step
@@ -593,7 +597,9 @@ class LiveLimit:
     def reresolve_after_s(self) -> float:
         """How long after the last resolve a retryable mode is resolved again."""
         if self._mode.mode == "off:unread" and self._unread_tries > 0:
-            return min(RERESOLVE_S, UNREAD_RERESOLVE_S * 2 ** (self._unread_tries - 1))
+            # The exponent is bounded: after about a thousand tries the float
+            # product would overflow and end the sampler.
+            return min(RERESOLVE_S, UNREAD_RERESOLVE_S * 2 ** min(self._unread_tries - 1, 16))
         return RERESOLVE_S
 
     async def _run(self) -> None:
@@ -816,6 +822,10 @@ class LiveLimit:
                 # Only a stopped lock holder keeps the lock this long; the next
                 # sample still catches a real shortage.
                 return None
+            # The clock again: the reading and the lock may have taken long
+            # enough that a charge another worker made meanwhile would look
+            # like one from before a clock restart, and be dropped.
+            now = self._clock()
             rec = txn.read()
             if rec is None:
                 rec = self._replacement(txn, now)
