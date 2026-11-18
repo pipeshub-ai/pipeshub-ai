@@ -127,6 +127,7 @@ def _make_record(record_id="rec-1", external_id="file-1", record_name="test.txt"
     r.extraction_status = extraction_status
     r.record_type = RecordType.FILE
     r.connector_id = "drive-fc-1"
+    r.mime_type = "text/plain"
     return r
 
 
@@ -1961,6 +1962,7 @@ def _make_record(record_id="rec-1", external_id="file-1", record_name="test.txt"
     r.extraction_status = extraction_status
     r.record_type = RecordType.FILE
     r.connector_id = "drive-fc-1"
+    r.mime_type = "text/plain"
     return r
 
 

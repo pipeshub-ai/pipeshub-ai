@@ -370,12 +370,15 @@ class FakeEntitiesProcessor:
         stored = self.records.get(external_record_id)
         return self._plain(stored) if stored is not None else None
 
-    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str | None = None) -> list[Any]:
+    async def get_records_by_parent(
+        self, connector_id: str, parent_external_record_id: str, record_type: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Any]:
         return [
             self._plain(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or str(getattr(r.record_type, "value", r.record_type)) == str(getattr(record_type, "value", record_type)))
-            and is_live_record(r)
+            and matches_visibility(r, visibility)
         ]
 
     async def get_records_by_status(
