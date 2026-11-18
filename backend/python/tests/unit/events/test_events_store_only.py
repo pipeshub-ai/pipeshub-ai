@@ -22,6 +22,7 @@ from app.modules.indexing.parse_now_marker import (
 )
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.transformers.transformer import PARSE_NOW, STORE_ONLY
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.events.test_events import (
     DedupDecision,
     _drain,
@@ -72,7 +73,8 @@ def _setup(
 
 
 def _writes(gp: AsyncMock) -> list[dict[str, Any]]:
-    return [call.args[2] for call in gp.update_node.await_args_list]
+    # a write of the revision is first tried conditional on the stored revision (the count rule), then written plain
+    return [call.args[2] for call in [*gp.update_node.await_args_list, *gp.update_node_fields_if_match.await_args_list]]
 
 
 def _event(**kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
@@ -96,6 +98,7 @@ class TestStoreOnly:
         writes = _writes(gp)
         assert writes
         assert all(not STATUS_FIELDS & set(write) for write in writes)
+        # the revision write is tried conditional on the stored revision first (a count belongs to its content; the store keeps it only for the same one)
         assert {"contentRev": REV, "parseNowStatus": "IN_PROGRESS", "parseNowRev": REV, "parseNowReason": None, "parseNowAt": ANY} in writes
 
     async def test_a_finished_twin_is_not_attached_to(self) -> None:
@@ -199,6 +202,7 @@ class TestLegacyProcessorWrites:
         processor.graph_provider = AsyncMock()
         processor.graph_provider.get_document = AsyncMock(return_value={"_key": "rec-1", "parsingStatus": "IN_PROGRESS"})
         processor.graph_provider.update_node = AsyncMock(return_value=True)
+        processor.graph_provider.write_attempt_start = attempt_start_via(processor.graph_provider)
 
         await processor._mark_record("rec-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason="Too large")
 

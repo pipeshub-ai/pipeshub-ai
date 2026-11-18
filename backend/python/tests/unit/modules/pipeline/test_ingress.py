@@ -28,6 +28,7 @@ def _ingress(document: dict[str, object] | None) -> tuple[StageIngress, AsyncMoc
     coordinator, graph = AsyncMock(), AsyncMock()
     coordinator.on_external_done = AsyncMock(return_value=["job"])
     graph.get_document = AsyncMock(return_value=document)
+    graph.update_node_fields_if_match = AsyncMock(return_value=False)  # the record holds no such revision: the count goes
     return StageIngress(coordinator, graph, MagicMock()), coordinator, graph
 
 
@@ -67,7 +68,8 @@ async def test_a_missing_revision_is_derived_from_the_blocks_and_stored() -> Non
     record = _record()
     await ingress.on_indexed(record, trigger=None)
     rev = content_facts(record.block_containers).blocks_digest[:16]
-    graph.update_node.assert_awaited_once_with("rec-1", "records", {"contentRev": rev})
+    # a record with no revision holds no count it can vouch for: it goes with the new revision (the rule of write_attempt_start)
+    graph.update_node.assert_awaited_once_with("rec-1", "records", {"contentRev": rev, "pageCount": None})
     assert coordinator.on_external_done.await_args.args[1].rev == rev
     assert coordinator.on_external_done.await_args.kwargs["trigger"] == "index"
 
@@ -183,3 +185,13 @@ async def test_an_indexed_queued_record_without_a_revision_lost_its_hand_off() -
     ingress, coordinator, _ = _ingress(None)
     coordinator.has_seen_revision = AsyncMock(return_value=True)
     assert await ingress.handoff_lost({**_INDEXED_QUEUED, "contentRev": None}) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["", None, 5])
+async def test_an_empty_or_unusable_stored_revision_also_drops_the_count(held: object) -> None:
+    ingress, _, graph = _ingress({"contentRev": held, "pageCount": 9})
+    record = _record()
+    await ingress.on_indexed(record, trigger=None)
+    rev = content_facts(record.block_containers).blocks_digest[:16]
+    graph.update_node.assert_awaited_once_with("rec-1", "records", {"contentRev": rev, "pageCount": None})

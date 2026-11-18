@@ -66,6 +66,8 @@ WRITERS: dict[str, tuple[str, str]] = {
     "update_sync_point_if": (NO_PROJECTION, _SYNC),
     "upsert_authenticated_as": (PROJECTED, ""),
     "upsert_sync_point": (NO_PROJECTION, _SYNC),
+    # the attempt-start write takes any record fields, as the update_node it replaces did
+    "write_attempt_start": (PROJECTED, ""),
     # trash.py
     "soft_delete_records": (PROJECTED, ""), "restore_records": (PROJECTED, ""), "purge_trashed_records": (PROJECTED, ""), "purge_trash_kept_record_groups": (PROJECTED, ""),
     "take_back_kept_record_group": (PROJECTED, ""), "claim_push_record": (PROJECTED, ""),

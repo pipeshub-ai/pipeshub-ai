@@ -36,6 +36,8 @@ from app.containers.connector import (
 from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
 from app.exceptions.non_retryable import NonRetryableError
+from app.modules.indexing.record_diagnostics import WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_republish import record_event
 from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
@@ -1089,6 +1091,8 @@ class EntityEventService(BaseEventService):
             "queuedAtTimestamp": now,
             "processingStartedAt": None,
             "reason": None,
+            # a record parked while its connector was off has no open run: this starts one
+            **run_reference(record, WriteKind.QUEUE, now),
         }
         # Stale recovery parks these too when it parks an in-flight record.
         for status_field in ("parsingStatus", "extractionStatus"):

@@ -125,7 +125,7 @@ CONNECTORS: tuple[Connector, ...] = (
     Connector("gitlab_personal", "container", CONTAINER, "gitlab_personal/connector.py:107"),
     Connector("notion", "container", CONTAINER, "notion/connector.py:2325", "workspace/team groups RECORD_GROUP_LEVEL, inherit"),
     Connector("notion_personal", "container", CONTAINER, "notion_personal/connector.py:55"),
-    Connector("localKB", "container", CONTAINER, "localKB/connector.py:57", "knowledge bases"),
+    Connector("localKB", "container", CONTAINER, "localKB/connector.py:65", "knowledge bases"),
     Connector("local_fs", "container", CONTAINER, "local_fs/connector.py:467"),
     Connector("local_repo", "container", CONTAINER, "local_repo/connector.py:38",
               "a personal repository pushed by one user (scope personal, APP_LEVEL): only the uploading user can read it, there is no sharing"),
