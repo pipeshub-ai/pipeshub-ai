@@ -116,6 +116,7 @@ from app.services.messaging.config import (
 from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.paid_cache.run import current_run as current_paid_run
+from app.services.paid_cache.run import refresh_requested
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
@@ -1171,6 +1172,7 @@ class EventProcessor:
         *,
         content_rev: str | None = None,
         scans_for_secrets: bool = False,
+        force_index: bool = False,
     ) -> DedupDecision:
         """Check for duplicate records by MD5 hash and decide whether to skip indexing.
 
@@ -1189,6 +1191,10 @@ class EventProcessor:
 
         ``scans_for_secrets`` records are not attached to a finished twin
         that was never scanned: its vectors and blob hold the raw content.
+
+        ``force_index`` (a user's Force reindex) never attaches to a twin or waits for one: nothing of the twin's
+        identity is copied onto the record, which is indexed itself (a shared VRID it already holds is rebuilt, as
+        for a twin whose stored content is gone).
         """
         # Calculate MD5 from content
         existing_md5_checksum = doc.get("md5Checksum")
@@ -1253,6 +1259,12 @@ class EventProcessor:
                 _record_key(doc),
             )
             return DedupDecision()
+
+        if force_index:
+            self.logger.info("Forced reindex of %s: indexing it itself, not attaching to a twin", _record_key(doc))
+            return DedupDecision(
+                rebuild_shared_vrid=bool(match.is_processed) and doc.get("virtualRecordId") == match.record.get("virtualRecordId"),
+            )
 
         if match.is_processed:
             return await self._reuse_finished_duplicate(
@@ -1846,6 +1858,9 @@ class EventProcessor:
                 dedup_decision = DedupDecision() if store_only else await self._check_duplicate_by_md5(
                     file_content, doc, before_reusing_status=before_reusing_status,
                     content_rev=content_rev, scans_for_secrets=scans_for_secrets,
+                    # A user's Force reindex re-parses and re-embeds: it is never settled by a twin, and a twin's
+                    # identity is never copied onto it before the decision is made.
+                    force_index=refresh_requested(event_data),
                 )
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")

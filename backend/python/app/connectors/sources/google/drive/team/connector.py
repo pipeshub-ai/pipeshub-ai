@@ -213,6 +213,11 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 # Shared drives this connector has synced, kept so a drive deleted from Workspace can be removed.
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
+# Stored beside the member groups' digests: the drive's direct members, whom a members-only drive's grants depend on.
+DRIVE_DIRECT_MEMBERS_MARK = "drive-members"
+# On a user's shared drive sync point whose token a relist dropped: the changes that token would still have reported
+# are lost, so once that user's listing of the drive is complete, a stored item it did not see is checked as removed.
+DRIVE_RELISTED = "relisted_without_token"
 DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
 # Set once a full read has written the audience grants (discoverable domain and "anyone" shares).
 DISCOVERABLE_SHARES_SYNC_POINT_KEY = "discoverable_shares_read"
@@ -364,6 +369,11 @@ def _add_reach_candidate(candidates: list[dict], candidate: dict) -> None:
         and sum(c["owners"] == candidate["owners"] for c in candidates) < REACH_CANDIDATES_PER_OWNER
     ):
         candidates.append(candidate)
+
+
+def _role_rank(permission: Permission | None, stored_role: str | None = None) -> int:
+    """How much a grant (or, without one, a stored role) allows, to keep a person's highest."""
+    return PERMISSION_HIERARCHY.get(permission.type.value if permission else stored_role or "", 0)
 
 
 def _delegated_scopes() -> list[str]:
@@ -630,6 +640,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._group_digests: dict[str, dict[str, str]] = {}
         self._account_domains: set[str] | None = None
         self._refreshed_folders: set[str] = set()
+        # Shared drives whose unseen items were checked this run after a relist (`_check_unseen_after_relist`).
+        self._relist_checked: set[str] = set()
         self._group_members_cache: dict[str, set[str] | None] = {}
         self._deployment_emails: set[str] | None = None
         # Every shared drive in the domain before the DRIVE_IDS filter, to tell a shared
@@ -904,6 +916,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._reach_candidates = {}
             self._run_started_at = get_epoch_timestamp_in_ms()
             self._refreshed_folders = set()
+            self._relist_checked = set()
             self._group_members_cache = {}
             self._deployment_emails = None
             self._external_emails = set()
@@ -2396,13 +2409,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Emails of the people who are members of a shared drive, directly or through a member group, and of
         the member groups. A member group the directory cannot list adds nobody, with a warning."""
         if drive_id not in self._drive_principals:
-            users: set[str] = set()
-            groups: set[str] = set()
-            for permission in await self._drive_acl(drive_id):
-                if permission.entity_type == EntityType.USER and permission.email:
-                    users.add(permission.email.lower())
-                elif permission.entity_type == EntityType.GROUP and permission.external_id:
-                    groups.add(permission.external_id.lower())
+            users, groups = await self._drive_direct_members(drive_id)
             for group in sorted(groups):
                 members = await self._group_member_emails(group)
                 if members is None:
@@ -2451,9 +2458,23 @@ class GoogleDriveTeamConnector(BaseConnector):
         # The limits changed or a hidden group can be read: a file shared out of the drive with someone who is not a
         # member reaches them only through their own shared-with-me listing, which no change feed reports again.
         reseed = relist
+        # Who is a member at all: a person who leaves a members-only drive keeps no access through a share of their
+        # own ("Whether access to items inside this shared drive is restricted to its members",
+        # https://developers.google.com/workspace/drive/api/reference/rest/v3/drives), and the drive's change log
+        # records only "removal of a member", not its items
+        # (https://developers.google.com/workspace/drive/api/guides/about-changes). The member list read here, users
+        # and member groups, is the one remembered, so a change after it is caught by the next run; a drive without a
+        # remembered list (written before it was kept) is read again once.
+        membership = None
+        if now.get("driveMembersOnly"):
+            users, groups = await self._drive_direct_members(drive_id)
+            membership = self._people_digest(users | {f"group:{g}" for g in groups})
+            relist = relist or seen.get(DRIVE_DIRECT_MEMBERS_MARK) != membership
         for group, digest in seen.items():
             if relist:
                 break
+            if group == DRIVE_DIRECT_MEMBERS_MARK:
+                continue
             # The grants written for the drive depend on who is in these groups. One that cannot be read now has
             # changed too: the relist hides it, and it is then remembered as hidden, so this happens once.
             people = await self._group_member_emails(group)
@@ -2463,11 +2484,73 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._group_digests[drive_id] = seen
             return
         await self._read_drive_again(drive_id, reseed=reseed)
+        if any(now.values()) and not await self._drive_has_synced_member(drive_id):
+            # Nobody synced lists the drive again, so its stored items get the new limits here; a failure raises
+            # before the new restrictions are saved, so the next run tries again.
+            await self._apply_limits_to_stored_items(drive_id)
+        digests = {DRIVE_DIRECT_MEMBERS_MARK: membership} if membership else {}
         await self.drive_delta_sync_point.update_sync_point(
-            key, {**now, "hidden_groups": [], "group_hashes": [], DRIVE_RESTRICTIONS_ASSUMED: False}
+            key,
+            {
+                **now, "hidden_groups": [], "group_hashes": [f"{g}|{d}" for g, d in digests.items()],
+                DRIVE_RESTRICTIONS_ASSUMED: False,
+            },
         )
         self._hidden_groups[drive_id] = set()
-        self._group_digests[drive_id] = {}
+        self._group_digests[drive_id] = digests
+
+    async def _apply_limits_to_stored_items(self, drive_id: str) -> None:
+        """Apply a shared drive's limits to the stored grants of each of its items (`_drop_grants_the_drive_keeps_out`),
+        for a drive no synced user lists again."""
+        after: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, drive_id, limit=FILTER_CLEANUP_PAGE_SIZE, after_key=after
+            )
+            for record in page:
+                if not record.is_placeholder:
+                    await self._drop_grants_the_drive_keeps_out(record, drive_id)
+            if len(page) < FILTER_CLEANUP_PAGE_SIZE:
+                break
+            after = page[-1].id
+
+    async def _drop_grants_the_drive_keeps_out(self, record: Record, drive_id: str | None) -> None:
+        """An item whose sharing the reader cannot see keeps its stored grants, but its drive's limits still apply to
+        them, as `_restriction_filter` applies them to a list read in full: a person the drive keeps out loses their
+        grant, and a group or audience it keeps out loses its grant, a group being replaced by grants for those of its
+        people who pass, each with the group's stored role."""
+        if not drive_id or drive_id not in self._listed_shared_drive_ids:
+            return
+        if not any((await self._drive_restrictions_of(drive_id)).values()):
+            return
+        restrict, may_stay = await self._restriction_filter(drive_id, is_drive=False)
+        user_roles, group_roles = await self.data_entities_processor.get_roles_on_record(record.id)
+        for email in list(user_roles):
+            if not may_stay(email):
+                await self.data_entities_processor.delete_principal_permission_from_record(
+                    record.id, email, self.connector_id
+                )
+                del user_roles[email]
+        held = [
+            Permission(external_id=group_id, email=group_id, type=PermissionType(role), entity_type=EntityType.GROUP)
+            for group_id, role in group_roles.items()
+        ]
+        kept = await restrict(held)
+        kept_groups = {p.external_id for p in kept if p.entity_type == EntityType.GROUP}
+        # A person has one edge and a grant replaces it, so each gets only their highest role from the split groups,
+        # and only when it is above the role they already hold.
+        best: dict[str, Permission] = {}
+        for p in kept:
+            email = (p.email or "").lower()
+            if p.entity_type != EntityType.GROUP and _role_rank(p) > _role_rank(best.get(email), user_roles.get(email)):
+                best[email] = p
+        if best:
+            await self.data_entities_processor.add_permission_to_record(record, list(best.values()))
+        for group in held:
+            if group.external_id not in kept_groups:
+                await self.data_entities_processor.delete_group_permission_from_record(
+                    record.id, group.external_id, self.connector_id
+                )
 
     @staticmethod
     def _track_failed_items() -> set[str]:
@@ -2590,9 +2673,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         reaches them only that way, and no change feed reports it when the drive's limits change. Their token is
         kept, so removals their feed reports still apply."""
         for user in self.synced_users:
-            await self.drive_delta_sync_point.delete_sync_point(
-                generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
-            )
+            key = generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
+            stored = await self.drive_delta_sync_point.read_sync_point(key) or {}
+            await self.drive_delta_sync_point.delete_sync_point(key)
+            # Only a dropped token loses removals; a check still owed from an earlier relist is kept.
+            if stored.get("pageToken") or stored.get(DRIVE_RELISTED):
+                await self.drive_delta_sync_point.update_sync_point(key, {DRIVE_RELISTED: True})
             if reseed:
                 # Cost: one shared-with-me listing per synced user, on a change of the limits, which is rare. Ids
                 # left to retry are dropped: only a whole listing answers for a change of the limits.
@@ -2600,6 +2686,49 @@ class GoogleDriveTeamConnector(BaseConnector):
                     generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id),
                     {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: []},
                 )
+
+    async def _check_unseen_after_relist(
+        self, drive_id: str, user: AppUser, source: GoogleDriveDataSource
+    ) -> None:
+        """After a complete listing of a shared drive whose token a relist dropped, check each stored item of the drive
+        this run did not see as a removal (`_apply_shared_drive_removal`, which asks the drive's members, the record's
+        holders and its audience whether anyone still opens it): a file deleted after the dropped token was issued is
+        reported by no feed now. Once a drive a run. A failure raises, so the token is not saved and the next run
+        lists the drive and checks again."""
+        if drive_id in self._relist_checked:
+            return
+        after: str | None = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, drive_id, limit=FILTER_CLEANUP_PAGE_SIZE, after_key=after
+            )
+            for record in page:
+                if not record.is_placeholder and record.external_record_id not in self._sync_ledger.seen:
+                    try:
+                        settled = await self._apply_shared_drive_removal(
+                            record.external_record_id, user, drive_id, source, ask_audience=True
+                        )
+                    except _RemovalUndecided:  # nobody asked answered: a later run asks again, the listing is done
+                        settled = _Settled.UNDECIDED
+                    if settled is _Settled.UNDECIDED:  # checked again on later runs, as an undecided removal is
+                        await self._park_undecided_removal(
+                            self._undecided_key(user, drive_id), f"{record.external_record_id}:{drive_id}"
+                        )
+            if len(page) < FILTER_CLEANUP_PAGE_SIZE:
+                break
+            after = page[-1].id
+        self._relist_checked.add(drive_id)
+
+    async def _drive_direct_members(self, drive_id: str) -> tuple[set[str], set[str]]:
+        """The emails of a shared drive's member users and of its member groups, as its permission list names them."""
+        users: set[str] = set()
+        groups: set[str] = set()
+        for permission in await self._drive_acl(drive_id):
+            if permission.entity_type == EntityType.USER and permission.email:
+                users.add(permission.email.lower())
+            elif permission.entity_type == EntityType.GROUP and permission.external_id:
+                groups.add(permission.external_id.lower())
+        return users, groups
 
     @staticmethod
     def _people_digest(people: set[str]) -> str:
@@ -5152,17 +5281,21 @@ class GoogleDriveTeamConnector(BaseConnector):
                         )
                     if existing_record is not None:
                         if new_permissions:
-                            await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
-                        elif user_email and (
-                            (member_reads_through_drive and not keeps_own_grant)
-                            or not (await self._restriction_filter(item_drive_id, is_drive=False))[1](user_email)
-                        ):
-                            # The drive's limits leave this reader out, or they reach it from the drive (a grant of
-                            # their own, from an earlier sync, would outlast a limited folder): their own stored grant
-                            # goes, everyone else's stays.
+                            # The reader's own grant is a read grant whatever their role: it never lowers a role they
+                            # hold, such as one a group's split gave them (`_drop_grants_the_drive_keeps_out`).
+                            held = (await self.data_entities_processor.get_roles_on_record(existing_record.id))[0]
+                            if raising := [
+                                p for p in new_permissions
+                                if _role_rank(p) > _role_rank(None, held.get((p.email or "").lower()))
+                            ]:
+                                await self.data_entities_processor.add_permission_to_record(existing_record, raising)
+                        elif user_email and member_reads_through_drive and not keeps_own_grant:
+                            # They reach it from the drive (a grant of their own, from an earlier sync, would outlast a
+                            # limited folder): their own stored grant goes, everyone else's stays.
                             await self.data_entities_processor.delete_permission_from_record(
                                 existing_record.id, user_email, self.connector_id
                             )
+                        await self._drop_grants_the_drive_keeps_out(existing_record, item_drive_id)
                         # Written as a metadata update, never as a new record: in a full sync the first write of
                         # a new record replaces its stored grants with the list given, and this user's single
                         # grant is not the file's list. A reader reaching the file first removed everyone else.
@@ -6713,6 +6846,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
                             if hold is None and not await self._keep_failed_items(sync_point_key, drive_failed):
                                 hold = {}  # too many to keep by id: the drive is listed in full again
+                                if (sync_point or {}).get(DRIVE_RELISTED):  # the unseen-item check is still owed
+                                    await self.drive_delta_sync_point.update_sync_point(
+                                        sync_point_key, {DRIVE_RELISTED: True}
+                                    )
                             if not listing_finished or search_incomplete or hold is not None:
                                 if not listing_finished or search_incomplete:
                                     self._sync_ledger.note_skipped_drive()
@@ -6723,10 +6860,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 synced_drive_ids.add(drive_id)
                                 continue
 
+                            if (sync_point or {}).get(DRIVE_RELISTED):
+                                await self._check_unseen_after_relist(drive_id, user, user_drive_data_source)
                             await self.drive_delta_sync_point.update_sync_point(
                                 sync_point_key,
                                 {"pageToken": start_page_token, **released(sync_point),
-                                 FAILED_ITEMS: sorted(drive_failed)}
+                                 FAILED_ITEMS: sorted(drive_failed), DRIVE_RELISTED: False}
                             )
 
                             self.logger.info(

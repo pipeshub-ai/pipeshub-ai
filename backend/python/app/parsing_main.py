@@ -87,7 +87,7 @@ from app.services.resource_governor.probe import (
     effective_cpu_count,
     effective_cpu_source,
 )
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -481,7 +481,7 @@ async def readiness() -> JSONResponse:
     )
 
 
-def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = None, *, reload: bool = False) -> None:
+def run(host: str | None = None, port: int | None = None, workers: int | None = None, *, reload: bool = False) -> None:
     """Run the Parsing Service.
 
     ``PARSING_UVICORN_WORKERS`` (default 1) scales the service across
@@ -491,7 +491,8 @@ def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = No
     divided by the worker count instead of every worker independently
     claiming the whole box's resources (see ``lifespan``).
     """
-    port = port or int(os.getenv("PARSING_SERVICE_PORT", "8092"))
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8092, "PARSING_SERVICE_PORT")
     workers = workers or max(1, int(os.getenv("PARSING_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         logger.warning(

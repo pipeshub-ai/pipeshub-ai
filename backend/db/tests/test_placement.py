@@ -69,7 +69,8 @@ def test_an_orgs_leaf_exists_before_its_first_row_and_holds_only_its_rows(rdb, m
         assert c.execute(f"SELECT array_agg(DISTINCT org_id) FROM retrieval.points_o_{ORG_A}").fetchone()[0] == [ORG_A]       # B's row went elsewhere
         assert c.execute("SELECT count(*) FROM retrieval.points_default WHERE org_id = %s", (ORG_B,)).fetchone()[0] == 1
         assert c.execute("SELECT count(*) FROM retrieval.points_default WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 0
-        with pytest.raises(pg.CheckViolation):                                              # the leaf itself refuses another org's row
+        # the leaf itself refuses another org's row (PostgreSQL names it a move to another partition when a BEFORE ROW trigger ran first)
+        with pytest.raises((pg.CheckViolation, pg.FeatureNotSupported)):
             c.execute(f"INSERT INTO retrieval.points_o_{ORG_A} (org_id, collection_id, space_id, point_id, group_key, embedding, embedding_dim) "
                       "VALUES (%s, 1, 1, gen_random_uuid(), 'g', %s::ext.halfvec, 4)", (ORG_B, VEC))
     with connect_as(cluster, name, "pipeshub_query_login") as c, uow(c, "pipeshub_query", ORG_B):

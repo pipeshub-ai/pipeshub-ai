@@ -2271,6 +2271,50 @@ class TestOnEventDuplicate:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
+    async def test_a_users_force_reindex_never_takes_a_twins_identity_before_it_indexes(self) -> None:
+        """A forced refresh asks dedup not to attach: the twin's relationships, VRID and status are not copied onto it."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+        seen: list[bool] = []
+
+        async def decide(*_args: object, force_index: bool = False, **_kwargs: object) -> DedupDecision:
+            seen.append(force_index)
+            return DedupDecision() if force_index else DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=decide):
+            plain = await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+            forced_event = _make_event_payload(extension=ExtensionTypes.DOCX.value)
+            forced_event["payload"].update({"forceReindex": True, "refreshPaidOutputs": True})
+            forced = await _drain(ep.on_event(forced_event))
+
+        assert seen == [False, True]
+        assert any(e.event == "indexing_complete" for e in plain)
+        assert processor.process_docx_document.called          # the forced event ran the parse
+        assert any(e.event == "indexing_complete" for e in forced)
+
+    @pytest.mark.asyncio
+    async def test_dedup_for_a_forced_event_copies_nothing_from_a_finished_twin(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        processor.sink_orchestrator.blob_storage.get_actual_content_path.return_value = "some/path"
+        gp.find_duplicate_records.return_value = [{
+            "_key": "twin", "virtualRecordId": "vr-shared", "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value, "summaryDocumentId": "sum-1",
+        }]
+        ep._attach_to_finished_twin = AsyncMock()
+        doc = {"_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        plain = await ep._check_duplicate_by_md5(b"x", dict(doc))
+        ep._attach_to_finished_twin.assert_awaited_once()      # a plain event attaches, as before
+        ep._attach_to_finished_twin.reset_mock()
+        forced = await ep._check_duplicate_by_md5(b"x", dict(doc), force_index=True)
+
+        ep._attach_to_finished_twin.assert_not_awaited()       # nothing of the twin's identity was copied
+        assert plain.skip_indexing is True
+        assert forced.skip_indexing is False
+        assert forced.rebuild_shared_vrid is True               # the shared VRID it holds is rebuilt, repairing the twin too
+
+    @pytest.mark.asyncio
     async def test_duplicate_skip_invalidates_accessible_records_cache(self):
         """When dedup skips indexing, the accessible-records cache must still
         be invalidated so the newly attached record is searchable immediately.

@@ -173,11 +173,14 @@ class PersonalDb(CloudRecordsDb):
         self.groups_kept_for_the_trash: set[str] = set()
 
     async def get_nodes_by_filters(
-        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
-        """Record group nodes; like both graph providers, a failed read answers [] instead of raising."""
+        """Record group nodes; like the graph providers, a failed read answers [] unless asked to raise."""
         assert collection == "recordGroups", collection
         if self.fail_group_read:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
             return []
         nodes = [
             {
