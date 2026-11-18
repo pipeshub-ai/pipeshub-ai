@@ -21,9 +21,13 @@ ISSUED_DOWNLOAD_LINKS_KEY = "issued_download_links"
 _SIGNATURE_PARAMS = frozenset({"x-amz-signature", "x-goog-signature", "sig"})
 # Ends at a quote, so a link inside a JSON string stops at the string's end.
 _URL_IN_TEXT = re.compile(r"https?://[^\s'\"<>)\\]+")
-# A signature value wherever it is: a link with a space, `(` or `'` in its file name ends the scan
-# above early, and the signature after that point still opens the file.
-_SIGNATURE_VALUE = re.compile(r"(?i)([?&](?:x-amz-signature|x-goog-signature|sig)=)[^&\s\"'<>)]+")
+# A signature or credential value wherever it is: a link with a space, `(` or `'` in its file name
+# ends the scan above early, and the signature after that point still opens the file. The value stops
+# at a backslash, which in JSON text escapes the quote that closes the string.
+_SIGNATURE_VALUE = re.compile(
+    r"(?i)([?&](?:x-amz-signature|x-goog-signature|sig|x-amz-credential|x-amz-security-token|x-goog-credential)=)"
+    r"[^&\s\"'<>)\\]+"
+)
 
 
 @dataclass(frozen=True)

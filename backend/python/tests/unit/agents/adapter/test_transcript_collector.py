@@ -541,6 +541,16 @@ class TestSignedStorageLinksAreNotStored:
         }
         assert part["resultSummary"] == "Completed successfully"
 
+    async def test_a_quoted_link_inside_a_json_string_keeps_the_json_valid(self) -> None:
+        """In JSON text the quote that closes the link is escaped; the backslash must stay."""
+        part = await self._stored(
+            {"tool": "some_tool", "args": {}},
+            # The signature last, so the escaped closing quote follows it directly.
+            {"tool": "some_tool", "content": json.dumps({"message": 'Open "' + self.SIGNED.removesuffix("&X-Amz-SignedHeaders=host") + '"'})},
+        )
+        self._hidden(part["resultPreview"])
+        assert json.loads(part["resultPreview"])["message"].endswith('"')
+
     async def test_fetch_url_arguments_and_label(self) -> None:
         part = await self._stored(
             {"tool": "dynamic__fetch_url", "args": {"url": self.SIGNED}, "args_summary": f"Reading {self.SIGNED}"},

@@ -147,6 +147,15 @@ class TestHideStorageSignatures:
         assert "abc%2Bdef" not in hidden
         assert signature_removed(hidden.removeprefix("Reading "))
 
+    def test_credentials_of_a_link_cut_short_are_hidden(self) -> None:
+        link = (
+            "https://bucket.s3.amazonaws.com/O'Brien.pdf?X-Amz-Credential=AKIAEXAMPLE"
+            "&X-Amz-Security-Token=SESSIONEXAMPLE&X-Amz-Signature=abc123"
+        )
+        hidden = hide_storage_signatures(f"Reading {link}")
+        assert "AKIAEXAMPLE" not in hidden and "SESSIONEXAMPLE" not in hidden and "abc123" not in hidden
+        assert "O'Brien.pdf?" in hidden
+
     def test_a_link_cut_short_inside_json(self) -> None:
         link = "https://acct.blob.core.windows.net/c/O'Brien.pdf?sv=2023-11-03&sig=abc%2Bdef%3D"
         stored = json.loads(hide_storage_signatures(json.dumps({"url": link})))
