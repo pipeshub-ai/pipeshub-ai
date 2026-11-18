@@ -142,14 +142,14 @@ async def test_the_org_user_read_lists_users_only_and_a_failure_is_no_users_unle
         def down(*_a: object, **_k: object) -> object:
             raise RuntimeError("store down")
 
-        if isinstance(graph, Neo4jProvider):
-            monkeypatch.setattr(graph.client, "execute_query", down)
-        else:
-            monkeypatch.setattr(graph.http_client, "execute_aql", down)
-        assert await graph.get_users(org_id) == []
-        with pytest.raises(RuntimeError):
-            await graph.get_users(org_id, raise_on_error=True)
-        monkeypatch.undo()
+        with monkeypatch.context() as patched:  # undone before the cleanup below, which uses the same query method
+            if isinstance(graph, Neo4jProvider):
+                patched.setattr(graph.client, "execute_query", down)
+            else:
+                patched.setattr(graph.http_client, "execute_aql", down)
+            assert await graph.get_users(org_id) == []
+            with pytest.raises(RuntimeError):
+                await graph.get_users(org_id, raise_on_error=True)
     finally:
         with contextlib.suppress(Exception):
             await graph.delete_nodes_and_edges([group], CollectionNames.RECORD_GROUPS.value)

@@ -396,7 +396,8 @@ class SiteDb(CloudRecordsDb):
         self.team_gate_open = False
 
     async def get_nodes_by_filters(
-        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """The stored project and role nodes, with the fields the connector asks for."""
         if collection == "roles":

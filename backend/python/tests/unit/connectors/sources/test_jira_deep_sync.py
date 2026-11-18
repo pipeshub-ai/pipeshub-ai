@@ -55,8 +55,9 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-jira-1"
     dep.on_new_app_users = AsyncMock()
-    dep.open_app_to_org_team = AsyncMock()
+    dep.open_app_to_org_team = AsyncMock(return_value=True)
     dep.withdraw_team_app_edge = AsyncMock()
+    dep.org_team_app_edge_exists = AsyncMock(return_value=False)
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -510,7 +511,11 @@ class TestFetchIssuesBatched:
         ([{"issues": [], "isLast": False, "nextPageToken": "t1"}, {"issues": [], "isLast": False, "nextPageToken": "t1"}],
          0, False),
         ([{"issues": [], "isLast": True, "nextPageToken": "t1"}], 0, True),
-    ], ids=["empty_page_then_issues", "repeated_token", "last_page"])
+        ([{"issues": [], "isLast": False}], 0, False),
+        ([{"issues": ["I"], "isLast": False}], 1, False),
+        ([{"issues": ["I"], "nextPageToken": "t1"}, {"issues": ["I"], "isLast": False, "nextPageToken": "t1"}], 2, False),
+    ], ids=["empty_page_then_issues", "repeated_token", "last_page", "not_last_without_a_token",
+            "issues_not_last_without_a_token", "issues_with_a_repeated_token"])
     async def test_an_empty_page_that_is_not_the_last_is_followed(self, pages: list, built: int, complete: bool) -> None:
         """Enhanced search can answer an empty page with a nextPageToken before a page with issues: stopping there would
         leave the later issues with their old access and report the pass done."""

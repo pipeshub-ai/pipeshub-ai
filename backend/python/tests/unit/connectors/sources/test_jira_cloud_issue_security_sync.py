@@ -2426,18 +2426,71 @@ class TestAnonymousBrowseReachesEveryone:
         assert not c.stored[ANONYMOUS_GATE_KEY]["confirmed_at"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("stored", "selected", "left_out"), [
-        ([("10001", "PUB")], [], False), ([("10001", "PUB"), ("10009", "GONE")], [], True),
-        ([("10001", "PUB"), ("10009", "GONE")], ["PUB"], False), (ConnectionError("store down"), [], True)],
-        ids=["all_listed", "one_missing", "missing_one_not_selected", "unreadable"])
+    @pytest.mark.parametrize(("stored", "selected", "granted", "left_out"), [
+        ([("10001", "PUB")], [], False, False), ([("10001", "PUB"), ("10009", "GONE")], [], False, True),
+        ([("10001", "PUB"), ("10009", "OUT")], ["PUB"], False, False),
+        ([("10001", "PUB"), ("10009", "OUT")], ["PUB"], True, True),
+        ([("10001", "PUB"), ("10009", "OUT")], ["PUB"], ConnectionError("store down"), True),
+        (ConnectionError("store down"), [], False, True)],
+        ids=["all_listed", "one_missing", "filtered_out_and_unlinked", "filtered_out_still_granted",
+             "filtered_out_unreadable", "unreadable"])
     async def test_a_stored_project_missing_from_the_listing_keeps_the_gate_closed(
-        self, stored: object, selected: list, left_out: bool,
+        self, stored: object, selected: list, granted: object, left_out: bool,
     ) -> None:
-        """It keeps its stored grants, `anyone` among them, until Jira says it is gone (a 503 keeps it)."""
+        """It keeps its stored grants, `anyone` among them, until Jira says it is gone (a 503 keeps it). A project the filter
+        now leaves out keeps them until the full sync's unlink takes them, which runs after the gate."""
         c = _connector()
         c._stored_projects = AsyncMock(side_effect=stored) if isinstance(stored, Exception) else AsyncMock(return_value=stored)
         c._project_still_selected = lambda project: not selected or project["key"] in selected
+        c.data_entities_processor.has_stored_permissions = (
+            AsyncMock(side_effect=granted) if isinstance(granted, Exception) else AsyncMock(return_value=granted))
         assert await c._stored_projects_left_out({"10001"}) is left_out
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_stored_projects_is_not_read_as_none(self) -> None:
+        """The stores answer a failed read with no rows unless asked to raise: read as none, nothing would be left out."""
+        c = _connector()
+
+        async def nodes(*_a: object, raise_on_error: bool = False, **_k: object) -> list:
+            if raise_on_error:
+                raise ConnectionError("store down")
+            return []
+
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(side_effect=nodes)
+        assert await c._stored_projects_left_out({"10001"}) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("where", ["refresh_cleanup", "first_opening_read", "first_opening_cancelled_save"])
+    async def test_an_opening_that_fails_part_way_closes_the_gate(self, where: str) -> None:
+        """The edge may be written before the failure (the cleanup, the read-back or the save): the gate is closed again
+        and the failure goes on, so no edge stays open without its saved confirmation or with a cleanup undone."""
+        import asyncio
+
+        c = self._gated(confirmed_hours_ago=1 if where == "refresh_cleanup" else None)
+
+        async def open_then_fail(_connector_id: str) -> bool:
+            c.edge = True
+            raise ConnectionError("store down")
+
+        error: type[BaseException] = ConnectionError
+        if where == "first_opening_cancelled_save":
+            error = asyncio.CancelledError
+            c.issues_sync_point.update_sync_point = AsyncMock(side_effect=asyncio.CancelledError())
+        else:
+            c.data_entities_processor.open_app_to_org_team = AsyncMock(side_effect=open_then_fail)
+        with pytest.raises(error):
+            await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+            await c._settle_org_gate(set())
+        assert c.edge is False
+
+    @pytest.mark.asyncio
+    async def test_a_live_edge_whose_confirmation_expired_closes_before_the_new_opening_waits(self) -> None:
+        """Fresh at sync start, a day old once the checks answered: the edge closes, and only a clean issue pass reopens it."""
+        c = self._gated(confirmed_hours_ago=25)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
+        await c._settle_org_gate({"PUB"})
+        assert c.edge is False
 
     @pytest.mark.asyncio
     async def test_no_public_project_closes_the_gate(self) -> None:

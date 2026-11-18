@@ -651,11 +651,13 @@ async def test_a_public_project_is_read_by_the_whole_org_and_no_longer_once_it_i
     # A closed gate opens only after the issue pass has written each stored issue's level (``_sync_project`` ran it).
     assert await reads(erin_id) == set()
     await connector._settle_org_gate(set())
+    assert await world["processor"].org_team_app_edge_exists(world["connector_id"])
     assert not await _mismatches(world, public, by_key)
     assert await reads(erin_id) == unleveled
     assert await reads(frank_id) == unleveled  # not PROJ-9: his stale grant went before the gate opened
 
     await world["processor"].on_new_record_groups([(project, browse)])
     await connector._admit_everyone_to_public_projects([(project, browse)], written_in_full=True)
+    assert not await world["processor"].org_team_app_edge_exists(world["connector_id"])
     assert not await _mismatches(world, readers, by_key)
     assert await reads(erin_id) == set()

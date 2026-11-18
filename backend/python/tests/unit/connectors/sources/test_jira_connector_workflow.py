@@ -619,6 +619,30 @@ class TestJiraFullSync:
             connector._sync_project_lead_roles.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_the_org_gate_is_settled_before_the_issue_checkpoint_is_saved(self):
+        """An incomplete pass of a public project closes an open gate; a checkpoint write that fails must not skip that."""
+        connector, dep, dsp, cs, tx = _make_connector()
+        connector.data_source = MagicMock()
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+                   new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
+            connector._fetch_users = AsyncMock(return_value=[AppUser(
+                app_name=Connectors.JIRA, connector_id="conn-jira-1", source_user_id="a1", org_id="org-jira-1",
+                email="alice@test.com", full_name="Alice", is_active=True)])
+            connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)
+            connector._sync_user_groups = AsyncMock(return_value={})
+            connector._fetch_projects = AsyncMock(return_value=([], []))
+            connector._sync_project_roles = AsyncMock()
+            connector._sync_project_lead_roles = AsyncMock()
+            connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+            connector._sync_all_project_issues = AsyncMock(return_value={"incomplete_project_keys": ["PUB"]})
+            connector._update_issues_sync_checkpoint = AsyncMock(side_effect=ConnectionError("store down"))
+            connector._settle_org_gate = AsyncMock()
+            connector.notify = AsyncMock()
+            with pytest.raises(ConnectionError):
+                await connector.run_sync()
+            connector._settle_org_gate.assert_awaited_once_with({"PUB"})
+
+    @pytest.mark.asyncio
     async def test_run_sync_no_users_returns(self):
         connector, dep, *_ = _make_connector()
         dep.get_all_active_users = AsyncMock(return_value=[])
