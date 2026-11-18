@@ -60,7 +60,7 @@ async def test_a_release_wakes_a_waiter_within_a_few_milliseconds(ledger: Path) 
 async def test_a_release_that_lands_before_the_watchers_first_read_is_not_missed(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The watcher thread starts late (as a descheduled thread would): the waiter's own pre-attempt read still sees the change."""
     b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=1)
-    monkeypatch.setattr(mb, "FALLBACK_S", 5.0)  # only a wake, not the fallback tick, can serve the waiter in time
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: only a wake can serve the waiter
     real_run = mb._Watcher._run
 
     def late(self: mb._Watcher) -> None:
@@ -71,23 +71,20 @@ async def test_a_release_that_lands_before_the_watchers_first_read_is_not_missed
     held = await b.reserve(_llm(), deadline_s=1)
     task = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
     await asyncio.sleep(0.05)  # the waiter has made its first attempt; the watcher thread is still asleep
-    started = time.monotonic()
     held.release()
-    await asyncio.wait_for(task, 3)
-    assert time.monotonic() - started < 1.0
+    (await asyncio.wait_for(task, 30)).release()  # a missed wake times out at the 10 s deadline
 
 
-async def test_freeing_k_llm_slots_at_once_wakes_k_waiters_in_one_round(ledger: Path) -> None:
+async def test_freeing_k_llm_slots_at_once_wakes_k_waiters_in_one_round(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: a waiter the release did not wake times out
     b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=20)
     holder = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=20)
     held = [holder.try_reserve(_llm()) for _ in range(20)]
     waiters = [asyncio.create_task(b.reserve(_llm(), deadline_s=10)) for _ in range(20)]
     await asyncio.sleep(0.3)
     assert not any(w.done() for w in waiters)
-    started = time.monotonic()
     holder.close()  # one call frees 20 slots
-    await asyncio.wait_for(asyncio.gather(*waiters), 5)
-    assert time.monotonic() - started < 0.5  # one wake round, not one waiter per fallback tick (about 1.4 s)
+    await asyncio.wait_for(asyncio.gather(*waiters), 30)  # all 20 woken by the release, none left for a fallback tick
     assert len(held) == 20
 
 
@@ -310,17 +307,15 @@ async def _async_wait(b: MemberBudget) -> None:
 
 
 async def test_a_freed_token_wakes_the_critical_waiter_before_an_older_big_one(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mb, "FALLBACK_S", 5.0)  # only a wake, not the fallback tick, can serve the waiter in time
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: only a wake can serve the waiter
     b = MemberBudget(ledger, cpu_tokens=1, mem_bytes=1 << 36)
     held = b.try_reserve(_small())
     big = asyncio.create_task(b.reserve(Demand(Family.PARSE, 1, 0, "large"), deadline_s=10))
     await asyncio.sleep(0.1)
     critical = asyncio.create_task(b.reserve(_small(), deadline_s=10))
     await asyncio.sleep(0.1)
-    started = time.monotonic()
     held.release()
-    permit = await asyncio.wait_for(critical, 2)
-    assert time.monotonic() - started < 0.5  # woken first, not after the fallback tick (5 s)
+    permit = await asyncio.wait_for(critical, 30)  # woken first; not woken, it times out at its 10 s deadline
     assert not big.done()
     permit.release()
     (await asyncio.wait_for(big, 2)).release()
