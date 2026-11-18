@@ -293,6 +293,8 @@ ANONYMOUS_READ_TIMEOUT_S: float = 20.0
 ANONYMOUS_READ_PAGES: int = 20
 # Answers to one page of it before a 429 or gateway error counts as no answer, each after the wait Jira asks for.
 ANONYMOUS_READ_ATTEMPTS: int = 3
+# Seconds one project's signed-out check may take in all (a read timeout applies per chunk): past it, no answer.
+ANONYMOUS_READ_DEADLINE_S: float = 120.0
 # The connector's sync point holding when that search last confirmed every public project, which ones, and a closing
 # notice still due. Past ANONYMOUS_GATE_MAX_AGE_MS with no answer since, the org's access closes until a search confirms it.
 ANONYMOUS_GATE_KEY: str = "anonymous_gate"
@@ -604,8 +606,10 @@ class JiraConnector(BaseConnector):
         self._unresolved_selected_keys: set[str] = set()
         # Selected keys Jira finds no live project for; their stored grants are not rewritten.
         self._missing_selected_keys: set[str] = set()
-        # Public project keys and ids whose closed org gate opens once the issue pass has read them.
-        self._org_gate_to_open: tuple[set[str], list[str]] | None = None
+        # Public project keys and ids, and when the signed-out check confirmed them, whose closed org gate opens once
+        # the issue pass has read them; and the public project keys of a gate this sync kept open.
+        self._org_gate_to_open: tuple[set[str], list[str], int] | None = None
+        self._org_gate_open_keys: set[str] = set()
         # Keys of the projects this sync covers; None outside run_sync (a reindex keeps what is stored).
         self._synced_project_keys: set[str] | None = None
         # True when the bulk user list was refused on its first page: the account cannot
@@ -1058,14 +1062,19 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(readable_projects)
             # A project kept as stored may still be granted through roles under its old key.
             access_written_in_full = len(readable_projects) == len(projects)
-            await self._admit_everyone_to_public_projects(readable_projects, written_in_full=access_written_in_full)
+            await self._admit_everyone_to_public_projects(
+                readable_projects, written_in_full=access_written_in_full and not (
+                    self.scope == ConnectorScope.TEAM.value
+                    and await self._stored_projects_left_out({str(group.external_group_id) for group, _ in projects})
+                ),
+            )
 
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, jira_users, last_sync_time)
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             failed_issue_projects = set(sync_stats.get("failed_project_keys") or [])
-            await self._open_org_gate_after_issues(failed_issue_projects)
+            await self._settle_org_gate(failed_issue_projects | set(sync_stats.get("incomplete_project_keys") or []))
             await self._handle_issue_deletions(
                 last_sync_time,
                 [group for group, _ in projects if group.short_name not in failed_issue_projects],
@@ -2929,6 +2938,7 @@ class JiraConnector(BaseConnector):
         if self.scope != ConnectorScope.TEAM.value:
             return
         self._org_gate_to_open = None
+        self._org_gate_open_keys = set()
         # A selected project left out (its key not looked up, not found, or not built) keeps its stored grants unasked.
         written_in_full = (written_in_full and not self._unresolved_selected_keys and not self._skipped_project_keys
                            and not self._missing_selected_keys)
@@ -2949,39 +2959,73 @@ class JiraConnector(BaseConnector):
         confirmed_at = int(state.get("confirmed_at") or 0)
         confirmed = set(json.loads(state.get("projects") or "[]"))
         ids = sorted(str(g.external_group_id) for g in public)
+        keys = {g.short_name for g in public if g.short_name}
+        fresh = bool(confirmed_at) and now - confirmed_at < ANONYMOUS_GATE_MAX_AGE_MS
         if all(a is True for a in answers):
-            if confirmed_at:
-                await self.data_entities_processor.open_app_to_org_team(self.connector_id)
-                await self._save_org_gate(now, ids)
+            # The live edge, not the saved time, says the gate is open: a withdrawal whose state write failed leaves the time.
+            if fresh and await self.data_entities_processor.org_team_app_edge_exists(self.connector_id):
+                if await self.data_entities_processor.open_app_to_org_team(self.connector_id):
+                    self._org_gate_open_keys = keys
+                    await self._save_org_gate(now, ids)
+                else:
+                    await self._save_org_gate(0, [])
             else:
                 # A closed gate opens after the issue pass: a stored issue that gained a level since its last sync
-                # still inherits its project until that pass writes the level (``_open_org_gate_after_issues``).
-                self._org_gate_to_open = ({g.short_name for g in public if g.short_name}, ids)
+                # still inherits its project until that pass writes the level (``_settle_org_gate``).
+                self._org_gate_to_open = (keys, ids, now)
             return
         # Only a project shown public now or at the last confirmation may keep the gate open without an answer.
         covered = all(a is True or str(g.external_group_id) in confirmed for g, a in zip(public, answers))
-        if covered and now - confirmed_at < ANONYMOUS_GATE_MAX_AGE_MS:
+        if covered and fresh:
             # A search with no answer is not proof either way: an open gate stays open, a closed one closed.
             self.logger.warning("Could not tell whether every public Jira project is public; org access kept as is")
+            self._org_gate_open_keys = keys
             return
         await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
         if confirmed_at:
             # Unanswered for a day: a project made private meanwhile must not stay open to the whole org.
             await self._save_org_gate(0, [], notice=covered)
 
-    async def _open_org_gate_after_issues(self, failed_project_keys: set[str]) -> None:
-        """Open the gate ``_admit_everyone_to_public_projects`` found every public project confirmed for, once the
-        issue pass has written each stored issue's current level; not when that pass failed for a public project."""
-        if not self._org_gate_to_open:
+    async def _settle_org_gate(self, unread_project_keys: set[str]) -> None:
+        """After the issue pass. The gate ``_admit_everyone_to_public_projects`` found every public project confirmed for
+        opens once that pass has written each stored issue's current level, measured from the signed-out check (not
+        the pass) for its day, and only when the edge is there to confirm. A public project whose pass failed, skipped
+        an issue or got a partial search closes the gate, open or not: an issue may still hold its old access."""
+        pending, self._org_gate_to_open = self._org_gate_to_open, None
+        if pending:
+            keys, ids, checked_at = pending
+            if keys & unread_project_keys:
+                self.logger.warning("Org access to public Jira projects stays closed: the issues of %s were not all read",
+                                    ", ".join(sorted(keys & unread_project_keys)))
+                return
+            if get_epoch_timestamp_in_ms() - checked_at >= ANONYMOUS_GATE_MAX_AGE_MS:
+                self.logger.warning("Org access to public Jira projects stays closed: their check is a day old")
+                return
+            if not await self.data_entities_processor.open_app_to_org_team(self.connector_id):
+                self.logger.warning("Org access to public Jira projects stays closed: the org has no All team")
+                return
+            try:
+                await self._save_org_gate(checked_at, ids)
+            except Exception:
+                # An open edge with no saved confirmation would never expire.
+                await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+                raise
             return
-        keys, ids = self._org_gate_to_open
-        self._org_gate_to_open = None
-        if keys & failed_project_keys:
-            self.logger.warning("Org access to public Jira projects stays closed: the issues of %s were not all read",
-                                ", ".join(sorted(keys & failed_project_keys)))
-            return
-        await self.data_entities_processor.open_app_to_org_team(self.connector_id)
-        await self._save_org_gate(get_epoch_timestamp_in_ms(), ids)
+        if self._org_gate_open_keys & unread_project_keys:
+            self.logger.warning("Org access to public Jira projects closed: the issues of %s were not all read",
+                                ", ".join(sorted(self._org_gate_open_keys & unread_project_keys)))
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
+            await self._save_org_gate(0, [])
+
+    async def _stored_projects_left_out(self, listed_project_ids: set[str]) -> bool:
+        """Whether a stored project the filter still selects is missing from this sync's listing (it keeps its stored
+        grants, ``anyone`` among them, until a definite answer removes it), or whether that cannot be told."""
+        try:
+            stored = await self._stored_projects()
+        except Exception as e:
+            self.logger.warning("Could not read the stored projects; org access to public projects stays closed: %s", e)
+            return True
+        return any(pid not in listed_project_ids and self._project_still_selected({"key": key}) for pid, key in stored)
 
     async def _close_org_gate_for_unconfirmed(self, projects: list[tuple[RecordGroup, list[Permission]]]) -> None:
         """Before project grants are written: through an open gate, a project about to grant ``anyone`` that the last
@@ -3004,6 +3048,7 @@ class JiraConnector(BaseConnector):
             return
         try:
             state = (await self.issues_sync_point.read_sync_point(ANONYMOUS_GATE_KEY)) or {}
+            open_now = await self.data_entities_processor.org_team_app_edge_exists(self.connector_id)
         except Exception as e:
             self.logger.warning("Could not read when public Jira projects were last confirmed (%s); org access closed", e)
             await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
@@ -3012,6 +3057,10 @@ class JiraConnector(BaseConnector):
         if confirmed_at and get_epoch_timestamp_in_ms() - confirmed_at >= ANONYMOUS_GATE_MAX_AGE_MS:
             await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             await self._save_org_gate(0, [], notice=True)
+        elif open_now and not confirmed_at:
+            # Open with no saved confirmation (its write failed): nothing would ever expire it.
+            self.logger.warning("The org could read public Jira projects with no confirmation saved; org access closed")
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
         elif state.get("notice") == "due":
             await self._send_org_gate_notice()
 
@@ -3057,7 +3106,7 @@ class JiraConnector(BaseConnector):
         token: str | None = None
         used: set[str] = set()
         try:
-            async with httpx.AsyncClient(timeout=ANONYMOUS_READ_TIMEOUT_S) as client:
+            async with asyncio.timeout(ANONYMOUS_READ_DEADLINE_S), httpx.AsyncClient(timeout=ANONYMOUS_READ_TIMEOUT_S) as client:
                 for _ in range(ANONYMOUS_READ_PAGES):
                     body: dict[str, Any] = {"jql": jql, "maxResults": ISSUE_ID_LISTING_PAGE_SIZE, "fields": ["id"]}
                     if token:
@@ -3081,15 +3130,16 @@ class JiraConnector(BaseConnector):
                     if not isinstance(issues, list):
                         return False
                     if issues:
-                        return True
+                        # Only a row with the id the request asks for shows a readable issue; anything else is malformed.
+                        return any(isinstance(issue, dict) and issue.get("id") for issue in issues)
                     # An empty page that is not the last (isLast false, a nextPageToken) can precede one with issues;
                     # a terminal empty page is the answer of a site that does not let signed-out visitors read.
                     token = data.get("nextPageToken")
                     if data.get("isLast") is True or not token or not isinstance(token, str) or token in used:
                         return False
                     used.add(token)
-        except httpx.HTTPError as e:
-            self.logger.warning("Could not check whether project %s is public: %s", project_key, e)
+        except (httpx.HTTPError, TimeoutError) as e:
+            self.logger.warning("Could not check whether project %s is public: %r", project_key, e)
             return None
         except (ValueError, AttributeError) as e:
             self.logger.warning("Could not check whether project %s is public: %s", project_key, e)
@@ -4531,6 +4581,8 @@ class JiraConnector(BaseConnector):
         new_count = 0
         updated_count = 0
         failed_project_keys: list[str] = []
+        # Projects whose pass skipped an issue or got a partial search: an issue may still hold its old access.
+        incomplete_project_keys: list[str] = []
         # Project key -> the status its issue read failed with (None: transport or other error).
         failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
@@ -4553,6 +4605,8 @@ class JiraConnector(BaseConnector):
                     full_sync_project_ids.add(project.external_group_id)
                 if project_stats.get("leveled_reread"):
                     leveled_reread_project_ids.add(project.external_group_id)
+                if self._issue_build_failures:
+                    incomplete_project_keys.append(project.short_name)
             except Exception as e:
                 # Per-project failures self-heal: the project checkpoint only advances on
                 # success, so the next sync resumes it. run_sync notifies with the keys.
@@ -4569,6 +4623,7 @@ class JiraConnector(BaseConnector):
             "updated_count": updated_count,
             "failed_count": len(failed_project_keys),
             "failed_project_keys": failed_project_keys,
+            "incomplete_project_keys": incomplete_project_keys,
             "failed_project_statuses": failed_project_statuses,
             "full_sync_project_ids": full_sync_project_ids,
             "leveled_reread_project_ids": leveled_reread_project_ids,
@@ -5188,6 +5243,7 @@ class JiraConnector(BaseConnector):
 
         page_count = 0
         next_page_token = None
+        seen_page_tokens: set[str] = set()
         page_size = ISSUE_PAGE_SIZE
         # Track last issue updated timestamp for resume (starts with resume_from_timestamp if resuming)
         last_issue_updated = resume_from_timestamp
@@ -5242,6 +5298,14 @@ class JiraConnector(BaseConnector):
             new_page_token = issues_batch_response.get("nextPageToken")
 
             if not batch_issues:
+                # An empty page that is not the last (isLast false, a new nextPageToken) can precede one with issues.
+                if issues_batch_response.get("isLast") is not True and isinstance(new_page_token, str) and new_page_token:
+                    if new_page_token not in seen_page_tokens:
+                        seen_page_tokens.add(new_page_token)
+                        next_page_token = new_page_token
+                        continue
+                    self.logger.warning("Jira repeated a page token for %s; the issue pass is repeated next sync", project_key)
+                    self._issue_build_failures += 1
                 # No more issues - yield empty to signal completion
                 yield [], False, last_issue_updated
                 break

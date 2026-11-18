@@ -648,6 +648,9 @@ async def test_a_public_project_is_read_by_the_whole_org_and_no_longer_once_it_i
     await world["processor"].on_new_record_groups([(project, [*browse, anyone])])
     connector._read_anonymously = AsyncMock(return_value=True)  # a signed-out search reads the project
     await connector._admit_everyone_to_public_projects([(project, [*browse, anyone])], written_in_full=True)
+    # A closed gate opens only after the issue pass has written each stored issue's level (``_sync_project`` ran it).
+    assert await reads(erin_id) == set()
+    await connector._settle_org_gate(set())
     assert not await _mismatches(world, public, by_key)
     assert await reads(erin_id) == unleveled
     assert await reads(frank_id) == unleveled  # not PROJ-9: his stale grant went before the gate opened

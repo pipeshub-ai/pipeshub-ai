@@ -2139,8 +2139,19 @@ class TestAnonymousBrowseReachesEveryone:
                ) -> JiraConnector:
         c = _connector()
         c.scope = scope
-        c.data_entities_processor.open_app_to_org_team = AsyncMock()
-        c.data_entities_processor.withdraw_team_app_edge = AsyncMock()
+        # The All-team edge, open when a confirmation was saved; the store says whether the edge is there afterwards.
+        c.edge = confirmed_hours_ago is not None
+
+        async def open_gate(_connector_id: str) -> bool:
+            c.edge = True
+            return True
+
+        async def close_gate(_connector_id: str) -> None:
+            c.edge = False
+
+        c.data_entities_processor.open_app_to_org_team = AsyncMock(side_effect=open_gate)
+        c.data_entities_processor.withdraw_team_app_edge = AsyncMock(side_effect=close_gate)
+        c.data_entities_processor.org_team_app_edge_exists = AsyncMock(side_effect=lambda _c: c.edge)
         c._read_anonymously = AsyncMock(return_value=readable)
         c.notify = AsyncMock()
         c.notify_and_wait = AsyncMock(return_value=NotificationOutcome.SENT)
@@ -2159,7 +2170,7 @@ class TestAnonymousBrowseReachesEveryone:
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
-        c.notify.assert_not_awaited()
+        c.notify_and_wait.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_answer_for_more_than_a_day_closes_the_gate_and_tells_the_owner_once(self) -> None:
@@ -2177,7 +2188,7 @@ class TestAnonymousBrowseReachesEveryone:
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c._read_anonymously = AsyncMock(return_value=True)
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
-        await c._open_org_gate_after_issues(set())
+        await c._settle_org_gate(set())
         c.data_entities_processor.open_app_to_org_team.assert_awaited_once_with("conn-sec")
         c._read_anonymously = AsyncMock(return_value=None)
         c.data_entities_processor.withdraw_team_app_edge.reset_mock()
@@ -2194,13 +2205,13 @@ class TestAnonymousBrowseReachesEveryone:
         await c._admit_everyone_to_public_projects(self.PUBLIC + new, written_in_full=True)
         c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
-        c.notify.assert_not_awaited()
+        c.notify_and_wait.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_confirmation_records_the_projects_it_covers(self) -> None:
         c = self._gated()
         await c._admit_everyone_to_public_projects(self.PRIVATE + self.PUBLIC, written_in_full=True)
-        await c._open_org_gate_after_issues(set())
+        await c._settle_org_gate(set())
         assert json.loads(c.stored[ANONYMOUS_GATE_KEY]["projects"]) == ["10001"]
 
     @pytest.mark.asyncio
@@ -2219,7 +2230,7 @@ class TestAnonymousBrowseReachesEveryone:
         c = self._gated()
         await c._admit_everyone_to_public_projects(self.PRIVATE + self.PUBLIC, written_in_full=True)
         c._read_anonymously.assert_awaited_once_with("PUB")
-        await c._open_org_gate_after_issues(set())
+        await c._settle_org_gate(set())
         c.data_entities_processor.open_app_to_org_team.assert_awaited_once_with("conn-sec")
         c.data_entities_processor.withdraw_team_app_edge.assert_not_awaited()
 
@@ -2299,7 +2310,7 @@ class TestAnonymousBrowseReachesEveryone:
         c = self._gated()
         await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
         c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
-        await c._open_org_gate_after_issues(failed)
+        await c._settle_org_gate(failed)
         assert c.data_entities_processor.open_app_to_org_team.await_count == int(opened)
         assert bool((c.stored.get(ANONYMOUS_GATE_KEY) or {}).get("confirmed_at")) is opened
 
@@ -2349,6 +2360,86 @@ class TestAnonymousBrowseReachesEveryone:
         c.notify_and_wait.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_saved_confirmation_without_the_edge_opens_only_after_the_issue_pass(self) -> None:
+        """A withdrawal whose state write failed leaves the time: the live edge, not the time, says the gate is open."""
+        c = self._gated(confirmed_hours_ago=1)
+        c.edge = False
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+        await c._settle_org_gate(set())
+        c.data_entities_processor.open_app_to_org_team.assert_awaited_once_with("conn-sec")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("open_already", [True, False], ids=["refresh", "first_opening"])
+    async def test_no_confirmation_is_saved_when_the_org_has_no_all_team(self, open_already: bool) -> None:
+        c = self._gated(confirmed_hours_ago=1 if open_already else None)
+        c.data_entities_processor.open_app_to_org_team = AsyncMock(return_value=False)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        await c._settle_org_gate(set())
+        assert not (c.stored.get(ANONYMOUS_GATE_KEY) or {}).get("confirmed_at")
+
+    @pytest.mark.asyncio
+    async def test_an_open_edge_with_no_saved_confirmation_closes_at_the_start_of_a_sync(self) -> None:
+        c = self._gated()
+        c.edge = True
+        await c._expire_org_gate()
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
+        c.notify_and_wait.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_confirmation_that_cannot_be_saved_closes_the_edge_it_opened(self) -> None:
+        c = self._gated()
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=ConnectionError("store down"))
+        with pytest.raises(ConnectionError):
+            await c._settle_org_gate(set())
+        assert c.edge is False
+
+    @pytest.mark.asyncio
+    async def test_the_confirmation_is_dated_by_the_signed_out_check_not_the_issue_pass(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        clock = [1_000_000]
+        monkeypatch.setattr(module, "get_epoch_timestamp_in_ms", lambda: clock[0])
+        c = self._gated()
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        clock[0] += 3_600_000
+        await c._settle_org_gate(set())
+        assert c.stored[ANONYMOUS_GATE_KEY]["confirmed_at"] == 1_000_000
+        c = self._gated()
+        clock[0] = 1_000_000
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        clock[0] += module.ANONYMOUS_GATE_MAX_AGE_MS
+        await c._settle_org_gate(set())
+        c.data_entities_processor.open_app_to_org_team.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_public_project_whose_issue_pass_skipped_an_issue_closes_an_open_gate(self) -> None:
+        """An issue that failed to build (or a partial search) may still inherit the project it gained a level in."""
+        c = self._gated(confirmed_hours_ago=1)
+        await c._admit_everyone_to_public_projects(self.PUBLIC, written_in_full=True)
+        c.data_entities_processor.open_app_to_org_team.assert_awaited_once_with("conn-sec")
+        await c._settle_org_gate({"PUB"})
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with("conn-sec")
+        assert not c.stored[ANONYMOUS_GATE_KEY]["confirmed_at"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stored", "selected", "left_out"), [
+        ([("10001", "PUB")], [], False), ([("10001", "PUB"), ("10009", "GONE")], [], True),
+        ([("10001", "PUB"), ("10009", "GONE")], ["PUB"], False), (ConnectionError("store down"), [], True)],
+        ids=["all_listed", "one_missing", "missing_one_not_selected", "unreadable"])
+    async def test_a_stored_project_missing_from_the_listing_keeps_the_gate_closed(
+        self, stored: object, selected: list, left_out: bool,
+    ) -> None:
+        """It keeps its stored grants, `anyone` among them, until Jira says it is gone (a 503 keeps it)."""
+        c = _connector()
+        c._stored_projects = AsyncMock(side_effect=stored) if isinstance(stored, Exception) else AsyncMock(return_value=stored)
+        c._project_still_selected = lambda project: not selected or project["key"] in selected
+        assert await c._stored_projects_left_out({"10001"}) is left_out
+
+    @pytest.mark.asyncio
     async def test_no_public_project_closes_the_gate(self) -> None:
         c = self._gated()
         await c._admit_everyone_to_public_projects(self.PRIVATE, written_in_full=True)
@@ -2372,8 +2463,10 @@ class TestAnonymousBrowseReachesEveryone:
          True),
         ([{"issues": [], "isLast": False, "nextPageToken": f"t{i}"} for i in range(ANONYMOUS_READ_PAGES)], None),
         ([{"issues": [], "isLast": False, "nextPageToken": {"t": 1}}], False),
+        ([{"issues": [None], "isLast": True}], False),
+        ([{"issues": [{"key": "PUB-1"}], "isLast": True}], False),
     ], ids=["issue_on_a_later_page", "terminal_empty_page", "repeated_token", "five_empty_pages_then_an_issue",
-            "page_bound_is_unknown", "token_not_a_string"])
+            "page_bound_is_unknown", "token_not_a_string", "null_row", "row_without_an_id"])
     async def test_the_signed_out_search_follows_empty_pages_that_are_not_the_last(
         self, monkeypatch: pytest.MonkeyPatch, pages: list, public: bool,
     ) -> None:
@@ -2487,6 +2580,26 @@ class TestAnonymousBrowseReachesEveryone:
         c = _connector()
         assert await c._read_anonymously("PUB") is None
         assert len(sent) == module.ANONYMOUS_READ_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_a_signed_out_check_past_its_deadline_is_no_answer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A read timeout applies per chunk: a server that keeps trickling bytes would hold the check open."""
+        import asyncio
+
+        import httpx
+
+        from app.connectors.sources.atlassian.jira_cloud import connector as module
+
+        async def slow(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(5)
+            return httpx.Response(200, json={"issues": [{"id": "1"}]})
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(slow), **kw))
+        monkeypatch.setattr(module, "ANONYMOUS_READ_DEADLINE_S", 0.05)
+        c = _connector()
+        c.site_url = "https://acme.atlassian.net"
+        assert await c._read_anonymously("PUB") is None
 
     @pytest.mark.asyncio
     async def test_a_signed_out_search_with_no_response_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:

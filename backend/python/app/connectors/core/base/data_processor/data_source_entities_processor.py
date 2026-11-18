@@ -7264,20 +7264,25 @@ class DataSourceEntitiesProcessor:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
 
     @retry_on_deadlock()
-    async def open_app_to_org_team(self, connector_id: str) -> None:
-        """Let the org's All team through the connector gate, for content the source opens to everyone. Until then
-        the gate alone kept every org user the connector does not link away from grants still naming them (left
-        from before withdrawals took them), so those grants go first. Every call removes them again, gate open or
-        not, so a pass that missed some is made good. A failed read of the links or the users raises and leaves
-        the gate as it was. Deactivated users are included: made active again, they are in the All team."""
-        linked = {u.id for u in await self.get_app_user_links(connector_id)}
-        async with self.data_store_provider.transaction() as tx_store:
-            users = await tx_store.get_users(self.org_id, active=False, raise_on_error=True)
-        unlinked = [u.id for u in users if u.id and u.id not in linked]
+    async def open_app_to_org_team(self, connector_id: str) -> bool:
+        """Let the org's All team through the connector gate, for content the source opens to everyone, and say whether
+        the edge is there afterwards (an org without its All team gets none). Until then the gate alone kept every
+        user the connector does not link away from grants still naming them (left from before withdrawals took them),
+        so those grants go first, in one statement that checks the link (``remove_unlinked_user_access_to_connector``):
+        deactivated users and guests are included, and a user linked meanwhile keeps theirs. Every call removes them
+        again, gate open or not, so a pass that missed some is made good."""
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
-            for user_id in unlinked:
-                await tx_store.remove_user_access_to_connector(connector_id, user_id)
+            await tx_store.remove_unlinked_user_access_to_connector(connector_id)
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
+        return await self.org_team_app_edge_exists(connector_id)
+
+    async def org_team_app_edge_exists(self, connector_id: str) -> bool:
+        """Whether the org's All team passes the connector gate now. A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return bool(await tx_store.get_edge(
+                f"all_{self.org_id}", CollectionNames.TEAMS.value, connector_id, CollectionNames.APPS.value,
+                CollectionNames.USER_APP_RELATION.value, raise_on_error=True,
+            ))
 
     async def withdraw_team_app_edge(self, connector_id: str) -> None:
         """Undo ``open_app_to_org_team``: the org's members pass the gate again only through their own links."""

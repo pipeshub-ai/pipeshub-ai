@@ -358,6 +358,7 @@ class TestSyncAllProjectIssues:
             "updated_count": 0,
             "failed_count": 0,
             "failed_project_keys": [],
+            "incomplete_project_keys": [],
             "failed_project_statuses": {},
             "full_sync_project_ids": set(),
             "leveled_reread_project_ids": set(),
@@ -502,6 +503,34 @@ class TestFetchIssuesBatched:
             batches.append(batch)
 
         assert len(batches) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("pages", "built", "complete"), [
+        ([{"issues": [], "isLast": False, "nextPageToken": "t1"}, {"issues": ["I"], "nextPageToken": None}], 1, True),
+        ([{"issues": [], "isLast": False, "nextPageToken": "t1"}, {"issues": [], "isLast": False, "nextPageToken": "t1"}],
+         0, False),
+        ([{"issues": [], "isLast": True, "nextPageToken": "t1"}], 0, True),
+    ], ids=["empty_page_then_issues", "repeated_token", "last_page"])
+    async def test_an_empty_page_that_is_not_the_last_is_followed(self, pages: list, built: int, complete: bool):
+        """Enhanced search can answer an empty page with a nextPageToken before a page with issues: stopping there would
+        leave the later issues with their old access and report the pass done."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = None
+        connector.indexing_filters = None
+        connector._issue_build_failures = 0
+        issue = _issue_dict("1001", "PROJ-1", "2024-06-01T00:00:00.000+0000")
+        bodies = [{**p, "issues": [issue if i == "I" else i for i in p["issues"]]} for p in pages]
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(return_value=_resp(200, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._build_issue_records = AsyncMock(return_value=([MagicMock()], []))
+        connector._safe_json_parse = MagicMock(side_effect=bodies)
+
+        batches = [batch async for batch, _more, _ts in connector._fetch_issues_batched("PROJ", "p-1", [], None, None)]
+
+        assert sum(len(b) for b in batches) == built
+        assert (connector._issue_build_failures == 0) is complete
 
     @pytest.mark.asyncio
     async def test_api_error_raises(self):

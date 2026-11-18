@@ -71,6 +71,21 @@ async def test_users_listed_for_an_org_are_its_members_by_edge_and_active_unless
     assert await w.p.get_users(_org()) == []                                      # another org's id reads nothing
 
 
+async def test_a_failed_user_read_is_no_users_unless_asked_to_raise(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller that must not read a failure as an empty org (the org gate's cleanup, a connector's ACL targets) asks to raise."""
+    await member(w, "on", userId="a", isActive=True, email="on@x.com")
+    rows = w.p._id_rows
+
+    async def users_down(sql: str, *a: object, **k: object) -> list:
+        if "pipeshub:graph.get_users" in sql:
+            raise RuntimeError("store down")
+        return await rows(sql, *a, **k)
+    monkeypatch.setattr(w.p, "_id_rows", users_down)
+    assert await w.p.get_users(w.org) == []
+    with pytest.raises(RuntimeError):
+        await w.p.get_users(w.org, raise_on_error=True)
+
+
 async def test_organization_users_page_search_count_and_leave_out_service_accounts(w: World) -> None:
     for i, name in enumerate(["Cara", "Abe", "Bea", "Dan"]):
         await member(w, f"u{i}", userId=f"id{i}", fullName=name, email=f"{name.lower()}@x.com", isActive=True)

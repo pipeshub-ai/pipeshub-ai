@@ -218,6 +218,18 @@ async def test_a_user_the_source_no_longer_lets_in_loses_only_their_own_grants_o
         assert keys(await w.p.get_users_with_permission_to_node("direct", "records")) == {"u"}     # another org's same keys are untouched
 
 
+async def test_the_grants_of_users_the_connector_does_not_link_go_and_a_linked_users_stay(w: World) -> None:
+    """Before the org's All team passes the gate: every user's own grants on the connector go unless the user holds a link to it,
+    checked in the same statement (a user linked meanwhile, as a verified email taking over a stub, keeps them); other connectors'
+    grants and what a team, a group of another connector or the organization grants stay."""
+    await suspended_world(w)
+    await w.edge("userAppRelation", ("users", "other"), ("apps", APP))
+    assert await w.p.remove_unlinked_user_access_to_connector(APP) == 4          # u's direct, both, the record group g and grp
+    assert await w.allowed("u", *ALL) == {"both", "via_org", "via_grp2", "elsewhere"}
+    assert keys(await w.p.get_users_with_permission_to_node("direct", "records")) == {"other"}          # the linked user keeps theirs
+    assert await w.p.remove_unlinked_user_access_to_connector(APP) == 0          # a repeat finds nothing
+
+
 async def test_a_suspended_users_grants_leave_the_typed_graph_once_drained_and_a_team_grant_still_admits(w: World, pg_db) -> None:
     """The removal reaches the typed graph through the change capture: until the drain the connector is answered by the walk, and after it
     kg itself denies what the user held alone and still admits what the team grants."""
