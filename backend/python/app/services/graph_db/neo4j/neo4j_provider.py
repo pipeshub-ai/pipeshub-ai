@@ -20877,12 +20877,63 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self._KH_LISTS: {k: parameters[k] for k in read},
             }
         try:
-            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+            return await self._kh_run(query, parameters, txn_id)
         except Exception as e:
             # Transaction memory is one pool: any listing statement can be the one that finds it spent.
             if self._kh_out_of_memory(e):
                 raise KnowledgeHubListingBusy(out_of_memory=True) from e
+            if str(getattr(e, "code", "")).startswith("Neo.ClientError.Transaction.TransactionTimedOut"):
+                raise KnowledgeHubListingBusy() from e
             raise
+
+    # A listing statement whose plan is not cached takes Neo4j minutes of CPU to plan on a small server, and
+    # milliseconds to run once it is. So one request per statement text plans it, and the others with the same text
+    # wait for that plan instead of each planning a copy. A waiter past the browser's patience is answered as busy;
+    # the planner runs on, under its own limit, so that the plan is cached for the next request.
+    _KH_PLAN_WAIT_S = env_seconds("NEO4J_KH_PLAN_WAIT", 60.0)
+    _KH_QUERY_TIMEOUT_S = env_seconds("NEO4J_KH_QUERY_TIMEOUT", 600.0)
+    _KH_PLANNED_MAX = 4096
+
+    def _kh_plans(self) -> tuple[dict[str, asyncio.Task], set[str]]:
+        """The statements being planned by a request of this process, and those that have run once."""
+        return vars(self).setdefault("_kh_planning", {}), vars(self).setdefault("_kh_planned_texts", set())
+
+    def _kh_planned(self, key: str, task: asyncio.Task) -> None:
+        planning, planned = self._kh_plans()
+        if planning.get(key) is task:
+            del planning[key]
+        if not task.cancelled() and task.exception() is None:
+            if len(planned) >= self._KH_PLANNED_MAX:
+                planned.clear()
+            planned.add(key)
+
+    async def _kh_run(self, query: str, parameters: dict[str, Any], txn_id: str | None) -> list[dict]:
+        if txn_id is not None:
+            # Inside a transaction the statement shares that transaction's session and limit.
+            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        planning, planned = self._kh_plans()
+        key = hashlib.sha1(query.encode()).hexdigest()
+        # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
+        # by every request at once (bounded by the query timeout). Track evictions if that shows up again.
+        while key not in planned:
+            task = planning.get(key)
+            if task is None or task.done():
+                task = spawn_in_request(
+                    self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
+                    name="kh-plan",
+                )
+                planning[key] = task
+                task.add_done_callback(lambda t, key=key: self._kh_planned(key, t))
+                # The planner's own request waits for it: giving up would free nothing, since the planning runs on.
+                return await asyncio.shield(task)
+            try:
+                await asyncio.wait_for(asyncio.shield(task), self._KH_PLAN_WAIT_S)
+            except TimeoutError:
+                raise KnowledgeHubListingBusy() from None
+            except Exception:
+                # The planner's own request reports its failure; this one plans the statement itself.
+                continue
+        return await self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
 
     # The global flatten lets each connector's page read its own grants.
     kh_grants_per_connector = True
