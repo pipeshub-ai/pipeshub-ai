@@ -158,23 +158,37 @@ _NO_TIMEOUT = ("TIMEOUT", "0")
 # FT.HYBRID refuses a DIALECT option (it answers "Unknown field" on its own, as dialect 2 does); its queries are only checked
 # against the schema too (`_require_indexed`), so every path raises the same typed error.
 _DIALECT = ("DIALECT", "2")
-# How long a key lookup waits for documents written just before it to show up in the index (0.75 s in all).
-# Fields that FT.CREATE gives every index (create_collection). Every other field arrives through FT.ALTER, which returns at
-# once and indexes the stored documents in the background: until the scan ends such a field matches only the documents reached.
-_CREATE_TIME_FIELDS = frozenset({
-    "page_content", "dense_embedding", "metadata_orgId", "metadata_virtualRecordId",
-    "connectorIds", "recordGroupIds", "rootRecordGroupIds",
-})
 # How long a delete or payload write that names a field still being back-filled waits for the scan (seconds). A back-fill took
 # about 2.5 minutes per 300k documents, so the default covers roughly a million. The wait is inside the call: the
 # message is not redelivered, so it does not use up delivery attempts.
 _BACKFILL_WAIT_ENV = "REDIS_VECTOR_BACKFILL_WAIT_SECONDS"
 _DEFAULT_BACKFILL_WAIT_SECONDS = 600.0
 _BACKFILL_POLL_SECONDS = 1.0
-# An entry written for an ALTER that never reported back (its process died between the two) is dropped once idle this long; the
-# clearing of a finished scan never depends on a clock.
-_PENDING_ALTER_LOST_SECONDS = 600.0
-_ALTER_STARTED = "started"
+# KEYS[1] the set of complete fields, ARGV[1] the index: adds every schema attribute when FT.INFO says no scan is running.
+# Lua sees FT.INFO's simple-string replies as {ok = "..."} tables.
+_NOTE_COMPLETE_FIELDS = """
+local function str(v) if type(v) == 'table' then return v.ok end return v end
+local info = redis.call('FT.INFO', ARGV[1])
+local indexing, percent, names = nil, nil, {}
+for i = 1, #info - 1, 2 do
+  local key = str(info[i])
+  if key == 'indexing' then indexing = tonumber(str(info[i + 1]))
+  elseif key == 'percent_indexed' then percent = tonumber(str(info[i + 1]))
+  elseif key == 'attributes' then
+    for _, attribute in ipairs(info[i + 1]) do
+      for j = 1, #attribute - 1 do
+        if str(attribute[j]) == 'attribute' then names[#names + 1] = str(attribute[j + 1]) end
+      end
+    end
+  end
+end
+if indexing == 0 and percent == 1 and #names > 0 then
+  redis.call('SADD', KEYS[1], unpack(names))
+  return 1
+end
+return 0
+"""
+# How long a key lookup waits for documents written just before it to show up in the index (0.75 s in all).
 _SETTLE_ATTEMPTS = 5
 _SETTLE_DELAY_SECONDS = 0.05
 
@@ -213,14 +227,6 @@ def _is_unknown_index_error(exc: Exception) -> bool:
         # Redis 8.8 and later, which the floating redis:8 tag now serves.
         or "search_index_not_found" in message
     )
-
-
-def _pending_is_lost(state: str) -> bool:
-    """``pending:<time>`` older than ``_PENDING_ALTER_LOST_SECONDS``: its process died before the ALTER reported back."""
-    try:
-        return time.time() - float(state.split(":", 1)[1]) > _PENDING_ALTER_LOST_SECONDS
-    except (IndexError, ValueError):
-        return False
 
 
 def _backfill_wait_seconds() -> float:
@@ -532,6 +538,8 @@ class RedisVectorService(IVectorDBService):
             "rootRecordGroupIds", "TAG",
         ]
         self._schema_fields.pop(idx, None)
+        # A record left by an earlier index of this name must not vouch for this one, which may be reading stored hashes.
+        await self.client.execute_command("DEL", self._complete_key(idx))  # type: ignore
         try:
             await self.client.execute_command(*cmd)  # type: ignore
         finally:
@@ -585,6 +593,8 @@ class RedisVectorService(IVectorDBService):
         # Drop index (DD = also delete documents)
         with contextlib.suppress(Exception):
             await self.client.execute_command("FT.DROPINDEX", idx, "DD")  # type: ignore
+        with contextlib.suppress(Exception):  # create_collection clears it again before it reuses the name
+            await self.client.execute_command("DEL", self._complete_key(idx))  # type: ignore
         self._collection_configs.pop(collection_name, None)
         self._schema_fields.pop(idx, None)
         logger.info(f"Deleted Redis collection '{collection_name}'")
@@ -607,10 +617,11 @@ class RedisVectorService(IVectorDBService):
         idx = self._index_name(collection_name)
         redis_alias = field_name.replace(".", "_")
         field_type = {"keyword": "TAG", "integer": "NUMERIC"}.get(field_schema.get("type"), "TEXT")
-        recorded: str | None = None
+        # Before the ALTER: its scan would hide, until it ends, that every field already in the schema is complete. Best effort: a
+        # failure here only makes writes by those fields wait for the scan.
+        with contextlib.suppress(Exception):
+            await self._note_complete_fields(idx)
         try:
-            # Recorded before the ALTER, where every process can read it: the scan that follows is what makes the field complete.
-            recorded = await self._record_pending_alter(idx, redis_alias)
             # The scope fields are new in this release line: tags that tell `X` from `x`, so an exclusion can be carried by the query. (The membership
             # tags created with the index in older releases cannot be changed and keep matching without case.)
             case = ["CASESENSITIVE"] if field_type == "TAG" and field_name in {name for name, _ in SCOPE_KEYWORD_INDEXES} else []
@@ -620,8 +631,6 @@ class RedisVectorService(IVectorDBService):
                     "SCHEMA", "ADD",
                     redis_alias, field_type, *case,
                 )
-                # The scan has started: from here a check that finds the index idle may clear the entry.
-                await self.client.execute_command("HSET", self._pending_key(idx), redis_alias, _ALTER_STARTED)  # type: ignore
             finally:
                 self._schema_fields.pop(idx, None)
         except Exception as e:
@@ -630,14 +639,7 @@ class RedisVectorService(IVectorDBService):
             # Redis surfaces this as either "already exists" or
             # "duplicate field in schema".
             if "already exists" in err or "duplicate field" in err:
-                # Nothing was added, so no scan is owed for it. An entry someone else wrote stays; one written for this attempt goes,
-                # unless a scan is running (it could be that other process's for this very field; the check that sees it end clears it).
-                if recorded is not None:
-                    await self._withdraw_pending_alter(idx, redis_alias, recorded)
                 return
-            if recorded is not None:  # nothing was added
-                with contextlib.suppress(Exception):
-                    await self._withdraw_pending_alter(idx, redis_alias, recorded)
             raise
 
     # ------------------------------------------------------------------
@@ -1617,65 +1619,42 @@ class RedisVectorService(IVectorDBService):
         return None if read is None else read[0]
 
     @staticmethod
-    def _pending_key(idx: str) -> str:
-        """The hash beside the index (``<index>:pending_alter``: field -> time of its FT.ALTER). Not under the index's document prefix."""
-        return f"{idx}:pending_alter"
+    def _complete_key(idx: str) -> str:
+        """The set beside the index (``<index>:complete_fields``) of the fields an idle FT.INFO showed in its schema. Not under the
+        index's document prefix."""
+        return f"{idx}:complete_fields"
 
-    async def _record_pending_alter(self, idx: str, alias: str) -> str | None:
-        """Note the field before the ALTER, without overwriting another process's entry. The value written, or None when one was there."""
-        value = f"pending:{time.time()!r}"
-        wrote = await self.client.execute_command("HSETNX", self._pending_key(idx), alias, value)  # type: ignore
-        return value if wrote else None
+    async def _note_complete_fields(self, idx: str) -> None:
+        """An idle FT.INFO reply proves every field in its schema fully indexed. Read and recorded in one script, so a drop and
+        re-create of the index in between cannot make the old schema vouch for the new index. Only ever added to: a field does not
+        become incomplete again until the index is dropped (create_collection and delete_collection clear the set)."""
+        await self.client.execute_command("EVAL", _NOTE_COMPLETE_FIELDS, "1", self._complete_key(idx), idx)  # type: ignore
 
-    async def _withdraw_pending_alter(self, idx: str, alias: str, value: str) -> None:
-        """Drop this attempt's entry when it added nothing (the field was there, or the ALTER failed): only if it still holds what this
-        attempt wrote, so an entry another process marked started for a scan of its own stays. One atomic compare-and-delete."""
-        await self.client.execute_command(  # type: ignore
-            "EVAL", "if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) end return 0",
-            "1", self._pending_key(idx), alias, value,
-        )
-
-    async def _pending_alters(self, idx: str) -> dict[str, str]:
-        """Fields any process added with FT.ALTER whose scan was not yet seen to finish (field -> ``started`` or ``pending:<time>``).
-
-        Absent key: none (an index from before this key existed)."""
-        raw = await self.client.execute_command("HGETALL", self._pending_key(idx))  # type: ignore
-        pairs = list(raw.items()) if isinstance(raw, dict) else list(zip(raw[::2], raw[1::2], strict=False)) if raw else []
-        return {
-            (k.decode() if isinstance(k, bytes) else str(k)): (v.decode() if isinstance(v, bytes) else str(v))
-            for k, v in pairs
-        }
-
-    async def _clear_pending_alters(self, idx: str, seen: dict[str, str]) -> None:
-        """The index was idle after ``seen`` was read: every entry in it whose ALTER had returned has had its scan finish. An entry whose ALTER
-        had not returned yet stays, and so does one written after the read; no clock decides either."""
-        done = [f for f, state in seen.items() if state == _ALTER_STARTED or _pending_is_lost(state)]
-        if done:
-            await self.client.execute_command("HDEL", self._pending_key(idx), *done)  # type: ignore
+    async def _complete_fields(self, idx: str) -> frozenset[str]:
+        raw = await self.client.execute_command("SMEMBERS", self._complete_key(idx))  # type: ignore
+        return frozenset(m.decode() if isinstance(m, bytes) else str(m) for m in raw or ())
 
     async def _require_settled(self, idx: str, query: str) -> None:
         """Hold a delete or payload write until the fields its filter names are fully indexed (:class:`IndexBackfilling` after the bound).
 
-        An ``FT.ALTER`` that adds a field returns at once and indexes the existing documents in the background (minutes on a large
-        collection); until then that field matches only the documents reached so far, so a write built on it would leave some behind.
-        FT.INFO does not say which field is being filled, so the process that issues the ALTER records the field in a hash beside the
-        index and every process reads it here; the entry is dropped once a check sees the scan finished. A write that names only
-        complete fields (the index's creation fields, none of them pending) runs during the scan. A write that names a field still being
-        filled waits inside this call, polling ``FT.INFO``, for at most ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS`` (a wait is not a failed
-        delivery), then raises. Read on every call: the state changes by itself.
+        ``FT.CREATE`` over stored hashes and an ``FT.ALTER`` that adds a field return at once and index the stored documents in the
+        background (minutes on a large collection); until then a field matches only the documents reached, so a write built on it
+        would leave some behind. FT.INFO does not say which fields are being filled, so a field counts as complete only once some
+        process saw it in the schema of an idle index (:meth:`_note_complete_fields`, also called by create_index before its ALTER).
+        Proof, not a record of work in flight: no interleaving of processes, lost reply or clock can make a field being filled look
+        complete. A write that names only complete fields runs during a scan; one that names any other field waits inside this call,
+        polling ``FT.INFO``, for at most ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS`` (a wait is not a failed delivery), then raises.
         """
         named = query_fields(query)
         deadline = time.monotonic() + _backfill_wait_seconds()
         while True:
-            # Read before FT.INFO: an entry in this snapshot was there before the index was looked at.
-            pending = await self._pending_alters(idx)
             read = await self._read_index(idx)
             if read is None:
                 return
             if not read[2]:
-                await self._clear_pending_alters(idx, pending)
+                await self._note_complete_fields(idx)
                 return
-            if not ((named - _CREATE_TIME_FIELDS) | (named & frozenset(pending))):
+            if named <= await self._complete_fields(idx):
                 return
             if time.monotonic() >= deadline:
                 raise IndexBackfilling(idx, read[1])
