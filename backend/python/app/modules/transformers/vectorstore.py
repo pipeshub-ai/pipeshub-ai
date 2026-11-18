@@ -3224,7 +3224,7 @@ class VectorStore(Transformer):
         self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
 
     async def _confirm_batch(
-        self, guard: PrecisionGuard, collection_name: str, precision: str, fence: Fence, documents: List[Document],
+        self, guard: PrecisionGuard, collection_name: str, precision: str, fence: Fence, documents: list[Document],
     ) -> None:
         """After the write: the epoch and the pin are still the batch's, else the batch's own points go and the error is raised.
 
@@ -3248,7 +3248,7 @@ class VectorStore(Transformer):
             raise
 
     async def _remove_unconfirmed(
-        self, guard: PrecisionGuard, collection_name: str, org: str | None, precision: str, fence: Fence, documents: List[Document],
+        self, guard: PrecisionGuard, collection_name: str, org: str | None, precision: str, fence: Fence, documents: list[Document],
     ) -> None:
         record_ids = sorted({d.metadata.get("virtualRecordId") for d in documents if d.metadata.get("virtualRecordId")})
         block_ids = sorted({d.metadata.get("blockId") for d in documents if d.metadata.get("blockId")})
