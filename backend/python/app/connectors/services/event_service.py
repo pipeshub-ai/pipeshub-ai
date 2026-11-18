@@ -24,6 +24,7 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.data_source_entities_processor import unless_synced_since
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -1606,7 +1607,15 @@ class EventService:
                 if ids:
                     await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
 
-            await connector.reindex_records(records)
+            async with unless_synced_since(self.graph_provider, connector_id) as stamp:
+                try:
+                    await connector.reindex_records(records)
+                except Exception:
+                    if not stamp.tripped:
+                        raise
+            if stamp.tripped:
+                # Whatever it did not write is left NOT_STARTED, which the next sync or the stranded-record sweep answers.
+                self.logger.info(f"A sync of {connector_id} ran during this reindex batch; its newer writes stand over the batch's")
 
             total_processed += len(records)
 
