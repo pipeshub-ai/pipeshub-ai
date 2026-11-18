@@ -284,6 +284,7 @@ from app.services.graph_db.vector_membership_queries import (
 from app.telemetry.backend import METRICS_BACKEND
 from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
+from app.utils.request_deadline import seconds_left
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
 
@@ -20909,13 +20910,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if self._kh_out_of_memory(e):
                 raise KnowledgeHubListingBusy(out_of_memory=True) from e
             if str(getattr(e, "code", "")).startswith("Neo.ClientError.Transaction.TransactionTimedOut"):
-                raise KnowledgeHubListingBusy() from e
+                raise KnowledgeHubListingBusy(timed_out=True) from e
             raise
 
     # A listing statement whose plan is not cached takes Neo4j minutes of CPU to plan on a small server, and
     # milliseconds to run once it is. So one request per statement text plans it, and the others with the same text
     # wait for that plan instead of each planning a copy. A waiter past the browser's patience is answered as busy;
-    # the planner runs on, under its own limit, so that the plan is cached for the next request.
+    # the planner runs on, under its own limit, so that the plan is cached for the next request. Every wait also ends at
+    # the request's deadline (`knowledge_hub_deadline_seconds`, inside the web app's timeout): past it the browser has
+    # already shown a failure, so the request is answered busy while the planning goes on.
     _KH_PLAN_WAIT_S = env_seconds("NEO4J_KH_PLAN_WAIT", 60.0)
     _KH_QUERY_TIMEOUT_S = env_seconds("NEO4J_KH_QUERY_TIMEOUT", 600.0)
     _KH_PLANNED_MAX = 4096
@@ -20937,6 +20940,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if txn_id is not None:
             # Inside a transaction the statement shares that transaction's session and limit.
             return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        if self._kh_time_left(None) == 0:
+            raise KnowledgeHubListingBusy(timed_out=True)
         planning, planned = self._kh_plans()
         # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
         types = sorted((k, type(v).__name__) for k, v in parameters.items())
@@ -20954,18 +20959,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 planning[key] = task
                 task.add_done_callback(lambda t, key=key: self._kh_planned(key, t))
-                # The planner's own request waits for it: giving up would free nothing, since the planning runs on.
-                return await self._kh_timed(asyncio.shield(task))
+                # The planner's own request waits for it until its deadline: giving up sooner would free nothing, since the
+                # planning runs on, and past the deadline nobody reads the answer.
+                return await self._kh_timed(self._kh_until_deadline(asyncio.shield(task)))
             try:
-                await asyncio.wait_for(asyncio.shield(task), max(deadline - time.monotonic(), 0))
+                await asyncio.wait_for(asyncio.shield(task), self._kh_time_left(max(deadline - time.monotonic(), 0)))
             except TimeoutError:
-                raise KnowledgeHubListingBusy() from None
+                raise KnowledgeHubListingBusy(timed_out=self._kh_time_left(None) == 0) from None
             except Exception:
                 # The planner's own request reports its failure; this one plans the statement itself.
                 continue
-        return await self._kh_timed(
-            self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
-        )
+        # The client may wait for a pooled connection and retry a lost one with the limit it was given: the request is
+        # answered at its deadline whichever it is doing, and a statement already sent ends at that limit on the server.
+        return await self._kh_timed(self._kh_until_deadline(
+            self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._kh_time_left(self._KH_QUERY_TIMEOUT_S))
+        ))
+
+    @staticmethod
+    def _kh_time_left(limit: float | None) -> float | None:
+        """``limit``, or the time to the request's deadline when that is sooner (never below 0); ``None`` for no limit."""
+        left = seconds_left()
+        if left is None:
+            return limit
+        left = max(left, 0.0)
+        return left if limit is None else min(limit, left)
+
+    async def _kh_until_deadline(self, run: Awaitable[list[dict]]) -> list[dict]:
+        """``run``, answered busy at the request's deadline. A shielded planner goes on; anything else is cancelled."""
+        left = self._kh_time_left(None)
+        if left is None:
+            return await run
+        try:
+            return await asyncio.wait_for(run, left)
+        except TimeoutError:
+            raise KnowledgeHubListingBusy(timed_out=True) from None
 
     async def _kh_timed(self, run: Awaitable[list[dict]]) -> list[dict]:
         """``run``, with an out-of-memory failure timed from here: a wait for the plan before it says nothing about
