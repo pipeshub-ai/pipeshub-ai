@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { layout, loadSecrets } from "../src/config.ts";
-import { alive as aliveFn, health, procIdentity, startDetached, stopPostgres } from "../src/launcher.ts";
+import { alive as aliveFn, health, procIdentity, startDetached, startPostgres, stopPostgres } from "../src/launcher.ts";
 
 const root = mkdtempSync(join(tmpdir(), "psh-fake-"));
 const main = join(import.meta.dirname, "..", "src", "main.ts"), fakeApi = join(import.meta.dirname, "fake-api.mjs");
@@ -109,6 +109,20 @@ describe("PostgreSQL ownership", () => {
     await assert.rejects(stopPostgres(lay, 300), /did not stop/);
     pm.kill("SIGKILL");
   });
+  test("a pg_ctl start whose pid cannot be recorded is still waited for, so its server is found", async () => {
+    const b = fakeBundle(), d = mkdtempSync(join(root, "data-")), lay = layout(b, d);
+    writeFileSync(join(b, "slow-pgstart"), "");
+    for (const f of [lay.pgData, lay.logs]) mkdirSync(f, { recursive: true });
+    writeFileSync(join(lay.pgData, "PG_VERSION"), "18\n"); writeFileSync(join(lay.pgData, "postgresql.conf"), "include 'launcher.conf'\n");
+    const c = { layout: lay, ports: { api: 1, pg: 2, query: 3, connectors: 4, indexing: 5, embedding: 6, docling: 7 }, secrets: loadSecrets(d) };
+    const steps = { cancelled: false, onSpawn: (name: string, pid: number | undefined) => { if (name === "pg_ctl" && pid) throw new Error("disk full"); } };
+    await assert.rejects(startPostgres(c, () => {}, steps), /disk full/);
+    const pg = pgPid(d), up = !!pg && alive(pg);
+    if (up) process.kill(pg!, "SIGKILL");
+    else await sleep(3000);   // the server pg_ctl was still handing over to: ended once it appears
+    const late = pgPid(d); if (!up && late && alive(late)) process.kill(late, "SIGKILL");
+    assert.ok(up, "the start failed before its server was up, so a shutdown would not find it");
+  });
 });
 
 describe("health", () => {
@@ -140,6 +154,14 @@ process.on("SIGTERM", () => { require("fs").writeFileSync(${JSON.stringify(marke
     if (!existsSync(marker)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
     assert.ok(existsSync(marker), "the background start was left running");
     assert.ok(!alive(pid));
+  });
+});
+
+describe("start --detach, cannot run", () => {
+  test("a background launcher that cannot be started is reported, not thrown", async () => {
+    const d = mkdtempSync(join(root, "data-")), events: Record<string, unknown>[] = [];
+    assert.equal(await startDetached({ dataDir: d, bundle: root }, (e) => events.push(e), [], [join(d, "no-such-node")]), 1);
+    assert.equal(events.at(-1)?.event, "error");
   });
 });
 
@@ -424,7 +446,7 @@ describe("launcher", () => {
   test("an unreadable lock file stops the start rather than being taken over", async () => {
     const b = fakeBundle(), d = join(root, "data badlock");
     mkdirSync(d, { recursive: true });
-    writeFileSync(join(d, "launcher.lock"), "", { mode: 0o000 });
+    mkdirSync(join(d, "launcher.lock"));   // unopenable for writing even by root, unlike a mode-000 file
     const l = launch(b, d, "start");
     assert.equal(await l.exited, 1);
     assert.match(l.events.find((e) => e.event === "error")?.message ?? "", /launcher\.lock/);
@@ -499,9 +521,9 @@ describe("launcher", () => {
     assert.equal((await cli(b, d, "stop")).code, 0);
     assert.equal(await a.exited, 0);
     await sleep(3000);
-    const pg = pgPid(d);
-    if (pg && alive(pg)) process.kill(pg, "SIGKILL");
-    assert.ok(!(pg && alive(pg)), "a server came up after the stop");
+    const pg = pgPid(d), up = !!pg && alive(pg);
+    if (up) process.kill(pg!, "SIGKILL");
+    assert.ok(!up, "a server came up after the stop");
   });
 
   test("killed while pg_ctl start hands over, then stop: no server comes up after the stop", async () => {
@@ -512,9 +534,9 @@ describe("launcher", () => {
     a.p.kill("SIGKILL"); await a.exited;
     assert.equal((await cli(b, d, "stop")).code, 0);
     await sleep(3000);
-    const pg = pgPid(d);
-    if (pg && alive(pg)) process.kill(pg, "SIGKILL");
-    assert.ok(!(pg && alive(pg)), "a server came up after the stop");
+    const pg = pgPid(d), up = !!pg && alive(pg);
+    if (up) process.kill(pg!, "SIGKILL");
+    assert.ok(!up, "a server came up after the stop");
   });
 
   test("a postmaster.pid naming another live process: that process is never signalled", async () => {
@@ -536,8 +558,9 @@ describe("launcher", () => {
       leftover: { pid: dead, phase: "ready", services: { query: worker.pid }, ports: {} } }));
     assert.equal((await cli(b, d, "stop")).code, 0);
     await sleep(300);
-    if (alive(worker.pid!)) worker.kill("SIGKILL");
-    assert.throws(() => process.kill(-worker.pid!, 0), "the first launcher's service survived");
+    const up = alive(worker.pid!);
+    if (up) worker.kill("SIGKILL");
+    assert.ok(!up, "the first launcher's service survived");
   });
 
   test("a suspended start-up step does not hold the stop: it is ended after a grace period", async () => {
@@ -566,12 +589,43 @@ describe("launcher", () => {
     assert.equal(await a.exited, 1);
     assert.equal(a.events.find((e) => e.event === "error")?.code, "start_failed");
     assert.ok(a.events.some((e) => e.event === "stopped"));
-    if (alive(pg)) process.kill(pg, "SIGKILL");
-    assert.ok(!alive(pg), "the server was left running");
+    const up = alive(pg);
+    if (up) process.kill(pg, "SIGKILL");
+    assert.ok(!up, "the server was left running");
   });
 
   test("stop with a data folder that was never created: nothing runs, exit 0", async () => {
     assert.deepEqual(await cli(fakeBundle(), join(root, "data never"), "stop"), { code: 0, out: { event: "stopped", was_running: false } });
+  });
+
+  test("a state file that cannot be written: start reports start_failed and frees the lock", async () => {
+    const b = fakeBundle(), d = join(root, "data nostate");
+    mkdirSync(join(d, "launcher.json", "x"), { recursive: true });   // rename onto a non-empty folder fails
+    const l = launch(b, d, "start");
+    assert.equal(await l.exited, 1);
+    assert.equal(l.events.find((e) => e.event === "error")?.code, "start_failed");
+    rmSync(join(d, "launcher.json"), { recursive: true });
+    const w = launch(b, d, "start"); await w.until("ready");   // the lock was released
+    await cli(b, d, "stop"); await w.exited;
+  });
+
+  test("a dead launcher whose lock is still held a moment: stop waits for it and ends the leftovers", async () => {
+    const b = fakeBundle(), d = join(root, "data lingerlock");
+    mkdirSync(d, { recursive: true });
+    const launcher = spawn("sleep", ["60"], { stdio: "ignore" }); live.push(launcher);
+    const worker = spawn("sleep", ["60"], { detached: true, stdio: "ignore" }); live.push(worker);
+    await sleep(100);
+    writeFileSync(join(d, "launcher.json"), JSON.stringify({ pid: launcher.pid, pidId: procIdentity(launcher.pid!), phase: "ready", services: { query: worker.pid }, ports: {} }));
+    // holds the flock for 2 s, as a dead launcher's helper does until it sees its pipe close
+    const holder = spawn("python3", ["-c", "import fcntl, os, sys, time; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600); fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); time.sleep(2)", join(d, "launcher.lock")], { stdio: ["ignore", "pipe", "ignore"] });
+    live.push(holder);
+    await new Promise((r) => holder.stdout!.once("data", r));
+    const r = await cli(b, d, "stop");
+    await sleep(300);
+    const up = alive(worker.pid!);
+    if (up) worker.kill("SIGKILL");
+    assert.equal(r.code, 0, JSON.stringify(r.out));
+    assert.ok(!up, "stop reported stopped without ending the dead launcher's service");
   });
 
   test("stop during a start's long cleanup of a crashed launcher's leftovers stops that start", async () => {

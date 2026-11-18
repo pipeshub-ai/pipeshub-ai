@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import {
-  type Ctx, PY_SERVICES, SERVICES, defaultDataDir, layout, loadSecrets, pickPorts, postgresConf, redact, schemaEnv, serviceEnvs, socketDir,
+  type Ctx, PY_SERVICES, SERVICES, defaultDataDir, layout, loadSecrets, pickPorts, postgresConf, redact, schemaEnv, serviceEnvs, socketDir, writeJson,
 } from "../src/config.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "psh-cfg-"));
@@ -40,6 +40,12 @@ describe("ports", () => {
   test("a base scans upward from it", async () => {
     const p = await pickPorts({}, 54800, async () => true);
     assert.deepEqual(Object.values(p), SERVICES.map((_, i) => 54800 + i));
+    const top = await pickPorts({}, 65536 - SERVICES.length, async () => true, async () => 1);
+    assert.deepEqual(Object.values(top), SERVICES.map((_, i) => 65536 - SERVICES.length + i), "65535 is a port too");
+  });
+  test("a saved port out of range is replaced, not probed", async () => {
+    const p = await pickPorts({ query: 70000, pg: 1.5 } as never);
+    assert.ok(Number.isInteger(p.query) && p.query <= 65535 && Number.isInteger(p.pg));
   });
 });
 
@@ -88,7 +94,9 @@ describe("secrets", () => {
     assert.ok(a.pg_backup, "bootstrap_roles refuses to create the backup login without a password");
     const raw = JSON.parse(readFileSync(join(d, "secrets.json"), "utf8"));
     delete raw.pg_kv;
-    writeFileSync(join(d, "secrets.json"), JSON.stringify(raw), { mode: 0o644 });
+    writeFileSync(join(d, "secrets.json"), JSON.stringify(raw));
+    chmodSync(join(d, "secrets.json"), 0o644);   // writeFileSync's mode applies only to a new file
+    assert.equal(statSync(join(d, "secrets.json")).mode & 0o777, 0o644);
     const b = loadSecrets(d);
     assert.equal(b.pg_node, a.pg_node);
     assert.ok(b.pg_kv);
@@ -100,6 +108,15 @@ describe("secrets", () => {
     chmodSync(join(d, "secrets.json"), 0o644);
     assert.equal(statSync(join(d, "secrets.json")).mode & 0o777, 0o644);
     assert.deepEqual(loadSecrets(d), a);
+    assert.equal(statSync(join(d, "secrets.json")).mode & 0o777, 0o600);
+  });
+  test("a file left at the temporary name, or a symlink there, is never written through", () => {
+    const d = tmp(), elsewhere = join(tmp(), "other");
+    writeFileSync(elsewhere, "untouched");
+    symlinkSync(elsewhere, join(d, `secrets.json.${process.pid}.tmp`));
+    writeJson(join(d, "secrets.json"), { pg_admin: "x" });
+    assert.equal(readFileSync(elsewhere, "utf8"), "untouched");
+    assert.deepEqual(JSON.parse(readFileSync(join(d, "secrets.json"), "utf8")), { pg_admin: "x" });
     assert.equal(statSync(join(d, "secrets.json")).mode & 0o777, 0o600);
   });
   test("redact masks every secret value", () => {
@@ -191,5 +208,7 @@ describe("postgres settings", () => {
     // a comma would split the list in two
     assert.match(postgresConf(ctx("/tmp/psh,with-comma"), {}, "linux"), /^unix_socket_directories = '"\/tmp\/psh,with-comma\/run"'$/m);
     assert.match(postgresConf(long, {}, "darwin"), /^unix_socket_directories = ''$/m);
+    // the settings file reads backslash escapes inside quotes
+    assert.match(postgresConf(ctx("/tmp/a\\b"), {}, "linux"), /^unix_socket_directories = '"\/tmp\/a\\\\b\/run"'$/m);
   });
 });

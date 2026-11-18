@@ -17,11 +17,12 @@ export function parse(argv: string[]): Parsed {
   let json = false, detach = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    const val = () => { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); return v; };
+    // "" would mean the current folder, and "--json" is the next option, not a value
+    const val = () => { const v = argv[++i]; if (!v || v.startsWith("--")) throw new Error(`${a} needs a value`); return v; };
     if (a === "--json") json = true;
     else if (a === "--detach") detach = true;
     else if (a === "--data-dir") { opts.dataDir = val(); rest.push(a, opts.dataDir); }
-    else if (a.startsWith("--data-dir=")) { opts.dataDir = a.slice(11); rest.push(a); }
+    else if (a.startsWith("--data-dir=")) { opts.dataDir = a.slice(11); if (!opts.dataDir) throw new Error("--data-dir needs a value"); rest.push(a); }
     else if (a === "--bundle") { opts.bundle = val(); rest.push(a, opts.bundle); }
     else if (a === "--port-base") {
       const n = Number(val());
@@ -31,6 +32,7 @@ export function parse(argv: string[]): Parsed {
     else if (a.startsWith("--")) throw new Error(`unknown option ${a}`);
     else pos.push(a);
   }
+  if (pos.length > 1) throw new Error(`unexpected argument ${pos[1]}`);
   return { cmd: pos[0] ?? "", json, detach, opts, rest };
 }
 
@@ -49,12 +51,18 @@ export async function run(argv: string[], selfCmd: string[], out: (s: string) =>
   let p: Parsed;
   try { p = parse(argv); } catch (e) { process.stderr.write(`${(e as Error).message}\n${USAGE}\n`); return 2; }
   const emit = emitter(p.json, out);
-  switch (p.cmd) {
-    case "start": return p.detach ? startDetached(p.opts, emit, p.rest, selfCmd) : start(p.opts, emit);
-    case "stop": return stop(p.opts, emit);
-    case "status": { const r = status(p.opts); emit({ event: "status", ...r.body }); return r.code; }
-    case "health": { const r = await health(p.opts); emit({ event: "health", ...r.body }); return r.code; }
-    case "version": out("pipeshub-native 1"); return 0;
+  try {
+    switch (p.cmd) {
+      case "start": return await (p.detach ? startDetached(p.opts, emit, p.rest, selfCmd) : start(p.opts, emit));
+      case "stop": return await stop(p.opts, emit);
+      case "status": { const r = status(p.opts); emit({ event: "status", ...r.body }); return r.code; }
+      case "health": { const r = await health(p.opts); emit({ event: "health", ...r.body }); return r.code; }
+      case "version": out("pipeshub-native 1"); return 0;
+    }
+  } catch (e) {
+    // Anything not already reported (an unwritable data folder, say) still reaches a --json caller as one error event.
+    emit({ event: "error", code: p.cmd === "stop" ? "stop_failed" : "start_failed", message: (e as Error).message });
+    return 1;
   }
   process.stderr.write(USAGE + "\n");
   return 2;
