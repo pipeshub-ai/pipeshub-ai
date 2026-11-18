@@ -4756,11 +4756,25 @@ class JiraDataCenterConnector(BaseConnector):
         }
         return {**aliases, **user_by_key}
 
+    def _directory_extra(self) -> list[AppUser]:
+        """The linked accounts an issue's people also resolve against: on a user list not read in full, those it did not
+        show (the last complete state); and those the active-user list shows whose email is hidden, left out of the
+        directory a sync builds (it keeps a cached account only with an email), so held by account."""
+        return [*self._linked_not_read(),
+                *(u for u in self._stored_app_users if u.source_user_id and not u.email and u.source_user_id in self._listed_user_keys)]
+
     def _grant_directory(self, users: dict[str, AppUser]) -> dict[str, AppUser]:
-        """The accounts an issue's people resolve against: the synced directory and, on a user list not read in full,
-        the linked accounts it did not show (the last complete state, as ``_directory_grants`` counts them)."""
-        linked = self._linked_not_read()
-        return {**{u.source_user_id: u for u in linked if u.source_user_id}, **users} if linked else users
+        """The accounts an issue's people resolve against: the synced directory and the linked accounts
+        ``_directory_extra`` adds (as ``_directory_grants`` counts them)."""
+        linked = self._directory_extra()
+        if not linked:
+            return users
+        # Aliases rebuilt over every account, the added ones too: a key always names its own account, never a username
+        # alias that ``users`` may carry for the same string.
+        return self._users_with_usernames({
+            **{u.source_user_id: u for u in linked if u.source_user_id},
+            **{key: u for key, u in users.items() if key == u.source_user_id},
+        })
 
     def _remember_parent_levels(self, issues: list[dict[str, Any]]) -> None:
         """Note the project and level of each issue read that may parent a story."""
@@ -4976,7 +4990,7 @@ class JiraDataCenterConnector(BaseConnector):
         """An issue's own grants (reporter, assignee, level members) name only accounts in the synced
         directory. When it was not read in full, the linked accounts it did not show (the last complete state)
         count too, but never one the issue payload alone names, such as an account withdrawn earlier."""
-        linked = self._linked_not_read()
+        linked = self._directory_extra()
         listed = {u.email.lower() for u in [*users.values(), *linked] if u.email}
         # A grant by account (the directory holds no email for it) is kept when that account is listed.
         accounts = set(users) | {u.source_user_id for u in linked if u.source_user_id}

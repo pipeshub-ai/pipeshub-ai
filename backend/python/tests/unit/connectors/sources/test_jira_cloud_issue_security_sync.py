@@ -2130,6 +2130,33 @@ class TestIssueGrantsNameListedAccountsOnly:
         (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
         assert {(p.email, p.external_id) for p in grants} == {(None, "acc-9")}  # by account, reaching that user
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("listed", "licensed", "granted"), [
+        (True, True, True), (False, True, False), (True, False, False), (True, None, False)],
+        ids=["listed_and_licensed", "not_listed", "not_licensed", "product_access_unknown"])
+    async def test_a_linked_account_stored_without_an_email_is_in_the_directory_a_sync_resolves_against(
+        self, listed: bool, licensed: bool | None, granted: bool,
+    ) -> None:
+        """The user list read in full lists acc-9 active, and it is linked, but its email is hidden, so the directory a sync
+        builds (`_fetch_users` keeps a cached account only with an email) does not hold it. The level names it: its
+        record group grants it by account when the list shows it active and it has product access; not otherwise. The
+        issue holds no grant of its own for a holder that names the same person on every issue."""
+        c = _connector()
+        mia = AppUser(app_name="JIRA", connector_id="conn-sec", source_user_id="acc-9", org_id="org-1", email="",
+                      full_name="Mia", is_active=True)
+        c._stored_app_users = [*_users()[:2], mia]
+        c._listed_account_ids = {"acc-1", "acc-2"} | ({"acc-9"} if listed else set())
+        c._seen_account_ids = {"acc-1", "acc-2", "acc-9"}
+        c._licensed_account_ids = None if licensed is None else ({"acc-1", "acc-2"} | ({"acc-9"} if licensed else set()))
+        c._issue_security[PROJECT_ID] = _present({"10102": [
+            {"type": "user", "parameter": "acc-9", "user": {"accountId": "acc-9", "emailAddress": "mia@x.com"}}]})
+        records, _ = await c._build_issue_records([_issue({"id": "10102"})], PROJECT_ID, _users()[:2])
+        assert not any(p.external_id == "acc-9" for p in records[0][1])
+        await c._write_level_groups(PROJECT_ID, "PROJ", c._issue_security[PROJECT_ID], ["10102"],
+                                    c._grant_directory({u.source_user_id: u for u in _users()[:2]}))
+        (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert {(p.email, p.external_id) for p in grants} == ({(None, "acc-9")} if granted else set())
+
     @pytest.mark.parametrize("not_in_full", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused", "empty"])
     def test_a_directory_not_read_in_full_counts_the_linked_accounts_and_no_one_else(self, not_in_full: str) -> None:
         c = _connector()
