@@ -352,7 +352,10 @@ export class NotificationService {
   sendToUser(userId: string, event: string, data: any): boolean {
     // A scheduled notification is never pushed and never queued for an offline user: a client sees it through its own
     // list or stats, at or after `visibleAt`. Nothing delivers it later.
-    if (event === 'newNotification' && isNotYetVisible(data?.visibleAt)) {
+    if (
+      event === 'newNotification' &&
+      isNotYetVisible((data as { visibleAt?: unknown } | undefined)?.visibleAt)
+    ) {
       this.logger.debug('Scheduled notification not pushed', { userId, event });
       return false;
     }

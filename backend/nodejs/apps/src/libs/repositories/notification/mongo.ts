@@ -52,7 +52,11 @@ const rowOf = (doc: unknown): NotificationRow => toPlain<NotificationRow>(doc);
 function stamped(row: NewNotification, now: Date): NewNotification {
   const r = prepareNotification(row) as Record<string, unknown>;
   const createdAt = (r.createdAt as Date | undefined) ?? now;
-  return { ...r, createdAt, updatedAt: r.updatedAt ?? createdAt } as unknown as NewNotification;
+  return {
+    ...r,
+    createdAt,
+    updatedAt: r.updatedAt ?? createdAt,
+  } as unknown as NewNotification;
 }
 
 export class MongoNotificationRepository implements NotificationRepository {
@@ -66,7 +70,7 @@ export class MongoNotificationRepository implements NotificationRepository {
 
   async insertMany(rows: NewNotification[]): Promise<NotificationRow[]> {
     const now = new Date();
-    const out: NotificationRow[] = new Array(rows.length);
+    const out = new Array<NotificationRow>(rows.length);
     const fresh: number[] = [];
     for (const [i, r] of rows.entries()) {
       if (r._id === undefined) {
@@ -75,10 +79,17 @@ export class MongoNotificationRepository implements NotificationRepository {
       }
       // a row with its own id is idempotent: the duplicate key of a republish returns the stored row
       try {
-        out[i] = rowOf((await Notifications.create([stamped(r, now)], { timestamps: false }))[0]);
+        out[i] = rowOf(
+          (
+            await Notifications.create([stamped(r, now)], { timestamps: false })
+          )[0],
+        );
       } catch (e) {
         if ((e as { code?: number }).code !== 11000) throw e;
-        const existing = await Notifications.findOne({ _id: oid(String(r._id)), orgId: oid(r.orgId) }).lean();
+        const existing = await Notifications.findOne({
+          _id: oid(r._id as string),
+          orgId: oid(r.orgId),
+        }).lean();
         if (!existing) throw e;
         out[i] = rowOf(existing);
       }
@@ -94,8 +105,19 @@ export class MongoNotificationRepository implements NotificationRepository {
   }
 
   async exists(scope: NotificationScope, id: string): Promise<boolean> {
-    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(scope.orgId) || !mongoose.isValidObjectId(scope.userId)) return false;
-    return (await Notifications.countDocuments({ _id: oid(id), orgId: oid(scope.orgId), assignedTo: oid(scope.userId) })) > 0;
+    if (
+      !mongoose.isValidObjectId(id) ||
+      !mongoose.isValidObjectId(scope.orgId) ||
+      !mongoose.isValidObjectId(scope.userId)
+    )
+      return false;
+    return (
+      (await Notifications.countDocuments({
+        _id: oid(id),
+        orgId: oid(scope.orgId),
+        assignedTo: oid(scope.userId),
+      })) > 0
+    );
   }
 
   async list(

@@ -107,7 +107,9 @@ export class PgNotificationRepository
         );
         for (const r of found) have.set(r.id, r);
       }
-      const keep = docs.map((_, i) => i).filter((i) => !have.has(ids[i] as string));
+      const keep = docs
+        .map((_, i) => i)
+        .filter((i) => !have.has(ids[i] as string));
       if (keep.length === 0) return ids.map((id) => toRow(have.get(id) as Row));
       const allDocs = docs;
       const allIds = ids;
