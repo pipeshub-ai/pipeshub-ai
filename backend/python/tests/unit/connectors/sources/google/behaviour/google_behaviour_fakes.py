@@ -370,12 +370,15 @@ class FakeEntitiesProcessor:
         stored = self.records.get(external_record_id)
         return self._plain(stored) if stored is not None else None
 
-    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str | None = None) -> list[Any]:
+    async def get_records_by_parent(
+        self, connector_id: str, parent_external_record_id: str, record_type: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Any]:
         return [
             self._plain(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or str(getattr(r.record_type, "value", r.record_type)) == str(getattr(record_type, "value", record_type)))
-            and is_live_record(r)
+            and matches_visibility(r, visibility)
         ]
 
     async def get_records_by_status(
@@ -591,6 +594,21 @@ class FakeEntitiesProcessor:
             self.permissions[record.external_record_id] = [
                 p for p in self.permissions.get(record.external_record_id, []) if p.email != user_email
             ]
+
+    async def remove_user_grants_from_records(
+        self, record_ids: list[str], user_emails: set[str], connector_id: str, *, batch: int = 500
+    ) -> int:
+        removed = 0
+        emails = {e.lower() for e in user_emails}
+        for record_id in record_ids:
+            record = self.by_id(record_id)
+            if record is None:
+                continue
+            perms = self.permissions.get(record.external_record_id, [])
+            kept = [p for p in perms if not (p.entity_type == EntityType.USER and (p.email or "").lower() in emails)]
+            removed += len(perms) - len(kept)
+            self.permissions[record.external_record_id] = kept
+        return removed
 
     async def stop_inheriting_permissions(self, record_id: str, connector_id: str) -> None:
         record = self.by_id(record_id)
