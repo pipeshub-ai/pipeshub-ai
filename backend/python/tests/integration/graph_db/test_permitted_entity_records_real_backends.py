@@ -487,7 +487,10 @@ class TestNeo4jRoleWalkLeftOut:
     ) -> dict[bool, list[str]]:
         import json
 
-        from app.services.graph_db.common.utils import ENTITY_CANDIDATE_SCAN_CAP, within_param
+        from app.services.graph_db.common.utils import (
+            ENTITY_CANDIDATE_SCAN_CAP,
+            within_param,
+        )
 
         entity_type = ref["type"]
         typed = provider._entity_refs_by_type([ref])[entity_type]
