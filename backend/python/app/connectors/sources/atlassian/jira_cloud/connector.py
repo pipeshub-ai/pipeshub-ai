@@ -758,16 +758,11 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             # Raise so the router can forward the real failure reason to the FE
             # (return False only yields a generic "check credentials" message).
-            self.logger.error(f"❌ Failed to initialize Jira client: {e}")
             raise ConnectorInitError(str(e)) from e
 
     async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
         """Notify admin: account-level app reaches multiple sites — needs a new
         Resource-restricted OAuth app (grants cannot be changed on an existing app)."""
-        self.logger.error(
-            "❌ Jira connector %s: OAuth app can access multiple Atlassian sites: %s",
-            self.connector_id, error,
-        )
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,

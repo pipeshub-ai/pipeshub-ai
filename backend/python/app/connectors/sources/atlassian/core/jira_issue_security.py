@@ -260,6 +260,7 @@ UNREADABLE_AUTH = "auth"
 UNREADABLE_PERMISSION = "permission"
 UNREADABLE_ROLES = "roles"
 UNREADABLE_NOT_LISTED = "not_listed"
+UNREADABLE_MEMBERS_UNREAD = "members_unread"
 UNREADABLE_UNCLEAR_404 = "unclear_404"
 UNREADABLE_TRANSIENT = "transient"
 UNREADABLE_OTHER = "other"
@@ -276,6 +277,10 @@ UNREADABLE_REASONS = {
         "Jira does not list who holds each issue security level (HTTP 404, 405 or 501), "
         "so an issue that has a level cannot be shown to anyone"
     ),
+    UNREADABLE_MEMBERS_UNREAD: (
+        "Jira does not list who holds each issue security level (Jira Data Center documents no route for it, "
+        "and the one read answered with an error)"
+    ),
     UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
     UNREADABLE_UNCLEAR_404: (
         "Jira answered the scheme read with a not-found that does not say the project has no scheme "
@@ -286,7 +291,9 @@ UNREADABLE_REASONS = {
 
 # Reasons after which issues keep the grants they were stored with, until a sync reads the
 # levels; after any other reason an issue that carries a level is closed to everyone.
-UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT, UNREADABLE_UNCLEAR_404})
+UNREADABLE_KEEPS_STORED_ACCESS = frozenset({
+    UNREADABLE_ROLES, UNREADABLE_TRANSIENT, UNREADABLE_UNCLEAR_404, UNREADABLE_MEMBERS_UNREAD,
+})
 
 
 def unreadable_reason(context: IssueSecurityContext) -> str | None:
@@ -296,6 +303,12 @@ def unreadable_reason(context: IssueSecurityContext) -> str | None:
         return None
     if context.knowledge == SchemeKnowledge.PRESENT and context.members_readable:
         return None
+    if (
+        context.knowledge == SchemeKnowledge.PRESENT and context.defer_checkpoint
+        and context.read_status in (401, 403, 404, 405, 501)
+    ):
+        # Only a read whose failures are all kept (Data Center's undocumented members route) gets here.
+        return UNREADABLE_MEMBERS_UNREAD
     if context.read_status == 401:
         return UNREADABLE_SCOPE if context.scope_refused else UNREADABLE_AUTH
     if context.read_status == 403 or context.scheme_forbidden:
