@@ -55,6 +55,7 @@ class Harness:
         graph.check_record_access_with_details = AsyncMock(return_value={"record": {}} if access else None)
         event_processor.graph_provider = graph
         event_processor.stage_ingress = None
+        event_processor.sink_orchestrator = None  # no vector store behind the harness: the precision check before a delete has nothing to ask
         event_processor.on_event = self._on_event
         pipeline = AsyncMock()
         pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
