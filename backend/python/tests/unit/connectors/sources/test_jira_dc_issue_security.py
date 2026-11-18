@@ -763,13 +763,16 @@ class TestLevelsJiraLeavesOut:
             await connector._parent_level("5")
         assert "5" not in connector._parent_levels
 
-    async def test_an_answer_without_an_issues_list_settles_nothing(self) -> None:
-        """SearchResultsBean carries issues; without it the check is not "none of them has no level"."""
+    @pytest.mark.parametrize(("answer", "unsettled"), [({"total": 1}, {"1"}), ({}, {"1"}), ({"total": 0}, set())],
+                             ids=["matches but no list", "nothing", "no match"])
+    async def test_an_answer_without_an_issues_list_settles_only_a_zero_match(self, answer, unsettled) -> None:
+        """SearchResultsBean declares issues but does not require it: a zero total is an answer (none of them has no
+        level, so the key stays missing and the issue closed); anything else without the list is not."""
         connector = _connector()
         connector._search_issues_with_retry = AsyncMock(
-            return_value=MagicMock(status=200, json=MagicMock(return_value={"total": 1})))
+            return_value=MagicMock(status=200, json=MagicMock(return_value=answer)))
         issue = {"id": "1", "fields": {}}
-        assert await connector._null_levels_jira_left_out([issue]) == {"1"}
+        assert await connector._null_levels_jira_left_out([issue]) == unsettled
         assert "security" not in issue["fields"]
 
     async def test_nothing_is_asked_when_every_issue_carries_the_key(self) -> None:

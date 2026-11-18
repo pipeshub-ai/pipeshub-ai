@@ -3369,12 +3369,16 @@ class TestBrowseHolders:
         assert grants(db, "1001") == []
 
     async def test_a_page_without_an_issues_list_fails_the_read_instead_of_ending_it(self, jira, db, store, search) -> None:
-        """SearchResultsBean carries ``issues``; a page without it is not the end of the search."""
+        """SearchResultsBean declares ``issues`` without requiring it: only a zero ``total`` ends the search."""
         connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
         scheme_with(jira)
         search.add("ENG", 0, json_response({"total": 1}))
         await connector.run_sync()
         assert store.values_for("project_ENG")["browse_holders"] == "?" and grants(db, "1001") == [CAROL]
+
+        search.add("ENG", 0, json_response({"total": 0}))
+        await connector.run_sync()  # an empty search: the project is read, nothing is left to re-read
+        assert store.values_for("project_ENG")["browse_holders"] == ""
 
     async def test_a_reindex_written_without_its_holders_is_read_again_by_the_next_sync(self, jira, db, store, search) -> None:
         """The stored timestamp stays, so the next sync, which can read the holders, rebuilds the issue."""
@@ -3395,8 +3399,19 @@ class TestBrowseHolders:
         await connector.reindex_records([ticket])
         assert grants(db, "1001") == [] and db.records["1001"].source_updated_at == ticket.source_updated_at
 
+        # The scheme is back to what the last sync applied, so no project re-read runs: only the incremental pass,
+        # which takes the issue as changed because its stored timestamp is the old one, grants the assignee.
         connector._update_project_sync_checkpoint = save
         await connector._update_project_sync_checkpoint("ENG", browse_holders=applied, last_sync_time=1, last_issue_updated=1)
-        search.add("ENG", 0, [story("1001", "ENG-1", ts(6))])
+        scheme_with(jira, ASSIGNEE)
+        bob = {"key": "bob-key", "name": "bob", "displayName": "Bob"}
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(6), assignee=bob)])
+        db.cached_app_users = [
+            AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id=f"{name}-key", org_id="org-1",
+                    email=f"{name}@example.com" if name != "dave" else "", full_name=name, is_active=True)
+            for name in ("alice", "bob", "carol", "dave")
+        ]  # none newly listed: no read of the issues naming them
+        searched = len(search.jql)
         await connector.run_sync()
-        assert grants(db, "1001") == [CAROL]
+        assert ("EntityType.USER", None, "bob@example.com") in grants(db, "1001")
+        assert all("updated" in jql for jql in search.jql[searched:]), "the incremental pass alone, no project re-read"

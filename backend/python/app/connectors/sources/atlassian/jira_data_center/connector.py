@@ -4163,8 +4163,10 @@ class JiraDataCenterConnector(BaseConnector):
                 raise
 
             batch_issues = issues_batch_response.get("issues") if isinstance(issues_batch_response, dict) else None
+            if batch_issues is None and isinstance(issues_batch_response, dict) and issues_batch_response.get("total") == 0:
+                batch_issues = []  # SearchResultsBean does not require ``issues``: a zero total is an empty search
             if not isinstance(batch_issues, list):
-                # SearchResultsBean carries ``issues``; read as the end, a missing page would be taken as read.
+                # Any other page without the list is not the end of the search: read as one, it would be taken as read.
                 raise ValueError(f"The issue search for {project_key} answered without an issues list")
             total_matching = int(issues_batch_response.get("total", 0) or 0)
 
@@ -5169,8 +5171,10 @@ class JiraDataCenterConnector(BaseConnector):
                 unsettled.update(chunk)
                 return
             rows = payload.get("issues")
+            if rows is None and payload.get("total") == 0:
+                rows = []  # SearchResultsBean does not require ``issues``: a zero total says none of them matched
             if not isinstance(rows, list):
-                # SearchResultsBean carries ``issues``: an answer without it settles none of them.
+                # Any other answer without the list settles none of them.
                 self.logger.warning("Could not check which of %s issue(s) have no security level: no issues list", len(chunk))
                 unsettled.update(chunk)
                 return
@@ -7242,8 +7246,8 @@ class JiraDataCenterConnector(BaseConnector):
                 return None
 
             if security is not None and security.enforce and security.browse_holders is None:
-                # Written without its holders' grants: the stored timestamp stays, so the next sync, which can read
-                # them, reads the issue as changed and grants them (it is in its search window: it changed after it).
+                # Written without its holders' grants: the stored timestamp stays, so a sync whose search returns the
+                # issue reads it as changed and grants them; a project re-read (the `?` mark, when it was saved) too.
                 issue_record.source_updated_at = getattr(record, "source_updated_at", None) or 0
             return (issue_record, permissions)
 
