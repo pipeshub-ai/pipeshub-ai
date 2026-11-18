@@ -57,14 +57,14 @@ LAZY_IMPORT_IMPORTS = {
 }
 LAZY_IMPORT_REPINNED = {
     "DoclingProcessor.__init__": "2530d7f496cd4485",
-    "if:TYPE_CHECKING": "1331c17b12c0a195",
-    "_get_converter": "4dadac7cb530286a",
+    "if:TYPE_CHECKING": "e2172f92759e8033",
+    "_get_converter": "5d6cda477aab1783",
     "_parse_document_in_worker": "c506f30760b63571",
     "assign:DOCLING_ROUTED_FORMATS": None,  # removed: ``docling_routed_formats()`` returns the same tuple
 }
 LAZY_IMPORT_ADDED = {
     "DoclingProcessor._converter", "DoclingProcessor.converter", "DoclingProcessor._convert_in_process",
-    "docling_routed_formats",
+    "docling_routed_formats", "_get_table_mode",
 }
 # The service: the functions that gained a lane branch hold legacy behaviour too, so they are
 # pinned by the behaviour traces below rather than by hash.

@@ -34,6 +34,8 @@ services:
       # The paid-result cache settings of the app: the same values (empty keeps the defaults).
       - PAID_CACHE=${PAID_CACHE:-}
       - PAID_CACHE_WRITE=${PAID_CACHE_WRITE:-}
+      # The same Docling table-structure mode as the app (this container runs Docling locally).
+      - PDF_DOCLING_TABLE_MODE=${PDF_DOCLING_TABLE_MODE:-accurate}
       # Model credentials and endpoints the parser may need when a saved model configuration omits them
       # (OCR and table summaries run here): the same values as the app.
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}

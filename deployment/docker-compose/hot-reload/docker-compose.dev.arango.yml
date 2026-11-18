@@ -221,6 +221,7 @@ services:
 
       - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
       - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
+      - PDF_DOCLING_TABLE_MODE=${PDF_DOCLING_TABLE_MODE:-accurate}
 
       # Next.js frontend dev (browser calls Node API on host port 3000)
       - DOCKER_DEV=true
