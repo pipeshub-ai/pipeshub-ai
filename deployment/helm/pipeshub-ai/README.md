@@ -354,8 +354,8 @@ runs past `DOCKER_PROXY_BODY_TIMEOUT_S` (1800), and holds at most
 
 `config.sandboxMaxRunTimeoutS` (default 300, 10..3600) is the most seconds one
 `run_code` run may take; a larger timeout asked for by the model is lowered to
-it. Set the run-time cap only through `config.sandboxMaxRunTimeoutS`, never
-through `extraEnv`: `extraEnv` reaches only the app container, so the proxy's
+it. Set the run-time cap only through `config.sandboxMaxRunTimeoutS`; the chart
+refuses it in `extraEnv`, which reaches only the app container, so the proxy's
 reaper would keep its 420 s age and kill longer runs mid-way. The proxy removes
 this release's sandbox containers that are older than the cap (at least 300 s,
 the install deadline) plus 120 s, for example after a crashed worker left one

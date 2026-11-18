@@ -382,6 +382,11 @@ the raw daemon API with no policy in between, i.e. root on the node.
     {{- end }}
   {{- end }}
 {{- end }}
+{{- range .Values.extraEnv }}
+  {{- if and (kindIs "map" .) (eq (toString (.name | default "")) "SANDBOX_MAX_RUN_TIMEOUT_S") }}
+    {{- fail "extraEnv sets SANDBOX_MAX_RUN_TIMEOUT_S, which reaches only the app container, so the docker-proxy reaper would keep its own age and remove longer runs mid-way. Set config.sandboxMaxRunTimeoutS instead; it configures both containers." }}
+  {{- end }}
+{{- end }}
 {{- range $volumes := list .Values.extraVolumes .Values.volumes }}
   {{- range $volumes }}
     {{- if and (kindIs "map" .) (kindIs "map" .hostPath) }}
