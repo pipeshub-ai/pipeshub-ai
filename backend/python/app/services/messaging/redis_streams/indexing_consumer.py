@@ -158,9 +158,12 @@ _RECORD_WAIT_RECHECK_SECONDS = 60.0
 # A record lease held by another process has no release to listen for, so
 # the entry is retried after the lease wait, doubling up to this.
 _RECORD_LEASE_RETRY_MAX_SECONDS = 300.0
-# Ids only, no payloads. Past it an entry is left as before: pending, and
-# offered again by recovery.
-_RECORD_WAIT_LIMIT = 1000
+# Ids only, no payloads (about 100 bytes each). Past it an entry is left as
+# before: pending, and offered again by recovery.
+_RECORD_WAIT_LIMIT = 10_000
+# Ids per XCLAIM when refreshing ownership, so a long waiting list is never
+# one command big enough to stall Redis.
+_REFRESH_CLAIM_CHUNK = 500
 _RECORD_WAIT_LIMIT_LOG_EVERY_SECONDS = 60.0
 # Recovery leaves 1/N of the buffer free for new events (__buffer_headroom).
 _RECLAIM_HEADROOM_DIVISOR = 4
@@ -362,6 +365,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # in the same step as the check, and a run releasing a record wakes
         # a waiter in the same step as the release (see _claim_record_or_wait).
         self._record_waits: dict[tuple[str, str], _RecordWait] = {}
+        # The same waits by record, so a release finds its waiters without
+        # walking every wait.
+        self._record_waiters: dict[str, set[tuple[str, str]]] = {}
         self._record_wait_limit_logged_at = 0.0
         # Held by a record whose last attempt never finished, so such records
         # run one at a time: when the process dies again, the record that
@@ -972,6 +978,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._in_flight_message_ids.clear()
             self._in_flight_record_ids.clear()
             self._record_waits.clear()
+            self._record_waiters.clear()
         metrics.record_record_waits("redis", 0)
 
     def _wait_for_active_futures(self) -> None:
@@ -1163,6 +1170,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 return None
             wait = _RecordWait(record_id, on_lease, now, now, parks=0)
             self._record_waits[key] = wait
+        elif wait.record_key != record_id:
+            self.__unindex_wait_locked(key, wait.record_key)
+        self._record_waiters.setdefault(record_id, set()).add(key)
         wait.parks = wait.parks + 1 if wait.on_lease == on_lease else 1
         wait.record_key = record_id
         wait.on_lease = on_lease
@@ -1205,9 +1215,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             message_id, stream_name, record_id, why, wait.parks, waiting,
         )
 
+    def __unindex_wait_locked(self, key: tuple[str, str], record_id: str) -> None:
+        waiters = self._record_waiters.get(record_id)
+        if waiters is not None:
+            waiters.discard(key)
+            if not waiters:
+                del self._record_waiters[record_id]
+
+    def __drop_wait_locked(self, key: tuple[str, str]) -> _RecordWait | None:
+        wait = self._record_waits.pop(key, None)
+        if wait is not None:
+            self.__unindex_wait_locked(key, wait.record_key)
+        return wait
+
     def _end_record_wait(self, stream_name: str, message_id: str) -> None:
         with self._in_flight_lock:
-            if self._record_waits.pop((stream_name, message_id), None) is None:
+            if self.__drop_wait_locked((stream_name, message_id)) is None:
                 return
             waiting = len(self._record_waits)
         metrics.record_record_waits("redis", waiting)
@@ -1221,12 +1244,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         woken while the record is held, or while a waiter is already due (it
         is on its way). Hold _in_flight_lock.
         """
-        if not self._record_waits or record_id in self._in_flight_record_ids:
+        keys = self._record_waiters.get(record_id)
+        if not keys or record_id in self._in_flight_record_ids:
             return None
         waiting = [
             (key, wait)
-            for key, wait in self._record_waits.items()
-            if wait.record_key == record_id and not wait.on_lease
+            for key in keys
+            if not (wait := self._record_waits[key]).on_lease
         ]
         if not waiting or any(self.__wait_is_due_locked(wait, now) for _key, wait in waiting):
             return None
@@ -1291,7 +1315,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if key[0] == stream_name and key[1] not in still_pending
             ]
             for key, _wait in gone:
-                del self._record_waits[key]
+                self.__drop_wait_locked(key)
             waiting = len(self._record_waits)
         if not gone:
             return
@@ -1315,11 +1339,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if now - max(wait.parked_at, self._ownership_confirmed_at.get(key[0], 0.0)) >= risk_after
             ]
             for key, _wait in at_risk:
-                del self._record_waits[key]
+                self.__drop_wait_locked(key)
             waiting = len(self._record_waits)
         if not at_risk:
             return
         metrics.record_record_waits("redis", waiting)
+        # One let go may have been its record's woken waiter.
+        self.__wake_and_log({wait.record_key for _key, wait in at_risk})
         self.logger.warning(
             "Stopped keeping %d entry(ies) waiting for their records: their "
             "ownership could not be confirmed for %.0fs; recovery offers them "
@@ -2575,17 +2601,24 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         for stream, message_ids in waits.items():
             by_stream.setdefault(stream, []).extend(message_ids)
         for stream, message_ids in by_stream.items():
+            unique = list(dict.fromkeys(message_ids))
             try:
-                claimed = await self.redis.xclaim(  # type: ignore
-                    stream,
-                    self.config.group_id,
-                    self.consumer_name,
-                    min_idle_time=0,
-                    message_ids=list(dict.fromkeys(message_ids)),
-                    justid=True,
-                )
+                claimed: list[object] | None = []
+                for start in range(0, len(unique), _REFRESH_CLAIM_CHUNK):
+                    reply = await self.redis.xclaim(  # type: ignore
+                        stream,
+                        self.config.group_id,
+                        self.consumer_name,
+                        min_idle_time=0,
+                        message_ids=unique[start:start + _REFRESH_CLAIM_CHUNK],
+                        justid=True,
+                    )
+                    if claimed is not None and isinstance(reply, (list, tuple)):
+                        claimed.extend(reply)
+                    else:
+                        claimed = None
                 self._ownership_confirmed_at[stream] = now
-                if stream in waits and isinstance(claimed, (list, tuple)):
+                if stream in waits and claimed is not None:
                     # Only ids still pending come back: a wait whose entry was
                     # acknowledged or trimmed meanwhile would otherwise keep its
                     # record's next waiter from being woken.

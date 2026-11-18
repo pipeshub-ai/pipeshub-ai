@@ -559,7 +559,91 @@ class TestClaimAndReleaseAreOneStep:
             thread.join()
 
         assert consumer._in_flight_record_ids == set()
+        _assert_index_matches(consumer)
         for record_id in records:
             waits = [w for w in consumer._record_waits.values() if w.record_key == record_id]
             if waits:
                 assert any(w.due_at <= time.monotonic() for w in waits), record_id
+
+
+def _assert_index_matches(consumer: IndexingRedisStreamsConsumer) -> None:
+    by_record: dict[str, set[tuple[str, str]]] = {}
+    for key, wait in consumer._record_waits.items():
+        by_record.setdefault(wait.record_key, set()).add(key)
+    assert consumer._record_waiters == by_record
+
+
+@pytest.mark.asyncio
+class TestAtScale:
+    async def test_the_by_record_index_follows_every_way_a_wait_ends(self, harness: Harness) -> None:
+        consumer = harness.consumer
+        await _park(harness, 3, "r1")
+        await _park(harness, 2, "r2")
+        _assert_index_matches(consumer)
+
+        consumer._release_record("r1")
+        await harness.passes(1)
+        _assert_index_matches(consumer)
+
+        (gone,) = [key for key, wait in consumer._record_waits.items() if wait.record_key == "r2"][:1]
+        await consumer.redis.xack(gone[0], GROUP, gone[1])
+        await harness.refresh()
+        _assert_index_matches(consumer)
+
+        consumer._stop_worker_thread()
+        assert consumer._record_waiters == {}
+
+    async def test_a_refresh_in_chunks_prunes_only_what_is_gone(self, harness: Harness) -> None:
+        consumer = harness.consumer
+        first, second, third = await _park(harness, 3)
+        await consumer.redis.xack(LANE, GROUP, second)
+        calls: list[int] = []
+        real = consumer.redis.xclaim
+
+        async def counting(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            calls.append(len(kwargs["message_ids"]))
+            return await real(*args, **kwargs)
+
+        consumer.redis.xclaim = counting  # type: ignore[method-assign]
+        with patch(f"{_MODULE}._REFRESH_CLAIM_CHUNK", 2):
+            await harness.refresh()
+
+        assert calls == [2, 1]
+        assert sorted(consumer._record_waits) == sorted([(LANE, first), (LANE, third)])
+
+    async def test_letting_go_of_a_woken_waiter_wakes_the_next(self, harness: Harness) -> None:
+        consumer = harness.consumer
+        first, second = await _park(harness, 2)
+        consumer._release_record("r1")
+        # The first is woken; its stream's ownership then goes unconfirmed
+        # while the second's wait is fresh.
+        consumer._record_waits[(LANE, first)].parked_at = 0.0
+        consumer._ownership_confirmed_at.clear()
+        risk_after = getattr(consumer, f"{_CONSUMER}__ownership_risk_after")()
+        consumer._record_waits[(LANE, second)].parked_at = time.monotonic()
+        getattr(consumer, f"{_CONSUMER}__release_record_waits_at_risk")(risk_after, time.monotonic())
+
+        assert list(consumer._record_waits) == [(LANE, second)]
+        assert not consumer._is_waiting_for_record(second, LANE)
+
+
+class TestReleaseCost:
+    def test_a_release_does_not_walk_every_wait(self) -> None:
+        consumer = IndexingRedisStreamsConsumer(
+            logging.getLogger(LOGGER_NAME),
+            RedisStreamsConfig(topics=[LANE], group_id=GROUP, client_id="scale"),
+        )
+        for i in range(10_000):
+            record_id = f"r{i}"
+            assert consumer._claim_record(record_id)
+            assert not consumer._claim_record_or_wait(record_id, LANE, f"{i}-0")
+        assert len(consumer._record_waits) == 10_000
+
+        started = time.perf_counter()
+        for i in range(10_000):
+            consumer._release_record(f"r{i}")
+        elapsed = time.perf_counter() - started
+
+        # Walking every wait on each release is 10^8 steps, minutes in Python.
+        assert elapsed < 2.0
+        assert all(not consumer._is_waiting_for_record(f"{i}-0", LANE) for i in range(0, 10_000, 997))
