@@ -1243,7 +1243,7 @@ class SinkOrchestrator(Transformer):
                 ctx.reconciliation_context.new_metadata,
                 document_path=ctx.settings.get("storage_path"),
                 # A vector-only reindex has no storage path: it updates the document in place and never creates one at a guessed path.
-                create_if_missing=not ctx.settings.get("skip_blob"),
+                **({"create_if_missing": False} if ctx.settings.get("skip_blob") else {}),
                 connector_id=getattr(record, "connector_id", None),
                 record_group_id=getattr(record, "record_group_id", None),
             )
