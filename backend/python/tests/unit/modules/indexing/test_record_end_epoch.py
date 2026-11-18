@@ -14,15 +14,22 @@ import pytest
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.modules.transformers import vectorstore as vs
-from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import WRITTEN_UNDER
 from app.services.messaging.precision_flip import FenceMoved
-from app.services.vector_db.collection_epoch import Fence
 from app.services.vector_db.collection_pin import CollectionPinStore
 from app.services.vector_db.models import CollectionConfig
 from app.services.vector_db.precision_guard import PrecisionGuard
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
-from tests.support.index_world import COLL, ORG, RID, VRID, context_of, make_store, parse, record_of
+from tests.support.index_world import (
+    COLL,
+    ORG,
+    RID,
+    VRID,
+    context_of,
+    make_store,
+    parse,
+    record_of,
+)
 
 log = logging.getLogger("record-end-epoch")
 
@@ -73,12 +80,15 @@ async def test_every_token_a_record_wrote_under_must_be_current_not_just_the_las
 
 
 async def test_a_record_whose_epoch_moved_is_not_marked_indexed() -> None:
-    from tests.unit.modules.transformers.test_sink_orchestrator import _make_ctx, _make_orchestrator
+    from tests.unit.modules.transformers.test_sink_orchestrator import (
+        _make_ctx,
+        _make_orchestrator,
+    )
 
     orch = _make_orchestrator(graph_doc={"indexingStatus": "IN_PROGRESS"})
     orch._update_indexing_status = AsyncMock(return_value=True)
 
-    async def apply(ctx):  # noqa: ANN001, ANN202
+    async def apply(ctx):  # noqa: ANN202
         ctx.settings[WRITTEN_UNDER] = {"records": ["t0"]}
 
     orch.vector_store.apply = AsyncMock(side_effect=apply)
@@ -89,7 +99,10 @@ async def test_a_record_whose_epoch_moved_is_not_marked_indexed() -> None:
 
 
 async def test_a_record_that_wrote_nothing_reads_no_epoch() -> None:
-    from tests.unit.modules.transformers.test_sink_orchestrator import _make_ctx, _make_orchestrator
+    from tests.unit.modules.transformers.test_sink_orchestrator import (
+        _make_ctx,
+        _make_orchestrator,
+    )
 
     orch = _make_orchestrator(graph_doc={"indexingStatus": "IN_PROGRESS"})
     orch._update_indexing_status = AsyncMock(return_value=True)
@@ -108,7 +121,7 @@ async def test_the_record_summary_is_checked_against_the_epoch_it_was_written_un
     store._check_for_leaks = AsyncMock()
     epochs = store._guard._pins.epochs
 
-    async def write(docs, record_id, collection, fence=None):  # noqa: ANN001, ANN202
+    async def write(docs, record_id, collection, fence=None):  # noqa: ANN202
         vs._note_fence(await store._guard.capture(collection))  # what the chunk writer does when it accepts a batch
         await epochs.begin_reset(collection)  # a cleanup moves the epoch while the summary is being embedded
 

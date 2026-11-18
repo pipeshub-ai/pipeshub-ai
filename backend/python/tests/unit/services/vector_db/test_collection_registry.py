@@ -826,14 +826,14 @@ class TestFenceReady:
 
 class TestDropMovesTheEpochTwice:
     @staticmethod
-    async def _registry_with_collection(vdb):  # noqa: ANN001, ANN205
+    async def _registry_with_collection(vdb):  # noqa: ANN205
         registry = _make_registry(vector_db_service=vdb)
         await registry.ensure_collection(RecordContext(org_id="org-1"), embedding_size=768)
         vdb.create_collection.reset_mock()
         return registry
 
     @pytest.mark.asyncio
-    async def test_a_writer_that_began_during_the_delete_can_no_longer_confirm(self):
+    async def test_a_writer_that_began_during_the_delete_can_no_longer_confirm(self) -> None:
         from app.services.vector_db.collection_epoch import CollectionEpochs
 
         vdb = AsyncMock()
@@ -842,14 +842,14 @@ class TestDropMovesTheEpochTwice:
         epochs = registry._pins().epochs
         captured: dict = {}
 
-        async def delete(name):  # noqa: ANN001, ANN202
+        async def delete(name):  # noqa: ANN202
             captured["fence"] = await epochs.capture(name)  # accepted under the first reset's token, while the delete runs
 
         vdb.delete_collection = AsyncMock(side_effect=delete)
         calls: list[str] = []
         real = CollectionEpochs.begin_reset
 
-        async def counting(self, collection):  # noqa: ANN001, ANN202
+        async def counting(self, collection):  # noqa: ANN202
             calls.append("begin")
             return await real(self, collection)
 
@@ -859,7 +859,7 @@ class TestDropMovesTheEpochTwice:
         assert await epochs.moved(captured["fence"])  # fails its confirmation and the record-end check
 
     @pytest.mark.asyncio
-    async def test_a_second_epoch_that_fails_twice_is_made_the_third_time(self):
+    async def test_a_second_epoch_that_fails_twice_is_made_the_third_time(self) -> None:
         from app.services.vector_db import collection_registry as module
         from app.services.vector_db.collection_epoch import CollectionEpochs
 
@@ -868,7 +868,7 @@ class TestDropMovesTheEpochTwice:
         registry = await self._registry_with_collection(vdb)
         real, state = CollectionEpochs.begin_reset, {"n": 0}
 
-        async def flaky(self, collection):  # noqa: ANN001, ANN202
+        async def flaky(self, collection):  # noqa: ANN202
             state["n"] += 1
             if state["n"] in (2, 3):
                 raise RuntimeError("kv down")
@@ -880,7 +880,7 @@ class TestDropMovesTheEpochTwice:
         vdb.create_collection.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_a_second_epoch_that_cannot_be_made_confirms_the_first_reset_and_raises_before_recreating(self):
+    async def test_a_second_epoch_that_cannot_be_made_confirms_the_first_reset_and_raises_before_recreating(self) -> None:
         from app.services.vector_db import collection_registry as module
         from app.services.vector_db.collection_epoch import CollectionEpochs
 
@@ -891,13 +891,13 @@ class TestDropMovesTheEpochTwice:
         confirmed: list = []
         real_confirm = CollectionEpochs.confirm_reset
 
-        async def failing_after_first(self, collection):  # noqa: ANN001, ANN202
+        async def failing_after_first(self, collection):  # noqa: ANN202
             state["n"] += 1
             if state["n"] > 1:
                 raise RuntimeError("kv down")
             return await real(self, collection)
 
-        async def confirm(self, ticket):  # noqa: ANN001, ANN202
+        async def confirm(self, ticket):  # noqa: ANN202
             confirmed.append(ticket)
             return await real_confirm(self, ticket)
 

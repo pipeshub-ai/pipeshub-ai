@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, patch
 import fakeredis.aioredis
 import pytest
 
-from app.services.vector_db.precision_guard import PrecisionUnreadable
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
@@ -28,6 +27,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from app.services.vector_db.models import ScrollWindowExceededError, VectorPoint
+from app.services.vector_db.precision_guard import PrecisionUnreadable
 from tests.support.embedding_config import (
     another_process,
     config_service,

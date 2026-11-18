@@ -14,10 +14,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.messaging.precision_flip import FenceMoved, PinAbsent, PrecisionFlip
+from app.services.vector_db import precision_guard as pg
 from app.services.vector_db.collection_epoch import CollectionEpochs
 from app.services.vector_db.collection_pin import FP32, INT8
-from app.services.vector_db import precision_guard as pg
-from app.services.vector_db.precision_guard import UNCONFIRMED_WRITE, PrecisionDerivationTimeout, PrecisionUnreadable, is_definite
+from app.services.vector_db.precision_guard import (
+    UNCONFIRMED_WRITE,
+    PrecisionDerivationTimeout,
+    PrecisionUnreadable,
+    is_definite,
+)
 from tests.unit.modules.transformers.test_fence_writers import _with_epoch
 from tests.unit.modules.transformers.test_vectorstore_precision_records import (  # noqa: F401  (the fixture is used by name)
     ORG,
@@ -94,11 +99,11 @@ def _no_waits(monkeypatch):  # noqa: ANN202
     monkeypatch.setattr(pg, "DELETE_DELAYS", (0.0, 0.0))
 
 
-async def _debts(guard) -> list:  # noqa: ANN001
+async def _debts(guard) -> list:
     return await guard._pins.epochs.debts(RECORDS, guard.scope(ORG))
 
 
-def _unreadable_times(pins, written: dict, times: int, then=None) -> None:  # noqa: ANN001
+def _unreadable_times(pins, written: dict, times: int, then=None) -> None:
     """The pin cannot be read for the next *times* reads after the batch landed, then reads as *then* (the real pin when None)."""
     real = pins.get
     left = {"n": times}
@@ -301,6 +306,7 @@ async def test_a_removal_that_times_out_is_not_repeated_and_becomes_debt(monkeyp
             return await real_delete(*a, **k)
         calls["n"] += 1
         await asyncio.sleep(5)
+        return None
 
     db.delete_points = hangs
     await _index(store)
@@ -513,7 +519,7 @@ def test_no_code_treats_a_missing_pin_as_a_moved_epoch() -> None:
 
 # -- entities ---------------------------------------------------------------------------------------------------------------
 
-def _entity_unreadable(world, times: int = 99) -> dict:  # noqa: F811, ANN001
+def _entity_unreadable(world, times: int = 99) -> dict:  # noqa: F811
     written = {"yes": False}
     real = world.vdb.upsert_points
 
@@ -526,16 +532,16 @@ def _entity_unreadable(world, times: int = 99) -> dict:  # noqa: F811, ANN001
     return written
 
 
-def _entity_points(world) -> list:  # noqa: F811, ANN001
+def _entity_points(world) -> list:  # noqa: F811
     return [p for p in world.vdb.points[ENTITIES] if p.get("entityId") == _entity().entity_id]
 
 
-async def _entity_debts(world) -> list:  # noqa: F811, ANN001
+async def _entity_debts(world) -> list:  # noqa: F811
     guard = world.store._guard()
     return await guard._pins.epochs.debts(ENTITIES, guard.scope(ORG))
 
 
-async def _int8_entities(world) -> None:  # noqa: F811, ANN001
+async def _int8_entities(world) -> None:  # noqa: F811
     world.vdb.add(ENTITIES, INT8, entityType="person", entityId="p0")
     world.served["precision"] = INT8
     await world.pins._claim_unfenced(ENTITIES, INT8)

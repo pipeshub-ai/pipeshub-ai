@@ -1083,7 +1083,7 @@ async def test_a_cleanup_whose_epoch_cannot_move_resets_nothing() -> None:
     kafka.publish_event.assert_not_awaited()
 
 
-async def _cleanup_with(reset_side_effect, publish_hook=None):  # noqa: ANN001, ANN202
+async def _cleanup_with(reset_side_effect, publish_hook=None):  # noqa: ANN202
     from app.connectors.services import vector_store_rebuild as rebuild
 
     config = await _config_with("records")
@@ -1109,7 +1109,7 @@ async def _cleanup_with(reset_side_effect, publish_hook=None):  # noqa: ANN001, 
                 redis=redis, org_id="org-1", user_id="user-1", apps=[("org-1", "app-1")],
             )
             error = None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             error = exc
     return graph, redis, error
 
@@ -1119,7 +1119,7 @@ async def test_a_record_completed_after_the_first_reset_is_reset_again_once_the_
     """A record that began after the first reset completes before the drop and would stay indexed with its points gone."""
     statuses = {"early": "COMPLETED"}
 
-    async def reset(connector_id, to, exclude_statuses=None):  # noqa: ANN001, ANN202
+    async def reset(connector_id, to, exclude_statuses=None):  # noqa: ANN202
         for key, value in statuses.items():
             if value not in (exclude_statuses or []):
                 statuses[key] = to
@@ -1161,7 +1161,7 @@ async def test_a_record_retried_after_the_first_epoch_move_and_completed_before_
     statuses = {"rec": "IN_PROGRESS"}
     seen: dict = {}
 
-    async def reset(connector_id, to, exclude_statuses=None):  # noqa: ANN001, ANN202
+    async def reset(connector_id, to, exclude_statuses=None):  # noqa: ANN202
         for key, value in statuses.items():
             if value not in (exclude_statuses or []):
                 statuses[key] = to
@@ -1174,7 +1174,7 @@ async def test_a_record_retried_after_the_first_epoch_move_and_completed_before_
     graph.reset_indexing_status_for_connector = AsyncMock(side_effect=reset)
     kafka = AsyncMock()
 
-    async def publish(topic, event) -> bool:  # noqa: ANN001
+    async def publish(topic, event) -> bool:
         seen["first_attempt_fenced"] = await epochs.moved(first_batch)  # FenceMoved: it is retried
         retry = await epochs.capture("records")  # the retry is read before the delete event and takes the token now current
         seen["retry_confirms"] = not await epochs.moved(retry)  # the old collection still exists, so it writes and confirms

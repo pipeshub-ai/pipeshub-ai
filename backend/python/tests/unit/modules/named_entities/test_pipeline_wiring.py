@@ -683,7 +683,7 @@ async def test_a_year_less_date_is_written_in_the_year_nearest_the_records_creat
     assert kept.entities[0].value.ambiguous
 
 
-async def _persist_with_vector_store(upsert, monkeypatch) -> str:  # noqa: ANN001
+async def _persist_with_vector_store(upsert, monkeypatch) -> str:
     monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
     graph = MagicMock(
         find_named_entities=AsyncMock(return_value=[]),
