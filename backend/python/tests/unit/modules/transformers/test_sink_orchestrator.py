@@ -225,6 +225,26 @@ class TestSkipBlob:
         orch.blob_storage.apply.assert_not_awaited()
         orch.vector_store.apply.assert_awaited_once_with(ctx)
 
+    @pytest.mark.asyncio
+    async def test_a_vector_only_reindex_saves_the_stored_metadata_the_vector_store_updated(self) -> None:
+        """No diff and no blob write, but the points are all written again: the stored reconciliation metadata goes through the apply
+        (which records which blocks got a point) and is saved, so the recorded set follows an embedding-model change."""
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"}, vector_result=True)
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+        ctx.reconciliation_context = None
+        ctx.record.virtual_record_id, ctx.record.org_id = "vr-1", "org-1"
+        orch.blob_storage.get_reconciliation_metadata = AsyncMock(return_value={"hashes": {"b": "h"}, "pointedBlocks": ["old"]})
+
+        async def apply(c: object) -> bool:
+            c.reconciliation_context.new_metadata["pointedBlocks"] = ["new"]
+            return True
+
+        orch.vector_store.apply = AsyncMock(side_effect=apply)
+        await orch.index(ctx)
+        saved = orch.blob_storage.save_reconciliation_metadata.await_args.args[3]
+        assert saved == {"hashes": {"b": "h"}, "pointedBlocks": ["new"]}
+
 
 # =========================================================================
 # enrich — entities-collection sync

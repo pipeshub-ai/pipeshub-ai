@@ -63,6 +63,7 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     PARSE_NOW,
     STORE_ONLY,
+    ReconciliationContext,
     TransformContext,
     Transformer,
 )
@@ -334,6 +335,8 @@ class SinkOrchestrator(Transformer):
         indexing_status = record_doc.get("indexingStatus")
         if skip_blob or indexing_status != ProgressStatus.COMPLETED.value:
             connector, org, kb = self._activity_labels(record)
+            if skip_blob:
+                await self._rewrite_recorded_points(ctx)
             result = await self.vector_store.apply(ctx)
             if result is False:
                 record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
@@ -1204,6 +1207,22 @@ class SinkOrchestrator(Transformer):
             self.logger.warning(
                 "Named-entity persist retry for record %s could not be recorded: %s", record.id, type(exc).__name__
             )
+
+    async def _rewrite_recorded_points(self, ctx: TransformContext) -> None:
+        """A vector-only reindex (no blob write, no diff) writes every point of the record again, so the set of blocks that have a point
+        is whatever it wrote: the stored reconciliation metadata goes through the same path as any other index (the vector store
+        records ``pointedBlocks`` in it and ``_save_reconciliation_metadata`` saves it), with every block to be embedded. A record with
+        no stored metadata has nothing to update."""
+        record = ctx.record
+        if ctx.reconciliation_context is not None or not record.org_id or not record.virtual_record_id:
+            return
+        try:
+            stored = await self.blob_storage.get_reconciliation_metadata(record.virtual_record_id, record.org_id)
+        except Exception as e:  # the set stays as it was; the next index of the record rewrites it
+            self.logger.warning("Record %s: the stored reconciliation metadata could not be read, its recorded points are not rewritten: %s", record.id, e)
+            return
+        if isinstance(stored, dict) and stored:
+            ctx.reconciliation_context = ReconciliationContext(new_metadata=dict(stored))
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:
