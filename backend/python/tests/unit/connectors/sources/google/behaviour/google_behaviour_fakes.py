@@ -592,6 +592,21 @@ class FakeEntitiesProcessor:
                 p for p in self.permissions.get(record.external_record_id, []) if p.email != user_email
             ]
 
+    async def remove_user_grants_from_records(
+        self, record_ids: list[str], user_emails: set[str], connector_id: str, *, batch: int = 500
+    ) -> int:
+        removed = 0
+        emails = {e.lower() for e in user_emails}
+        for record_id in record_ids:
+            record = self.by_id(record_id)
+            if record is None:
+                continue
+            perms = self.permissions.get(record.external_record_id, [])
+            kept = [p for p in perms if not (p.entity_type == EntityType.USER and (p.email or "").lower() in emails)]
+            removed += len(perms) - len(kept)
+            self.permissions[record.external_record_id] = kept
+        return removed
+
     async def stop_inheriting_permissions(self, record_id: str, connector_id: str) -> None:
         record = self.by_id(record_id)
         if record is not None:
