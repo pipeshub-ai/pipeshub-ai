@@ -9,7 +9,7 @@ reads it at run time (the grant), or in ``NOT_READ`` with why that service never
 - under-grant: every reachable key is classified, and every key in ``READS`` is readable by the role in enforce;
 - over-grant: on every key the code names (and the keys under it, and a few made-up ones), the role's matrix answers exactly what
   ``READS`` says, so a new readable key needs a ``READS`` entry and a reader;
-- the citations: each ``READS`` reader function (or module constant) still names its key.
+- the citations: each ``READS`` reader still reads its key.
 connectors and query read every key but the Node API's own (a deny-list): for them the check is that every reachable key is readable
 unless it is one of those. Keys built at run time from other values are not seen by the scan.
 """
@@ -43,48 +43,49 @@ SERVICES = {
 # connectors and query: everything but these
 NODE_ONLY = ("/services/smtp", "/services/slackBot", "/services/auth/", "/services/mcp/accessPolicy/", "crawl:")
 
-# The grants: key (exact), "prefix*", or "re:<regex>" -> where it is read at run time ("path::Qualified.name" below backend/python: a
-# function, class or module constant, never a line number, so an edit elsewhere in the file moves nothing) and a text one line in it
-# holds. Reads only; writes are the revision's own allow-lists.
+# The grants: key (exact), "prefix*", or "re:<regex>" -> the function that reads it at run time ("path::Qualified.name" below
+# backend/python, never a line number, so an edit elsewhere in the file moves nothing) and the read, as text one line in it holds:
+# the key or the constant that names it. A constant's definition is not a read; a store built at module level around the key is
+# cited by that binding. Reads only; writes are the revision's own allow-lists.
 _META = "re:^/services/connectors/[^/]+/metadataSchemas/"
 READS = {
     "kv": {
-        "/services/aiModels": ("app/embedding_main.py::_local_model_in_use", "AI_MODELS"),         # also utils/llm.py::is_local_cpu_embedding_configured (docling, parsing), extraction/client.py::ExtractionClient._context_length_ceiling
-        "/services/secretKeys": ("app/api/middlewares/auth.py::isJwtTokenValid", "SECRET_KEYS"),  # parsing and extraction routes; policy_store.py::IdentityPolicyStore.pseudonym_key (pseudonyms)
-        "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "AI_GATEWAY_IDENTITY_POLICY"),  # routes/parsing.py::_parse_file, routes/extraction.py::classify
-        "/services/metricsCollection": ("app/telemetry/pusher.py::METRICS_CONFIG_KEY", "/services/metricsCollection"),  # embedding, docling (pusher bound at start)
+        "/services/aiModels": ("app/embedding_main.py::_local_model_in_use", "config_node_constants.AI_MODELS.value"),         # also utils/llm.py::is_local_cpu_embedding_configured (docling, parsing), extraction/client.py::ExtractionClient._context_length_ceiling
+        "/services/secretKeys": ("app/api/middlewares/auth.py::isJwtTokenValid", "config_node_constants.SECRET_KEYS.value"),  # parsing and extraction routes; policy_store.py::IdentityPolicyStore.pseudonym_key (pseudonyms)
+        "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value"),  # routes/parsing.py::_parse_file, routes/extraction.py::classify
+        "/services/metricsCollection": ("app/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),  # embedding, docling (pusher bound at start)
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch", "/migrations/etcd_to_redis"),  # every ConfigurationService
         # parsing and extraction bind the fleet breaker at start (fleet_redis.bind_service_fleet): created if absent, then read
         "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "INSTALL_SECRET_KEY"),
-        "/services/redis": ("app/config/configuration_service.py::ConfigurationService.get_redis_config", "REDIS"),  # the same: fleet_redis.py::fleet_redis_config
+        "/services/redis": ("app/config/configuration_service.py::ConfigurationService.get_redis_config", "config_node_constants.REDIS.value"),  # the same: fleet_redis.py::fleet_redis_config
     },
     "indexing": {
-        "state:*": ("app/services/pg_state.py::LOCK_PREFIX", "state:lock:"),
-        "/services/scopeFields/*": ("app/services/permissions/generation.py::ENABLED_KEY", "/services/scopeFields/"),
-        "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py::STRATEGY_CONFIG_KEY", "/services/vectordb/"),
-        "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py::MEMBERSHIP_DIRECTORY", "/services/platform/artifactRollout/membership/"),
-        "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py::PENDING_DIRECTORY", "/services/entityCleanup/"),  # entity_index_rebuild.py::EntityIndexRebuilder._reconcile_entity_cleanup
-        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::FLAG_PREFIX", "/migrations/class_units_backfill/"),
-        "/services/secretKeys": ("app/core/envelope.py::configure_from_config.load", "SECRET_KEYS"),
-        "/services/endpoints": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "ENDPOINTS"),
-        "/services/storage": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "STORAGE"),
-        "/services/arangodb": ("app/health/health.py::Health.health_check_arango", "ARANGODB"),
-        "/services/kafka": ("app/services/messaging/utils.py::MessagingUtils._create_kafka_consumer_config", "KAFKA"),
-        "/services/redis": ("app/config/configuration_service.py::ConfigurationService.get_redis_config", "REDIS"),
-        "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py::QdrantService.connect", "QDRANT"),
-        "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py::PgVectorService._load_config", "PGVECTOR"),
-        "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py::OpenSearchService.connect", "OPENSEARCH"),
-        "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py::RedisVectorService._load_config", "REDIS_VECTOR"),
-        "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py::EntityVectorStore._load_embedding_configs", "AI_MODELS"),
-        "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "AI_GATEWAY_IDENTITY_POLICY"),
-        "/services/namedEntities": ("app/modules/named_entities/domain/config.py::load_named_entity_config", "NAMED_ENTITIES"),
-        "/services/metricsCollection": ("app/telemetry/pusher.py::METRICS_CONFIG_KEY", "/services/metricsCollection"),
-        "/services/platform/settings": ("app/services/featureflag/platform_settings.py::PLATFORM_SETTINGS_KEY", "/services/platform/settings"),  # pipeline stages
-        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py::RecordEventHandler._disabled_file_types", "FILE_TYPES_CONFIG_KEY"),  # the record event handler
-        "/migrations/kh_listing_state_v1": ("app/services/graph_db/interface/graph_db_provider.py::KH_LISTING_STATE_FLAG", "/migrations/kh_listing_state_v1"),
+        "state:*": ("app/services/pg_state.py::PgState.lock_owner", "fetchval(_GET, LOCK_PREFIX"),
+        "/services/scopeFields/*": ("app/services/permissions/generation.py::init_scope_generation", "get_config(ENABLED_KEY"),
+        "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py::resolve_persisted_strategy_name", "get_config(STRATEGY_CONFIG_KEY"),
+        "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py::read_entries_from_config", "list_keys_in_directory(MEMBERSHIP_DIRECTORY)"),
+        "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py::_STORE", "ConnectorIntentStore(PENDING_DIRECTORY"),  # entity_index_rebuild.py::EntityIndexRebuilder._reconcile_entity_cleanup
+        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::backfill_class_units", "FLAG_PREFIX"),
+        "/services/secretKeys": ("app/core/envelope.py::configure_from_config.load", "config_node_constants.SECRET_KEYS.value"),
+        "/services/endpoints": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.ENDPOINTS.value"),
+        "/services/storage": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.STORAGE.value"),
+        "/services/arangodb": ("app/health/health.py::Health.health_check_arango", "config_node_constants.ARANGODB.value"),
+        "/services/kafka": ("app/services/messaging/utils.py::MessagingUtils._create_kafka_consumer_config", "config_node_constants.KAFKA.value"),
+        "/services/redis": ("app/config/configuration_service.py::ConfigurationService.get_redis_config", "config_node_constants.REDIS.value"),
+        "/services/qdrant": ("app/services/vector_db/qdrant/qdrant.py::QdrantService.connect", "config_node_constants.QDRANT.value"),
+        "/services/pgvector": ("app/services/vector_db/pgvector/pgvector.py::PgVectorService._load_config", "config_node_constants.PGVECTOR.value"),
+        "/services/opensearch": ("app/services/vector_db/opensearch/opensearch.py::OpenSearchService.connect", "config_node_constants.OPENSEARCH.value"),
+        "/services/redis-vector": ("app/services/vector_db/redis/redis_vector.py::RedisVectorService._load_config", "config_node_constants.REDIS_VECTOR.value"),
+        "/services/aiModels": ("app/modules/transformers/entity_vectorstore.py::EntityVectorStore._load_embedding_configs", "config_node_constants.AI_MODELS.value"),
+        "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value"),
+        "/services/namedEntities": ("app/modules/named_entities/domain/config.py::load_named_entity_config", "config_node_constants.NAMED_ENTITIES.value"),
+        "/services/metricsCollection": ("app/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),
+        "/services/platform/settings": ("app/services/featureflag/platform_settings.py::read_platform_feature_flag", "PLATFORM_SETTINGS_KEY"),  # pipeline stages
+        "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py::RecordEventHandler._disabled_file_types", "get_config(file_types.FILE_TYPES_CONFIG_KEY"),  # the record event handler
+        "/migrations/kh_listing_state_v1": ("app/services/graph_db/neo4j/neo4j_provider.py::Neo4jProvider._kh_listing_state_ready", "get_config(KH_LISTING_STATE_FLAG"),
         "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch", "/migrations/etcd_to_redis"),
-        _META: ("app/modules/record_metadata/schemas.py::_schemas_key", "metadataSchemas"),  # sink_orchestrator.py::SinkOrchestrator._project_properties (indexing)
-        "/services/indexing/spendGuard": ("app/modules/pipeline/pause_judge.py::spend_limits_source.read", "SPEND_GUARD_KEY"),  # the pause judge (pipeline/runtime.py::build_pipeline_runtime)
+        _META: ("app/modules/record_metadata/schemas.py::MetadataSchemaRegistry._read", "self._get(schema_key("),  # sink_orchestrator.py::SinkOrchestrator._project_properties (indexing)
+        "/services/indexing/spendGuard": ("app/modules/pipeline/pause_judge.py::spend_limits_source.read", "get_config(SPEND_GUARD_KEY"),  # the pause judge (pipeline/runtime.py::build_pipeline_runtime)
         "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "INSTALL_SECRET_KEY"),  # indexing_main.py::_bind_fleet_state, at start
         # the class admission's live numbers: indexing_main.py::lifespan attaches the store (attach_parse_admission_config)
         "/services/indexing/parseAdmission": ("app/modules/parse_engine/admission.py::LiveAdmissionConfig.refresh", "ADMISSION_CONFIG_KEY"),
@@ -294,7 +295,7 @@ _MOVED = _READER.replace("return await self.config.get_config(config_node_consta
 def test_a_citation_holds_only_while_its_function_names_the_key(tmp_path, source, line):
     path = tmp_path / "store.py"
     path.write_text(source)
-    assert cited_line(path, "Store.load", "AI_MODELS") == line
+    assert cited_line(path, "Store.load", "config_node_constants.AI_MODELS.value") == line
     assert cited_line(path, "FLAG", "/migrations/x") == source.splitlines().index('FLAG = "/migrations/x"') + 1
 
 
