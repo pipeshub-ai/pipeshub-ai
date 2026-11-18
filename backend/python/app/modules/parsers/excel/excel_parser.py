@@ -523,8 +523,6 @@ class ExcelParser:
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
         self.table_summary_prompt = table_summary_prompt
-        # The retry calls the table in flight may still spend splitting failed row batches.
-        self._row_retry_budget: RetryBudget | None = None
 
         # Configure retry parameters
         self.max_retries = 3
@@ -1650,7 +1648,11 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self._output.release(prompt_charge)
 
     async def get_rows_text(
-        self, rows: list[list[dict[str, Any]]], table_summary: str
+        self,
+        rows: list[list[dict[str, Any]]],
+        table_summary: str,
+        *,
+        retry_budget: RetryBudget | None = None,
     ) -> list[str]:
         """Convert rows into natural language text, addressing each row by its number.
 
@@ -1676,7 +1678,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 rows_data,
                 table_summary,
                 self.logger,
-                budget=self._row_retry_budget,
+                # The table operation hands its budget in; a direct call gets one of its own.
+                budget=retry_budget or RetryBudget.for_batches(1),
                 config_service=self.config_service,
                 prompt_guard=self._row_prompt_guard,
                 # The output budget's refusal ends the load; it is not a model failure.
@@ -1752,14 +1755,19 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     batches.append((i, batch))  # Store start index and batch data
 
                 self.logger.info(f"Processing {len(table['data'])} rows in {len(batches)} batches of {batch_size}")
-                self._row_retry_budget = RetryBudget.for_batches(len(batches))
+                table_retry_budget = RetryBudget.for_batches(len(batches))
 
                 # Limit parallel processing to at most 10 concurrent batches
                 semaphore = asyncio.Semaphore(10)
 
-                async def limited_get_rows_text(batch: list[Any], _sem: asyncio.Semaphore = semaphore, _ts: str = table_summary) -> list[str]:
+                async def limited_get_rows_text(
+                    batch: list[Any],
+                    _sem: asyncio.Semaphore = semaphore,
+                    _ts: str = table_summary,
+                    _budget: RetryBudget = table_retry_budget,
+                ) -> list[str]:
                     async with _sem:
-                        texts = await self.get_rows_text(batch, _ts)
+                        texts = await self.get_rows_text(batch, _ts, retry_budget=_budget)
                     # charged as the batch arrives, before the other batches' texts are gathered
                     self._output.charge_text(*texts)
                     return texts

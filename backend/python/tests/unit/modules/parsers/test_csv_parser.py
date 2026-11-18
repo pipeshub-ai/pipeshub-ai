@@ -1485,7 +1485,7 @@ class TestGetBlocksFromCsvDeep:
 
         get_rows_calls = []
 
-        async def mock_get_rows_text(llm, rows, summary, batch_size=50):
+        async def mock_get_rows_text(llm, rows, summary, batch_size=50, **_kwargs):
             get_rows_calls.append(len(rows))
             return [f"text{i}" for i in range(len(rows))]
 

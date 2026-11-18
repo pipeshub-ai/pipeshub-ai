@@ -36,6 +36,7 @@ from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app.core.org_context import spawn_in_request
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import summary_with_captions
 from app.modules.parsers.excel.prompt_template import (
@@ -59,6 +60,7 @@ from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.concurrency import (
     MAX_CONCURRENT_ROW_BATCHES,
     MAX_CONCURRENT_TABLES,
+    TABLE_ROW_BATCH_SIZE_MAX,
     gather_with_concurrency,
     max_table_rows_for_llm,
     table_row_batch_size,
@@ -129,7 +131,11 @@ class TableEnrichmentResult:
     headers: list[str] = field(default_factory=list)
     header_row_count: int = 0
     descriptions: list[str] = field(default_factory=list)
+    #: Some text is plain ``column: value`` text (a row, or the summary, that the model did not give).
     degraded: bool = False
+    #: The whole table fell back (its summary and headers could not be had). Only this counts
+    #: against a record; rows that fell back do not, as before.
+    failed: bool = False
 
 
 def cell_text(cell: Any) -> str:  # noqa: ANN401
@@ -164,10 +170,34 @@ _KEY_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"  # base32: no 0/1/8/9, so no 
 KEY_CHARS = 4  # 20 bits: unique within a batch by construction, and short enough to copy
 
 
+#: Characters of each cell (and column title) the key seed reads. Keys only have to be stable and
+#: distinct within a batch, so a bounded slice is enough, and a huge cell is never serialised.
+_SEED_CELL_CHARS = 256
+#: Rows a batch of keys can hold. Keys at least two apart number at most 32**3, a draw loop saturates
+#: well before that, and no batch is meant to be this large: every path batches at the size limit.
+MAX_KEYED_ROWS = TABLE_ROW_BATCH_SIZE_MAX
+
+
+def _seed_text(value: Any) -> bytes:  # noqa: ANN401
+    text = value[:_SEED_CELL_CHARS] if isinstance(value, str) else str(value)[:_SEED_CELL_CHARS]
+    return text.encode("utf-8", "surrogatepass")
+
+
 def _batch_seed(rows: Sequence[Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(rows, sort_keys=True, default=str, ensure_ascii=False).encode()
-    ).hexdigest()
+    """A hash of the batch: each row's cells in column order, each cut to ``_SEED_CELL_CHARS``.
+
+    Built cell by cell, so nothing is compared (column titles may be numbers beside text) and
+    nothing larger than a cell's slice is held.
+    """
+    digest = hashlib.sha256()
+    for row in rows:
+        for column, value in row.items() if isinstance(row, dict) else enumerate(row):
+            digest.update(_seed_text(column))
+            digest.update(b"\x1f")
+            digest.update(_seed_text(value))
+            digest.update(b"\x1e")
+        digest.update(b"\x1d")
+    return digest.hexdigest()
 
 
 def _raw_key(seed: str, counter: int) -> str:
@@ -192,11 +222,16 @@ def row_keys(rows: Sequence[Any]) -> list[str]:
     equals, or is one character away from, a key already in the batch is redrawn, so a single
     copy typo never turns one row's key into another's.
     """
+    if len(rows) > MAX_KEYED_ROWS:
+        raise ValueError(f"a batch holds at most {MAX_KEYED_ROWS} rows, got {len(rows)}")
     seed = _batch_seed(rows)
     keys: list[str] = []
     blocked: set[str] = set()
     counter = 0
+    max_draws = 20 * len(rows) + 1000
     while len(keys) < len(rows):
+        if counter >= max_draws:
+            raise ValueError(f"key space used up after {counter} draws for {len(rows)} rows")
         key = _raw_key(seed, counter)
         counter += 1
         if key not in blocked:
@@ -376,7 +411,8 @@ async def _gather_or_cancel(*coros: Any) -> list[Any]:  # noqa: ANN401
     A bare gather leaves the siblings running after the error ended the load: they would finish
     their model calls, and could split again and spend more.
     """
-    tasks = [asyncio.ensure_future(c) for c in coros]
+    # Request child work: each half keeps the caller's context (org included) and is cancelled with it.
+    tasks = [spawn_in_request(c) for c in coros]
     try:
         return list(await asyncio.gather(*tasks))
     except BaseException:
@@ -463,7 +499,9 @@ async def describe_row_dicts(
         llm, table_summary, logger, budget or RetryBudget(MIN_RETRY_CALLS),
         config_service=config_service, prompt_guard=prompt_guard, propagate=propagate,
     )
-    texts = await _describe_batch(run, rows_data)
+    # No batch is larger than the size limit, whatever the caller hands over.
+    chunks = [rows_data[i : i + MAX_KEYED_ROWS] for i in range(0, len(rows_data), MAX_KEYED_ROWS)] or [rows_data]
+    texts = [t for part in await _gather_or_cancel(*(_describe_batch(run, chunk) for chunk in chunks)) for t in part]
     for reason, count in run.rows_by_reason.items():
         note_degraded_rows(reason, count)
     return [
@@ -607,7 +645,7 @@ async def enrich_table_grid(
     rows = normalize_grid(grid)
     if not rows:
         return TableEnrichmentResult()
-    batch_size = batch_size or table_row_batch_size()
+    batch_size = min(batch_size or table_row_batch_size(), MAX_KEYED_ROWS)
 
     known = known_header_row_count is not None
     known_headers: Optional[list[str]] = None
@@ -632,7 +670,9 @@ async def enrich_table_grid(
         # are exactly what failed.
         note_table_result(succeeded=False, degraded=True, reason=reason)
         note_degraded_rows(reason, len(rows) - header_rows)
-        return _plain_enrichment(rows, header_rows, known_headers or [], degraded=True)
+        failed = _plain_enrichment(rows, header_rows, known_headers or [], degraded=True)
+        failed.failed = True
+        return failed
 
     first_keys = row_keys(first_batch)
     parsed: Optional[TableEnrichment] = None
@@ -645,25 +685,28 @@ async def enrich_table_grid(
     summary = ((parsed.summary if parsed else "") or "").strip()
     llm_headers = list(parsed.headers) if parsed and parsed.headers else []
     llm_header_rows = parsed.header_row_count if parsed else 0
-    # The first call is complete when it gave the summary and the headers this table still needs.
-    complete = bool(summary) and (known or bool(llm_headers))
-
-    if not complete:
-        # The rows of the combined call are lost, but the summary and headers it did give
-        # are kept; ask for the rest on its own.
+    # The first reply may give the keyed rows and a header decision without a summary (or without
+    # headers). Whatever it gave is kept; the missing parts are asked for on their own.
+    summary_lost: Optional[str] = None
+    if not summary or not (known or llm_headers):
+        followup_error = False
         try:
             extra = await _summary_and_headers_call(llm, first_batch, known_headers)
         except Exception as e:
             logger.warning(f"Table summary call failed: {e}")
-            return whole_table_fallback("error")
+            extra, followup_error = None, True
         if extra is not None:
             if not summary:
                 summary = (extra.summary or "").strip()
             if not known and not llm_headers:
                 llm_headers = list(extra.headers or [])
                 llm_header_rows = extra.header_row_count
-        if not summary or not (known or llm_headers):
-            return whole_table_fallback("parse")
+        if not (known or llm_headers) or (not summary and parsed is None):
+            # Nothing of the first reply to keep (it did not parse), or no header decision on the
+            # unknown path, where the header row cannot be told from data: the table falls back.
+            return whole_table_fallback("error" if followup_error else "parse")
+        if not summary:
+            summary_lost = "error" if followup_error else "parse"
 
     if known:
         headers = known_headers or list(llm_headers)
@@ -672,6 +715,9 @@ async def enrich_table_grid(
         headers = list(llm_headers)
 
     data_rows = rows[header_rows:]
+    if summary_lost is not None:
+        # Only the summary is plain; the rest of the first reply stands.
+        summary = fallback_table_summary(headers, len(data_rows))
 
     if not describe_rows:
         # The MAX_TABLE_ROWS_FOR_LLM cutoff is configuration, not a degradation.
@@ -681,8 +727,9 @@ async def enrich_table_grid(
             headers=headers,
             header_row_count=header_rows,
             descriptions=_simple_texts(data_rows, headers),
+            degraded=summary_lost is not None,
         )
-        note_table_result(succeeded=True)
+        note_table_result(succeeded=summary_lost is None, degraded=summary_lost is not None, reason=summary_lost)
         return result
 
     # Batches: the first call's own rows when it answered completely, then the rest.
@@ -728,7 +775,7 @@ async def enrich_table_grid(
     # Never let a short list desynchronize descriptions from rows.
     descriptions.extend(fallback[len(descriptions) :])
 
-    degraded = bool(run.rows_by_reason)
+    degraded = bool(run.rows_by_reason) or summary_lost is not None
     for reason, count in run.rows_by_reason.items():
         note_degraded_rows(reason, count)
     result = TableEnrichmentResult(
@@ -741,7 +788,7 @@ async def enrich_table_grid(
     note_table_result(
         succeeded=not degraded,
         degraded=degraded,
-        reason=run.rows_by_reason.most_common(1)[0][0] if degraded else None,
+        reason=run.rows_by_reason.most_common(1)[0][0] if run.rows_by_reason else summary_lost,
     )
     return result
 
@@ -801,7 +848,7 @@ async def enrich_tables(
             rows = normalize_grid(grid)
             enriched.append(
                 TableEnrichmentResult(
-                    descriptions=_simple_texts(rows, []), degraded=True
+                    descriptions=_simple_texts(rows, []), degraded=True, failed=True
                 )
             )
             # enrich_table_grid already noted success/failure; gather exceptions did not.
@@ -976,7 +1023,8 @@ async def _enhance_one_table(
         if rb.data is not None:
             rb.data.setdefault("row_natural_language_text", _fallback_text(rb))
 
-    return not enrichment.degraded
+    # Row or summary fallbacks leave the table counted as enriched; only a table that fell back as a whole fails.
+    return not enrichment.failed
 
 
 async def enhance_tables_with_llm(
@@ -1044,7 +1092,7 @@ async def enhance_tables_with_llm(
         if stats.attempted:
             logger.info(
                 f"Table enhancement: {stats.succeeded}/{stats.attempted} succeeded, "
-                f"{stats.failed} degraded"
+                f"{stats.failed} fell back to plain text as a whole"
             )
             if stats.failed == stats.attempted and fail_on_all_errors:
                 raise RuntimeError(
@@ -1072,14 +1120,19 @@ async def get_rows_text(
     rows = [[cell_text(cell) for cell in row] for row in table_rows]
     run = _Run(llm, table_summary, logging.getLogger(__name__), RetryBudget(0))
     rows_data = [_row_dict(row, column_headers) for row in rows]
-    try:
-        answer = await _call_row_batch(run, rows_data)
-    except _ModelCallFailed as e:
-        raise (e.__cause__ or e) from None
     fallback = _simple_texts(rows, column_headers)
-    if answer is None:
-        return fallback, table_rows
-    return [a if _usable(a) else fallback[i] for i, a in enumerate(answer)], table_rows
+    texts: list[str] = []
+    for start in range(0, len(rows_data), MAX_KEYED_ROWS):  # no call is larger than the size limit
+        chunk = rows_data[start : start + MAX_KEYED_ROWS]
+        try:
+            answer = await _call_row_batch(run, chunk)
+        except _ModelCallFailed as e:
+            raise (e.__cause__ or e) from None
+        if answer is None:
+            texts.extend(fallback[start : start + len(chunk)])
+        else:
+            texts.extend(a if _usable(a) else fallback[start + i] for i, a in enumerate(answer))
+    return texts, table_rows
 
 
 def fallback_table_summary(headers: "Sequence[object]", row_count: int) -> str:

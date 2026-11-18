@@ -40,6 +40,7 @@ from tests.support.table_model import (
     FakeTableModel,
     assert_aligned,
     by_first_row,
+    count_hashed_bytes,
     make_rows,
 )
 
@@ -976,14 +977,14 @@ def test_no_two_keys_in_a_batch_are_one_character_apart(rows: int, variant: int)
 
 
 def test_keys_stay_stable_across_calls_with_the_distance_rule() -> None:
-    batch = [{"v": f"1-{i}"} for i in range(500)]
+    batch = [{"v": f"row-{i}"} for i in range(500)]
 
     assert table_enrichment.row_keys(batch) == table_enrichment.row_keys(batch)
 
 
 def test_a_batch_whose_raw_key_stream_collides_still_gets_unique_keys() -> None:
     """These 500 rows draw the same key twice from the raw stream, so only the redraw keeps them unique."""
-    batch = [{"v": f"1-{i}"} for i in range(500)]
+    batch = [{"v": f"row-{i}"} for i in range(500)]
     seed = table_enrichment._batch_seed(batch)
     raw = [table_enrichment._raw_key(seed, i) for i in range(500)]
     assert len(set(raw)) < 500, "the premise: the raw stream repeats a key within the first 500 draws"
@@ -1007,3 +1008,210 @@ def test_an_echo_that_names_no_key_of_the_batch_drops_only_that_row(echo: str) -
     entries = [KeyedRowDescription(key=echo, description="bad"), KeyedRowDescription(key="DE3F", description="two")]
 
     assert table_enrichment.align_by_key(entries, keys) == [None, "two"]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Review follow-ups: key capacity, seed cost, a missing summary, row fallback versus a failed table
+# ---------------------------------------------------------------------------------------------------------
+
+
+def test_row_keys_refuse_more_rows_than_a_batch_can_hold() -> None:
+    """With keys at least two apart there are at most 32**3 of them; past that the draw loop could never end."""
+    too_many = [{"v": i} for i in range(table_enrichment.MAX_KEYED_ROWS + 1)]
+
+    with pytest.raises(ValueError, match="at most"):
+        table_enrichment.row_keys(too_many)
+
+
+def test_row_keys_stop_drawing_when_the_key_space_is_used_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The draw loop is bounded even if the row cap is raised past what the key space can hold."""
+    monkeypatch.setattr(table_enrichment, "MAX_KEYED_ROWS", 40_000)
+
+    with pytest.raises(ValueError, match="key space"):
+        table_enrichment.row_keys([{"v": i} for i in range(40_000)])
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_batch_size_above_the_maximum_is_capped() -> None:
+    model = FakeTableModel()
+
+    result = await enrich(model, [HEAD, *make_rows(1200)], batch_size=100_000)
+
+    assert max(n for _k, n in model.calls) <= table_enrichment.MAX_KEYED_ROWS
+    assert not result.degraded and len(result.descriptions) == 1200
+
+
+@pytest.mark.asyncio
+async def test_a_caller_that_hands_over_more_rows_than_a_batch_has_them_split_not_refused() -> None:
+    model = FakeTableModel()
+    rows = [dict(zip(HEAD, r, strict=True)) for r in make_rows(1300)]
+
+    texts = await table_enrichment.describe_row_dicts(model, rows, "Register map", LOG)
+
+    assert texts == [f"desc of REG{i}" for i in range(1300)]
+    assert max(model.row_calls) <= table_enrichment.MAX_KEYED_ROWS
+
+
+@pytest.mark.asyncio
+async def test_get_rows_text_splits_a_grid_past_the_maximum() -> None:
+    model = FakeTableModel()
+
+    texts, rows = await table_enrichment.get_rows_text(model, {"grid": [HEAD, *make_rows(1100)]}, "Register map", HEAD)
+
+    assert len(texts) == len(rows) == 1100
+    assert texts[1099] == "desc of REG1099"
+
+
+def test_the_key_seed_reads_a_bounded_slice_of_each_cell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """50 rows x 40 columns of 20,000 characters is 40 MB of cells; the keys must not serialise it."""
+    big = "w" * 20_000
+    rows = [{f"h{c}": big + str(r) for c in range(40)} for r in range(50)]
+    hashed = count_hashed_bytes(monkeypatch)
+
+    keys = table_enrichment.row_keys(rows)
+
+    assert len(keys) == 50
+    assert hashed[0] < 2_000_000, f"{hashed[0]} bytes were hashed"
+
+
+def test_keys_are_stable_when_only_the_tail_of_a_huge_cell_differs() -> None:
+    a = [{"v": "x" * 20_000 + "a"}]
+    b = [{"v": "x" * 20_000 + "b"}]
+
+    assert table_enrichment.row_keys(a) == table_enrichment.row_keys(b), "the seed reads a bounded slice"
+
+
+def test_keys_do_not_depend_on_unlike_column_types() -> None:
+    """A numeric column title next to a text one (a year header) used to raise TypeError from the sort."""
+    rows = [{2024: "a", "Region": "b"}, {2024: "c", "Region": "d"}]
+
+    keys = table_enrichment.row_keys(rows)
+
+    assert len(set(keys)) == 2
+    assert keys == table_enrichment.row_keys([{2024: "a", "Region": "b"}, {2024: "c", "Region": "d"}])
+    assert keys != table_enrichment.row_keys([{"Region": "b", 2024: "a"}, {"Region": "d", 2024: "c"}]), "column order is part of the batch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("known", [1, None])
+async def test_a_reply_with_keyed_rows_and_a_header_but_no_summary_keeps_them_when_the_follow_up_fails(known: int | None) -> None:
+    def behave(kind: str, _ids: list[str], _n: int) -> str:
+        return "malformed" if kind == "summary" else "ok"
+
+    model = FakeTableModel(behave, summary="", header_row_count=1 if known is None else 0)
+
+    result = await enrich(model, [HEAD, *make_rows(120)], known=known)
+
+    assert result.summary == "A table with 120 rows and columns: Name, Offset, Reset."
+    assert result.headers == HEAD
+    assert result.header_row_count == (1 if known is None else 1 if known else 0)
+    assert len(result.descriptions) == 120
+    assert result.descriptions == [f"desc of REG{i}" for i in range(120)], "the keyed rows of the first reply are kept"
+    assert result.degraded and not result.failed
+    assert model.count("rows") == 2, "only the rows after the first batch cost a call"
+
+
+@pytest.mark.asyncio
+async def test_a_summary_call_that_raises_keeps_the_first_replys_rows_too() -> None:
+    def behave(kind: str, _ids: list[str], _n: int) -> str:
+        return "raise" if kind == "summary" else "ok"
+
+    model = FakeTableModel(behave, summary="")
+
+    result = await enrich(model, [HEAD, *make_rows(60)])
+
+    assert result.descriptions == [f"desc of REG{i}" for i in range(60)]
+    assert result.degraded and not result.failed
+
+
+@pytest.mark.asyncio
+async def test_a_table_with_no_header_decision_to_keep_still_falls_back_as_a_whole() -> None:
+    model = FakeTableModel(lambda _k, _i, _n: "malformed")
+
+    result = await enrich(model, [HEAD, *make_rows(60)], known=None)
+
+    assert result.failed and result.degraded
+
+
+def _record_with_table(rows: int) -> tuple[object, object]:
+    from app.models.blocks import (
+        Block,
+        BlockGroup,
+        BlockGroupChildren,
+        BlocksContainer,
+        BlockType,
+        DataFormat,
+        GroupType,
+        TableMetadata,
+        TableRowMetadata,
+    )
+
+    blocks = [
+        Block(
+            id=f"b{i}", index=i, parent_index=0, type=BlockType.TABLE_ROW, format=DataFormat.JSON,
+            data={"cells": make_rows(rows)[i], "row_natural_language_text": ""},
+            table_row_metadata=TableRowMetadata(row_number=i + 1, is_header=False),
+        )
+        for i in range(rows)
+    ]
+    children = BlockGroupChildren()
+    for block in blocks:
+        children.add_block_index(block.index)
+    group = BlockGroup(
+        id="g", index=0, type=GroupType.TABLE, format=DataFormat.JSON,
+        data={"table_markdown": "x", "column_headers": HEAD},
+        table_metadata=TableMetadata(num_of_cols=3, has_header=False, column_names=HEAD), children=children,
+    )
+    return BlocksContainer(blocks=blocks, block_groups=[group]), group
+
+
+@pytest.mark.asyncio
+async def test_rows_that_fall_back_do_not_fail_the_record(caplog: pytest.LogCaptureFixture) -> None:
+    """A one-table record whose later batches come back malformed used to raise 'All 1 tables failed'."""
+    from unittest.mock import MagicMock
+
+    caplog.set_level(logging.INFO)
+
+    container, group = _record_with_table(120)
+    model = FakeTableModel(lambda kind, _i, _n: "malformed" if kind == "rows" else "ok")
+
+    stats = await table_enrichment.enhance_tables_with_llm(container, MagicMock(), LOG, llm=model)
+
+    assert (stats.attempted, stats.succeeded, stats.failed) == (1, 1, 0)
+    assert container.blocks[10].data["row_natural_language_text"] == "desc of REG10"
+    assert container.blocks[100].data["row_natural_language_text"] == "Name: REG100, Offset: 0x190, Reset: 0"
+    line = next(r.getMessage() for r in caplog.records if "Indexing enrichment (block-tables)" in r.getMessage())
+    assert "degraded=1" in line and "degraded_rows=70" in line, "the fallback is still counted"
+
+
+@pytest.mark.asyncio
+async def test_a_table_whose_summary_and_first_call_both_fail_still_fails_the_record() -> None:
+    from unittest.mock import MagicMock
+
+    container, _group = _record_with_table(60)
+    model = FakeTableModel(lambda _k, _i, _n: "malformed")
+
+    with pytest.raises(RuntimeError, match="All 1 tables failed"):
+        await table_enrichment.enhance_tables_with_llm(container, MagicMock(), LOG, llm=model)
+
+
+@pytest.mark.asyncio
+async def test_split_halves_run_in_the_callers_context() -> None:
+    """Each half of a split batch is request child work: it sees the context (the org) of the caller."""
+    import contextvars
+
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker", default="none")
+    seen: list[str] = []
+
+    class Watching(FakeTableModel):
+        async def ainvoke(self, messages: list, **kwargs: object) -> object:
+            seen.append(marker.get())
+            return await super().ainvoke(messages, **kwargs)
+
+    model = Watching(lambda _k, ids, _n: "nothing" if len(ids) == 12 else "ok")
+    rows = [dict(zip(HEAD, r, strict=True)) for r in make_rows(12)]
+    marker.set("org-1")
+
+    await table_enrichment.describe_row_dicts(model, rows, "Register map", LOG)
+
+    assert seen == ["org-1", "org-1", "org-1"]

@@ -15,7 +15,7 @@ from app.services.parsing.interface import ParseError
 from app.utils import user_errors
 from app.utils.indexing_helpers import generate_simple_row_text
 from tests.support.excel_workbooks import MAIN_NS, load, workbook_zip
-from tests.support.table_model import keyed_answer
+from tests.support.table_model import count_hashed_bytes, keyed_answer
 
 
 def _quiet(parser) -> None:
@@ -101,7 +101,7 @@ def test_llm_row_texts_are_charged_as_each_batch_arrives(monkeypatch) -> None:
     async def summary(_table: object) -> str:
         return "s"
 
-    async def get_rows_text(batch: list, _summary: str) -> list[str]:
+    async def get_rows_text(batch: list, _summary: str, **_kwargs: object) -> list[str]:
         await asyncio.sleep(0)
         returned[0] += 1
         return ["z" * 100_000] * len(batch)
@@ -154,13 +154,14 @@ def _wide_rows(n_rows: int, n_cols: int) -> list[list[dict]]:
     return [[{"header": f"h{c}", "value": big + str(r)} for c in range(n_cols)] for r in range(n_rows)]
 
 
-def test_a_wide_row_text_prompt_is_refused_before_it_is_built() -> None:
+def test_a_wide_row_text_prompt_is_refused_before_it_is_built(monkeypatch) -> None:
     # 50 rows x 40 columns x 20 000 chars is 40 MB of prompt text, copied several times
     parser = load(_big_cell_workbook(10))
     _quiet(parser)
     parser.llm = MagicMock()
     parser._output.left = 20_000_000
     built = [0]
+    hashed = count_hashed_bytes(monkeypatch)
 
     async def rows(_llm: object, messages: list, *_a: object, **_k: object) -> SimpleNamespace:
         built[0] += 1
@@ -177,6 +178,7 @@ def test_a_wide_row_text_prompt_is_refused_before_it_is_built() -> None:
         te.invoke_with_structured_output_and_reflection = original
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
     assert built[0] == 0  # the LLM was never called: the prompt was not built
+    assert hashed[0] < 2_000_000, "the row keys must not serialise the 40 MB of cells before the guard refuses them"
 
 
 def test_a_wide_row_text_prompt_within_budget_is_charged_at_least_what_it_allocates(monkeypatch) -> None:

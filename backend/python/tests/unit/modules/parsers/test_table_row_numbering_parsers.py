@@ -225,3 +225,117 @@ async def test_a_keyed_answer_is_reused_by_a_retry(store: MemoryResultStore, des
         second = await describe(model)
 
     assert first == second and len(model.calls) == 1
+
+
+# -- Review follow-ups: a retry budget owned by each table, and column titles of unlike types ---------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_csv_tables_on_one_parser_each_spend_their_own_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The parsing service shares one CSVParser; two tables in flight must not read each other's budget."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.modules.parsers.csv import csv_parser
+    from app.modules.parsers.excel.prompt_template import CSVHeaderDetection
+
+    seen: dict[str, set[int]] = {"A": set(), "B": set()}
+    budgets: dict[int, object] = {}
+
+    async def describe(_llm: object, rows: list[dict], _summary: str, _logger: object, *, budget: object = None, **_kw: object) -> list[str]:
+        await asyncio.sleep(0)
+        which = "A" if str(rows[0]["Name"]).startswith("A") else "B"
+        seen[which].add(id(budget))
+        budgets[id(budget)] = budget
+        return ["t"] * len(rows)
+
+    monkeypatch.setattr(csv_parser, "describe_row_dicts", describe)
+    parser = CSVParser(MagicMock())
+    detection = CSVHeaderDetection(has_headers=True, num_header_rows=1, confidence="high", reasoning="r")
+    parser.detect_headers_with_llm = AsyncMock(return_value=detection)  # type: ignore[method-assign]
+    parser.get_table_summary = AsyncMock(return_value="S")  # type: ignore[method-assign]
+
+    def table(prefix: str, n: int) -> dict:
+        return {"raw_rows": [["Name"], *[[f"{prefix}{i}"] for i in range(n)]], "start_row": 1}
+
+    await asyncio.gather(
+        parser.get_blocks_from_csv_with_multiple_tables([table("A", 120)], AsyncMock()),
+        parser.get_blocks_from_csv_with_multiple_tables([table("B", 400)], AsyncMock()),
+    )
+
+    assert len(seen["A"]) == 1 and len(seen["B"]) == 1 and seen["A"] != seen["B"]
+    (a,) = seen["A"]
+    (b,) = seen["B"]
+    assert budgets[a] is not budgets[b]
+
+
+@pytest.mark.asyncio
+async def test_a_standalone_get_rows_text_does_not_inherit_the_budget_of_an_earlier_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.modules.parsers.csv import csv_parser
+    from app.utils.table_enrichment import RetryBudget
+
+    got: list[object] = []
+
+    async def describe(_llm: object, rows: list[dict], _summary: str, _logger: object, *, budget: object = None, **_kw: object) -> list[str]:
+        got.append(budget)
+        return ["t"] * len(rows)
+
+    monkeypatch.setattr(csv_parser, "describe_row_dicts", describe)
+    parser = CSVParser(MagicMock())
+    spent = RetryBudget(0)
+
+    await parser.get_rows_text(FakeTableModel(), csv_rows(3), "S", retry_budget=spent)
+    await parser.get_rows_text(FakeTableModel(), csv_rows(3), "S")
+
+    assert got[0] is spent
+    assert got[1] is not spent and got[1].calls > 0  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_excel_batches_of_one_table_share_one_budget_and_other_documents_do_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.modules.parsers.excel import excel_parser
+
+    seen: list[object] = []
+
+    async def describe(_llm: object, rows: list[dict], _summary: str, _logger: object, *, budget: object = None, **_kw: object) -> list[str]:
+        seen.append(budget)
+        return ["t"] * len(rows)
+
+    monkeypatch.setattr(excel_parser, "describe_row_dicts", describe)
+    parser = ExcelParser(LOG, MagicMock())
+    parser.llm = FakeTableModel()  # type: ignore[assignment]
+    first = excel_rows(3)
+
+    await parser.get_rows_text(first, "S")
+    await parser.get_rows_text(first, "S")
+
+    assert seen[0] is not seen[1], "a standalone call gets a budget of its own, not the previous table's"
+
+
+@pytest.mark.asyncio
+async def test_a_numeric_column_title_next_to_a_text_one_indexes_through_the_real_excel_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A year header (2024) beside "Region" gave row dicts with keys of two types, and the key seed sorted them."""
+    from unittest.mock import AsyncMock
+
+    from app.modules.parsers.excel.prompt_template import ExcelHeaderDetection
+    from tests.support.excel_workbooks import load, workbook_zip
+
+    rows = (
+        '<row r="1"><c r="A1"><v>2024</v></c><c r="B1" t="inlineStr"><is><t>Region</t></is></c></row>'
+        + "".join(
+            f'<row r="{r}"><c r="A{r}"><v>{r * 10}</v></c><c r="B{r}" t="inlineStr"><is><t>REG{r - 2}</t></is></c></row>'
+            for r in range(2, 8)
+        )
+    )
+    parser = load(workbook_zip(f"<sheetData>{rows}</sheetData>"))
+    parser.logger = LOG  # type: ignore[assignment]
+    parser.detect_excel_headers_with_llm = AsyncMock(  # type: ignore[method-assign]
+        return_value=ExcelHeaderDetection(has_headers=True, num_header_rows=1, confidence="high", reasoning="r")
+    )
+    parser.get_table_summary = AsyncMock(return_value="S")  # type: ignore[method-assign]
+    model = FakeTableModel()
+
+    result = await parser.get_blocks_from_workbook(model)
+
+    texts = [b.data["row_natural_language_text"] for b in result.blocks if b.type.value == "table_row"]
+    assert texts == [f"desc of REG{i}" for i in range(6)]

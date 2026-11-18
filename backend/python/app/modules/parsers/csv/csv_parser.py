@@ -48,6 +48,7 @@ from app.utils.logger import create_logger
 from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 from app.utils.table_enrichment import (
+    MAX_KEYED_ROWS,
     RetryBudget,
     describe_row_dicts,
     fallback_table_summary,
@@ -112,8 +113,6 @@ class CSVParser:
             quotechar: Character used for quoting fields (default: double quote)
             encoding: File encoding (default: utf-8)
         """
-        # The retry calls the table in flight may still spend splitting failed row batches.
-        self._row_retry_budget: Optional[RetryBudget] = None
         self.delimiter = delimiter
         self.quotechar = quotechar
         self.encoding = encoding
@@ -807,7 +806,13 @@ class CSVParser:
             return fallback_table_summary(list(rows[0].keys()) if rows else [], len(rows))
 
     async def get_rows_text(
-        self, llm, rows: List[Dict[str, Any]], table_summary: str, batch_size: Optional[int] = None
+        self,
+        llm,
+        rows: List[Dict[str, Any]],
+        table_summary: str,
+        batch_size: Optional[int] = None,
+        *,
+        retry_budget: Optional[RetryBudget] = None,
     ) -> list[str]:
         """Convert rows into natural language text in batches, addressing each row by its number.
 
@@ -815,8 +820,10 @@ class CSVParser:
         text for that row alone (a short batch is split and retried first), never another row's
         description.
         """
-        batch_size = batch_size or table_row_batch_size()
-        budget = self._row_retry_budget or RetryBudget.for_batches(-(-len(rows) // batch_size))
+        batch_size = min(batch_size or table_row_batch_size(), MAX_KEYED_ROWS)
+        # The table operation hands its budget in; a direct call gets one of its own. It is never
+        # parser state: the parsing service shares one CSVParser between documents in flight.
+        budget = retry_budget or RetryBudget.for_batches(-(-len(rows) // batch_size))
         processed_texts: list[str] = []
 
         for i in range(0, len(rows), batch_size):
@@ -961,7 +968,7 @@ class CSVParser:
                 for i in range(0, len(csv_result), row_batch_size):
                     batch = csv_result[i : i + row_batch_size]
                     batches.append((i, batch))
-                self._row_retry_budget = RetryBudget.for_batches(len(batches))
+                table_retry_budget = RetryBudget.for_batches(len(batches))
 
                 max_concurrent_batches = min(MAX_CONCURRENT_BATCHES, len(batches))
                 batch_results = []
@@ -971,7 +978,7 @@ class CSVParser:
 
                     batch_tasks = []
                     for start_idx, batch in current_batches:
-                        task = self.get_rows_text(llm, batch, table_summary)
+                        task = self.get_rows_text(llm, batch, table_summary, retry_budget=table_retry_budget)
                         batch_tasks.append((start_idx, batch, task))
 
                     task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])

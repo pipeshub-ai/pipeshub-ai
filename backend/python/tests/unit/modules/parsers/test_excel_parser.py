@@ -1779,7 +1779,7 @@ class TestProcessSheetWithSummariesDeep:
 
         get_rows_text_calls = []
 
-        async def mock_get_rows_text(rows, summary):
+        async def mock_get_rows_text(rows, summary, **_kwargs):
             get_rows_text_calls.append(len(rows))
             return [f"text {i}" for i in range(len(rows))]
 

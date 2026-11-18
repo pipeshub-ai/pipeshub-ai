@@ -7,6 +7,7 @@ once and runs over any prompt revision and any parser that describes rows.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from types import SimpleNamespace
@@ -40,7 +41,9 @@ class FakeTableModel:
         headers: list[str] | None = None,
         describe: Callable[[str], str] | None = None,
         identify: Callable[[Any], str] | None = None,
+        summary: str = "Register map",
     ) -> None:
+        self.summary = summary
         self.identify = identify
         self.describe = describe or (lambda rid: f"desc of {rid}")
         self.behave = behave or (lambda _kind, _ids, _n: "ok")
@@ -146,14 +149,14 @@ class FakeTableModel:
         if kind == "summary":
             if behavior == "malformed":
                 return SimpleNamespace(content="not json {", response_metadata={}, additional_kwargs={})
-            payload = {"summary": "Register map", "headers": self.headers, "header_row_count": self.header_row_count}
+            payload = {"summary": self.summary, "headers": self.headers, "header_row_count": self.header_row_count}
         else:
             entries = self._entries(behavior, rows)
             if isinstance(entries, str):
                 return SimpleNamespace(content=entries, response_metadata={}, additional_kwargs={})
             payload = {"descriptions": [{"key": key, "description": t} for key, t in entries]}
             if kind == "combined":
-                payload |= {"summary": "Register map", "headers": self.headers, "header_row_count": self.header_row_count}
+                payload |= {"summary": self.summary, "headers": self.headers, "header_row_count": self.header_row_count}
         return SimpleNamespace(content=json.dumps(payload), response_metadata={}, additional_kwargs={})
 
 
@@ -216,3 +219,31 @@ def keyed_answer(messages: list, texts: list[str] | Callable[[int, Any], str]) -
     return SimpleNamespace(
         descriptions=[SimpleNamespace(key=key, description=pick(i, row)) for i, (key, row) in enumerate(shown)],
     )
+
+
+def count_hashed_bytes(monkeypatch: Any) -> list[int]:  # noqa: ANN401
+    """Counts the bytes the key seed hashes (a one-item list, read after the call under test)."""
+    from app.utils import table_enrichment
+
+    total = [0]
+
+    def sha256(data: bytes = b"") -> object:
+        inner = hashlib.sha256()
+        total[0] += len(data)
+        inner.update(data)
+
+        class Counting:
+            def update(self, more: bytes) -> None:
+                total[0] += len(more)
+                inner.update(more)
+
+            def hexdigest(self) -> str:
+                return inner.hexdigest()
+
+            def digest(self) -> bytes:
+                return inner.digest()
+
+        return Counting()
+
+    monkeypatch.setattr(table_enrichment, "hashlib", SimpleNamespace(sha256=sha256))
+    return total
