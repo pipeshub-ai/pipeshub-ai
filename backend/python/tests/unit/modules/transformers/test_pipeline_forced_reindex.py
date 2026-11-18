@@ -56,6 +56,18 @@ async def test_a_forced_reindex_purges_the_points_and_indexes_every_block_with_n
     pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_not_awaited()
 
 
+async def test_a_forced_reindex_says_it_purges_first(caplog: pytest.LogCaptureFixture) -> None:
+    block, old = _unchanged_block_and_metadata()
+    pipeline = _pipeline(blob_meta=old)
+    begin_run(ORG, REC, None, "index", refresh=True)
+    ctx = _ctx(_record(blocks=[block]), event_type=EventTypes.REINDEX_RECORD.value, prev_vrid="vr-1")
+
+    with caplog.at_level("WARNING"):
+        await IndexingPipeline.build_reconciliation_context(ctx, pipeline.logger, pipeline.sink_orchestrator)
+
+    assert any("no vectors until this indexing completes" in r.getMessage() for r in caplog.records)
+
+
 async def test_a_forced_reindex_whose_purge_fails_fails_the_delivery_rather_than_double_indexing() -> None:
     block, old = _unchanged_block_and_metadata()
     pipeline = _pipeline(blob_meta=old)
@@ -65,3 +77,32 @@ async def test_a_forced_reindex_whose_purge_fails_fails_the_delivery_rather_than
 
     with pytest.raises(RuntimeError):
         await IndexingPipeline.build_reconciliation_context(ctx, pipeline.logger, pipeline.sink_orchestrator)
+
+
+async def test_a_forced_run_that_fails_while_embedding_is_not_completed_and_its_retry_runs_the_full_path() -> None:
+    """The points go first; a failure while embedding leaves the record un-COMPLETED (so it is retried), and the retry
+    purges and indexes every block again, which restores the points."""
+    block, old = _unchanged_block_and_metadata()
+    pipeline = _pipeline(blob_meta=old)
+    sink = pipeline.sink_orchestrator
+    sink.index.side_effect = [RuntimeError("embedding failed"), None]
+    begin_run(ORG, REC, None, "index", refresh=True)
+
+    def ctx():
+        return _ctx(_record(blocks=[block]), event_type=EventTypes.REINDEX_RECORD.value, prev_vrid="vr-1")
+
+    with pytest.raises(RuntimeError, match="embedding failed"):                # not swallowed: the delivery is retried
+        await pipeline.apply(ctx())
+
+    assert sink.vector_store.purge_record_vectors.await_count == 1              # the points are already gone
+    pipeline.document_extraction.graph_provider.update_node.assert_not_awaited()     # nothing wrote COMPLETED
+    pipeline.stage_ingress.on_indexed.assert_not_awaited()                      # and no later stage ran
+
+    retry = ctx()
+    await pipeline.apply(retry)
+
+    assert sink.vector_store.purge_record_vectors.await_count == 2              # the retry purges again
+    assert sink.index.await_count == 2
+    reconciliation = retry.reconciliation_context
+    assert not reconciliation.rekey_ids and not reconciliation.blocks_to_index_ids and not reconciliation.block_ids_to_delete
+    pipeline.stage_ingress.on_indexed.assert_awaited_once()                     # the full path ran: the stages follow the index

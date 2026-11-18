@@ -76,8 +76,11 @@ class IndexingPipeline:
             if prev_vrid and prev_vrid == record.virtual_record_id and scope is not None and scope.refresh:
                 # A user's Force reindex (a refresh run) re-embeds every block: no diff keeps an unchanged block's
                 # point, and no re-key moves one. The record's old points go first, as on a first reconciliation pass.
-                logger.info(
-                    f"📊 Forced reindex of {record.virtual_record_id}: purging its vectors and indexing all blocks"
+                # The points go before the blocks are embedded again: if indexing then fails, the record has no vectors
+                # until its retry (its status is FAILED, never COMPLETED, so the retry runs).
+                logger.warning(
+                    f"Forced reindex of {record.virtual_record_id}: purging its vectors, then indexing every block; "
+                    f"the record has no vectors until this indexing completes"
                 )
                 try:
                     await sink_orchestrator.vector_store.purge_record_vectors(
