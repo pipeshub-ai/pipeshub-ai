@@ -1039,6 +1039,37 @@ class TestWithdrawnAccounts:
         assert connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"] == {"10000"}
         assert json.loads(store.values_for("people_reread")["accounts"]) == []
 
+    async def test_a_linked_account_with_a_hidden_email_reads_a_leveled_issue_synced_before_it_was_admitted(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """frank is listed with a hidden email and is named by a level, but not linked, so ENG-2 is written without him.
+        Once linked, the directory holds him by account, though ENG-2 has not changed: its level is read again, once,
+        and only after a re-read that went through is he no longer owed one."""
+        stub_site(jira, jql_search)
+        everyone = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                    user("carol-key", "carol", "carol@example.com"), user("frank-key", "frank", None)]
+        jira.on("GET", f"{API}/user/list", json_response({"values": everyone, "isLast": True}))
+        serve_scheme(jira, {SECRET: [holder("user", parameter="frank-key", user={"key": "frank-key", "name": "frank"})]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert ("USER", "frank-key") not in readers(db, "2")
+
+        db.cached_app_users.append(AppUser(app_name="JIRA DATA CENTER", connector_id="jira-dc-1", source_user_id="frank-key",
+                                           org_id="org-1", email="", full_name="Frank", is_active=True))
+        jql_search.fail_plain_from = 1
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "frank-key") not in readers(db, "2"), "a failed re-read grants nothing"
+        assert json.loads(store.values_for("people_reread")["accounts"]) == ["frank-key"]
+
+        jql_search.fail_plain_from = None
+        await sync(connector, jql_search, recent=[])
+        assert ("USER", "frank-key") in readers(db, "2")
+        assert json.loads(store.values_for("people_reread")["accounts"]) == []
+
+        await sync(connector, jql_search, recent=[])
+        assert jql_search.plain_calls == 0, "read again once, not every sync"
+
     async def test_a_short_user_list_that_shows_an_account_deactivated_withdraws_it(
         self, jira, db, store, jql_search,
     ) -> None:

@@ -298,6 +298,8 @@ def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], s
 
 # The connector's sync point holding newly listed accounts not yet handed to every project.
 PEOPLE_REREAD_KEY: str = "people_reread"
+# The linked accounts with a hidden email the grant directory held at the last sync.
+ADMITTED_WITHOUT_EMAIL_KEY: str = "admitted_without_email"
 # Stored in a project's checkpoint once every stored issue was read with ``level IS EMPTY`` naming
 # the ones with no level. A project with a scheme synced before that has them stored closed.
 NO_LEVEL_READ: str = "level-is-empty"
@@ -4888,9 +4890,22 @@ class JiraDataCenterConnector(BaseConnector):
         )
 
     async def _note_newly_listed(self, jira_users: list[AppUser]) -> set[str]:
-        """``_note_people_to_reread`` for the listed accounts no stored link names yet."""
+        """``_note_people_to_reread`` for the listed accounts no stored link names yet, and for the linked accounts with a
+        hidden email the directory now holds that it did not before (``_directory_extra``: an issue written before
+        they were held left out their grants)."""
         linked_before = {u.source_user_id for u in self._stored_app_users}
-        return await self._note_people_to_reread({u.source_user_id for u in jira_users if u.source_user_id} - linked_before)
+        newly = {u.source_user_id for u in jira_users if u.source_user_id} - linked_before
+        try:
+            held = set(json.loads(
+                ((await self.issues_sync_point.read_sync_point(ADMITTED_WITHOUT_EMAIL_KEY)) or {}).get("accounts") or "[]"))
+        except (TypeError, ValueError):
+            held = set()
+        admitted = {u.source_user_id for u in self._directory_extra() if u.source_user_id and not u.email}
+        pending = await self._note_people_to_reread(newly | (admitted - held))
+        if admitted != held:
+            # After the accounts to re-read are saved: a sync that fails in between re-reads them, never forgets them.
+            await self.issues_sync_point.update_sync_point(ADMITTED_WITHOUT_EMAIL_KEY, {"accounts": json.dumps(sorted(admitted))})
+        return pending
 
     async def _note_people_to_reread(self, newly_listed: set[str]) -> set[str]:
         """The accounts whose leveled issues need reading again: these, and those an earlier sync saved but did
