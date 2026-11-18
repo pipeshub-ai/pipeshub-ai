@@ -71,7 +71,7 @@ describe('OIDCProviderController', () => {
       expect(config.grant_types_supported).to.include(
         'urn:ietf:params:oauth:grant-type:device_code',
       )
-      expect(config.registration_endpoint).to.equal(undefined)
+      expect(config.registration_endpoint).to.include('/register')
       expect(config.device_authorization_endpoint).to.include(
         '/device_authorization',
       )
@@ -111,11 +111,17 @@ describe('OIDCProviderController', () => {
       )
     })
 
-    it('should advertise registration_endpoint only when DCR is enabled', async () => {
-      process.env.PIPESHUB_ENABLE_DCR = 'true'
+    it('should advertise registration_endpoint by default', async () => {
       await controller.openidConfiguration({} as any, mockRes, mockNext)
       const config = mockRes.json.firstCall.args[0]
       expect(config.registration_endpoint).to.include('/register')
+    })
+
+    it('should omit registration_endpoint when DCR is disabled', async () => {
+      process.env.PIPESHUB_ENABLE_DCR = 'false'
+      await controller.openidConfiguration({} as any, mockRes, mockNext)
+      const config = mockRes.json.firstCall.args[0]
+      expect(config.registration_endpoint).to.equal(undefined)
     })
 
     it('advertises client ID metadata documents unless PIPESHUB_ENABLE_CIMD is false', async () => {
@@ -145,13 +151,13 @@ describe('OIDCProviderController', () => {
       expect(mockFirstPartyDeviceAppService.getOrCreate.called).to.be.false
     })
 
-    it('should not advertise registration_endpoint for truthy values other than true', async () => {
-      for (const value of ['TRUE', '1', 'yes', 'on']) {
+    it('should advertise registration_endpoint for any value but false', async () => {
+      for (const value of ['', 'true', 'FALSE', '0', 'off']) {
         process.env.PIPESHUB_ENABLE_DCR = value
         mockRes.json.resetHistory()
         await controller.openidConfiguration({} as any, mockRes, mockNext)
         const config = mockRes.json.firstCall.args[0]
-        expect(config.registration_endpoint, value).to.equal(undefined)
+        expect(config.registration_endpoint, value).to.include('/register')
       }
     })
   })
@@ -231,6 +237,7 @@ describe('OIDCProviderController', () => {
 
     it('leaves out the device sign-in when it is off, and offers registration only with DCR on', async () => {
       process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
+      process.env.PIPESHUB_ENABLE_DCR = 'false'
       let out = await md()
       expect(out).to.not.include('device_authorization')
       expect(out).to.not.include('/register')
