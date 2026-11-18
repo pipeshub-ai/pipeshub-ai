@@ -24,6 +24,7 @@ from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     IndexingError,
 )
+from app.modules.indexing.connector_off_events import SameBytesSkipPending
 from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
 )
@@ -33,6 +34,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     StreamMessage,
 )
+from app.services.messaging.consumer_concurrency import backstop_give_up_reason
 from app.services.messaging.error_classifier import MessageErrorType
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import (
@@ -115,29 +117,35 @@ class TestProcessEventEdgeCases:
 
 
 @pytest.mark.asyncio
-async def test_a_retry_clears_the_vectors_of_the_vrid_on_the_record_not_the_one_in_the_message() -> None:
-    """The first attempt's vectors are under the VRID it saved on the record."""
+@pytest.mark.parametrize("event_type", [EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value])
+async def test_nonreconciled_update_does_not_rewrite_before_work(event_type: str) -> None:
+    """The record still holds its vrid, so taking its points out first only rewrote their membership. Nothing
+    leaves the vector store before the work: the old points go once the record has moved to its new vrid."""
     handler = _make_handler()
     handler.event_processor.graph_provider.get_document = AsyncMock(
         return_value=_vector_only_graph_doc(virtualRecordId="saved-by-attempt-1")
     )
     pipeline = handler.event_processor.processor.indexing_pipeline
-    pipeline.bulk_delete_embeddings = AsyncMock(side_effect=RuntimeError("stop after the clear"))
+    pipeline.bulk_delete_embeddings = AsyncMock()
+    # A folder record is settled as soon as the handler is past the point where the vectors used to go.
+    handler.event_processor.graph_provider.get_document = AsyncMock(
+        return_value=_vector_only_graph_doc(virtualRecordId="saved-by-attempt-1", isFile=False)
+    )
 
-    with pytest.raises(RuntimeError, match="stop after the clear"):
-        await _collect_events(
-            handler,
-            EventTypes.REINDEX_RECORD.value,
-            {
-                "recordId": "rec-1",
-                "orgId": "org-1",
-                "virtualRecordId": "vrid-in-the-message",
-                "mimeType": MimeTypes.XLSX.value,
-                "extension": "xlsx",
-            },
-        )
+    events = await _collect_events(
+        handler,
+        event_type,
+        {
+            "recordId": "rec-1",
+            "orgId": "org-1",
+            "virtualRecordId": "vrid-in-the-message",
+            "mimeType": MimeTypes.XLSX.value,
+            "extension": "xlsx",
+        },
+    )
 
-    pipeline.bulk_delete_embeddings.assert_awaited_once_with(["saved-by-attempt-1"], org_id="org-1")
+    assert [e.event for e in events] == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 # ===================================================================
@@ -513,7 +521,6 @@ class TestSyncVectorMembershipEvent:
         assert len(events) == 2
         processor.sync_vector_membership.assert_awaited_once_with("vr-1")
         pipeline.bulk_delete_embeddings.assert_not_awaited()
-        pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_membership_skips_missing_vrid(self):
@@ -1981,25 +1988,34 @@ class TestAlreadyIndexed:
         assert pipeline.mock_calls == []
 
     @pytest.mark.asyncio
-    async def test_a_lost_hand_off_still_reconciles_before_running(self) -> None:
+    async def test_a_lost_hand_off_still_runs_without_taking_the_points_out_first(self) -> None:
         handler, pipeline = self._indexed_xlsx(handoff_lost=True)
-        payload = {"recordId": "r1", "virtualRecordId": "vr1", **self._XLSX}
+        handler.event_processor.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "signedUrl": "https://example.com/f.xlsx", **self._XLSX}
 
-        # The full path runs into the bare test doubles further on; what matters is the reconciliation.
-        with contextlib.suppress(Exception):
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"x"):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once()
+        handler.event_processor.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_forced_reindex_of_an_indexed_xlsx_still_reconciles(self) -> None:
+    async def test_a_forced_reindex_of_an_indexed_xlsx_still_runs_without_taking_the_points_out_first(self) -> None:
         handler, pipeline = self._indexed_xlsx(handoff_lost=False)
-        payload = {"recordId": "r1", "virtualRecordId": "vr1", "forceReindex": True, **self._XLSX}
+        handler.event_processor.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "signedUrl": "https://example.com/f.xlsx", "forceReindex": True, **self._XLSX}
 
-        with contextlib.suppress(Exception):
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"x"):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once()
+        handler.event_processor.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     # ---- the replay set: an exact replay of a delivery that completed the record -----------------
 
@@ -2524,6 +2540,24 @@ class TestAlreadyIndexed:
         assert record["indexingStatus"] == ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
+    async def test_a_force_reindex_that_fails_on_its_final_attempt_says_the_record_may_have_no_vectors(self) -> None:
+        """A forced run removes the earlier index first: its FAILED reason tells an admin the record may not be searchable."""
+        from app.services.messaging.kafka.handlers.record import (
+            FORCE_REINDEX_FAILED_NOTE,
+        )
+
+        handler = _make_handler()
+        record = self._record_that_indexes_then_fails(handler, ConnectionError("vector store down"), indexes=False)
+        payload = {**self._SIGNED_PAYLOAD, "forceReindex": True, "refreshPaidOutputs": True}
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
+            with pytest.raises(ConnectionError):
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert record["indexingStatus"] == ProgressStatus.FAILED.value
+        assert FORCE_REINDEX_FAILED_NOTE in (record.get("reason") or "")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("connector", [{"_key": "conn-1", "isActive": False}, None], ids=["inactive", "removed"])
     async def test_a_cut_short_enrichment_on_a_stopped_connector_ends_and_releases_its_copies(
         self, connector
@@ -2930,7 +2964,7 @@ class TestUpdateRecordEvent:
     """Tests for updateRecord event type."""
 
     @pytest.mark.asyncio
-    async def test_update_record_deletes_existing_embeddings(self):
+    async def test_update_record_does_not_take_embeddings_out_before_the_work(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2967,7 +3001,8 @@ class TestUpdateRecordEvent:
             mock_dl.return_value = b"file content"
             events = await _collect_events(handler, EventTypes.UPDATE_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
+        ep.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert len(events) == 2
 
 
@@ -5725,7 +5760,7 @@ class TestReconciliationPath:
         pipeline.bulk_delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_reindex_non_reconciliation_deletes_embeddings(self):
+    async def test_reindex_non_reconciliation_does_not_take_embeddings_out_before_the_work(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         pptx_mime = MimeTypes.PPTX.value
@@ -5760,7 +5795,8 @@ class TestReconciliationPath:
             mock_dl.return_value = b"pptx"
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
 
-        pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id="org-1")
+        ep.on_event.assert_called_once()
+        pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 # ===================================================================
@@ -6536,8 +6572,8 @@ class TestStageRedrive:
         with contextlib.suppress(Exception):
             await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(forceReindex=True))
         ingress.redrive.assert_awaited_once()
-        # Past the stage branch: the regular reindex path clears the old vectors.
-        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once_with(["vr1"], org_id=None)
+        # Past the stage branch, the regular reindex path takes nothing out of the vector store first.
+        handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -6685,3 +6721,174 @@ class TestRejectedTooLargeCounter:
         counter.assert_called_once_with(400)
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
         assert updates["reason"] == user_errors.FILE_TOO_LARGE
+
+
+GIVE_UP_REASON = backstop_give_up_reason(SameBytesSkipPending("r1: x"), 11, 10)
+
+
+class TestMembershipRepairAfterAGiveUp:
+    """A same-bytes update handed back until the consumer's backstop never applied its membership sync."""
+
+    RECORD = {
+        "_key": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "connectorId": "conn-1", "contentRev": "rev-1",
+        "indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+
+    @classmethod
+    def _handler(cls) -> RecordEventHandler:
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=dict(cls.RECORD))
+        handler.event_processor.graph_provider.update_node = AsyncMock(return_value=True)
+        handler.event_processor.graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+        handler.producer = MagicMock()
+        handler.producer.send_event = AsyncMock(return_value=True)
+        return handler
+
+    @pytest.mark.asyncio
+    async def test_it_marks_a_reason_marks_the_scope_stale_and_queues_a_sync(self) -> None:
+        handler = self._handler()
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock) as stale:
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_awaited_once_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": record_module.MEMBERSHIP_SYNC_PENDING},
+            {"contentRev": "rev-1", "reason": None},
+        )
+        stale.assert_awaited_once()
+        assert stale.await_args.args[2] == "vr1"
+        handler.producer.send_event.assert_awaited_once()
+        sent = handler.producer.send_event.await_args.kwargs
+        assert sent["event_type"] == EventTypes.SYNC_VECTOR_MEMBERSHIP.value
+        assert sent["payload"]["virtualRecordId"] == "vr1" and sent["payload"]["pendingReasonRecordId"] == "r1"
+        assert sent["payload"]["priorReason"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_reason_the_record_had_is_carried_and_put_back(self) -> None:
+        handler = self._handler()
+        had = {**self.RECORD, "reason": "Classification skipped: no model"}
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=had)
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+        payload = handler.producer.send_event.await_args.kwargs["payload"]
+        assert payload["priorReason"] == "Classification skipped: no model"
+
+        handler.event_processor.sync_vector_membership = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value={**self.RECORD, "reason": record_module.MEMBERSHIP_SYNC_PENDING}
+        )
+        await _collect_events(handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, payload)
+
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_awaited_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": "Classification skipped: no model"},
+            {"contentRev": "rev-1", "reason": record_module.MEMBERSHIP_SYNC_PENDING},
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_second_request_neither_overwrites_nor_claims_the_original_reason(self) -> None:
+        """Another give-up finds the pending reason already set: it queues a sync, but that sync carries no reason to
+        clear, so it cannot erase what the first request will restore."""
+        handler = self._handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value={**self.RECORD, "reason": record_module.MEMBERSHIP_SYNC_PENDING}
+        )
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
+        payload = handler.producer.send_event.await_args.kwargs["payload"]
+        assert "pendingReasonRecordId" not in payload and "priorReason" not in payload
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["send_raises", "no_producer"])
+    async def test_a_sync_that_could_not_be_queued_gives_the_reason_back(self, failure: str) -> None:
+        handler = self._handler()
+        had = {**self.RECORD, "reason": "Classification skipped: no model"}
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=had)
+        if failure == "send_raises":
+            handler.producer.send_event = AsyncMock(side_effect=ConnectionError("broker down"))
+        else:
+            handler.producer = None
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+
+        calls = handler.event_processor.graph_provider.update_node_fields_if_match.await_args_list
+        assert [c.args[2] for c in calls] == [
+            {"reason": record_module.MEMBERSHIP_SYNC_PENDING}, {"reason": "Classification skipped: no model"},
+        ]
+        assert calls[1].args[3] == {"contentRev": "rev-1", "reason": record_module.MEMBERSHIP_SYNC_PENDING}
+
+        # A later give-up can mark it again, carrying the reason the record had.
+        handler.producer = MagicMock()
+        handler.producer.send_event = AsyncMock(return_value=True)
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+        assert handler.producer.send_event.await_args.kwargs["payload"]["priorReason"] == "Classification skipped: no model"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_mark_leaves_the_sync_without_a_reason_to_clear(self) -> None:
+        handler = self._handler()
+        handler.event_processor.graph_provider.update_node_fields_if_match = AsyncMock(return_value=False)
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        with patch.object(record_module, "mark_scope_stale", new_callable=AsyncMock):
+            await handler.on_message_abandoned(message, reason=GIVE_UP_REASON, attempts=11)
+
+        assert "pendingReasonRecordId" not in handler.producer.send_event.await_args.kwargs["payload"]
+
+    @pytest.mark.asyncio
+    async def test_a_give_up_of_anything_else_queues_nothing(self) -> None:
+        """An update that was handed back for another reason (a download slot that never freed) never reached the
+        skip: its record is not repaired and keeps whatever reason it showed."""
+        handler = self._handler()
+        message = StreamMessage(eventType=EventTypes.UPDATE_RECORD.value, payload={"recordId": "r1", "orgId": "org-1"})
+
+        await handler.on_message_abandoned(message, reason="handed back 11 times without being admitted", attempts=11)
+
+        handler.producer.send_event.assert_not_awaited()
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_queued_sync_applies_the_membership_and_clears_the_reason(self) -> None:
+        handler = self._handler()
+        handler.event_processor.sync_vector_membership = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(
+            return_value={**self.RECORD, "reason": record_module.MEMBERSHIP_SYNC_PENDING}
+        )
+        payload = {"virtualRecordId": "vr1", "orgId": "org-1", "pendingReasonRecordId": "r1"}
+
+        await _collect_events(handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, payload)
+
+        handler.event_processor.sync_vector_membership.assert_awaited_once_with("vr1")
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_awaited_once_with(
+            "r1", CollectionNames.RECORDS.value, {"reason": None},
+            {"contentRev": "rev-1", "reason": record_module.MEMBERSHIP_SYNC_PENDING},
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_reason_is_not_cleared(self) -> None:
+        handler = self._handler()
+        handler.event_processor.sync_vector_membership = AsyncMock()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value={**self.RECORD, "reason": "other"})
+
+        await _collect_events(
+            handler, EventTypes.SYNC_VECTOR_MEMBERSHIP.value, {"virtualRecordId": "vr1", "pendingReasonRecordId": "r1"}
+        )
+
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_reindex_of_a_completed_record_queues_nothing(self) -> None:
+        handler = self._handler()
+        message = StreamMessage(eventType=EventTypes.REINDEX_RECORD.value, payload={"recordId": "r1"})
+
+        await handler.on_message_abandoned(message, reason="x", attempts=3)
+
+        handler.producer.send_event.assert_not_awaited()
+        handler.event_processor.graph_provider.update_node_fields_if_match.assert_not_awaited()

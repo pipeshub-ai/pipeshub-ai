@@ -147,7 +147,8 @@ async def test_payload_and_group_statements_pin_the_org() -> None:
         assert "org_id = $1" in statement, statement[:80]
     tx.sql.clear()
     await writes.write_groups(tx, A, 1, {"g": {"connectorIds": ["c"]}}, datetime.now(UTC), allow_empty=True)
-    assert tx.sql and all("$1" in statement and "org_id" in statement for statement in tx.sql)       # $1 is the org of every group row
+    assert tx.sql and all("$1" in statement and "org_id" in statement for statement in tx.sql[1:])   # $1 is the org of every group row
+    assert "lock_group_keys" in tx.sql[0] and "hashtext($1 ||" in tx.sql[0]                            # and of every group key lock
 
 
 @pytest.mark.asyncio
@@ -169,9 +170,10 @@ async def test_a_group_write_replaces_only_the_arrays_it_carries() -> None:
     assert await writes.write_groups(tx, A, 1, {"g": {"connectorIds": ["c9"]}}, datetime.now(UTC), allow_empty=True) == 1
     import json
 
-    rows = json.loads(seen[0][2])
+    assert seen[0] == (A, 1, ["g"])                                                          # the group keys are locked first
+    rows = json.loads(seen[1][2])
     assert rows == [{"k": "g", "c": ["c9"], "r": None, "x": None, "p": None, "a": None, "s": None, "v": None, "n": None}]   # absent, not empty
-    members = json.loads(seen[1][2])
+    members = json.loads(seen[2][2])
     assert members == [{"k": "g", "kind": 1, "members": ["c9"]}]                             # and only connector members are diffed
 
 
@@ -244,9 +246,9 @@ async def test_a_group_write_mirrors_the_stamp_lists_as_member_kinds_four_and_fi
 
     group = writes.membership_of(STAMP)
     assert await writes.write_groups(Tx(), A, 1, {"g": group}, datetime.now(UTC), allow_empty=True) == 1
-    assert json.loads(seen[0][2])[0]["s"] == "union" and json.loads(seen[0][2])[0]["n"] == 3
-    members = {(m["kind"], tuple(m["members"])) for m in json.loads(seen[1][2])}
+    assert json.loads(seen[1][2])[0]["s"] == "union" and json.loads(seen[1][2])[0]["n"] == 3          # seen[0]: the group key lock
+    members = {(m["kind"], tuple(m["members"])) for m in json.loads(seen[2][2])}
     assert members == {(4, ("s1", "p1")), (5, ())}                       # a NULL list of the row is an empty member set, not a crash
     seen.clear()
     await writes.write_groups(Tx(), A, 1, {"g": {"connectorIds": ["c"]}}, datetime.now(UTC), allow_empty=True)
-    assert {m["kind"] for m in json.loads(seen[1][2])} == {1}              # a write without a stamp leaves kinds 4 and 5 alone
+    assert {m["kind"] for m in json.loads(seen[2][2])} == {1}              # a write without a stamp leaves kinds 4 and 5 alone

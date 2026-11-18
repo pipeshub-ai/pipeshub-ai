@@ -125,4 +125,20 @@ def uvicorn_worker_healthcheck_timeout() -> int:
     return env_int("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", 60, lo=5) or 60
 
 
-__all__ = ["env_bool", "env_int", "env_positive_int", "uvicorn_worker_healthcheck_timeout"]
+def bind_host() -> str:
+    """Address a service listens on: ``PIPESHUB_BIND_HOST``, else every interface (right inside a container, whose network
+    is its own). A process started outside a container sets loopback here."""
+    return (os.getenv("PIPESHUB_BIND_HOST") or "").strip() or "0.0.0.0"
+
+
+def bind_port(default: int, service_var: str | None = None) -> int:
+    """Port a service listens on: ``PIPESHUB_BIND_PORT`` (one per process, so a supervisor can pick it), else the service's own
+    port variable, else ``default``. A blank or malformed value counts as unset, so it never stops the service."""
+    for name in ("PIPESHUB_BIND_PORT", service_var):
+        port = env_int(name) if name else None
+        if port is not None and 0 < port < 65536:
+            return port
+    return default
+
+
+__all__ = ["bind_host", "bind_port", "env_bool", "env_int", "env_positive_int", "uvicorn_worker_healthcheck_timeout"]

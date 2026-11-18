@@ -63,6 +63,7 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     PARSE_NOW,
     STORE_ONLY,
+    ReconciliationContext,
     TransformContext,
     Transformer,
 )
@@ -334,6 +335,8 @@ class SinkOrchestrator(Transformer):
         indexing_status = record_doc.get("indexingStatus")
         if skip_blob or indexing_status != ProgressStatus.COMPLETED.value:
             connector, org, kb = self._activity_labels(record)
+            if skip_blob:
+                await self._rewrite_recorded_points(ctx)
             result = await self.vector_store.apply(ctx)
             if result is False:
                 record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
@@ -1205,6 +1208,31 @@ class SinkOrchestrator(Transformer):
                 "Named-entity persist retry for record %s could not be recorded: %s", record.id, type(exc).__name__
             )
 
+    async def _rewrite_recorded_points(self, ctx: TransformContext) -> None:
+        """A vector-only reindex (no blob write, no diff) writes every point of the record again, so the set of blocks that have a point
+        is whatever it wrote: the stored reconciliation metadata goes through the same path as any other index (the vector store
+        records ``pointedBlocks`` in it and ``_save_reconciliation_metadata`` saves it), with every block to be embedded. A record with
+        no stored metadata has nothing to update; one that cannot be read fails the record."""
+        record = ctx.record
+        if ctx.reconciliation_context is not None or not record.org_id or not record.virtual_record_id:
+            return
+        try:
+            stored = await self.blob_storage.get_reconciliation_metadata(
+                record.virtual_record_id, record.org_id, raise_on_error=True
+            )
+        except Exception as e:
+            # Not an absent document: leaving the recorded set as it was could keep naming a block this run gives no point (an image
+            # on a model that does not embed it), and every later run would carry it. The record fails and is retried.
+            self.logger.warning(
+                "Record %s: the stored reconciliation metadata could not be read (%s); the reindex is retried",
+                record.id, type(e).__name__,
+            )
+            raise IndexingError(
+                message=f"The stored reconciliation metadata of record {record.id} could not be read", record_id=record.id
+            ) from e
+        if isinstance(stored, dict) and stored:
+            ctx.reconciliation_context = ReconciliationContext(new_metadata=dict(stored))
+
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:
             record = ctx.record
@@ -1214,6 +1242,8 @@ class SinkOrchestrator(Transformer):
                 record.virtual_record_id,
                 ctx.reconciliation_context.new_metadata,
                 document_path=ctx.settings.get("storage_path"),
+                # A vector-only reindex has no storage path: it updates the document in place and never creates one at a guessed path.
+                **({"create_if_missing": False} if ctx.settings.get("skip_blob") else {}),
                 connector_id=getattr(record, "connector_id", None),
                 record_group_id=getattr(record, "record_group_id", None),
             )

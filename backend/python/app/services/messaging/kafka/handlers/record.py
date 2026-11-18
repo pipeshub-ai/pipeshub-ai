@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import os
 import time
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
@@ -29,7 +30,7 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
-from app.core.org_context import current_org_id
+from app.core.org_context import current_org_id, for_org
 from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import (
@@ -50,10 +51,11 @@ from app.modules.code_graph.build_state import (
 from app.modules.indexing import replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
+    SAME_BYTES_GIVE_UP_LABEL,
     ConnectorState,
     RecordHeldForDelete,
+    SameBytesSkipPending,
     already_indexed,
-    clears_embeddings_first,
     connector_gated_event,
     connector_state,
     gating_connector_id,
@@ -128,8 +130,11 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import run as paid_cache_run
+from app.services.paid_cache.cache import RefreshPurgeInProgress
+from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
 from app.services.paid_cache.repurge import ORG_SCOPE, schedule_next_hop
 from app.services.paid_cache.repurge import schedule_repurge as schedule_paid_repurge
+from app.services.vector_db.membership import mark_scope_stale
 from app.services.vector_db.rebuild_state import (
     PHASE_FAILED,
     PHASE_READY,
@@ -227,6 +232,27 @@ _PARSE_NOW_NO_ACCESS = "the requesting user cannot access the record"
 
 _DISABLED_TYPES_TTL_SECONDS = 60.0
 
+
+#: How long the broker holds a refresh event handed back because another delivery is purging.
+REFRESH_HANDBACK_DELAY_S = 30.0
+
+# What a record shows while the membership sync of its update waits for its repair.
+MEMBERSHIP_SYNC_PENDING = "Access scope update pending: the vector store could not be updated; a background sync is queued"
+
+
+#: Added to the reason of a record whose Force reindex failed on every attempt: that run removes the record's earlier
+#: index before it indexes again, so the record may have no vectors until a reindex succeeds.
+FORCE_REINDEX_FAILED_NOTE = (
+    "This was a Force reindex, which removes the record's earlier index before it indexes again: "
+    "the record may not be searchable until a reindex succeeds."
+)
+
+
+def with_force_reindex_note(reason: str | None, payload: dict | None) -> str | None:
+    """``reason`` for a record, with the Force reindex note when the failed event was a user's Force reindex."""
+    if not paid_cache_run.refresh_requested(payload):
+        return reason
+    return f"{reason} {FORCE_REINDEX_FAILED_NOTE}" if reason else FORCE_REINDEX_FAILED_NOTE
 
 
 def requeue_updates(current: dict | None, *, store_only: bool) -> dict:
@@ -498,6 +524,15 @@ class RecordEventHandler(BaseEventService):
             if current_status in self._IN_FLIGHT_STATUSES:
                 claim = await self._claim_if_orphaned(record_id)
             orphaned = claim is not None
+            if (
+                message.eventType == EventTypes.UPDATE_RECORD.value
+                and current_status == ProgressStatus.COMPLETED.value
+                and SAME_BYTES_GIVE_UP_LABEL in reason
+            ):
+                # An update of an indexed record that was handed back until the backstop (its same-bytes skip could not
+                # finish) never reached the membership sync, and nothing else will: the points keep the old container
+                # arrays, so a grant through a group or app change stays invisible to a search that selects by them.
+                await self._repair_membership_after_give_up(record_id, record, reason)
             if not orphaned and (current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES):
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
@@ -578,6 +613,102 @@ class RecordEventHandler(BaseEventService):
         finally:
             if claim is not None and self.record_leases is not None:
                 await self.record_leases.release(record_id, claim)
+
+    async def _clear_membership_pending(self, record_id: object, prior_reason: object = None) -> None:
+        """The repair ran: put back the reason the record had before the pending one. Best effort; it only replaces
+        the pending reason itself, and only while the record is at the revision it was read at."""
+        if not isinstance(record_id, str) or not record_id:
+            return
+        try:
+            graph = self.event_processor.graph_provider
+            record = await graph.get_document(record_id, CollectionNames.RECORDS.value)
+            if record and record.get("reason") == MEMBERSHIP_SYNC_PENDING and record.get("contentRev"):
+                await graph.update_node_fields_if_match(
+                    record_id, CollectionNames.RECORDS.value,
+                    {"reason": prior_reason if isinstance(prior_reason, str) and prior_reason else None},
+                    {"contentRev": str(record["contentRev"]), "reason": MEMBERSHIP_SYNC_PENDING},
+                )
+        except Exception as exc:
+            self.logger.warning("Could not clear the pending membership reason of %s: %s", record_id, type(exc).__name__)
+
+    async def _repair_membership_after_give_up(self, record_id: str, record: dict, reason: str) -> None:
+        """Make a membership sync that was given up on visible and queue its repair. Never raises.
+
+        The record stays COMPLETED. It gets a reason naming what is pending, its points' scope stamps are marked
+        stale (a stale stamp is never trusted over the graph), and one ``syncVectorMembership`` event is published
+        for its vrid: the same repair the connector path uses, idempotent, and given up on by the consumer like any
+        event if it fails again (this runs once per abandoned message, so it cannot loop)."""
+        vrid = record.get("virtualRecordId")
+        org_id = record.get("orgId")
+        if not vrid or not org_id:
+            return
+        self.logger.error(
+            "Record %s: the vector membership of its update was not applied (%s); marking it stale and queueing a sync",
+            record_id, reason,
+        )
+        graph = self.event_processor.graph_provider
+        prior_reason = record.get("reason")
+        content_rev = record.get("contentRev")
+        # Whether this request owns the pending reason, and so the reason to put back. When an earlier request already
+        # did (the record shows the pending reason), this one only queues a sync: the earlier one carries the original.
+        marked = False
+        try:
+            # Only while the record still has the revision and the reason this give-up read: a real update, or a
+            # reason written since, owns the record. The reason it had is carried on the queued sync, to be put back.
+            if content_rev and prior_reason != MEMBERSHIP_SYNC_PENDING:
+                marked = bool(
+                    await graph.update_node_fields_if_match(
+                        record_id, CollectionNames.RECORDS.value, {"reason": MEMBERSHIP_SYNC_PENDING},
+                        {"contentRev": str(content_rev), "reason": prior_reason},
+                    )
+                )
+        except Exception as exc:
+            self.logger.error("Could not record the pending membership sync of %s: %s", record_id, type(exc).__name__)
+        try:
+            pipeline = self.event_processor.processor.indexing_pipeline
+            with for_org(str(org_id), job="same-bytes-give-up"):
+                await mark_scope_stale(
+                    pipeline.vector_db_service, pipeline.collection_locator, str(vrid), self.logger
+                )
+        except Exception as exc:
+            self.logger.error("Could not mark the scope of %s stale: %s", vrid, type(exc).__name__)
+        if self.producer is None:
+            await self._undo_pending_reason(record_id, content_rev, prior_reason, marked=marked)
+            return
+        try:
+            await run_on_loop(
+                self._producer_loop,
+                self.producer.send_event(
+                    topic=Topic.RECORD_EVENTS.value,
+                    event_type=EventTypes.SYNC_VECTOR_MEMBERSHIP.value,
+                    payload={
+                        "virtualRecordId": str(vrid),
+                        "orgId": str(org_id),
+                        "connectorId": record.get("connectorId"),
+                        # Which record shows the pending reason this request set, for the sync to put right once it has
+                        # run; absent when this request set nothing, so it cannot clear what another one will restore.
+                        **({"pendingReasonRecordId": record_id, "priorReason": prior_reason} if marked else {}),
+                    },
+                    key=str(vrid),
+                ),
+            )
+        except Exception as exc:
+            self.logger.error("Could not queue the membership sync of %s: %s", vrid, type(exc).__name__)
+            await self._undo_pending_reason(record_id, content_rev, prior_reason, marked=marked)
+
+    async def _undo_pending_reason(self, record_id: str, content_rev: object, prior_reason: object, *, marked: bool) -> None:
+        """The sync that was to put the reason back was not queued: put it back now, while it is still the pending one,
+        so the reason the record had is not lost with the event. A later give-up can mark it again."""
+        if not marked or not content_rev:
+            return
+        try:
+            await self.event_processor.graph_provider.update_node_fields_if_match(
+                record_id, CollectionNames.RECORDS.value,
+                {"reason": prior_reason if isinstance(prior_reason, str) and prior_reason else None},
+                {"contentRev": str(content_rev), "reason": MEMBERSHIP_SYNC_PENDING},
+            )
+        except Exception as exc:
+            self.logger.error("Could not put back the reason of %s: %s", record_id, type(exc).__name__)
 
     async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
         """End a record stale recovery has given up on, and move its queued copies on.
@@ -1753,6 +1884,9 @@ class RecordEventHandler(BaseEventService):
         handed_back = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
+        held_for_refresh = False
+        # A same-bytes update handed back: the record is indexed and nothing of it is written.
+        skip_pending = False
         record = None
         resuming_enrichment = False
         source_name: str | None = None
@@ -1903,6 +2037,7 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = payload.get("virtualRecordId")
                 if virtual_record_id:
                     await self.event_processor.sync_vector_membership(virtual_record_id)
+                    await self._clear_membership_pending(payload.get("pendingReasonRecordId"), payload.get("priorReason"))
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id="sync_vector_membership"),
@@ -2228,23 +2363,12 @@ class RecordEventHandler(BaseEventService):
                 # The sink remembers this delivery when it writes COMPLETED, as a call of its own.
                 replay_set.begin_delivery(self._replay_ref(payload))
 
-            # Reconciliation: only an event that goes on to run touches the vector store.
             vector_db_only = bool(payload.get("vectorDbOnly"))
-            if parse_now:
-                # Parsing to read, not to index: nothing is taken out of the vector store.
-                pass
-            elif clears_embeddings_first(event_type, payload):
-                await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
-                    [virtual_record_id], org_id=payload.get("orgId") or None
-                )
-            elif not vector_db_only and event_type in (
-                EventTypes.UPDATE_RECORD.value,
-                EventTypes.REINDEX_RECORD.value,
-            ):
-                self.logger.info(
-                    f"📊 Reconciliation-enabled type detected for record {record_id}, "
-                    f"skipping full embedding deletion"
-                )
+            # Nothing is taken out of the vector store ahead of the work. The record still holds its
+            # vrid, so a delete here only rewrote the points' membership and left what search serves as
+            # it was; the points a re-parse replaces go with the old vrid once the record has moved to
+            # its new one (the abandoned-vrid path in EventProcessor.on_event, which replaces the record's
+            # vrid before the parse).
 
             # Check if record is from a connector and if the connector is active.
             # UPDATE_RECORD is included: without it an update for a disabled
@@ -2360,14 +2484,30 @@ class RecordEventHandler(BaseEventService):
                 refresh_org = payload.get("orgId") or record.get("orgId")
                 if refresh_org:
                     paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
-                    event_id = payload.get(replay_set.EVENT_ID_KEY)
-                    if not event_id or await paid_cache.refresh_purge_needed(refresh_org, record_id, str(event_id)):
-                        await paid_cache.purge_record(refresh_org, record_id)
-                        if event_id:
-                            await paid_cache.mark_refresh_purged(refresh_org, record_id, str(event_id))
-                        paid_cache_run.begin_run(refresh_org, record_id, None, "index", refresh=True)
-                    # A redelivery of the same event already purged: what its first delivery paid for and stored is
-                    # reused by an ordinary run, not deleted and paid for again.
+                    # The identity of the refresh across broker requeues: the delivery id a consumer keeps through its
+                    # own re-queues (a republish gets a new envelope event id, so that one names only one delivery).
+                    event_id = payload.get(replay_set.DELIVERY_ID_KEY) or payload.get(replay_set.EVENT_ID_KEY)
+                    try:
+                        async with paid_cache.refresh_purge(refresh_org, record_id, str(event_id or uuid.uuid4().hex)) as must_purge:
+                            if must_purge:
+                                # A failure raises out of the block: no marker is written, and the redelivery purges.
+                                # Only what existed before this purge started goes, by the object store's own clock
+                                # (never this process's): a DELETE that lands after this delivery lost its lease leaves
+                                # what the delivery that took over has stored since.
+                                await paid_cache.purge_for_refresh(refresh_org, record_id)
+                    except RefreshPurgeInProgress as exc:
+                        # Nothing has been written for this delivery: the bookkeeping below skips it, as for a
+                        # record held for its connector's delete (no FAILED, no queued duplicate, no status rewrite).
+                        held_for_refresh = True
+                        # Queue time, not a failure: handed back after a delay without counting an attempt.
+                        raise RefreshPurgeHeld(str(exc), delay_s=REFRESH_HANDBACK_DELAY_S) from exc
+                    # A redelivery of the same event (must_purge False) still refreshes: it reuses only what its first
+                    # delivery stored, as that delivery's manifest lists it, and pays for the rest. The event id names
+                    # the refresh for the parsing service too.
+                    paid_cache_run.begin_run(
+                        refresh_org, record_id, None, "index", refresh=True, reuse_prior_attempt=not must_purge,
+                        refresh_token=str(event_id) if event_id else None,
+                    )
 
             # Fallback: Get mimeType from database record if payload has empty/unknown value
             if mime_type == "unknown" or not mime_type:
@@ -2607,6 +2747,8 @@ class RecordEventHandler(BaseEventService):
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
                     return
+                except SameBytesSkipPending:
+                    raise  # a hand-back, not a failure: the outer handler leaves the record alone
                 except IndexingError:
                     error_occurred = True
                     raise  # preserve DocumentProcessingError and other IndexingError subtypes
@@ -2654,9 +2796,15 @@ class RecordEventHandler(BaseEventService):
                 # line, QUEUED, even on its last counted delivery; the consumer hands the message back and refunds the attempt.
                 handed_back = True
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
+        except SameBytesSkipPending:
+            skip_pending = True
+            raise
         except RecordHeldForDelete:
             # Not a failure: the consumer hands the message back, and nothing is written for it.
             self.logger.info(f"Record {record_id} held: its connector is being deleted")
+            raise
+        except RefreshPurgeHeld:
+            self.logger.info(f"Record {record_id} held: another delivery of its refresh is purging")
             raise
         except Exception as e:
             error_occurred = True
@@ -2689,7 +2837,7 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if stage_redrive or held_for_delete:
+            if stage_redrive or held_for_delete or held_for_refresh or skip_pending:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
                 # A held event has done nothing yet, and its record is the delete's.
@@ -2769,6 +2917,7 @@ class RecordEventHandler(BaseEventService):
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     user_reason = to_user_reason(last_exception, record=record, source=source_name)
+                    user_reason = with_force_reindex_note(user_reason, payload)
                     # Chosen from the exception's type, not its text (see is_password_protected).
                     terminal_status = (
                         ProgressStatus.PASSWORD_PROTECTED
@@ -2893,7 +3042,7 @@ class RecordEventHandler(BaseEventService):
             # stays IN_PROGRESS for redelivery, so the repo is not drained and
             # this would be graph I/O during an unwind. Skipped for a record in
             # the trash too, which is drained like a missing one.
-            if not cancelled and not held_for_delete and not in_trash and not parse_now_refused and not store_only:
+            if not cancelled and not held_for_delete and not held_for_refresh and not skip_pending and not in_trash and not parse_now_refused and not store_only:
                 await self._request_code_edge_build_if_repo_drained(record_id, record)
 
             # Last, so every status write above is shaped by the run.

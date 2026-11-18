@@ -361,6 +361,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # serves search never reaches the indexing write path that would
         # otherwise do it, so it has to happen here too.
         async def _reconcile_lexical_scoring() -> None:
+            # Same reason: the payload indexes of a collection from an older release are added here, not by a first write.
+            await retrieval_service.collection_registry.reconcile_payload_indexes()
             try:
                 changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
                 if changed:
@@ -641,9 +643,13 @@ def configured_worker_count() -> int:
     return 1
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, *, workers: int | None = None, reload: bool = True) -> None:
     """Run the application"""
     import warnings
+
+    from app.utils.env_utils import bind_host, bind_port
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8000)
     workers = workers or configured_worker_count()
     if reload and workers > 1:
         warnings.warn(
