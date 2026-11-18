@@ -51,6 +51,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 LOG = logging.getLogger("test-table-row-descriptions")
+
+
+@pytest.fixture(autouse=True)
+def _pinned_row_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The batch size (50) and the row budget (1000) these tests count calls and rows by, whatever the environment sets."""
+    monkeypatch.setenv("INDEXING_TABLE_ROW_BATCH_SIZE", "50")
+    monkeypatch.setenv("MAX_TABLE_ROWS_FOR_LLM", "1000")
 GRID_120 = [HEAD, *make_rows(120)]
 
 
@@ -1215,3 +1222,166 @@ async def test_split_halves_run_in_the_callers_context() -> None:
     await table_enrichment.describe_row_dicts(model, rows, "Register map", LOG)
 
     assert seen == ["org-1", "org-1", "org-1"]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# A deliberate stop (NonRetryableError) passes through every layer unchanged
+# ---------------------------------------------------------------------------------------------------------
+
+
+def _stops_on(where: str) -> object:
+    def behave(kind: str, _ids: list[str], _n: int) -> str:
+        return "nonretryable" if kind == where else "ok"
+
+    return behave
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["rows", "combined", "summary"])
+async def test_a_non_retryable_error_propagates_out_of_the_table_enrichment_unchanged(where: str) -> None:
+    """The request can never succeed as sent: no plain-text fallback, no 'enriched' table."""
+    from app.exceptions.non_retryable import NonRetryableError
+
+    if where == "summary":  # the follow-up is only asked for when the first reply has no summary
+        model = FakeTableModel(_stops_on("summary"), summary="")  # type: ignore[arg-type]
+    else:
+        model = FakeTableModel(_stops_on(where))  # type: ignore[arg-type]
+
+    with pytest.raises(NonRetryableError, match="can never succeed"):
+        await enrich(model)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["rows", "combined"])
+async def test_a_non_retryable_error_propagates_out_of_enrich_tables_and_the_record(where: str) -> None:
+    from unittest.mock import MagicMock
+
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+
+    grid = [HEAD, *make_rows(120)]
+    with pytest.raises(NonRetryableError):
+        await table_enrichment.enrich_tables(
+            FakeTableModel(_stops_on(where)), [grid], logger=LOG, known_header_row_counts=[1],  # type: ignore[arg-type]
+        )
+
+    container, _group = _record_with_table(120)
+    with pytest.raises(NonRetryableError) as raised:
+        await table_enrichment.enhance_tables_with_llm(container, MagicMock(), LOG, llm=FakeTableModel(_stops_on(where)))  # type: ignore[arg-type]
+    assert not isinstance(raised.value, RuntimeError), "not wrapped in 'All N tables failed'"
+    assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL, "the record ends as non-retryable"
+
+
+@pytest.mark.asyncio
+async def test_a_non_retryable_error_cancels_the_sibling_batches_and_leaves_no_task_behind() -> None:
+    import asyncio
+
+    from app.exceptions.non_retryable import NonRetryableError
+
+    finished: list[str] = []
+
+    class Slow(FakeTableModel):
+        async def ainvoke(self, messages: list, **kwargs: object) -> object:
+            ids = [rid for _, rid in self._rows(messages[-1].content)]
+            if ids and ids[0] == "REG50":
+                raise NonRetryableError("refused")
+            if ids and ids[0] not in ("HDR", "REG0"):
+                await asyncio.sleep(0.2)
+                finished.append(ids[0])
+            return await super().ainvoke(messages, **kwargs)
+
+    before = asyncio.all_tasks()
+    with pytest.raises(NonRetryableError):
+        await enrich(Slow(), [HEAD, *make_rows(400)])
+    await asyncio.sleep(0.4)
+
+    assert finished == [], "batches still running when the stop arrived must not complete"
+    assert asyncio.all_tasks() - before == set()
+
+
+@pytest.mark.asyncio
+async def test_a_non_retryable_error_in_one_table_cancels_the_other_tables() -> None:
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from app.exceptions.non_retryable import NonRetryableError
+
+    finished: list[int] = []
+
+    class Slow(FakeTableModel):
+        async def ainvoke(self, messages: list, **kwargs: object) -> object:
+            await asyncio.sleep(0.05)
+            ids = [rid for _, rid in self._rows(messages[-1].content)]
+            if ids and ids[0] == "REG0" and len(ids) == 3:
+                raise NonRetryableError("refused")
+            await asyncio.sleep(0.3)
+            finished.append(len(ids))
+            return await super().ainvoke(messages, **kwargs)
+
+    from app.models.blocks import BlocksContainer
+
+    big, big_group = _record_with_table(40)
+    small, small_group = _record_with_table(3)
+    offset = len(big.blocks)
+    for block in small.blocks:
+        block.index += offset
+        block.id = f"s{block.id}"
+    for index in list(small_group.children.block_ranges):
+        index.start += offset
+        index.end += offset
+    small_group.index = 1
+    container = BlocksContainer(blocks=[*big.blocks, *small.blocks], block_groups=[big_group, small_group])
+
+    with pytest.raises(NonRetryableError):
+        await table_enrichment.enhance_tables_with_llm(container, MagicMock(), LOG, llm=Slow())
+    await asyncio.sleep(0.6)
+
+    assert finished == []
+
+
+@pytest.mark.asyncio
+async def test_get_rows_text_returns_all_texts_or_raises_never_a_partial_list() -> None:
+    """One call per chunk of at most 500 rows, no retry: a call that fails after earlier chunks finished raises."""
+    calls: list[int] = []
+
+    def behave(_kind: str, ids: list[str], _n: int) -> str:
+        calls.append(len(ids))
+        return "raise" if len(calls) == 2 else "ok"
+
+    model = FakeTableModel(behave)
+
+    with pytest.raises(RuntimeError, match="provider down"):
+        await table_enrichment.get_rows_text(model, {"grid": [HEAD, *make_rows(1100)]}, "Register map", HEAD)
+
+    assert calls == [500, 500], "the third chunk is never asked for and the first chunk's texts are not returned"
+
+
+@pytest.mark.asyncio
+async def test_a_queued_job_is_not_started_after_a_stop() -> None:
+    """With one slot, the job waiting for it must not start its call once the running job has stopped the record."""
+    import asyncio
+
+    from app.exceptions.non_retryable import NonRetryableError
+
+    started: list[int] = []
+
+    def job(i: int) -> object:
+        async def run() -> int:
+            started.append(i)
+            await asyncio.sleep(0)
+            if i == 0:
+                raise NonRetryableError("refused")
+            return i
+
+        return run
+
+    before = asyncio.all_tasks()
+    with pytest.raises(NonRetryableError):
+        await table_enrichment._gather_limited(1, [job(0), job(1), job(2)])  # type: ignore[list-item]
+    await asyncio.sleep(0.05)
+
+    assert started == [0]
+    assert asyncio.all_tasks() - before == set()

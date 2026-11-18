@@ -1785,6 +1785,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 except BaseException:
                     for _, _, task in batch_tasks:
                         task.cancel()
+                    # Wait for them: no task is pending, and no call completes, once the error leaves.
+                    await asyncio.gather(*[task for _, _, task in batch_tasks], return_exceptions=True)
                     raise
                 self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
 

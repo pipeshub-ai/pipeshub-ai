@@ -52,6 +52,7 @@ from app.utils.table_enrichment import (
     RetryBudget,
     describe_row_dicts,
     fallback_table_summary,
+    gather_or_cancel,
 )
 
 logger = create_logger("csv_parser")
@@ -981,7 +982,8 @@ class CSVParser:
                         task = self.get_rows_text(llm, batch, table_summary, retry_budget=table_retry_budget)
                         batch_tasks.append((start_idx, batch, task))
 
-                    task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                    # A stop (or any failure) in one batch cancels and awaits the others: no call completes after it.
+                    task_results = await gather_or_cancel(*[task for _, _, task in batch_tasks])
 
                     for j, (start_idx, batch, _) in enumerate(batch_tasks):
                         row_texts = task_results[j]

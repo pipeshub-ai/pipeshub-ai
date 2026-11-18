@@ -64,6 +64,13 @@ async def excel_describe(model: FakeTableModel, count: int = ROWS) -> list[str]:
     return await parser.get_rows_text(excel_rows(count), "Register map")
 
 
+@pytest.fixture(autouse=True)
+def _pinned_row_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Batches of 50 rows and a row budget of 1000, whatever the environment sets."""
+    monkeypatch.setenv("INDEXING_TABLE_ROW_BATCH_SIZE", "50")
+    monkeypatch.setenv("MAX_TABLE_ROWS_FOR_LLM", "1000")
+
+
 PARSERS = pytest.mark.parametrize("describe", [csv_describe, excel_describe], ids=["csv", "excel"])
 
 
@@ -339,3 +346,110 @@ async def test_a_numeric_column_title_next_to_a_text_one_indexes_through_the_rea
 
     texts = [b.data["row_natural_language_text"] for b in result.blocks if b.type.value == "table_row"]
     assert texts == [f"desc of REG{i}" for i in range(6)]
+
+
+@pytest.mark.asyncio
+async def test_a_non_retryable_error_from_the_model_ends_a_csv_table_unchanged() -> None:
+    from unittest.mock import AsyncMock
+
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.modules.parsers.excel.prompt_template import CSVHeaderDetection
+
+    parser = CSVParser(MagicMock())
+    parser.detect_headers_with_llm = AsyncMock(  # type: ignore[method-assign]
+        return_value=CSVHeaderDetection(has_headers=True, num_header_rows=1, confidence="high", reasoning="r")
+    )
+    parser.get_table_summary = AsyncMock(return_value="S")  # type: ignore[method-assign]
+    table = {"raw_rows": [["Name"], *[[f"REG{i}"] for i in range(120)]], "start_row": 1}
+
+    with pytest.raises(NonRetryableError):
+        await parser.get_blocks_from_csv_with_multiple_tables([table], FakeTableModel(lambda _k, _i, _n: "nonretryable"))
+
+
+@PARSERS
+@pytest.mark.asyncio
+async def test_a_non_retryable_error_from_the_model_passes_through_each_parser(describe: Callable) -> None:
+    from app.exceptions.non_retryable import NonRetryableError
+
+    with pytest.raises(NonRetryableError):
+        await describe(FakeTableModel(lambda _k, _i, _n: "nonretryable"))
+
+
+@pytest.mark.asyncio
+async def test_no_model_call_completes_after_a_stop_in_a_csv_table() -> None:
+    """The batches of a CSV table run side by side; once one is refused the others are cancelled, not left to finish."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.modules.parsers.excel.prompt_template import CSVHeaderDetection
+
+    finished: list[str] = []
+
+    class Slow(FakeTableModel):
+        async def ainvoke(self, messages: list, **kwargs: object) -> object:
+            ids = [rid for _, rid in self._rows(messages[-1].content)]
+            if ids[0] == "REG50":
+                await asyncio.sleep(0.05)
+                raise NonRetryableError("refused")
+            await asyncio.sleep(0.3)
+            finished.append(ids[0])
+            return await super().ainvoke(messages, **kwargs)
+
+    parser = CSVParser(MagicMock())
+    parser.detect_headers_with_llm = AsyncMock(  # type: ignore[method-assign]
+        return_value=CSVHeaderDetection(has_headers=True, num_header_rows=1, confidence="high", reasoning="r")
+    )
+    parser.get_table_summary = AsyncMock(return_value="S")  # type: ignore[method-assign]
+    table = {"raw_rows": [["Name"], *[[f"REG{i}"] for i in range(300)]], "start_row": 1}
+    from app.exceptions.non_retryable import NonRetryableError as Stop
+
+    before = asyncio.all_tasks()
+    with pytest.raises(Stop):
+        await parser.get_blocks_from_csv_with_multiple_tables([table], Slow())
+    await asyncio.sleep(0.5)
+
+    assert finished == []
+    assert asyncio.all_tasks() - before == set()
+
+
+@pytest.mark.asyncio
+async def test_no_task_is_pending_when_a_stop_leaves_an_excel_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Excel cancels the batches still running and waits for them before the error leaves."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.modules.parsers.excel.prompt_template import ExcelHeaderDetection
+    from tests.support.excel_workbooks import load, workbook_zip
+
+    rows = '<row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c></row>' + "".join(
+        f'<row r="{r}"><c r="A{r}" t="inlineStr"><is><t>REG{r - 2}</t></is></c></row>' for r in range(2, 302)
+    )
+    finished: list[str] = []
+
+    class Slow(FakeTableModel):
+        async def ainvoke(self, messages: list, **kwargs: object) -> object:
+            ids = [rid for _, rid in self._rows(messages[-1].content)]
+            if ids[0] == "REG50":
+                await asyncio.sleep(0.05)
+                raise NonRetryableError("refused")
+            await asyncio.sleep(0.3)
+            finished.append(ids[0])
+            return await super().ainvoke(messages, **kwargs)
+
+    parser = load(workbook_zip(f"<sheetData>{rows}</sheetData>"))
+    parser.logger = LOG  # type: ignore[assignment]
+    parser.detect_excel_headers_with_llm = AsyncMock(  # type: ignore[method-assign]
+        return_value=ExcelHeaderDetection(has_headers=True, num_header_rows=1, confidence="high", reasoning="r")
+    )
+    parser.get_table_summary = AsyncMock(return_value="S")  # type: ignore[method-assign]
+
+    before = asyncio.all_tasks()
+    with pytest.raises(NonRetryableError):
+        await parser.get_blocks_from_workbook(Slow())
+    pending = asyncio.all_tasks() - before  # looked at the moment the error leaves, with no extra wait
+
+    assert pending == set()
+    await asyncio.sleep(0.5)
+    assert finished == []

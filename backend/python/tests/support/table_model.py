@@ -145,6 +145,10 @@ class FakeTableModel:
         behavior = self.behave(kind, ids, len(self.calls))
         if behavior == "raise":
             raise RuntimeError("provider down")
+        if behavior == "nonretryable":
+            from app.exceptions.non_retryable import NonRetryableError
+
+            raise NonRetryableError("the request can never succeed as sent")
         payload: dict[str, object] = {}
         if kind == "summary":
             if behavior == "malformed":

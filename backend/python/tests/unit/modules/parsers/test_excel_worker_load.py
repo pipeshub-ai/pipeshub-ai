@@ -624,9 +624,12 @@ def test_a_stray_cell_far_from_the_data_cannot_make_the_parent_build_millions_of
 
 
 @pytest.mark.asyncio
-async def test_the_batches_of_one_table_share_one_retry_budget() -> None:
+async def test_the_batches_of_one_table_share_one_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """A table's retries are bounded per table: every batch of it draws on the same budget, and the next
     table gets a new one."""
+    # 2 tables of 120 rows in batches of 50: pinned, whatever the environment sets
+    monkeypatch.setenv("INDEXING_TABLE_ROW_BATCH_SIZE", "50")
+    monkeypatch.setenv("MAX_TABLE_ROWS_FOR_LLM", "1000")
     wb = openpyxl.Workbook()
     for sheet_index, title in enumerate(("First", "Second")):
         ws = wb.active if sheet_index == 0 else wb.create_sheet()

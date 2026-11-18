@@ -61,7 +61,6 @@ from app.utils.concurrency import (
     MAX_CONCURRENT_ROW_BATCHES,
     MAX_CONCURRENT_TABLES,
     TABLE_ROW_BATCH_SIZE_MAX,
-    gather_with_concurrency,
     max_table_rows_for_llm,
     table_row_batch_size,
 )
@@ -405,7 +404,7 @@ async def _call_row_batch(
     return align_by_key(parsed.descriptions, keys)
 
 
-async def _gather_or_cancel(*coros: Any) -> list[Any]:  # noqa: ANN401
+async def gather_or_cancel(*coros: Any) -> list[Any]:  # noqa: ANN401
     """``asyncio.gather``, but when one raises the others are cancelled and awaited first.
 
     A bare gather leaves the siblings running after the error ended the load: they would finish
@@ -420,6 +419,32 @@ async def _gather_or_cancel(*coros: Any) -> list[Any]:  # noqa: ANN401
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+async def _gather_limited(limit: int, jobs: Sequence[Callable[[], Any]]) -> list[Any]:
+    """Run *jobs* (functions that return a coroutine), at most *limit* at once, results in order.
+
+    An exception that is an ordinary failure becomes that job's result, for the caller to turn
+    into a fallback. A ``NonRetryableError`` is a deliberate stop: the request can never succeed,
+    so it is raised unchanged after the jobs still running are cancelled and awaited.
+    """
+    semaphore = asyncio.Semaphore(max(1, limit))
+    stopped = False
+
+    async def run(job: Callable[[], Any]) -> Any:  # noqa: ANN401
+        nonlocal stopped
+        async with semaphore:
+            if stopped:  # woken by the slot the stopping job released: its call must not start
+                return None
+            try:
+                return await job()
+            except NonRetryableError:
+                stopped = True
+                raise
+            except Exception as e:
+                return e
+
+    return await gather_or_cancel(*(run(job) for job in jobs))
 
 
 async def _resolve_batch(
@@ -449,7 +474,7 @@ async def _resolve_batch(
     can_split = n >= 2 * MIN_SPLIT_ROWS
     if can_split and run.budget.take(2):
         mid = n // 2
-        left, right = await _gather_or_cancel(
+        left, right = await gather_or_cancel(
             _describe_batch(run, rows_data[:mid], best[:mid]),
             _describe_batch(run, rows_data[mid:], best[mid:]),
         )
@@ -501,7 +526,7 @@ async def describe_row_dicts(
     )
     # No batch is larger than the size limit, whatever the caller hands over.
     chunks = [rows_data[i : i + MAX_KEYED_ROWS] for i in range(0, len(rows_data), MAX_KEYED_ROWS)] or [rows_data]
-    texts = [t for part in await _gather_or_cancel(*(_describe_batch(run, chunk) for chunk in chunks)) for t in part]
+    texts = [t for part in await gather_or_cancel(*(_describe_batch(run, chunk) for chunk in chunks)) for t in part]
     for reason, count in run.rows_by_reason.items():
         note_degraded_rows(reason, count)
     return [
@@ -678,6 +703,8 @@ async def enrich_table_grid(
     parsed: Optional[TableEnrichment] = None
     try:
         parsed = await _first_call(llm, first_batch, first_keys, known_headers)
+    except NonRetryableError:
+        raise
     except Exception as e:
         logger.warning(f"Table enrichment call failed: {e}")
         return whole_table_fallback("error")
@@ -692,6 +719,8 @@ async def enrich_table_grid(
         followup_error = False
         try:
             extra = await _summary_and_headers_call(llm, first_batch, known_headers)
+        except NonRetryableError:
+            raise
         except Exception as e:
             logger.warning(f"Table summary call failed: {e}")
             extra, followup_error = None, True
@@ -748,18 +777,16 @@ async def enrich_table_grid(
     run = _Run(llm, summary, logger, RetryBudget.for_batches(len(batches) + 1))
 
     texts: list[Optional[str]] = []
-    jobs = []
+    jobs: list[Callable[[], Any]] = []
     spans: list[int] = []
     if first_answer is not None and first_data_rows:
-        jobs.append(_resolve_batch(run, data_dicts[:first_data_rows], first_answer))
+        jobs.append(lambda: _resolve_batch(run, data_dicts[:first_data_rows], first_answer))
         spans.append(first_data_rows)
     for batch in batches:
-        jobs.append(_describe_batch(run, batch))
+        jobs.append(lambda batch=batch: _describe_batch(run, batch))
         spans.append(len(batch))
 
-    results = await gather_with_concurrency(
-        MAX_CONCURRENT_ROW_BATCHES, *jobs, return_exceptions=True
-    )
+    results = await _gather_limited(MAX_CONCURRENT_ROW_BATCHES, jobs)
     for span, result in zip(spans, results):
         if isinstance(result, BaseException):
             logger.warning("Row batch failed, using simple text: %s", type(result).__name__)
@@ -819,15 +846,17 @@ async def enrich_tables(
 ) -> list[TableEnrichmentResult]:
     """Enrich several tables concurrently. Results are in input order.
 
-    ``describe_rows`` defaults to the record's row budget over *grids*, in order.
+    ``describe_rows`` defaults to the record's row budget over *grids*, in order. A table that
+    fails for an ordinary reason gets plain text; a ``NonRetryableError`` from any table is
+    raised unchanged and the other tables are cancelled.
     """
     if not grids:
         return []
     if describe_rows is None:
         describe_rows = describe_rows_within_budget([len(grid) for grid in grids])
 
-    coros = [
-        enrich_table_grid(
+    jobs = [
+        lambda i=i, grid=grid: enrich_table_grid(
             llm,
             grid,
             logger=logger,
@@ -839,7 +868,7 @@ async def enrich_tables(
         for i, grid in enumerate(grids)
     ]
 
-    results = await gather_with_concurrency(max_concurrent, *coros, return_exceptions=True)
+    results = await _gather_limited(max_concurrent, jobs)
 
     enriched: list[TableEnrichmentResult] = []
     for grid, result in zip(grids, results):
@@ -986,6 +1015,8 @@ async def _enhance_one_table(
             known_header_row_count=known_header_row_count,
             describe_rows=describe_rows,
         )
+    except NonRetryableError:
+        raise
     except Exception as e:
         logger.warning(f"Table {table_group.index} enrichment failed: {e}")
         enrichment = None
@@ -1043,7 +1074,9 @@ async def enhance_tables_with_llm(
     lost. Only raises when every attempted table failed, since that usually means the
     LLM is unreachable and the record should be retried rather than silently indexed
     with no table content at all. With no model set up, every table gets plain text and
-    nothing raises: there is no model to retry against.
+    nothing raises: there is no model to retry against. A ``NonRetryableError`` (the request
+    can never succeed as sent) is not a failed table: it passes through unchanged, the other
+    tables are cancelled, and the record ends as non-retryable.
     """
     from app.models.blocks import GroupType
 
@@ -1063,15 +1096,14 @@ async def enhance_tables_with_llm(
     ])
 
     with track_indexing_enrichment(logger, label="block-tables"):
-        results = await gather_with_concurrency(
+        results = await _gather_limited(
             max_concurrent_tables,
-            *(
-                _enhance_one_table(
+            [
+                lambda table_group=table_group, describe=describe: _enhance_one_table(
                     table_group, block_containers, llm, logger, describe_rows=describe
                 )
                 for table_group, describe in zip(table_groups, describe_flags)
-            ),
-            return_exceptions=True,
+            ],
         )
 
         stats = TableEnhancementStats()
@@ -1106,11 +1138,13 @@ async def get_rows_text(
     llm, table_data: dict, table_summary: str, column_headers: list[str]
 ) -> tuple[list[str], list[list[dict]]]:
     """Describe the rows of ``table_data["grid"]`` (minus the header row when ``column_headers``
-    is given) in one keyed call.
+    is given), one keyed call per chunk of at most ``MAX_KEYED_ROWS`` rows.
 
-    A row the model left out, or an answer that cannot be parsed, gets plain ``column: value``
-    text for that row alone: never another row's description and never a dict repr. A failed
-    call raises. This is a single call; ``enrich_table_grid`` adds the split-and-retry.
+    A row the model left out, or a chunk whose answer cannot be parsed, gets plain ``column:
+    value`` text for that row alone: never another row's description and never a dict repr.
+    There is no split or retry here (``enrich_table_grid`` and ``describe_row_dicts`` add
+    that). A failed call raises, and nothing is returned for the chunks that had already
+    finished: the caller gets all the texts or the error, never a partial list.
     """
     table = table_data.get("grid")
     if not table:
