@@ -2542,7 +2542,9 @@ class TestAlreadyIndexed:
     @pytest.mark.asyncio
     async def test_a_force_reindex_that_fails_on_its_final_attempt_says_the_record_may_have_no_vectors(self) -> None:
         """A forced run removes the earlier index first: its FAILED reason tells an admin the record may not be searchable."""
-        from app.services.messaging.kafka.handlers.record import FORCE_REINDEX_FAILED_NOTE
+        from app.services.messaging.kafka.handlers.record import (
+            FORCE_REINDEX_FAILED_NOTE,
+        )
 
         handler = _make_handler()
         record = self._record_that_indexes_then_fails(handler, ConnectionError("vector store down"), indexes=False)

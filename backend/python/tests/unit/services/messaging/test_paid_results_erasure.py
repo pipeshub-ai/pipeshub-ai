@@ -668,7 +668,10 @@ async def test_after_the_holders_deadline_the_pages_are_paid_once_not_twice(
 
 
 def test_a_failed_force_reindex_says_the_record_may_have_no_vectors_and_a_plain_failure_does_not() -> None:
-    from app.services.messaging.kafka.handlers.record import FORCE_REINDEX_FAILED_NOTE, with_force_reindex_note
+    from app.services.messaging.kafka.handlers.record import (
+        FORCE_REINDEX_FAILED_NOTE,
+        with_force_reindex_note,
+    )
 
     forced = {"recordId": REC, "forceReindex": True, "refreshPaidOutputs": True}
     assert with_force_reindex_note("The file could not be read.", forced) == f"The file could not be read. {FORCE_REINDEX_FAILED_NOTE}"
