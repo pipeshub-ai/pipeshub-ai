@@ -23,14 +23,16 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
+    closed_level_groups,
     collect_paged_values,
-    hold_levels_naming_unread_roles,
+    level_group_grants,
     level_reads_alike,
     levels_after_walk,
     plan_level_reread,
     pre_walk_marker,
     refuses_a_scope,
     resolve_scheme_knowledge,
+    roles_for_levels,
     scheme_has_no_levels,
     unreadable_reason,
     unreadable_security_notices,
@@ -781,17 +783,39 @@ class TestPlanLevelReread:
         assert plan_level_reread(refused, to_save, is_new_project=False, app_roles_mapping={})[0] is None
 
 
-class TestHoldLevelsNamingUnreadRoles:
-    def test_a_level_naming_an_application_role_is_unknown_while_the_roles_are_unread(self) -> None:
-        security = IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
-            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
-        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
-        assert held.members_readable is False and held.defer_checkpoint is True
+class _Points:
+    def __init__(self) -> None:
+        self.points: dict[str, dict] = {}
 
-    def test_other_levels_and_read_roles_are_untouched(self) -> None:
-        security = _with_users(**{"1": ["a"]})
-        assert hold_levels_naming_unread_roles(security, app_roles_unread=True).members_readable is True
+    async def read_sync_point(self, key: str) -> dict:
+        return dict(self.points.get(key, {}))
+
+    async def update_sync_point(self, key: str, data: dict) -> None:
+        self.points[key] = dict(data)
+
+
+class TestRolesForLevels:
+    ROLES = {"jira-software": [{"groupId": "g-1"}]}
+    DAY = 24 * 60 * 60 * 1000
+
+    @pytest.mark.asyncio
+    async def test_a_list_read_is_kept_and_applied(self) -> None:
+        points = _Points()
+        assert await roles_for_levels(points, self.ROLES, read=True, now_ms=5) == (self.ROLES, False)
+        assert await roles_for_levels(points, {}, read=False, now_ms=5 + self.DAY) == (self.ROLES, False)
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_none_is_applied_and_the_expiry_is_told_once(self) -> None:
+        points = _Points()
+        await roles_for_levels(points, self.ROLES, read=True, now_ms=0)
+        assert await roles_for_levels(points, {}, read=False, now_ms=self.DAY + 1) == ({}, True)
+        assert await roles_for_levels(points, {}, read=False, now_ms=self.DAY + 2) == ({}, False)
+        await roles_for_levels(points, self.ROLES, read=True, now_ms=2 * self.DAY)  # read again: told again next time
+        assert await roles_for_levels(points, {}, read=False, now_ms=4 * self.DAY) == ({}, True)
+
+    @pytest.mark.asyncio
+    async def test_with_none_kept_none_is_applied_and_nothing_told(self) -> None:
+        assert await roles_for_levels(_Points(), {}, read=False, now_ms=1) == ({}, False)
 
 
 class TestUnreadableNotices:
@@ -827,13 +851,6 @@ class TestDeferredReadOnAProjectNeverTightened:
     def test_a_project_with_no_scheme_has_nothing_to_close(self) -> None:
         none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, defer_checkpoint=True)
         assert plan_level_reread(none, None, is_new_project=False, app_roles_mapping={})[0] is None
-
-    def test_a_level_naming_unread_roles_on_a_project_never_tightened_is_closed_too(self) -> None:
-        security = IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
-            members_by_level={"1": [{"type": "applicationRole", "parameter": "jira-software"}]})
-        held = hold_levels_naming_unread_roles(security, app_roles_unread=True)
-        assert plan_level_reread(held, None, is_new_project=False, app_roles_mapping={})[0] == "leveled"
 
     def test_the_notice_says_hidden_for_such_a_project_and_kept_for_the_others(self) -> None:
         notices = unreadable_security_notices(
@@ -969,3 +986,159 @@ class TestPagingWithTotalOnly:
             return 200, {"values": [{"n": start}], "maxResults": 1000}
         status, values = await collect_paged_values(endless)
         assert values is None
+
+
+class TestLevelGroups:
+    """A leveled issue that is not a sub-task takes its access from its level's record group, which
+    holds the holders that name the same people on every issue once; the issue holds the rest."""
+
+    HOLDERS = {"7": [{"type": "group", "value": "g-1"}, {"type": "reporter"}, {"type": "projectLead"}]}
+
+    def _apply(self, fields: dict, *, is_subtask: bool = False, context: IssueSecurityContext | None = None,
+               project_id: str | None = "p-1", **record) -> tuple[Record, list, list, bool]:
+        rec = _record(**record)
+        grants, skipped, settled = apply_issue_access_settled(
+            rec, fields, is_subtask=is_subtask, project_key="P", context=context or _present(members=self.HOLDERS),
+            reporter_email="rep@x.com", project_id=project_id,
+        )
+        return rec, grants, skipped, settled
+
+    def test_a_leveled_issue_holds_only_the_holders_it_names_and_inherits_its_level_group(self) -> None:
+        rec, grants, _, settled = self._apply({"security": {"id": "7"}}, parent_external_record_id="epic-1")
+        assert (rec.access_rule, rec.access_group_external_id, settled) == (AccessRule.STRICT, "level:p-1:7", True)
+        assert [(g.entity_type, g.email) for g in grants] == [(EntityType.USER, "rep@x.com")]
+        assert rec.parent_external_record_id == "epic-1"  # filed where it was: placement grants nothing
+        group, skipped = level_group_grants(self.HOLDERS["7"], project_key="P", user_by_id={}, app_roles_mapping=None)
+        assert ({(g.entity_type, g.external_id) for g in group}, skipped) == (
+            {(EntityType.GROUP, "g-1"), (EntityType.ROLE, "P_projectLead")}, [])
+        # a holder that depends on the issue is never the group's, even one no issue payload can resolve here
+        group, _ = level_group_grants([*self.HOLDERS["7"], {"type": "userCustomField", "parameter": "cf_1"}],
+                                      project_key="P", user_by_id={}, app_roles_mapping=None)
+        assert {(g.entity_type, g.external_id) for g in group} == {(EntityType.GROUP, "g-1"), (EntityType.ROLE, "P_projectLead")}
+
+    def test_a_sub_task_holds_a_copy_of_its_level_and_is_read_only_with_its_parent(self) -> None:
+        """Atlassian documents that a sub-task inherits its parent's level, not that its own holders read it without the
+        parent: it keeps no group, so it inherits its parent and is read by those its level admits among its parent's."""
+        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, parent_external_record_id="1")
+        assert (rec.access_rule, rec.access_group_external_id, rec.inherit_permissions) == (AccessRule.RESTRICTED, "", True)
+        copy = {(EntityType.GROUP, None, "g-1"), (EntityType.USER, "rep@x.com", None), (EntityType.ROLE, None, "P_projectLead")}
+        assert len(grants) == 3 and {(g.entity_type, g.email, g.external_id) for g in grants} == copy  # a copy of every holder
+        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, is_subtask=True, project_id=None)
+        assert (rec.access_rule, len(grants)) == (AccessRule.RESTRICTED, 3)
+        assert {(g.entity_type, g.email, g.external_id) for g in grants} == copy
+
+    def test_an_issue_with_no_level_or_a_level_without_holders_names_no_group(self) -> None:
+        for fields in ({"security": None}, {"security": {"id": "8"}}):
+            rec, *_ = self._apply(fields)
+            assert rec.access_group_external_id == ""
+        rec, *_ = self._apply({"security": None}, context=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+        assert (rec.access_group_external_id, rec.access_rule) == ("", AccessRule.STRICT)
+        personal = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False)
+        rec, *_ = self._apply({"security": {"id": "7"}}, context=personal)
+        assert rec.access_group_external_id is None
+        rec, grants, _, _ = self._apply({"security": {"id": "8"}})
+        assert (rec.access_rule, grants) == (AccessRule.RESTRICTED, [])
+
+    def test_a_deferred_read_keeps_the_stored_group(self) -> None:
+        context = _present(members=self.HOLDERS, readable=False)
+        context.defer_checkpoint = True
+        rec, grants, _, settled = self._apply({"security": {"id": "7"}}, context=context)
+        assert (rec.access_group_external_id, rec.rewrite_permissions, grants, settled) == (None, False, [], False)
+        context.defer_checkpoint = False
+        rec, *_ = self._apply({"security": {"id": "7"}}, context=context)
+        assert (rec.access_group_external_id, rec.access_rule, rec.rewrite_permissions) == ("", AccessRule.RESTRICTED, True)
+
+    def test_an_unreadable_field_holder_closes_the_issue(self) -> None:
+        context = _present(members={"7": [{"type": "group", "value": "g-1"}, {"type": "userCustomField", "parameter": "cf_1"}]})
+        rec, grants, _, settled = self._apply({"security": {"id": "7"}}, context=context)
+        assert (rec.access_rule, rec.access_group_external_id, grants, settled) == (AccessRule.RESTRICTED, "", [], False)
+
+    def test_without_a_project_no_group_is_managed(self) -> None:
+        rec, grants, _, _ = self._apply({"security": {"id": "7"}}, project_id=None)
+        assert (rec.access_rule, rec.access_group_external_id, len(grants)) == (AccessRule.RESTRICTED, None, 3)
+
+
+class TestSplitLevelDigests:
+    def test_each_half_moves_with_its_own_holders(self) -> None:
+        def digests(holders: list) -> str:
+            return _present(members={"7": holders}).level_fingerprints({"r": [{"groupId": "g-r"}]}, split=True)["7"]
+
+        base = digests([{"type": "group", "value": "g-1"}, {"type": "reporter"}])
+        static, dynamic = base.split(".")
+        group_changed = digests([{"type": "group", "value": "g-2"}, {"type": "reporter"}]).split(".")
+        assert group_changed[0] != static and group_changed[1] == dynamic
+        holder_changed = digests([{"type": "group", "value": "g-1"}, {"type": "assignee"}]).split(".")
+        assert holder_changed[0] == static and holder_changed[1] != dynamic
+        role = _present(members={"7": [{"type": "applicationRole", "parameter": "r"}]})
+        assert role.level_fingerprints({"r": [{"groupId": "a"}]}, split=True)["7"].split(".")[0] != \
+            role.level_fingerprints({"r": [{"groupId": "b"}]}, split=True)["7"].split(".")[0]
+
+    def test_a_level_gone_from_the_scheme_is_closed_only_when_a_group_was_written(self) -> None:
+        stored = {"1": "s1.d1", "2": "legacy", "3": "s3.d3", "*": "retry"}
+        assert closed_level_groups(stored, {"3": "s3.d3"}) == ["1"]
+        assert closed_level_groups(None, {}) == []
+
+    def test_a_project_stored_with_whole_digests_reads_every_level_again_once(self) -> None:
+        """The first sync with groups drops each issue's copy of the holders: every level is re-read."""
+        security = _with_users(**{"1": ["a"], "2": ["b"]})
+        reread, levels, to_save = plan_level_reread(
+            security, security.level_fingerprints(), is_new_project=False, app_roles_mapping={}, split=True)
+        assert (reread, levels, to_save) == ("levels", ["1", "2"], security.level_fingerprints(split=True))
+
+
+class TestBrowseAndLevelNamedOnTheIssue:
+    """Level 10115 holds projectRole 10002, the reporter and two users; the project's Browse is held by the reporter too. The reporter,
+    in neither the role nor the project's readers, reads the issue in Jira: Browse and the level both name them on it."""
+
+    LEVEL = {"10115": [
+        {"type": "projectRole", "parameter": "10002", "projectRole": {"id": "10002", "name": "Developers"}},
+        {"type": "reporter"},
+        {"type": "user", "parameter": "acc-1", "user": {"accountId": "acc-1", "emailAddress": "one@x.com"}},
+        {"type": "user", "parameter": "acc-2", "user": {"accountId": "acc-2", "emailAddress": "two@x.com"}},
+    ]}
+
+    def _apply(self, browse: list[dict] | None, members: dict | None = None, users: dict | None = None,
+               **emails: str) -> tuple[Record, list]:
+        context = _present(members=members or self.LEVEL)
+        context.browse_holders = browse
+        rec = _record()
+        grants, _, settled = apply_issue_access_settled(
+            rec, {"security": {"id": next(iter(context.members_by_level))}}, is_subtask=False, project_key="JUNI", context=context,
+            project_id="p-1", user_by_account_id=users, **emails)
+        assert settled
+        return rec, grants
+
+    def test_the_reporter_reads_it_alone(self) -> None:
+        rec, grants = self._apply([{"type": "reporter"}], reporter_email="angela@x.com")
+        assert (rec.access_rule, rec.access_group_external_id) == (AccessRule.OPEN, "level:p-1:10115")
+        assert [(g.entity_type, g.email) for g in grants] == [(EntityType.USER, "angela@x.com")]
+
+    def test_a_user_holder_named_by_browse_on_the_issue_reads_it_alone(self) -> None:
+        rec, grants = self._apply([{"type": "assignee"}], assignee_email="one@x.com", reporter_email="angela@x.com")
+        assert rec.access_rule == AccessRule.STRICT  # the reporter's grant needs the project: Browse does not name them on it
+        rec, grants = self._apply([{"type": "assignee"}], members={"7": [{"type": "user", "parameter": "acc-1",
+                                  "user": {"accountId": "acc-1", "emailAddress": "one@x.com"}}]}, assignee_email="one@x.com",
+                                  users={"acc-1": type("U", (), {"email": "one@x.com"})()})  # a user holder resolves through the directory
+        assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.OPEN, ["one@x.com"])
+
+    def test_a_reporter_the_directory_holds_no_email_for_reads_it_alone_by_account(self) -> None:
+        """The reporter is granted by account when the directory holds no email for them: Browse and the level still name
+        the same person on the issue, so they read it alone, as with an email."""
+        rec2 = _record()
+        context = _present(members=self.LEVEL)
+        context.browse_holders = [{"type": "reporter"}]
+        grants, _, settled = apply_issue_access_settled(
+            rec2, {"security": {"id": "10115"}, "reporter": {"accountId": "acc-r"}}, is_subtask=False, project_key="JUNI",
+            context=context, project_id="p-1", user_by_account_id={"acc-r": type("U", (), {"email": ""})()})
+        assert settled and [(g.email, g.external_id) for g in grants] == [(None, "acc-r")]
+        assert rec2.access_rule == AccessRule.OPEN  # STRICT would also ask for the project, which they do not read
+
+    def test_without_browse_named_on_the_issue_the_reporter_needs_the_project(self) -> None:
+        for browse in ([], None):
+            rec, grants = self._apply(browse, reporter_email="angela@x.com")
+            assert (rec.access_rule, [g.email for g in grants]) == (AccessRule.STRICT, ["angela@x.com"])
+
+    def test_someone_browse_names_outside_the_level_is_no_grant(self) -> None:
+        rec, grants = self._apply([{"type": "assignee"}], members={"7": [{"type": "group", "value": "g-1"}]},
+                                  assignee_email="out@x.com")
+        assert (rec.access_rule, grants) == (AccessRule.STRICT, [])
