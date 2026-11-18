@@ -194,6 +194,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.render_budget import FETCH_MAX_CHARS
 from app.utils.egress_ips import get_egress_ips
+from app.utils.error_class import log_failure
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.utils.not_indexed import not_indexed_note
@@ -2806,6 +2807,22 @@ async def _schedule_upload_removal(
         ) from e
 
 
+def mark_user_forced_reindex(event_data: dict) -> None:
+    """A user's Force reindex re-parses and re-indexes: every stored paid result is bypassed and paid for again.
+
+    A record event carries it directly; a sync-events reindex carries ``force``, which the handler that walks the
+    records turns into the same flag on each record event it publishes.
+    """
+    payload = event_data.get("payload")
+    if not isinstance(payload, dict):
+        return
+    if event_data.get("topic") == "record-events":
+        payload["forceReindex"] = True
+        payload["refreshPaidOutputs"] = True
+    else:
+        payload["force"] = True
+
+
 def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
     """Parse depth and optional statusFilters from a reindex request body."""
     if not request_body:
@@ -2917,6 +2934,8 @@ async def reindex_single_record(
 
             event_data = result.get("eventData")
             event_published = False
+            if event_data and request_body and request_body.get("force") is True:
+                mark_user_forced_reindex(event_data)
             if event_data:
                 try:
                     timestamp = get_epoch_timestamp_in_ms()
@@ -8435,7 +8454,7 @@ async def _build_and_store_connector(
             # Connector surfaced a specific, actionable reason (e.g. multi-site OAuth
             # ambiguity). Show it to the user instead of the generic message.
             error_msg = str(init_error)  # user-written message
-            logger.error(f"❌ {error_msg}")
+            log_failure(logger, "connector.init_failed", init_error, connector_id=connector_id)
             with contextlib.suppress(Exception):
                 await dispose_connector(connector)
             raise HTTPException(
