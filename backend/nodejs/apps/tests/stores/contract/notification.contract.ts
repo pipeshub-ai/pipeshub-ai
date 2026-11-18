@@ -212,6 +212,16 @@ export function describeNotificationContract(fx: NotificationFixture): void {
     expect(counts.unread, 'one row for the id, one plain').to.equal(2);
   });
 
+  it('a batch that names the same new _id twice stores the first and returns it in both positions', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const id = fx.newId();
+    const [a, b] = await repo.insertMany([mk(org, me, { _id: id, title: 'first' }), mk(org, me, { _id: id, title: 'second' })]);
+    expect([a!._id, b!._id]).to.deep.equal([id, id]);
+    expect([a!.title, b!.title]).to.deep.equal(['first', 'first']);
+    expect((await repo.counts({ orgId: org, userId: me })).unread).to.equal(1);
+  });
+
   describe('scheduled notifications (visibleAt)', function () {
     this.timeout(30_000);
     const ahead = (ms: number) => new Date(Date.now() + ms);
@@ -310,6 +320,23 @@ export function describeNotificationContract(fx: NotificationFixture): void {
       }
       expect(err).to.be.instanceOf(Error);
       expect(await repo.counts({ orgId: org, userId: me })).to.deep.equal({ unread: 0, read: 0, archived: 0 });
+    });
+
+    it('a visibleAt past the retention window of its own createdAt is refused (it would expire unseen), and nothing is stored', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const day = 24 * 3600_000;
+      const [late, inside] = [fx.newId(), fx.newId()];
+      let err: unknown;
+      try {
+        await repo.insertMany([mk(org, me, { _id: late, createdAt: new Date(), visibleAt: ahead(31 * day) })]);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).to.be.instanceOf(Error);
+      expect(await repo.exists({ orgId: org, userId: me }, late)).to.equal(false);
+      await repo.insertMany([mk(org, me, { _id: inside, createdAt: new Date(), visibleAt: ahead(29 * day) })]);
+      expect(await repo.exists({ orgId: org, userId: me }, inside), 'inside the window').to.equal(true);
     });
 
     it('a row scheduled far ahead (past any partition made in advance) is stored and stays hidden', async () => {

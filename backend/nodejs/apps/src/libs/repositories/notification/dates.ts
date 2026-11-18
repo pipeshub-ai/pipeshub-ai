@@ -2,6 +2,7 @@
  * Scheduled notifications: a notification may carry `visibleAt`. Until that instant it is not listed, counted, changed or
  * pushed; at and after it, it behaves like any other. The same helpers serve both document stores.
  */
+import { NOTIFICATION_RETENTION_DAYS } from '../../../modules/notification/utils/notification-api.utils';
 import type { NewNotification } from './types';
 
 /** A date from a Date or an ISO string (a message from the broker carries strings). Null when absent; throws when unusable. */
@@ -27,6 +28,17 @@ export function castDate(value: unknown, field: string): Date | null {
 export function prepareNotification(row: NewNotification): NewNotification {
   const visibleAt = castDate(row.visibleAt, 'visibleAt');
   const createdAt = castDate(row.createdAt, 'createdAt');
+  // both stores expire a row by createdAt, so one visible only after that would be dropped unseen
+  if (
+    visibleAt &&
+    createdAt &&
+    visibleAt.getTime() - createdAt.getTime() >
+      NOTIFICATION_RETENTION_DAYS * 86_400_000
+  ) {
+    throw new Error(
+      'notification visibleAt is past the retention window of its createdAt',
+    );
+  }
   const out: Record<string, unknown> = { ...row };
   delete out.visibleAt;
   delete out.createdAt;

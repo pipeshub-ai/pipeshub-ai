@@ -107,9 +107,14 @@ export class PgNotificationRepository
         );
         for (const r of found) have.set(r.id, r);
       }
-      const keep = docs
-        .map((_, i) => i)
-        .filter((i) => !have.has(ids[i] as string));
+      // a new id named twice in one batch is inserted once; both positions get that row, as in MongoDB
+      const seen = new Set(have.keys());
+      const keep: number[] = [];
+      for (const [i, id] of ids.entries()) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        keep.push(i);
+      }
       if (keep.length === 0) return ids.map((id) => toRow(have.get(id) as Row));
       const allDocs = docs;
       const allIds = ids;
