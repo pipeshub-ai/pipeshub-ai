@@ -14,6 +14,7 @@ from app.sources.external.common.atlassian import (
     match_atlassian_cloud_resource,
     resolve_preferred_site_with_fallback,
 )
+from app.utils.api_call import ApiCallError
 from app.utils.oauth_config import fetch_toolset_oauth_config_by_id
 
 
@@ -188,17 +189,18 @@ class JiraClient(IClient):
 
             # Check if the response is successful
             if response.status != HttpStatusCode.SUCCESS.value:
-                raise Exception(f"API request failed with status {response.status}: {response.text()}")
+                # Typed, so the retry classifier reads the status (a 401 is not retried like an outage).
+                raise ApiCallError(f"API request failed with status {response.status}", status_code=response.status)
 
             # Try to parse JSON response
             try:
                 response_data = response.json()
             except Exception as json_error:
-                raise Exception(f"Failed to parse JSON response: {json_error}. Response: {response.text()}")
+                raise Exception(f"Failed to parse JSON response: {json_error}")
 
             # Check if response_data is a list
             if not isinstance(response_data, list):
-                raise Exception(f"Expected list of resources, got {type(response_data)}: {response_data}")
+                raise Exception(f"Expected list of resources, got {type(response_data).__name__}")
 
             return [
                 AtlassianCloudResource(
@@ -259,114 +261,109 @@ class JiraClient(IClient):
         Returns:
             JiraClient instance
         """
-        try:
-            # Get Jira configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
-            if not config:
-                raise ValueError("Failed to get Jira connector configuration")
-            auth_config = config.get("auth",{}) or {}
-            if not auth_config:
-                raise ValueError("Auth configuration not found in Jira connector configuration")
+        # Get Jira configuration from the configuration service
+        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
+        if not config:
+            raise ValueError("Failed to get Jira connector configuration")
+        auth_config = config.get("auth",{}) or {}
+        if not auth_config:
+            raise ValueError("Auth configuration not found in Jira connector configuration")
 
-            # Extract configuration values
-            auth_type = str(auth_config.get("authType") or "BEARER_TOKEN").strip().upper()
+        # Extract configuration values
+        auth_type = str(auth_config.get("authType") or "BEARER_TOKEN").strip().upper()
 
-            # Resolved Atlassian site web URL, surfaced on the returned client so the
-            # connector doesn't have to re-resolve it in init().
-            site_url = None
+        # Resolved Atlassian site web URL, surfaced on the returned client so the
+        # connector doesn't have to re-resolve it in init().
+        site_url = None
 
-            # Create appropriate client based on auth type
-            if auth_type == "API_TOKEN":
-                # Cloud: email + apiToken → Basic email:apiToken against site URL.
-                # Data Center PAT: apiToken only (no email) → Bearer against plain baseUrl (no Cloud proxy).
-                base_url = auth_config.get("baseUrl", "").strip()
-                email = auth_config.get("email", "").strip()
-                api_token = auth_config.get("apiToken", "").strip()
+        # Create appropriate client based on auth type
+        if auth_type == "API_TOKEN":
+            # Cloud: email + apiToken → Basic email:apiToken against site URL.
+            # Data Center PAT: apiToken only (no email) → Bearer against plain baseUrl (no Cloud proxy).
+            base_url = auth_config.get("baseUrl", "").strip()
+            email = auth_config.get("email", "").strip()
+            api_token = auth_config.get("apiToken", "").strip()
 
-                if not base_url:
-                    raise ValueError("Base URL is required for API_TOKEN auth")
-                if not api_token:
-                    if email:
-                        raise ValueError(
-                            "Email and API token are required for API_TOKEN auth"
-                        )
-                    raise ValueError("API token is required for API_TOKEN auth")
-
-                base_url = base_url.rstrip("/")
-                site_url = base_url
+            if not base_url:
+                raise ValueError("Base URL is required for API_TOKEN auth")
+            if not api_token:
                 if email:
-                    client = JiraRESTClientViaApiKey(base_url, email, api_token)
-                else:
-                    client = JiraRESTClientViaToken(base_url, api_token, "Bearer")
+                    raise ValueError(
+                        "Email and API token are required for API_TOKEN auth"
+                    )
+                raise ValueError("API token is required for API_TOKEN auth")
 
-            elif auth_type == "BASIC_AUTH":
-                base_url = auth_config.get("baseUrl", "").strip()
-                username = auth_config.get("username", "").strip()
-                password = auth_config.get("password", "").strip()
-                if not base_url:
-                    raise ValueError("Base URL is required for BASIC_AUTH")
-                if not username or not password:
-                    raise ValueError("Username and password are required for BASIC_AUTH")
-                site_url = base_url.rstrip("/")
-                client = JiraRESTClientViaUsernamePassword(
-                    site_url, username, password, "Basic"
-                )
-
-            elif auth_type == "BEARER_TOKEN":  # Default to token auth
-                token = auth_config.get("bearerToken", "")
-                if not token:
-                    raise ValueError("Token required for token auth type")
-                preferred_site = (auth_config.get("baseUrl") or "").strip()
-                if not preferred_site:
-                    raise ValueError("Atlassian site URL (baseUrl) is required for BEARER_TOKEN auth")
-                base_url = await cls.get_jira_base_url(token, preferred_site)
-
-                if not base_url:
-                    raise ValueError("Jira base_url not found in configuration")
-
-                site_url = preferred_site
-                client = JiraRESTClientViaToken(base_url, token)
-            elif auth_type == "OAUTH":
-                credentials_config = config.get("credentials", {}) or {}
-                if not credentials_config:
-                    raise ValueError("Credentials configuration not found for OAuth auth type")
-                access_token = credentials_config.get("access_token", "")
-                if not access_token:
-                    raise ValueError("Access token required for OAuth auth type")
-                preferred_site = (auth_config.get("baseUrl") or "").strip()
-                if not preferred_site:
-                    oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
-                    if oauth_config_id:
-                        from app.edition_config import fetch_oauth_config_by_id
-                        shared = await fetch_oauth_config_by_id(
-                            oauth_config_id=oauth_config_id,
-                            connector_type=connector_type,
-                            config_service=config_service,
-                            logger=logger,
-                            org_id=auth_config.get("inheritedFromOrgId"),
-                        )
-                        if shared:
-                            preferred_site = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
-                preferred_site = await resolve_preferred_site_with_fallback(
-                    preferred_site, access_token, cls.get_accessible_resources, logger, "Jira",
-                )
-                base_url = await cls.get_jira_base_url(access_token, preferred_site)
-
-                if not base_url:
-                    raise ValueError("Jira base_url not found in configuration")
-
-                site_url = preferred_site
-                client = JiraRESTClientViaToken(base_url, access_token)
+            base_url = base_url.rstrip("/")
+            site_url = base_url
+            if email:
+                client = JiraRESTClientViaApiKey(base_url, email, api_token)
             else:
-                raise ValueError(f"Invalid auth type: {auth_type}")
+                client = JiraRESTClientViaToken(base_url, api_token, "Bearer")
 
-            jira_client = cls(client)
-            jira_client.site_url = (site_url or "").rstrip("/") or None
-            return jira_client
+        elif auth_type == "BASIC_AUTH":
+            base_url = auth_config.get("baseUrl", "").strip()
+            username = auth_config.get("username", "").strip()
+            password = auth_config.get("password", "").strip()
+            if not base_url:
+                raise ValueError("Base URL is required for BASIC_AUTH")
+            if not username or not password:
+                raise ValueError("Username and password are required for BASIC_AUTH")
+            site_url = base_url.rstrip("/")
+            client = JiraRESTClientViaUsernamePassword(
+                site_url, username, password, "Basic"
+            )
 
-        except Exception as e:
-            logger.error(f"Failed to build Jira client from services: {str(e)}")
-            raise
+        elif auth_type == "BEARER_TOKEN":  # Default to token auth
+            token = auth_config.get("bearerToken", "")
+            if not token:
+                raise ValueError("Token required for token auth type")
+            preferred_site = (auth_config.get("baseUrl") or "").strip()
+            if not preferred_site:
+                raise ValueError("Atlassian site URL (baseUrl) is required for BEARER_TOKEN auth")
+            base_url = await cls.get_jira_base_url(token, preferred_site)
+
+            if not base_url:
+                raise ValueError("Jira base_url not found in configuration")
+
+            site_url = preferred_site
+            client = JiraRESTClientViaToken(base_url, token)
+        elif auth_type == "OAUTH":
+            credentials_config = config.get("credentials", {}) or {}
+            if not credentials_config:
+                raise ValueError("Credentials configuration not found for OAuth auth type")
+            access_token = credentials_config.get("access_token", "")
+            if not access_token:
+                raise ValueError("Access token required for OAuth auth type")
+            preferred_site = (auth_config.get("baseUrl") or "").strip()
+            if not preferred_site:
+                oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                if oauth_config_id:
+                    from app.edition_config import fetch_oauth_config_by_id
+                    shared = await fetch_oauth_config_by_id(
+                        oauth_config_id=oauth_config_id,
+                        connector_type=connector_type,
+                        config_service=config_service,
+                        logger=logger,
+                        org_id=auth_config.get("inheritedFromOrgId"),
+                    )
+                    if shared:
+                        preferred_site = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
+            preferred_site = await resolve_preferred_site_with_fallback(
+                preferred_site, access_token, cls.get_accessible_resources, logger, "Jira",
+            )
+            base_url = await cls.get_jira_base_url(access_token, preferred_site)
+
+            if not base_url:
+                raise ValueError("Jira base_url not found in configuration")
+
+            site_url = preferred_site
+            client = JiraRESTClientViaToken(base_url, access_token)
+        else:
+            raise ValueError(f"Invalid auth type: {auth_type}")
+
+        jira_client = cls(client)
+        jira_client.site_url = (site_url or "").rstrip("/") or None
+        return jira_client
 
     @staticmethod
     async def _get_connector_config(

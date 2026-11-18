@@ -21,6 +21,11 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
 
+@pytest.fixture(autouse=True)
+def _paid_cache_writes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+
+
 @pytest.fixture
 def org() -> str:
     """An org of this test alone: parallel workers share one Redis, so no test touches another's locks."""
@@ -119,3 +124,15 @@ async def test_ownership_is_one_compare_on_the_token_and_a_stolen_lock_is_not_st
 
     assert await cache.get_or_compute(key, compute) == "text"
     assert store.results(org, "rec-2") == []
+
+
+async def test_concurrent_refresh_claims_on_a_real_redis_grant_exactly_one_per_token(redis, org) -> None:  # type: ignore[no-untyped-def]
+    """Two replicas, four concurrent claims of each of 20 tokens: 20 winners, not 80."""
+    replicas = [PaidResultCache(MemoryResultStore(), RedisLocks(redis)) for _ in range(2)]
+    grants = 0
+    for n in range(20):
+        results = await asyncio.gather(*(replicas[i % 2].claim_refresh(org, "rec-1", f"tok-{n}") for i in range(4)))
+        grants += sum(r is not None for r in results)
+    for key in await redis.keys(f"pc:refresh:{{{org}:*"):
+        await redis.delete(key)
+    assert grants == 20

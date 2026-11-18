@@ -1,6 +1,10 @@
 import type { IMessagePart } from '../types/conversation.interfaces';
 import { Readable } from 'stream';
 import { bindOrgContext } from '../../../libs/context/orgContext';
+import {
+  getRequestContext,
+  runWithRequestContext,
+} from '../../../libs/context/request-context';
 import { Logger } from '../../../libs/services/logger.service';
 
 const logger = Logger.getInstance({ service: 'StreamLifecycle' });
@@ -22,7 +26,7 @@ const logger = Logger.getInstance({ service: 'StreamLifecycle' });
  * *normal* completion, so `writableEnded`/`writableFinished` distinguish
  * "we finished the response ourselves" from "the client is actually gone".
  */
-interface ResponseWatchable {
+export interface ResponseWatchable {
   on(event: 'close', listener: () => void): unknown;
   readonly writableEnded?: boolean;
   readonly writableFinished?: boolean;
@@ -71,7 +75,6 @@ export interface UpstreamAbortHandle {
  */
 export function attachUpstreamAbort(
   res: ResponseWatchable,
-  requestId: string | undefined,
   onAbandon?: () => void,
   maxDetachedMs: number = DETACHED_RUN_MAX_MS,
 ): UpstreamAbortHandle {
@@ -88,28 +91,34 @@ export function attachUpstreamAbort(
     }
   };
 
-  const onClose = bindOrgContext(() => {
+  const onClose = (): void => {
     if (clientDisconnected) return;
     if (res.writableEnded || res.writableFinished) return;
     clientDisconnected = true;
-    logger.info(
+    // DEBUG: the run's end line reports the client leaving.
+    logger.debug(
       'Client disconnected; letting the run finish in the background',
-      { requestId },
     );
     abandonTimer = setTimeout(() => {
       abandonTimer = null;
       if (streamClosed) return;
-      logger.warn('Detached run exceeded its time cap; abandoning it', {
-        requestId,
-        maxDetachedMs,
-      });
+      // No line here: the run's end line reports the cap.
       controller.abort();
       boundStream?.destroy();
       onAbandon?.();
     }, maxDetachedMs);
     abandonTimer.unref();
-  });
-  res.on('close', onClose);
+  };
+  // A socket's close is emitted outside any request: run the listener in the request it was attached in.
+  const requestContext = getRequestContext();
+  res.on(
+    'close',
+    bindOrgContext(() =>
+      requestContext
+        ? runWithRequestContext(requestContext, onClose)
+        : onClose(),
+    ),
+  );
 
   return {
     signal: controller.signal,
@@ -208,14 +217,8 @@ export class StreamedContentAccumulator {
  * listener, a timer callback). A throw would otherwise be an unhandled
  * rejection, which can take the process down.
  */
-export const runGuarded = (
-  task: () => Promise<void>,
-  context: Record<string, unknown> = {},
-): void => {
+export const runGuarded = (task: () => Promise<void>): void => {
   task().catch((error: unknown) => {
-    logger.error('Failed to finalize the run', {
-      ...context,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    logger.error('Failed to finalize the run', { error });
   });
 };

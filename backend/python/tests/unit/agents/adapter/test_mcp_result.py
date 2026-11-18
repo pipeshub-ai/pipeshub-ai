@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mcp.types as mt
 
@@ -11,6 +11,9 @@ from app.agent_loop_lib.core.messages import ImagePart, TextPart
 from app.agents.agent_loop.mcp_result import mcp_result_to_tool_output
 from app.utils.image_admission import ImageAdmission
 from app.utils.image_policy import permissive_policy
+
+if TYPE_CHECKING:
+    import pytest
 
 # Two distinct 1x1 PNGs.
 _PNG_A = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
@@ -228,6 +231,58 @@ class TestImages:
         assert sum(isinstance(part, ImagePart) for part in output.data) == 1
         notes = [part.text for part in output.data if isinstance(part, TextPart)]
         assert notes == ["[image returned by the tool not shown: over request cap]"]
+
+    async def test_an_image_that_does_not_decode_is_left_out_with_a_note(self) -> None:
+        """One undecodable image makes a provider refuse the whole request: it is never sent."""
+        import base64
+
+        truncated = base64.b64encode(base64.b64decode(_PNG_A)[:30]).decode()
+        output = await mcp_result_to_tool_output(_result([_image(truncated), _image(_PNG_B)]), _context())
+
+        assert sum(isinstance(part, ImagePart) for part in output.data) == 1
+        notes = [part.text for part in output.data if isinstance(part, TextPart)]
+        assert notes == ["[image returned by the tool not shown: unreadable image data]"]
+
+    async def test_a_large_valid_image_reaches_admission_to_be_downscaled(self) -> None:
+        """Larger than the web path's pixel cap, but valid: admission downscales it, as before."""
+        import base64
+        import io
+
+        from PIL import Image
+
+        out = io.BytesIO()
+        Image.new("L", (5000, 4000)).save(out, format="PNG")
+        big = base64.b64encode(out.getvalue()).decode()
+
+        output = await mcp_result_to_tool_output(_result([_image(big)]), _context())
+
+        assert any(isinstance(part, ImagePart) for part in output.data)
+
+    async def test_an_animated_image_is_left_out_with_its_reason(self) -> None:
+        import base64
+        import io
+
+        from PIL import Image
+
+        out = io.BytesIO()
+        frames = [Image.new("RGB", (4, 4), colour) for colour in ((255, 0, 0), (0, 255, 0))]
+        frames[0].save(out, format="WEBP", save_all=True, append_images=frames[1:], duration=100)
+        output = await mcp_result_to_tool_output(
+            _result([_image(base64.b64encode(out.getvalue()).decode(), "image/webp")]), _context(),
+        )
+
+        assert output.data == "[image returned by the tool not shown: animated image]"
+
+    async def test_images_already_checked_are_not_decoded_twice(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.agent_loop.image_parts import admitted_image_parts
+        from app.utils import image_utils
+
+        calls: list[str] = []
+        monkeypatch.setattr(image_utils, "check_data_uri", lambda uri, **kw: calls.append(uri) or image_utils.ImageCheck.OK)
+
+        parts = await admitted_image_parts([f"data:image/png;base64,{_PNG_A}"], _context(), source="on the page", verified=True)
+
+        assert calls == [] and isinstance(parts[0], ImagePart)
 
     async def test_same_image_twice_is_sent_once(self) -> None:
         output = await mcp_result_to_tool_output(_result([_image(), _image()]), _context())

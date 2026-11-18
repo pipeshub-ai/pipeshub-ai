@@ -445,7 +445,9 @@ class TestFullSyncCoverage:
             ))
 
         assert owed == [False, False, False]
-        assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        # Only the sync's own logger: a session another test left unclosed can be garbage-collected here and log
+        # "Unclosed client session" on the asyncio logger.
+        assert not [r.getMessage() for r in caplog.records if r.name == log.name and r.levelno >= logging.WARNING]
 
 
 class TestSettings:
