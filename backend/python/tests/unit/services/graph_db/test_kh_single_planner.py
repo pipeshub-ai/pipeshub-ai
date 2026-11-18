@@ -24,7 +24,7 @@ class FakeClient:
         self.max_running = 0
         self.fail_first = fail_first
 
-    async def execute_query(self, query, parameters=None, txn_id=None, **kw):
+    async def execute_query(self, query, parameters=None, txn_id=None, **kw) -> list[dict]:
         self.calls.append({"query": query, "txn_id": txn_id, **kw})
         self.running += 1
         self.max_running = max(self.max_running, self.running)
@@ -150,7 +150,7 @@ class StepClient:
         self.steps = steps
         self.calls = 0
 
-    async def execute_query(self, query, parameters=None, txn_id=None, **kw):
+    async def execute_query(self, query, parameters=None, txn_id=None, **kw) -> list[dict]:
         seconds, error = self.steps[min(self.calls, len(self.steps) - 1)]
         self.calls += 1
         await asyncio.sleep(seconds)
