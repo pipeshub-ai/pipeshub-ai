@@ -217,7 +217,7 @@ def test_a_forked_child_that_only_closes_does_not_keep_the_parents_lock_alive(le
         finally:
             os._exit(0)
     os.close(w)  # the parent's write end: a failed child then ends the read with EOF instead of hanging it
-    assert os.read(r, 1) == b"x"
+    assert _read_or_kill(r, pid) == b"x"
     os.close(r)
     try:
         # The parent's slot lock must still be held by the parent alone: closing a copy does not release it,
@@ -248,9 +248,22 @@ def test_a_forked_child_can_wait_for_a_slot_the_parent_frees(ledger: Path) -> No
             os._exit(code)
     time.sleep(0.1)
     held.release()  # the parent frees the only slot while the child waits
-    outcome = os.read(r, 1)
+    outcome = _read_or_kill(r, pid)
     os.waitpid(pid, 0)
     assert outcome == b"\x00"
+
+
+def _read_or_kill(r: int, pid: int, timeout: float = 15.0) -> bytes:
+    """One byte from the child, or a failure: a child that hangs (a regression) is killed so pytest does not hang with it."""
+    import select
+    import signal
+
+    ready, _, _ = select.select([r], [], [], timeout)
+    if not ready:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        pytest.fail(f"the forked child did not answer within {timeout} s (it was killed)")
+    return os.read(r, 1)
 
 
 def _in_a_forked_child(work: object) -> bytes:
@@ -266,8 +279,9 @@ def _in_a_forked_child(work: object) -> bytes:
         finally:
             os.write(w, bytes([code]))
             os._exit(code)
-    outcome = os.read(r, 1)
+    outcome = _read_or_kill(r, pid)
     os.waitpid(pid, 0)
+    os.close(r)
     return outcome
 
 

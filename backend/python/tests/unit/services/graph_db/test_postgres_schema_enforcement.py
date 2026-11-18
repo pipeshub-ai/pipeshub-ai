@@ -243,7 +243,8 @@ class _Rec:
 CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys(["create_node_if_absent", "ensure_nodes", "stage_state_create"], "create"),
     **dict.fromkeys(["batch_upsert_nodes", "batch_upsert_records"], "upsert"),
-    **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_node_fields_if", "update_knowledge_base", "compare_and_set_record_fields"], "update"),
+    **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_node_fields_if", "update_knowledge_base", "compare_and_set_record_fields",
+                     "write_attempt_start"], "update"),
     "update_node_if_match": "replace",
     **dict.fromkeys(["batch_update_connector_status", "compare_and_set_indexing_status", "update_indexing_status_for_record_ids",
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
@@ -330,6 +331,8 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
     ("batch_update_team_member_roles bad", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "NOT_A_ROLE"}], 1), {}),
     ("update_edge bad role", "update_edge", ("users/u1", "records/r1", {"role": "NOT_A_ROLE"}, "permission"), {}),
     ("cas_record_fields bad", "compare_and_set_record_fields", (["r1"], "rev-1", {"indexingStatus": "NOT_A_STATUS"}), {}),
+    ("attempt_start bad enum", "write_attempt_start", ("r1", {"indexingStatus": "NOT_A_STATUS"}), {}),
+    ("attempt_start unknown key", "write_attempt_start", ("r1", {"bogusKey": 1}), {}),
     # replace: full
     ("replace bad enum", "update_node_if_match", ("r1", "records", rec(recordType="NOT_A_TYPE"), "version", 1), {}),
     ("replace missing required", "update_node_if_match", ("r1", "records", without(rec(), "recordName"), "version", 1), {}),
@@ -387,6 +390,7 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("batch_update_team_member_roles", "batch_update_team_member_roles", ("t1", [{"userId": "u1", "role": "OWNER"}], 1), {}),
     ("update_edge", "update_edge", ("users/u1", "records/r1", {"role": "WRITER"}, "permission"), {}),
     ("cas_record_fields", "compare_and_set_record_fields", (["r1"], "rev-1", {"indexingStatus": "COMPLETED"}), {}),
+    ("attempt_start", "write_attempt_start", ("r1", {"indexingStatus": "IN_PROGRESS"}), {}),
     ("replace", "update_node_if_match", ("r1", "records", rec(version=2), "version", 1), {}),
     ("batch_update_connector_status", "batch_update_connector_status", ("apps", ["a1"]), {"is_active": True, "is_agent_active": False}),
     ("cas_indexing_status", "compare_and_set_indexing_status", (["r1"], "NOT_STARTED", "IN_PROGRESS"), {}),

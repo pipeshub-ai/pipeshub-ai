@@ -40,7 +40,13 @@ export class MongoGroupRepository implements GroupRepository {
       filter.createdAt = dateFilter;
     }
     const [rows, total] = await Promise.all([
-      UserGroups.find(filter).skip(q.skip).limit(q.limit).lean().exec(),
+      // without a sort MongoDB returns whatever order the chosen index gives, and skip/limit pages can repeat or miss groups
+      UserGroups.find(filter)
+        .sort({ _id: 1 })
+        .skip(q.skip)
+        .limit(q.limit)
+        .lean()
+        .exec(),
       UserGroups.countDocuments(filter),
     ]);
     return { rows: rows.map(dto), total };
@@ -198,7 +204,9 @@ export class MongoGroupRepository implements GroupRepository {
       orgId,
       users: { $in: [userId] },
       isDeleted: false,
-    }).select('name type');
+    })
+      .select('name type')
+      .sort({ _id: 1 });
     return rows.map((r) => toPlain<GroupSummaryDto>(r));
   }
 
@@ -211,6 +219,7 @@ export class MongoGroupRepository implements GroupRepository {
       }),
     )
       .select('users')
+      .sort({ _id: 1 })
       .lean();
     return groups.flatMap((g) =>
       ((g as { users?: unknown[] }).users ?? []).map(String),
@@ -229,6 +238,7 @@ export class MongoGroupRepository implements GroupRepository {
       },
     })
       .select('_id name type users')
+      .sort({ _id: 1 })
       .lean()
       .exec();
     return rows.map((r) => toPlain<GroupSummaryDto & { users: string[] }>(r));
@@ -247,6 +257,7 @@ export class MongoGroupRepository implements GroupRepository {
           avgUsers: { $avg: { $size: '$users' } },
         },
       },
+      { $sort: { _id: 1 } },
     ]);
   }
 }
