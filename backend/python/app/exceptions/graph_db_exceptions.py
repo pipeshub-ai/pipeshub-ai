@@ -123,3 +123,15 @@ def is_graph_memory_refusal(exc: BaseException) -> bool:
     error that carries one of the pool's status codes (a statement not marked as bulk keeps the
     driver's error)."""
     return isinstance(exc, GraphMemoryLimitError) or getattr(exc, "code", None) in MEMORY_LIMIT_CODES
+
+
+class RecordSchemaNarrowError(GraphDBError):
+    """A write to ``records`` was refused because the live collection schema is narrower than this process's.
+
+    Transient: the schema is widened outside any transaction, and the owner of the transaction that was aborted
+    runs it again. Nothing the transaction wrote was kept. A handler that logs a failure and goes on must let this
+    one through (``_must_propagate``).
+    """
+
+    # Retried like a lost write conflict: nothing the aborted transaction wrote was kept.
+    log_error_class = "conflict"

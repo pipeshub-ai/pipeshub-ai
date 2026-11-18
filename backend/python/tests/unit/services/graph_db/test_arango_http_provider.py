@@ -16544,181 +16544,63 @@ class TestFindFileByNameInParent:
 
 
 class TestUpdateIndexingStatusForRecordIds:
-    """Tests for update_indexing_status_for_record_ids method."""
+    """update_indexing_status_for_record_ids: one statement, so the run rule reads the record it writes."""
 
     @pytest.mark.asyncio
     async def test_empty_list_returns_early(self, connected_provider):
-        """Should return early without calling execute_query for empty list."""
-        connected_provider.execute_query = AsyncMock()
-        
+        connected_provider.http_client.execute_aql = AsyncMock()
+
         await connected_provider.update_indexing_status_for_record_ids([], "QUEUED")
-        
-        connected_provider.execute_query.assert_not_called()
+
+        connected_provider.http_client.execute_aql.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_filters_out_non_strings(self, connected_provider):
-        """Should filter out None, empty strings, and non-string values."""
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+
         await connected_provider.update_indexing_status_for_record_ids(
-            [None, "", "valid1", 123, "valid2", "", None],
-            "QUEUED",
+            [None, "", "valid1", 123, "valid2", "", None], "QUEUED",
         )
-        
-        connected_provider.execute_query.assert_called_once()
-        call_args = connected_provider.execute_query.call_args
-        bind_vars = call_args[1]["bind_vars"]
+
+        bind_vars = connected_provider.http_client.execute_aql.call_args.args[1]
         assert bind_vars["keys"] == ["valid1", "valid2"]
 
     @pytest.mark.asyncio
-    async def test_no_records_found_returns_early(self, connected_provider):
-        """Should return early if query returns no results."""
-        connected_provider.execute_query = AsyncMock(return_value=None)
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        
-        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
-        
-        connected_provider.batch_upsert_nodes.assert_not_called()
+    async def test_one_statement_skips_internal_and_placeholder_records_and_carries_the_run_rule(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[1])
 
-    @pytest.mark.asyncio
-    async def test_no_records_found_empty_list(self, connected_provider):
-        """Should return early if query returns empty list."""
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        
-        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
-        
-        connected_provider.batch_upsert_nodes.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_skips_internal_records(self, connected_provider):
-        """Should skip records with isInternal=True."""
-        connected_provider.execute_query = AsyncMock(return_value=[
-            {"_key": "rec1", "isInternal": True, "indexingStatus": "COMPLETED"},
-            {"_key": "rec2", "isInternal": False, "indexingStatus": "COMPLETED"},
-        ])
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        
         await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
-        
-        connected_provider.batch_upsert_nodes.assert_called_once()
-        call_args = connected_provider.batch_upsert_nodes.call_args[0]
-        upserted = call_args[0]
-        assert len(upserted) == 1
-        assert upserted[0]["_key"] == "rec2"
+
+        connected_provider.http_client.execute_aql.assert_called_once()
+        query, bind_vars = connected_provider.http_client.execute_aql.call_args.args[:2]
+        assert "doc.isInternal != true" in query and "doc.isPlaceholder != true" in query
+        assert "firstQueuedAt" in query and "UPDATE doc WITH" in query
+        assert bind_vars["status"] == "QUEUED" and isinstance(bind_vars["now"], int)
 
     @pytest.mark.asyncio
-    async def test_updates_already_queued_records(self, connected_provider):
-        """Should update records even when they already have QUEUED status."""
-        connected_provider.execute_query = AsyncMock(return_value=[
-            {"_key": "rec1", "indexingStatus": "QUEUED"},
-            {"_key": "rec2", "indexingStatus": "COMPLETED"},
-        ])
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        
-        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
-        
-        connected_provider.batch_upsert_nodes.assert_called_once()
-        call_args = connected_provider.batch_upsert_nodes.call_args[0]
-        upserted = call_args[0]
-        assert len(upserted) == 2
-        assert {u["_key"] for u in upserted} == {"rec1", "rec2"}
+    async def test_ids_are_deduplicated_in_order(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[1])
+
+        await connected_provider.update_indexing_status_for_record_ids(["b", "a", "b", "a", "c"], "QUEUED")
+
+        assert connected_provider.http_client.execute_aql.call_args.args[1]["keys"] == ["b", "a", "c"]
 
     @pytest.mark.asyncio
-    async def test_mixed_states_filters_correctly(self, connected_provider):
-        """Should handle records with mixed states: internal and valid."""
-        connected_provider.execute_query = AsyncMock(return_value=[
-            {"_key": "rec1", "isInternal": True, "indexingStatus": "COMPLETED"},
-            {"_key": "rec2", "indexingStatus": "QUEUED"},
-            {"_key": "rec3", "indexingStatus": "COMPLETED"},
-            {"_key": "rec4", "indexingStatus": "FAILED"},
-            {"_key": "rec5", "isInternal": False, "indexingStatus": "IN_PROGRESS"},
-        ])
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        
-        await connected_provider.update_indexing_status_for_record_ids(
-            ["rec1", "rec2", "rec3", "rec4", "rec5"],
-            "QUEUED",
-        )
-        
-        connected_provider.batch_upsert_nodes.assert_called_once()
-        call_args = connected_provider.batch_upsert_nodes.call_args[0]
-        upserted = call_args[0]
-        assert len(upserted) == 4
-        upserted_keys = [u["_key"] for u in upserted]
-        assert "rec2" in upserted_keys
-        assert "rec3" in upserted_keys
-        assert "rec4" in upserted_keys
-        assert "rec5" in upserted_keys
+    async def test_no_matching_record_is_not_an_error(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.logger = MagicMock()
+
+        assert await connected_provider.update_indexing_status_for_record_ids(["gone"], "QUEUED") is None
+        connected_provider.logger.error.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_successful_batch_upsert_with_correct_payload(self, connected_provider):
-        """Should call batch_upsert_nodes with correct payload."""
-        connected_provider.execute_query = AsyncMock(return_value=[
-            {"_key": "rec1", "indexingStatus": "COMPLETED"},
-        ])
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        
+    async def test_a_failed_statement_is_logged_not_raised(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("Query failed"))
+        connected_provider.logger = MagicMock()
+
         await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
-        
-        connected_provider.batch_upsert_nodes.assert_called_once()
-        call_args = connected_provider.batch_upsert_nodes.call_args
-        upserted = call_args[0][0]
-        collection = call_args[0][1]
-        
-        assert upserted[0]["_key"] == "rec1"
-        assert upserted[0]["indexingStatus"] == "QUEUED"
-        assert collection == "records"
 
-    @pytest.mark.asyncio
-    async def test_exception_during_query_logged(self, connected_provider):
-        """Should log error when exception occurs during query."""
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("Query failed"))
-        
-        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
-        
         connected_provider.logger.error.assert_called_once()
-        error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed to update records to" in error_msg
-
-    @pytest.mark.asyncio
-    async def test_skips_records_without_id(self, connected_provider):
-        """Should skip records that have no id or _key."""
-        connected_provider.execute_query = AsyncMock(return_value=[
-            {"name": "no_id_record", "indexingStatus": "COMPLETED"},
-            {"_key": "rec2", "indexingStatus": "COMPLETED"},
-        ])
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        
-        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
-        
-        connected_provider.batch_upsert_nodes.assert_called_once()
-        call_args = connected_provider.batch_upsert_nodes.call_args[0]
-        upserted = call_args[0]
-        assert len(upserted) == 1
-        assert upserted[0]["_key"] == "rec2"
-
-    @pytest.mark.asyncio
-    async def test_deduplicates_record_ids(self, connected_provider):
-        """Should deduplicate record IDs before querying."""
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        
-        await connected_provider.update_indexing_status_for_record_ids(
-            ["rec1", "rec2", "rec1", "rec3", "rec2"],
-            "QUEUED",
-        )
-        
-        connected_provider.execute_query.assert_called_once()
-        call_args = connected_provider.execute_query.call_args
-        bind_vars = call_args[1]["bind_vars"]
-        assert len(bind_vars["keys"]) == 3
-        assert set(bind_vars["keys"]) == {"rec1", "rec2", "rec3"}
-
-
-# ---------------------------------------------------------------------------
-# _ensure_edge_definitions_up_to_date
-# ---------------------------------------------------------------------------
-
 
 class TestEnsureEdgeDefinitionsUpToDate:
     """Tests for _ensure_edge_definitions_up_to_date method."""
