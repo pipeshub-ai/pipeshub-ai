@@ -49,7 +49,16 @@ export interface NotificationCursor {
 
 export interface NotificationRepository {
   insert(row: NewNotification): Promise<NotificationRow>;
+  /**
+   * One row per input, in order. A row that names its own `_id` (a 24-hex id) is stored under that id, and is IDEMPOTENT: when a notification of the org already has that id,
+   * nothing is written and the existing row is returned. A row without `_id` gets a new one.
+   */
   insertMany(rows: NewNotification[]): Promise<NotificationRow[]>;
+  /**
+   * Whether the notification with this id exists for this user in this org. Ungated: neither the retention window, the delete flag nor `visibleAt` hides it (a read-back asks
+   * "was it stored", not "is it in the inbox"). An id or user that is not a valid id, or another org's or user's notification, is false.
+   */
+  exists(scope: NotificationScope, id: string): Promise<boolean>;
   /**
    * Newest first, keyset on (createdAt, _id). `status: null` lists everything
    * but archived. Returns up to `limit + 1` rows so the caller can tell whether

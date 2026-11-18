@@ -177,6 +177,41 @@ export function describeNotificationContract(fx: NotificationFixture): void {
     expect(await repo.softDelete({ orgId: org, userId: fx.newId() }, a._id)).to.equal(null);
   });
 
+  it('exists is by org, user and id and is ungated: a deleted or expired notification still exists; another user, org or a bad id does not', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const other = fx.newId();
+    const row = await repo.insert(mk(org, me));
+    expect(await repo.exists({ orgId: org, userId: me }, row._id)).to.equal(true);
+    expect(await repo.exists({ orgId: org, userId: other }, row._id), 'another user').to.equal(false);
+    expect(await repo.exists({ orgId: fx.newId(), userId: me }, row._id), 'another org').to.equal(false);
+    expect(await repo.exists({ orgId: org, userId: me }, fx.newId()), 'another id').to.equal(false);
+    expect(await repo.exists({ orgId: org, userId: me }, 'not-an-id')).to.equal(false);
+    await repo.softDelete({ orgId: org, userId: me }, row._id);
+    expect(await repo.exists({ orgId: org, userId: me }, row._id), 'a deleted one still exists').to.equal(true);
+    await fx.setCreatedAt(row._id, ago(400 * 24 * 3600 * 1000));
+    expect(await repo.exists({ orgId: org, userId: me }, row._id), 'an expired one still exists').to.equal(true);
+    const later = await repo.insert(mk(org, me, { visibleAt: new Date(Date.now() + 3600_000) }));
+    expect(await repo.list({ orgId: org, userId: me }, { status: null, limit: 10 }), 'a scheduled one is not listed').to.deep.equal([]);
+    expect(await repo.exists({ orgId: org, userId: me }, later._id), 'a scheduled one still exists').to.equal(true);
+  });
+
+  it('a row that names its own _id is stored under it and is idempotent: a republish returns the stored row and writes nothing', async () => {
+    const org = fx.newId();
+    const me = fx.newId();
+    const id = fx.newId();
+    const [a] = await repo.insertMany([mk(org, me, { _id: id, title: 'first' })]);
+    expect(a!._id).to.equal(id);
+    const [b, c] = await repo.insertMany([mk(org, me, { _id: id, title: 'second' }), mk(org, me, { title: 'plain' })]);
+    expect(b!._id, 'the existing row').to.equal(id);
+    expect(b!.title, 'nothing was overwritten').to.equal('first');
+    expect(c!._id).to.match(HEX);
+    expect(c!._id).to.not.equal(id);
+    expect(await repo.exists({ orgId: org, userId: me }, id)).to.equal(true);
+    const counts = await repo.counts({ orgId: org, userId: me });
+    expect(counts.unread, 'one row for the id, one plain').to.equal(2);
+  });
+
   describe('scheduled notifications (visibleAt)', function () {
     this.timeout(30_000);
     const ahead = (ms: number) => new Date(Date.now() + ms);

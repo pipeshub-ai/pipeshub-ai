@@ -95,9 +95,26 @@ export class PgNotificationRepository
         stripNul(prepareNotification(r), 'notification', 'row'),
       );
       for (const d of docs) assertOrg(k, d.orgId);
-      const ids = docs.map(() => newObjectId());
+      // a row that names its own id keeps it, and is idempotent (an existing row of the org with that id is returned, nothing is written)
+      const supplied = docs.map((d) => oidOf((d as { _id?: unknown })._id));
+      const ids = supplied.map((s) => s ?? newObjectId());
+      const named = ids.filter((_, i) => supplied[i] !== undefined);
+      const have = new Map<string, Row>();
+      if (named.length > 0) {
+        const { rows: found } = await k.query<Row>(
+          `/* pipeshub:platform.notification_by_ids */ SELECT ${COLS} FROM platform.notifications n WHERE n.org_id = $1 AND n.id = ANY($2::text[])`,
+          [k.orgId, named],
+        );
+        for (const r of found) have.set(r.id, r);
+      }
+      const keep = docs.map((_, i) => i).filter((i) => !have.has(ids[i] as string));
+      if (keep.length === 0) return ids.map((id) => toRow(have.get(id) as Row));
+      const allDocs = docs;
+      const allIds = ids;
+      const docs2 = keep.map((i) => allDocs[i] as NewNotification);
+      const ids2 = keep.map((i) => allIds[i] as string);
       const text = (f: (d: NewNotification) => unknown): (string | null)[] =>
-        docs.map((d) => {
+        docs2.map((d) => {
           const v = f(d);
           if (v === undefined || v === null) return null;
           return typeof v === 'object'
@@ -115,7 +132,7 @@ export class PgNotificationRepository
         [
           k.orgId,
           new Date(),
-          ids,
+          ids2,
           text((d) => d.type),
           text((d) => d.title),
           text((d) => d.message),
@@ -124,19 +141,33 @@ export class PgNotificationRepository
           text((d) => d.status),
           text((d) => d.originService),
           text((d) => d.assignedTo),
-          docs.map((d) =>
+          docs2.map((d) =>
             d.payload === undefined ? null : JSON.stringify(d.payload),
           ),
           text((d) => d.deletedBy),
-          docs.map((d) =>
+          docs2.map((d) =>
             d.isDeleted === undefined ? null : Boolean(d.isDeleted),
           ),
-          docs.map((d) => (d.createdAt as Date | undefined) ?? null),
-          docs.map((d) => (d.visibleAt as Date | undefined) ?? null),
+          docs2.map((d) => (d.createdAt as Date | undefined) ?? null),
+          docs2.map((d) => (d.visibleAt as Date | undefined) ?? null),
         ],
       );
-      const byId = new Map(out.map((r) => [r.id, r]));
+      const byId = new Map([...have, ...out.map((r) => [r.id, r] as const)]);
       return ids.map((id) => toRow(byId.get(id) as Row));
+    });
+  }
+
+  async exists(scope: NotificationScope, id: string): Promise<boolean> {
+    const [user, row] = [oidOf(scope.userId), oidOf(id)];
+    if (!user || !row) return false;
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, scope.orgId);
+      // ungated by retention, the delete flag and visibleAt; by org, user and id (the by-id index probes each month's partition once)
+      const { rows } = await k.query<{ one: number }>(
+        `/* pipeshub:platform.notification_exists */ SELECT 1 AS one FROM platform.notifications n WHERE n.org_id = $1 AND n.id = $2 AND n.assigned_to = $3 LIMIT 1`,
+        [k.orgId, row, user],
+      );
+      return rows.length > 0;
     });
   }
 

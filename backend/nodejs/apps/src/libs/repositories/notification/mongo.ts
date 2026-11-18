@@ -66,11 +66,36 @@ export class MongoNotificationRepository implements NotificationRepository {
 
   async insertMany(rows: NewNotification[]): Promise<NotificationRow[]> {
     const now = new Date();
-    const saved = await Notifications.create(
-      rows.map((r) => stamped(r, now)),
-      { timestamps: false },
-    );
-    return saved.map(rowOf);
+    const out: NotificationRow[] = new Array(rows.length);
+    const fresh: number[] = [];
+    for (const [i, r] of rows.entries()) {
+      if (r._id === undefined) {
+        fresh.push(i);
+        continue;
+      }
+      // a row with its own id is idempotent: the duplicate key of a republish returns the stored row
+      try {
+        out[i] = rowOf((await Notifications.create([stamped(r, now)], { timestamps: false }))[0]);
+      } catch (e) {
+        if ((e as { code?: number }).code !== 11000) throw e;
+        const existing = await Notifications.findOne({ _id: oid(String(r._id)), orgId: oid(r.orgId) }).lean();
+        if (!existing) throw e;
+        out[i] = rowOf(existing);
+      }
+    }
+    if (fresh.length > 0) {
+      const saved = await Notifications.create(
+        fresh.map((i) => stamped(rows[i] as NewNotification, now)),
+        { timestamps: false },
+      );
+      for (const [j, i] of fresh.entries()) out[i] = rowOf(saved[j]);
+    }
+    return out;
+  }
+
+  async exists(scope: NotificationScope, id: string): Promise<boolean> {
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(scope.orgId) || !mongoose.isValidObjectId(scope.userId)) return false;
+    return (await Notifications.countDocuments({ _id: oid(id), orgId: oid(scope.orgId), assignedTo: oid(scope.userId) })) > 0;
   }
 
   async list(
