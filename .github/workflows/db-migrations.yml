@@ -8,6 +8,7 @@ on:
     paths:
       - 'backend/db/**'
       - 'deployment/docker-compose/postgres/pg-roles.sh'
+      - 'deployment/docker-compose/postgres/extra-vetted-schemas'
       - 'backend/python/app/edition.py'
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/db-migrations.yml'
