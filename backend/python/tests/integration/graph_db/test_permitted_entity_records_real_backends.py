@@ -475,6 +475,9 @@ class TestPermittedEntityRecords:
         assert out[("record", records["denied"])] == []
 
 
+# Only Neo4j's statement drops the walk, and the backend-matrix job fails on any skip, so
+# the ArangoDB leg leaves these out of collection (graph_db/conftest.py).
+@pytest.mark.neo4j_only
 class TestNeo4jRoleWalkLeftOut:
     """When every ref's connectors are app-level, Neo4j sends the statement without the
     permission-role walk: its first UNION branch admits every such row, and the walk is most
@@ -524,8 +527,6 @@ class TestNeo4jRoleWalkLeftOut:
         self, backend, connectors: str, offset: int, window: int, limit: int,
     ) -> None:
         provider, org_id = backend
-        if not isinstance(provider, Neo4jProvider):
-            pytest.skip("the role walk is left out of Neo4j's statement only")
         connector_ids = {"both": [APP_LEVEL, RECORD_LEVEL], "app": [APP_LEVEL], "none": []}[connectors]
         ref = {"id": _keys(org_id)["topic"], "type": "topic", "connectorIds": connector_ids}
 
@@ -535,8 +536,6 @@ class TestNeo4jRoleWalkLeftOut:
 
     async def test_a_record_ref_reads_the_same_with_and_without_the_walk(self, backend) -> None:
         provider, org_id = backend
-        if not isinstance(provider, Neo4jProvider):
-            pytest.skip("the role walk is left out of Neo4j's statement only")
         ref = {"id": _keys(org_id)["records"]["direct"], "type": "record", "connectorIds": [RECORD_LEVEL]}
 
         both = await self._both(provider, org_id, ref, offset=0, window=200, limit=200)
@@ -547,8 +546,6 @@ class TestNeo4jRoleWalkLeftOut:
         """The decision itself, through the method: with both connectors app-level every
         candidate in the window comes back, in order."""
         provider, org_id = backend
-        if not isinstance(provider, Neo4jProvider):
-            pytest.skip("the role walk is left out of Neo4j's statement only")
         keys = _keys(org_id)
         sent: list[str] = []
         original = provider.client.execute_query
