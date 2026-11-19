@@ -131,6 +131,7 @@ async def test_the_opening_and_closing_counters_are_atomic_and_read_on_both_stor
 async def test_an_admin_s_mode_is_stored_on_the_app_document_and_decides_which_current_connector_the_plan_serves(backend) -> None:  # noqa: F811
     from app.services.permissions.currency import MODE_KEY
     from app.services.permissions.mode import AclFilterMode
+    from tests.permissions.test_generation_paths import ORG
 
     _, conn, *_ = await _world(backend)
     await finish_pass(backend.provider, conn)
@@ -140,4 +141,6 @@ async def test_an_admin_s_mode_is_stored_on_the_app_document_and_decides_which_c
         assert await backend.provider.update_node(conn, CollectionNames.APPS.value, {MODE_KEY: mode}) is not False
         assert (await backend.provider.get_document(conn, CollectionNames.APPS.value))[MODE_KEY] == mode
         assert (await currency.read([conn], default=AclFilterMode.SHADOW))[0] == served, mode
+        assert await currency.switched(ORG) == served, mode                                      # the switched-connector read, from the same document
+        assert await currency.switched("f" * 24) == frozenset()                                  # another organisation's: none
     assert await current(backend.provider, conn)                                                  # the mode is not part of currency

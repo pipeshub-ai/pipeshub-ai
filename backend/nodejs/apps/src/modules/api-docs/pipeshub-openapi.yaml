@@ -2657,8 +2657,8 @@ components:
       type: string
       description: |
         Why this deployment cannot search any connector with its stored permissions: `serving_off`
-        (`ACL_FILTER_MODE` is `legacy`, so no stored permissions are written) or `store_unsupported`
-        (the vector store cannot filter by them).
+        (`ACL_FILTER_MODE` is `legacy`, so scope-filter serving is disabled; `ACL_SCOPE_FIELDS` may still
+        write the stored permissions ahead of it) or `store_unsupported` (the vector store cannot filter by them).
       enum: [serving_off, store_unsupported]
     ConnectorPermissionFilter:
       type: object
@@ -56283,7 +56283,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The connector service could not be reached, or the setting could not be saved. Safe to retry.
+          description: The connector service could not be reached. Safe to retry.
           content:
             application/json:
               schema:

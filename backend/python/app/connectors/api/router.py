@@ -180,7 +180,7 @@ from app.services.featureflag.platform_settings import (
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.permissions import access_status
-from app.services.permissions.currency import MODE_KEY, SCOPES_CONNECTORS_KEY, chosen_mode
+from app.services.permissions.currency import MODE_KEY, chosen_mode
 from app.services.permissions.mode import AclFilterMode
 from app.services.storage_documents import BoundReadChanged, BoundReadOutOfRange, StorageDocumentInfo
 from app.utils.byte_range import ByteRange, resolve_range
@@ -9041,10 +9041,6 @@ async def delete_connector_instance(
                 logger.exception(f"Could not clear DELETING for connector {connector_id}")
             raise
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
-        try:
-            await _set_scopes_listed(resolve_config_service(container, org_id), connector_id, listed=False)
-        except HTTPException:
-            logger.warning(f"Connector {connector_id} stays on the list of connectors switched to scopes")      # costs a read, never access
 
         return JSONResponse(
             status_code=202,
@@ -10769,35 +10765,7 @@ async def get_permission_status(
 ) -> dict[str, Any]:
     """Admin only (`_admin_connector_app`)."""
     app = await _admin_connector_app(request, connector_id, graph_provider)
-    listed = await _is_scopes_listed(resolve_config_service(request.app.container, current_org_id()), connector_id)
-    return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider),
-                                listed=listed)
-
-
-async def _is_scopes_listed(config: Any, connector_id: str) -> bool:  # noqa: ANN401
-    """Whether the connector is on the list of connectors switched to `scopes`, read from the store (not a cache); unreadable is not listed."""
-    try:
-        raw = await config.get_config(SCOPES_CONNECTORS_KEY, default=[], use_cache=False, raise_on_error=True)
-    except Exception:
-        logger.warning("Could not read the connectors switched to scopes")
-        return False
-    return isinstance(raw, list) and connector_id in {str(i) for i in raw}
-
-
-async def _set_scopes_listed(config: Any, connector_id: str, *, listed: bool) -> None:  # noqa: ANN401
-    """Add the connector to, or take it from, the list of connectors switched to `scopes` (`currency.SCOPES_CONNECTORS_KEY`). A store that cannot be
-    read or written is a 503. shortcut: read, change, write; two admins switching two connectors at the same instant can lose one entry (that
-    connector then stays on the classic check until it is set again). Upgrade to a compare-and-set if switching becomes frequent."""
-    try:
-        raw = await config.get_config(SCOPES_CONNECTORS_KEY, default=[], use_cache=False, raise_on_error=True)
-        ids = {str(i) for i in raw} if isinstance(raw, list) else set()
-        if (connector_id in ids) == listed:
-            return
-        ids = ids | {connector_id} if listed else ids - {connector_id}
-        if not await config.set_config(SCOPES_CONNECTORS_KEY, sorted(ids)):
-            raise RuntimeError("not written")
-    except Exception as exc:
-        raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=action_failed("save this setting")) from exc
+    return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))
 
 
 class PermissionFilterRequest(BaseModel):
@@ -10815,18 +10783,9 @@ async def set_permission_filter(
     default, store_serves = AclFilterMode.from_env(), access_status.store_serves_scope_filter()
     if body.mode == "scopes" and (found := access_status.blockers(default, store_serves=store_serves)):
         raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail={"error": "not_switchable", "blockers": found})
-    config = resolve_config_service(request.app.container, current_org_id())
-    if body.mode == "scopes":
-        # listed before the document is written: a deployment whose default is not `scopes` serves only listed connectors, so a list that misses one
-        # would leave it on the classic check, and one that names a connector set back to `legacy` costs a read, never access
-        await _set_scopes_listed(config, connector_id, listed=True)
+    # the app document is the one record of the mode: the serving plan reads it (`currency.switched_connectors`), so there is nothing to keep in step
     if not await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {MODE_KEY: body.mode}):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
-    if body.mode != "scopes":
-        try:
-            await _set_scopes_listed(config, connector_id, listed=False)
-        except HTTPException:
-            logger.warning("connector %s stays listed as switched to scopes; its app document decides", connector_id)
     logger.info("audit: permission filter of connector %s set from %s to %s by user %s",
                 connector_id, chosen_mode(app), body.mode, request.state.user.get("userId"))
-    return access_status.filter_state({**app, MODE_KEY: body.mode}, default, store_serves=store_serves, listed=body.mode == "scopes")
+    return access_status.filter_state({**app, MODE_KEY: body.mode}, default, store_serves=store_serves)

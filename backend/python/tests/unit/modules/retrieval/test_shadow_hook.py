@@ -143,3 +143,16 @@ def test_a_search_the_serving_plan_filtered_is_handed_over_as_served(carried: st
     plan.scope_filter = flt() if carried else None
     submit(service(shadow), plan, {"v1"}, {"v1": "r1"})
     assert shadow.submit.call_args.kwargs["served"] is served
+
+
+@pytest.mark.parametrize(("scoped", "served"), [
+    (None, True),                                   # unscoped: the filter reached the search
+    (frozenset({"c1", "c2"}), True),                # mixed: it decided c1's points
+    (frozenset({"c2"}), False),                     # only a connector on the classic check: nothing was filtered, so the comparison stays valid
+], ids=["unscoped", "mixed", "classic only"])
+def test_a_scoped_request_is_served_only_when_it_reaches_a_connector_the_filter_decides(scoped: frozenset[str] | None, served: bool) -> None:
+    shadow = MagicMock()
+    plan = _QueryPlan(dense=[[0.1]])
+    plan.scope_filter = flt()                       # decides c1
+    service(shadow)._submit_shadow(["q"], "FILTER", 20, "org", "user", "ukey", scoped, (), plan, {"v1"}, {"v1": "r1"})
+    assert shadow.submit.call_args.kwargs["served"] is served
