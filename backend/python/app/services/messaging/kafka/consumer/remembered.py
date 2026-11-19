@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 
 from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 
+from app.core.org_context import spawn_in_request
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
     from logging import Logger
@@ -195,7 +197,13 @@ class OffsetFetcher:
         reader = await self._reader()
         partitions = sorted(wanted, key=lambda tp: (tp.topic, tp.partition))
         reader.assign(partitions)
-        lookups = {asyncio.ensure_future(reader.beginning_offsets([tp])): tp for tp in partitions}
+        # Child work of this fetch, awaited or cancelled before it returns: it
+        # keeps the caller's context (spawn_in_request), as a bare task would not
+        # be guaranteed to under the org-context rules.
+        lookups = {
+            spawn_in_request(reader.beginning_offsets([tp]), name=f"first-offset-{tp.topic}-{tp.partition}"): tp
+            for tp in partitions
+        }
         looking = set(lookups)
         ready: dict[TopicPartition, list[int]] = {}
         try:
