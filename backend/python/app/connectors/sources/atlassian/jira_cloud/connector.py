@@ -95,6 +95,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     BROWSE_ISSUE_HOLDER_TYPES,
     HOLDER_USER,
     HOLDER_USER_FIELD,
+    LEVEL_MEMBERS_UNREAD,
     ROLE_LIST_MAX_AGE_MS,
     UNREADABLE_REASONS,
     IssueSecurityContext,
@@ -110,6 +111,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     index_members,
     level_group_external_id,
     level_group_grants,
+    level_readers,
     level_reads_alike,
     levels_after_walk,
     plan_level_reread,
@@ -574,6 +576,10 @@ class JiraConnector(BaseConnector):
         self._projects_naming_unread_roles: set[str] = set()
         # The role list security levels apply: the one read this sync, or the last one kept (``roles_for_levels``).
         self._level_roles: dict[str, list[dict[str, Any]]] = {}
+        # Members of each group (by id and name, None when unread) and role (``<key>_<role id>``, ``<key>_projectLead``)
+        # as last saved, so a level's members are known (``level_readers``).
+        self._group_members: dict[str, list[AppUser] | None] = {}
+        self._role_members: dict[str, list[AppUser]] = {}
         # True when the group list stopped on something other than 401/403 (rate limit, outage,
         # dropped connection): the groups are there and could not be read this time.
         self._group_fetch_interrupted: bool = False
@@ -1063,6 +1069,8 @@ class JiraConnector(BaseConnector):
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
+            if groups_members_map is not None:
+                self._group_members = groups_members_map
 
             # 5. Resolve project filter, then fetch projects
             projects, raw_projects = await self._fetch_filtered_projects(jira_users)
@@ -2360,6 +2368,8 @@ class JiraConnector(BaseConnector):
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
             groups_members_map = await self._sync_user_groups(jira_users)
+            if groups_members_map is not None:
+                self._group_members = groups_members_map
             # Only keys and leads are needed: skip the permission scheme read of every project.
             raw_projects = await self._list_projects_with_filter(*self._project_keys_filter())
             if groups_members_map is not None:
@@ -4221,6 +4231,7 @@ class JiraConnector(BaseConnector):
 
         if self._user_read_unfinished:
             roles_to_sync = await self._without_stored_members("role", roles_to_sync)
+        self._role_members.update({role.source_role_id: members for role, members in roles_to_sync})
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
@@ -4305,6 +4316,7 @@ class JiraConnector(BaseConnector):
 
         if unresolved_leads:
             lead_roles_to_sync = await self._without_unresolved_stored_leads(lead_roles_to_sync, unresolved_leads)
+        self._role_members.update({role.source_role_id: members for role, members in lead_roles_to_sync})
 
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
@@ -4812,6 +4824,8 @@ class JiraConnector(BaseConnector):
             await self._load_issue_security(project_key), project_key
         )
         self._issue_security[project_id] = security
+        security.level_readers = self._level_readers(
+            security, project_key, self._grant_directory({u.source_user_id: u for u in jira_users if u.source_user_id}))
         self._issue_build_failures = 0
         self._parents_to_retry = set()
         self._issues_to_retry = set()
@@ -5105,6 +5119,17 @@ class JiraConnector(BaseConnector):
                 message="Jira roles unreadable: grant the connector account Jira admin to restore role-based access.",
                 payload={"redirect_link": None},
             )
+
+    def _level_readers(
+        self, security: IssueSecurityContext, project_key: str, users: dict[str, AppUser],
+    ) -> dict[str, frozenset[tuple[str, str]] | None]:
+        """Each level's readers through its same-on-every-issue holders, from the members last saved."""
+        out: dict[str, frozenset[tuple[str, str]] | None] = {}
+        for level_id, holders in security.members_by_level.items():
+            grants, skipped = level_group_grants(
+                holders, project_key=project_key, user_by_id=users, app_roles_mapping=self._level_roles)
+            out[level_id] = None if skipped else level_readers(grants, self._group_members, self._role_members)
+        return out
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,
@@ -8330,6 +8355,8 @@ class JiraConnector(BaseConnector):
                     await self._load_issue_security(project_ref, cached=False),
                     project_ref, fresh=True,
                 )
+                security.level_readers = self._level_readers(
+                    security, project.get("key") or project_ref, self._grant_directory(synced_user_by_account_id or {}))
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
 
@@ -8409,6 +8436,10 @@ class JiraConnector(BaseConnector):
                 project_id=project_id if project_id and project_id == issue_record.external_record_group_id else None,
             )
             permissions = self._directory_grants(permissions, synced_user_by_account_id or {})
+            # The level's members are not known in this process yet (no sync since it started): written without a grant
+            # through them, never wider, and read again by the next sync.
+            members_pending = LEVEL_MEMBERS_UNREAD in skipped_holders
+            skipped_holders = [h for h in skipped_holders if h != LEVEL_MEMBERS_UNREAD]
             if settled and not skipped_holders and issue_record.access_group_external_id:
                 skipped_holders = await self._ensure_level_group(
                     project_id, project.get("key") or project_ref,
@@ -8425,9 +8456,9 @@ class JiraConnector(BaseConnector):
                 )
                 return None
 
-            if comments_wait:
+            if comments_wait or members_pending:
                 self.logger.info(
-                    f"Issue {issue_id}: its access is written now and its restricted comments by the next sync"
+                    f"Issue {issue_id}: its access is written now and its restricted comments or level members by the next sync"
                 )
                 issue_record.source_updated_at = getattr(record, "source_updated_at", None) or 0
             return (issue_record, permissions)

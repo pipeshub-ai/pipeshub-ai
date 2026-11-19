@@ -680,6 +680,23 @@ class TestReindexAppliesTheLevel:
         {"issueSecurityLevelId": "10102", "holder": {"type": "group", "value": "group-1"}}]}
 
     @pytest.mark.asyncio
+    async def test_the_reporter_in_the_level_through_a_group_reads_it_after_a_reindex(self) -> None:
+        """Browse names the reporter on the issue and the level holds them through a group: Jira shows it to them."""
+        c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
+        c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
+        c._group_members = {"group-1": [_users()[0]]}  # as the last sync saved them
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert record.source_updated_at == c._parse_jira_timestamp("2025-01-01T00:00:00.000+0000")
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_before_any_sync_grants_nobody_through_the_group_and_leaves_the_issue_to_the_sync(self) -> None:
+        c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
+        c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert (record.access_rule, perms, record.source_updated_at) == (AccessRule.STRICT, [], 1)
+
+    @pytest.mark.asyncio
     async def test_a_level_set_since_the_last_sync_is_applied_by_the_reindex(self) -> None:
         """A project-open issue given a level, then reindexed, must not stay open to the project."""
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
@@ -1591,10 +1608,13 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         c = _connector()
         c._browse_issue_holders["PROJ"] = self.HOLDERS
         digest = self._none(self.HOLDERS).browse_fingerprint()
+        # Saved by the last sync with the holders and the level's members as read (unread here: no group read).
+        stored = _present()
+        stored.browse_holders, stored.level_readers = self.HOLDERS, c._level_readers(stored, "PROJ", {})
         c.issues_sync_point = MagicMock()
         c.issues_sync_point.read_sync_point = AsyncMock(return_value={
             "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
-            "security_levels": json.dumps(_present().level_fingerprints(split=True)), "browse_holders": digest})
+            "security_levels": json.dumps(stored.level_fingerprints(split=True)), "browse_holders": digest})
         c.issues_sync_point.update_sync_point = AsyncMock()
         c._load_issue_security = AsyncMock(return_value=_present())
         calls = []
