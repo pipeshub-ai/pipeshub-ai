@@ -393,28 +393,48 @@ export function describeNotificationContract(fx: NotificationFixture): void {
       expect((await repo.counts(scope)).unread).to.equal(1);
     });
 
-    it('a batch whose later row the schema refuses (an empty type, a severity or status outside the enum) stores none of its rows', async () => {
-      const org = fx.newId();
-      const me = fx.newId();
-      const [first, second, plain] = [fx.newId(), fx.newId(), fx.newId()];
-      for (const rows of [
-        [mk(org, me, { _id: first }), mk(org, me, { _id: second, type: '' })],
-        [mk(org, me), mk(org, me, { type: '' })],
-        [mk(org, me, { _id: first }), mk(org, me, { _id: second, severity: 'not-a-severity' })],
-        [mk(org, me), mk(org, me, { status: 'not-a-status' })],
-      ]) {
+    const refusedRows: [string, Record<string, unknown>][] = [
+      ['an empty type', { type: '' }],
+      ['a severity outside the enum', { severity: 'not-a-severity' }],
+      ['a status outside the enum', { status: 'not-a-status' }],
+    ];
+    for (const [what, bad] of refusedRows) {
+      it(`a batch whose last row the schema refuses (${what}) stores none of its rows, each checked by id`, async () => {
+        const org = fx.newId();
+        const me = fx.newId();
+        const ids = [fx.newId(), fx.newId(), fx.newId()];
         let err: unknown;
         try {
-          await repo.insertMany(rows);
+          await repo.insertMany([
+            mk(org, me, { _id: ids[0] }),
+            mk(org, me, { _id: ids[1] }),
+            mk(org, me, { _id: ids[2], ...bad }),
+          ]);
+        } catch (e) {
+          err = e;
+        }
+        expect(err, 'the refused batch').to.be.instanceOf(Error);
+        // the ungated existence check sees a stored row whatever its status
+        for (const id of ids)
+          expect(await repo.exists({ orgId: org, userId: me }, id), `row ${id} of the refused batch`).to.equal(false);
+        await repo.insertMany([mk(org, me, { _id: ids[0] })]);
+        expect(await repo.exists({ orgId: org, userId: me }, ids[0]), 'the same id stores once the batch is valid').to.equal(true);
+      });
+    }
+
+    it('a batch of rows without ids whose later row the schema refuses stores none of its rows', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      for (const bad of [{ type: '' }, { severity: 'not-a-severity' }]) {
+        let err: unknown;
+        try {
+          await repo.insertMany([mk(org, me), mk(org, me, bad)]);
         } catch (e) {
           err = e;
         }
         expect(err, 'the refused batch').to.be.instanceOf(Error);
         expect((await repo.counts({ orgId: org, userId: me })).unread, 'rows left by the refused batch').to.equal(0);
       }
-      expect(await repo.exists({ orgId: org, userId: me }, first), 'the earlier row with its own id').to.equal(false);
-      await repo.insertMany([mk(org, me, { _id: plain })]);
-      expect(await repo.exists({ orgId: org, userId: me }, plain)).to.equal(true);
     });
 
     it('a row scheduled far ahead (past any partition made in advance) is stored and stays hidden', async () => {
