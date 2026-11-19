@@ -369,8 +369,9 @@ class TestMiscComprehensive:
         connector.run_sync.assert_awaited_once()
 
     def test_handle_webhook_notification(self, connector):
-        with patch("asyncio.create_task"):
-            connector.handle_webhook_notification({})
+        connector.request_sync = MagicMock()
+        connector.handle_webhook_notification({})
+        connector.request_sync.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_reindex_records_empty(self, connector):
