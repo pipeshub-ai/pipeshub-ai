@@ -87,16 +87,17 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "version=$version candidate=${version}-rc.${GITHUB_RUN_ID} promote=$promote"
 
-      # Whatever can move :latest (a tag push, or a promoting dispatch): test_no_released_head_is_gone holds every later
-      # migration head to the ones the released tree records, so it must record its own (backend/db/README.md, Released heads).
+      # Whatever publishes (a tag push, a promoting dispatch, or a prerelease dispatch, which publishes its version tags):
+      # test_no_released_head_is_gone holds every later migration head to the ones the released tree records, so it must
+      # record its own (backend/db/README.md, Released heads). A stable dispatch without promote is a rehearsal and is skipped.
       - name: Checkout
-        if: github.event_name == 'push' || inputs.promote
+        if: github.event_name == 'push' || inputs.promote || contains(inputs.version, '-')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: The release records its migration heads
-        if: github.event_name == 'push' || inputs.promote
+        if: github.event_name == 'push' || inputs.promote || contains(inputs.version, '-')
         working-directory: backend
         env:
           VERSION: ${{ steps.v.outputs.version }}

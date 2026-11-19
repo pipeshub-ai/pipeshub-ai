@@ -34,7 +34,7 @@ then does four things in order, and stops at the first failure.
 
 | Stage | What happens | What it proves |
 |-------|--------------|----------------|
-| Resolve | The tag is parsed as semver, and the epochs in `backend/db/released_heads.json` must equal the tree's migration heads (on a tag push, or a manual run with **promote**) | A typo cannot publish `pipeshubai/pipeshub-ai:oops`; a release cannot ship without recording its migration heads |
+| Resolve | The tag is parsed as semver, and the epochs in `backend/db/released_heads.json` must equal the tree's migration heads (on a tag push, a manual run with **promote**, or a manual run of a pre-release version) | A typo cannot publish `pipeshubai/pipeshub-ai:oops`; a release cannot ship without recording its migration heads |
 | Build | Both variants built for amd64 and arm64, pushed under a **candidate** tag | The image builds reproducibly from the tag |
 | Verify | First-run install, then upgrade from the previous release — both variants, on amd64 and arm64 | A user can install it, and an existing user can move to it, on either architecture |
 | Promote | Candidate copied by digest onto the release tags | `:latest` only ever points at an image that passed |
