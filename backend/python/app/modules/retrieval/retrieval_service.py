@@ -505,7 +505,7 @@ class RetrievalService:
         self.collection_registry = collection_registry
         # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
         self._shadow = self._build_shadow(graph_provider)
-        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE=scopes); None in every other mode.
+        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE scopes, or shadow for a connector an admin switched); None in legacy.
         self._planner = self._build_planner(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
@@ -538,7 +538,7 @@ class RetrievalService:
     def _build_planner(self, graph_provider: IGraphDBProvider) -> object | None:
         from app.services.permissions.wiring import build_serving_planner
 
-        return build_serving_planner(graph_provider)
+        return build_serving_planner(graph_provider, self.config_service)
 
     def _submit_shadow(
         self, queries, filter, asked: int, org_id: str, user_id: str | None, user_key: str | None,  # noqa: A002, ANN001

@@ -10,13 +10,36 @@ from fastapi import HTTPException
 
 from app.connectors.api import router as r
 from app.core import org_context
+from app.services.permissions.currency import SCOPES_CONNECTORS_KEY
 from app.services.permissions.mode import ENV_ACL_FILTER_MODE
 
 
+class Config:
+    """The config store of the switched list; ``down`` makes every read and write fail."""
+
+    def __init__(self, listed: list[str] | None = None) -> None:
+        self.listed, self.down, self.writes = listed, False, 0
+
+    async def get_config(self, key: str, default: object = None, **_: object) -> object:
+        if self.down:
+            raise RuntimeError("store down")
+        return self.listed if key == SCOPES_CONNECTORS_KEY and self.listed is not None else default
+
+    async def set_config(self, key: str, value: object, **_: object) -> bool:
+        if self.down:
+            raise RuntimeError("store down")
+        assert key == SCOPES_CONNECTORS_KEY
+        self.listed, self.writes = value, self.writes + 1      # type: ignore[assignment]
+        return True
+
+
 @pytest.fixture(autouse=True)
-def _env(monkeypatch: pytest.MonkeyPatch) -> None:
+def cfg(monkeypatch: pytest.MonkeyPatch) -> Config:
     monkeypatch.setenv(ENV_ACL_FILTER_MODE, "shadow")
     monkeypatch.setenv("VECTOR_DB_TYPE", "pgvector")
+    c = Config()
+    monkeypatch.setattr(r, "resolve_config_service", lambda *_: c)
+    return c
 
 
 @pytest.fixture(autouse=True)
@@ -90,3 +113,32 @@ async def test_a_connector_gone_between_the_read_and_the_write_is_404() -> None:
 async def test_an_unknown_mode_is_refused_by_the_request_model() -> None:
     with pytest.raises(ValueError):
         r.PermissionFilterRequest(mode="shadow")
+
+
+async def test_scopes_lists_the_connector_before_its_document_and_a_store_that_is_down_stores_nothing(cfg: Config) -> None:
+    cfg.listed = ["c0"]
+    g = _graph({"status": "IDLE"})
+    await _patch("scopes", g=g)
+    assert cfg.listed == ["c0", "c1"]
+    cfg.down = True
+    g2 = _graph({"status": "IDLE"})
+    with pytest.raises(HTTPException) as e:
+        await _patch("scopes", g=g2)
+    assert e.value.status_code == 503
+    g2.update_node.assert_not_called()
+
+
+async def test_a_rollback_takes_the_connector_off_the_list_and_still_succeeds_when_the_list_cannot_be_written(cfg: Config) -> None:
+    cfg.listed = ["c1", "c2"]
+    await _patch("legacy")
+    assert cfg.listed == ["c2"]
+    cfg.listed, cfg.down = ["c1"], True
+    g = _graph({"status": "IDLE", "aclFilterMode": "scopes"})
+    assert (await _patch("inherit", g=g))["mode"] == "inherit"      # the document decides; a list that still names c1 costs a read, never access
+    g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": "inherit"})
+
+
+async def test_setting_the_mode_it_already_has_does_not_rewrite_the_list(cfg: Config) -> None:
+    cfg.listed = ["c1"]
+    await _patch("scopes")
+    assert cfg.writes == 0

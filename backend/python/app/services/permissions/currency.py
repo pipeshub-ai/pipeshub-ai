@@ -48,6 +48,9 @@ if TYPE_CHECKING:
 #: The connector's own choice, set by an admin: `inherit` (the deployment's ``ACL_FILTER_MODE``), `legacy` or `scopes`.
 MODE_KEY = "aclFilterMode"
 MODES = ("inherit", "legacy", "scopes")
+#: Config key: the ids of the connectors whose own mode is `scopes`. Only a deployment whose default is not `scopes` reads it, so that a search
+#: that no admin switch can concern reads nothing; the app document stays the answer for each connector it names.
+SCOPES_CONNECTORS_KEY = "/services/permissions/scopesConnectors"
 
 
 def chosen_mode(app: Mapping[str, object] | None) -> str:

@@ -56191,7 +56191,9 @@ paths:
         every mode, so no mode shows anyone more than the classic check does.
 
         `scopes` is refused with `409` when this deployment cannot read stored permissions at
-        all (see `blockers`). `legacy` and `inherit` are always accepted.
+        all (see `blockers`). `legacy` and `inherit` are always accepted and apply to the next
+        search. When `ACL_FILTER_MODE` is `shadow`, a switch to `scopes` reaches search within
+        30 seconds.
 
         <b>Who can call it:</b> the same callers as `GET /connectors/{connectorId}/permissions/status`;
         anyone else gets <code>404</code>.
@@ -56278,7 +56280,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The connector service could not be reached. Safe to retry.
+          description: The connector service could not be reached, or the setting could not be saved. Safe to retry.
           content:
             application/json:
               schema:
