@@ -18,7 +18,7 @@ async def test_it_takes_a_free_place_and_refuses_a_full_pool_without_waiting() -
 async def test_it_never_jumps_ahead_of_a_queued_download() -> None:
     ahead = DownloadAhead(1)
     assert await ahead.acquire(0.5)
-    queued = asyncio.create_task(ahead.acquire(30.0))
+    queued = asyncio.create_task(ahead.acquire(10.0))
     await asyncio.sleep(0.05)
     assert ahead.waiting == 1
     ahead.release()  # the place is handed to the queued download, which has not run yet

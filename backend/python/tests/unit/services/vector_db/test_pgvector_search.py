@@ -522,7 +522,7 @@ async def test_a_search_never_waits_for_the_connector_check_and_a_slow_pool_does
     sizer = dense.Sizer(db, dataclasses.replace(T, connector_check_ms=150))
     with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
         assert done_without_waiting(sizer.connectors(ORG, 1)) is None                 # the search goes on with the arms
-        await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 30)
+        await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)
         assert await sizer.connectors(ORG, 1) == frozenset({"c1"})                     # the check finished despite the wait
         assert db.runs == 1 and db.budgets == [(150,)]
 

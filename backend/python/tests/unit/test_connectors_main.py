@@ -1907,7 +1907,7 @@ class TestGraphDbHealthCheck:
 
         async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does, until the test lets it go
             pings.append(asyncio.current_task())
-            end = time.monotonic() + 30  # bounds a hang
+            end = time.monotonic() + 10  # bounds a hang
             while not stop.is_set() and time.monotonic() < end:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(0.05)

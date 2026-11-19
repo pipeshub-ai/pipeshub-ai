@@ -109,10 +109,10 @@ async def test_a_waiter_over_its_class_ceiling_does_not_block_the_ones_behind_it
     gate = ClassGate("heavy_parse", numbers=lambda: N, capacity=lambda: PoolCapacity(10))
     running = await gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=1)
     # The head outlives the others' deadlines, so one stuck behind it times out instead of being let through late.
-    heavy = asyncio.create_task(gate.acquire(GateRequest(cls=L, cpu=2, est_seconds=120.0), deadline_s=60))
+    heavy = asyncio.create_task(gate.acquire(GateRequest(cls=L, cpu=2, est_seconds=120.0), deadline_s=20))
     await settle()
-    light_large = asyncio.create_task(gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=30))
-    small = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=10.0), deadline_s=30))
+    light_large = asyncio.create_task(gate.acquire(GateRequest(cls=L, est_seconds=120.0), deadline_s=10))
+    small = asyncio.create_task(gate.acquire(GateRequest(cls=S, est_seconds=10.0), deadline_s=10))
     small_permit = await small  # not stuck behind a request this gate will not admit
     large_permit = await light_large  # the weight-1 behind the weight-2 head fits and is granted
     assert not heavy.done()

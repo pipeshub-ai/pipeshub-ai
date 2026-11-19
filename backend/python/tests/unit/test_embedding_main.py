@@ -1276,7 +1276,7 @@ class TestQueriesDuringIndexing:
             assert before["in_use"] == 1 and before["waiting"] == 2
             assert before["oldest_in_use_age_s"]["bulk"] > 0
 
-            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=30)
+            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=10)
             # The query took the reserved slot without queueing (read on the gate's own clock, not timed).
             assert manager.encode_gate_stats()["wait_p95_ms"]["query"] == 0.0
 

@@ -72,7 +72,7 @@ async def test_a_release_that_lands_before_the_watchers_first_read_is_not_missed
     task = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
     await asyncio.sleep(0.05)  # the waiter has made its first attempt; the watcher thread is still asleep
     held.release()
-    (await asyncio.wait_for(task, 30)).release()  # a missed wake times out at the 10 s deadline
+    (await asyncio.wait_for(task, 15)).release()  # a missed wake times out at the 10 s deadline
 
 
 async def test_freeing_k_llm_slots_at_once_wakes_k_waiters_in_one_round(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,7 +84,7 @@ async def test_freeing_k_llm_slots_at_once_wakes_k_waiters_in_one_round(ledger: 
     await asyncio.sleep(0.3)
     assert not any(w.done() for w in waiters)
     holder.close()  # one call frees 20 slots
-    await asyncio.wait_for(asyncio.gather(*waiters), 30)  # all 20 woken by the release, none left for a fallback tick
+    await asyncio.wait_for(asyncio.gather(*waiters), 15)  # all 20 woken by the release; one not woken times out at 10 s
     assert len(held) == 20
 
 
@@ -315,7 +315,7 @@ async def test_a_freed_token_wakes_the_critical_waiter_before_an_older_big_one(l
     critical = asyncio.create_task(b.reserve(_small(), deadline_s=10))
     await asyncio.sleep(0.1)
     held.release()
-    permit = await asyncio.wait_for(critical, 30)  # woken first; not woken, it times out at its 10 s deadline
+    permit = await asyncio.wait_for(critical, 15)  # woken first; not woken, it times out at its 10 s deadline
     assert not big.done()
     permit.release()
     (await asyncio.wait_for(big, 2)).release()
