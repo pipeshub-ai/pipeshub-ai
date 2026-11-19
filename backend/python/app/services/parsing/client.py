@@ -149,6 +149,7 @@ class ParsingClient(BaseServiceClient):
         provider: ParserProvider | None = None,
         skip_table_enrichment: bool = False,
         file_path: str | None = None,
+        record_id: str | None = None,
     ) -> ParseResult:
         """Parse *file_content* by calling the Parsing Service.
 
@@ -176,6 +177,8 @@ class ParsingClient(BaseServiceClient):
             form_data["provider"] = provider.value
         if file_path:
             form_data["file_path"] = file_path
+        if record_id:
+            form_data["record_id"] = record_id
         # The record budget this call waits under: the service bounds its stage (and its late writes) by it.
         form_data["record_budget_s"] = str(messaging_env.record_processing_timeout_for(extension, mime_type))
         run = current_run()

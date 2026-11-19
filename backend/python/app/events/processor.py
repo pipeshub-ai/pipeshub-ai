@@ -377,7 +377,7 @@ class Processor:
             )
 
             # Phase 1: Parse PDF layout (no LLM calls)
-            parsed_data = await processor.parse_document(record_name, pdf_binary)
+            parsed_data = await processor.parse_document(record_name, pdf_binary, table_model=True, record_id=recordId)
             pdf_binary = None
 
             # Signal parsing complete
