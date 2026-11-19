@@ -1730,7 +1730,6 @@
       "subtitle": "Create and manage groups to control access and permissions",
       "enterpriseTitle": "Group permissions are available in the Enterprise Edition",
       "enterpriseMessage": "Upgrade to the Enterprise Edition to use group permissions.",
-      "enterpriseContact": "Contact us",
       "createGroup": "Create group",
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
@@ -1811,6 +1810,21 @@
         "saveError": "Failed to save permissions",
         "loadError": "Failed to load permissions",
         "empty": "No permissions are defined yet."
+      }
+    },
+    "enterprise": {
+      "contact": "Talk to Sales",
+      "scim": {
+        "heading": "SCIM provisioning is available in the Enterprise Edition",
+        "message": "Let Okta or Microsoft Entra ID add, update and switch off people in your workspace automatically."
+      },
+      "auditLogs": {
+        "heading": "Audit logs are available in the Enterprise Edition",
+        "message": "See who did what in your workspace, and when."
+      },
+      "usage": {
+        "heading": "Usage, credits and billing are available in the Enterprise Edition",
+        "message": "See what AI costs by person, agent, connector and model, manage credits, your plan and invoices, and set spending alerts in Credit settings."
       }
     },
     "teams": {
@@ -2311,6 +2325,8 @@
       "sections": {
         "overview": "Overview",
         "workspace": "Workspace",
+        "usageAndCredits": "Usage & credits",
+        "security": "Security",
         "personal": "Personal",
         "people": "People",
         "developerSettings": "Developer settings"
@@ -2340,6 +2356,9 @@
         "archivedChats": "Archived chats",
         "users": "Users",
         "groups": "Groups",
+        "scim": "SCIM",
+        "auditLogs": "Audit logs",
+        "usage": "Usage & credits",
         "teams": "Teams",
         "webSearch": "Web search",
         "tenants": "Tenants",

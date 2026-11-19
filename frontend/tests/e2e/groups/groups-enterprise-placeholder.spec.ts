@@ -26,9 +26,9 @@ test.describe('Groups Enterprise Placeholder', () => {
     await expect(page.getByText(/Showing/i)).toHaveCount(0);
   });
 
-  test('contact link opens the docs contact page', async ({ page }) => {
-    const contact = page.getByRole('link', { name: 'Contact us' });
+  test('Talk to Sales opens the booking page', async ({ page }) => {
+    const contact = page.getByRole('link', { name: 'Talk to Sales' });
     await expect(contact).toBeVisible();
-    await expect(contact).toHaveAttribute('href', 'https://docs.pipeshub.com/contact-us');
+    await expect(contact).toHaveAttribute('href', 'https://calendly.com/rishabh-pipeshub/30min');
   });
 });

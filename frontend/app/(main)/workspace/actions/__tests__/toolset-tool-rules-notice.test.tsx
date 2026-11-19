@@ -1,9 +1,12 @@
 import React from 'react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import { ToolsetToolRulesNotice } from '../components/toolset-tool-rules-notice';
+
+// The Enterprise notices these screens show are for admins; render them as an admin would see them.
+vi.mock('@/lib/hooks/use-enterprise-prompt', () => ({ useEnterprisePrompt: () => true }));
 
 beforeEach(() => installBrowserShims());
 afterEach(() => cleanup());

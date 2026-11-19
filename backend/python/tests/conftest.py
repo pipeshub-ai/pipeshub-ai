@@ -322,6 +322,16 @@ def _reset_narrow_access_memo() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_log_once() -> Iterator[None]:
+    """``log_once`` remembers, per process, when each key last logged. A line throttled in one
+    test must not be silenced, or its flag left unset, in another."""
+    logging_fields = sys.modules.get("app.utils.logging_fields")
+    if logging_fields is not None:
+        logging_fields._log_once_last.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_dns_for_model_endpoints(monkeypatch):
     """A model health check looks its endpoint's name up before calling it; unit tests must
     not reach a resolver, so every name resolves to a public address. Tests of the lookup

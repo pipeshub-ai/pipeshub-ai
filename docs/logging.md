@@ -245,7 +245,8 @@ the auth middleware bound.
   a thread, and the route's own lines would lose the binding). A route marks the `HTTPException` it raises, not its cause, then
   raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds a bounded event field to this line only.
 - `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
-  first leaf), on a failure line whose exception has a chain; it is a type name only, so it stays with
+  first leaf), on a failure line whose exception has a chain (`error_class.has_chain`; omitted otherwise, since it would repeat
+  `error_type`; `http.request.end` and `index.end` follow this rule); it is a type name only, so it stays with
   `include_error_text=False`. For `HTTPException from MCPOAuthError from httpx.ConnectError` the line has
   `error_type=HTTPException cause_type=ConnectError`: the middle domain error is not on the line. A route that needs its domain
   code there marks it with `reason=`.
@@ -343,7 +344,7 @@ or `<topic>-<partition>-<offset>` on Kafka); then the producer's request id, bef
 verified, the envelope's org and user, `event_type`, and the payload's `record_id` and `connector_id`. Every line of the delivery
 carries them: the handler's own, and the ack, retry or dead-letter decision. Before verification, and on a rejected envelope,
 `org_id` is the org the producer claims, not a verified one. The indexing consumers bind the same for a record's whole run
-(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is the indexing summary.
+(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is `index.end` (see "Indexing").
 
 | Event | Level | Fields |
 | --- | --- | --- |
@@ -376,6 +377,108 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
 - Work a handler starts in its own context (the sync task manager) keeps the message's ids; `message.end` is written when the
   delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
   (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
+
+## Indexing
+
+The indexing consumers (Redis Streams and Kafka, `app/services/messaging/*/indexing_consumer.py`, and the PostgreSQL broker's
+`PgMessagingConsumer(indexing=True)`) open a `RecordTimeline` (`app/utils/indexing_timing.py`) for each delivery that reaches a
+record, and write **one** `index.end` line when it ends, in the `finally` after the releases. P8's `bound_message` gives it the
+delivery's ids on Redis and Kafka; on PostgreSQL the line is written in the root the delivery ran in (the envelope's request id,
+or the one minted for an envelope without one), binds its org and notes `record_id`, `event_type` and `connector_id` from the payload.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `index.end` | see below | `outcome` (`success`, `skipped`, `failure`), `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `attempt`, `tier`, `duration_ms`, `record_id`, `event_type`; timings `wait_slot_ms`, `held_ms`, `pre_parse_ms`, `parse_wait_ms`, `parse_ms`, `post_parse_ms`, `stages` (busy time per step, largest first, steps under 50 ms left out), `slow_steps`; what was learned on the way: `extension`, `mime_type` (as the file-type registry knows them, else `unknown`: never the text of a name or a MIME parameter), `size_bytes`, `blocks`, `chunks`, `failed_batches`, `page` (an OCR page), `block_group` (the block group a failure was in), `duplicate_of` (the shared virtual record id; absent while the twin is still being indexed), `timeout_s`, `phase` (`enrichment`, `after_indexing_complete`), `code` (a hand-back's type), `pool` (the slot a parse-slot wait ran out on), and for a stage job `stage`, `job`; for an exception, the `log_failure` fields and `cause_type` |
+
+Levels and outcome:
+- `ack`: `success`, or `skipped` when the handler noted a skip (`reason`: `duplicate`, `already_indexed`, `replayed` (an exact
+  replay of a delivery that completed the record), `not_found`, `in_trash`, `stage_moved`, `no_stage_state`, `connector_missing`,
+  `connector_inactive`, `parse_now_refused`, `folder`, `unsupported_type`, `too_large` (a file too large to read), `metadata_file`, `code_file_skipped` (a generated or oversized code file), `no_virtual_record_id`, `stored_content_missing` (a vector-only reindex whose stored blocks could not be read; the
+  record is marked failed, and `index.blob_read_failed` says why), `nothing_to_rerun` (a stage re-run that dispatched no job: a
+  newer release owns the revision, or every stage was current), `duplicate_envelope` (PostgreSQL)). INFO.
+- Handed back without an attempt counted: `skipped`, `retry`; `reason=requeued` is WARNING (waiting on capacity), or the level the
+  hand-back asks for (a paused stage job that wakes into the same outage is DEBUG), `contended` INFO.
+- A failure that will be retried: `failure`, `retry`, at WARNING, or ERROR for `internal`/`misconfigured`.
+- Dead-lettered: `reason=terminal` (the content: a corrupt, password-protected or unsupported file) at the class's level, WARNING for
+  a user's file; `attempts_exhausted`, `backstop` (handed back too many times) and `unfinished_attempts` (a crash loop) are ERROR:
+  a human reindexes the record. Kafka with no retry tracker commits the failure: `dead_letter`, `reason=no_retry_tracker`.
+  On PostgreSQL the hand-back backstop does not drop the row: it nacks it as a failed attempt (`retry`, `reason=backstop`,
+  WARNING), and the delivery limit dead-letters it later (`attempts_exhausted`, ERROR). A hand-back that names itself
+  (`give_up_label`, a same-bytes skip that cannot finish) is the exception: it is dead-lettered at the backstop
+  (`dead_letter`, `reason=backstop`, ERROR), with no later retry. A terminal failure there keeps the
+  specific reason `_process` found (`envelope_rejected` with `code`, `unparseable`, `no_handler`) instead of `terminal`, at ERROR
+  like the other non-content dead-letters.
+- `shutdown` and `cancelled` are INFO, and so is a record deleted while it was being indexed. A delivery cancelled before a
+  broker call confirmed its settlement is `disposition=retry` (it is redelivered), `success` when the record was already
+  indexed; one cancelled after a confirmed ack keeps `ack`. A source that refused the item
+  (its 4xx with a stored reason) and ended the record as terminal is `reason=source_refused` at its class's level, WARNING; a
+  retried or exhausted refusal keeps its retry reason.
+- A branch that leaves the entry pending (`requeue_failed`, `count_failed`, Redis's `no_retry_tracker`, and `ack_failed` when the
+  replacement was sent but the original's ack failed) is `disposition=retry` whatever the handler reached.
+- `disposition=ack` on Kafka under fair scheduling records the local settlement (the offset marked done on the commit
+  watermark), not that Kafka committed that offset: an earlier offset still in flight holds the watermark back, and a restart
+  before it advances can read the offset again (the redelivery is deduped).
+- `reason=claim_lost`: the delivery no longer owns its message, so nothing was settled. On PostgreSQL the ack, nack or dead
+  update matched no row (a newer claim of it exists); on Kafka the partition was revoked under it (also after a hand-back's
+  replacement was published, or when a give-up had already told the sink: then it is not `dead_letter`).
+- `reason=nack_failed` / `dead_letter_failed` (PostgreSQL): the nack or dead update raised, so nothing was settled; the error
+  propagates and the expired claim hands the row out again. `index.end` keeps the record's own exception. WARNING; an indexed record
+  stays `success`.
+- `reason=queued_copies_release_failed`: the record finished (or was already indexed), but its queued copies could not be
+  released; the delivery is retried so the redelivery can release them.
+- `phase=after_indexing_complete`: a timeout in the bookkeeping after `INDEXING_COMPLETE`, not the record's budget (`timeout_s` is
+  only written when that budget ran out). A timeout raised inside the handler before `INDEXING_COMPLETE` has neither.
+- `timeout_s` is the record's configured processing budget. The embedding stall timer (`RecordProgress`) can end the same
+  budget earlier; its `embed cut (stall)` line says so, and `duration_ms` is the time the attempt ran.
+- The ack or commit failed after the record was indexed (`reason=ack_failed` or `commit_failed`): `success` (or `skipped`,
+  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. A handler that raised after
+  `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+- A failure with no exception and no class is WARNING, except the dead-letters above (`unfinished_attempts`, `backstop`),
+  which stay ERROR.
+- `error_class` is `classify_error`'s, except that a `DocumentProcessingError` whose direct cause is a programming error
+  (`KeyError`, `AttributeError`, `TypeError`, `NameError`, `AssertionError`) is `internal`: a bug in our parse code. A library that
+  wraps its own `KeyError` (docling on a zip renamed `.docx`) stays the user's content, `bad_request`. Retries do not read this.
+- No `error_message` when a link of the chain, or a member of an exception group in it, is a content error or a pydantic
+  `ValidationError` (`error_class.quotes_content`): the processor copies the parser's text, which quotes the file name, and a
+  validation error quotes the message's values. A page fan-out keeps the `page` of the first page that failed. The stack written at ERROR then shows each exception as `Type: <message omitted>`.
+- `INDEXING_TIMING_LOGS=false` silences only `index.slow_step`; the timing fields stay on `index.end`.
+
+Rules for the code on the path:
+- Inner layers (the record handler, the event processor, the processor, the sinks, the stage worker) raise what they cannot handle
+  without logging it, and `indexing_timing.note(...)` what the line should say. The consumer notes `disposition` and `attempt`
+  only after the broker call (XACK, re-queue, commit) returns, and reason codes, never free text.
+- `tests/unit/core/test_indexing_log_once.py` lists the `except` blocks on the path that may still log and raise.
+- A stage job (`StageJobHandler`) notes `stage`, `job` and `record_id` on the delivery's timeline: one `index.end` per stage delivery.
+- A double failure (the status write fails after the record failed) re-raises the record's error `from` the status-write error, so
+  that line's `cause_type` and stack come from the status write.
+
+Other lines on the path, each once:
+
+| Event | Level | When |
+| --- | --- | --- |
+| `index.slow_step` | WARNING | a step ran past `INDEXING_SLOW_STEP_SECONDS`; `step`, `duration_ms`, `threshold_ms`, `detail`, `record_id`; at most three per step per record |
+| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. A failed request (a 500, a 429 without `Retry-After`, a connection lost mid-answer) has no `reason`: `error_class` says why, and `status` adds Docling's HTTP status when it answered with one (a lost connection has none) |
+| `index.download_fallback` | WARNING | the signed-URL download failed; the connector stream is tried next (no text: it can carry the URL) |
+| `index.requeue_failed` | WARNING | the re-queue of a failed or handed-back record failed; it stays pending (no text) |
+| `index.ack_failed` | WARNING | Redis: the replacement was sent, but the original's ack failed; it stays pending and is deduped when redelivered (no text) |
+| `index.count_failed` | WARNING | Redis: the retry tracker could not count the failed attempt; the entry stays pending (no text) |
+| `index.commit_failed` | WARNING | Kafka: the offset commit failed (no text) |
+| `index.status_write_failed` | WARNING | the record's FAILED or QUEUED status could not be written; the record's own error is still raised |
+| `index.post_ack_failed` | WARNING | Redis: cleanup after a successful record's XACK raised |
+| `index.retry_clear_failed` | WARNING | the retry tracker could not clear a settled delivery's count; the settlement stands (`tracking_id`) |
+| `index.blob_read_failed` | WARNING | a vector-only reindex could not read the stored blocks; the record is marked failed |
+| `index.ack_failed` | WARNING | Redis: the XACK of a dead-letter failed; the entry stays pending (no text; `index.end` keeps the record's own exception) |
+| `index.dedup_normalize_failed` | WARNING | HTML could not be normalised for duplicate detection; the raw bytes are hashed instead (no text: it can carry the document) |
+| `index.task_failed` | per class | a processing task ended with an exception nobody handled; DEBUG for one already written (by `index.end`, `index.requeue_failed` or `index.commit_failed`) |
+| `stage.run_failed` | WARNING | a stage failed after another worker took its job over (`reason=superseded`): the failure's only trace |
+
+On Redis and Kafka, deliveries that end before the timeline opens write no `index.end`: an unparseable message (a WARNING, the
+sink's `Discarded an unparseable message` ERROR, and on Kafka also `Dead-lettered`), a backoff wait cut short by shutdown, a pending
+entry that is no longer ours, a record already claimed in this process (DEBUG). PostgreSQL opens the timeline before it decodes the
+message, so an unparseable message there is one `index.end` (`dead_letter`, `reason=unparseable`); the sink's line is DEBUG.
+
+Known limitation: failures raised inside `blob_storage.py`, the parsers and `docling_processor` can still log their own lines
+before `index.end` (P6b). docling's own loggers can print the file name.
 
 ## Agent loop events (Python)
 
@@ -485,6 +588,33 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
   child's call opened) (inferred). Programmatic dispatch binds its synthetic call ids (`programmatic_spawn_<step>_<hex>`) as the
   children's `tool_call_id`; they have no `tool_call.end`.
 
+## Model calls outside the agent loop (Python)
+
+A model provider puts its response body in the exception message, and the body can echo the prompt, the document or the
+account's email. So a failed model or embedding call is never logged with its text: the line that handles it calls
+`log_failure(..., include_error_text=False)` (class, type, the site's ids, a text-free stack at ERROR), and a retry or skip note
+names `error_type` instead of the error; some notes add `cause_type` (the innermost cause), so a missing `cause_type` does not
+mean the error had no cause. Lines that only relay the error (log, then raise)
+are not written: the handler above logs it once. An answer that does not fit the schema is `bad_request` (WARNING), not `internal`.
+
+| Event | Level | Fields |
+|---|---|---|
+| `structured_llm.failed` | `log_failure` policy; a reply that does not fit the schema `bad_request` | `schema`, `attempt` (0 = the first call, n = reflection n) |
+| `llm_stream.failed` | `log_failure` policy | the no-tools chat answer; the SSE error event is still sent |
+| `table_summary.failed` | `log_failure` policy | `parser` (`csv`, `excel`); a plain summary is used |
+| `document_extraction.failed` | `log_failure` policy; a failure with no cause: `bad_request` (no usable answer) or `unavailable` (open circuit) | `record_id` |
+| `extraction.fallback_failed` | `log_failure` policy | `kind` (`document`, `code`) |
+| `document_classify.failed` | as `document_extraction.failed` | the extraction service's route; `org_id` from the call scope |
+| `vlm_ocr.page_failed` | `log_failure` policy | `page`, `attempts`; the page is indexed empty, unless no page was read: then the document fails with the last error |
+| `grep_generation.failed` | `log_failure` policy | `attempt`; an answer that does not parse is an INFO note with the parser error's `error_type`, and its commands are recovered from the raw answer |
+| `record_extract.failed` | `log_failure` policy | `record_id`; the plain read is returned |
+| `image_generation.failed` | `log_failure` policy | `provider`, `model`, `mode` (`generate`, `edit`) |
+| `skill_index.embed_failed` | `log_failure` policy | `step` (`skill`, `bulk`, `query`), `count`, `total`; keyword search is used |
+| `entity_index.upsert_failed` | `log_failure` policy | `batch_start`, `count` |
+| `search.failed` | `log_failure` policy | the search's catch-all (a refused query embedding lands here) |
+| `parse.failed` | `log_failure` policy | `provider`, `parse_ms`; the parsing service's catch-all. An error VLM OCR already logged (no page read) keeps this line at its level, without a second stack |
+| `title_lookup.failed` | `log_failure` policy | the lookup of records by name beside a search (route and knowledge-graph tool); the search answers without it |
+
 ## Credential refresh
 
 The connector, toolset and MCP token refresh services log through `app/utils/credential_refresh_log.py`, so one
@@ -560,6 +690,27 @@ which every Postgres graph provider runs through) write one record per call that
   transaction the statement runs in another task, so `_Txn.run` finds the caller while its stack is live and hands it over; the
   unit's own `begin` and `prologue` there have `caller=unknown`.
 
+## Search access reads (Python)
+
+A search that cannot read what its user may access, or a graph read around it, writes one `log_failure` line where it handles the
+failure, without the error's text (`include_error_text=False`): the graph's text can carry the database host, the query and the
+record content. Like any `log_failure` line it is DEBUG when the same exception, or its cause, was already logged at its level or
+higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
+logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. When the batch access read
+fails, `check_access` first logs a `check_access failed …` ERROR with only the counts and the error's class. The
+`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause, which a
+traceback (`exc_info=True`, `logger.exception`) still prints.
+
+| Event | What the search does next | Fields |
+| --- | --- | --- |
+| `search.access_unreadable`, `search.selection_unreadable`, `search.entity_filter_unavailable`, `search.hit_check_failed` | answers that access could not be checked (an entity lookup: a search error) | the `log_failure` fields |
+| `search.remembered_scope_unreadable`, `search.record_id_retry_failed` | clears the memo and retries normal scope resolution / keeps the container results | the `log_failure` fields |
+| `container_search.verification_unavailable` | marks the attempt degraded | `vrid_count` |
+| `search.notice_gate_failed`, `search.demo_setting_failed`, `demo_data.list_failed` | no access notices / excludes no demo connector | the `log_failure` fields |
+| `search.batch_fetch_failed` | fetches the records one by one | `collection` (`files`, `mails`) |
+| `search.diversity_read_failed`, `search.connector_types_unreadable` | keeps the plain result / searches every collection | the `log_failure` fields |
+| `search.location_access_failed`, `search.location_failed` | shows an App-only Location when permitted and available; otherwise omits it | the `log_failure` fields |
+
 ## Auth audit events (Node)
 
 Every security decision of sign-in, lockout, OTP, password reset and change, SSO, JIT provisioning, sign-out and the sign-in
@@ -584,6 +735,7 @@ access line has `client_ip` and the same `request_id`.
 | `auth.session.refresh` | `failure` only | `no_token`, `token_invalid`, `token_expired`, `session_ended`, `account_inactive`, `no_credentials`, `locked` | |
 | `auth.policy.update` | `success`, `failure` | `not_admin` | |
 | `auth.jit_provision` | `success` | | `google`, `microsoft` |
+| `auth.email.verify` | `failure` only | `no_token`, `token_invalid`, `token_expired` (the `org:email:verify` and `email:verified` scopes; EE mounts their routes) | |
 
 How a refusal gets its line: the code that refuses throws its error tagged with `refusal(error, reason)` (`authRefusal` in
 `modules/auth/utils/sign-in-audit.ts` checks the code). The tag is invisible to the client and to the logs. The handler, or the
@@ -592,6 +744,32 @@ scopes only), calls `auditRefusal` once in its catch; it writes a line only for 
 (`AUTH_AUDIT_REASONS`). An untagged error is a system failure: no audit line, and the error middleware logs it once.
 Not audited: body validation 400s, rate limits, regular-JWT failures on authenticated routes, and service-to-service scoped tokens.
 Each still has its `http.request.error` (or the limiter's) line.
+
+## User and group audit events (Node)
+
+Every change to a user account, a group or a group membership is one INFO line on the `audit` logger, written right after the
+store write that makes it, with the same fields as the auth events: `org_id`, `actor` (the admin or user who made the change),
+`target` (the account; the group for `group.create`, `group.update` and `group.delete`; the affected user on membership lines),
+`outcome`, `reason`, and `group_id` (the group) on membership lines. Never an email, name,
+role name, group name or field value: a role change is told by the event and its reason.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `user.create` | `success`, `failure` | success: `demo_password` (a demo account got a starting password), else none; failure: `email_taken`, `password_not_allowed` | |
+| `user.invite` | `success`, `failure` | success: `new`, `reinvite`, `resend`; failure: `not_admin`, `admin_limit` | `new` is written when the account is created, even if its mail then fails; `reinvite` and `resend` only after the mail was accepted |
+| `user.restore` | `success` | `invite` | a removed account brought back by an invite |
+| `user.role.change` | `success`, `failure` | success: `promote`, `demote`, `new_admin` (created or invited as admin); failure: `not_admin`, `last_admin`, `admin_limit` | "who made U an admin" is this one event |
+| `user.update` | `success`, `failure` | success: `profile`, `sign_in_state` (an admin set whether the user has signed in); failure: `not_admin` | a user's own first sign-in is `auth.sign_in`, not this |
+| `user.email_change.request` | `success`, `failure` | failure: `not_self`, `email_taken` | the verification link was sent; the change itself is `auth.email.change reason=link` when the link is opened |
+| `user.delete` | `success`, `failure` | failure: `not_member` (only members can be deleted) | |
+| `group.create` | `success` only | | `target` = the group; a reserved name or type is refused as a validation 400, before any audit line |
+| `group.update`, `group.delete` | `success`, `failure` | failure: `protected_group` (the everyone/admin groups) | `target` = the group |
+| `group.member.add`, `group.member.remove` | `success`, `failure` | success: `already_member` / `not_member` on every found pair when the store reports no group changed (also when other requested groups are missing); failure: `not_found` | one line per user × group; invites with groups write `group.member.add` too. On Postgres the store counts live groups, not changed ones, so a no-op is a plain success and `already_member` / `not_member` never fire |
+| `org.create` | `success` | | `actor` = the first admin, `org_id` = the new org |
+
+Refusals use the same tags as the auth events (`userRefusal` / `auditUserRefusal` in `modules/user_management/utils/user-audit.ts`,
+lists in `USER_AUDIT_REASONS`). Not audited: route-guard refusals (`userAdminCheck`, `userAdminOrSelfCheck`, …), validation 400s,
+display-picture changes, and system failures (the error middleware logs those once).
 
 ## Upstream calls (Node)
 
@@ -762,10 +940,10 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
   `mcp_server_id`, `toolset_id`, `job`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
-  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Python
-  also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also
-  has `upstream` and `network_code` (on `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on
-  `chat_stream.*`).
+  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Node
+  audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `error_message`
+  and `cause_type`; Node's `error` is an object (`error.message`). Node also has `upstream` and `network_code` (on
+  `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.
