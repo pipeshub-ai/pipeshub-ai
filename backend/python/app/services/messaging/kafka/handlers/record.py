@@ -48,7 +48,7 @@ from app.modules.code_graph.build_state import (
     claimed_build_already_ran,
     request_is_stale,
 )
-from app.modules.indexing import replay_set
+from app.modules.indexing import keep_old_copy, replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
     SAME_BYTES_GIVE_UP_LABEL,
@@ -2982,7 +2982,8 @@ class RecordEventHandler(BaseEventService):
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
-                        await self._release_pending_copy(record_id, RecordContext.from_graph_document(record).org_id)
+                        if keep_old_copy.pending_of(record):
+                            await self._release_pending_copy(record_id, RecordContext.from_graph_document(record).org_id)
 
                         # Decide duplicate handling based on error type
                         if (last_exception and 
