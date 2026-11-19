@@ -56198,8 +56198,11 @@ paths:
         search. When `ACL_FILTER_MODE` is `shadow`, a switch to `scopes` reaches search within
         30 seconds.
 
-        <b>Who can call it:</b> the same callers as `GET /connectors/{connectorId}/permissions/status`;
-        anyone else gets <code>404</code>.
+        <b>Who can call it:</b> an org admin, for a connector they may open: a personal connector
+        only by the user who created it, and a connected app only when its knowledge limit names this
+        connector whole. A session needs no scope; an OAuth client or personal access token needs
+        `connector:write` (this route does not accept `connector:read`). Anyone else, and an ID no
+        instance of the caller's organization has, gets <code>404</code>.
       operationId: setConnectorPermissionFilter
       security:
         - bearerAuth: []
@@ -56287,7 +56290,8 @@ paths:
             The connector service could not be reached, or its answer was lost. The change may have been
             applied. The write is not conditional: a retry sets the mode again and overwrites a change another
             admin made in between, so read `GET /connectors/{connectorId}/permissions/status` first and retry
-            only if `filter.mode` is not already the one you want.
+            only if `filter.mode` is not already the one you want. That read needs `connector:read` for an OAuth
+            client or personal access token (`connector:write` does not grant it); a session needs no scope.
           content:
             application/json:
               schema:
