@@ -43,24 +43,13 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.responses import TokenUsage
 from app.agent_loop_lib.transport.tool_images import relocated_tool_images
+from app.utils.is_truncated import is_truncated
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from app.agent_loop_lib.core.messages import Message, Part
     from app.agent_loop_lib.core.tool_schema import ToolSchema
-
-# response_metadata keys different LangChain chat model integrations use to
-# signal the completion was cut off at the output-token cap.
-_TRUNCATION_FINISH_REASONS = {"length", "max_tokens"}
-
-# OpenAI's Responses API (used for gpt-5.x reasoning models, see
-# `aimodels._reasoning_effort_kwargs`) never populates `finish_reason` — it
-# reports a cut-off answer as `status="incomplete"` with the cause under
-# `incomplete_details.reason`. Only the output-token cause counts as
-# truncation; `content_filter` is a different stop the recovery path in
-# `agent/__init__.py` must not treat as "continue where you left off".
-_TRUNCATION_INCOMPLETE_REASONS = {"max_output_tokens", "max_tokens"}
 
 # OpenAI/Azure enforce max 64 characters on `tool_calls[].id` and on the
 # matching `tool_call_id` in a ToolMessage. IDs originate from three
@@ -388,17 +377,6 @@ def _recover_invalid_tool_call(call: dict[str, Any]) -> ToolCall:
     )
 
 
-def _is_truncated(ai_message: AIMessage) -> bool:
-    metadata = ai_message.response_metadata or {}
-    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
-    if finish_reason in _TRUNCATION_FINISH_REASONS:
-        return True
-    incomplete_details = metadata.get("incomplete_details")
-    if not isinstance(incomplete_details, dict):
-        return False
-    return incomplete_details.get("reason") in _TRUNCATION_INCOMPLETE_REASONS
-
-
 def convert_assistant_message_from_langchain(ai_message: AIMessage) -> AssistantMessage:
     """Convert a LangChain `AIMessage` response into an agent-loop
     `AssistantMessage`, using LangChain's standardized `content_blocks`
@@ -430,7 +408,7 @@ def convert_assistant_message_from_langchain(ai_message: AIMessage) -> Assistant
     return AssistantMessage(
         content=parts,
         tool_calls=tool_calls or None,
-        truncated=_is_truncated(ai_message),
+        truncated=is_truncated(ai_message),
     )
 
 

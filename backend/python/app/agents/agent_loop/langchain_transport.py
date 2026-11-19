@@ -82,6 +82,7 @@ from app.agents.agent_loop.converters import (
 )
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
+from app.utils.is_truncated import is_truncated
 from app.utils.llm_api_mode_store import (
     REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
@@ -104,7 +105,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _STOP_REASON_TOOL_CALLS = {"tool_calls", "tool_use"}
-_STOP_REASON_TRUNCATED = {"length", "max_tokens"}
 
 # No HTTP status code means the failure never reached the provider (DNS,
 # TCP reset, read timeout, ...) — these are transient by nature and should
@@ -685,7 +685,7 @@ class LangChainTransport(LLMTransport):
             return StopReason.TOOL_USE
         metadata = ai_message.response_metadata or {}
         finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
-        if finish_reason in _STOP_REASON_TRUNCATED:
+        if is_truncated(ai_message):
             return StopReason.MAX_TOKENS
         if finish_reason in _STOP_REASON_TOOL_CALLS:
             return StopReason.TOOL_USE
