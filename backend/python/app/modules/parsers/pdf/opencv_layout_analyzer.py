@@ -1576,8 +1576,12 @@ def extract_layout_regions(
         stripe_frames=stripe_frames,
     )
     model_boxes = _detect_model_boxes(page, pdf_path, model_raster_cache) if all_words else None
+    suppressed_boxes: list[tuple[float, float, float, float]] = []
     if model_boxes:
         table_regions = _prefer_model_tables(
+            page, page_w, page_h, table_regions, all_words, model_boxes["table"],
+        )
+        table_regions, suppressed_boxes = _apply_table_evidence(
             page, page_w, page_h, table_regions, all_words, model_boxes["table"],
         )
 
@@ -1639,7 +1643,10 @@ def extract_layout_regions(
 
     table_regions = table_regions + _detect_aligned_tables(
         page, page_w, page_h, all_words,
-        existing=table_regions + image_regions, gutter_x=gutter_x,
+        existing=table_regions + image_regions + [
+            LayoutRegion(type=LayoutRegionType.TEXT, bbox=b) for b in suppressed_boxes
+        ],
+        gutter_x=gutter_x,
     )
     higher_priority = image_regions + table_regions
 
@@ -3010,6 +3017,46 @@ def _prefer_model_tables(
     return kept + model
 
 
+def _apply_table_evidence(
+    page: "Page",
+    page_w: float,
+    page_h: float,
+    legacy: list[LayoutRegion],
+    all_words: list[dict[str, Any]],
+    boxes: list[Any],
+) -> tuple[list[LayoutRegion], list[tuple[float, float, float, float]]]:
+    """``PDF_TABLE_EXTRACTION``: legacy (the default) returns ``legacy``; shadow computes and logs the
+    ruled-table decisions and returns ``legacy``; evidence applies them (see ``table_reconcile``).
+    Returns the regions and the model boxes found not to be tables."""
+    from app.modules.parsers.pdf import table_reconcile
+
+    mode = table_reconcile.table_extraction_mode()
+    if mode == "legacy" or not boxes:
+        return legacy, []
+    pixel = [
+        _clamp_bbox((fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h), page_w, page_h)
+        for (fx0, fy0, fx1, fy1), _score in sorted(boxes, key=lambda b: -b[1])
+    ]
+    pixel = [b for b in pixel if _valid_bbox(b)]
+    pixel = [b for b in pixel if sum(1 for o in pixel if o is not b and _overlap_ratio(o, b) >= 0.9) < 2]
+    kept: list[tuple[float, float, float, float]] = []
+    for b in pixel:
+        if not any(_boxes_overlap(b, k) for k in kept):
+            kept.append(b)
+    try:
+        decisions = table_reconcile.reconcile(page, all_words, kept)
+    except Exception:  # the evidence path never loses the legacy tables
+        logger.warning("Table evidence failed; keeping the legacy tables", exc_info=True)
+        return legacy, []
+    if mode == "shadow":
+        logger.info(
+            "table evidence (shadow): %s",
+            [(d.kind, d.not_table or d.reason, len(d.tables)) for d in decisions],
+        )
+        return legacy, []
+    return table_reconcile.apply(legacy, decisions)
+
+
 def _prefer_model_pictures(
     rule_images: list[LayoutRegion],
     tables: list[LayoutRegion],
@@ -3062,6 +3109,7 @@ def _table_grid_by_words(
     within: Optional[tuple[float, float, float, float]] = None,
     *,
     split_rows: bool = False,
+    row_of: list[int] | None = None,
 ) -> list[list[Optional[str]]]:
     """``Table.extract()``, but with whole words assigned to the cell holding
     their centre.
@@ -3081,6 +3129,9 @@ def _table_grid_by_words(
 
     ``split_rows`` splits a row band into one row per text line when the rules
     draw no lines between the records (see ``split_band_records``).
+
+    ``row_of``: when a list is passed, it receives, for each grid row, the index of the table row
+    it came from.
     """
     try:
         if region is None:
@@ -3162,6 +3213,8 @@ def _table_grid_by_words(
             ]
             for band in bands or [row_buckets]
         )
+        if row_of is not None:
+            row_of.extend([ri] * len(bands or [row_buckets]))
     return grid
 
 
