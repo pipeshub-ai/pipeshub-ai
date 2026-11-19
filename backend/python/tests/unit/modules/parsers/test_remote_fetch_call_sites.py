@@ -56,6 +56,7 @@ NETWORK_IMPORTERS = {
     # DOCLING_SERVICE_URL, never one read from a document; it sends crops and word boxes of the PDF being parsed to that
     # service and fetches nothing a document names.
     "modules/parsers/pdf/table_hybrid_client.py": "the Docling service's own table-structure endpoint (DOCLING_SERVICE_URL), not a document URL",
+    "modules/parsers/pdf/table_hybrid_sync_client.py": "the same endpoint, called from the parse worker (DOCLING_SERVICE_URL), not a document URL",
 }
 
 
