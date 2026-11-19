@@ -17,7 +17,12 @@ from contextlib import nullcontext
 from logging import Logger
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from neo4j import AsyncGraphDatabase, AsyncSession, NotificationDisabledClassification, Query
+from neo4j import (
+    AsyncGraphDatabase,
+    AsyncSession,
+    NotificationDisabledClassification,
+    Query,
+)
 from neo4j.exceptions import (
     ClientError,
     Neo4jError,
