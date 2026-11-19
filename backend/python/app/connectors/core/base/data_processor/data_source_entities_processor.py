@@ -13,6 +13,7 @@ from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
+    AppStatus,
     CollectionNames,
     Connectors,
     DeleteSource,
@@ -36,6 +37,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.data_store.graph_data_store import (
     ends_explicit_transaction,
     is_transient_conflict,
@@ -105,6 +107,7 @@ from app.services.graph_db.common.record_visibility import RecordVisibility, is_
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
+    IGraphDBProvider,
 )
 from app.services.messaging.config import Topic
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -148,6 +151,75 @@ _PENDING_FULL_SYNC_SEEN: contextvars.ContextVar[set[tuple[str, str, str]] | None
 _PENDING_RUN_STATS: contextvars.ContextVar[SyncRunStats | None] = contextvars.ContextVar(
     "pending_run_stats", default=None
 )
+
+
+class ReindexSuperseded(RuntimeError):
+    """A sync of the connector ran while a reindex read the source: the reindex's write is dropped, since the sync's
+    write may come from a later read of the source."""
+
+
+@dataclass
+class SyncStamp:
+    """The connector's sync state when a reindex began: its writes commit only while it still holds (see :func:`unless_synced_since`)."""
+
+    connector_id: str
+    #: The app document's fields a sync's start and end move; None when a sync was already running, so nothing the reindex
+    #: read is safe to write.
+    expected: dict[str, Any] | None
+    #: Syncs started in this process: a fence no failed status write can lose.
+    started_here: int = 0
+    tripped: bool = False
+
+    async def check(self, tx_store: TransactionStore) -> None:
+        from app.connectors.core.base.connector.connector_service import (
+            connector_sync_lock,
+            syncs_started,
+        )
+
+        if (
+            self.expected is None
+            or connector_sync_lock(self.connector_id).locked()
+            or syncs_started(self.connector_id) != self.started_here
+            or not await tx_store.lock_app_if_unchanged(self.connector_id, self.expected)
+        ):
+            self.tripped = True
+            raise ReindexSuperseded(f"a sync of connector {self.connector_id} ran while this reindex read the source")
+
+
+_REINDEX_STAMP: contextvars.ContextVar[SyncStamp | None] = contextvars.ContextVar("reindex_sync_stamp", default=None)
+
+
+@contextlib.asynccontextmanager
+async def unless_synced_since(graph_provider: IGraphDBProvider, connector_id: str) -> AsyncIterator[SyncStamp]:
+    """Inside this block, every connector write (:meth:`DataSourceEntitiesProcessor._sync_transaction`) commits only while no
+    sync of the connector has started since the block began; otherwise it rolls back with :class:`ReindexSuperseded`.
+
+    A reindex reads a record's access from the source and writes it. A sync that read the source after it and wrote first
+    would otherwise be overwritten with the older access, re-granting what the source had just taken away.
+    """
+    from app.connectors.core.base.connector.connector_service import (
+        connector_sync_lock,
+        syncs_started,
+    )
+
+    started_here = syncs_started(connector_id)
+    # A failed read is an error, not a sign that a sync ran.
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+    running = (
+        not app
+        or connector_sync_lock(connector_id).locked()
+        or app.get("status") in (AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value)
+    )
+    # Not the status: a sync queued for a slot has not read the source, and its start moves the start time.
+    stamp = SyncStamp(connector_id, None if running else {
+        ConnectorStateKeys.LAST_SYNC_STARTED_AT: app.get(ConnectorStateKeys.LAST_SYNC_STARTED_AT),
+        ConnectorStateKeys.LAST_SYNC_FINISHED_AT: app.get(ConnectorStateKeys.LAST_SYNC_FINISHED_AT),
+    }, started_here)
+    token = _REINDEX_STAMP.set(stamp)
+    try:
+        yield stamp
+    finally:
+        _REINDEX_STAMP.reset(token)
 
 
 def _stats_sink() -> SyncRunStats:
@@ -550,10 +622,14 @@ class DataSourceEntitiesProcessor:
         token = _PENDING_FULL_SYNC_SEEN.set(pending)
         pending_stats = SyncRunStats()
         stats_token = _PENDING_RUN_STATS.set(pending_stats)
+        stamp = _REINDEX_STAMP.get()
         try:
-            options = {} if explicit is None else {"explicit": explicit}
+            # A reindex's block must be able to roll back whole when its stamp check fails.
+            options = {"explicit": True} if stamp is not None else {} if explicit is None else {"explicit": explicit}
             async with self.data_store_provider.transaction(**options) as tx_store:
                 yield tx_store
+                if stamp is not None:
+                    await stamp.check(tx_store)
         finally:
             _PENDING_FULL_SYNC_SEEN.reset(token)
             _PENDING_RUN_STATS.reset(stats_token)
@@ -7463,6 +7539,47 @@ class DataSourceEntitiesProcessor:
         else:
             self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
 
+    async def remove_user_grants_from_records(
+        self, record_ids: list[str], user_emails: set[str], connector_id: str, *, batch: int = 500
+    ) -> int:
+        """Delete the permission edges these users hold on these records themselves (not grants through groups or
+        anything a record inherits), a batch of records at a time: each record's incoming edges are read, and the
+        users' edges among them deleted in one write. Returns how many went. A failed read raises, so nothing is
+        left unremoved unreported."""
+        if not record_ids or not user_emails:
+            return 0
+        users = CollectionNames.USERS.value
+        removed = 0
+        # Dropped even when a later batch raises: on Neo4j without explicit transactions an earlier batch's deletes
+        # have already committed, and a retry finds nothing left to report.
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            user_ids: set[str] = set()
+            for email in sorted(user_emails):
+                user = await tx_store.get_user_by_email(email, raise_on_error=True, org_id=self.org_id)
+                if user is not None and user.id:
+                    user_ids.add(user.id)
+            if not user_ids:
+                return 0
+            for start in range(0, len(record_ids), batch):
+                edges: list[dict] = []
+                for record_id in record_ids[start:start + batch]:
+                    for edge in await tx_store.get_edges_to_node(
+                        f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.PERMISSION.value,
+                        raise_on_error=True,
+                    ) or []:
+                        # Arango returns `_from`; Neo4j and PostgreSQL return from_collection and from_id.
+                        collection, _, key = (edge.get("_from") or "").partition("/")
+                        if edge.get("from_collection"):
+                            collection, key = edge["from_collection"], edge.get("from_id")
+                        if collection == users and key in user_ids:
+                            edges.append({
+                                "from_id": key, "from_collection": users,
+                                "to_id": record_id, "to_collection": CollectionNames.RECORDS.value,
+                            })
+                if edges:
+                    removed += await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value) or 0
+        return removed
+
     async def get_app_creator_user(self, connector_id: str) -> User | None:
         """
         Fetch the creator user for a connector/app by connectorId.
@@ -7522,7 +7639,8 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
-        async with self.data_store_provider.transaction() as tx_store:
+        # _sync_transaction: a reindex's path rewrite (Dropbox's moved folders) is checked against its stamp too.
+        async with self._sync_transaction() as tx_store:
             return await tx_store.batch_update_nodes(nodes, collection)
 
     @retry_on_deadlock()

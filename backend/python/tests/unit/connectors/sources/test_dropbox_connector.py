@@ -3741,10 +3741,9 @@ class TestTestConnectionAndAccess:
 # ===========================================================================
 class TestHandleWebhookNotification:
     def test_triggers_sync(self, connector):
-        connector.run_incremental_sync = AsyncMock()
-        with patch("asyncio.create_task") as mock_create_task:
-            connector.handle_webhook_notification({"delta": {}})
-            mock_create_task.assert_called_once()
+        connector.request_sync = MagicMock()
+        connector.handle_webhook_notification({"delta": {}})
+        connector.request_sync.assert_called_once_with()
 
 
 # ===========================================================================

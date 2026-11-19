@@ -18,7 +18,11 @@ installMemoryStorage();
 const logoutAndRedirect = vi.fn();
 vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: () => logoutAndRedirect() };
+  return {
+    useAuthStore: auth.useAuthStore,
+    readStoredRefreshToken: auth.readStoredRefreshToken,
+    logoutAndRedirect: () => logoutAndRedirect(),
+  };
 });
 
 const { useAuthStore } = await import('@/lib/store/auth-store');
