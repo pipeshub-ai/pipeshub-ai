@@ -10783,8 +10783,10 @@ async def set_permission_filter(
     default, store_serves = AclFilterMode.from_env(), access_status.store_serves_scope_filter()
     if body.mode == "scopes" and (found := access_status.blockers(default, store_serves=store_serves)):
         raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail={"error": "not_switchable", "blockers": found})
-    # the app document is the one record of the mode: the serving plan reads it (`currency.switched_connectors`), so there is nothing to keep in step
-    if not await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {MODE_KEY: body.mode}):
+    # the app document is the one record of the mode: the serving plan reads it (`currency.switched_connectors`), so there is nothing to keep in step.
+    # That read keeps the documents of the viewer's organisation by `orgId`, which instances created before it was stored lack: it is written here.
+    org_field = {} if app.get("orgId") else {"orgId": current_org_id()}
+    if not await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {MODE_KEY: body.mode, **org_field}):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
     logger.info("audit: permission filter of connector %s set from %s to %s by user %s",
                 connector_id, chosen_mode(app), body.mode, request.state.user.get("userId"))
