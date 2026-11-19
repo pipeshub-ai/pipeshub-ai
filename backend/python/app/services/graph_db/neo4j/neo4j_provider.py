@@ -8795,8 +8795,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.get_entity_access_context`.
 
         App paths mirror `get_user_apps` plus the KB paths, and RecordGroup
-        paths mirror Paths 1-4 and the nested step of
-        `_build_permission_paths_cypher`.
+        paths mirror Paths 1-4 of `_build_permission_paths_cypher`. Unlike its
+        nested step, the inheritance walk here stays inside the seed's connector.
         """
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
