@@ -363,7 +363,16 @@ class _Lane:
         raise payload
 
     def _crashed(self, job: _Job) -> ParseWorkerError:
-        self._drop_worker()
+        worker = self._worker
+        self._drop_worker()  # stops and reaps it, so its exit status is known
+        if worker is not None and worker.process.returncode == -signal.SIGXCPU:
+            # The job's own CPU limit ended it (workbook_model._cpu_limited): the same stop as the
+            # timeout above, and no sign of memory pressure.
+            _logger.warning(
+                "Parsing %s (%d bytes) used up its CPU time limit; its worker was replaced",
+                job.label, job.size,
+            )
+            return ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out")
         _logger.warning(
             "The parse worker died while parsing %s (%d bytes), most likely out of memory. "
             "That record fails; a fresh worker takes the next file.",

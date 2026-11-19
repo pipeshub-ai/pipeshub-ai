@@ -29,6 +29,12 @@ from app.utils.process_hardening import mark_process_non_dumpable
 
 _LENGTH = struct.Struct("!Q")
 _PARENT_POLL_SECONDS = 2.0
+_IN_WORKER_ENV = "PIPESHUB_PARSE_WORKER"
+
+
+def in_worker() -> bool:
+    """True in a parse worker, the one process a job may end (a CPU limit) without harm to others."""
+    return os.environ.get(_IN_WORKER_ENV) == str(os.getpid())  # not its children, which inherit it
 
 
 def write_frame(stream: BinaryIO, obj: object) -> None:
@@ -104,6 +110,7 @@ def main(request_fd: int, reply_fd: int) -> None:
     # Ctrl-C in a terminal reaches the whole process group; the parent decides
     # when a worker stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    os.environ[_IN_WORKER_ENV] = str(os.getpid())
     threading.Thread(
         target=_exit_with_parent, args=(os.getppid(),), name="exit-with-parent", daemon=True
     ).start()

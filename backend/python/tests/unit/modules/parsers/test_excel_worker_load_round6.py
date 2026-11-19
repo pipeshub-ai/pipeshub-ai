@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 
+from app.modules.parsers import parse_pool
 from app.modules.parsers.excel import excel_parser as module
 from app.modules.parsers.excel import limits
 from app.modules.parsers.excel.workbook_model import (
@@ -19,7 +23,14 @@ from app.services.parsing.interface import ParseError
 from app.services.resource_governor import policy as policy_mod
 from app.utils import user_errors
 from tests.support.excel_workbooks import workbook_zip
+from tests.support.excel_worker_jobs import (
+    cpu_limit_around_a_load,
+    spin_under_the_cpu_limit,
+)
 from tests.unit.services.resource_governor.test_policy import _snapshot
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 MERGES = 2500
 LINKS = 2000  # 5 M hyperlinks x merges: under the precheck bound, about 80 s of openpyxl
@@ -43,13 +54,58 @@ def _load_model(data: bytes, seconds: float | None) -> WorkbookModel:
     )
 
 
-def test_a_load_past_its_cpu_limit_is_refused_as_too_large() -> None:
-    data = _links_on_merges()
+def test_a_load_past_its_cpu_limit_is_refused_as_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the worker's own CPU limit ends the load, not the pool's timeout: the worker is ended by the
+    # kernel and the parser refuses the workbook as it does for the timeout
+    real_run_blocking = parse_pool.run_blocking
+
+    def with_a_long_timeout(fn: object, *args: object, **kwargs: object) -> object:
+        return real_run_blocking(fn, *args, **{**kwargs, "timeout": 120})
+
+    monkeypatch.setattr(module, "EXCEL_LOAD_MAX_SECONDS", 1)
+    monkeypatch.setattr(module.parse_pool, "run_blocking", with_a_long_timeout)
+    parser = module.ExcelParser(logging.getLogger("excel-test"), MagicMock())
     started = time.monotonic()
-    with pytest.raises(WorkbookRefused) as raised:
-        _load_model(data, 2)
-    assert raised.value.too_large
+    with pytest.raises(ParseError) as raised:
+        parser.load_workbook_from_binary(_links_on_merges())
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
     assert time.monotonic() - started < 30  # the limit plus slack; unbounded this runs about 80 s
+
+
+def test_the_cpu_limit_never_raises_into_the_worker() -> None:
+    # An exception raised from a signal handler can land between a lock's acquire and its release
+    # and hang the reused worker on a later job; the limit must end the worker instead.
+    with pytest.raises(parse_pool.ParseWorkerError) as raised:
+        parse_pool.run_blocking(spin_under_the_cpu_limit, 1, label="spin", timeout=120)
+    assert raised.value.cause == "timed_out"
+
+
+@pytest.fixture
+def one_worker_pool(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
+    monkeypatch.setenv(parse_pool.WORKERS_ENV, "1")
+    governor = MagicMock()
+    governor.ceilings = SimpleNamespace(heavy=4)
+    parse_pool.set_resource_governor(governor)
+    try:
+        yield governor
+    finally:
+        parse_pool.shutdown_parse_pool()
+        parse_pool.set_resource_governor(None)
+
+
+async def test_jobs_queued_behind_a_worker_ended_by_its_cpu_limit_still_run(one_worker_pool: MagicMock) -> None:
+    outcomes = await asyncio.gather(
+        parse_pool.submit(len, b"before"),
+        parse_pool.submit(spin_under_the_cpu_limit, 1, label="spin", timeout=120),
+        parse_pool.submit(len, b"after one"),
+        parse_pool.submit(len, b"after two"),
+        return_exceptions=True,
+    )
+    assert outcomes[0] == len(b"before")
+    assert isinstance(outcomes[1], parse_pool.ParseWorkerError), outcomes[1]
+    assert outcomes[1].cause == "timed_out"
+    assert outcomes[2:] == [len(b"after one"), len(b"after two")]
+    one_worker_pool.report_memory_incident.assert_not_called()  # a CPU limit is not memory pressure
 
 
 def test_a_normal_workbook_loads_within_the_limit() -> None:
@@ -58,11 +114,11 @@ def test_a_normal_workbook_loads_within_the_limit() -> None:
 
 
 def test_the_cpu_limit_is_put_back_after_the_load() -> None:
-    import resource
-
-    before = resource.getrlimit(resource.RLIMIT_CPU)
-    _load_model(workbook_zip('<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>'), 60)
-    assert resource.getrlimit(resource.RLIMIT_CPU) == before
+    data = workbook_zip('<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>')
+    before, after = parse_pool.run_blocking(
+        cpu_limit_around_a_load, data, module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, 60, timeout=120
+    )
+    assert after == before
 
 
 def test_the_pool_timeout_ends_a_load_in_a_worker_as_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
