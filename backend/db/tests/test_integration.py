@@ -986,16 +986,16 @@ def test_in_enforce_connectors_writes_the_epoch_keys_of_a_cleanup_and_no_pin_or_
             c.execute("INSERT INTO platform.kv_entries (key, value) VALUES (%s, 'w') ON CONFLICT DO NOTHING RETURNING true",
                       (f"{base}/tokens/r2/{state}",))
         c.commit()
+        # The refusal itself is the proof: other roles write these keys elsewhere in this database, so their
+        # presence afterwards says nothing about this role.
         for key in ("/services/vectordb/embedding_pin/records", "/services/vectordb/embedding_pin/records/o1",
                     "/services/vectordb/collection_manifest", "/services/vectordb/embedding_epochs/records"):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(UPSERT, (key,))
             c.rollback()
-    refused = ("/services/vectordb/embedding_pin/records", "/services/vectordb/embedding_pin/records/o1",
-               "/services/vectordb/collection_manifest", "/services/vectordb/embedding_epochs/records")
     wrote = (f"{base}/current", f"{base}/tokens/r2/issuing", f"{base}/tokens/r2/live")
     with connect(cluster, name) as c:   # the exact keys, not a count: the role matrix above writes under the same prefix
-        present = {k for (k,) in c.execute("SELECT key FROM platform.kv_entries WHERE key = ANY(%s)", (list(wrote + refused),))}
+        present = {k for (k,) in c.execute("SELECT key FROM platform.kv_entries WHERE key = ANY(%s)", (list(wrote),))}
         assert present == set(wrote)
 
 
