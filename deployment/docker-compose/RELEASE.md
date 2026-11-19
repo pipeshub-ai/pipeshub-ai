@@ -12,17 +12,26 @@ bottleneck was never the code, it was the verification.
 
 ## Cutting a release
 
+First record the migration heads the release ships, in a pull request merged
+to `main` before you tag (`backend/db/README.md`, Released heads):
+
+```bash
+cd backend && python -m db.released_heads v0.7.1   # rewrites backend/db/released_heads.json
+```
+
+Then tag the commit that holds it:
+
 ```bash
 git tag v0.7.1
 git push origin v0.7.1
 ```
 
-That is the whole procedure. The `Release — build, publish, verify` workflow
+The `Release — build, publish, verify` workflow
 then does four things in order, and stops at the first failure.
 
 | Stage | What happens | What it proves |
 |-------|--------------|----------------|
-| Resolve | The tag is parsed as semver | A typo cannot publish `pipeshubai/pipeshub-ai:oops` |
+| Resolve | The tag is parsed as semver, and `backend/db/released_heads.json` at the tag is re-generated and must not change | A typo cannot publish `pipeshubai/pipeshub-ai:oops`; a release cannot ship without recording its migration heads |
 | Build | Both variants built for amd64 and arm64, pushed under a **candidate** tag | The image builds reproducibly from the tag |
 | Verify | First-run install, then upgrade from the previous release — both variants, on amd64 and arm64 | A user can install it, and an existing user can move to it, on either architecture |
 | Promote | Candidate copied by digest onto the release tags | `:latest` only ever points at an image that passed |
