@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useChatStore } from '@/chat/store';
-import type { AppliedFilters } from '@/chat/types';
+import type { AppliedFilterNode, AppliedFilters } from '@/chat/types';
 import { appliedFiltersFromNodes, filtersFromAppliedFilters, restoreAppliedFilters } from '../restore-applied-filters';
 
 const node = (id: string, name: string, nodeType: string, connector: string) => ({ id, name, nodeType, connector });
@@ -88,6 +88,28 @@ describe('restoreAppliedFilters', () => {
     const store = useChatStore.getState();
     expect(store.agentKnowledgeScope).toEqual({ apps: ['jira-1'], kb: ['alpha'] });
     expect(store.settings.filters).toEqual({ apps: [], kb: [] });
+  });
+
+  // What the API sends someone a chat was shared with for a node they cannot read
+  // (backend viewer-redaction `restrictedRef`): no id.
+  const restricted = { redacted: true, reason: 'no_access', name: 'Restricted source' } as unknown as AppliedFilterNode;
+
+  it('opens a shared agent chat whose knowledge the viewer cannot read', () => {
+    const applied: AppliedFilters = {
+      apps: [restricted, node('jira-1', 'Jira', 'app', 'Jira')],
+      kb: [restricted],
+      records: [restricted],
+    };
+    expect(() => restoreAppliedFilters(applied, true)).not.toThrow();
+    const store = useChatStore.getState();
+    expect(store.agentKnowledgeScope).toEqual({ apps: ['jira-1'], kb: [] });
+    expect(store.collectionNamesCache).not.toHaveProperty('undefined');
+  });
+
+  it('opens a shared chat whose filters the viewer cannot read', () => {
+    const applied: AppliedFilters = { apps: [restricted], kb: [], recordGroups: [restricted] };
+    expect(() => restoreAppliedFilters(applied, false)).not.toThrow();
+    expect(useChatStore.getState().settings.filters).toEqual({ apps: [], kb: [], recordGroups: [], records: [] });
   });
 
   it('narrows a project chat in its own scope, not the main composer filters', () => {

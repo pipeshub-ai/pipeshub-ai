@@ -780,6 +780,17 @@ class TestSqlToolConnectorAccess:
         impl.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_failed_access_check_keeps_the_graph_error_out_of_the_tool_result(self) -> None:
+        """The tool result goes to the model; the graph's text (host, query, values) must not."""
+        secret = "neo4j://graph-db.internal.example:7687 MATCH (u:User {id: 'gk-7f3a9c'})"
+        factory = _reachable()
+        factory["graph_provider"].get_user_by_user_id = AsyncMock(side_effect=ConnectionError(secret))
+        result, impl = await self._call(**factory)
+        assert result["ok"] is False and "Query execution failed" in result["error"]
+        assert secret not in result["error"] and "graph-db.internal" not in result["error"]
+        impl.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_a_connector_of_another_org_is_refused(self) -> None:
         factory = _reachable(app_org="org-2")
         result, impl = await self._call(**factory)

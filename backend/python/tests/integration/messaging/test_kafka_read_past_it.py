@@ -184,9 +184,9 @@ async def test_commit_holds_at_a_remembered_offset_and_retention_deleted_offsets
     release = asyncio.Event()
     real_fetch = remembered_module.OffsetFetcher.fetch
 
-    async def held_fetch(self, wanted):  # noqa: ANN202
+    async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
         await release.wait()
-        return await real_fetch(self, wanted)
+        return await real_fetch(self, wanted, **kwargs)
 
     handler = Handler(delay=0.05)
     consumer = _consumer(kafka_available, backlog, group)
@@ -227,9 +227,9 @@ async def test_a_restart_with_positions_remembered_loses_nothing(
     release = asyncio.Event()
     real_fetch = remembered_module.OffsetFetcher.fetch
 
-    async def held_fetch(self, wanted):  # noqa: ANN202
+    async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
         await release.wait()
-        return await real_fetch(self, wanted)
+        return await real_fetch(self, wanted, **kwargs)
 
     first = Handler(delay=0.05)
     consumer = _consumer(kafka_available, backlog, group)

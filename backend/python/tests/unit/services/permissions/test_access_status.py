@@ -48,13 +48,16 @@ def st(app: dict, **kw: object) -> dict:
 
 def test_healthy() -> None:
     """Healthy."""
-    out = st(healthy(), reach_minutes=60)
+    from app.services.permissions.mode import AclFilterMode
+
+    out = st(healthy(), reach_minutes=60, default=AclFilterMode.SCOPES, store_serves=True)
     assert out == {
         "asOf": "2026-11-11T12:00:00+00:00", "state": "healthy", "reachWithinMinutes": 60,
         "serving": {"current": True, "served": True},
         "lastPermissionSync": {"finishedAt": FINISHED, "outcome": "succeeded"},
         "pending": {"roots": 0, "unreadable": False, "oldestChangesAgo": None},
         "coverage": {"records": 120, "stale": 0}, "attention": [], "warnings": [],
+        "filter": {"mode": "inherit", "effective": "scopes", "blockers": []},
     }
 
 
@@ -159,3 +162,37 @@ def test_connector_warnings_pass_through_trimmed_and_bad_entries_are_dropped() -
     out = st(healthy(permissionWarnings=raw))
     assert out["warnings"] == [{"code": "scheme_unreadable", "items": 4, "container": "HR", "fix": {"vendor": "Jira"}}]
     assert st(healthy(permissionWarnings="oops"))["warnings"] == []
+
+
+@pytest.mark.parametrize(("default", "store", "mode", "served", "want"), [
+    ("scopes", True, None, True, {"mode": "inherit", "effective": "scopes", "blockers": []}),
+    ("scopes", True, "legacy", True, {"mode": "legacy", "effective": "legacy", "blockers": []}),
+    ("scopes", True, "inherit", False, {"mode": "inherit", "effective": "legacy", "blockers": []}),      # not served yet: legacy, not blocked
+    ("shadow", True, None, True, {"mode": "inherit", "effective": "legacy", "blockers": []}),
+    ("shadow", True, "scopes", True, {"mode": "scopes", "effective": "scopes", "blockers": []}),
+    ("shadow", True, "nonsense", True, {"mode": "legacy", "effective": "legacy", "blockers": []}),
+    ("legacy", True, "scopes", True, {"mode": "scopes", "effective": "legacy", "blockers": ["serving_off"]}),
+    ("scopes", False, "scopes", True, {"mode": "scopes", "effective": "legacy", "blockers": ["store_unsupported"]}),
+])
+def test_the_filter_says_what_the_next_search_of_the_connector_uses(monkeypatch: pytest.MonkeyPatch, default: str, store: bool, mode: str | None,
+                                                                    served: bool, want: dict) -> None:
+    from app.services.permissions import access_status as st
+    from app.services.permissions.mode import AclFilterMode
+
+    monkeypatch.setattr(st, "app_is_served", lambda app: served)
+    app = {"status": "IDLE", **({"aclFilterMode": mode} if mode is not None else {})}
+    assert st.status(app, default=AclFilterMode(default), store_serves=store)["filter"] == want
+
+
+@pytest.mark.parametrize(("store_type", "serves"), [("pgvector", True), (" PGVECTOR ", True), ("qdrant", False), ("", False), (None, False)])
+def test_only_pgvector_serves_the_scope_filter(monkeypatch: pytest.MonkeyPatch, store_type: str | None, serves: bool) -> None:
+    from app.services.permissions import access_status as st
+    from app.services.vector_db.interface.vector_db import IVectorDBService
+    from app.services.vector_db.pgvector.pgvector import PgVectorService
+
+    if store_type is None:
+        monkeypatch.delenv("VECTOR_DB_TYPE", raising=False)
+    else:
+        monkeypatch.setenv("VECTOR_DB_TYPE", store_type)
+    assert st.store_serves_scope_filter() is serves
+    assert PgVectorService.supports_scope_filter and not IVectorDBService.supports_scope_filter      # the class flags the shortcut mirrors

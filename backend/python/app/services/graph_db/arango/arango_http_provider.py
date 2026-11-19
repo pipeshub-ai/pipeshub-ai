@@ -2091,6 +2091,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Record | None:
         """
         Get record by internal ID (_key) with associated type document (file/mail/etc.).
@@ -2098,6 +2100,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             record_id: Internal record ID (_key)
             transaction: Optional transaction ID
+            raise_on_error: Propagate a failed read instead of answering None. A record
+                that will not build is still None.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
@@ -2123,15 +2127,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={"id": record_id},
                 transaction=transaction,
             )
-            if not results:
-                return None
-            result = results[0]
+        except Exception as e:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
+                raise
+            self.logger.error("Failed to get record by id %s: %s", record_id, type(e).__name__)
+            return None
+        if not results:
+            return None
+        result = results[0]
+        try:
             return self._create_typed_record_from_arango(
                 result["record"],
                 result.get("typeDoc"),
             )
         except Exception as e:
-            self.logger.error("❌ Failed to get record by id %s: %s", record_id, str(e))
+            # The builder's error quotes the whole type document.
+            self.logger.error("Failed to build record %s of type %s: %s",
+                              record_id, result["record"].get("recordType"), type(e).__name__)
             return None
 
     async def page_record_ids_by_type(
