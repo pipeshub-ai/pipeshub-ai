@@ -6,7 +6,7 @@ record that still holds one is refused on every write. Rolling back to the relea
 nothing. Rolling back below it needs this:
 
 1. stop every service that runs the release that writes the fields (or any later one);
-2. run ``--apply`` for each organisation;
+2. run ``--apply`` with ``--org`` for every organisation the store holds;
 3. start the older image.
 
     python -m app.scripts.record_diagnostics_contract --org ORG --check
