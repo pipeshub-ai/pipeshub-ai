@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app.services.docling.client import DoclingClient
+from app.services.docling.client import DoclingClient, DoclingParseError
 from app.services.parsing.interface import (
     IParser,
     ParseError,
@@ -31,12 +31,10 @@ class DoclingServiceParser:
     ) -> ParseResult:
         record_name_pdf = record_name if record_name.lower().endswith(".pdf") else f"{record_name}.pdf"
 
-        doc = await self._client.parse_pdf_batched(record_name_pdf, content)
-        if doc is None:
-            raise ParseError(
-                ParseErrorCode.PARSE_FAILED,
-                f"Docling service failed to parse '{record_name}'",
-            )
+        try:
+            doc = await self._client.parse_pdf_batched(record_name_pdf, content)
+        except DoclingParseError as exc:
+            raise ParseError(ParseErrorCode.PARSE_FAILED, exc.message) from exc
 
         raw_document = await asyncio.to_thread(doc.model_dump_json)
         return ParseResult(
