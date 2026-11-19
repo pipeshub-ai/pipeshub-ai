@@ -56283,7 +56283,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The connector service could not be reached. Safe to retry.
+          description: |
+            The connector service could not be reached, or its answer was lost. The change may have been
+            applied. The write is not conditional: a retry sets the mode again and overwrites a change another
+            admin made in between, so read `GET /connectors/{connectorId}/permissions/status` first and retry
+            only if `filter.mode` is not already the one you want.
           content:
             application/json:
               schema:

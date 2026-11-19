@@ -49,13 +49,10 @@ def scopes(**kw: object) -> ViewerScopes:
 
 
 def graph(docs: dict[str, dict]) -> MagicMock:
-    """Reads by id, and by mode as the switched-connector read asks (every organisation's apps, as Neo4j and ArangoDB answer)."""
-    def read(coll: str, field: str, values: list, **k: object) -> list[dict]:
-        if field == MODE_KEY:
-            return [{"_key": i, "orgId": ORG, **d} for i, d in docs.items() if d.get(MODE_KEY) in values]
-        return [{"_key": i, **docs[i]} for i in values if i in docs]
+    """Reads by id, and the organisation's apps (all of ``docs``) as the switched-connector read asks."""
     g = MagicMock()
-    g.get_nodes_by_field_in = AsyncMock(side_effect=read)
+    g.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, ids, **k: [{"_key": i, **docs[i]} for i in ids if i in docs])
+    g.get_org_apps = AsyncMock(side_effect=lambda org, **k: [{"_key": i, **d} for i, d in docs.items()] if org == ORG else [])
     return g
 
 
@@ -110,18 +107,66 @@ async def test_a_shadow_search_with_no_connector_switched_reads_one_mode_query_p
     for _ in range(200):
         assert await p.plan_exact(ORG, USER) == (None, False)
     svc.scopes.assert_not_awaited()
-    assert [c.args[1] for c in g.get_nodes_by_field_in.await_args_list] == [MODE_KEY]      # the next read is SWITCHED_TTL_SECONDS later
+    g.get_nodes_by_field_in.assert_not_awaited()
+    assert g.get_org_apps.await_count == 1                # the next read is SWITCHED_TTL_SECONDS later
+
+
+async def test_searches_that_find_the_memo_expired_together_share_one_read() -> None:
+    import asyncio
+
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    docs = {"c1": _with_mode(current(), "scopes"), "c2": current()}
+    g = graph(docs)
+    release = asyncio.Event()
+    real = g.get_org_apps.side_effect
+
+    async def slow(org: str, **k: object) -> list[dict]:
+        await release.wait()
+        return real(org, **k)
+
+    g.get_org_apps.side_effect = slow
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW)
+    searches = [asyncio.create_task(p.plan(ORG, USER)) for _ in range(20)]
+    await asyncio.sleep(0.01)
+    release.set()
+    plans = await asyncio.gather(*searches)
+    assert g.get_org_apps.await_count == 1
+    assert all(f is not None and f.current == {"c1"} for f in plans)
+
+
+async def test_a_switched_read_that_fails_or_is_slow_is_the_classic_check_and_is_tried_again_after_the_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import app.services.permissions.serving as serving
+
+    monkeypatch.setattr(serving, "SWITCHED_TTL_SECONDS", -1.0)      # every search reads again (the event loop's clock must keep running here)
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    g = graph({"c1": _with_mode(current(), "scopes")})
+    g.get_org_apps.side_effect = RuntimeError("down")
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW, budget_seconds=0.05)
+    assert await p.plan(ORG, USER) is None
+
+    async def hang(org: str, **k: object) -> list[dict]:
+        await asyncio.sleep(1)
+        return []
+
+    g.get_org_apps.side_effect = hang
+    assert await p.plan(ORG, USER) is None                # slower than the budget: none switched
+    g.get_org_apps.side_effect = lambda org, **k: [{"_key": "c1", **_with_mode(current(), "scopes")}]
+    assert (await p.plan(ORG, USER)).current == {"c1"}
 
 
 async def test_the_switched_connectors_are_those_of_the_viewer_s_organisation_whose_document_says_scopes() -> None:
     from app.services.permissions.currency import switched_connectors
 
     g = MagicMock()
-    g.get_nodes_by_field_in = AsyncMock(return_value=[
-        {"_key": "c1", "orgId": ORG, MODE_KEY: "scopes"}, {"id": "c2", "orgId": ORG, MODE_KEY: "scopes"},
-        {"_key": "x1", "orgId": "other-org", MODE_KEY: "scopes"}, {"_key": "c3", MODE_KEY: "scopes"}])      # Neo4j and ArangoDB answer every org
+    g.get_org_apps = AsyncMock(return_value=[      # the organisation's apps by its org-to-app edges, inactive ones too
+        {"_key": "c1", MODE_KEY: "scopes"}, {"id": "c2", MODE_KEY: "scopes", "isActive": False},
+        {"_key": "c3", MODE_KEY: "legacy"}, {"_key": "c4", MODE_KEY: "Scopes"}, {"_key": "c5"}])
     assert await switched_connectors(g, ORG) == {"c1", "c2"}
-    assert g.get_nodes_by_field_in.await_args.args[1:3] == (MODE_KEY, ["scopes"])
+    assert g.get_org_apps.await_args.args == (ORG,) and g.get_org_apps.await_args.kwargs == {"active_only": False, "raise_on_error": True}
 
 
 async def test_a_shadow_search_reads_only_the_documents_of_the_switched_connectors_and_an_opt_in_arrives_within_the_interval(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,7 +185,7 @@ async def test_a_shadow_search_reads_only_the_documents_of_the_switched_connecto
     assert await p.plan(ORG, USER) is None                # still inside the interval
     clock[0] += 1
     assert (await p.plan(ORG, USER)).current == {"c1"}
-    assert g.get_nodes_by_field_in.await_args.args[2] == ["c1"]      # c2 is not switched: its document is not read
+    assert g.get_nodes_by_field_in.await_args.args[2] == ["c1"]      # c2 is not switched: its document is not read per search
     docs["c1"] = _with_mode(current(), "legacy")          # a rollback: the remembered set still names c1, the document decides at once
     assert await p.plan(ORG, USER) is None
 

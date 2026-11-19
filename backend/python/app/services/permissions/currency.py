@@ -65,12 +65,11 @@ def effective_mode(app: Mapping[str, object] | None, default: AclFilterMode) -> 
 
 
 async def switched_connectors(graph: IGraphDBProvider, org_id: str) -> frozenset[str]:
-    """The connectors of ``org_id`` whose own mode is `scopes`, from their app documents (one statement over the apps). Neo4j and ArangoDB answer
-    for every organisation, so the organisation is checked on each document. A value other than exactly `scopes` (a hand edit) is not found,
-    which leaves that connector on the classic check."""
-    docs = await graph.get_nodes_by_field_in(CollectionNames.APPS.value, MODE_KEY, ["scopes"], raise_on_error=True)
-    return frozenset(str(d.get("_key") or d.get("id")) for d in docs or []
-                     if isinstance(d, dict) and str(d.get("orgId") or "") == org_id and chosen_mode(d) == "scopes")
+    """The connectors of ``org_id`` whose own mode is `scopes`, from their app documents: the organisation's apps as its org-to-app edges list them
+    (`get_org_apps`, the same read on every store), so no document's own org field is trusted and instances that predate it are found. A value other
+    than exactly `scopes` (a hand edit) is not, which leaves that connector on the classic check."""
+    docs = await graph.get_org_apps(org_id, active_only=False, raise_on_error=True)
+    return frozenset(str(d.get("_key") or d.get("id")) for d in docs or [] if isinstance(d, dict) and chosen_mode(d) == "scopes")
 
 
 def app_is_current(app: Mapping[str, object] | None) -> bool:

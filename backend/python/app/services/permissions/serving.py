@@ -61,6 +61,7 @@ class ServingPlanner:
         """``default``: the deployment's mode, which a connector whose own mode is `inherit` takes."""
         self._scopes, self._currency, self._budget, self._default = scopes, currency, budget_seconds, default
         self._switched_by_org: dict[str, tuple[float, frozenset[str]]] = {}
+        self._switched_locks: dict[str, asyncio.Lock] = {}
 
     async def _switched(self, org_id: str) -> frozenset[str]:
         """The connectors an admin switched to `scopes`, read from their app documents (no cache in between) at most every ``SWITCHED_TTL_SECONDS``.
@@ -68,13 +69,20 @@ class ServingPlanner:
         at, ids = self._switched_by_org.get(org_id, (float("-inf"), frozenset()))
         if time.monotonic() - at <= SWITCHED_TTL_SECONDS:
             return ids
-        try:
-            ids = await asyncio.wait_for(self._currency.switched(org_id), self._budget)
-        except Exception as exc:
-            _logger.warning("switched connectors not read: %s", type(exc).__name__)
-            ids = frozenset()
-        self._switched_by_org[org_id] = (time.monotonic(), ids)
-        return ids
+        # one read per organisation at a time: the searches that find the memo expired together wait for that read instead of each running it, and
+        # reads never overlap, so an older answer cannot land after a newer one
+        async with self._switched_locks.setdefault(org_id, asyncio.Lock()):
+            at, ids = self._switched_by_org.get(org_id, (float("-inf"), frozenset()))
+            if time.monotonic() - at <= SWITCHED_TTL_SECONDS:
+                return ids
+            started = time.monotonic()      # the answer is as old as the read's start
+            try:
+                ids = await asyncio.wait_for(self._currency.switched(org_id), self._budget)
+            except Exception as exc:
+                _logger.warning("switched connectors not read: %s", type(exc).__name__)
+                ids = frozenset()
+            self._switched_by_org[org_id] = (started, ids)
+            return ids
 
     async def plan(self, org_id: str, user_key: str) -> ScopeFilter | None:
         """The filter to search with, or None for the legacy request. Never raises. Runs inside the organisation."""
