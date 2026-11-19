@@ -322,7 +322,7 @@ async def test_a_batch_that_names_no_record_logs_an_error_instead_of_removing_no
     )
     with pytest.raises(PrecisionUnreadable):
         await store._confirm_batch(guard, "records", INT8, SimpleNamespace(token="t0"), [Document(page_content="x", metadata={})])
-    store.logger.error.assert_called()
+    store.logger.info.assert_called()
     guard.settle_unconfirmed.assert_not_awaited()
 
 

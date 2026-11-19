@@ -3273,7 +3273,7 @@ class VectorStore(Transformer):
             await guard.confirm_after_write(collection_name, org, precision, fence)
         except UNCONFIRMED_WRITE as exc:
             if not extras:
-                self.logger.error(
+                self.logger.info(
                     "The points of an unconfirmed batch in '%s' were not removed: its %d documents name no record",
                     collection_name, len(documents),
                 )

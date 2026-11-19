@@ -1712,7 +1712,8 @@ class RecordEventHandler(BaseEventService):
             await registry.release_orphan_pins()
             await registry.sweep_dead_epochs(await self._org_ids_to_sweep())
         except Exception:
-            self.logger.error("Could not release the weight-precision pins of collections that are gone", exc_info=True)
+            # Raised: the consumer's index.end writes the failure once.
+            self.logger.debug("Could not release the weight-precision pins of collections that are gone", exc_info=True)
             raise
         verdict = active_verdict()
         if verdict is not None:
@@ -2864,7 +2865,7 @@ class RecordEventHandler(BaseEventService):
             precision_flipped = True
             error_msg = str(flip)
             last_exception = flip
-            self.logger.warning(f"Record {record_id} handed back: {flip}")
+            self.logger.debug(f"Record {record_id} handed back: {flip}")
             raise
         except IndexingError as ie:
             flip = precision_flip_in(ie)
@@ -2873,7 +2874,7 @@ class RecordEventHandler(BaseEventService):
                 precision_flipped = True
                 error_msg = str(flip)
                 last_exception = flip
-                self.logger.warning(f"Record {record_id} handed back: {flip}")
+                self.logger.debug(f"Record {record_id} handed back: {flip}")
                 raise flip from ie
             error_occurred = True
             error_msg = str(ie)
@@ -2912,7 +2913,7 @@ class RecordEventHandler(BaseEventService):
                 precision_flipped = True
                 error_msg = str(flip)
                 last_exception = flip
-                self.logger.warning(f"Record {record_id} handed back: {flip}")
+                self.logger.debug(f"Record {record_id} handed back: {flip}")
                 raise flip from e
             error_occurred = True
             error_msg = str(e)
