@@ -593,6 +593,26 @@ which every Postgres graph provider runs through) write one record per call that
   transaction the statement runs in another task, so `_Txn.run` finds the caller while its stack is live and hands it over; the
   unit's own `begin` and `prologue` there have `caller=unknown`.
 
+## Search access reads (Python)
+
+A search that cannot read what its user may access, or a graph read around it, writes one `log_failure` line where it handles the
+failure, without the error's text (`include_error_text=False`): the graph's text can carry the database host, the query and the
+record content. Like any `log_failure` line it is DEBUG when the same exception, or its cause, was already logged at its level or
+higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
+logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. Only these events leave the
+text out: when the batch access read fails, the graph provider's `check_access` first logs its own `check_access failed …` ERROR,
+which still carries the driver's text.
+
+| Event | What the search does next | Fields |
+| --- | --- | --- |
+| `search.access_unreadable`, `search.selection_unreadable`, `search.entity_filter_unavailable`, `search.hit_check_failed` | answers that access could not be checked (an entity lookup: a search error) | the `log_failure` fields |
+| `search.remembered_scope_unreadable`, `search.record_id_retry_failed` | clears the memo and retries normal scope resolution / keeps the container results | the `log_failure` fields |
+| `container_search.verification_unavailable` | marks the attempt degraded | `vrid_count` |
+| `search.notice_gate_failed`, `search.demo_setting_failed`, `demo_data.list_failed` | no access notices / excludes no demo connector | the `log_failure` fields |
+| `search.batch_fetch_failed` | fetches the records one by one | `collection` (`files`, `mails`) |
+| `search.diversity_read_failed`, `search.connector_types_unreadable` | keeps the plain result / searches every collection | the `log_failure` fields |
+| `search.location_access_failed`, `search.location_failed` | shows an App-only Location when permitted and available; otherwise omits it | the `log_failure` fields |
+
 ## Auth audit events (Node)
 
 Every security decision of sign-in, lockout, OTP, password reset and change, SSO, JIT provisioning, sign-out and the sign-in
