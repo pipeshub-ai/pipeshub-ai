@@ -8,7 +8,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/app/components/ui/Select';
 import { selectIsAdmin, useUserStore } from '@/lib/store/user-store';
 import { ConnectorsApi } from '../../api';
-import type { ConnectorInstance, PermissionFilterMode, PermissionStatus } from '../../types';
+import type { ProcessedError } from '@/lib/api/api-error';
+import type { ConnectorInstance, PermissionFilter, PermissionFilterMode, PermissionStatus } from '../../types';
 
 const MAX_WARNINGS = 5;
 const REFRESH_MS = 30_000;
@@ -77,6 +78,9 @@ export function PermissionFreshness({
   const [showAll, setShowAll] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
+  /** The blockers of a refused change (409), worded instead of the generic failure. */
+  const [refused, setRefused] = useState<PermissionFilter['blockers'] | null>(null);
+  const [saved, setSaved] = useState(false);
 
   if (!id) return null;
   const k = (key: string, o?: Record<string, unknown>) => t(`workspace.connectors.access.${key}`, o);
@@ -89,11 +93,18 @@ export function PermissionFreshness({
   const chooseMode = async (mode: PermissionFilterMode) => {
     setSavingMode(true);
     setSaveFailed(false);
+    setRefused(null);
+    setSaved(false);
     try {
       await ConnectorsApi.setPermissionFilter(id as string, mode);
+      setSaved(true);
       await mutate();
-    } catch {
+    } catch (e) {
+      const body = ((e as ProcessedError)?.originalError as { response?: { data?: { blockers?: unknown } } } | undefined)?.response?.data;
+      const blockers = (e as ProcessedError)?.statusCode === 409 && Array.isArray(body?.blockers) ? (body.blockers as PermissionFilter['blockers']) : null;
+      setRefused(blockers && blockers.length ? blockers : null);
       setSaveFailed(true);
+      void mutate();      // the stored mode may differ from what the card showed
     } finally {
       setSavingMode(false);
     }
@@ -162,29 +173,36 @@ export function PermissionFreshness({
         </Row>
 
         {filter && (
-        <Flex direction="column" gap="1">
-          <Text size="1" weight="medium" id={filterLabelId} style={{ color: 'var(--gray-11)' }}>{k('filter.label')}</Text>
-          <Select value={filter.mode} onValueChange={(v) => void chooseMode(v as PermissionFilterMode)} disabled={savingMode}>
-            <SelectTrigger aria-labelledby={filterLabelId} aria-describedby={filterHelpId} aria-busy={savingMode} style={{ minHeight: 44, alignSelf: 'start' }} />
-            <SelectContent>
-              {FILTER_MODES.map((mode) => (
-                <SelectItem key={mode} value={mode} disabled={mode === 'scopes' && blocked && filter.mode !== 'scopes'}>
-                  {k(`filter.mode.${mode}`)}
-                </SelectItem>
+          <Flex direction="column" gap="1">
+            <Text size="1" weight="medium" id={filterLabelId} style={{ color: 'var(--gray-11)' }}>{k('filter.label')}</Text>
+            <Select value={filter.mode} onValueChange={(v) => void chooseMode(v as PermissionFilterMode)} disabled={savingMode}>
+              <SelectTrigger aria-labelledby={filterLabelId} aria-describedby={filterHelpId} aria-busy={savingMode} style={{ minHeight: 44, alignSelf: 'start' }} />
+              <SelectContent>
+                {FILTER_MODES.map((mode) => (
+                  <SelectItem key={mode} value={mode} disabled={mode === 'scopes' && blocked && filter.mode !== 'scopes'}>
+                    {k(`filter.mode.${mode}`)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Flex direction="column" gap="1" id={filterHelpId}>
+              <Text size="2">{k(`filter.effective.${filter.effective}`, { connector: instance.name })}</Text>
+              {filter.blockers.map((code) => (
+                <Text size="2" key={code} style={{ color: 'var(--gray-11)' }}>{k(`filter.blocker.${code}`)}</Text>
               ))}
-            </SelectContent>
-          </Select>
-          <Flex direction="column" gap="1" id={filterHelpId}>
-            <Text size="2">{k(`filter.effective.${filter.effective}`, { connector: instance.name })}</Text>
-            {filter.blockers.map((code) => (
-              <Text size="2" key={code} style={{ color: 'var(--gray-11)' }}>{k(`filter.blocker.${code}`)}</Text>
-            ))}
-            {!blocked && filter.mode === 'scopes' && filter.effective === 'legacy' && (
-              <Text size="2" style={{ color: 'var(--gray-11)' }}>{k('filter.waiting', { connector: instance.name })}</Text>
-            )}
-            {saveFailed && <Text size="2" color="red" role="alert">{k('filter.saveError')}</Text>}
+              {!blocked && filter.mode === 'scopes' && filter.effective === 'legacy' && (
+                <Text size="2" style={{ color: 'var(--gray-11)' }}>{k('filter.waiting', { connector: instance.name })}</Text>
+              )}
+              {saved && <Text size="2" role="status" style={{ color: 'var(--gray-11)' }}>{k('filter.applies')}</Text>}
+              {saveFailed && (
+                <Flex direction="column" gap="1" role="alert">
+                  {refused
+                    ? refused.map((code) => <Text size="2" color="red" key={code}>{k(`filter.blocker.${code}`)}</Text>)
+                    : <Text size="2" color="red">{k('filter.saveError')}</Text>}
+                </Flex>
+              )}
+            </Flex>
           </Flex>
-        </Flex>
         )}
 
         <Row label={k('attention.label', { count: problems })}>

@@ -3459,10 +3459,11 @@
             "scopes": "Faster search"
           },
           "effective": {
-            "scopes": "Searches of {{connector}} use the faster search: results come straight from what each person may see.",
+            "scopes": "Searches of {{connector}} use the faster search: results are narrowed to what each person may see before they are found, and each result is still checked.",
             "legacy": "Searches of {{connector}} use the classic check: results are checked after they are found."
           },
           "waiting": "Faster search starts once the permissions of {{connector}} are up to date.",
+          "applies": "This change reaches search within 30 seconds.",
           "blocker": {
             "serving_off": "Faster search is turned off for this deployment.",
             "store_unsupported": "This deployment's vector store does not support faster search."

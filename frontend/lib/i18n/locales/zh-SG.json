@@ -3610,10 +3610,11 @@
             "scopes": "更快的搜索"
           },
           "effective": {
-            "scopes": "{{connector}} 的搜索使用更快的搜索：结果直接来自每个人有权查看的内容。",
+            "scopes": "{{connector}} 的搜索使用更快的搜索：在找到结果之前，就已将结果限定为每个人有权查看的内容，并且每个结果仍会被检查。",
             "legacy": "{{connector}} 的搜索使用经典检查：结果在找到后再检查。"
           },
           "waiting": "{{connector}} 的权限更新完成后，更快的搜索就会开始。",
+          "applies": "此更改会在 30 秒内应用于搜索。",
           "blocker": {
             "serving_off": "此部署已关闭更快的搜索。",
             "store_unsupported": "此部署的向量存储不支持更快的搜索。"

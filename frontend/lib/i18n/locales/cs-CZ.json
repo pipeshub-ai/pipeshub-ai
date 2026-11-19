@@ -3731,10 +3731,11 @@
             "scopes": "Rychlejší vyhledávání"
           },
           "effective": {
-            "scopes": "Vyhledávání v {{connector}} používá rychlejší vyhledávání: výsledky vycházejí přímo z toho, co smí každý člověk vidět.",
+            "scopes": "Vyhledávání v {{connector}} používá rychlejší vyhledávání: výsledky se ještě před nalezením zúží na to, co smí každý člověk vidět, a každý výsledek se stále kontroluje.",
             "legacy": "Vyhledávání v {{connector}} používá klasickou kontrolu: výsledky se kontrolují až po nalezení."
           },
           "waiting": "Rychlejší vyhledávání začne, jakmile budou oprávnění {{connector}} aktuální.",
+          "applies": "Tato změna se do vyhledávání promítne do 30 sekund.",
           "blocker": {
             "serving_off": "Rychlejší vyhledávání je v tomto nasazení vypnuté.",
             "store_unsupported": "Vektorové úložiště tohoto nasazení rychlejší vyhledávání nepodporuje."

@@ -250,6 +250,18 @@ describe('PermissionFreshness: how search checks access', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Faster search' }));
     await vi.waitFor(() => expect(setFilter).toHaveBeenCalledWith('conn-1', 'scopes'));
     await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));
+    expect((await screen.findByText('This change reaches search within 30 seconds.')).getAttribute('role')).toBe('status');
+  });
+
+  it('words the blockers of a refused change instead of the generic failure, and reloads the status', async () => {
+    getStatus.mockResolvedValue(filtered({ mode: 'inherit', effective: 'legacy', blockers: [] }));
+    setFilter.mockRejectedValue({ statusCode: 409, message: 'x', originalError: { response: { data: { error: 'not_switchable', blockers: ['store_unsupported'] } } } });
+    renderCard();
+    fireEvent.click(await screen.findByRole('combobox', { name: 'How search checks access' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Faster search' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe("This deployment's vector store does not support faster search.");
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));
   });
 
   it('says why faster search cannot be chosen, and does not offer it', async () => {
@@ -274,6 +286,7 @@ describe('PermissionFreshness: how search checks access', () => {
     fireEvent.click(screen.getByRole('combobox', { name: 'How search checks access' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Classic check' }));
     expect((await screen.findByRole('alert')).textContent).toBe('Could not change this setting. Try again.');
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));
     expect(screen.getByRole('combobox', { name: 'How search checks access' }).textContent).toBe('Faster search');
   });
 });
