@@ -60,6 +60,58 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       await stack?.stop();
     });
 
+    describe('visibility inside one reused unit', () => {
+      it('a scheduled row is hidden before visibleAt and visible after it within the same open transaction (the app clock decides, not the transaction start)', async () => {
+        const user = newId();
+        const scope = { orgId: A, userId: user };
+        // the operation's clock is held by the test: nothing here depends on how long the setup or the statements take
+        const t0 = Date.now();
+        const lead = 60_000;
+        const insertScheduled = () =>
+          inOrg(A, () =>
+            notifications.insert({ orgId: A, assignedTo: user, type: 't', visibleAt: new Date(t0 + lead) }),
+          );
+        await insertScheduled();
+        const clock = sinon.useFakeTimers({ now: t0, toFake: ['Date'] });
+        try {
+          const seen = await run(
+            A,
+            async () => {
+              const before = await notifications.list(scope, { status: null, limit: 10 });
+              const beforeCount = await notifications.counts(scope);
+              clock.setSystemTime(t0 + lead + 1_000); // past visibleAt, the unit stays open
+              const after = await notifications.list(scope, { status: null, limit: 10 });
+              const afterCount = await notifications.counts(scope);
+              const marked = await notifications.markAllRead(scope);
+              return { before, beforeCount, after, afterCount, marked };
+            },
+            true,
+          );
+          expect(seen.before).to.deep.equal([]);
+          expect(seen.beforeCount.unread).to.equal(0);
+          expect(seen.after).to.have.length(1);
+          expect(seen.afterCount.unread).to.equal(1);
+          expect(seen.marked).to.equal(1);
+          clock.setSystemTime(t0);
+          const row = await insertScheduled();
+          const changed = await run(
+            A,
+            async () => {
+              const early = await notifications.setStatus(scope, row._id, 'read');
+              clock.setSystemTime(t0 + lead + 1_000);
+              const late = await notifications.setStatus(scope, row._id, 'read');
+              return { early, late };
+            },
+            true,
+          );
+          expect(changed.early).to.equal(null);
+          expect(changed.late?.status).to.equal('read');
+        } finally {
+          clock.restore();
+        }
+      });
+    });
+
     describe('row policies and grants', () => {
       it("an organisation sees none of another one's notifications, and cannot write into it", async () => {
         const user = newId();
