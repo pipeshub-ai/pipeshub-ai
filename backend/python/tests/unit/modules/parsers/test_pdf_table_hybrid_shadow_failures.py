@@ -398,3 +398,21 @@ async def test_a_deadline_that_runs_out_after_the_first_table_is_deadline_too(ca
     tables, _ = parse_logs(caplog)
     by = {t["key"]: t["reason"] for t in tables}
     assert by["p1:b0"] == "none" and by["p1:b1"] == "deadline"
+
+
+async def test_the_clients_timeout_outlasts_the_deadline_it_sends(caplog) -> None:
+    """The service may answer 429 as late as the deadline it was given. The request's own timeout is longer by a margin, so
+    that answer arrives first: tables the service never started are service_busy, not a model timeout."""
+    seen: list[tuple[float, float]] = []
+
+    def busy(request: httpx.Request) -> httpx.Response:
+        seen.append((int(request.headers["X-Table-Deadline-Ms"]) / 1000, request.extensions["timeout"]["read"]))
+        return httpx.Response(429, json={"errorCode": "service_busy"})
+
+    svc = Service()
+    coord = flow.ShadowCoordinator(TableStructureClient("http://svc", httpx.MockTransport(busy)), doc_s=lambda: 30.0)
+    await run_doc(svc, 2, coordinator=coord)
+    tables, _ = parse_logs(caplog)
+    assert set(reasons(tables)) == {"service_busy"}
+    deadline_s, read_timeout = seen[0]
+    assert read_timeout >= deadline_s + flow.DEADLINE_MARGIN_S - 0.01

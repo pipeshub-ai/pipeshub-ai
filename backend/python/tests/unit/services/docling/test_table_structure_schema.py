@@ -89,3 +89,12 @@ def test_the_token_definition_is_the_same_on_both_sides() -> None:
     from app.modules.parsers.pdf import table_hybrid as th
 
     assert th.TOKEN_DEFINITION == sch.TOKEN_DEFINITION
+
+
+@pytest.mark.parametrize("bad", [1, 0, "true", "yes"])
+def test_header_flags_accept_real_booleans_or_null_only(bad) -> None:
+    with pytest.raises(ValidationError):
+        sch.CellOut.model_validate({"r0": 0, "r1": 1, "c0": 0, "c1": 1, "tokens": [], "column_header": bad})
+    with pytest.raises(ValidationError):
+        sch.CellOut.model_validate({"r0": 0, "r1": 1, "c0": 0, "c1": 1, "tokens": [], "row_header": bad})
+    assert sch.CellOut.model_validate({"r0": 0, "r1": 1, "c0": 0, "c1": 1, "tokens": [], "row_header": None}).row_header is None

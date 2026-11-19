@@ -64,6 +64,7 @@ MAX_REQUEST_IMAGE_BYTES = 7 * 1024 * 1024  # under the endpoint's 8 MiB
 MAX_META_BYTES = 900_000  # under the form parser's 1 MB field limit
 MAX_WORD_CHARS = 256  # a longer word (a dot leader the text layer joined into one word) is cut
 SPOOL_MAX_BYTES = 128 * 1024 * 1024  # per document; past it the boxes are ``spool_full``
+DEADLINE_MARGIN_S = 5.0
 QUEUE_WAIT_CAP_S = 120.0  # the service's longest wait for a permit; the request timeout covers it
 RECORD_BUDGET_SHARE = 0.8  # the parsing client's read-timeout share of the record budget
 CREATE_BLOCKS_RESERVE_S = 600.0
@@ -745,7 +746,9 @@ class ShadowCoordinator:
                 stats.bytes_sent += len(png)
                 specs.append({**rec["_spec"], "image": f"c{n}"})
             left = deadline - self._clock()
-            timeout = min(left, sum(_table_timeout(r["cap"]) for r in ok_batch) + 10.0 + QUEUE_WAIT_CAP_S)
+            # The request outlasts the deadline header by a margin, so a 429 the service answers at the deadline arrives
+            # before the client's own timeout: a table the service never started is service_busy, not a model timeout.
+            timeout = min(left + DEADLINE_MARGIN_S, sum(_table_timeout(r["cap"]) for r in ok_batch) + 10.0 + QUEUE_WAIT_CAP_S)
             stats.sent += len(ok_batch)
             sent_at = self._clock()
             outcome = await self._client_or_default().post_batch(

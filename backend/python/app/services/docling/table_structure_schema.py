@@ -12,7 +12,7 @@ import math
 import os
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 SCHEMA_VERSION = 1
 TOKEN_DEFINITION = "text-layer-v2"  # what a token is (see table_hybrid.TOKEN_DEFINITION); part of the hash
@@ -76,8 +76,8 @@ class CellOut(BaseModel):
     c1: int
     bbox: list[float] | None = None
     tokens: list[int] = Field(default_factory=list)
-    column_header: bool | None = None  # the model's header tags; absent = null
-    row_header: bool | None = None
+    column_header: StrictBool | None = None  # the model's header tags (real booleans only); absent = null
+    row_header: StrictBool | None = None
 
 
 class TableResult(BaseModel):
