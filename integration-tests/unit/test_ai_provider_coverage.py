@@ -1,9 +1,10 @@
 """Which AI providers a run is held to, and which it may skip.
 
 Three of the four live providers have no key in the integration workflow, so
-holding the nightly to them would only produce permanent red. Azure OpenAI has
-one, so a run that was meant to cover it must fail rather than skip when the
-key is gone — a rotated key otherwise reads as a passing run.
+holding the nightly to them would only produce permanent red. OpenAI has one
+(Azure OpenAI's account is gone), so a run that was meant to cover it must fail
+rather than skip when the key is gone — a rotated key otherwise reads as a
+passing run.
 """
 
 from __future__ import annotations
@@ -53,26 +54,26 @@ def _clear_keys(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_a_missing_azure_key_fails_a_run_meant_to_cover_it(monkeypatch) -> None:
-    suite = _suite()
-    _clear_keys(monkeypatch)
-    monkeypatch.setenv(REQUIRE_ENV, "1")
-
-    with pytest.raises(BaseException) as caught:
-        suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_AZURE_OPENAI))
-
-    assert caught.typename == "Failed"
-    assert "TEST_AZURE_OPENAI_API_KEY" in str(caught.value)
-
-
-def test_a_provider_the_run_no_longer_funds_only_skips(monkeypatch) -> None:
-    """OpenAI's key is gone, so the nightly must not still demand it."""
+def test_a_missing_openai_key_fails_a_run_meant_to_cover_it(monkeypatch) -> None:
     suite = _suite()
     _clear_keys(monkeypatch)
     monkeypatch.setenv(REQUIRE_ENV, "1")
 
     with pytest.raises(BaseException) as caught:
         suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_OPENAI))
+
+    assert caught.typename == "Failed"
+    assert "TEST_OPENAI_API_KEY" in str(caught.value)
+
+
+def test_a_provider_the_run_no_longer_funds_only_skips(monkeypatch) -> None:
+    """Azure OpenAI's account is gone, so the nightly must not still demand it."""
+    suite = _suite()
+    _clear_keys(monkeypatch)
+    monkeypatch.setenv(REQUIRE_ENV, "1")
+
+    with pytest.raises(BaseException) as caught:
+        suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_AZURE_OPENAI))
 
     assert caught.typename == "Skipped"
 
@@ -93,26 +94,28 @@ def test_an_ordinary_run_skips_every_provider(monkeypatch) -> None:
     _clear_keys(monkeypatch)
     monkeypatch.delenv(REQUIRE_ENV, raising=False)
 
-    for provider in (suite._PROVIDER_AZURE_OPENAI, suite._PROVIDER_GROQ):
+    for provider in (suite._PROVIDER_OPENAI, suite._PROVIDER_AZURE_OPENAI, suite._PROVIDER_GROQ):
         with pytest.raises(BaseException) as caught:
             suite._skip_if_no_live_credentials(_spec_for(provider))
         assert caught.typename == "Skipped"
 
 
-def test_no_workflow_still_passes_the_unfunded_openai_key() -> None:
+def test_the_test_jobs_no_longer_pass_the_gone_azure_key() -> None:
     """The skip-or-fail rule only decides what happens when a key is absent.
 
-    While a workflow still passed TEST_OPENAI_API_KEY, every live OpenAI spec
-    went on running and posting to the key with no credits. Unsetting the
-    variable in a test cannot catch that, because the test controls its own
-    environment and CI does not; the workflows are the thing to assert on.
+    While a job passes TEST_AZURE_OPENAI_API_KEY, every live Azure spec, and
+    the Playwright helper (which tries Azure first), goes on running against
+    the account that no longer exists. Unsetting the variable in a test cannot
+    catch that, because the test controls its own environment and CI does not;
+    the workflows are the thing to assert on. The perf and answer-quality
+    workflows still name Azure and are out of this check until they move too.
     """
     workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
     passing_it = sorted(
-        path.name
-        for path in workflows.glob("*.yml")
-        if "TEST_OPENAI_API_KEY: ${{ secrets." in path.read_text()
+        name
+        for name in ("integration-tests.yml", "sdk-tests.yml")
+        if "TEST_AZURE_OPENAI_API_KEY: ${{ secrets." in (workflows / name).read_text()
     )
     assert passing_it == [], (
-        "these jobs still hand the tests the OpenAI key: " + ", ".join(passing_it)
+        "these jobs still hand the tests the gone Azure OpenAI key: " + ", ".join(passing_it)
     )

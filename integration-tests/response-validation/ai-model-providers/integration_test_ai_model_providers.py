@@ -225,7 +225,7 @@ def _resolve_live_spec(spec: LiveProviderSpec) -> Optional[tuple[str, str, Dict[
 # key is in the repository's integration-test environment - and take one out
 # when the workflow stops passing it, or the nightly starts demanding a key
 # nobody is paying for.
-_PROVIDERS_CI_MUST_COVER = frozenset({_PROVIDER_AZURE_OPENAI})
+_PROVIDERS_CI_MUST_COVER = frozenset({_PROVIDER_OPENAI})
 
 
 def _spec_for_a_live_provider() -> LiveProviderSpec:
