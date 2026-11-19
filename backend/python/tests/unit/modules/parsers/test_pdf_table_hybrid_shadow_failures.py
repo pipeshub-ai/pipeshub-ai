@@ -416,3 +416,24 @@ async def test_the_clients_timeout_outlasts_the_deadline_it_sends(caplog) -> Non
     assert set(reasons(tables)) == {"service_busy"}
     deadline_s, read_timeout = seen[0]
     assert read_timeout >= deadline_s + flow.DEADLINE_MARGIN_S - 0.01
+
+
+def test_a_strict_word_loss_is_reported_beside_the_one_percent_figure() -> None:
+    from app.services.docling.table_structure_schema import TableResult
+
+    n = 200
+    rec = {"words": [[f"w{i}", float(i), 0.0, float(i) + 0.5, 5.0] for i in range(n)], "rules": None, "content_excess": 3}
+    cells = [{"r0": r, "r1": r + 1, "c0": 0, "c1": 2, "tokens": list(range(r * 100 + (1 if r == 0 else 0), r * 100 + 100))} for r in range(2)]
+    cells = [{**cells[0], "c1": 1}, {**cells[1], "r0": 1, "r1": 2, "c0": 1, "c1": 2}, {"r0": 0, "r1": 1, "c0": 1, "c1": 2, "tokens": []}, {"r0": 1, "r1": 2, "c0": 0, "c1": 1, "tokens": []}]
+    one_lost = flow.analyse_table(rec, TableResult(id="t", status="ok", n_rows=2, n_cols=2, cells=cells), None)
+    assert one_lost["content_words_lost"] == 1 and one_lost["strict_word_loss"] is True
+    assert one_lost["would_route"] == "model" and one_lost["content_excess"] == 3  # the 1 % rule still passes it
+    full = [{**cells[0], "tokens": list(range(0, 100))}, *cells[1:]]
+    none_lost = flow.analyse_table(rec, TableResult(id="t", status="ok", n_rows=2, n_cols=2, cells=full), None)
+    assert none_lost["content_words_lost"] == 0 and none_lost["strict_word_loss"] is False
+
+
+async def test_a_document_without_a_parse_wall_logs_null_and_counts_its_table_pages(caplog) -> None:
+    await run_doc(Service(), 8)  # six boxes to a page: two pages
+    _, docs = parse_logs(caplog)
+    assert docs[0]["layout_parse_wall_s"] is None and docs[0]["table_pages"] == 2

@@ -20,6 +20,9 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.modules.parsers.pdf.drawn_rules import Stroke as _Stroke
+from app.modules.parsers.pdf.drawn_rules import crossings as _crossings
+
 Word = dict[str, Any]
 Box = tuple[float, float, float, float]  # x0, top, x1, bottom
 
@@ -872,6 +875,22 @@ def word_losses(token_texts: dict[int, str], cells: list[dict[str, Any]]) -> tup
     return all_share, (len(content_lost) / len(content) if content else 0.0)
 
 
+def content_words_lost(token_texts: dict[int, str], cells: list[dict[str, Any]]) -> int:
+    """Words with a letter or a digit that no cell lists. The strict figure: any one is a loss, beside the 1 % share."""
+    listed = {t for c in cells for t in c.get("tokens", [])}
+    return sum(1 for t, text in token_texts.items() if _has_content(text) and t not in listed)
+
+
+def content_excess(grid_texts: list[str], word_texts: list[str]) -> int:
+    """Letters and digits the evidence grid holds that the box's own words do not: the multiset difference of the two, summed
+    (a grid that holds a caption or a neighbour's text has an excess; a grid that holds fewer is not counted)."""
+    from collections import Counter
+
+    have = Counter(ch for t in grid_texts for ch in t if ch.isalnum())
+    own = Counter(ch for t in word_texts for ch in t if ch.isalnum())
+    return sum((have - own).values())
+
+
 def would_route(failure: str | None, check: GridCheck | None, shape: tuple[int, int] | None, content_loss: float) -> tuple[str, str]:
     """What a model-first mode would do with this table: ``("model" | "evidence", reason)``. First match wins,
     in the order the reasons are listed: a request failure, malformed, a grid under 2 x 2, word loss above 1 %."""
@@ -927,37 +946,12 @@ def is_synthetic(word: Word) -> bool:
     return word.get("synthetic") is True
 
 
-Stroke = tuple[float, float, float]  # a horizontal stroke (y, x0, x1) or a vertical one (x, y0, y1)
+Stroke = _Stroke
 
 
 def rule_crossings(words_by_id: dict[int, Word], cells: list[dict[str, Any]], h_rules: list[Stroke], v_rules: list[Stroke]) -> int:
-    """Cells holding words on both sides of a drawn stroke that spans them (every word on one side or the other).
-    Reported only; the stroke must run over the cell's words, so a rule beside the cell never counts."""
-    n = 0
-    for c in cells:
-        ws = [words_by_id[t] for t in c.get("tokens", []) if t in words_by_id]
-        if len(ws) < 2:
-            continue
-        x0, x1 = min(w["x0"] for w in ws), max(w["x1"] for w in ws)
-        t0, b0 = min(w["top"] for w in ws), max(w["bottom"] for w in ws)
-        bad = False
-        for y, a, d in h_rules:
-            if t0 + 1 < y < b0 - 1 and a <= x0 + 2 and d >= x1 - 2:
-                up = [w for w in ws if w["bottom"] <= y + 1.0]
-                dn = [w for w in ws if w["top"] >= y - 1.0]
-                if up and dn and len(up) + len(dn) == len(ws):
-                    bad = True
-                    break
-        if not bad:
-            for x, a, d in v_rules:
-                if x0 + 1 < x < x1 - 1 and a <= t0 + 2 and d >= b0 - 2:
-                    le = [w for w in ws if w["x1"] <= x + 1.0]
-                    ri = [w for w in ws if w["x0"] >= x - 1.0]
-                    if le and ri and len(le) + len(ri) == len(ws):
-                        bad = True
-                        break
-        n += bad
-    return n
+    """Cells holding words on both sides of a drawn rule that spans them (see ``drawn_rules.crossings``). Reported only."""
+    return _crossings(words_by_id, cells, h_rules, v_rules)[2]
 
 
 def hard_flags(words_by_id: dict[int, Word], cells: list[dict[str, Any]], shape: tuple[int, int]) -> dict[str, bool]:

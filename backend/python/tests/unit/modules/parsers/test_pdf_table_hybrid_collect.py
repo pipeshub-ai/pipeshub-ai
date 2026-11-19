@@ -200,3 +200,28 @@ def test_a_page_whose_crop_box_is_not_its_media_box_is_measured_and_the_box_land
     for t in toks:
         x0, y0, x1, y1 = (v * sf for v in t["bbox"])
         assert tb[0] - 1 <= x0 and x1 <= tb[2] + 1 and tb[1] - 1 <= y0 and y1 <= tb[3] + 1, (t, tb)
+
+
+def _evidence(box, rows):  # noqa: ANN202
+    from tests.support.table_shadow import FakeRegion
+
+    return FakeRegion(box, rows)
+
+
+def test_the_content_excess_of_the_evidence_grid_is_spooled(spool) -> None:
+    from app.modules.parsers.pdf import table_hybrid_flow as f
+
+    words = grid_words(BOX)
+    own = [[w["text"] for w in words[i : i + 3]] for i in range(0, len(words), 3)]
+    clean = f.TableJobCollector(spool, "x.pdf", renderer=blank_renderer)
+    clean.collect_page(0, PAGE_W, PAGE_H, [FakeDecision(BOX)], [], [_evidence(BOX, own)], words)
+    assert read_index(spool)[0]["content_excess"] == 0
+    other = spool + "-b"
+    os.mkdir(other)
+    extra = [*own, ["Table 3", None, {"text": "note"}]]  # a caption and a note held in the grid (cells may be dicts or empty)
+    f.TableJobCollector(other, "x.pdf", renderer=blank_renderer).collect_page(0, PAGE_W, PAGE_H, [FakeDecision(BOX)], [], [_evidence(BOX, extra)], words)
+    assert read_index(other)[0]["content_excess"] == len("Table3note")
+    none = spool + "-c"
+    os.mkdir(none)
+    f.TableJobCollector(none, "x.pdf", renderer=blank_renderer).collect_page(0, PAGE_W, PAGE_H, [FakeDecision(BOX)], [], [], words)
+    assert read_index(none)[0]["content_excess"] is None  # no evidence table for the box

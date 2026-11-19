@@ -176,3 +176,20 @@ def test_a_cell_with_words_on_both_sides_of_a_spanning_rule_is_a_crossing() -> N
     assert th.rule_crossings(words, two_cells, [(25.0, 0.0, 100.0)], []) == 0
     side = {0: w("a", 10, 0, 20), 1: w("b", 60, 0, 70)}
     assert th.rule_crossings(side, [cell(0, 1, 0, 1, [0, 1])], [], [(40.0, -5.0, 20.0)]) == 1
+
+
+def test_strict_word_loss_counts_any_unlisted_word_with_a_letter_or_digit() -> None:
+    texts = {i: f"w{i}" for i in range(200)}
+    texts[200] = "•"
+    cells = [cell(0, 1, 0, 1, [i for i in range(200) if i != 7])]
+    assert th.content_words_lost(texts, cells) == 1  # the bullet is not content
+    assert th.word_losses(texts, cells)[1] == pytest.approx(1 / 200)  # under the 1 % figure
+    assert th.content_words_lost(texts, [cell(0, 1, 0, 1, list(range(201)))]) == 0
+
+
+def test_content_excess_is_what_the_grid_holds_beyond_the_boxs_own_words() -> None:
+    words = ["Net", "sales", "1,515", "2,030"]
+    assert th.content_excess(["Net sales", "1,515", "2,030"], words) == 0
+    assert th.content_excess(["Net sales", "1,515", "2,030", "Table 3"], words) == len("Table3")  # a caption inside the grid
+    assert th.content_excess(["Net"], words) == 0  # a grid that holds less is not counted
+    assert th.content_excess(["Net", "•", ". ."], words) == 0  # marks are not content

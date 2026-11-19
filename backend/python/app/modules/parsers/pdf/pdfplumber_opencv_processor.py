@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import logging
 import re
+import time
 import uuid
 from collections import Counter
 from io import BytesIO
@@ -44,6 +44,7 @@ from app.utils.table_enrichment import (
 )
 
 if TYPE_CHECKING:
+    import logging
     from collections.abc import Callable
 
     from app.config.configuration_service import ConfigurationService
@@ -235,6 +236,7 @@ class PDFPlumberOpenCVProcessor:
         pdf_bytes = stream.read()
 
         coordinator, admission, request_id = self._shadow_admit(record_id, table_model=table_model)
+        parse_started = time.monotonic()
         # The worker may run as long as the PDF record it parses for.
         try:
             if admission is None:
@@ -262,7 +264,7 @@ class PDFPlumberOpenCVProcessor:
             raise
         if admission is not None:
             try:
-                coordinator.start(admission, record_id, request_id)
+                coordinator.start(admission, record_id, request_id, time.monotonic() - parse_started)
             except Exception:
                 coordinator.abandon(admission)
         for pd in pages_data:

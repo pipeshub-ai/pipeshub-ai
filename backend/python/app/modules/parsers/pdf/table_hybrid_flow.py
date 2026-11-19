@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import spawn_detached
 from app.modules.parsers.pdf import table_hybrid as th
+from app.modules.parsers.pdf.drawn_rules import crossings, drawn_rules, strokes_touching
 from app.modules.parsers.pdf.table_hybrid_client import (
     DOWN_LATCH_S,
     UNSUPPORTED_LATCH_S,
@@ -182,6 +183,17 @@ def _shape(region: object) -> list[int] | None:
     return [len(grid), max(len(r) for r in grid)]
 
 
+def _grid_texts(region: object) -> list[str]:
+    """The cell texts of a table region's grid (cells are strings or dicts with a ``text``)."""
+    out: list[str] = []
+    for row in getattr(region, "table_grid", None) or []:
+        for cell in row:
+            text = cell.get("text") if isinstance(cell, dict) else cell
+            if text:
+                out.append(str(text))
+    return out
+
+
 def _overlap_area(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     w = min(a[2], b[2]) - max(a[0], b[0])
     h = min(a[3], b[3]) - max(a[1], b[1])
@@ -296,42 +308,6 @@ def _default_renderer(pdf_path: str) -> Callable[[int], tuple[Any, ...]]:
     return render
 
 
-def _page_strokes(page: object) -> tuple[list[th.Stroke], list[th.Stroke]] | None:
-    """Drawn strokes of a page: thin lines and thin rectangles, and the edges of stroked rectangles. ``None`` when the
-    page cannot be read."""
-    try:
-        h: list[th.Stroke] = []
-        v: list[th.Stroke] = []
-        for ln in page.lines or []:  # type: ignore[attr-defined]
-            x0, x1, t, b = ln["x0"], ln["x1"], ln["top"], ln["bottom"]
-            if abs(b - t) <= 1.5 and x1 - x0 >= 8:
-                h.append(((t + b) / 2, x0, x1))
-            elif abs(x1 - x0) <= 1.5 and b - t >= 6:
-                v.append(((x0 + x1) / 2, t, b))
-        for r in page.rects or []:  # type: ignore[attr-defined]
-            x0, x1, t, b = r["x0"], r["x1"], r["top"], r["bottom"]
-            w, hh = x1 - x0, b - t
-            if hh <= 1.5 and w >= 8:
-                h.append(((t + b) / 2, x0, x1))
-            elif w <= 1.5 and hh >= 6:
-                v.append(((x0 + x1) / 2, t, b))
-            elif r.get("stroke") and w >= 8 and hh >= 6 and r.get("linewidth", 0) > 0 and r.get("stroking_color") is not None:
-                h += [(t, x0, x1), (b, x0, x1)]
-                v += [(x0, t, b), (x1, t, b)]
-        return h, v
-    except Exception:
-        return None
-
-
-def _strokes_in(strokes: tuple[list[th.Stroke], list[th.Stroke]] | None, box: tuple[float, ...]) -> dict[str, list[list[float]]] | None:
-    """The strokes that touch *box*, for the parent's rule-crossing count; ``None`` when the page's strokes are unknown."""
-    if strokes is None:
-        return None
-    h = [[round(y, 1), round(a, 1), round(c, 1)] for y, a, c in strokes[0] if box[1] <= y <= box[3] and c >= box[0] and a <= box[2]]
-    v = [[round(x, 1), round(a, 1), round(c, 1)] for x, a, c in strokes[1] if box[0] <= x <= box[2] and c >= box[1] and a <= box[3]]
-    return {"h": h, "v": v}
-
-
 class TableJobCollector:
     """Renders and spools one job per eligible table box and an index line per box. Per box, any exception is
     recorded as ``collect_error`` and the parse continues; nothing from here reaches the caller."""
@@ -411,7 +387,7 @@ class TableJobCollector:
         text_words = [w for w in all_words if str(w.get("text", "")).strip()]
         words_all = [w for w in text_words if not th.is_synthetic(w)]
         synthetic = [w for w in text_words if th.is_synthetic(w)]
-        strokes = _page_strokes(page) if page is not None else None
+        strokes = drawn_rules(page) if page is not None else None
         for bi, d in enumerate(eligible):
             box = tuple(float(v) for v in d.box)
             rec: dict[str, Any] = {
@@ -420,7 +396,7 @@ class TableJobCollector:
             try:
                 self._one_box(rec, page_index, page_w, page_h, box, legacy, evidence, words_all)
                 rec["synthetic"] = [[round(w["x0"], 1), round(w["top"], 1), round(w["x1"], 1), round(w["bottom"], 1)] for w in synthetic if _in_box(w, box)]
-                rec["rules"] = _strokes_in(strokes, box)
+                rec["rules"] = strokes_touching(strokes, box)
             except Exception as exc:
                 self._warn_once(type(exc).__name__)
                 rec.update(reason="collect_error", png=None)
@@ -439,11 +415,13 @@ class TableJobCollector:
         rec["legacy_shape"] = self._best_shape(legacy, box)
         if evidence is not None:
             rec["evidence_shape"] = self._best_shape(evidence, box)
-            ev_sets = [
-                {i for i, w in enumerate(words_all) if _in_box(w, tuple(r.bbox))}
-                for r in evidence
+            ev_tables = [
+                r for r in evidence
                 if getattr(r, "type", None) is not None and getattr(r.type, "name", "") == "TABLE" and _overlap_area(tuple(r.bbox), box) > 0
             ]
+            ev_sets = [{i for i, w in enumerate(words_all) if _in_box(w, tuple(r.bbox))} for r in ev_tables]
+            # Letters and digits the evidence grid holds that the box's own words do not (a caption, a neighbour's text).
+            rec["content_excess"] = th.content_excess([t for r in ev_tables for t in _grid_texts(r)], [w["text"] for w in words]) if ev_tables else None
             box_ids = {i for i, w in enumerate(words_all) if _in_box(w, box)}
             rec["box_class"] = th.box_class(box_ids, ev_sets)
         if plan.reason != "none":
@@ -504,6 +482,8 @@ class DocStats:
     deadline_hit: bool = False
     fallback_by_reason: dict[str, int] = field(default_factory=dict)
     phase2_wall_s: float = 0.0
+    layout_parse_wall_s: float | None = None
+    table_pages: int | None = None
     bytes_sent: int = 0
     spool_peak_bytes: int = 0
     outcome: str = "ok"
@@ -584,10 +564,16 @@ def analyse_table(rec: dict[str, Any], result: TableResult | None, failure: str 
         tf_shape=list(shape), shape_equal=(rec.get("evidence_shape") == list(shape)) if rec.get("evidence_shape") else None,
         would_route=would, would_reason=why, reason=why, word_loss_all=round(loss_all, 4), word_loss_content=round(loss_content, 4),
         glyph_candidates=th.glyph_candidates(texts, cells), overlaps=check.overlaps, checks=th.hard_flags(words, cells, shape),
-        synthetic_excluded=len(rec.get("synthetic") or []),
+        synthetic_excluded=len(rec.get("synthetic") or []), content_words_lost=th.content_words_lost(texts, cells),
+        content_excess=rec.get("content_excess"),
     )
+    out["strict_word_loss"] = out["content_words_lost"] > 0
     rules = rec.get("rules")
-    out["rule_crossings"] = None if rules is None else th.rule_crossings(words, cells, [tuple(x) for x in rules["h"]], [tuple(x) for x in rules["v"]])
+    if rules is None:
+        out.update(rule_crossings=None, rule_crossings_h=None, rule_crossings_v=None)
+    else:
+        n_h, n_v, n_any = crossings(words, cells, [tuple(x) for x in rules["h"]], [tuple(x) for x in rules["v"]])
+        out.update(rule_crossings=n_any, rule_crossings_h=n_h, rule_crossings_v=n_v)
     out["route"] = "model" if would == "model" else "evidence"
     return out
 
@@ -656,9 +642,12 @@ class ShadowCoordinator:
         remove_spool(admission.spool_dir)
         self._busy = False
 
-    def start(self, admission: Admission, record_id: str | None, request_id: str | None) -> asyncio.Task[None]:
-        """Start the detached run in a fresh context that keeps only the ids it logs."""
-        task = spawn_detached(self._run(admission, record_id, request_id), name="table-hybrid-shadow")
+    def start(
+        self, admission: Admission, record_id: str | None, request_id: str | None, parse_wall_s: float | None = None
+    ) -> asyncio.Task[None]:
+        """Start the detached run in a fresh context that keeps only the ids it logs. *parse_wall_s* is the wall time the
+        layout parse took, the denominator for a cost per table page."""
+        task = spawn_detached(self._run(admission, record_id, request_id, parse_wall_s), name="table-hybrid-shadow")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
@@ -671,8 +660,9 @@ class ShadowCoordinator:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t
 
-    async def _run(self, admission: Admission, record_id: str | None, request_id: str | None) -> None:
+    async def _run(self, admission: Admission, record_id: str | None, request_id: str | None, parse_wall_s: float | None = None) -> None:
         stats = DocStats(record_id, request_id)
+        stats.layout_parse_wall_s = None if parse_wall_s is None else round(parse_wall_s, 3)
         t0 = self._clock()
         try:
             await self._phase2(admission.spool_dir, stats, t0)
@@ -690,6 +680,7 @@ class ShadowCoordinator:
     async def _phase2(self, spool_dir: str, stats: DocStats, t0: float) -> None:
         records = await asyncio.to_thread(_read_index, spool_dir)
         stats.tables_seen = len(records)
+        stats.table_pages = len({r["page"] for r in records})
         stats.spool_peak_bytes = sum(r.get("png_bytes", 0) for r in records)
         jobs: list[dict[str, Any]] = []
         for rec in records:
@@ -834,6 +825,7 @@ class ShadowCoordinator:
             "prefiltered": stats.prefiltered, "long_words_cut": stats.long_words, "sent": stats.sent, "budget": stats.budget, "deadline_hit": stats.deadline_hit,
             "fallback_by_reason": dict(sorted(reasons.items())),
             "docs_with_load_fallback": any(r in th.LOAD_REASONS for r in reasons), "phase2_wall_s": stats.phase2_wall_s,
+            "layout_parse_wall_s": stats.layout_parse_wall_s, "table_pages": stats.table_pages,
             "bytes_sent": stats.bytes_sent, "spool_peak_bytes": stats.spool_peak_bytes,
         }
         logger.info("table hybrid shadow document: %s", json.dumps(doc, sort_keys=True, separators=(",", ":")))
