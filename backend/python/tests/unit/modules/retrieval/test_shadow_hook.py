@@ -133,3 +133,13 @@ def test_an_invalid_setting_stops_the_service_at_start_up_instead_of_being_swall
     s.logger = MagicMock()
     with pytest.raises(ValueError, match=name):
         s._build_shadow(MagicMock())
+
+
+@pytest.mark.parametrize(("carried", "served"), [(None, False), ("filter", True)])
+def test_a_search_the_serving_plan_filtered_is_handed_over_as_served(carried: str | None, served: bool) -> None:
+    """Its result already went through the filter, so the comparator must not judge recall loss from it."""
+    shadow = MagicMock()
+    plan = _QueryPlan(dense=[[0.1]])
+    plan.scope_filter = flt() if carried else None
+    submit(service(shadow), plan, {"v1"}, {"v1": "r1"})
+    assert shadow.submit.call_args.kwargs["served"] is served

@@ -2672,7 +2672,8 @@ components:
           type: string
           description: |
             What the connector's next search uses: `scopes` only while its mode resolves to `scopes`, nothing
-            blocks it, and its stored permissions are served now (see `serving.served`); otherwise `legacy`.
+            blocks it, its stored permissions are served now (see `serving.served`) and, when `ACL_FILTER_MODE` is
+            not `scopes`, the switch has been recorded; otherwise `legacy`.
           enum: [legacy, scopes]
         blockers:
           type: array
@@ -56043,7 +56044,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [asOf, state, reachWithinMinutes, serving, lastPermissionSync, pending, coverage, attention, warnings, filter]
+                required: [asOf, state, reachWithinMinutes, serving, lastPermissionSync, pending, coverage, attention, warnings]
                 properties:
                   asOf:
                     type: string
@@ -56134,7 +56135,9 @@ paths:
                           nullable: true
                           additionalProperties: true
                   filter:
-                    $ref: '#/components/schemas/ConnectorPermissionFilter'
+                    description: The connector's permission filter mode and what its next search uses. Absent from servers that predate the mode.
+                    allOf:
+                      - $ref: '#/components/schemas/ConnectorPermissionFilter'
         '401':
           description: Missing or invalid credentials
           content:

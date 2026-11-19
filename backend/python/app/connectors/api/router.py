@@ -9041,6 +9041,10 @@ async def delete_connector_instance(
                 logger.exception(f"Could not clear DELETING for connector {connector_id}")
             raise
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
+        try:
+            await _set_scopes_listed(resolve_config_service(container, org_id), connector_id, listed=False)
+        except HTTPException:
+            logger.warning(f"Connector {connector_id} stays on the list of connectors switched to scopes")      # costs a read, never access
 
         return JSONResponse(
             status_code=202,
@@ -10765,7 +10769,19 @@ async def get_permission_status(
 ) -> dict[str, Any]:
     """Admin only (`_admin_connector_app`)."""
     app = await _admin_connector_app(request, connector_id, graph_provider)
-    return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))
+    listed = await _is_scopes_listed(resolve_config_service(request.app.container, current_org_id()), connector_id)
+    return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider),
+                                listed=listed)
+
+
+async def _is_scopes_listed(config: Any, connector_id: str) -> bool:  # noqa: ANN401
+    """Whether the connector is on the list of connectors switched to `scopes`, read from the store (not a cache); unreadable is not listed."""
+    try:
+        raw = await config.get_config(SCOPES_CONNECTORS_KEY, default=[], use_cache=False, raise_on_error=True)
+    except Exception:
+        logger.warning("Could not read the connectors switched to scopes")
+        return False
+    return isinstance(raw, list) and connector_id in {str(i) for i in raw}
 
 
 async def _set_scopes_listed(config: Any, connector_id: str, *, listed: bool) -> None:  # noqa: ANN401
@@ -10773,7 +10789,7 @@ async def _set_scopes_listed(config: Any, connector_id: str, *, listed: bool) ->
     read or written is a 503. shortcut: read, change, write; two admins switching two connectors at the same instant can lose one entry (that
     connector then stays on the classic check until it is set again). Upgrade to a compare-and-set if switching becomes frequent."""
     try:
-        raw = await config.get_config(SCOPES_CONNECTORS_KEY, default=[], raise_on_error=True)
+        raw = await config.get_config(SCOPES_CONNECTORS_KEY, default=[], use_cache=False, raise_on_error=True)
         ids = {str(i) for i in raw} if isinstance(raw, list) else set()
         if (connector_id in ids) == listed:
             return
@@ -10813,4 +10829,4 @@ async def set_permission_filter(
             logger.warning("connector %s stays listed as switched to scopes; its app document decides", connector_id)
     logger.info("audit: permission filter of connector %s set from %s to %s by user %s",
                 connector_id, chosen_mode(app), body.mode, request.state.user.get("userId"))
-    return access_status.filter_state({**app, MODE_KEY: body.mode}, default, store_serves=store_serves)
+    return access_status.filter_state({**app, MODE_KEY: body.mode}, default, store_serves=store_serves, listed=body.mode == "scopes")

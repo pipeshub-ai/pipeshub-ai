@@ -567,7 +567,7 @@ class RetrievalService:
             return set(found.records_by_vrid)
 
         try:
-            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check)
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check, served=plan.scope_filter is not None)
         except Exception as exc:  # the shadow must never cost a search
             self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 

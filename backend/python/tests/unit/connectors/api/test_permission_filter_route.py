@@ -142,3 +142,53 @@ async def test_setting_the_mode_it_already_has_does_not_rewrite_the_list(cfg: Co
     cfg.listed = ["c1"]
     await _patch("scopes")
     assert cfg.writes == 0
+
+
+async def test_scopes_again_puts_back_an_entry_the_list_lost(cfg: Config) -> None:
+    """A concurrent change can drop an entry; setting `scopes` again repairs it even though the document already says so."""
+    cfg.listed = []
+    g = _graph({"status": "IDLE", "aclFilterMode": "scopes"})
+    await _patch("scopes", g=g)
+    assert cfg.listed == ["c1"]
+
+
+@pytest.mark.parametrize(("listed", "effective"), [(["c1"], "scopes"), ([], "legacy"), (None, "legacy")])
+async def test_the_status_says_scopes_under_shadow_only_for_a_listed_connector(cfg: Config, monkeypatch: pytest.MonkeyPatch,
+                                                                                listed: list[str] | None, effective: str) -> None:
+    monkeypatch.setattr(r, "store_now", AsyncMock(return_value=None))
+    monkeypatch.setattr(r.access_status, "app_is_served", lambda app: True)
+    cfg.listed = listed
+    out = await r.get_permission_status("c1", _req(), _graph({"status": "IDLE", "aclFilterMode": "scopes"}))
+    assert out["filter"]["effective"] == effective
+
+
+async def test_a_list_that_cannot_be_read_says_legacy_in_the_status(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(r, "store_now", AsyncMock(return_value=None))
+    monkeypatch.setattr(r.access_status, "app_is_served", lambda app: True)
+    cfg.listed, cfg.down = ["c1"], True
+    out = await r.get_permission_status("c1", _req(), _graph({"status": "IDLE", "aclFilterMode": "scopes"}))
+    assert out["filter"]["effective"] == "legacy"
+
+
+async def test_deleting_a_connector_takes_it_off_the_list(cfg: Config) -> None:
+    from unittest.mock import patch
+
+    from tests.unit.connectors.api.test_router_part2 import (
+        _make_instance,
+        _make_request,
+    )
+
+    cfg.listed = ["c1", "c2"]
+    req = _make_request(is_admin=True)
+    req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(return_value=_make_instance(scope="team", created_by="u1"))
+    graph_provider = AsyncMock()
+    graph_provider.check_connector_in_use = AsyncMock(return_value=[])
+    req.app.container.messaging_producer.send_message = AsyncMock()
+    with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+         patch("app.connectors.api.router._validate_connector_deletion_permissions"):
+        result = await r.delete_connector_instance("c1", req, graph_provider=graph_provider)
+    assert result.status_code == 202 and cfg.listed == ["c2"]
+    cfg.listed, cfg.down = ["c1"], True
+    with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
+         patch("app.connectors.api.router._validate_connector_deletion_permissions"):
+        assert (await r.delete_connector_instance("c1", req, graph_provider=graph_provider)).status_code == 202      # a list that is down never fails a delete
