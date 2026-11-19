@@ -70,16 +70,16 @@ async def test_scopes_is_refused_with_the_blocker_when_the_deployment_cannot_ser
 async def test_a_rollback_is_written_even_when_nothing_can_be_served(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     monkeypatch.setenv(ENV_ACL_FILTER_MODE, "legacy")
     monkeypatch.setenv("VECTOR_DB_TYPE", "qdrant")
-    g = _graph({"status": "IDLE", "aclFilterMode": "scopes"})
+    g = _graph({"status": "IDLE", "orgId": "o1", "aclFilterMode": "scopes"})
     out = await _patch(mode, g=g)
     g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": mode})
     assert out == {"mode": mode, "effective": "legacy", "blockers": ["serving_off", "store_unsupported"]}
 
 
 async def test_scopes_is_written_and_reads_legacy_until_the_connector_is_served() -> None:
-    g = _graph({"status": "IDLE"})
+    g = _graph({"status": "IDLE"})                       # an instance created before `orgId` was stored
     out = await _patch("scopes", g=g)
-    g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": "scopes"})
+    g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": "scopes", "orgId": "o1"})
     assert out == {"mode": "scopes", "effective": "legacy", "blockers": []}
 
 
