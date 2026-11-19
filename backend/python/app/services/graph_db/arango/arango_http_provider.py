@@ -3601,7 +3601,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         LET held = (
                             FOR record IN {CollectionNames.RECORDS.value}
                                 FILTER record.virtualRecordId == v
-                                    AND (record.contentRev == rev OR (record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
+                                    AND (record.contentRev == rev OR (record.hasIndexedCopy == true AND record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                                 LIMIT 1
                                 RETURN 1
                         )
@@ -3629,7 +3629,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     LET held = (
                         FOR record IN {CollectionNames.RECORDS.value}
                             FILTER record.virtualRecordId == pair[0]
-                                AND (record.contentRev == pair[1] OR (record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
+                                AND (record.contentRev == pair[1] OR (record.hasIndexedCopy == true AND record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                             LIMIT 1
                             RETURN 1
                     )

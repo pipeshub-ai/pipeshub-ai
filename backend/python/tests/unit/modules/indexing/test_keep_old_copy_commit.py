@@ -249,3 +249,29 @@ async def test_a_twin_whose_membership_resync_fails_gets_a_durable_repair_and_th
         await swap._repoint_twins(ctx_for("A", "Y"), run(forced=True))
     assert g.records["B"]["virtualRecordId"] == "Y" and g.records["C"]["virtualRecordId"] == "Y"  # both moved: one failure does not stop the rest
     g.update_node.assert_any_await("k1", "apps", {"vectorMembershipBackfilled": False})
+
+
+@pytest.mark.asyncio
+async def test_the_old_copy_is_marked_for_its_grace_before_the_move_so_a_crash_before_finish_leaves_it_protected() -> None:
+    from app.config.constants.arangodb import CollectionNames
+
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    swap, _ = committer(g)
+    order: list[str] = []
+    real_update = g.update_node_fields_if
+
+    async def recording(*a: object, **k: object) -> bool:
+        order.append("move")
+        return await real_update(*a, **k)
+
+    g.update_node_fields_if = recording  # type: ignore[method-assign]
+    real_node = g.update_node
+
+    async def mark(key: str, collection: str, fields: dict, *rest: object) -> bool:
+        order.append(f"mark {key} {collection}")
+        return await real_node(key, collection, fields, *rest)
+
+    g.update_node = mark  # type: ignore[method-assign]
+    assert await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})  # finish never runs: the process died
+    assert order[:2] == [f"mark X {CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value}", "move"]
+    assert keep_old_copy.RETIRED_AT_FIELD in g.mapping["X"]

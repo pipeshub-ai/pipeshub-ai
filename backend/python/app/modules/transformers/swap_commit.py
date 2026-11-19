@@ -83,6 +83,11 @@ class SwapCommitter:
             Cond("indexingStatus", ONE_OF, list(keep_old_copy.COMMITTABLE)),
         ]
         graph = self.o.graph_provider
+        # Marked just before the write, so that a process that dies between the move and ``finish`` leaves the old copy with its grace: the
+        # orphan sweep would otherwise take it at once, while a reader's cached map may still name it. Harmless when the write is refused
+        # (the copy is still held, and a mark older than the grace delays nothing).
+        with contextlib.suppress(Exception):
+            await graph.update_node(swap.old_vrid, _MAPPING, {keep_old_copy.RETIRED_AT_FIELD: int(time.time() * 1000)})
         # The records that keep sharing the old copy are fenced around the move, as for any other move off a shared one.
         fence = leaving_vrid(graph, record.id, swap.old_vrid, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
         async with fence:

@@ -17214,7 +17214,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH vrid, state.rev AS rev, max(coalesce(state.updatedAtMs, 0)) AS newest
                 WHERE newest < $before
                   AND NOT EXISTS {{
-                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev OR (r.indexingStatus IS NOT NULL AND r.indexingStatus <> 'COMPLETED' AND coalesce(r.isPlaceholder, false) = false)
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev OR (r.hasIndexedCopy = true AND r.indexingStatus IS NOT NULL AND r.indexingStatus <> 'COMPLETED' AND coalesce(r.isPlaceholder, false) = false)
                   }}
                 RETURN vrid, rev ORDER BY vrid, rev
                 """,
@@ -17248,7 +17248,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH vrid, rev, collect(state) AS states
                 WHERE all(s IN states WHERE coalesce(s.updatedAtMs, 0) < $before)
                   AND NOT EXISTS {{
-                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev OR (r.indexingStatus IS NOT NULL AND r.indexingStatus <> 'COMPLETED' AND coalesce(r.isPlaceholder, false) = false)
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev OR (r.hasIndexedCopy = true AND r.indexingStatus IS NOT NULL AND r.indexingStatus <> 'COMPLETED' AND coalesce(r.isPlaceholder, false) = false)
                   }}
                 UNWIND states AS state
                 DETACH DELETE state
