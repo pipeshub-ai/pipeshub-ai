@@ -827,7 +827,8 @@ async def run_sync_task(
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
         # Until this lands the connector is still served from its stamps (`app_is_served`), and the grants this run writes are hidden from it.
-        # Retried, not required: a write that keeps failing (a schema that rejects it) must not stop every sync of the connector.
+        # Required: the start time is how a reindex in any process sees this run (`unless_synced_since`); a run it cannot see could have its
+        # newer access overwritten by that reindex, so a run whose start is not recorded does not read the source.
         for attempt in range(_START_STATUS_TRIES):
             if await write_app_status(
                 graph_provider, logger, connector_id, start_status,
@@ -837,7 +838,7 @@ async def run_sync_task(
             if attempt + 1 < _START_STATUS_TRIES:
                 await asyncio.sleep(attempt + 1)
         else:
-            logger.error("the %s status of connector %s could not be written; it is read from its stamps until the run ends", start_status, connector_id)
+            raise RuntimeError(f"the {start_status} status of connector {connector_id} could not be written; the run does not start")
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an
