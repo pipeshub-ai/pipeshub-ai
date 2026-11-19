@@ -399,3 +399,49 @@ def test_the_trash_revision_moves_the_floor_and_its_downgrade_takes_back_its_col
     with connect(cluster, name) as c:
         assert state(c) == (False, True, 1, 2, 2, with_trash)
         assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 30
+
+
+# (deletedAtTimestamp, deleteBatchId) as JSON, and what kg.model reads of them (``_ms``, ``_s``), or None where kg_0019's fill cannot tell what Python reads: the same
+# table is held to kg.model in tests/unit/services/graph_db/test_kg_model.py.
+TRASH_PROBES = [
+    ('1790000000000', '"bt1"', (1790000000000, "bt1")), ("1.5", "7", (1, "7")), ("-1.5", "true", (-1, "True")), ('"1790000000000"', "false", (1790000000000, "False")),
+    ('" 12 "', "null", (12, None)), ('"1e3"', '"x"', (1000, "x")), ('"abc"', '"x"', (None, "x")), ('"inf"', '"x"', (None, "x")), ('" NaN"', '"x"', (None, "x")),
+    ("true", '"x"', (None, "x")), ("null", '"x"', (None, "x")), ("9223372036854775807", '"x"', (9223372036854775807, "x")),
+    ("9223372036854775808", '"x"', (None, "x")), ('"9223372036854775807"', '"x"', (None, "x")), ("0.1", '"x"', (0, "x")), ('{"a": 1}', '"x"', (None, "x")),
+    ('""', '"x"', (None, "x")), ("1" + "0" * 400, '"x"', (None, "x")), ('"1e-400"', '"x"', (0, "x")),
+    ('"1_000"', '"x"', None), ('"12abc"', '"x"', None), ("1", "1.5", None), ("1", "[1]", None),
+]
+
+
+def test_the_trash_revision_fills_the_copies_made_before_it_in_place_and_keeps_serving_them(db):
+    """An install upgraded with copies made by epoch 7 code: kg_0019 fills each row's trash columns from its node as kg.model reads them and relabels the copies
+    epoch 8, so they stay served and nothing is copied again. A connector holding a value the fill cannot read as Python does is copied again instead. (The documents
+    carry no isDeleted: the graph's trash index takes a trashed record's delete time as a bigint, and the fill reads the fields whatever the flag says.)"""
+    from .rls_fixture import ORG_A as org
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "kg_0018", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    clean = [(i, ts, b, want) for i, (ts, b, want) in enumerate(TRASH_PROBES) if want is not None]
+    odd = [(i, ts, b) for i, (ts, b, want) in enumerate(TRASH_PROBES) if want is None]
+    with connect(cluster, name) as c:
+        for app_sk, rows in ((1, clean), (2, odd)):
+            c.execute("INSERT INTO kg.projection_state (org_id, app_sk, code_epoch, mode, backfill_cursor, verified_at) VALUES (%s, %s, 7, 'enforce', 'done', now())",
+                      (org, app_sk))
+            for i, ts, b, *_ in rows:
+                c.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, 'records', %s, format('{\"deletedAtTimestamp\": %%s, \"deleteBatchId\": %%s}', %s::text, %s::text)::jsonb)",
+                          (org, f"p{i}", ts, b))
+                c.execute("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, deleted) VALUES (%s, %s, 3, %s, 3, %s, true)", (org, 1000 + i, f"p{i}", app_sk))
+        c.execute("INSERT INTO kg.projection_state (org_id, app_sk, code_epoch, mode, backfill_cursor) VALUES (%s, 0, 7, 'legacy', 'done')", (org,))
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        got = {row[0]: (row[1], row[2]) for row in c.execute("SELECT id, deleted_ms, delete_batch FROM kg.records WHERE org_id = %s", (org,))}
+        assert {f"p{i}": want for i, _, _, want in clean} == {k: v for k, v in got.items() if k in {f"p{i}" for i, *_ in clean}}
+        assert all(got[f"p{i}"] == (None, None) for i, *_ in odd)
+        state = {row[0]: tuple(row[1:]) for row in c.execute("SELECT app_sk, code_epoch, mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s", (org,))}
+        assert state == {1: (8, "enforce", "done", True), 2: (0, "legacy", None, False), 0: (8, "legacy", "done", False)}
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = ANY(ARRAY['graph.nodes', 'kg.records', 'kg.projection_state']::regclass[])").fetchall() == [(True,)] * 3
+        assert c.execute("SELECT tgenabled FROM pg_trigger WHERE tgname = 'kg_records_count_update'").fetchone()[0] == "O"

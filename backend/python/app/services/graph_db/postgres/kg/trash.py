@@ -65,10 +65,14 @@ ROWS = """/* pipeshub:kg.trash_rows */ WITH page AS (SELECT * FROM jsonb_to_reco
     WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
             LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.deleted_by
             ORDER BY page.o"""
+# A count asked with no cap reads every batch of the connector: as the access check's reads (``read.PROFILE``), a slow statement hands the read to the walk at once.
+LIMITS = "/* pipeshub:kg.trash_limits */ SELECT set_config('statement_timeout', '2s', true)"
+
 
 async def page(tx: Tx, org: str, connector_id: str, org_id: str, *, files_only: bool, skip: int, limit: int, after: tuple[int, str] | None,
                count_cap: int | None) -> tuple[list[dict[str, Any]], int]:
     """``list_trashed_records``'s rows and total, as the walk's statements return them. Raises Fallback."""
+    await tx.fetchval(LIMITS)
     app_sk = await _served(tx, org, connector_id)
     ts, batch = after or (None, None)
     found = await tx.fetch(PAGE, org, app_sk, connector_id, org_id, files_only, ts, batch, skip + limit, TRASH_LIST_OTHER_ROOT_NAMES)

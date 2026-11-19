@@ -200,6 +200,80 @@ async def test_a_connector_copied_by_older_projection_code_takes_the_walk(pg_pro
     assert tally.c[("trash", "not_served")] and not tally.c[("trash", "kg")], dict(tally.c)
 
 
+def _fill_sql() -> str:
+    """kg_0019's in-place fill of the copies made before it (the revision's own text, read without importing the migration package)."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).resolve().parents[5] / "db" / "versions" / "kg" / "0019_trash.py").read_text(encoding="utf-8"))
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "FILL" for t in n.targets))
+
+
+async def test_a_copy_of_epoch_7_code_upgraded_by_kg_0019_stays_enforced_and_served(pg_provider, pg_db, tally, caplog) -> None:
+    """The upgrade path: a connector copied, verified and enforced by epoch 7 code (no trash columns) holds trashed records. kg_0019 fills the columns in place and
+    relabels the copy; the bootstrap worker then leaves it as it is: still enforced, served, never demoted or copied again, and the listing is kg's and the walk's."""
+    import logging
+
+    from app.services.graph_db.postgres.kg import bootstrap
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _trash(pg_provider, org, ["b"])
+    await _trash(pg_provider, org, ["e"])
+    await flip(pg_db, org)
+    await _admin("UPDATE kg.records SET deleted_ms = NULL, delete_batch = NULL WHERE org_id = $1", org)               # what epoch 7 code copied
+    await _admin("UPDATE kg.projection_state SET code_epoch = 7 WHERE org_id = $1", org)
+    await _admin(_fill_sql())
+    caplog.set_level(logging.WARNING, logger=bootstrap.logger.name)
+    await bootstrap.bring_to_enforce(pg_db, org, {})
+    with ctx(org):
+        state = await pg_db.run(lambda tx: tx.fetch("""SELECT k.id, s.mode, s.code_epoch FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+            AND k.coll = 1 WHERE s.org_id = $1 ORDER BY k.id""", org))
+    assert [tuple(r) for r in state] == [(KB, "enforce", 8), ("kb2", "enforce", 8)]
+    assert not [r for r in caplog.records if r.name == bootstrap.logger.name], [r.getMessage() for r in caplog.records]
+    tally.c.clear()
+    walk, got = await _both(pg_provider, org)
+    assert got == walk and walk["cursor False 50"][0]["total"] == 2
+    assert tally.c[("trash", "kg")] and not tally.c[("trash", "not_served")], dict(tally.c)
+
+
+async def test_a_live_records_projection_writes_no_trash_columns(pg_provider, pg_db, monkeypatch) -> None:
+    """The trash columns are written only where they change: renaming a live record writes none, trashing one writes its row, restoring it clears it."""
+    from app.services.graph_db.postgres.kg import writers
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    written: list[tuple] = []
+    real = writers.KgWriter.trash_set
+
+    async def spy(self, rows: list[tuple]) -> int:
+        written.extend(rows)
+        return await real(self, rows)
+    monkeypatch.setattr(writers.KgWriter, "trash_set", spy)
+    with ctx(org):
+        await pg_provider.batch_update_nodes([{"id": "e", "recordName": "E2"}], "records")
+    await flip(pg_db, org)
+    assert written == []
+    batch = await _trash(pg_provider, org, ["e"])
+    await flip(pg_db, org)
+    assert [(r[2], r[5]) for r in written] == [("e", batch)]
+    written.clear()
+    await _restore(pg_provider, org, batch)
+    await flip(pg_db, org)
+    assert [(r[2], r[4], r[5]) for r in written] == [("e", None, None)]
+
+
+async def test_a_slow_trash_read_hands_over_to_the_walk(pg_provider, pg_db, tally, monkeypatch) -> None:
+    """A statement past the read's limit (here a count made slow on purpose under a 1 ms limit) is the walk's read, not an error."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _trash(pg_provider, org, ["e"])
+    await flip(pg_db, org)
+    monkeypatch.setattr(kg_trash, "LIMITS", "SELECT set_config('statement_timeout', '1ms', true)")
+    monkeypatch.setattr(kg_trash, "COUNT", kg_trash.COUNT.replace("SELECT count(*) FILTER", "SELECT pg_sleep(0.05), count(*) FILTER"))
+    tally.c.clear()
+    with ctx(org):
+        assert [i["record"]["id"] for i in (await pg_provider.list_trashed_records(KB, org))["items"]] == ["e"]
+    assert tally.c[("trash", "error")] and not tally.c[("trash", "kg")], dict(tally.c)
+
+
 async def test_older_projection_code_cannot_write_into_kg_any_more(pg_provider, pg_db) -> None:
     import asyncpg
     org = new_org()

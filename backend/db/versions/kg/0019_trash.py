@@ -15,7 +15,7 @@ down_revision = "kg_0018"
 branch_labels = None
 depends_on = None
 # A contract, as kg_0014: code of an older release projects a delete without the trash columns and is refused by the epoch floor, so it cannot leave a trashed record
-# out of the listing that pages by them.
+# out of the listing that pages by them. The copies it made are filled in place here (FILL) and keep being served.
 min_code_epoch = 19
 
 WRITERS = ("w_trash_set",)
@@ -26,6 +26,51 @@ INDEXES = [
     ("records_trash", "org_id, app_sk, deleted_ms, delete_batch", "coll = 3 AND deleted AND deleted_ms IS NOT NULL AND delete_batch IS NOT NULL"),
     ("records_trash_batch", "org_id, delete_batch", "coll = 3 AND deleted AND delete_batch IS NOT NULL"),
 ]
+
+# The copies made before this revision, filled in place so that no connector is copied again: each row's deleted_ms and delete_batch from its node's document,
+# exactly as kg.model reads them (``_ms``: an integer as it is, a fraction or a numeric string as a double truncated, a boolean, text that is no number, inf or nan as
+# nothing, nothing outside int64; ``_s``: ``str()`` of the JSON value), for what SQL can tell apart as Python does. A value it cannot (a string Python's float()
+# might read and these patterns do not, a fractional number or a structure as a batch) is ``odd``: that row's connector is copied again rather than guessed.
+# The document is read as kg.reader reads it, PostgreSQL's text of the JSON, so a number's integer-or-fraction is its jsonb text.
+FILL = r"""WITH f AS MATERIALIZED (
+SELECT k.org_id, k.sk, k.app_sk, m.ms, b.batch, h.how <> 'odd' AND b.ok AS ok
+FROM graph.nodes n
+JOIN kg.records k ON k.org_id = n.org_id AND k.coll = CASE n.coll WHEN 'apps' THEN 1 WHEN 'recordGroups' THEN 2 ELSE 3 END AND k.id = n.id
+CROSS JOIN LATERAL (SELECT jsonb_typeof(n.doc->'deletedAtTimestamp') AS tt, n.doc->>'deletedAtTimestamp' AS ts,
+                           jsonb_typeof(n.doc->'deleteBatchId') AS bt, n.doc->>'deleteBatchId' AS bs) a
+CROSS JOIN LATERAL (SELECT CASE
+    WHEN a.tt = 'number' AND a.ts ~ '^-?[0-9]+$' THEN 'int'
+    WHEN a.tt = 'number' THEN 'float'
+    WHEN a.tt = 'string' AND a.ts ~ '^[ \t\n\r\f\v]*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?[ \t\n\r\f\v]*$' THEN 'float'
+    WHEN a.tt = 'string' AND lower(btrim(a.ts, E' \t\n\r\f\v')) ~ '^[+-]?(inf|infinity|nan)$' THEN 'none'
+    WHEN a.tt = 'string' AND a.ts !~ '[0-9]' AND a.ts !~ '[^\x01-\x7f]' THEN 'none'
+    WHEN a.tt = 'string' THEN 'odd'
+    ELSE 'none' END AS how) h
+CROSS JOIN LATERAL (SELECT CASE h.how
+    WHEN 'int' THEN CASE WHEN a.ts::numeric >= -9223372036854775808 AND a.ts::numeric < 9223372036854775808 THEN a.ts::numeric::bigint END
+    WHEN 'float' THEN (SELECT CASE WHEN abs(x) < 1e-300 THEN 0 WHEN abs(x) >= 1e300 THEN NULL
+                                   WHEN x::float8 >= -9223372036854775808::float8 AND x::float8 < 9223372036854775808::float8 THEN trunc(x::float8)::bigint END
+                       FROM (SELECT btrim(a.ts, E' \t\n\r\f\v')::numeric AS x) q) END AS ms) m
+CROSS JOIN LATERAL (SELECT CASE WHEN a.bt = 'boolean' THEN CASE a.bs WHEN 'true' THEN 'True' ELSE 'False' END WHEN a.bt IN ('string', 'number') THEN a.bs END AS batch,
+                           a.bt IS NULL OR a.bt IN ('null', 'string', 'boolean') OR (a.bt = 'number' AND a.bs ~ '^-?[0-9]+$') AS ok) b
+WHERE n.coll IN ('apps', 'recordGroups', 'records') AND (n.doc ? 'deletedAtTimestamp' OR n.doc ? 'deleteBatchId')),
+  filled AS (UPDATE kg.records k SET deleted_ms = f.ms, delete_batch = f.batch FROM f WHERE f.ok AND k.org_id = f.org_id AND k.sk = f.sk RETURNING 1)
+UPDATE kg.projection_state s SET mode = 'legacy', code_epoch = 0, backfill_cursor = NULL, verified_at = NULL, verify_digest = NULL
+  FROM (SELECT DISTINCT org_id, app_sk FROM f WHERE NOT ok) o WHERE s.org_id = o.org_id AND s.app_sk = o.app_sk;
+UPDATE kg.projection_state SET code_epoch = 8 WHERE code_epoch = 7;"""
+# The tables force row-level security, which hides every org's rows from the owner: lifted for the fill (as retrieval_0002 does) and forced again in the same transaction.
+FORCED = ("graph.nodes", "kg.records", "kg.projection_state")
+
+
+def _fill() -> None:
+    for t in FORCED:
+        op.execute(f"ALTER TABLE {t} NO FORCE ROW LEVEL SECURITY")
+    # The counters' trigger would aggregate every filled row into no delta (the trash columns are no counter key): left out of the fill.
+    op.execute("ALTER TABLE kg.records DISABLE TRIGGER kg_records_count_update")
+    op.get_bind().connection.cursor().execute(FILL)
+    op.execute("ALTER TABLE kg.records ENABLE TRIGGER kg_records_count_update")
+    for t in FORCED:
+        op.execute(f"ALTER TABLE {t} FORCE ROW LEVEL SECURITY")
 
 
 def _mine() -> list[Fn]:
@@ -50,6 +95,7 @@ def _drop(fns: list[Fn]) -> None:
 
 def upgrade():
     run_sql(__file__)
+    _fill()
     # shortcut: built inside the upgrade's one transaction with the writers of kg.records waiting (as kg_0009): run this upgrade on an install whose typed graph is large in a maintenance window.
     for name, cols, where in INDEXES:
         ensure_partitioned_index(op.get_bind(), "kg.records", name, cols, where=where, blocking=True)
@@ -72,3 +118,7 @@ def downgrade():
     for name, *_ in INDEXES:
         op.execute(f"DROP INDEX IF EXISTS kg.{name}")
     op.execute("ALTER TABLE kg.records DROP COLUMN deleted_ms, DROP COLUMN delete_batch")
+    # A copy of this code is one of kg_0018's once the columns are gone: served again by the code of that release.
+    op.execute("ALTER TABLE kg.projection_state NO FORCE ROW LEVEL SECURITY")
+    op.execute("UPDATE kg.projection_state SET code_epoch = 7 WHERE code_epoch = 8")
+    op.execute("ALTER TABLE kg.projection_state FORCE ROW LEVEL SECURITY")
