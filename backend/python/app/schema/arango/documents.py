@@ -229,6 +229,7 @@ app_schema = {
             "scopeProjectionOpenWrites": {"type": ["string", "null"]},  # {token: {deadline, roots}} of the writes counted as opened (see open_write)
             "scopeSweepState": {"type": ["string", "null"]},  # {failures, error, retry time} of the sweep of this connector (see scope_sweep)
             "scopeRewriteLease": {"type": ["string", "null"]},  # {holder, deadline} of the rewriter that holds the connector (see permissions.rewrite_lease)
+            "aclFilterMode": {"type": ["string", "null"]},  # the admin's permission filter mode for this connector (see permissions.currency.MODE_KEY)
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
@@ -1100,6 +1101,7 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            "accessOnly": {"type": ["boolean", "null"], "default": False},
             # Permission traversal input, as on records: per node, and
             # RESTRICTED never cascades to children.
             "accessRule": {

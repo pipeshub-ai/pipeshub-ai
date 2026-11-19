@@ -259,6 +259,11 @@ export function switchToSignedInWorkspace(_orgId: string): boolean {
   return false;
 }
 
+/** The refresh token stored for this browser; a sign-out in another tab removes it. */
+export function readStoredRefreshToken(): string | null {
+  return typeof window !== 'undefined' ? window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) : null;
+}
+
 // Selectors for common access patterns
 export const selectAccessToken = (state: AuthStore) => state.accessToken;
 export const selectRefreshToken = (state: AuthStore) => state.refreshToken;

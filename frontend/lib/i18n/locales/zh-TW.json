@@ -1804,7 +1804,6 @@
       "subtitle": "建立及管理群組以控制存取權和權限",
       "enterpriseTitle": "群組權限功能僅在企業版中提供",
       "enterpriseMessage": "升級至企業版即可使用群組權限功能。",
-      "enterpriseContact": "聯絡我們",
       "createGroup": "建立群組",
       "searchPlaceholder": "搜尋...",
       "emptyTitle": "您尚未建立任何群組",
@@ -1885,6 +1884,21 @@
         "saveError": "儲存權限失敗",
         "loadError": "載入權限失敗",
         "empty": "尚未定義任何權限。"
+      }
+    },
+    "enterprise": {
+      "contact": "聯絡銷售",
+      "scim": {
+        "heading": "SCIM 佈建功能僅在企業版中提供",
+        "message": "讓 Okta 或 Microsoft Entra ID 自動新增、更新和停用工作區中的成員。"
+      },
+      "auditLogs": {
+        "heading": "稽核記錄功能僅在企業版中提供",
+        "message": "查看工作區中誰在何時做了什麼。"
+      },
+      "usage": {
+        "heading": "用量、額度和帳單功能僅在企業版中提供",
+        "message": "依人員、代理程式、連接器和模型查看 AI 成本，管理額度、方案和發票，並在用量設定中設定支出提醒。"
       }
     },
     "teams": {
@@ -2459,6 +2473,8 @@
       "sections": {
         "overview": "總覽",
         "workspace": "工作區",
+        "usageAndCredits": "用量與額度",
+        "security": "安全性",
         "personal": "個人",
         "people": "成員",
         "developerSettings": "開發人員設定"
@@ -2488,6 +2504,9 @@
         "archivedChats": "已封存的對話",
         "users": "使用者",
         "groups": "群組",
+        "scim": "SCIM",
+        "auditLogs": "稽核記錄",
+        "usage": "用量與額度",
         "teams": "團隊",
         "webSearch": "網頁搜尋",
         "tenants": "租戶",
@@ -3741,6 +3760,7 @@
         "disconnected": "已成功中斷連線",
         "disconnectError": "無法中斷連線",
         "credentialsSaveError": "伺服器已儲存，但憑證無法儲存。您可以稍後從「管理」中新增。",
+        "accessSaveError": "伺服器已儲存，但可使用者設定未儲存。請再次儲存以套用存取權限。",
         "logoSaveError": "伺服器已儲存，但其標誌未能儲存。您可以在「管理」中重試。",
         "credentialsSaved": "憑證已儲存",
         "credentialsReset": "MCP 伺服器已更新。由於連線已變更，已儲存的憑證已被移除；請重新連線後再使用。",

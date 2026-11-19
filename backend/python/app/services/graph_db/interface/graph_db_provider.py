@@ -867,6 +867,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional["Record"]:
         """
         Get record by internal ID (_key) with associated type document (file/mail/etc.).
@@ -874,6 +876,9 @@ class IGraphDBProvider(ABC):
         Args:
             record_id: Internal record ID (_key)
             transaction: Optional transaction ID
+            raise_on_error: Propagate a failed read instead of answering None, so a graph that
+                cannot be reached does not read as a missing record. A record that is there but
+                will not build into a typed Record is still None: that is not a failed read.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
@@ -3759,6 +3764,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users in an organization.
@@ -3766,6 +3772,7 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             active (bool): Filter by active status
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of users
@@ -5984,6 +5991,18 @@ class IGraphDBProvider(ABC):
         """Delete the user's own PERMISSION edges to the connector's records, record groups, user groups and roles,
         for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
         teams or the organization are left alone. Returns how many edges were deleted."""
+        raise NotImplementedError
+
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when that user has no USER_APP_RELATION edge to the connector, the link checked in the same statement (a user
+        linked meanwhile, say by a verified email taking over a stub, keeps them). Before the org's All team passes
+        the connector gate, no grant may wait there for a person the connector does not link. Returns how many
+        edges were deleted."""
         raise NotImplementedError
 
     @abstractmethod

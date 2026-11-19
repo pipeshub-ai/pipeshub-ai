@@ -417,31 +417,26 @@ class TestParallelPartitionDispatch:
 
         assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 1
         assert consumer._in_flight_records == {"rec-1"}
-        # Held back, not dropped.
-        assert consumer._scheduler.pending_count == 1
+        # Held back, not dropped: it waits beside the scheduler for its record.
+        assert consumer._scheduler.pending_count == 0
+        assert consumer._record_waiting_count == 1
 
-    async def test_a_blocked_record_holds_its_own_key_queue(
+    async def test_a_blocked_record_does_not_hold_its_key_queue(
         self, logger, plain_config
     ):
-        """Documents the limit of parallel dispatch, so it is a known
-        trade-off rather than a surprise.
-
-        A key's virtual queue is FIFO, so a blocked head blocks that key --
-        a second event for the same record parks everything behind it for
-        that connector until the first finishes. That is the pre-Phase-4
-        behaviour for that one connector, never worse, and it is rare: a
-        sync emits distinct records, so adjacent same-record events mostly
-        arise from re-queues. Other keys are unaffected.
-        """
+        """A key's queue is judged by its head, so a duplicate left at the head
+        stalled every later event of its connector until the first finished
+        (hours, for a long reindex). It waits for its record instead."""
         consumer = self._consumer(logger, plain_config, parallel=True)
         tp = TopicPartition("record-events", 0)
         await self._buffer(consumer, tp, ["rec-1", "rec-1", "rec-2"])
 
         await consumer._IndexingKafkaConsumer__dispatch_phase()
 
-        assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 1
-        # rec-2 sits behind the duplicate in the same key's FIFO queue.
-        assert consumer._scheduler.pending_count == 2
+        assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 2
+        assert consumer._in_flight_records == {"rec-1", "rec-2"}
+        assert consumer._scheduler.pending_count == 0
+        assert consumer._record_waiting_count == 1
 
     async def test_another_key_is_not_blocked_by_it(self, logger, plain_config):
         consumer = self._consumer(logger, plain_config, parallel=True)
@@ -463,7 +458,7 @@ class TestParallelPartitionDispatch:
         tp = TopicPartition("record-events", 0)
         await self._buffer(consumer, tp, ["rec-1", "rec-1"])
         await consumer._IndexingKafkaConsumer__dispatch_phase()
-        assert consumer._scheduler.pending_count == 1
+        assert consumer._record_waiting_count == 1
 
         consumer._IndexingKafkaConsumer__finish_partition(
             _make_message(offset=0, record_id="rec-1"),
@@ -474,6 +469,7 @@ class TestParallelPartitionDispatch:
 
         assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 2
         assert consumer._scheduler.is_empty
+        assert consumer._record_waiting_count == 0
 
     async def test_events_without_a_record_id_never_block_each_other(
         self, logger, plain_config

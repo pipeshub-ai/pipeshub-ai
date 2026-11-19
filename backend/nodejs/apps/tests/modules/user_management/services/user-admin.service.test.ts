@@ -18,6 +18,7 @@ import {
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
+import { refusalReason } from '../../../../src/libs/services/audit';
 
 function stubUsersFindOne(role: 'admin' | 'member' | null | undefined) {
   const doc =
@@ -581,6 +582,72 @@ describe('user-admin.service', () => {
       }
 
       expect(save.called).to.equal(false);
+    });
+  });
+  describe('refusal tags (the audit reason, invisible to the client)', () => {
+    const rejection = async (run: () => Promise<unknown>): Promise<unknown> => {
+      try {
+        await run();
+      } catch (error) {
+        return error;
+      }
+      return expect.fail('expected a refusal');
+    };
+    const inTransaction = (adminCount: number) => {
+      sinon.stub(Users, 'findOne').resolves({ _id: userId, orgId, save: sinon.stub().resolves() } as any);
+      sinon.stub(mongoose, 'startSession').resolves({
+        withTransaction: sinon.stub().callsFake(async (fn: () => Promise<void>) => { await fn(); }),
+        endSession: sinon.stub().resolves(),
+      } as any);
+      sinon.stub(Users, 'countDocuments').returns({
+        session: sinon.stub().callsFake(() => Promise.resolve(adminCount)),
+      } as any);
+      sinon.stub(Org, 'updateOne').resolves({} as any);
+    };
+
+    it('last admin, checked before the save: last_admin', async () => {
+      sinon.stub(Users, 'countDocuments').resolves(1);
+      expect(refusalReason(await rejection(() => assertCanDemoteAdmin(orgId)))).to.equal('last_admin');
+    });
+
+    it('last admin, found after a non-transactional save: last_admin', async () => {
+      sinon.stub(Users, 'findOne').resolves({ _id: userId, orgId, role: 'member', save: sinon.stub().resolves() } as any);
+      const count = sinon.stub(Users, 'countDocuments');
+      count.onFirstCall().resolves(2);
+      count.onSecondCall().resolves(0);
+      sinon.stub(Users, 'updateOne').resolves({} as any);
+      expect(refusalReason(await rejection(() => saveUserEnsuringOrgRetainsAdmin(orgId, userId, {}, false)))).to.equal('last_admin');
+    });
+
+    it('last admin inside a transaction: last_admin survives the unit of work', async () => {
+      inTransaction(1);
+      expect(refusalReason(await rejection(() => saveUserEnsuringOrgRetainsAdmin(orgId, userId, {}, true)))).to.equal('last_admin');
+    });
+
+    it('admin cap, checked before the write: admin_limit', async () => {
+      sinon.stub(Users, 'countDocuments').resolves(5);
+      expect(refusalReason(await rejection(() => assertCanPromoteAdmin(orgId)))).to.equal('admin_limit');
+    });
+
+    it('admin cap, found after a non-transactional save: admin_limit', async () => {
+      sinon.stub(Users, 'findOne').resolves({ _id: userId, orgId, role: 'admin', save: sinon.stub().resolves() } as any);
+      const count = sinon.stub(Users, 'countDocuments');
+      count.onFirstCall().resolves(4);
+      count.onSecondCall().resolves(6);
+      sinon.stub(Users, 'updateOne').resolves({} as any);
+      expect(refusalReason(await rejection(() => saveUserEnsuringAdminCap(orgId, userId, {}, false)))).to.equal('admin_limit');
+    });
+
+    it('admin cap inside a transaction: admin_limit survives the unit of work', async () => {
+      inTransaction(5);
+      expect(refusalReason(await rejection(() => saveUserEnsuringAdminCap(orgId, userId, {}, true)))).to.equal('admin_limit');
+    });
+
+    it('the tag is not in the error a client could see', async () => {
+      sinon.stub(Users, 'countDocuments').resolves(1);
+      const error = (await rejection(() => assertCanDemoteAdmin(orgId))) as Error;
+      expect(Object.keys(error)).to.not.include('last_admin');
+      expect(JSON.stringify(error)).to.not.include('last_admin');
     });
   });
 });

@@ -31,6 +31,7 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.resource_governor.models import ParseTier
+from tests.support.eventually import until
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -447,14 +448,8 @@ class TestOnFutureDoneException:
             msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
-            # Wait for task completion
-            import time
-            time.sleep(2)
-
-            # Future should be cleaned up via callback even after exception
-            with consumer._futures_lock:
-                remaining = len(consumer._active_futures)
-            assert remaining == 0
+            # The done callback runs on the worker thread even after the exception, so wait for it without blocking this loop.
+            assert await until(lambda: consumer._get_active_task_count() == 0)
         finally:
             consumer.running = False
             consumer._IndexingKafkaConsumer__stop_worker_thread()

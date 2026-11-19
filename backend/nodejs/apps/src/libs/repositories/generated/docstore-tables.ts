@@ -411,6 +411,7 @@ export interface OauthApps {
   version: Generated<number>;
   created_at: Date;
   updated_at: Date;
+  owner_format: number | null;
 }
 
 export interface OauthAuthorizationCodes {
@@ -555,6 +556,7 @@ export interface PlatformNotifications {
   deleted_by: string | null;
   version: Generated<number>;
   updated_at: Date;
+  visible_at: Date | null;
 }
 
 export interface PlatformOutbox {

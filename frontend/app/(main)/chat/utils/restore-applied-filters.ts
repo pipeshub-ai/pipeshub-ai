@@ -8,10 +8,21 @@ const BUCKETS = SELECTION_KEYS;
 // sending its id would search nothing.
 const LEGACY_COLLECTIONS_APP_PREFIX = 'knowledgeBase_';
 
+// Someone a chat was shared with gets a node they cannot read as
+// `{ redacted, reason, name }`, with no id: there is nothing to select again.
+const hasId = (node: AppliedFilterNode | null | undefined): node is AppliedFilterNode =>
+  typeof node?.id === 'string' && node.id !== '';
+
 function restorable(applied: AppliedFilters): AppliedFilters {
+  const kept = { ...applied };
+  for (const bucket of BUCKETS) {
+    const nodes = applied[bucket];
+    if (nodes) kept[bucket] = nodes.filter(hasId);
+  }
   return {
-    ...applied,
-    apps: applied.apps.filter((node) => !node.id.startsWith(LEGACY_COLLECTIONS_APP_PREFIX)),
+    ...kept,
+    apps: (kept.apps ?? []).filter((node) => !node.id.startsWith(LEGACY_COLLECTIONS_APP_PREFIX)),
+    kb: kept.kb ?? [],
   };
 }
 

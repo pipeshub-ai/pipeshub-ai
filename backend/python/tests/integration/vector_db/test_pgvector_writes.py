@@ -463,6 +463,81 @@ async def test_a_writer_that_carries_no_membership_still_holds_its_groups_rows_u
     assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "c1")]            # the membership is still there
 
 
+async def test_a_point_batch_takes_its_groups_rows_in_key_order_before_any_point_so_a_membership_writer_cannot_deadlock_it(store) -> None:
+    """A membership writer locks group rows in key order. A batch that inserted a point of group rH first would hold rH (its point
+    trigger takes the group row) while waiting for rG, and the writer holding rG would wait for rH: a deadlock. The batch takes every group
+    row it touches first, in the same order, in the mode the membership update needs, so it waits at rG holding nothing of rH."""
+    import asyncio
+
+    await store.upsert_points("records", [point(A, "g", vrid="rG", conn=["c1"]), point(A, "h", vrid="rH", conn=["c1"])])
+    coll = (await sql(store, "SELECT collection_id FROM retrieval.collections WHERE name = 'records'"))[0][0]
+    space = (await sql(store, "SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1", A))[0][0]
+    member, batch = await store.env.admin(), await store.env.admin()
+    try:
+        mtx = member.transaction()
+        await mtx.start()
+        await member.execute("UPDATE retrieval.point_groups SET computed_at = computed_at WHERE org_id = $1 AND group_key = 'rG'", A)
+        btx = batch.transaction()
+        await btx.start()
+        pid = await batch.fetchval("SELECT pg_backend_pid()")
+        task = asyncio.create_task(writes.upsert(batch, coll, space, writes.prepare([point(A, "h2", vrid="rH"), point(A, "g2", vrid="rG")]),
+                                                 None, safe_mode=False))
+        for _ in range(200):                                                                   # until the batch waits for a lock
+            if await member.fetchval("SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = $1", pid):
+                break
+            await asyncio.sleep(0.05)
+        await member.execute("SELECT 1 FROM retrieval.point_groups WHERE org_id = $1 AND group_key = 'rH' FOR NO KEY UPDATE NOWAIT", A)   # rH is free
+        await mtx.commit()
+        await task
+        await btx.commit()
+    finally:
+        for c in (member, batch):
+            await c.close()
+    assert await live(store, A) == 4
+
+
+async def test_a_batch_that_creates_a_group_row_and_a_membership_writer_of_the_same_groups_cannot_deadlock(store, monkeypatch) -> None:
+    """The batch holds rH (it exists) and is about to create rG; a membership writer of rG and rH creates rG first and then waits for rH.
+    If the batch went on to create rG it would wait for that writer: a deadlock. Every group writer takes the keys of its groups, rows or
+    not, in one order before any row, so the membership writer waits holding nothing and both complete."""
+    await store.upsert_points("records", [point(A, "h", vrid="rH", conn=["c1"])])
+    coll = (await sql(store, "SELECT collection_id FROM retrieval.collections WHERE name = 'records'"))[0][0]
+    space = (await sql(store, "SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1", A))[0][0]
+    at_pause, go, original = asyncio.Event(), asyncio.Event(), writes.write_groups
+
+    async def paused(*args: object, **kwargs: object) -> int:          # the batch stops once it holds its groups, before it writes them
+        at_pause.set()
+        await go.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(writes, "write_groups", paused)
+    member, batch = await store.env.admin(), await store.env.admin()
+    try:
+        btx, mtx = batch.transaction(), member.transaction()
+        await btx.start()
+        await mtx.start()
+        mpid = await member.fetchval("SELECT pg_backend_pid()")
+        upsert = asyncio.create_task(writes.upsert(
+            batch, coll, space, writes.prepare([point(A, "g", vrid="rG", conn=["c2"]), point(A, "h2", vrid="rH", conn=["c2"])]), None,
+            safe_mode=False))
+        await asyncio.wait_for(at_pause.wait(), 30)
+        membership = asyncio.create_task(original(member, A, coll, {"rG": {"connectorIds": ["c3"]}, "rH": {"connectorIds": ["c3"]}}, None,
+                                                  allow_empty=True))
+        for _ in range(200):                                                  # until the membership writer waits for a lock
+            if (await sql(store, "SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = $1", mpid))[0][0]:
+                break
+            await asyncio.sleep(0.05)
+        go.set()
+        await upsert                                                          # a deadlock raises here or in the membership writer
+        await btx.commit()
+        await membership
+        await mtx.commit()
+    finally:
+        for c in (member, batch):
+            await c.close()
+    assert [r["group_key"] for r in await sql(store, "SELECT group_key FROM retrieval.point_groups WHERE org_id = $1 ORDER BY 1", A)] == ["rG", "rH"]
+
+
 async def test_a_point_written_again_after_a_safe_mode_delete_is_counted_once_whichever_way_its_terms_change(store) -> None:
     safe = dataclasses.replace(store.pg_capabilities, hnsw_safe_mode=True)
     store.pg_capabilities = safe

@@ -28,6 +28,16 @@ from tests.support.record_event_harness import (
     make_record as _record,
 )
 
+_NOW_MS = 1_800_000_000_000
+
+
+def _freeze_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp and read the hand-back deadline on a frozen clock: the test read the wall clock apart from the handler, and a
+    stalled runner moved the deadline past the window."""
+    from app.services.messaging.kafka.handlers import record as record_module
+
+    monkeypatch.setattr(record_module, "get_epoch_timestamp_in_ms", lambda: _NOW_MS)
+
 
 @pytest.fixture(autouse=True)
 def _deferral_fields_are_written(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,14 +340,14 @@ async def test_the_first_handback_is_held_to_the_whole_allowance(monkeypatch: py
         await harness.run(_payload(parseNow=False, is_final_failure=False))
 
 
-async def test_a_duplicate_delivery_during_the_wait_keeps_the_wait_and_calls_nothing() -> None:
+async def test_a_duplicate_delivery_during_the_wait_keeps_the_wait_and_calls_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """A second ``newRecord`` for a record handed back for a provider's wait is returned for what is left of the wait: the wait
     is kept (not cleared), no attempt is spent, and the model is not called."""
-    until = int(time.time() * 1000) + 300_000
-    harness = Harness(_record(indexingStatus="QUEUED", deferredUntilMs=until))
+    _freeze_clock(monkeypatch)
+    harness = Harness(_record(indexingStatus="QUEUED", deferredUntilMs=_NOW_MS + 300_000))
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
-    assert 290.0 <= raised.value.delay_s <= 300.0
+    assert raised.value.delay_s == 300.0
     assert harness.runs == [], "the pipeline ran during the provider's wait"
     assert all("deferredUntilMs" not in w for w in harness.writes()), "the wait was cleared"
 
@@ -349,12 +359,12 @@ async def test_the_limit_check_and_the_stored_deadline_use_one_delay(monkeypatch
     monkeypatch.setattr(record_module, "handback_delay_s", lambda *a, **k: next(draws))
     harness = Harness(_record(indexingStatus="QUEUED"))
     harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
-    before = int(time.time() * 1000)
+    _freeze_clock(monkeypatch)
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
     stored = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")][-1]
     assert raised.value.delay_s == 120.0
-    assert before + 120_000 <= stored <= before + 121_000, "the stored deadline is not the delay that was checked"
+    assert stored == _NOW_MS + 120_000, "the stored deadline is not the delay that was checked"
 
 
 async def test_the_limit_check_counts_the_stored_jittered_delay_not_the_providers_wait(monkeypatch: pytest.MonkeyPatch) -> None:
