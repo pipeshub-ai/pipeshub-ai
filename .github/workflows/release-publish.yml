@@ -87,22 +87,23 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "version=$version candidate=${version}-rc.${GITHUB_RUN_ID} promote=$promote"
 
-      # A tag push only: test_no_released_head_is_gone holds every later migration head to the ones the tagged tree
-      # records, so the tag must record its own (backend/db/README.md, Released heads).
+      # Whatever can move :latest (a tag push, or a promoting dispatch): test_no_released_head_is_gone holds every later
+      # migration head to the ones the released tree records, so it must record its own (backend/db/README.md, Released heads).
       - name: Checkout
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || inputs.promote
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: The tag records its migration heads
-        if: github.event_name == 'push'
+      - name: The release records its migration heads
+        if: github.event_name == 'push' || inputs.promote
         working-directory: backend
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
-          python3 -m db.released_heads "$GITHUB_REF_NAME"
-          if ! git diff --exit-code -- db/released_heads.json; then
-            echo "::error::backend/db/released_heads.json does not hold the migration heads of ${GITHUB_REF_NAME}. Run 'python -m db.released_heads ${GITHUB_REF_NAME}' from backend/ on main, merge it, and tag again."
+          if ! python3 -m db.released_heads --check; then
+            echo "::error::backend/db/released_heads.json does not hold the migration heads of this tree. On the commit you tag (main, or the release branch for a hotfix), run 'python -m db.released_heads v${VERSION}' from backend/ and merge it. Then release again: delete a tag that failed here first (git push --delete origin v${VERSION}), or use the next patch version."
             exit 1
           fi
 
