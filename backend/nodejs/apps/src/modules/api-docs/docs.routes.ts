@@ -42,10 +42,7 @@ export function createApiDocsRouter(container: Container): Router {
       res.status(404).json({ error: 'OpenAPI spec not available' });
       return;
     }
-    res
-      .attachment('pipeshub-openapi.yaml')
-      .type('application/yaml')
-      .send(spec);
+    res.attachment('pipeshub-openapi.yaml').type('application/yaml').send(spec);
   });
 
   /**

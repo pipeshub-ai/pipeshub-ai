@@ -232,7 +232,10 @@ export class ApiDocsService {
    */
   getSpecYaml(): string | null {
     if (!this.mergedSpec) return null;
-    this.specYaml ??= yaml.dump(this.mergedSpec, { noRefs: true, lineWidth: -1 });
+    this.specYaml ??= yaml.dump(this.mergedSpec, {
+      noRefs: true,
+      lineWidth: -1,
+    });
     return this.specYaml;
   }
 
