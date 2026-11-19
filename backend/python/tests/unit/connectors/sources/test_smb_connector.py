@@ -933,6 +933,34 @@ class TestSmbConnectorStreamAndFilters:
         assert [(r.levelno, r.exc_info) for r in logged] == [(logging.WARNING, None)]
         assert str(failure) in logged[0].getMessage()
 
+    @pytest.mark.parametrize(
+        ("ntstatus", "status"),
+        [(0xC0000022, 403), (0xC0000034, 404), (0xC000006D, 409)],
+    )
+    async def test_the_servers_status_on_open_is_answered_and_logged(
+        self, smb_connector, ntstatus, status, caplog
+    ):
+        from smbprotocol.exceptions import SMBOSError
+
+        from app.sources.external.smb.smb import SmbDataSource
+
+        fake = MagicMock()
+        fake.stat.return_value = MagicMock(
+            st_mode=stat.S_IFREG | 0o644, st_size=5, st_ctime=0.0, st_mtime=0.0, st_ino=7, st_file_attributes=0
+        )
+        fake.open_file.side_effect = SMBOSError(ntstatus, r"\\10.0.0.5\share\no-access\secret.txt")
+        client = SmbClient(server="10.0.0.5", username="u", password="p", share=SHARE)
+        smb_connector.data_source = SmbDataSource(client)
+        record = _file_record(ext_id=f"{SHARE}/no-access/secret.txt", revision="r")
+        with (
+            patch.object(client, "_smbclient", return_value=fake),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await smb_connector.stream_record(record)
+        assert exc.value.status_code == status
+        assert f"0x{ntstatus:08x}" in caplog.records[-1].getMessage()
+
     async def test_any_other_open_failure_is_a_logged_500(self, smb_connector, caplog):
         smb_connector.data_source = FakeNetworkShareDataSource(
             stats={(SHARE, "locked.docx"): _entry("locked.docx", file_id=9)},

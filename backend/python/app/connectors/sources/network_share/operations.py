@@ -390,8 +390,10 @@ async def stream_file(
     except HTTPException:
         raise
     except (NetworkShareAuthError, AccessDeniedError, FileNotFoundError) as exc:
-        # An expected refusal: the server's own reason, without a traceback.
-        logger.warning("Streaming record %s from %s was refused: %s", record.id, display_name, exc)
+        # An expected refusal: the server's own error (the NT status the client translated), no traceback.
+        logger.warning(
+            "Streaming record %s from %s was refused: %s", record.id, display_name, exc.__cause__ or exc
+        )
         if isinstance(exc, NetworkShareAuthError):
             # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
             raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
