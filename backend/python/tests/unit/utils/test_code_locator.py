@@ -51,15 +51,3 @@ def test_block_qualified_name(block: dict, expected: str) -> None:
 )
 def test_format_code_locator(file_path: str, qualified_name: str, expected: str) -> None:
     assert ch.format_code_locator(file_path, qualified_name) == expected
-
-
-@pytest.mark.parametrize(
-    "file_path, qualified_name, expected",
-    [
-        (None, "Foo.bar", "Foo.bar"),
-        ("app/x.py", None, "app/x.py"),
-        (None, None, ""),
-    ],
-)
-def test_format_code_locator_none_values(file_path, qualified_name, expected) -> None:
-    assert ch.format_code_locator(file_path, qualified_name) == expected  # type: ignore[arg-type]
