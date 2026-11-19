@@ -12,6 +12,7 @@ labelled by org only -- bounded by customer count, and the same choice
 exposed as a *count* of active keys rather than one series per key.
 """
 
+import itertools
 import threading
 import weakref
 from collections import deque
@@ -144,27 +145,52 @@ def record_lanes_paused(broker: str, count: int) -> None:
 # priority consumers): the gauge is their total, kept here because no one
 # consumer can see the others'.
 _record_waits_lock = threading.Lock()
-_record_waits_by_owner: dict[str, dict[int, int]] = {}
-# Owners collected without a stop. Their finalizer only appends here: it runs
-# on whatever thread a collection happens on, possibly one already inside
-# this lock or the gauge's own (prometheus-client's is not re-entrant), so it
-# takes no lock and publishes nothing. The next publication or refresh takes
-# them out of the total.
-_record_waits_collected: deque[tuple[str, int]] = deque()
+
+
+class _WaitsOwner:
+    """One owner's registration. Keyed by id(), which CPython reuses once an
+    object is freed, so it also holds a weak reference (is this still the
+    owner?) and a token its collection notice carries (is this notice for
+    this registration?). By id alone, a dropped owner's queued notice took
+    away the count of a new owner that got the same id before the drain."""
+
+    __slots__ = ("count", "ref", "token")
+
+    def __init__(self, owner: object, token: int, count: int) -> None:
+        self.ref = weakref.ref(owner)
+        self.token = token
+        self.count = count
+
+
+_record_waits_by_owner: dict[str, dict[int, _WaitsOwner]] = {}
+_record_waits_tokens = itertools.count(1)
+# Owners collected without a stop, as (broker, id, token). Their finalizer
+# only appends here: it runs on whatever thread a collection happens on,
+# possibly one already inside this lock or the gauge's own (prometheus-client's
+# is not re-entrant), so it takes no lock and publishes nothing. The next
+# publication or refresh takes them out of the total.
+_record_waits_collected: deque[tuple[str, int, int]] = deque()
 
 
 def record_record_waits(broker: str, owner: object, count: int) -> None:
     with _record_waits_lock:
         owners = _record_waits_by_owner.setdefault(broker, {})
-        if id(owner) not in owners:
-            weakref.finalize(owner, _record_waits_collected.append, (broker, id(owner)))
-        owners[id(owner)] = count
+        registered = owners.get(id(owner))
+        if registered is None or registered.ref() is not owner:
+            token = next(_record_waits_tokens)
+            weakref.finalize(owner, _record_waits_collected.append, (broker, id(owner), token))
+            owners[id(owner)] = _WaitsOwner(owner, token, count)
+        else:
+            registered.count = count
         _publish_record_waits_locked(broker)
 
 
 def forget_record_waits(broker: str, owner: object) -> None:
     with _record_waits_lock:
-        _record_waits_by_owner.setdefault(broker, {}).pop(id(owner), None)
+        owners = _record_waits_by_owner.setdefault(broker, {})
+        registered = owners.get(id(owner))
+        if registered is not None and registered.ref() is owner:
+            del owners[id(owner)]
         _publish_record_waits_locked(broker)
 
 
@@ -185,9 +211,12 @@ def _publish_record_waits_locked(broker: str) -> None:
     total can be written after a newer one.
     """
     while _record_waits_collected:
-        collected_broker, owner_id = _record_waits_collected.popleft()
-        _record_waits_by_owner.get(collected_broker, {}).pop(owner_id, None)
-    RECORD_WAITS.set(broker, value=sum(_record_waits_by_owner.get(broker, {}).values()))
+        collected_broker, owner_id, token = _record_waits_collected.popleft()
+        owners = _record_waits_by_owner.get(collected_broker, {})
+        registered = owners.get(owner_id)
+        if registered is not None and registered.token == token:
+            del owners[owner_id]
+    RECORD_WAITS.set(broker, value=sum(r.count for r in _record_waits_by_owner.get(broker, {}).values()))
 
 
 def record_lane_assignment_fallback(reason: str) -> None:

@@ -995,7 +995,7 @@ with patch.object(m.RECORD_WAITS, "set", collecting_set):
     m.record_record_waits("test", kept, 2)
     m.record_record_waits("test", kept, 3)
 m.refresh_record_waits("test")
-assert m._record_waits_by_owner["test"] == {id(kept): 3}, m._record_waits_by_owner
+assert {k: r.count for k, r in m._record_waits_by_owner["test"].items()} == {id(kept): 3}
 print("ok")
 """
 
@@ -1133,3 +1133,35 @@ class TestReviewOfTheWaitsRoundThree:
 
         assert set(consumer._held_entries) == held
         assert consumer._scheduler.pending_count + len(consumer._deferred_entries) == BUFFER
+
+
+class TestTheGaugeAcrossIdReuse:
+    def test_a_new_owner_reusing_a_collected_owners_id_keeps_its_count(self) -> None:
+        """CPython reuses the id of a freed object. A collected owner's
+        notification still queued must not take away the count of a new
+        owner that got the same id before the queue was drained."""
+
+        class Owner:
+            pass
+
+        scheduling_metrics._record_waits_by_owner.pop("reuse", None)
+        old = Owner()
+        old_id = id(old)
+        scheduling_metrics.record_record_waits("reuse", old, 1)
+        del old
+        gc.collect()  # its finalizer queues the collection; nothing drains it yet
+        candidates = []
+        for _ in range(10_000):
+            candidate = Owner()
+            if id(candidate) == old_id:
+                break
+            candidates.append(candidate)
+        else:
+            pytest.skip("the interpreter did not reuse the freed id")
+        published: list[float] = []
+        with patch.object(
+            scheduling_metrics.RECORD_WAITS, "set", side_effect=lambda *_a, value: published.append(value)
+        ):
+            scheduling_metrics.record_record_waits("reuse", candidate, 5)
+            scheduling_metrics.refresh_record_waits("reuse")
+        assert published[-1] == 5
