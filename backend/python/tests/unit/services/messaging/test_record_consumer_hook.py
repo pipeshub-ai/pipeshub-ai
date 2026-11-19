@@ -14,6 +14,7 @@ import logging
 import re
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -46,10 +47,12 @@ KEY_FIELDS = ("orgId", "connectorId")
 
 
 @pytest.fixture(autouse=True)
-def _world_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _world_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for key, value in world.GOLDEN_ENV.items():
         monkeypatch.setenv(key, value)
     logging.disable(logging.CRITICAL)
+    yield
+    logging.disable(logging.NOTSET)
 
 
 def golden(kind: str) -> dict:

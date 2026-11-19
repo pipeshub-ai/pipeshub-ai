@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,12 @@ pytestmark = pytest.mark.timeout(240)
 
 
 @pytest.fixture(autouse=True)
-def _world_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _world_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for key, value in world.GOLDEN_ENV.items():
         monkeypatch.setenv(key, value)
     logging.disable(logging.CRITICAL)
+    yield
+    logging.disable(logging.NOTSET)
 
 
 def golden(kind: str) -> dict:

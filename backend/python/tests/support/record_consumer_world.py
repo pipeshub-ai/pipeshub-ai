@@ -483,6 +483,7 @@ async def run_pg(
             "topic": topic, "message_id": i + 1, "attempts": 1, "msg_key": m.record_id,
             "value": json.dumps({"eventType": "newRecord", "payload": m.envelope()["payload"], "requestId": f"req-{i}"}),
         })
+    saved_ordered = os.environ.get("PG_QUEUE_ORDERED_TOPICS")
     os.environ["PG_QUEUE_ORDERED_TOPICS"] = ordered_topics
     config = RedisStreamsConfig(
         topics=list(topic_list), group_id=GROUP, client_id="world", batch_size=batch_size, block_ms=5
@@ -509,6 +510,10 @@ async def run_pg(
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        if saved_ordered is None:
+            os.environ.pop("PG_QUEUE_ORDERED_TOPICS", None)
+        else:
+            os.environ["PG_QUEUE_ORDERED_TOPICS"] = saved_ordered
     trace = Trace(dispatch=sorted(handler.seen))
     trace.extra["statements"] = [s for s in runtime.statements if s[0] in {"claim", "lock"}]
     trace.extra["claim_sql"] = pg_claim_sql()
