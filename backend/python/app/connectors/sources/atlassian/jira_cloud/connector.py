@@ -1069,8 +1069,6 @@ class JiraConnector(BaseConnector):
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
-            if groups_members_map is not None:
-                self._group_members = groups_members_map
 
             # 5. Resolve project filter, then fetch projects
             projects, raw_projects = await self._fetch_filtered_projects(jira_users)
@@ -2368,8 +2366,6 @@ class JiraConnector(BaseConnector):
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
             groups_members_map = await self._sync_user_groups(jira_users)
-            if groups_members_map is not None:
-                self._group_members = groups_members_map
             # Only keys and leads are needed: skip the permission scheme read of every project.
             raw_projects = await self._list_projects_with_filter(*self._project_keys_filter())
             if groups_members_map is not None:
@@ -3783,6 +3779,7 @@ class JiraConnector(BaseConnector):
                 return None
             if not groups:
                 self.logger.info("ℹ️ No groups found in Jira")
+                self._group_members = {}
                 return {}
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
@@ -3815,6 +3812,12 @@ class JiraConnector(BaseConnector):
                     continue
                 # Add group to batch (with or without members)
                 user_groups_batch.append((user_group, app_users))
+
+            # Level readers (``level_readers``) follow the members just read, even from a list cut short: one removed in
+            # Jira must leave them. A group not read this time keeps what it had, as the graph keeps its stored members.
+            kept = self._group_members if fetch_failed else {
+                k: v for k, v in self._group_members.items() if k in groups_members_map}
+            self._group_members = {**kept, **{k: v for k, v in groups_members_map.items() if v is not None}}
 
             if self._user_read_unfinished:
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
@@ -4206,6 +4209,8 @@ class JiraConnector(BaseConnector):
             if failed:
                 failed_project_keys.append(project_key)
             roles_to_sync.extend(project_roles)
+            # The members read, before a short user read keeps a role's stored ones in the graph (``_group_members``).
+            self._role_members.update({role.source_role_id: members for role, members in project_roles})
             total_roles += len(project_roles)
             total_members += sum(len(members) for _, members in project_roles)
 
@@ -4231,7 +4236,6 @@ class JiraConnector(BaseConnector):
 
         if self._user_read_unfinished:
             roles_to_sync = await self._without_stored_members("role", roles_to_sync)
-        self._role_members.update({role.source_role_id: members for role, members in roles_to_sync})
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
@@ -4314,9 +4318,9 @@ class JiraConnector(BaseConnector):
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
 
+        self._role_members.update({role.source_role_id: members for role, members in lead_roles_to_sync})
         if unresolved_leads:
             lead_roles_to_sync = await self._without_unresolved_stored_leads(lead_roles_to_sync, unresolved_leads)
-        self._role_members.update({role.source_role_id: members for role, members in lead_roles_to_sync})
 
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
@@ -5128,7 +5132,10 @@ class JiraConnector(BaseConnector):
         for level_id, holders in security.members_by_level.items():
             grants, skipped = level_group_grants(
                 holders, project_key=project_key, user_by_id=users, app_roles_mapping=self._level_roles)
-            out[level_id] = None if skipped else level_readers(grants, self._group_members, self._role_members)
+            # A user holder outside the directory reads nothing, so it leaves the others known; any other holder skipped
+            # (an unmapped application role) may hold anyone.
+            out[level_id] = None if set(skipped) - {HOLDER_USER} else level_readers(
+                grants, self._group_members, self._role_members)
         return out
 
     def _plan_level_reread(

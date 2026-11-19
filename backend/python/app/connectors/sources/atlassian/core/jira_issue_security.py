@@ -76,7 +76,7 @@ _SAME_ON_EVERY_ISSUE = frozenset({
 })
 # Someone Browse names may be in the level through members not known: the issue is written without them and read again.
 LEVEL_MEMBERS_UNREAD = "levelMembers"
-_ANY_READER = ("*", "*")  # a level ``anyone`` holds names every reader
+_ANY_READER = ("*", "*")  # stands for every reader, when a level holds ``anyone``
 def level_group_external_id(project_id: str, level_id: str) -> str:
     """The external id of the record group that holds a level's holders (one per project and level)."""
     return f"level:{project_id}:{level_id}"

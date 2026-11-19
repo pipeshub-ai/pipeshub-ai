@@ -3163,3 +3163,74 @@ class TestSweepAncestorReads:
         response = MagicMock(status=status, json=MagicMock(return_value={"issues": [], "issueErrors": errors}))
         c._call_with_retry = AsyncMock(return_value=response)
         assert await c._sweep_placeholder_records({PROJECT_ID}, {PROJECT_ID}) is swept
+
+
+class TestLevelReadersFollowTheMembersRead:
+    """The reporter (Browse names them on the issue) reads a leveled issue on their own while the level holds them through
+    ``group-1``. Removed from the group in Jira, they must lose that grant: the level's issues are read again."""
+
+    REPORTER = [{"type": "reporter"}]
+    REP, OTHER = _users()[:2]
+
+    @staticmethod
+    def _group_read(c: JiraConnector, members: list[AppUser], *, cut_short: bool) -> None:
+        c._fetch_groups = AsyncMock(return_value=([{"groupId": "group-1", "name": "G1"}], cut_short))
+        c._group_fetch_interrupted = cut_short
+        c.notify = AsyncMock()
+        c._process_group = AsyncMock(return_value=("group-1", "G1", MagicMock(), members))
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+
+    def _stored_digests(self, c: JiraConnector) -> dict:
+        """The level digests the last sync saved, with the reporter in ``group-1``."""
+        c._group_members = {"group-1": [self.REP], "G1": [self.REP]}
+        c._role_members = {"PROJ_10003": [], "PROJ_projectLead": []}
+        ctx = _present()  # its user holder is outside the directory here: it reads nothing and leaves the others known
+        ctx.browse_holders, ctx.level_readers = self.REPORTER, c._level_readers(ctx, "PROJ", {})
+        assert ctx.level_readers["10102"] is not None
+        return ctx.level_fingerprints(split=True)
+
+    async def _next_issue_pass(self, c: JiraConnector, stored: dict) -> list:
+        c._browse_issue_holders["PROJ"] = self.REPORTER
+        browse = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=self.REPORTER).browse_fingerprint()
+        _, _, calls, _ = await TestMemberChangeRereadsOnlyTheAffectedLevels()._sync(
+            stored_levels=stored, connector=c, stored_browse=browse)
+        return calls[1:]
+
+    @pytest.mark.asyncio
+    async def test_a_group_list_cut_short_still_applies_the_members_it_read(self) -> None:
+        c = _connector()
+        stored = self._stored_digests(c)
+        self._group_read(c, [self.OTHER], cut_short=True)
+        assert await c._sync_user_groups([self.REP, self.OTHER]) is None
+        assert c._group_members["group-1"] == [self.OTHER]
+        assert await self._next_issue_pass(c, stored) == [
+            {"resume": None, "is_new_project": True, "level_ids": ["10102"], "leveled_only": False, "stored_only": True}]
+
+    @pytest.mark.asyncio
+    async def test_a_group_not_read_keeps_its_members_and_a_complete_list_drops_a_group_gone(self) -> None:
+        c = _connector()
+        c._group_members = {"group-2": [self.REP], "gone": [self.REP]}
+        self._group_read(c, [self.OTHER], cut_short=True)
+        await c._sync_user_groups([self.REP, self.OTHER])
+        assert c._group_members["group-2"] == [self.REP] and "gone" in c._group_members
+        self._group_read(c, [], cut_short=False)
+        await c._sync_user_groups([self.REP, self.OTHER])
+        assert c._group_members == {"group-1": [], "G1": []}
+
+    @pytest.mark.asyncio
+    async def test_a_member_removed_by_a_link_pass_is_reread_by_the_next_sync(self) -> None:
+        c = _connector()
+        stored = self._stored_digests(c)
+        c.data_source = MagicMock()
+        c._fetch_users = AsyncMock(return_value=[self.REP, self.OTHER])
+        c._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
+        c._keep_licensed_users = AsyncMock(side_effect=lambda users, _mapping: users)
+        c._note_newly_listed = AsyncMock()
+        c.data_entities_processor.on_new_app_users = AsyncMock()
+        c._list_projects_with_filter = AsyncMock(return_value=[])
+        c._sync_project_roles = AsyncMock()
+        c._sync_project_lead_roles = AsyncMock()
+        self._group_read(c, [self.OTHER], cut_short=False)
+        await c._link_users_groups_and_roles()
+        assert await self._next_issue_pass(c, stored) == [
+            {"resume": None, "is_new_project": True, "level_ids": ["10102"], "leveled_only": False, "stored_only": True}]
