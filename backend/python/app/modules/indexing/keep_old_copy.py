@@ -104,7 +104,7 @@ async def swap_allowed(config_service: Any) -> bool:  # noqa: ANN401
 
         reader = reader_for(config_service)
         if reader is None:
-            return False
+            return _refused("no_membership")
         verdict = await reader.strict_verdict()
     except Exception as exc:
         return _refused("membership_unreadable", type(exc).__name__)
