@@ -46,6 +46,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
 from app.modules.retrieval.selection_scope import names_below_apps
+from app.utils.request_deadline import deadline_after, knowledge_hub_deadline_seconds
 from app.utils.user_messages import action_failed
 
 # Handlers bind their own ``logger`` inside the request, so the module logger
@@ -508,12 +509,14 @@ async def _handle_get_nodes(
             "is_org_admin": is_request_admin(request),
         }
         limit_sources = connection_limit(request.state.user)
-        if parent_id is None and limit_sources is not None:
-            result = await _root_inside_connection(
-                request, knowledge_hub_service, query, bounded=bounded, params=listing_params,
-            )
-        else:
-            result = await knowledge_hub_service.get_nodes(**query)
+        # Past this the web app has stopped waiting: what the listing still asks the graph is ended there.
+        with deadline_after(knowledge_hub_deadline_seconds()):
+            if parent_id is None and limit_sources is not None:
+                result = await _root_inside_connection(
+                    request, knowledge_hub_service, query, bounded=bounded, params=listing_params,
+                )
+            else:
+                result = await knowledge_hub_service.get_nodes(**query)
         if limit_sources is not None:
             _offer_whole_apps_only(result, limit_sources.get("apps") or [])
 

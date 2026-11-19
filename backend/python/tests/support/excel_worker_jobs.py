@@ -45,3 +45,25 @@ def spike_then_fail(data: bytes, limit: int, cap: int, hold_seconds: float) -> s
     except Exception as exc:
         return f"error:{type(exc).__name__}"
     return "loaded"
+
+
+def spin_under_the_cpu_limit(max_seconds: float) -> str:
+    """Runs in the worker: burns CPU under the load's CPU limit. Returns only if something was raised into it; with no limit set,
+    only the caller's pool timeout ends it."""
+    from app.modules.parsers.excel.workbook_model import _cpu_limited
+
+    with _cpu_limited(max_seconds):
+        try:
+            while True:
+                pass
+        except BaseException as exc:  # what the test is looking for
+            return f"raised:{type(exc).__name__}"
+
+
+def cpu_limit_around_a_load(data: bytes, limit: int, cap: int, max_seconds: float) -> tuple:
+    """Runs in the worker: its soft and hard RLIMIT_CPU before and after a CPU-limited load."""
+    import resource
+
+    before = resource.getrlimit(resource.RLIMIT_CPU)
+    load_workbook_model(data, limit, cap, None, max_seconds)
+    return before, resource.getrlimit(resource.RLIMIT_CPU)
