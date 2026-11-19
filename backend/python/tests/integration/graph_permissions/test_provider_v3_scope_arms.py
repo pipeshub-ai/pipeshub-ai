@@ -381,6 +381,8 @@ async def _page_query(provider, monkeypatch, **overrides) -> str:
         return await original(query, *args, **kwargs)
 
     monkeypatch.setattr(provider.client, "execute_query", spy)
+    # The shape pinned here is the legacy statement's: the split browse writes no rule into it (docs/knowledge-hub-browse.md).
+    monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
     await _page(provider, **overrides)
     monkeypatch.setattr(provider.client, "execute_query", original)
     return [q for q in seen if "$kh_limit" in q][-1]

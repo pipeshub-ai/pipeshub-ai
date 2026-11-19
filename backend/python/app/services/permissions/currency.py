@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.services.permissions.mode import AclFilterMode
 from app.services.permissions.pending import parse
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
@@ -42,6 +43,33 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+
+#: The connector's own choice, set by an admin: `inherit` (the deployment's ``ACL_FILTER_MODE``), `legacy` or `scopes`.
+MODE_KEY = "aclFilterMode"
+MODES = ("inherit", "legacy", "scopes")
+
+
+def chosen_mode(app: Mapping[str, object] | None) -> str:
+    """Missing is `inherit`; a value that is not exactly a mode (a hand edit, "Scopes") is `legacy`, so nothing unreadable ever turns the filter on,
+    and every reader (the status, the plan, the switched-connector read, which matches the stored text) agrees on it."""
+    raw = (app or {}).get(MODE_KEY)
+    if raw is None or raw == "":
+        return "inherit"
+    return raw if raw in MODES else "legacy"
+
+
+def effective_mode(app: Mapping[str, object] | None, default: AclFilterMode) -> AclFilterMode:
+    chosen = chosen_mode(app)
+    return default if chosen == "inherit" else AclFilterMode(chosen)
+
+
+async def switched_connectors(graph: IGraphDBProvider, org_id: str) -> frozenset[str]:
+    """The connectors of ``org_id`` whose own mode is `scopes`, from their app documents: the organisation's apps as its org-to-app edges list them
+    (`get_org_apps`, the same read on every store), so no document's own org field is trusted and instances that predate it are found. A value other
+    than exactly `scopes` (a hand edit) is not, which leaves that connector on the classic check."""
+    docs = await graph.get_org_apps(org_id, active_only=False, raise_on_error=True)
+    return frozenset(str(d.get("_key") or d.get("id")) for d in docs or [] if isinstance(d, dict) and chosen_mode(d) == "scopes")
 
 
 def app_is_current(app: Mapping[str, object] | None) -> bool:
@@ -93,14 +121,18 @@ class StampCurrency:
     def __init__(self, graph_provider: IGraphDBProvider) -> None:
         self._graph = graph_provider
 
+    async def switched(self, org_id: str) -> frozenset[str]:
+        return await switched_connectors(self._graph, org_id)
+
     async def served(self, connector_ids: Iterable[str]) -> frozenset[str]:
         return (await self.read(connector_ids))[0]
 
-    async def read(self, connector_ids: Iterable[str]) -> tuple[frozenset[str], frozenset[str]]:
+    async def read(self, connector_ids: Iterable[str], *, default: AclFilterMode | None = None) -> tuple[frozenset[str], frozenset[str]]:
         """The connectors among ``connector_ids`` whose stamps may decide a search now (`app_is_served`) and, of those, the exact ones (`app_is_exact`), from one batched read of their app
         documents, made for this call and kept by nobody: the answer moves in the transaction that moves the generation, so a cached one is
         a window in which a revoked access still admits. A read that fails, or a connector it does not return, is not served. Runs inside the
-        organisation the connectors belong to."""
+        organisation the connectors belong to. With ``default`` (the deployment's mode), only the connectors whose own mode resolves to `scopes`
+        are served: the serving plan passes it, the shadow comparison does not."""
         ids = sorted(set(connector_ids))
         if not ids:
             return frozenset(), frozenset()
@@ -109,6 +141,8 @@ class StampCurrency:
         except Exception:
             return frozenset(), frozenset()
         docs = {key: d for d in found or [] if isinstance(d, dict) and (key := str(d.get("_key") or d.get("id"))) in ids}
+        if default is not None:
+            docs = {k: d for k, d in docs.items() if effective_mode(d, default) is AclFilterMode.SCOPES}
         return frozenset(k for k, d in docs.items() if app_is_served(d)), frozenset(k for k, d in docs.items() if app_is_exact(d))
 
     async def current(self, connector_ids: Iterable[str]) -> frozenset[str]:

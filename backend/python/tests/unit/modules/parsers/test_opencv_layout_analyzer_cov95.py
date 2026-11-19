@@ -57,9 +57,11 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     _is_plausible_table,
     _line_side,
     _link_captions,
+    _merge_currency_columns,
     _merge_regions,
     _merge_row_tables,
     _merge_small_text_regions,
+    _merge_table_currency_columns,
     _overlap_ratio,
     _page_hyperlinks,
     _prefer_model_pictures,
@@ -577,6 +579,17 @@ class TestHyperlinkHelpers:
             table_grid=[["link"]],
         )
         _inject_hyperlinks_into_region(table, links, words)
+        assert "https://x.com" in table.text
+
+    def test_inject_hyperlinks_keeps_a_merged_tables_extra_text(self) -> None:
+        words = [_w("link", 10, 50, 10, 20)]
+        links = [{"x0": 10, "top": 8, "x1": 50, "bottom": 22, "uri": "https://x.com"}]
+        table = _region(
+            LayoutRegionType.TABLE, (0, 0, 100, 50), "In USD millions\nlink | 4,835",
+            table_grid=[["link", "4,835"]],
+        )
+        _inject_hyperlinks_into_region(table, links, words)
+        assert table.text.startswith("In USD millions\n")
         assert "https://x.com" in table.text
 
     def test_inject_hyperlinks_skips_image(self):
@@ -3269,6 +3282,81 @@ class TestCoveragePush95Phase2:
     def test_trim_empty_rows_cols_all_empty(self):
         grid = [[None, ""], ["", None]]
         assert _trim_empty_rows_cols(grid) == []
+
+    def test_currency_sign_columns_join_their_figures(self) -> None:
+        # As pdfplumber splits a 10-K statement: the year sits over the "$".
+        grid = [
+            ["", "2015", "", "2016", ""],
+            ["Net product sales", "$", "79,268", "$", "94,665"],
+            ["Net service sales", "", "27,738", "", "41,322"],
+        ]
+        assert _merge_currency_columns(grid) == [
+            ["", "2015", "2016"],
+            ["Net product sales", "$ 79,268", "$ 94,665"],
+            ["Net service sales", "27,738", "41,322"],
+        ]
+
+    def test_a_header_with_numbers_does_not_stop_the_join(self) -> None:
+        grid = [
+            ["", "52 Weeks Ended\nAugust 29, 2021", "", "52 Weeks Ended\nAugust 30, 2020", ""],
+            ["Net income", "$", "5,079", "$", "4,059"],
+        ]
+        assert _merge_currency_columns(grid) == [
+            ["", "52 Weeks Ended\nAugust 29, 2021", "52 Weeks Ended\nAugust 30, 2020"],
+            ["Net income", "$ 5,079", "$ 4,059"],
+        ]
+
+    def test_columns_holding_figures_are_kept(self) -> None:
+        grid = [["", "2022", "2021"], ["Cash", "$ 4,835", "$ 2,535"], ["Goodwill", "$", "289"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_a_figure_beside_a_placeholder_keeps_the_columns_apart(self) -> None:
+        grid = [["", "2022", ""], ["Cash", "$ 4,835", "\u2014"], ["Goodwill", "$", "289"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_two_periods_are_not_joined_over_one_figure(self) -> None:
+        grid = [["", "2015", "2016"], ["Net", "$", "79,268"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_a_year_like_figure_beside_a_sign_is_a_figure(self) -> None:
+        assert _merge_currency_columns([["", "2022", ""], ["Net", "$", "2000"]]) == [
+            ["", "2022"], ["Net", "$ 2000"],
+        ]
+
+    def test_decimal_comma_figures_join_their_sign(self) -> None:
+        assert _merge_currency_columns([["", "2022", ""], ["Umsatz", "\u20ac", "1.234,56"]]) == [
+            ["", "2022"], ["Umsatz", "\u20ac 1.234,56"],
+        ]
+
+    def test_a_sign_and_a_figure_from_different_rows_do_not_pair(self) -> None:
+        grid = [["Item", "Currency", "Units"], ["Cash", "$", ""], ["Stock", "", "50"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_a_year_like_figure_with_its_own_sign_keeps_the_columns_apart(self) -> None:
+        grid = [["", "2022", ""], ["Cash", "$ 2000", "\u2014"], ["Goodwill", "$", "289"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_different_years_in_two_header_rows_are_not_joined(self) -> None:
+        grid = [["", "2022", ""], ["", "", "2021"], ["Net", "$", "500"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_a_merged_tables_extra_text_survives(self) -> None:
+        grid = [["", "2015", ""], ["Net", "$", "79,268"]]
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=(0, 0, 1, 1),
+            text="In USD millions\n" + _grid_to_text(grid), table_grid=grid,
+        )
+        _merge_table_currency_columns(region)
+        assert region.table_grid == [["", "2015"], ["Net", "$ 79,268"]]
+        assert region.text == "In USD millions\n" + _grid_to_text(region.table_grid)
+
+    def test_a_table_left_unchanged_keeps_its_text(self) -> None:
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE, bbox=(0, 0, 1, 1),
+            text="USD\nCash | 4,835", table_grid=[["Cash", "4,835"]],
+        )
+        _merge_table_currency_columns(region)
+        assert region.text == "USD\nCash | 4,835"
 
 
 class TestCoveragePush95Phase3:

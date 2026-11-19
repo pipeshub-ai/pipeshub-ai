@@ -10,6 +10,7 @@ shaped like the real record handler.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import sys
@@ -33,6 +34,7 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
+from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker
 from tests.support.fake_kafka import FakeKafkaBroker
 
 if TYPE_CHECKING:
@@ -389,3 +391,143 @@ class TestDuplicates:
         await harness.stop()
         assert pipeline.seen == ["copy"]
         assert harness.producer.sent == []
+
+
+class RefusingProducer(BrokerProducer):
+    """A retry producer whose first ``refusals`` sends fail, as when the broker is briefly unreachable."""
+
+    def __init__(self, broker: FakeKafkaBroker, refusals: int) -> None:
+        super().__init__(broker)
+        self.refusals = refusals
+
+    async def send_event(self, topic: str, event_type: str, payload: dict, key: str | None = None) -> bool:
+        if self.refusals > 0:
+            self.refusals -= 1
+            raise ConnectionError("broker unavailable")
+        return await super().send_event(topic, event_type, payload, key)
+
+
+class SweptTracker(PartitionOffsetTracker):
+    """The commit watermark on a clock the test moves, counting the dwell sweeps that ask it for stale offsets."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.sweeps = 0
+
+    def stale_offsets(self, max_dwell_seconds: float) -> list:
+        self.sweeps += 1
+        return super().stale_offsets(max_dwell_seconds)
+
+
+class TestFailedRepublishOfATransientFailure:
+    """F62: a transient failure whose retry copy cannot be published has no copy on the topic, so its own offset is
+    the only one left. It must be attempted again in this process, and the dwell sweep must never commit past it."""
+
+    TP = module.TopicPartition(TOPIC, 0)
+
+    @pytest.fixture
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        now = [0.0]  # the dwell budget elapses only when a test moves this
+        monkeypatch.setattr(module, "_DWELL_SWEEP_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(module, "PartitionOffsetTracker", functools.partial(SweptTracker, clock=lambda: now[0]))
+        return now
+
+    def _floored(self, consumer: IndexingKafkaConsumer) -> bool:
+        """Main's outcome: the offset is a redelivery floor that nothing in this process re-reads."""
+        tracker = consumer._offset_tracker
+        return tracker is not None and 0 in tracker._redeliver.get(self.TP, {})
+
+    async def _past_the_dwell_budget(self, harness: Harness, now: list[float]) -> None:
+        """Let the budget elapse and wait for two sweeps (fair scheduling), then for the commit to reach the end."""
+        tracker = harness.consumer._offset_tracker
+        swept = tracker.sweeps if tracker is not None else 0
+        now[0] = 10 * _fair().max_dwell_seconds
+        if tracker is not None:
+            await _until(lambda: tracker.sweeps >= swept + 2)
+        await _until(lambda: harness.committed() == harness.log_length())
+
+    async def test_it_is_attempted_again_before_anything_commits_past_it(
+        self, broker, harness, clock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG, logger="test")  # "Committed offset" is DEBUG: index.end says the settlement
+        harness.producer = RefusingProducer(broker, refusals=1)
+        broker.produce(TOPIC, _record_event("flaky"))
+        broker.produce(TOPIC, _record_event("next"))
+        pipeline = Pipeline(fail={"flaky": ConnectionError("vector store unreachable")})
+        consumer = await harness.start(pipeline)
+
+        await _until(lambda: "next" in pipeline.completed and ("flaky" in pipeline.completed or self._floored(consumer)))
+        assert harness.producer.refusals == 0
+        await self._past_the_dwell_budget(harness, clock)
+        await harness.stop()
+
+        assert "flaky" in pipeline.completed, (
+            f"offset 0 was committed past without another attempt (attempts: {pipeline.seen.count('flaky')})"
+        )
+        assert pipeline.seen.count("flaky") == 2
+        assert harness.producer.sent == []
+        assert harness.sink.abandoned == []
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages.count("index.requeue_failed") == 1
+        assert messages.count("Committed offset for record-events-0-0") == 1  # the retry's, not the failed publish's
+        if harness.fair is not None:
+            for line in ("Task completed with unhandled exception", "finished without resolving its commit claim",
+                         "force-committing past it"):
+                assert not any(line in m for m in messages), line
+
+    @pytest.mark.parametrize("fair_scheduler_config", ["fair"], indirect=True)
+    async def test_the_dwell_sweep_never_commits_past_it_while_it_waits_out_its_backoff(
+        self, broker, harness, clock
+    ) -> None:
+        harness.producer = RefusingProducer(broker, refusals=1)
+        broker.produce(TOPIC, _record_event("flaky"))
+        pipeline = Pipeline(fail={"flaky": ConnectionError("vector store unreachable")})
+        with patch.object(module, "_compute_retry_backoff_seconds", lambda _count: 60.0):
+            consumer = await harness.start(pipeline)
+            await _until(lambda: harness.producer.refusals == 0 and (
+                consumer._scheduler.pending_count == 1 or self._floored(consumer)))
+            tracker = consumer._offset_tracker
+            swept = tracker.sweeps
+            clock[0] = 10 * _fair().max_dwell_seconds
+            await _until(lambda: tracker.sweeps >= swept + 2)
+
+            assert harness.committed() == 0, "the sweep committed past a record that is still waiting to be retried"
+            assert "flaky" not in pipeline.completed
+            assert tracker._outstanding[self.TP] == {0: None}  # buffered: no dwell clock
+            await harness.stop()
+        assert harness.committed() == 0
+
+    async def test_a_record_whose_republish_fails_twice_is_indexed_on_its_third_attempt(
+        self, broker, harness, clock
+    ) -> None:
+        harness.producer = RefusingProducer(broker, refusals=2)
+        broker.produce(TOPIC, _record_event("flaky"))
+        pipeline = Pipeline(fail={"flaky": ConnectionError("vector store unreachable")}, fail_times=2)
+        consumer = await harness.start(pipeline)
+
+        await _until(lambda: "flaky" in pipeline.completed or self._floored(consumer))
+        await self._past_the_dwell_budget(harness, clock)
+        await harness.stop()
+
+        assert pipeline.seen.count("flaky") == 3
+        assert pipeline.completed == ["flaky"]
+        assert harness.producer.sent == []
+        assert harness.sink.abandoned == []
+        assert harness.retries.failures == {}
+
+    async def test_the_retry_budget_still_ends_it_while_the_broker_refuses_every_copy(
+        self, broker, harness, clock
+    ) -> None:
+        harness.producer = RefusingProducer(broker, refusals=99)
+        broker.produce(TOPIC, _record_event("doomed"))
+        pipeline = Pipeline(fail={"doomed": ConnectionError("down")}, fail_times=99)
+        consumer = await harness.start(pipeline)
+
+        await _until(lambda: len(harness.sink.abandoned) == 1 or self._floored(consumer))
+        await self._past_the_dwell_budget(harness, clock)
+        await harness.stop()
+
+        assert pipeline.seen.count("doomed") == 3
+        assert harness.sink.abandoned == [("doomed", "3 transient failures (max 3)", 3)]
+        assert harness.producer.sent == []
+        assert harness.retries.failures == {}

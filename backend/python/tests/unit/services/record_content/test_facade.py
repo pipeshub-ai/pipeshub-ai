@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from app.services.record_content.models import (
     RecordNotFoundError,
     ResolvedRecordContent,
 )
+from app.utils.error_class import mark_error
 
 
 def _make_state(**kwargs):
@@ -201,3 +203,73 @@ async def test_records_are_resolved_as_the_run_user_and_artifacts_as_their_owner
 
     kwargs = instance.resolve.await_args.kwargs
     assert (kwargs["actor"].user_id, kwargs["artifact_actor"].user_id) == ("u-alice", "u-bob")
+
+
+@pytest.mark.asyncio
+async def test_a_graph_outage_is_not_reported_to_the_model_as_not_found() -> None:
+    """F58: the real resolver behind the facade, with a graph that cannot be read."""
+    from app.agents.actions.util.attachments import resolve_attachments
+
+    graph = AsyncMock()
+    graph.get_record_by_id = AsyncMock(side_effect=ConnectionError("graph down"))
+    bundle = await resolve_attachments(_make_state(graph_provider=graph), ["rec1"])
+
+    assert not bundle.resolved
+    [failure] = bundle.failures
+    assert failure.ref == "rec1"
+    assert failure.error_type == "RecordContentError"
+    assert "try again" in failure.error.lower()
+    assert "not found" not in failure.error.lower()
+    assert "graph down" not in failure.error
+
+
+@pytest.mark.asyncio
+async def test_an_outage_no_query_recorded_is_logged_once_without_its_text(caplog: pytest.LogCaptureFixture) -> None:
+    """No pooled connection: the db layer raises before any statement, so no db.query.failed names the failure."""
+    from app.agents.actions.util.attachments import resolve_attachments
+    from app.core.db.errors import PoolTimeout
+
+    graph = AsyncMock()
+    graph.get_record_by_id = AsyncMock(side_effect=PoolTimeout("no pooled connection became free in time"))
+    with caplog.at_level(logging.DEBUG, logger="app.agents.actions.util.attachments"):
+        bundle = await resolve_attachments(_make_state(graph_provider=graph), ["rec1"])
+
+    assert bundle.failures[0].error_type == "RecordContentError"
+    [line] = [r for r in caplog.records if r.name == "app.agents.actions.util.attachments" and r.levelno >= logging.WARNING]
+    assert (line.getMessage(), line.levelno, line.ref, line.error_class) == ("attachment.resolve.failed", logging.WARNING, "rec1", "timeout")
+    assert getattr(line, "error_message", None) is None and line.exc_info is None
+
+
+@pytest.mark.asyncio
+async def test_an_outage_the_db_layer_recorded_is_not_logged_again(caplog: pytest.LogCaptureFixture) -> None:
+    from app.agents.actions.util.attachments import resolve_attachments
+
+    down = ConnectionError("graph down")
+    mark_error(down, "unavailable")  # what db.query.failed stamps on the error it logged
+    graph = AsyncMock()
+    graph.get_record_by_id = AsyncMock(side_effect=down)
+    with caplog.at_level(logging.DEBUG, logger="app.agents.actions.util.attachments"):
+        await resolve_attachments(_make_state(graph_provider=graph), ["rec1"])
+
+    assert not [r for r in caplog.records if r.name == "app.agents.actions.util.attachments" and r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_a_provider_without_raise_on_error_is_logged_as_a_bug_not_reported_as_an_outage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A provider (or fake) that lacks the kwarg would otherwise make every lookup a silent "try again later"."""
+    from app.agents.actions.util.attachments import resolve_attachments
+
+    async def _old_signature(record_id: str) -> None:
+        return None
+
+    graph = AsyncMock()
+    graph.get_record_by_id = _old_signature
+    with caplog.at_level(logging.DEBUG, logger="app.agents.actions.util.attachments"):
+        bundle = await resolve_attachments(_make_state(graph_provider=graph), ["rec1"])
+
+    [failure] = bundle.failures
+    assert failure.error_type == "TypeError"
+    [line] = [r for r in caplog.records if r.name == "app.agents.actions.util.attachments" and r.levelno >= logging.WARNING]
+    assert line.levelno == logging.ERROR and line.exc_info is not None

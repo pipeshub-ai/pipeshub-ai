@@ -1804,7 +1804,6 @@
       "subtitle": "그룹을 생성하고 관리하여 접근 및 권한을 제어합니다",
       "enterpriseTitle": "그룹 권한은 Enterprise Edition에서 사용할 수 있습니다",
       "enterpriseMessage": "그룹 권한을 사용하려면 Enterprise Edition으로 업그레이드하세요.",
-      "enterpriseContact": "문의하기",
       "createGroup": "그룹 생성",
       "searchPlaceholder": "검색...",
       "emptyTitle": "아직 생성된 그룹이 없습니다",
@@ -1885,6 +1884,21 @@
         "saveError": "권한 저장에 실패했습니다",
         "loadError": "권한을 불러오지 못했습니다",
         "empty": "아직 정의된 권한이 없습니다."
+      }
+    },
+    "enterprise": {
+      "contact": "영업팀과 상담하기",
+      "scim": {
+        "heading": "SCIM 프로비저닝은 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "Okta 또는 Microsoft Entra ID가 워크스페이스 사용자를 자동으로 추가, 업데이트, 비활성화하도록 하세요."
+      },
+      "auditLogs": {
+        "heading": "감사 로그는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요."
+      },
+      "usage": {
+        "heading": "사용량, 크레딧 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "사람, 에이전트, 커넥터, 모델별 AI 비용을 확인하고, 크레딧과 요금제, 청구서를 관리하며, 사용량 설정에서 지출 알림을 설정하세요."
       }
     },
     "teams": {
@@ -2459,6 +2473,8 @@
       "sections": {
         "overview": "개요",
         "workspace": "워크스페이스",
+        "usageAndCredits": "사용량 및 크레딧",
+        "security": "보안",
         "personal": "개인",
         "people": "구성원",
         "developerSettings": "개발자 설정"
@@ -2488,6 +2504,9 @@
         "archivedChats": "보관된 채팅",
         "users": "사용자",
         "groups": "그룹",
+        "scim": "SCIM",
+        "auditLogs": "감사 로그",
+        "usage": "사용량 및 크레딧",
         "teams": "팀",
         "webSearch": "웹 검색",
         "tenants": "테넌트",
