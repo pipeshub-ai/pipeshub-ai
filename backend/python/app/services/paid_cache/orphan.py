@@ -179,6 +179,9 @@ class DeliveryGuard:
         if self.stop_disabled or self.closed:
             return False
         markers = await self._markers(backend)
+        if self.gone:                                    # another check confirmed a delete while the markers were read
+            CHECKS.inc("sticky", "orphan")
+            return True
         seen = markers if markers is not None else (self.wm_record, self.wm_org)
         changed = seen != (self.wm_record, self.wm_org)
         if self.probe is None:

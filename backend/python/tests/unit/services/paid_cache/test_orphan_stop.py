@@ -338,3 +338,41 @@ async def test_a_hung_graph_read_is_bounded_fails_open_and_stalls_no_caller_beyo
     world.graph.answer = ProbeResult(found=False)
     with pytest.raises(RecordGone):
         await world.cache.get_or_compute(_key(1), paid)
+
+
+async def test_a_backend_that_cannot_be_built_is_advisory_the_graph_still_decides(world: Any, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
+    """Review: a failing backend factory must not fail a live record's call, and must not hide a confirmed orphan."""
+
+    async def broken() -> Any:  # noqa: ANN401
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(world.cache, "_locks", broken)
+    paid = Paid()
+    await world.cache.get_or_compute(_key(0), paid)                     # live: the call is made
+    await world.cache.ensure_alive(ORG, REC, "embed")
+    assert paid.calls == 1
+    world.clock[0] += orphan.RECHECK_S + 1                               # the periodic read finds the delete
+    world.graph.answer = ProbeResult(found=False)
+    with pytest.raises(RecordGone):
+        await world.cache.get_or_compute(_key(1), paid)
+    assert paid.calls == 1
+
+
+async def test_a_check_that_was_reading_markers_when_another_confirmed_the_delete_does_not_let_the_call_through(world: Any) -> None:  # noqa: ANN401
+    """Review: check A reads the old markers (slowly), check B confirms the delete meanwhile; A must still stop."""
+    backend = await world.cache._backend()
+    real = backend.marker_value
+    gate = asyncio.Event()
+
+    async def slow_marker(name: str) -> Any:  # noqa: ANN401
+        value = await real(name)
+        if name == deleted_name(ORG) and not gate.is_set():
+            gate.set()
+            await asyncio.sleep(0.1)
+        return value
+
+    backend.marker_value = slow_marker                                   # type: ignore[method-assign]
+    a = asyncio.create_task(world.guard.check(backend))
+    await gate.wait()
+    world.guard._mark_gone("graph")                                      # check B confirmed the delete
+    assert await a is True

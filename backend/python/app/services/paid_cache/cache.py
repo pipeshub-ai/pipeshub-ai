@@ -461,11 +461,20 @@ class PaidResultCache:
     async def _backend(self) -> LockBackend:
         return self._locks if not callable(self._locks) else await self._locks()  # type: ignore[no-any-return,misc,return-value]
 
+    async def _backend_or_none(self) -> LockBackend | None:
+        """The lock backend for an existence check: a backend that cannot be built is advisory (None), so the guard still
+        confirms with the graph and a live record's call is never failed by the check."""
+        try:
+            return await self._backend()
+        except Exception as exc:
+            self.logger.debug("Paid-result lock backend unavailable (%s); the existence check goes on", type(exc).__name__)
+            return None
+
     async def _stop_if_orphan(self, key: CacheKey, site: str) -> None:
         """Before a paid call and before a store: a record deleted while its run was in flight stops paying (see
         ``orphan``). No guard (a call outside a delivery or a parse request) means no check."""
         guard = current_guard(key.org_id, key.record_id)
-        if guard is not None and await guard.check(await self._backend()):
+        if guard is not None and await guard.check(await self._backend_or_none()):
             STOPPED.inc(site)
             raise RecordGone(key.record_id, f"its {key.kind} is not {'paid for' if site == 'call' else 'stored'}")
 
@@ -485,7 +494,7 @@ class PaidResultCache:
     async def ensure_alive(self, org_id: str, record_id: str, site: str) -> None:
         """The check of a stage boundary outside the cache (before the embeddings, before the vector and blob writes)."""
         guard = current_guard(org_id, record_id)
-        if guard is not None and await guard.check(await self._backend()):
+        if guard is not None and await guard.check(await self._backend_or_none()):
             STOPPED.inc(site)
             raise RecordGone(record_id)
 
