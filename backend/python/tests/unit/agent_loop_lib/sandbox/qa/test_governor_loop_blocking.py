@@ -8,6 +8,7 @@ granted, and release on 1024 slot files another worker also holds.
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import random
 import threading
@@ -24,10 +25,12 @@ if TYPE_CHECKING:
     from collections import Counter
     from pathlib import Path
 
-# One pass over 1024 files takes about 1-2 ms; the bound is loose so a loaded
-# CI machine passes, and still catches a spin or a blocking lock (which wait
-# up to a second).
-_SLOW_S = 0.1
+# One pass over 1024 files takes about 1-2 ms. The bound is loose so a loaded
+# CI machine (coverage on, thousands of tests in the same worker) passes, and
+# it still catches a spin or a blocking lock, which wait up to a second. The
+# garbage collector is off while the loop runs, so a collection pause is not
+# taken for a blocked loop.
+_SLOW_S = 0.5
 
 
 class _SlowSteps(logging.Handler):
@@ -86,9 +89,12 @@ def test_hundreds_of_waiters_on_1024_files_never_stall_the_loop(tmp_path: Path, 
         await asyncio.gather(*(one(rng) for _ in range(300)))
         governor.snapshot()
 
+    gc.collect()
+    gc.disable()
     try:
         asyncio.run(main(), debug=True)
     finally:
+        gc.enable()
         asyncio_log.removeHandler(slow)
         asyncio_log.setLevel(previous_level)
         for hold in held:
