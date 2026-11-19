@@ -170,6 +170,7 @@ def test_connector_warnings_pass_through_trimmed_and_bad_entries_are_dropped() -
     ("scopes", True, "inherit", False, {"mode": "inherit", "effective": "legacy", "blockers": []}),      # not served yet: legacy, not blocked
     ("shadow", True, None, True, {"mode": "inherit", "effective": "legacy", "blockers": []}),
     ("shadow", True, "scopes", True, {"mode": "scopes", "effective": "scopes", "blockers": []}),
+    ("shadow-unlisted", True, "scopes", True, {"mode": "scopes", "effective": "legacy", "blockers": []}),      # the plan serves only listed ones
     ("shadow", True, "nonsense", True, {"mode": "legacy", "effective": "legacy", "blockers": []}),
     ("legacy", True, "scopes", True, {"mode": "scopes", "effective": "legacy", "blockers": ["serving_off"]}),
     ("scopes", False, "scopes", True, {"mode": "scopes", "effective": "legacy", "blockers": ["store_unsupported"]}),
@@ -181,7 +182,8 @@ def test_the_filter_says_what_the_next_search_of_the_connector_uses(monkeypatch:
 
     monkeypatch.setattr(st, "app_is_served", lambda app: served)
     app = {"status": "IDLE", **({"aclFilterMode": mode} if mode is not None else {})}
-    assert st.status(app, default=AclFilterMode(default), store_serves=store)["filter"] == want
+    listed = not default.endswith("-unlisted")
+    assert st.status(app, default=AclFilterMode(default.removesuffix("-unlisted")), store_serves=store, listed=listed)["filter"] == want
 
 
 @pytest.mark.parametrize(("store_type", "serves"), [("pgvector", True), (" PGVECTOR ", True), ("qdrant", False), ("", False), (None, False)])

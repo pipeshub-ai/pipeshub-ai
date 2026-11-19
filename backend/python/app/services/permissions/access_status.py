@@ -67,15 +67,18 @@ def blockers(default: AclFilterMode, *, store_serves: bool) -> list[str]:
     return [code for code, on in (("serving_off", default is AclFilterMode.LEGACY), ("store_unsupported", not store_serves)) if on]
 
 
-def filter_state(app: Mapping[str, Any], default: AclFilterMode, *, store_serves: bool) -> dict[str, Any]:
-    """The connector's own mode, the one its next search uses (`scopes` only while nothing blocks it and its stamps are served now), and the blockers."""
+def filter_state(app: Mapping[str, Any], default: AclFilterMode, *, store_serves: bool, listed: bool) -> dict[str, Any]:
+    """The connector's own mode, the one its next search uses, and the blockers. `scopes` only while nothing blocks it, its stamps are served now
+    and, when the deployment's default is not `scopes`, it is on the list of switched connectors (`currency.SCOPES_CONNECTORS_KEY`, ``listed``),
+    which is all the serving plan reads there."""
     found = blockers(default, store_serves=store_serves)
-    scoped = not found and effective_mode(app, default) is AclFilterMode.SCOPES and app_is_served(app)
+    scoped = (not found and effective_mode(app, default) is AclFilterMode.SCOPES and app_is_served(app)
+              and (listed or default is AclFilterMode.SCOPES))
     return {"mode": chosen_mode(app), "effective": "scopes" if scoped else "legacy", "blockers": found}
 
 
 def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: datetime | None = None, store_time: float | None = None,
-           default: AclFilterMode | None = None, store_serves: bool | None = None) -> dict[str, Any]:
+           default: AclFilterMode | None = None, store_serves: bool | None = None, listed: bool = False) -> dict[str, Any]:
     """``state`` is the one a person reads first: running, never (no sync has ended), failed, overflow (the structure moved past the stamped
     generation and no root was registered: a change too large to list as subtrees, so the whole connector is rebuilt), pending (subtrees
     being rewritten), else healthy. Anything else that keeps the stamps from being current (a failed back-fill, a version skew, an unreadable
@@ -120,7 +123,7 @@ def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: dat
         "attention": [c for c in codes if c not in _NOT_LISTED],
         "warnings": _warnings(app.get(WARNINGS_KEY)),
         "filter": filter_state(app, AclFilterMode.from_env() if default is None else default,
-                               store_serves=store_serves_scope_filter() if store_serves is None else store_serves),
+                               store_serves=store_serves_scope_filter() if store_serves is None else store_serves, listed=listed),
     }
 
 

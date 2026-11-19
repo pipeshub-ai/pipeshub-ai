@@ -1,6 +1,8 @@
 """`ShadowComparator`: the scope filter, run beside the real search, never in its place.
 
-The real search and its post-check answer as before. For a sampled fraction of searches, once per search, when its attempts are done and
+The real search and its post-check answer as before, except for a connector an admin switched to `scopes`, whose search the serving plan
+already filters: such a search is not compared (its result went through the filter, so a record a stamp hides could not show as recall loss)
+and is counted as skipped (``served``). For a sampled fraction of the other searches, once per search, when its attempts are done and
 it has settled on the attempt it keeps (the caller formats the response while the comparison runs), in a detached task (a search never
 waits for it), the comparator runs the same queries again with the viewer's scope filter, and asks the post-check about
 every record the filtered search returned that the real search did not return. Then it counts, by record:
@@ -71,10 +73,12 @@ class ShadowComparator:
     def submit(
         self, org_id: str, user_key: str, returned: Collection[str], admitted: Collection[str],
         run_scoped: Callable[[ScopeFilter], Awaitable[list[Any]]], check: Callable[[set[str]], Awaitable[Collection[str]]],
+        *, served: bool = False,
     ) -> None:
         """Compare in the background. ``returned``: the virtual records the real search found; ``admitted``: those the post-check allowed;
         ``run_scoped(filter)``: the same search with the filter, as result dicts; ``check(vrids)``: the post-check, the admitted ones.
-        Never raises and never waits."""
+        ``served``: the real search already carried the scope filter (a connector switched to `scopes`), so it is not compared. Never raises
+        and never waits."""
         if not returned:
             return
         if not user_key:
@@ -82,6 +86,10 @@ class ShadowComparator:
             return
         if self._rate < 1.0 and self._rng.random() >= self._rate:
             SHADOW_SKIPPED.inc("sampled_out")
+            return
+        if served:
+            # the real result already went through the filter: a record a stamp hides is in neither side, so the loss would read as zero
+            SHADOW_SKIPPED.inc("served")
             return
         if len(self._inflight) >= self._max_inflight:
             SHADOW_SKIPPED.inc("busy")
