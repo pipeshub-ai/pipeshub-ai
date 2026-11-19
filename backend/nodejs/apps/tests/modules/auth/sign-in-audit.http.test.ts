@@ -598,14 +598,13 @@ describe('auth audit lines (HTTP)', function () {
         expect(errorLine()).to.include({ level: 'error', error_class: 'internal' });
       });
 
-      // The object form passes the first check; the method step is handed the whole object (F60). That is our bug, not the user's token.
-      it('a good token sent as {credential}: 500 internal at ERROR, not audited as the user\'s bad token', async () => {
-        // Keys for both checks, so the second check's failure is the object, not a missing key response.
+      // The documented object form reaches both checks as the token itself.
+      it('a good token sent as {credential} signs in, the same as the bare token', async () => {
         GOOGLE_CERTS().times(2).reply(200, { g1: (publicKey as KeyObject).export({ type: 'spki', format: 'pem' }) });
         const r = await attempt({ method: 'google', credentials: { credential: googleToken() } });
-        expect(r.status).to.equal(500);
-        expect(audits()).to.deep.equal([]);
-        expect(errorLine()).to.include({ level: 'error', error_class: 'internal', error_type: 'TypeError' });
+        expect(r.status).to.equal(200);
+        expect(audits()).to.deep.equal([{ event: 'auth.sign_in', outcome: 'success', actor: bob._id, auth_method: 'google' }]);
+        expect(nock.isDone()).to.equal(true);
       });
     });
 
