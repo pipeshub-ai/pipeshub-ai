@@ -365,7 +365,10 @@ class _Lane:
     def _crashed(self, job: _Job) -> ParseWorkerError:
         worker = self._worker
         self._drop_worker()  # stops and reaps it, so its exit status is known
-        if worker is not None and worker.process.returncode == -signal.SIGXCPU:
+        from app.services.resource_governor.kinds import ParseKind
+
+        # Only an Excel load sets that limit; any other job dying of it (an operator's `ulimit -t`) is the retryable crash below.
+        if job.kind is ParseKind.EXCEL_LOAD and worker is not None and worker.process.returncode == -signal.SIGXCPU:
             # The job's own CPU limit ended it (workbook_model._cpu_limited): the same stop as the
             # timeout above, and no sign of memory pressure.
             _logger.warning(

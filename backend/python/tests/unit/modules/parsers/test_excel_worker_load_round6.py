@@ -21,6 +21,7 @@ from app.modules.parsers.excel.workbook_model import (
 )
 from app.services.parsing.interface import ParseError
 from app.services.resource_governor import policy as policy_mod
+from app.services.resource_governor.kinds import ParseKind
 from app.utils import user_errors
 from tests.support.excel_workbooks import workbook_zip
 from tests.support.excel_worker_jobs import (
@@ -75,9 +76,18 @@ def test_a_load_past_its_cpu_limit_is_refused_as_too_large(monkeypatch: pytest.M
 def test_the_cpu_limit_never_raises_into_the_worker() -> None:
     # An exception raised from a signal handler can land between a lock's acquire and its release
     # and hang the reused worker on a later job; the limit must end the worker instead.
+    started = time.monotonic()
+    with pytest.raises(parse_pool.ParseWorkerError) as raised:
+        parse_pool.run_blocking(spin_under_the_cpu_limit, 1, label="spin", timeout=120, kind=ParseKind.EXCEL_LOAD)
+    assert raised.value.cause == "timed_out"
+    assert time.monotonic() - started < 30, "the CPU limit ended it, not the pool's timeout"
+
+
+def test_a_job_that_is_not_an_excel_load_ended_by_sigxcpu_is_the_retryable_crash() -> None:
+    # Only the Excel load sets that limit: another job dying of it (an operator's `ulimit -t`) is not a refused file.
     with pytest.raises(parse_pool.ParseWorkerError) as raised:
         parse_pool.run_blocking(spin_under_the_cpu_limit, 1, label="spin", timeout=120)
-    assert raised.value.cause == "timed_out"
+    assert raised.value.cause != "timed_out"
 
 
 @pytest.fixture
@@ -96,7 +106,7 @@ def one_worker_pool(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
 async def test_jobs_queued_behind_a_worker_ended_by_its_cpu_limit_still_run(one_worker_pool: MagicMock) -> None:
     outcomes = await asyncio.gather(
         parse_pool.submit(len, b"before"),
-        parse_pool.submit(spin_under_the_cpu_limit, 1, label="spin", timeout=120),
+        parse_pool.submit(spin_under_the_cpu_limit, 1, label="spin", timeout=120, kind=ParseKind.EXCEL_LOAD),
         parse_pool.submit(len, b"after one"),
         parse_pool.submit(len, b"after two"),
         return_exceptions=True,

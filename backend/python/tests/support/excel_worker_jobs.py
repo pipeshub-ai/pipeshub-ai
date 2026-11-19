@@ -48,7 +48,8 @@ def spike_then_fail(data: bytes, limit: int, cap: int, hold_seconds: float) -> s
 
 
 def spin_under_the_cpu_limit(max_seconds: float) -> str:
-    """Runs in the worker: burns CPU under the load's CPU limit. Returns only if something was raised into it."""
+    """Runs in the worker: burns CPU under the load's CPU limit. Returns only if something was raised into it; with no limit set,
+    only the caller's pool timeout ends it."""
     from app.modules.parsers.excel.workbook_model import _cpu_limited
 
     with _cpu_limited(max_seconds):

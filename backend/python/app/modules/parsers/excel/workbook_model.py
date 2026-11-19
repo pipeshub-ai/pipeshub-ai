@@ -17,8 +17,8 @@ the parser makes of a worksheet (``cell``, ``iter_rows``, merged cells, the
 extent of the data), so table finding and its LLM steps run in the parent on it
 unchanged.
 
-Keep this module's imports to the standard library and openpyxl: the worker
-imports it by name and must not pay for the service's own modules.
+Keep this module's imports to the standard library, openpyxl and the light parse-worker helpers
+(``parse_worker``): the worker imports it by name and must not pay for the rest of the service.
 """
 from __future__ import annotations
 

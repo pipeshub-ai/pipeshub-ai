@@ -27,6 +27,11 @@ from typing import BinaryIO
 from app.utils.memory_release import release_freed_memory
 from app.utils.process_hardening import mark_process_non_dumpable
 
+try:
+    import resource
+except ImportError:  # not POSIX
+    resource = None
+
 _LENGTH = struct.Struct("!Q")
 _PARENT_POLL_SECONDS = 2.0
 _IN_WORKER_ENV = "PIPESHUB_PARSE_WORKER"
@@ -107,6 +112,11 @@ def main(request_fd: int, reply_fd: int) -> None:
     # exec reset the non-dumpable mark the service set on itself. Without it a
     # same-uid process (a tool the service runs) can read /proc/<pid>/environ.
     mark_process_non_dumpable()
+    # The Excel load's CPU limit ends this process by SIGXCPU, whose default action dumps core: never write its memory
+    # (the environment's secrets, the file) to disk, even where the non-dumpable mark failed.
+    if resource is not None:
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     # Ctrl-C in a terminal reaches the whole process group; the parent decides
     # when a worker stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
