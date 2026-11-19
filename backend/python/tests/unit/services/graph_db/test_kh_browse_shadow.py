@@ -12,7 +12,11 @@ from typing import Any
 
 import pytest
 
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.neo4j.neo4j_provider import (
+    _KH_SPLIT_COMPARE,
+    Neo4jProvider,
+    _KhSplitUndecided,
+)
 
 LEGACY = {"rows": [{"id": "secret-a", "hasChildren": True}, {"id": "secret-b", "hasChildren": False}], "total": 2, "counts": {"r": 2}}
 
@@ -55,7 +59,7 @@ async def test_pages_that_agree_are_logged_as_agreeing(caplog: pytest.LogCapture
         await p._kh_shadow_compare(LEGACY, {"app_id": "A", "grants_out": {}})
     assert "agree (2 rows)" in caplog.text
     # The split page is computed for the same request, and does not fill the caller's grants.
-    assert asked == [{"app_id": "A", "grants_out": None, "browse_mode": "split"}]
+    assert asked == [{"app_id": "A", "grants_out": None, "browse_mode": _KH_SPLIT_COMPARE}]
 
 
 @pytest.mark.asyncio
@@ -64,6 +68,8 @@ async def test_pages_that_agree_are_logged_as_agreeing(caplog: pytest.LogCapture
     ({**LEGACY, "rows": LEGACY["rows"][::-1]}, "only_legacy=0 only_split=0 order=True arrows=0 totals=False"),
     ({**LEGACY, "rows": [{"id": "secret-a"}, {"id": "secret-b"}]}, "only_legacy=0 only_split=0 order=False arrows=1 totals=False"),
     ({**LEGACY, "total": 3}, "arrows=0 totals=True legacy_total=2 split_total=3"),
+    # A row both pages hold is compared by its flags even when the other rows differ.
+    ({**LEGACY, "rows": [{"id": "secret-a", "hasChildren": False}, {"id": "secret-c"}]}, "only_legacy=1 only_split=1 order=False arrows=1"),
 ])
 async def test_a_difference_is_logged_by_its_counts_never_its_ids(caplog: pytest.LogCaptureFixture, split: dict, expected: str) -> None:
     p, _ = _provider(split)
@@ -81,6 +87,15 @@ async def test_a_legacy_page_cut_by_its_time_budget_is_not_compared(caplog: pyte
     with caplog.at_level(logging.INFO):
         await p._kh_shadow_compare({**LEGACY, **cut}, {})
     assert asked == [] and "not compared" in caplog.text and "differ" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_page_split_would_answer_with_legacy_is_not_compared(caplog: pytest.LogCaptureFixture) -> None:
+    # Past split's bounds the page is legacy's: comparing legacy with itself would report agreement for a page split never made.
+    p, _ = _provider(_KhSplitUndecided("the start has more children than the split browse reads"))
+    with caplog.at_level(logging.INFO):
+        await p._kh_shadow_compare(LEGACY, {})
+    assert "not compared" in caplog.text and "agree" not in caplog.text and "split failed" not in caplog.text
 
 
 @pytest.mark.asyncio

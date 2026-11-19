@@ -13,7 +13,11 @@ from typing import Any
 
 import pytest
 
-from app.services.graph_db.neo4j.neo4j_provider import LISTED, Neo4jProvider
+from app.services.graph_db.neo4j.neo4j_provider import (
+    LISTED,
+    Neo4jProvider,
+    _KhSplitUndecided,
+)
 
 
 class World:
@@ -140,18 +144,40 @@ async def test_a_start_with_more_children_than_the_bound_is_left_to_legacy() -> 
     p = _provider(world)
     p._KH_SPLIT_MAX_CHILDREN = 3
     kw = {"app_id": "A", "org_id": "o", "access": {}, "placed": [], "transaction": None, "memo": {}}
-    assert await p._kh_split_listed("N", **kw) is None
+    with pytest.raises(_KhSplitUndecided):
+        await p._kh_split_listed("N", **kw)
     assert await p._kh_split_listed("M", **kw) == ["d0"]
     assert world.checked == [{"d0", "d1", "d2"}]      # the wide start asked the check nothing
 
 
 @pytest.mark.asyncio
-async def test_an_arrow_asks_about_the_first_children_by_id_up_to_the_bound() -> None:
+async def test_an_arrow_past_the_bound_is_decided_by_an_admitted_child_or_left_to_legacy() -> None:
+    """A row reads its first children by id up to the bound. One admitted among them decides the arrow; with none, the child that
+    decides it may lie past the bound, so the row is undecided and the page is answered by legacy, never shown without an arrow."""
     world = World({"r": [(f"k{i}", False, False) for i in range(5)][::-1]}, admitted={"k4"})
     p = _provider(world)
     p._KH_SPLIT_MAX_CHILDREN = 3
-    assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo={}) == set()
+    with pytest.raises(_KhSplitUndecided):
+        await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo={})
     assert set().union(*world.checked) == {"k0", "k1", "k2"}
+    world = World({"r": [(f"k{i}", False, False) for i in range(5)]}, admitted={"k1"})
+    p = _provider(world)
+    p._KH_SPLIT_MAX_CHILDREN = 3
+    assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo={}) == {"r"}
+
+
+@pytest.mark.asyncio
+async def test_a_stub_left_unfollowed_at_the_depth_cap_is_undecided_not_empty() -> None:
+    """A chain of stubs deeper than the cap is not remembered as listing nothing: a request with more depth left would list it."""
+    world = World({"N": [("s1", True, False)], "s1": [("s2", True, False)], "s2": [("r", False, False)]}, admitted={"r"})
+    p = _provider(world)
+    p._KH_SPLIT_STUB_DEPTH = 1
+    memo: dict = {}
+    with pytest.raises(_KhSplitUndecided):
+        await p._kh_split_lists(["N"], app_id="A", org_id="o", access={}, transaction=None, memo=memo)
+    assert "N" not in memo and "s1" not in memo
+    p._KH_SPLIT_STUB_DEPTH = 2
+    assert await p._kh_split_lists(["N"], app_id="A", org_id="o", access={}, transaction=None, memo={}) == {"N"}
 
 
 def test_the_mode_is_legacy_unless_split_is_asked(monkeypatch: pytest.MonkeyPatch) -> None:

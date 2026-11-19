@@ -79,7 +79,8 @@ It is not needed for the cost: the check is a fixed statement already.
 
 - **Children read per node:** `_KH_SPLIT_MAX_CHILDREN` (5,000), first by id. A browse whose start has more is answered by the legacy statement
   for that request: its rules decide in the database, and its check is windowed with a budget and a resume cursor. A row's arrow asks about that
-  many children, as legacy's asks about `_KH_UNDECIDED_MAX`.
+  many children; one admitted among them decides it, and with none the page is answered by legacy (below), so an arrow is never off for a
+  child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
 
@@ -90,8 +91,9 @@ Shortcuts, each bounded by the above:
   the live copy); carrying the admitted window in the cursor would remove that.
 - An arrow asks the check in growing windows, but reads each row's children to the bound at once (with their hidden-ancestor tests);
   reading the children in the same windows would cut the rows read for a page of wide folders.
-- A row whose only admitted child lies past the first 5,000 by id has no arrow (legacy's stub walk has no such bound), and a row decided
-  at the stub depth cap is remembered as listing nothing for the rest of the request.
+- A page with a row split cannot decide within these bounds is answered by legacy: a row (or stub) with more than 5,000 children and
+  none admitted among the first 5,000, or stubs below stubs left unfollowed at the depth cap (`_KhSplitUndecided`). A "lists nothing"
+  past a bound is never shown, or remembered, as an answer. Reading the rest of such a row in windows would keep it on split.
 
 ## Where it differs from legacy
 
@@ -130,6 +132,8 @@ Each difference is where legacy breaks the definition above and the split browse
   a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids. At most
   `_KH_SHADOW_MAX_RUNNING` (2) comparisons run at once per process; a sampled browse past that is not compared, so shadow adds a bounded
   load however busy the server is. A legacy page cut by its time budget is not compared: split has no budget, so they differ by construction.
+  Nor is a page split would hand to legacy (past its bounds): its replay runs as `split-compare`, which reports that instead of answering
+  with legacy. Arrow and stub flags are compared on every row both pages hold.
 - **`split`:** the split browse.
 
 Switch a deployment to `split` after shadow reports no differences over a representative period. The demo server first.

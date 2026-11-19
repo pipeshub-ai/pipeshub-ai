@@ -871,6 +871,15 @@ LISTED = """CALL () {{
                 RETURN collect(DISTINCT kh_x) AS {name}
             }}"""
 
+# The browse mode shadow mode replays a page with: split, but undecided past its bounds instead of answered by legacy.
+_KH_SPLIT_COMPARE = "split-compare"
+
+
+class _KhSplitUndecided(Exception):
+    """The split browse cannot decide a row within its bounds: a node with more children than it reads and none admitted among
+    those it read, or stubs below stubs past the depth cap. The page is answered by legacy, which decides in the database, so
+    no arrow or stub is decided from a partial read."""
+
 
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
@@ -21998,16 +22007,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.info("kh browse shadow: legacy page cut by its time budget, not compared")
             return
         try:
-            split = await self.get_knowledge_hub_connector_page_v3(**{**args, "browse_mode": "split", "grants_out": None})
+            split = await self.get_knowledge_hub_connector_page_v3(**{**args, "browse_mode": _KH_SPLIT_COMPARE, "grants_out": None})
+        except _KhSplitUndecided as undecided:
+            # Split would have answered with legacy: comparing legacy with itself says nothing.
+            self.logger.info("kh browse shadow: split would answer with legacy (%s), not compared", undecided)
+            return
         except Exception as e:
             self.logger.warning("kh browse shadow: split failed (%s)", type(e).__name__)
             return
         def rows(page: dict[str, Any]) -> list[tuple[Any, ...]]:
             return [(r.get("id"), bool(r.get("hasChildren")), bool(r.get("isPlaceholder"))) for r in page.get("rows") or []]
         a, b = rows(legacy), rows(split)
-        ids_a, ids_b = {r[0] for r in a}, {r[0] for r in b}
+        flags_a, flags_b = {r[0]: r for r in a}, {r[0]: r for r in b}
+        ids_a, ids_b = set(flags_a), set(flags_b)
         same_rows = [r[0] for r in a] == [r[0] for r in b]
-        arrows = sum(1 for x, y in zip(a, b) if x[0] == y[0] and x != y) if same_rows else 0
+        # Flags are compared on every row both pages hold, whatever else differs: membership and order are counted apart.
+        arrows = sum(1 for i in ids_a & ids_b if flags_a[i] != flags_b[i])
         totals = (legacy.get("total"), legacy.get("counts")) != (split.get("total"), split.get("counts"))
         if same_rows and not arrows and not totals:
             self.logger.info("kh browse shadow: agree (%d rows)", len(a))
@@ -22154,9 +22169,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             walked = sorted(held)
             found |= {g for g, places in zip(walked, await asyncio.gather(*map(places_a_chain_top, walked)), strict=True) if places}
+            # A "lists nothing" read past a bound is not an answer: an unread child or an unfollowed stub could list something.
+            if any(i not in found and len(kids[i]) > self._KH_SPLIT_MAX_CHILDREN for i in todo):
+                raise _KhSplitUndecided("a row has more children than the split browse reads")
+            if depth >= self._KH_SPLIT_STUB_DEPTH and any(i not in found for i in open_stubs):
+                raise _KhSplitUndecided("stubs below stubs past the depth cap")
             for i in todo:
                 memo[i] = i in found
         return {i for i in ids if memo.get(i)}
+
+    async def _kh_split_answered_by_legacy(
+        self, undecided: _KhSplitUndecided, app_id: str, args: dict[str, Any], browse_mode: str,
+    ) -> dict[str, Any]:
+        """The page legacy answers for a split browse that could not decide it. Shadow's replay is told instead: legacy is no split page."""
+        if browse_mode == _KH_SPLIT_COMPARE:
+            raise undecided
+        self.logger.info(f"kh browse in {app_id} answered by legacy: {undecided}")
+        return await self.get_knowledge_hub_connector_page_v3(**args, browse_mode="legacy")
 
     async def _kh_split_group_ids(self, ids: list[str], *, org_id: str, transaction: str | None) -> set[str]:
         if not ids:
@@ -22184,12 +22213,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def _kh_split_listed(
         self, start_id: str, *, app_id: str, org_id: str, access: dict[str, Any], placed: list[str], transaction: str | None,
         memo: dict[str, bool],
-    ) -> list[str] | None:
-        """What a browse of ``start_id`` lists (the definition above), before filters, order and paging; ``None`` when the start has more
-        children than ``_KH_SPLIT_MAX_CHILDREN``."""
+    ) -> list[str]:
+        """What a browse of ``start_id`` lists (the definition above), before filters, order and paging. ``_KhSplitUndecided`` when the
+        start has more children than ``_KH_SPLIT_MAX_CHILDREN``, or a stub it lists cannot be decided."""
         kids = (await self._kh_split_children([start_id], app_id=app_id, org_id=org_id, transaction=transaction))[start_id]
         if len(kids) > self._KH_SPLIT_MAX_CHILDREN:
-            return None
+            raise _KhSplitUndecided("the start has more children than the split browse reads")
         visible = [k for k in kids if not k["hidden"]]
         admitted = await self._kh_v3_admitted([k["id"] for k in visible if not k["stub"]], org_id=org_id, access=access,
                                               transaction=transaction)
@@ -22438,7 +22467,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # from that start.
         scoped_start = not start_is_app
         # The listing, its stubs and its arrows are decided before the statement (`_kh_split_listed`): none of the rules below is written.
-        split = not flatten and browse_mode == "split"
+        split = not flatten and browse_mode in ("split", _KH_SPLIT_COMPARE)
         # Whether the row's own expansion starts from the App: a scoped browse inherits it from its
         # start (carried per page item as `fa`); App rows come from the App except chain-tops; the
         # flatten cannot tell per node, so it takes the stricter OPEN-only rule (fail-safe).
@@ -23285,20 +23314,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         split_access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids},
                         "probe": probe, "cross": cross}
         if split:
-            listed = await self._kh_split_listed(
-                start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
-                transaction=transaction, memo=split_memo)
-            if listed is None:
-                self.logger.info(f"kh browse of a start with over {self._KH_SPLIT_MAX_CHILDREN} children in {app_id}: answered by legacy")
-                return await self.get_knowledge_hub_connector_page_v3(**shadow_args, browse_mode="legacy")
-            params["kh_listed"] = listed
-            # The sidebar keeps a row exactly where its arrow is on, and decides that before the page is cut.
-            if sidebar:
-                plain = await self._kh_split_plain_records(listed, org_id=org_id, state=state, transaction=transaction)
-                params["kh_arrows"] = sorted(await self._kh_split_lists(
-                    plain, app_id=app_id, org_id=org_id, access=split_access, transaction=transaction, memo=split_memo))
-            else:
-                params["kh_arrows"] = []
+            try:
+                listed = await self._kh_split_listed(
+                    start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
+                    transaction=transaction, memo=split_memo)
+                params["kh_listed"] = listed
+                # The sidebar keeps a row exactly where its arrow is on, and decides that before the page is cut.
+                if sidebar:
+                    plain = await self._kh_split_plain_records(listed, org_id=org_id, state=state, transaction=transaction)
+                    params["kh_arrows"] = sorted(await self._kh_split_lists(
+                        plain, app_id=app_id, org_id=org_id, access=split_access, transaction=transaction, memo=split_memo))
+                else:
+                    params["kh_arrows"] = []
+            except _KhSplitUndecided as undecided:
+                return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
         if not use_scope:
             try:
                 walk_started = time.monotonic()
@@ -23325,8 +23354,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             rows_ = payload.get("rows") or []
             for r in rows_:
                 r.pop("khAsk", None)
-            lit = await self._kh_split_lists([r["id"] for r in rows_], app_id=app_id, org_id=org_id, access=split_access,
-                                             transaction=transaction, memo=split_memo)
+            try:
+                lit = await self._kh_split_lists([r["id"] for r in rows_], app_id=app_id, org_id=org_id, access=split_access,
+                                                 transaction=transaction, memo=split_memo)
+            except _KhSplitUndecided as undecided:
+                return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
             for r in rows_:
                 r["hasChildren"] = r["id"] in lit
         else:
