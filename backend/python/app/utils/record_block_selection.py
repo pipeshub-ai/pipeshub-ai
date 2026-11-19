@@ -196,6 +196,9 @@ def _hits_from_search(
             # A reconciled update keeps an unchanged block's point, and the position it stores can be from an
             # earlier revision: the id says which block it is. A block no longer in the record has no position.
             index = positions.get(block_id)
+            if index is None:  # the first row of a grouped-row point is gone: the rows it still has place it
+                surviving = [positions[i] for i in metadata.get("rowBlockIds") or [] if i in positions]
+                index = min(surviving, default=None)
         if not isinstance(index, int):
             continue
         for row in grouped_row_indexes(metadata, positions, index):

@@ -24,6 +24,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.modules.indexing.embed_resume import EmbedAttempt, begin_attempt, end_attempt
+from app.modules.pipeline.leases import LeaseLost
 from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.models import CollectionConfig, ScrollResult
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
@@ -253,3 +254,28 @@ async def test_moved_points_of_a_legacy_record_take_the_revision_of_the_run(db) 
     await run(store, blob, _text(_paras("a", "b", "c")))
     assert embedded_texts(store) == []
     assert {m.get("contentRev") for m in _metas(db)} == {"rev-9"}
+
+
+async def test_a_lost_lease_during_the_refresh_hands_the_delivery_back(db) -> None:
+    store, blob = make_store(db), Blob()
+    await run(store, blob, _text(_paras("a", "b")), event=NEW)
+    store._resync_membership_after_write = AsyncMock(side_effect=LeaseLost("lease gone"))
+    with pytest.raises(LeaseLost):
+        await run(store, blob, _text(_paras("a", "b")[1:]))   # a removal only: the refresh is the one write
+
+
+async def test_a_refresh_that_fails_after_writing_still_resyncs_membership(db) -> None:
+    store, blob = make_store(db), Blob()
+    await run(store, blob, _text(_paras("a", "b", "c")), event=NEW)
+    store._resync_membership_after_write.reset_mock()
+    real_upsert = db.upsert_points
+
+    async def write_then_fail(*args: object, **kwargs: object) -> None:
+        await real_upsert(*args, **kwargs)
+        raise RuntimeError("store dropped the connection")
+
+    db.upsert_points = write_then_fail
+    await run(store, blob, _text(_paras("b", "c")))          # no embed: only the refresh writes
+    store._resync_membership_after_write.assert_awaited()
+    store.logger.warning.assert_any_call(
+        "Record rec-race: could not refresh the kept points' position and revision: store dropped the connection")

@@ -343,6 +343,19 @@ class TestGroupedRowHits:
 
         assert _hits_from_search(self._response({"blockId": "gone", "blockIndex": 2}), "v1", self.BLOCKS) == []
 
+    def test_a_grouped_point_whose_first_row_is_gone_is_placed_by_the_rows_it_still_has(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        blocks = [b for b in self.BLOCKS if b["id"] != "row-1"]
+        response = self._response({"blockId": "row-1", "blockIndex": 1, "rowBlockIds": ["row-1", "row-2", "row-3"]})
+        assert _hits_from_search(response, "v1", blocks) == [1, 2], "rows 2 and 3, now at positions 1 and 2"
+
+    def test_a_grouped_point_none_of_whose_rows_is_left_is_skipped(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        response = self._response({"blockId": "gone-1", "blockIndex": 1, "rowBlockIds": ["gone-1", "gone-2"]})
+        assert _hits_from_search(response, "v1", self.BLOCKS) == []
+
     def test_a_point_without_a_block_id_keeps_its_stored_index(self) -> None:
         from app.utils.record_block_selection import _hits_from_search
 

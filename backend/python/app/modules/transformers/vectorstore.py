@@ -1467,26 +1467,32 @@ class VectorStore(Transformer):
                 offset = page.next_offset
             if not stale:
                 return
-            ordered, written = sorted(stale), 0
-            for start in range(0, len(ordered), _REKEY_BLOCKS_PER_READ):
-                writes: list[VectorPoint] = []
-                for point in await self._read_points_whole(collection_name, org, vrid, ordered[start:start + _REKEY_BLOCKS_PER_READ]):
-                    meta = dict(point.payload.get("metadata") or {})
-                    change = changes(meta)
-                    if change and point.dense_vector is not None:
-                        writes.append(VectorPoint(
-                            id=point.id, dense_vector=point.dense_vector, sparse_vector=point.sparse_vector,
-                            payload={**point.payload, "metadata": {**meta, **change}},
-                        ))
-                for i in range(0, len(writes), _REKEY_PAGE):
-                    await self.vector_db_service.upsert_points(collection_name, writes[i:i + _REKEY_PAGE])
-                written += len(writes)
-            if written:
-                # Written from payloads read moments earlier: membership is re-applied from the graph, as after any write of points.
-                await self._resync_membership_after_write(vrid, record.id)
+            ordered, written, attempted = sorted(stale), 0, False
+            try:
+                for start in range(0, len(ordered), _REKEY_BLOCKS_PER_READ):
+                    writes: list[VectorPoint] = []
+                    for point in await self._read_points_whole(collection_name, org, vrid, ordered[start:start + _REKEY_BLOCKS_PER_READ]):
+                        meta = dict(point.payload.get("metadata") or {})
+                        change = changes(meta)
+                        if change and point.dense_vector is not None:
+                            writes.append(VectorPoint(
+                                id=point.id, dense_vector=point.dense_vector, sparse_vector=point.sparse_vector,
+                                payload={**point.payload, "metadata": {**meta, **change}},
+                            ))
+                    for i in range(0, len(writes), _REKEY_PAGE):
+                        attempted = True
+                        await self.vector_db_service.upsert_points(collection_name, writes[i:i + _REKEY_PAGE])
+                    written += len(writes)
+            finally:
+                if attempted:
+                    # Written from payloads read moments earlier: membership is re-applied from the graph, as after any write of
+                    # points, and also after a write that failed part way (a store may have taken some of its points).
+                    await self._resync_membership_after_write(vrid, record.id)
             self.logger.info(f"Record {record.id}: refreshed the position or revision of {written} kept point(s)")
         except VectorsNotFetchable:
             self.logger.info(f"Record {record.id}: the vector store cannot return stored vectors; kept points keep their stored position")
+        except LeaseLost:
+            raise  # the delivery is handed back, as for every other write under the lease
         except Exception as e:
             self.logger.warning(f"Record {record.id}: could not refresh the kept points' position and revision: {e}")
 
