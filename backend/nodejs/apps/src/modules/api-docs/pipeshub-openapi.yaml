@@ -23433,6 +23433,19 @@ components:
         message:
           type: string
           description: Message of the underlying error, or `Unknown error`.
+    ApiDocsSpecUnavailableResponse:
+      type: object
+      description: |
+        Error payload of `GET /docs/openapi.yaml` when the server has no specification loaded.
+        This route answers on its own and does not use the standard error envelope.
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          enum:
+            - OpenAPI spec not available
     ApiDocsModuleInfo:
       type: object
       description: One documentation module (a group of tags shown together in the docs sidebar).
@@ -77585,9 +77598,9 @@ paths:
         Returns the HTML page of the built-in API reference. The page loads its data from
         `GET /docs/json` in the browser.
 
-        The route is a catch-all: every `GET` under `/docs` other than `/docs/health` and
-        `/docs/json` (for example `/docs/` or `/docs/any/sub/path`) returns this same page with
-        `200`, so there is no `404` under this prefix; `GET /docs/{subPath}` documents that part.
+        The route is a catch-all: every `GET` under `/docs` other than `/docs/health`,
+        `/docs/json` and `/docs/openapi.yaml` (for example `/docs/` or `/docs/any/sub/path`) returns this same page with
+        `200`, so the catch-all never answers `404`; `GET /docs/{subPath}` documents that part.
         Query parameters are ignored.
 
         No authentication is required and a supplied token is not read.
@@ -77626,8 +77639,8 @@ paths:
       summary: API documentation UI (any other path under /docs)
       description: |
         The catch-all behind `GET /docs`: every `GET` under `/docs` that is not exactly
-        `/docs/health` or `/docs/json` returns the same HTML page as `GET /docs` with `200`,
-        so no path under this prefix answers `404`.
+        `/docs/health`, `/docs/json` or `/docs/openapi.yaml` returns the same HTML page as `GET /docs` with `200`,
+        so no path the catch-all serves answers `404`.
 
         The match is not limited to one segment: `/docs/a/b/c` and `/docs/health/x` are served
         the same way. An OpenAPI path parameter cannot hold a `/`, so a single segment is
@@ -77640,7 +77653,7 @@ paths:
         - name: subPath
           in: path
           required: true
-          description: Any path other than `health` and `json`. The value is not read.
+          description: Any path other than `health`, `json` and `openapi.yaml`. The value is not read.
           schema:
             type: string
       responses:
@@ -77749,6 +77762,60 @@ paths:
                   - $ref: '#/components/schemas/ApiDocsLoadErrorResponse'
 
   # ==================== MAIL ====================
+  /docs/openapi.yaml:
+    get:
+      tags:
+        - API Documentation
+      summary: Download the OpenAPI specification
+      description: |
+        Returns the OpenAPI specification this server documents, as YAML, for import into API
+        clients and code generators. It is the specification file read at server start, with any
+        overlays merged in. Its `servers` use the `{instance_url}` variable, so the file does not
+        name the deployment that served it.
+
+        The answer carries `Content-Disposition: attachment; filename="pipeshub-openapi.yaml"`,
+        so a browser saves it as a file. If the specification could not be read at server start,
+        the answer is `404`.
+
+        No authentication is required; query parameters are ignored.
+      operationId: getApiDocsOpenApiYaml
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI specification
+          headers:
+            Content-Disposition:
+              description: Always `attachment; filename="pipeshub-openapi.yaml"`.
+              schema:
+                type: string
+          content:
+            application/yaml:
+              schema:
+                type: string
+                description: An OpenAPI 3.0 document in YAML.
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '404':
+          description: No specification was loaded at server start
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiDocsSpecUnavailableResponse'
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+        '500':
+          description: |
+            Internal server error.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /mail/emails/sendEmail:
     post:
       tags:
