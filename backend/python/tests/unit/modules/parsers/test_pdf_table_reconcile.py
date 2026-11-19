@@ -580,9 +580,11 @@ def test_a_caption_line_is_never_folded_into_a_table_read_by_the_order_of_eviden
         legacy_table = _region(LayoutRegionType.TABLE, table_box)
         evidence_table = _region(LayoutRegionType.TABLE, table_box, evidence=True)
         caption = _region(LayoutRegionType.TEXT, caption_box, "Table 5-54. Boot parameters (continued)")
-        body = _region(LayoutRegionType.TEXT, caption_box, "Register values are listed below.")
+        body = _region(LayoutRegionType.TEXT, (60.0, 402.0, 100.0, 410.0), "Register values are listed below.")
+        above = _region(LayoutRegionType.TEXT, caption_box, "PSHUFLW Shuffle Packed Low Words")
         assert gate(legacy_table, caption)  # the legacy flow folds it in
         assert not gate(evidence_table, caption) and not gate(caption, evidence_table)
+        assert not gate(evidence_table, above)  # nor any text ending above the table: the header is read from the grid
         assert gate(evidence_table, body)  # other text is not affected
 
 
@@ -613,5 +615,32 @@ def test_a_table_whose_rows_have_text_in_several_columns_is_not_redrawn(monkeypa
         assert tr.drawn_rows_and_columns(t, own, h, v) is None
         ts = [r for r in regions(page, [mbox((60, 300, 420, 480))], "evidence", monkeypatch) if r.type == LayoutRegionType.TABLE]
         assert len(ts) == 1 and len(ts[0].table_grid) >= 6
+    finally:
+        pdf.close()
+
+
+def _title_in_the_header_band(c: canvas.Canvas) -> None:
+    xs = [60.0, 160.0, 240.0, 420.0]
+    c.setLineWidth(0.6)
+    for y in (300, 330, 350, 370, 390):
+        c.line(xs[0], top(y), xs[3], top(y))
+    for x in xs:
+        c.line(x, top(300), x, top(390))
+    c.setFont("Helvetica", 8)
+    c.drawString(64, top(309), "PSHUFLW Shuffle Packed Low Words")  # a title running over two cells
+    for x, t in zip((64, 164, 244), ("Opcode", "Op/En", "Description")):
+        c.drawString(x, top(322), t)
+    for r in range(3):
+        for x, t in zip((64, 164, 244), (f"Row{r}", "A", f"Does thing {r}")):
+            c.drawString(x, top(343 + 20 * r), t)
+
+
+def test_a_title_line_set_in_the_header_band_is_not_a_header_label(monkeypatch) -> None:
+    pdf, page = page_of(_title_in_the_header_band)
+    try:
+        ts = [r for r in regions(page, [mbox((60, 300, 420, 390))], "evidence", monkeypatch) if r.type == LayoutRegionType.TABLE]
+        assert len(ts) == 1
+        assert ts[0].table_grid[0] == ["Opcode", "Op/En", "Description"]
+        assert [r[0] for r in ts[0].table_grid[1:]] == ["Row0", "Row1", "Row2"]
     finally:
         pdf.close()

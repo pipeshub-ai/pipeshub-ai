@@ -409,6 +409,36 @@ def _trailing_rows_cut(
     return [g for g, r in zip(grid, row_of) if r < keep], top_cut, notes
 
 
+def drop_title_line(
+    t: Table, grid: list[list[Any]], row_of: list[int], own: list[dict[str, Any]],
+) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    """The header row without a title line: when the top row of the ruled table holds a line that is one segment
+    running across two or more of its cells, above a line of labels, that line is the table's title (a caption set
+    inside the top band), not a label; the row is read again without it."""
+    if not row_of or row_of[0] != 0 or (len(row_of) > 1 and row_of[1] == 0):
+        return grid
+    top, bot = _row_boxes(t)[0]
+    cells = [c for c in t.rows[0].cells if c is not None]
+    words = [w for w in own if top - 1 <= (float(w["top"]) + float(w["bottom"])) / 2 <= bot + 1]
+    lines = band_lines(words)
+    if len(lines) < 2:
+        return grid, []
+    first, second = lines[0], lines[1]
+    cuts = [c[2] for c in cells[:-1]]
+    segs = segments(first)
+    if len(segs) != 1 or len(segments(second)) < 2 or not any(segs[0][0] < c - 1 and segs[0][1] > c + 1 for c in cuts):
+        return grid, []
+    keep = [w for w in words if not any(w is x for x in first["w"])]
+    head: list[Any] = []
+    for cell in t.rows[0].cells:
+        if cell is None:
+            head.append(None)
+            continue
+        mine = [w for w in keep if cell[0] <= _cx(w) < cell[2]]
+        head.append("\n".join(" ".join(str(w["text"]) for w in ln["w"]) for ln in band_lines(mine)))
+    return [head, *grid[1:]], list(first["w"])
+
+
 def drawn_rows_and_columns(
     t: Table, own: list[dict[str, Any]], hrules: Sequence[Rule], vrules: Sequence[Rule],
 ) -> Table | None:
@@ -471,6 +501,10 @@ def ruled_table(
         grid = ola._table_grid_by_words(t, split_rows=True, row_of=row_of)
     except Exception:  # a table the finder cannot read is no evidence
         return None, [], "grid failed"
+    title: list[dict[str, Any]] = []
+    if len(row_of) == len(grid):
+        grid, title = drop_title_line(t, grid, row_of, own)
+        own = [w for w in own if not any(w is x for x in title)]
     clean = ola._trim_empty_rows_cols(grid)
     if not clean or len(clean) < 2 or max(len(r) for r in clean) < 2:
         return None, [], "under 2x2"
@@ -487,9 +521,17 @@ def ruled_table(
     clean = ola._trim_empty_rows_cols(grid)
     if not clean or len(clean) < 2 or max(len(r) for r in clean) < 2:
         return None, [], "under 2x2 without trailing rows"
-    bbox = (lb[0], lb[1], lb[2], cut if cut is not None else lb[3])
+    below_title = max((float(w["bottom"]) for w in title), default=None)
+    bbox = (lb[0], lb[1] if below_title is None else below_title + 0.5, lb[2], cut if cut is not None else lb[3])
+    from app.modules.parsers.pdf import table_quality
+
+    scored = table_quality.candidate_from_table("lattice", 1, t)
+    scored.f = table_quality.features(scored, own, hrules, vrules, scored.bbox)
     return (
-        ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=bbox, text=ola._grid_to_text(clean), table_grid=clean, from_evidence=True),
+        ola.LayoutRegion(
+            type=ola.LayoutRegionType.TABLE, bbox=bbox, text=ola._grid_to_text(clean), table_grid=clean,
+            from_evidence=True, table_q=table_quality.quality(scored.f),
+        ),
         notes,
         "",
     )
@@ -555,7 +597,7 @@ def decide_box(
 
     def region_of(c: table_quality.Cand, kind: str) -> Decision:
         grid = ola._trim_empty_rows_cols(c.grid)
-        region = ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=extent, text=ola._grid_to_text(grid), table_grid=grid, from_evidence=True)
+        region = ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=extent, text=ola._grid_to_text(grid), table_grid=grid, from_evidence=True, table_q=c.q)
         return Decision(box, kind, [region], reason=f"tier {c.tier} {c.name} q={c.q:.2f}")
 
     ruled: table_quality.Cand | None = None

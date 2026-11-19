@@ -72,6 +72,8 @@ class LayoutRegion:
     heading: bool = False
     # TABLE only: read by the order of evidence (PDF_TABLE_EXTRACTION=evidence); its caption stays outside the grid.
     from_evidence: bool = False
+    # TABLE only: the grid-quality score Q of the grid when read by the order of evidence (None otherwise).
+    table_q: float | None = None
 
 
 @dataclass
@@ -169,12 +171,14 @@ _TABLE_NUMBER_START = re.compile(r"^\s*(Table|Figure|TABLE|FIGURE)\s+[A-Z]?\d")
 
 
 def _evidence_table_keeps_caption_out(r: LayoutRegion, a: LayoutRegion) -> bool:
-    """A table read by the order of evidence never takes its caption into its grid: a TEXT region that opens with a
-    table or figure number stays a sibling (the legacy flow folds such a line into the header)."""
+    """A table read by the order of evidence never takes the text above it into its grid: a TEXT region that opens with
+    a table or figure number, or ends above the table's top, stays a sibling (the legacy flow folds such a line into the
+    header; the order of evidence reads the header itself)."""
     table, other = (r, a) if r.type == LayoutRegionType.TABLE else (a, r)
     return (
         table.type == LayoutRegionType.TABLE and table.from_evidence
-        and other.type == LayoutRegionType.TEXT and bool(_TABLE_NUMBER_START.match(other.text or ""))
+        and other.type == LayoutRegionType.TEXT
+        and (bool(_TABLE_NUMBER_START.match(other.text or "")) or other.bbox[3] <= table.bbox[1] + 2.0)
     )
 
 
