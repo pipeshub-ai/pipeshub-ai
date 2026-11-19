@@ -148,7 +148,7 @@ from app.telemetry.modules.record_storage_metrics import record_recovery_org_pas
 from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.indexing_workers import indexing_worker_count
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
@@ -3445,8 +3445,10 @@ async def health_check(request: Request) -> JSONResponse:
         )
 
 
-def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8091)
     import warnings
     workers = workers or indexing_worker_count()
     if reload and workers > 1:

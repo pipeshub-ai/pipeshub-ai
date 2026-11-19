@@ -1804,7 +1804,6 @@
       "subtitle": "创建和管理用户组以控制访问和权限",
       "enterpriseTitle": "用户组权限功能仅在企业版中提供",
       "enterpriseMessage": "升级到企业版以使用用户组权限功能。",
-      "enterpriseContact": "联系我们",
       "createGroup": "创建用户组",
       "searchPlaceholder": "搜索...",
       "emptyTitle": "您尚未创建任何用户组",
@@ -1885,6 +1884,21 @@
         "saveError": "保存权限失败",
         "loadError": "加载权限失败",
         "empty": "尚未定义任何权限。"
+      }
+    },
+    "enterprise": {
+      "contact": "联系销售",
+      "scim": {
+        "heading": "SCIM 预配功能仅在企业版中提供",
+        "message": "让 Okta 或 Microsoft Entra ID 自动添加、更新和停用工作区中的成员。"
+      },
+      "auditLogs": {
+        "heading": "审计日志功能仅在企业版中提供",
+        "message": "查看工作区中谁在何时做了什么。"
+      },
+      "usage": {
+        "heading": "用量、额度和账单功能仅在企业版中提供",
+        "message": "按人员、智能体、连接器和模型查看 AI 成本，管理额度、套餐和发票，并在消费设置中设置支出提醒。"
       }
     },
     "teams": {
@@ -2459,6 +2473,8 @@
       "sections": {
         "overview": "概览",
         "workspace": "工作区",
+        "usageAndCredits": "用量与额度",
+        "security": "安全",
         "personal": "个人",
         "people": "成员",
         "developerSettings": "开发者设置"
@@ -2488,6 +2504,9 @@
         "archivedChats": "已归档的对话",
         "users": "用户",
         "groups": "群组",
+        "scim": "SCIM",
+        "auditLogs": "审计日志",
+        "usage": "用量与额度",
         "teams": "团队",
         "webSearch": "网络搜索",
         "tenants": "租户",
@@ -3741,6 +3760,7 @@
         "disconnected": "已成功断开连接",
         "disconnectError": "断开连接失败",
         "credentialsSaveError": "服务器已保存，但凭证无法保存。您可以稍后在“管理”中添加。",
+        "accessSaveError": "服务器已保存，但可使用者设置未保存。请再次保存以应用访问权限。",
         "logoSaveError": "服务器已保存，但其徽标未能保存。您可以在“管理”中重试。",
         "credentialsSaved": "凭据已保存",
         "credentialsReset": "MCP 服务器已更新。由于连接已更改，已保存的凭证已被删除；请重新连接后再使用。",

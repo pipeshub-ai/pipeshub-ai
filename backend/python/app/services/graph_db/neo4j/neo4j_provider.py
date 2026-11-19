@@ -19,7 +19,7 @@ import time
 import traceback
 import unicodedata
 import uuid
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Collection, Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -441,8 +441,9 @@ def _cypher_read_by_app(v: str) -> str:
     """Whether ``v`` is read by this App's rules; ``app`` must be in scope. A record or group of another
     connector that a group edge, a hierarchy edge or an app-level filing joins to this App is read by its
     own connector's rules (the batch check decides a node in its own App), so every listing arm ends in
-    this test, once."""
-    return f"({v}.connectorId = app.id)"
+    this test, once. A group that carries access only (``accessOnly``) is never a row: what hangs under it is listed
+    under its other parents."""
+    return f"({v}.connectorId = app.id AND NOT coalesce({v}.accessOnly, false))"
 
 
 def _cypher_kh_held(v: str, stub: Callable[[str], str], container: str) -> str:
@@ -1799,6 +1800,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self._apply_schema(
                 self._generate_fulltext_indexes(), "full-text indexes", failure_level=logging.DEBUG,
             )
+            # A query that reads a property key no node has ever held carries a notification, which the driver logs with
+            # the whole query on every run: the listing reads accessOnly long before most graphs hold an access-only group.
+            await self._apply_schema(["CALL db.createProperty('accessOnly')"], "property keys")
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             try:
@@ -6709,8 +6713,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
-        """Get all users in an organization"""
+        """Get all users in an organization. ``raise_on_error`` raises a failed query instead of returning ``[]``."""
         try:
             query = """
             MATCH (u:User)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(o:Organization {id: $org_id})
@@ -6732,6 +6737,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get users failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(
@@ -11438,6 +11445,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return int((results or [{}])[0].get("removed") or 0)
 
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when the user has no USER_APP_RELATION edge to the connector, checked in the same statement."""
+        query = """
+        MATCH (u:User)-[p:PERMISSION]->(n)
+        WHERE (n:Record OR n:RecordGroup OR n:Group OR n:Role) AND n.connectorId = $connector_id
+          AND NOT EXISTS { MATCH (u)-[:USER_APP_RELATION]->(:App {id: $connector_id}) }
+        DELETE p
+        RETURN count(p) AS removed
+        """
+        results = await self.client.execute_query(query, parameters={"connector_id": connector_id}, txn_id=transaction)
+        return int((results or [{}])[0].get("removed") or 0)
+
     # ==================== Connector Deletion Helper Methods ====================
 
     async def _collect_connector_entities(
@@ -13066,53 +13090,63 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_record_by_id(
         self,
         record_id: str,
-        transaction: str | None = None
-    ) -> dict | None:
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> Record | None:
         """
         Get a record by its internal ID with associated type document (file/mail/etc.).
 
         Args:
             record_id (str): The internal record ID to look up
             transaction (Optional[str]): Optional transaction ID
+            raise_on_error (bool): Propagate a failed read instead of answering None.
+                A record that will not build is still None.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
         """
+        self.logger.debug(f"🚀 Retrieving record for id {record_id}")
+
+        query = """
+        MATCH (record:Record {id: $record_id})
+        OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+        RETURN record, typeDoc
+        LIMIT 1
+        """
         try:
-            self.logger.debug(f"🚀 Retrieving record for id {record_id}")
-
-            query = """
-            MATCH (record:Record {id: $record_id})
-            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
-            RETURN record, typeDoc
-            LIMIT 1
-            """
-
             results = await self.client.execute_query(
                 query,
                 parameters={"record_id": record_id},
                 txn_id=transaction
             )
-
-            if results and len(results) > 0:
-                result = results[0]
-                record_dict = dict(result["record"])
-                record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
-
-                type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
-                if type_doc:
-                    type_doc = self._neo4j_to_arango_node(type_doc, "")
-
-                typed_record = self._create_typed_record_from_neo4j(record_dict, type_doc)
-                self.logger.debug(f"✅ Successfully retrieved record for id {record_id}")
-                return typed_record
-            else:
-                self.logger.warning(f"⚠️ No record found for id {record_id}")
-                return None
-
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
+                raise
+            self.logger.error("Failed to retrieve record for id %s: %s", record_id, type(e).__name__)
             return None
+
+        if not results:
+            self.logger.warning(f"⚠️ No record found for id {record_id}")
+            return None
+
+        result = results[0]
+        record_dict = dict(result["record"])
+        try:
+            record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
+
+            type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
+            if type_doc:
+                type_doc = self._neo4j_to_arango_node(type_doc, "")
+
+            typed_record = self._create_typed_record_from_neo4j(record_dict, type_doc)
+        except Exception as e:
+            # The builder's error quotes the whole type document.
+            self.logger.error("Failed to build record %s of type %s: %s",
+                              record_id, record_dict.get("recordType"), type(e).__name__)
+            return None
+        self.logger.debug(f"✅ Successfully retrieved record for id {record_id}")
+        return typed_record
 
     async def page_record_ids_by_type(
         self,
@@ -20877,11 +20911,81 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self._KH_LISTS: {k: parameters[k] for k in read},
             }
         try:
-            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+            return await self._kh_run(query, parameters, txn_id)
+        except KnowledgeHubListingBusy:
+            raise
         except Exception as e:
             # Transaction memory is one pool: any listing statement can be the one that finds it spent.
             if self._kh_out_of_memory(e):
                 raise KnowledgeHubListingBusy(out_of_memory=True) from e
+            if str(getattr(e, "code", "")).startswith("Neo.ClientError.Transaction.TransactionTimedOut"):
+                raise KnowledgeHubListingBusy() from e
+            raise
+
+    # A listing statement whose plan is not cached takes Neo4j minutes of CPU to plan on a small server, and
+    # milliseconds to run once it is. So one request per statement text plans it, and the others with the same text
+    # wait for that plan instead of each planning a copy. A waiter past the browser's patience is answered as busy;
+    # the planner runs on, under its own limit, so that the plan is cached for the next request.
+    _KH_PLAN_WAIT_S = env_seconds("NEO4J_KH_PLAN_WAIT", 60.0)
+    _KH_QUERY_TIMEOUT_S = env_seconds("NEO4J_KH_QUERY_TIMEOUT", 600.0)
+    _KH_PLANNED_MAX = 4096
+
+    def _kh_plans(self) -> tuple[dict[str, asyncio.Task], set[str]]:
+        """The statements being planned by a request of this process, and those that have run once."""
+        return vars(self).setdefault("_kh_planning", {}), vars(self).setdefault("_kh_planned_texts", set())
+
+    def _kh_planned(self, key: str, task: asyncio.Task) -> None:
+        planning, planned = self._kh_plans()
+        if planning.get(key) is task:
+            del planning[key]
+        if not task.cancelled() and task.exception() is None:
+            if len(planned) >= self._KH_PLANNED_MAX:
+                planned.clear()
+            planned.add(key)
+
+    async def _kh_run(self, query: str, parameters: dict[str, Any], txn_id: str | None) -> list[dict]:
+        if txn_id is not None:
+            # Inside a transaction the statement shares that transaction's session and limit.
+            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        planning, planned = self._kh_plans()
+        # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
+        types = sorted((k, type(v).__name__) for k, v in parameters.items())
+        key = hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
+        # One wait budget per request, even when a failed planner hands the planning on.
+        deadline = time.monotonic() + self._KH_PLAN_WAIT_S
+        # shortcut: a text is trusted as planned for the life of the process; a plan Neo4j evicts later is planned again
+        # by every request at once (bounded by the query timeout). Track evictions if that shows up again.
+        while key not in planned:
+            task = planning.get(key)
+            if task is None or task.done():
+                task = spawn_in_request(
+                    self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
+                    name="kh-plan",
+                )
+                planning[key] = task
+                task.add_done_callback(lambda t, key=key: self._kh_planned(key, t))
+                # The planner's own request waits for it: giving up would free nothing, since the planning runs on.
+                return await self._kh_timed(asyncio.shield(task))
+            try:
+                await asyncio.wait_for(asyncio.shield(task), max(deadline - time.monotonic(), 0))
+            except TimeoutError:
+                raise KnowledgeHubListingBusy() from None
+            except Exception:
+                # The planner's own request reports its failure; this one plans the statement itself.
+                continue
+        return await self._kh_timed(
+            self.client.execute_query(query, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S)
+        )
+
+    async def _kh_timed(self, run: Awaitable[list[dict]]) -> list[dict]:
+        """``run``, with an out-of-memory failure timed from here: a wait for the plan before it says nothing about
+        the statement's size (``_kh_walk_refusal``)."""
+        started = time.monotonic()
+        try:
+            return await run
+        except Exception as e:
+            if self._kh_out_of_memory(e):
+                raise KnowledgeHubListingBusy(out_of_memory=True, ran_s=time.monotonic() - started) from e
             raise
 
     # The global flatten lets each connector's page read its own grants.
@@ -21173,7 +21277,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHEN {self._kh_v3_hidden_above(v, "ku", from_depth=0)} THEN [] ELSE COLLECT {{
             MATCH ({v})-[kh_ur:NODE_RELATION]->(kh_u:Record|RecordGroup)
             WHERE kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
-              AND kh_u.id IS NOT NULL AND NOT coalesce(kh_u.isDeleted, false) AND NOT coalesce(kh_u.isPlaceholder, false)
+              AND NOT coalesce(kh_u.accessOnly, false) AND kh_u.id IS NOT NULL AND NOT coalesce(kh_u.isDeleted, false) AND NOT coalesce(kh_u.isPlaceholder, false)
               {f"AND NOT coalesce(({decided}), false)" if decided else ""} AND NOT {self._kh_v3_in_hidden_group("kh_u", "kv")}
               // a child a browse of it would refuse takes no place under the cap
               AND {self._kh_v3_opens_below_hidden("kh_u", v)}
@@ -21372,7 +21476,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH c.id AS id,
                  [(p)-[r:NODE_RELATION]->(c)
                     WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-                      AND (p:Record OR p:RecordGroup OR p:App)
+                      AND (p:Record OR p:RecordGroup OR p:App) AND NOT coalesce(p.accessOnly, false)
                     | p.id] AS parents,
                  [g IN {self._kh_v3_chain_top_owns("c")}
                   | {{id: g.id, deleted: coalesce(g.isDeleted, false)}}] AS ownGroups
@@ -22826,6 +22930,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 rows = await self._kh_query(scope_query, parameters=scope_params, txn_id=transaction)
             except Exception as e:
+                if isinstance(e, KnowledgeHubListingBusy) and not e.out_of_memory:
+                    # Waiting on a cold plan or past its limit: the full query is heavier still to plan.
+                    raise
                 # The enrichment is the full query's own tail; should it fail on the scope page, answer from the
                 # full query rather than failing the request.
                 self.logger.warning(f"kh scope page enrichment failed for {app_id}, using the full query: {e}")
@@ -22837,7 +22944,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             except KnowledgeHubListingBusy as busy:
                 if not (flatten and busy.out_of_memory):
                     raise
-                elapsed = time.monotonic() - walk_started
+                elapsed = busy.ran_s if busy.ran_s is not None else time.monotonic() - walk_started
                 self.logger.warning(f"kh listing for {app_id} ran out of transaction memory after {elapsed:.1f}s")
                 raise self._kh_walk_refusal(elapsed) from busy
             except Exception as e:

@@ -45,8 +45,12 @@ PROCESSOR_ADDED = {
 #  - ``parse_document`` awaits ``ensure_docling()`` and calls the converter through a helper that
 #    runs in the worker thread: the off-path test below reverses exactly those edits and compares
 #    the body with main's;
-#  - the other entries are re-pinned to the hash they have now. Each differs from main only by
-#    the moved imports (``_get_converter``, ``_parse_document_in_worker``), by the lazily built
+#  - the table-structure mode is a behaviour change, not an import move: ``_get_table_mode`` (added)
+#    reads PDF_DOCLING_TABLE_MODE and ``_get_converter`` passes its result, so the default model is
+#    ACCURATE where main used FAST. ``test_docling_table_mode.py`` pins that behaviour;
+#  - the other entries are re-pinned to the hash they have now. Apart from the table mode above,
+#    each differs from main only by the moved imports (``_get_converter``,
+#    ``_parse_document_in_worker``), by the lazily built
 #    converter (``__init__`` no longer builds it) or by the type-only import block. The traces
 #    below still replay the behaviour of all of them.
 LAZY_IMPORT_IMPORTS = {
@@ -57,14 +61,14 @@ LAZY_IMPORT_IMPORTS = {
 }
 LAZY_IMPORT_REPINNED = {
     "DoclingProcessor.__init__": "2530d7f496cd4485",
-    "if:TYPE_CHECKING": "1331c17b12c0a195",
-    "_get_converter": "4dadac7cb530286a",
+    "if:TYPE_CHECKING": "e2172f92759e8033",
+    "_get_converter": "5d6cda477aab1783",
     "_parse_document_in_worker": "c506f30760b63571",
     "assign:DOCLING_ROUTED_FORMATS": None,  # removed: ``docling_routed_formats()`` returns the same tuple
 }
 LAZY_IMPORT_ADDED = {
     "DoclingProcessor._converter", "DoclingProcessor.converter", "DoclingProcessor._convert_in_process",
-    "docling_routed_formats",
+    "docling_routed_formats", "_get_table_mode",
 }
 # The service: the functions that gained a lane branch hold legacy behaviour too, so they are
 # pinned by the behaviour traces below rather than by hash.

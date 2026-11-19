@@ -1765,7 +1765,6 @@
       "subtitle": "Crea y administra grupos para controlar el acceso y los permisos",
       "enterpriseTitle": "Los permisos de grupo están disponibles en la Enterprise Edition",
       "enterpriseMessage": "Actualice a la Enterprise Edition para usar permisos de grupo.",
-      "enterpriseContact": "Contáctanos",
       "createGroup": "Crear grupo",
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",
@@ -1846,6 +1845,21 @@
         "saveError": "No se han podido guardar los permisos",
         "loadError": "No se han podido cargar los permisos",
         "empty": "Aún no se ha definido ningún permiso."
+      }
+    },
+    "enterprise": {
+      "contact": "Hablar con ventas",
+      "scim": {
+        "heading": "El aprovisionamiento SCIM está disponible en la Enterprise Edition",
+        "message": "Deje que Okta o Microsoft Entra ID añadan, actualicen y desactiven personas en su espacio de trabajo automáticamente."
+      },
+      "auditLogs": {
+        "heading": "Los registros de auditoría están disponibles en la Enterprise Edition",
+        "message": "Vea quién hizo qué en su espacio de trabajo y cuándo."
+      },
+      "usage": {
+        "heading": "El uso, los créditos y la facturación están disponibles en la Enterprise Edition",
+        "message": "Vea el coste de la IA por persona, agente, conector y modelo, gestione los créditos, su plan y sus facturas, y configure alertas de gasto en la Configuración de consumo."
       }
     },
     "teams": {
@@ -2348,6 +2362,8 @@
       "sections": {
         "overview": "Resumen",
         "workspace": "Espacio de trabajo",
+        "usageAndCredits": "Uso y créditos",
+        "security": "Seguridad",
         "personal": "Personal",
         "people": "Personas",
         "developerSettings": "Configuración de desarrollador"
@@ -2377,6 +2393,9 @@
         "archivedChats": "Chats archivados",
         "users": "Usuarios",
         "groups": "Grupos",
+        "scim": "SCIM",
+        "auditLogs": "Registros de auditoría",
+        "usage": "Uso y créditos",
         "teams": "Equipos",
         "webSearch": "Búsqueda Web",
         "tenants": "Inquilinos",
@@ -3636,6 +3655,7 @@
         "disconnected": "Desconectado correctamente",
         "disconnectError": "No se pudo desconectar",
         "credentialsSaveError": "Servidor guardado, pero no se pudieron guardar las credenciales. Puedes añadirlas más tarde desde Gestionar.",
+        "accessSaveError": "El servidor se guardó, pero no quién puede usarlo. Guarda de nuevo para aplicar el acceso.",
         "logoSaveError": "Servidor guardado, pero no se pudo guardar su logotipo. Puedes volver a intentarlo desde Gestionar.",
         "credentialsSaved": "Credenciales guardadas",
         "credentialsReset": "Servidor MCP actualizado. Se eliminaron las credenciales guardadas porque la conexión cambió; vuelve a conectarte para usarlo.",

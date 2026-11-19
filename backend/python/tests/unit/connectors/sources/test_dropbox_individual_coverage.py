@@ -1198,7 +1198,6 @@ class TestDropboxIndividualMisc:
 
     def test_handle_webhook_notification(self):
         c, _, _ = _make_connector()
-        c.run_incremental_sync = AsyncMock()
-        with patch("asyncio.create_task") as mock_task:
-            c.handle_webhook_notification({})
-            mock_task.assert_called_once()
+        c.request_sync = MagicMock()
+        c.handle_webhook_notification({})
+        c.request_sync.assert_called_once_with()

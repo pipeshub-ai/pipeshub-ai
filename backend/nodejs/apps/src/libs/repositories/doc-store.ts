@@ -30,9 +30,9 @@ export function unitsAreAtomic(rsAvailable: boolean): boolean {
 /** The newest revisions of each schema branch this code needs. */
 const CONVERSATION_EPOCH = 2;
 const CONTENT_EPOCH = 2;
-const PLATFORM_DATA_EPOCH = 1;
+const PLATFORM_DATA_EPOCH = 5;
 const IDENTITY_EPOCH = 5;
-const OAUTH_EPOCH = 4;
+const OAUTH_EPOCH = 5;
 const INTEGRATIONS_EPOCH = 2;
 const IDENTITY_REPOSITORIES = [
   'identity',

@@ -24,6 +24,7 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.data_source_entities_processor import unless_synced_since
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -49,6 +50,7 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
 )
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
+from app.connectors.services.reindex_force import forced_by_user
 from app.connectors.services.storage_release import (
     record_pending_storage_release,
     release_connector_storage,
@@ -1315,6 +1317,8 @@ class EventService:
         depth = payload.get("depth", 0)
         raw_status_filters = payload.get("statusFilters")
         user_key = payload.get("userKey")
+        # Only a literal true: a user's Force reindex (never a string, never a default).
+        force = payload.get("force") is True
         # Parent-scoped modes: optional filter; connector-wide mode: default FAILED,
         # except for KB connectors, where a KB-wide reindex means "reindex everything".
         status_filters: list[str] | None = None
@@ -1403,6 +1407,7 @@ class EventService:
                 user_key=user_key,
                 status_filters=status_filters,
                 stages=stages,
+                force=force,
             ),
         )
         if task is None:
@@ -1445,6 +1450,8 @@ class EventService:
         user_key: str | None,
         status_filters: list[str] | None,
         stages: list[str] | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         """Walk every matching record once and hand each batch to the connector.
 
@@ -1457,10 +1464,11 @@ class EventService:
         """
         scope_generation = await self._kh_scope_begin(connector_id)
         try:
-            await self._reindex_batches(
-                connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
-                user_key, status_filters, stages,
-            )
+            with forced_by_user(forced=force):
+                await self._reindex_batches(
+                    connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
+                    user_key, status_filters, stages,
+                )
         finally:
             await self._kh_scope_end(connector_id, scope_generation, stamp=True)
 
@@ -1606,7 +1614,20 @@ class EventService:
                 if ids:
                     await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
 
-            await connector.reindex_records(records)
+            async with unless_synced_since(self.graph_provider, connector_id) as stamp:
+                try:
+                    await connector.reindex_records(records)
+                except Exception:
+                    if not stamp.tripped:
+                        raise
+            if stamp.tripped:
+                self.logger.info(f"A sync of {connector_id} ran during this reindex batch; its newer writes stand over the batch's")
+                # A refused write can stop the connector before it publishes the rest of the batch: what is still
+                # NOT_STARTED is reindexed as stored, which is the sync's newer state.
+                stored = await self.graph_provider.get_typed_records_batch([r.id for r in records], raise_on_error=True)
+                left = [r for r in stored.values() if r is not None and r.indexing_status == ProgressStatus.NOT_STARTED.value]
+                if left:
+                    await connector.data_entities_processor.reindex_existing_records(left)
 
             total_processed += len(records)
 

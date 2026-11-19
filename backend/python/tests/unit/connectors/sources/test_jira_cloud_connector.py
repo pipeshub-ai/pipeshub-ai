@@ -84,6 +84,8 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-cov-1"
     dep.on_new_app_users = AsyncMock()
+    dep.open_app_to_org_team = AsyncMock()
+    dep.withdraw_team_app_edge = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -122,6 +124,9 @@ def _make_connector():
     connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
     # No issue security scheme: unsecured issues are unchanged
     connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    # The role list kept for security levels (roles_for_levels): nothing kept yet.
+    connector.issues_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.issues_sync_point.update_sync_point = AsyncMock()
     return connector
 
 
@@ -1474,6 +1479,28 @@ class TestFetchUsersPhases:
             await connector._fetch_users()
 
     @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_pipeshub_users_fails_the_user_read(self) -> None:
+        """The PipesHub users are the emails a hidden-email account is looked up by; read as none after a failure,
+        those accounts would go unresolved as if no one could match them. The read fails instead."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        async def get_all_active_users(*, raise_on_error: bool = False) -> list:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        connector.data_entities_processor.get_all_active_users = AsyncMock(side_effect=get_all_active_users)
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = _then_empty(_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(ConnectionError):
+            await connector._fetch_users()
+
+    @pytest.mark.asyncio
     async def test_a_short_page_is_not_the_end_of_the_user_list(self) -> None:
         """/users/search answers a bare array with no end marker: a page shorter than asked for may be followed by
         more, so only an empty page ends the list, and the next page starts after the rows returned."""
@@ -2134,6 +2161,25 @@ class TestFetchIssuesBatchedCoverage:
             batches.append((batch, has_more, ts))
 
         assert len(batches) >= 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("result", [{"success": False, "deleted_records": []}, {"failed_count": 1}],
+                             ids=["not_a_success", "a_failed_record"])
+    async def test_a_delete_cascade_that_failed_fails_the_batch_so_the_issues_are_read_again(self, result: dict) -> None:
+        """Records an issue no longer holds (a removed file, a stale restricted comment) that could not be deleted are
+        not left behind: the batch fails before its records are written, so the project's issues are read again."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.sync_filters = None
+        mock_ds = MagicMock()
+        mock_ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            return_value=_make_mock_response(200, {"issues": [_make_issue()], "nextPageToken": None}))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._build_issue_records = AsyncMock(return_value=([], ["stale-comment-rec"]))
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value=result)
+        with pytest.raises(Exception, match="could not be deleted"):
+            async for _ in connector._fetch_issues_batched("PROJ", "p1", []):
+                pass
 
     @pytest.mark.asyncio
     async def test_with_modified_filter(self):
