@@ -1042,12 +1042,25 @@ class TestTeamDriveItemSharedWith:
             "folder-1": [_user_grant("p-alice", "alice@example.com", "owner")],
         })
 
-        for file_id in ("file-1", "file-2"):
+        for file_id, email in (("file-1", "alice@example.com"), ("file-2", "alice@example.com"), ("file-1", "dan@example.com")):
             await connector._process_drive_item(
-                metadata=self._my_drive_file(id=file_id), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+                metadata=self._my_drive_file(id=file_id), user_id="u1", user_email=email, drive_id="drive-1"
             )
 
-        assert calls.count("folder-1") == 1
+        assert calls.count("folder-1") == 2
+
+    async def test_a_reader_who_can_see_the_folder_still_leaves_my_drive_shares_unknown(self, connector) -> None:
+        connector.drive_data_source.permissions_list, calls = self._lists({
+            "file-1": [_user_grant("p-alice", "alice@example.com", "owner"), _user_grant("p-bob", "bob@example.com", "writer")],
+            "folder-1": [_user_grant("p-alice", "alice@example.com", "owner")],
+        })
+
+        result = await connector._process_drive_item(
+            metadata=self._my_drive_file(ownedByMe=False), user_id="u2", user_email="bob@example.com", drive_id="drive-1"
+        )
+
+        assert result.record.shared_with is None
+        assert "folder-1" not in calls
 
     async def test_a_hidden_owner_email_is_filled_after_permissions_are_read(self, connector) -> None:
         connector.drive_data_source.permissions_list, _ = self._lists({
@@ -1140,17 +1153,53 @@ class TestForeignSharedDrive:
         assert delete.await_args.args[2] == "0APG"
         assert state["foreign_shared_drives"]["drives"] == {}
 
-    async def test_a_drive_whose_delete_fails_is_kept_for_next_run(self, connector) -> None:
+    async def test_a_failed_delete_still_revokes_access_and_is_retried(self, connector) -> None:
         state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        delete = AsyncMock(side_effect=[False, True])
+        with patch("app.connectors.sources.google.drive.team.connector.delete_shared_drive_records", new=delete):
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+            assert self._last_group_write(connector)[1] == []
+            assert "0APG" in state["foreign_shared_drives"]["drives"]
+
+            await connector._note_foreign_drives_reached(self._user("b@example.com"), [])
+
+        assert delete.await_count == 2
+        assert state["foreign_shared_drives"]["drives"] == {}
+
+    async def test_a_deleted_drive_forgets_every_users_change_token(self, connector) -> None:
+        self._store(connector)
+        connector.synced_users = [self._user("a@example.com"), self._user("b@example.com")]
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
 
         with patch(
             "app.connectors.sources.google.drive.team.connector.delete_shared_drive_records",
-            new=AsyncMock(return_value=False),
+            new=AsyncMock(return_value=True),
         ):
             await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
 
-        assert "0APG" in state["foreign_shared_drives"]["drives"]
+        forgotten = sorted(c.args[0] for c in connector.drive_delta_sync_point.delete_sync_point.await_args_list)
+        assert forgotten == ["DRIVE/drives/a@example.com_0APG", "DRIVE/drives/b@example.com_0APG"]
+
+    async def test_a_member_who_is_no_longer_synced_is_dropped(self, connector) -> None:
+        self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("gone@example.com"), [self.FOREIGN])
+        connector.synced_users = [self._user("b@example.com")]
+
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+
+        assert self._last_group_write(connector)[1] == ["b@example.com"]
+
+    async def test_a_bookkeeping_failure_does_not_stop_the_users_sync_of_other_drives(self, connector) -> None:
+        state = self._store(connector)
+        connector._sync_ledger = MagicMock()
+        connector.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=RuntimeError("store down"))
+
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        connector._sync_ledger.note_incomplete.assert_called_once()
+        assert state["foreign_shared_drives"]["drives"]["0APG"]["members"] == ["a@example.com"]
 
     async def test_concurrent_user_syncs_keep_both_members(self, connector) -> None:
         state = self._store(connector)

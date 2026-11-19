@@ -2794,9 +2794,10 @@ class DataSourceEntitiesProcessor:
                     record_group.id if record_group else None,
                     inherit=inherits_group,
                 )
-                if record.shared_with is not None:
+                if record.shared_with is not None and belongs_to_edges:
                     # A share or unshare reaches the connector as a permission change only, so the
-                    # people it names are rewritten here; None means the shares were not read.
+                    # people it names are rewritten here; None means the shares were not read. Without
+                    # BELONGS_TO, _process_record above has linked them already.
                     await self._handle_record_people(record, tx_store)
                 # Permissions may come from the group while browse stays on the
                 # parent record. A group hierarchy edge would list the record twice.

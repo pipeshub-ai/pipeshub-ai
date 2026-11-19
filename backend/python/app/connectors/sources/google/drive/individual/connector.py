@@ -610,11 +610,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             if grants is not None:
                 file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
-            if existing_record and file_record.shared_with is not None:
-                # A share or unshare moves nothing else on an uploaded file: written as a metadata
-                # update, the record's person edges follow its sharing.
-                is_updated = True
-                metadata_changed = True
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
@@ -649,12 +644,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _shared_with(self, metadata: dict, grants: list[dict], owners: list) -> list | None:
         """The people the file was shared with directly; None when its folder's sharing is unknown."""
+        # Decided by the owner only: a reader's view of the folder may differ from the owner's.
+        if not metadata.get("ownedByMe"):
+            return None
         parent_id = (metadata.get("parents") or [None])[0]
-        if parent_id:
-            parent_grants = await self._parent_grants(parent_id)
-        else:
-            # Only the owner can tell a root item from one whose folder is hidden from them.
-            parent_grants = [] if metadata.get("ownedByMe") else None
+        parent_grants = await self._parent_grants(parent_id) if parent_id else []
         return drive_shared_with(
             grants,
             owner_ids={o.source_id for o in owners if o.source_id},

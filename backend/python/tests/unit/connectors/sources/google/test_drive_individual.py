@@ -860,7 +860,8 @@ class TestPersonalDriveSharedWith:
 
         assert calls == ["folder-1"]
 
-    async def test_an_existing_file_with_known_sharing_is_written_as_a_metadata_update(self, connector) -> None:
+    async def test_an_unchanged_existing_file_stays_in_the_batched_write_with_its_shares(self, connector) -> None:
+        """The batched write rewrites the record's people edges, so a share change needs no metadata update."""
         connector.drive_data_source.files_get, _ = self._parent([])
         existing = MagicMock()
         existing.id = "existing-id"
@@ -877,8 +878,18 @@ class TestPersonalDriveSharedWith:
             metadata=self._shared_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
         )
 
-        assert result.is_updated is True
-        assert result.metadata_changed is True
+        assert result.is_updated is False
+        assert [p.email for p in result.record.shared_with] == ["bob@example.com"]
+
+    async def test_a_file_this_user_does_not_own_leaves_shared_with_unknown(self, connector) -> None:
+        connector.drive_data_source.files_get, calls = self._parent([])
+
+        result = await connector._process_drive_item(
+            metadata=self._shared_file(ownedByMe=False), user_id="u1", user_email="bob@example.com", drive_id="drive-1"
+        )
+
+        assert result.record.shared_with is None
+        assert calls == []
 
     async def test_hidden_owner_email_is_filled(self, connector) -> None:
         connector.drive_data_source.files_get, _ = self._parent([])

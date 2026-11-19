@@ -5188,13 +5188,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         record.authored_by, record.last_modified_by, record.owners = people
         details = bool(getattr(permissions, "grant_details_seen", False))
         parent_grants: list[dict] | None = None
-        if not details:
+        # My Drive shares are decided by the owner's sync only: a reader's view of the folder may differ,
+        # and the edges would follow whichever sync ran last.
+        if not details and metadata.get("ownedByMe"):
             parent_id = (metadata.get("parents") or [None])[0]
-            if parent_id:
-                parent_grants = await self._parent_grants(parent_id, user_email, data_source)
-            elif metadata.get("ownedByMe"):
-                # Only the owner can tell a root item from one whose folder is hidden from them.
-                parent_grants = []
+            parent_grants = await self._parent_grants(parent_id, user_email, data_source) if parent_id else []
         record.shared_with = drive_shared_with(
             grants,
             owner_ids={o.source_id for o in people.owners if o.source_id},
@@ -6163,7 +6161,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             # another user's individual grant into it. Unfiltered on purpose, so a drive
             # excluded by the DRIVE_IDS filter is not pulled back in this way either.
             user_drives = await self._list_user_shared_drives(user_drive_data_source)
-            await self._note_foreign_drives_reached(user, user_drives)
+            try:
+                await self._note_foreign_drives_reached(user, user_drives)
+            except Exception as e:
+                # Bookkeeping for drives of another organization must not cost this user's own sync.
+                self._sync_ledger.note_incomplete()
+                self.logger.error(f"Foreign shared drives not updated for {user.email}: {e}", exc_info=True)
             member_drive_ids = {
                 member_drive_id
                 for drive in user_drives
@@ -6947,6 +6950,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             if drive.get("id") and drive["id"] not in self._listed_shared_drive_ids
             and self._pass_drive_ids_filter(drive["id"])
         }
+        # A member who is no longer an active synced user never lists the drive again to leave it.
+        active = {u.email.lower() for u in self.synced_users if u.is_active and u.email}
         async with self._foreign_drives_lock:
             stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
             drives = {
@@ -6963,33 +6968,49 @@ class GoogleDriveTeamConnector(BaseConnector):
                     entry["name"] = name
                     changed.add(drive_id)
             for drive_id, entry in drives.items():
-                if drive_id not in reached and email in entry["members"]:
-                    entry["members"].remove(email)
+                kept = [m for m in entry["members"] if (m != email or drive_id in reached) and (not active or m in active)]
+                if kept != entry["members"]:
+                    entry["members"] = kept
+                    changed.add(drive_id)
+                elif not kept:
+                    # A delete that failed on an earlier run is tried again.
                     changed.add(drive_id)
             for drive_id in sorted(changed):
-                entry = drives[drive_id]
-                if entry["members"]:
-                    group = RecordGroup(
-                        name=entry["name"],
-                        org_id=self.data_entities_processor.org_id,
-                        external_group_id=drive_id,
-                        description="Shared Drive",
-                        connector_name=self.connector_name,
-                        connector_id=self.connector_id,
-                        group_type=RecordGroupType.DRIVE,
-                    )
-                    grants = [
-                        Permission(email=m, type=PermissionType.READ, entity_type=EntityType.USER)
-                        for m in entry["members"]
-                    ]
-                    await self.data_entities_processor.on_new_record_groups([(group, grants)])
-                elif await delete_shared_drive_records(
-                    self.data_entities_processor, self.connector_id, drive_id, self.logger
-                ):
-                    del drives[drive_id]
+                try:
+                    if await self._write_foreign_drive(drive_id, drives[drive_id]):
+                        del drives[drive_id]
+                except Exception as e:
+                    self._sync_ledger.note_incomplete()
+                    self.logger.error(f"Foreign shared drive {drive_id} not updated: {e}", exc_info=True)
             await self.drive_delta_sync_point.update_sync_point(
                 FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": drives}
             )
+
+    async def _write_foreign_drive(self, drive_id: str, entry: dict) -> bool:
+        """Write a foreign drive's group with its members' grants; with none, revoke and delete it.
+        True when the drive is gone and can be forgotten."""
+        group = RecordGroup(
+            name=entry["name"],
+            org_id=self.data_entities_processor.org_id,
+            external_group_id=drive_id,
+            description="Shared Drive",
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            group_type=RecordGroupType.DRIVE,
+        )
+        grants = [Permission(email=m, type=PermissionType.READ, entity_type=EntityType.USER) for m in entry["members"]]
+        # Revoked before the delete, so a delete that fails leaves nobody with access.
+        await self.data_entities_processor.on_new_record_groups([(group, grants)])
+        if grants:
+            return False
+        if not await delete_shared_drive_records(self.data_entities_processor, self.connector_id, drive_id, self.logger):
+            return False
+        # Without its change tokens gone, a user who rejoins would read only later changes and never the drive's files.
+        for user in self.synced_users:
+            await self.drive_delta_sync_point.delete_sync_point(
+                generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
+            )
+        return True
 
     async def _list_user_shared_drives(
         self, user_drive_data_source: GoogleDriveDataSource
