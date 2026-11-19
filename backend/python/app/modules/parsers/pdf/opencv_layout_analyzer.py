@@ -70,6 +70,8 @@ class LayoutRegion:
     caption: str = ""
     # TEXT only: a heading line split off the paragraph it was set on.
     heading: bool = False
+    # TABLE only: read by the order of evidence (PDF_TABLE_EXTRACTION=evidence); its caption stays outside the grid.
+    from_evidence: bool = False
 
 
 @dataclass
@@ -163,6 +165,19 @@ def _gutter_relax_merge_pair(
 _TABLE_PROXIMITY_NEIGHBOR_MAX_AREA = 2000.0
 
 
+_TABLE_NUMBER_START = re.compile(r"^\s*(Table|Figure|TABLE|FIGURE)\s+[A-Z]?\d")
+
+
+def _evidence_table_keeps_caption_out(r: LayoutRegion, a: LayoutRegion) -> bool:
+    """A table read by the order of evidence never takes its caption into its grid: a TEXT region that opens with a
+    table or figure number stays a sibling (the legacy flow folds such a line into the header)."""
+    table, other = (r, a) if r.type == LayoutRegionType.TABLE else (a, r)
+    return (
+        table.type == LayoutRegionType.TABLE and table.from_evidence
+        and other.type == LayoutRegionType.TEXT and bool(_TABLE_NUMBER_START.match(other.text or ""))
+    )
+
+
 def _table_proximity_neighbor_allowed(
     r: LayoutRegion, a: LayoutRegion
 ) -> bool:
@@ -180,6 +195,8 @@ def _table_proximity_neighbor_allowed(
     # Header-shape bypass: a short TEXT region flush against the top of
     # the table and horizontally contained within it folds in even when
     # its bbox area exceeds the neighbour cap.
+    if _evidence_table_keeps_caption_out(r, a):
+        return False
     if _text_is_table_top_header(r, a):
         return True
     non_table = a if r_is_table else r
@@ -223,6 +240,8 @@ def _table_overlap_with_large_neighbor_allowed(
     # table is sub-threshold -- which is precisely the situation a
     # missed multi-row column header produces (bbox-jitter overlap at
     # the table's top edge).
+    if _evidence_table_keeps_caption_out(r, a):
+        return False
     if _text_is_table_top_header(r, a):
         return True
     non_table = a if r_is_table else r

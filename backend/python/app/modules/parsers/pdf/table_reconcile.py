@@ -56,6 +56,7 @@ XCROSS_MAX = 0.25  # share of row/column pairs whose text may cross an undrawn c
 RULE_MIN_LEN = 5.0  # shorter rules are not row or column rules, pt
 FULL_ROW_RULE = 0.9  # a rule that ends a record of a shaded table runs the table's width (a line-level rule in one column does not)
 FRAGMENT_MIN_ROWS = 3  # row edges that are no row rule before a table counts as shaded line by line
+FRAGMENT_ONE_COLUMN = 0.4  # share of those rows that hold text in one column only: lines of one wrapped cell
 FRAGMENT_SHARE = 0.4  # ... and their share of the finder's rows
 COLUMN_RULE_COVER = 0.6  # a column rule runs this share of the table's height
 ROW_RULE_COVER = 0.6  # a row rule's segments cover this share of the extent's width
@@ -424,6 +425,14 @@ def drawn_rows_and_columns(
     stray = [top for top in tops if not any(abs(y - top) <= SNAP for y in ys)]
     if len(ys) < 2 or len(stray) < FRAGMENT_MIN_ROWS or len(stray) < FRAGMENT_SHARE * len(tops):
         return None
+    # a row that is a line of one wrapped cell has text in one column only; a row of a table has text in several
+    one_column = 0
+    for (top, bot), row in zip(_row_boxes(t), t.rows):
+        if not any(abs(y - top) <= SNAP for y in ys):
+            cols = {j for j, c in enumerate(row.cells) if c is not None and any(c[0] <= _cx(w) < c[2] and top - 1 <= (float(w["top"]) + float(w["bottom"])) / 2 <= bot + 1 for w in own)}
+            one_column += len(cols) <= 1
+    if one_column < FRAGMENT_ONE_COLUMN * len(stray):
+        return None
     height = lb[3] - lb[1]
     xs = sorted({round(x, 1) for x, a, b in vrules if lb[0] - SNAP <= x <= lb[2] + SNAP and min(b, lb[3]) - max(a, lb[1]) >= COLUMN_RULE_COVER * height})
     cols = [x for i, x in enumerate(xs) if i == 0 or x - xs[i - 1] > SNAP]
@@ -480,7 +489,7 @@ def ruled_table(
         return None, [], "under 2x2 without trailing rows"
     bbox = (lb[0], lb[1], lb[2], cut if cut is not None else lb[3])
     return (
-        ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=bbox, text=ola._grid_to_text(clean), table_grid=clean),
+        ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=bbox, text=ola._grid_to_text(clean), table_grid=clean, from_evidence=True),
         notes,
         "",
     )
@@ -546,7 +555,7 @@ def decide_box(
 
     def region_of(c: table_quality.Cand, kind: str) -> Decision:
         grid = ola._trim_empty_rows_cols(c.grid)
-        region = ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=extent, text=ola._grid_to_text(grid), table_grid=grid)
+        region = ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=extent, text=ola._grid_to_text(grid), table_grid=grid, from_evidence=True)
         return Decision(box, kind, [region], reason=f"tier {c.tier} {c.name} q={c.q:.2f}")
 
     ruled: table_quality.Cand | None = None
