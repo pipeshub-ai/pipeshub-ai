@@ -128,6 +128,9 @@ _DWELL_SWEEP_INTERVAL_SECONDS = 30.0
 # no finish signals (a backoff coming due, a downstream pause lifting, records
 # on another partition). Also the poll timeout parallel dispatch keeps.
 _BUSY_POLL_TIMEOUT_MS = 50
+# A finish frees an index permit for one loop turn and that turn's dispatch takes it back, so a backpressure
+# episode ends only once later turns have seen it stay clear for this long: one WARNING and one INFO per episode.
+_BACKPRESSURE_CLEAR_SETTLE_SECONDS = 5.0
 # Sentinel CompositeKeyExtractor uses for an absent fairness field.
 _DEFAULT_KEY_LEVEL = "__default__"
 # A message the read phase has not parsed yet (see __parse_batch).
@@ -367,6 +370,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # took it down is the only suspect in flight. Used on the worker loop.
         self._suspects = asyncio.Lock()
         self._backpressure_logged = False
+        self._backpressure_clear_since: float | None = None
         # Reads are paused because no record could be admitted (not a downstream service asking for a pause).
         self._admission_paused = False
         self._partition_lock = threading.Lock()
@@ -834,6 +838,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.message_handler = message_handler
             self.main_loop = asyncio.get_running_loop()
             self._finished = asyncio.Event()
+            # An episode a previous run left open must not hide this run's first WARNING.
+            self._backpressure_logged = False
+            self._backpressure_clear_since = None
 
             if not self.consumer:
                 await self.initialize()
@@ -1082,6 +1089,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if not_paused:
                 self.consumer.pause(*not_paused)
             self._admission_paused = bool(budget.blocked or saturated or scheduler_full)
+            self._backpressure_clear_since = None
             if not self._backpressure_logged:
                 if downstream_paused:
                     self.logger.warning(
@@ -1131,8 +1139,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.consumer.resume(*resumable)
             self._admission_paused = False
             if self._backpressure_logged:
-                self.logger.info("Backpressure cleared: %s", budget.describe())
-                self._backpressure_logged = False
+                now = time.monotonic()
+                if self._backpressure_clear_since is None:
+                    self._backpressure_clear_since = now
+                if now - self._backpressure_clear_since >= _BACKPRESSURE_CLEAR_SETTLE_SECONDS:
+                    self.logger.info("Backpressure cleared: %s", budget.describe())
+                    self._backpressure_logged = False
+                    self._backpressure_clear_since = None
 
     def __parallel_dispatch(self) -> bool:
         """Whether several records from one partition may run at once.
