@@ -156,10 +156,10 @@ async def test_a_connector_switched_to_scopes_is_never_served_from_stamps_that_a
     docs = {"c1": _with_mode(current(**{**over, K["exact"]: True}), "scopes")}
     p = ServingPlanner(svc, StampCurrency(graph(docs)), default=default, config=config(["c1"]))
     assert await p.plan_exact(ORG, USER) == (None, False), name
-    assert filter_state(docs["c1"], default, store_serves=True)["effective"] == "legacy", name
+    assert filter_state(docs["c1"], default, store_serves=True, listed=True)["effective"] == "legacy", name
     docs["c1"] = _with_mode(current(**{K["exact"]: True}), "scopes")
     assert (await p.plan(ORG, USER)).current == {"c1"}
-    assert filter_state(docs["c1"], default, store_serves=True)["effective"] == "scopes"
+    assert filter_state(docs["c1"], default, store_serves=True, listed=True)["effective"] == "scopes"
 
 
 async def test_the_shadow_comparison_reads_the_stamps_whatever_a_connector_s_mode() -> None:
