@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: pytest finds it by name)
+
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 from app.utils.process_hardening import disable_vendor_telemetry
 from tests.support.sys_modules_guard import install as install_sys_modules_guard

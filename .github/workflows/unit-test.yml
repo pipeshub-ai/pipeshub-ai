@@ -245,6 +245,12 @@ jobs:
       # the workers' data into COVERAGE_FILE. GitHub's 4 vCPUs are 2 cores, so
       # each of the 4 workers runs a test at about half serial speed:
       # --timeout=60 keeps pytest.ini's 30s hang guard at the same CPU budget.
+      # That guard (SIGALRM) cannot stop a test that swallows the alarm or waits in
+      # C code, and a modules run once sat silent until the job's 30-minute
+      # cancel, with no stack. faulthandler_timeout prints every thread's stack
+      # from a C watchdog, which works even then. It only prints: exiting the
+      # worker would make xdist re-queue that worker's finished files, and
+      # --dist loadfile then never completes. 300 is the longest timeout mark.
       - name: Run unit tests (${{ matrix.shard }})
         working-directory: backend/python
         env:
@@ -259,7 +265,7 @@ jobs:
         run: |
           args=$(python3 ../../scripts/unit_shards.py args "$SHARD")
           mapfile -t shard_args <<< "$args"
-          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
+          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 -o faulthandler_timeout=300 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
 
       # Every capacity knob blank, as compose and Helm deliver an unset one: each service's start-up import must
