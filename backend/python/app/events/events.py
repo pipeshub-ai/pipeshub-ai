@@ -355,6 +355,17 @@ class EventProcessor:
             self._spawn_abandoned_vrid_cleanup(org_id, earlier)
             await self._rewrite_or_delete_vrid_vectors(earlier)
 
+    async def _clear_pending(self, doc: dict[str, Any]) -> None:
+        """The record ends this run as a copy of another record's, or without indexing: it has no replacement copy pending any more. The
+        field goes (never null), so a commit of an earlier run of the record, which expects it, is refused."""
+        pending = keep_old_copy.pending_of(doc)
+        if not pending:
+            return
+        await self.graph_provider.update_node_fields_if_match(
+            _record_key(doc), CollectionNames.RECORDS.value, {}, {PENDING_VIRTUAL_RECORD_ID: pending}, unset=[PENDING_VIRTUAL_RECORD_ID]
+        )
+        doc.pop(PENDING_VIRTUAL_RECORD_ID, None)
+
     async def _discard_embed_marker(self, doc: dict[str, Any], marker: dict[str, Any], org_id: str) -> None:
         """End an interrupted run's marker when the record turns out to need no indexing.
 
@@ -367,6 +378,7 @@ class EventProcessor:
             "Failed to clear the embedding marker of record",
             doc,
         )
+        await self._clear_pending(doc)
         orphaned = marker.get(EMBED_VRID)
         if orphaned and orphaned != doc.get("virtualRecordId"):
             self._spawn_abandoned_vrid_cleanup(org_id, orphaned)
@@ -1551,6 +1563,7 @@ class EventProcessor:
                 "Failed to persist duplicate record fields",
                 doc,
             )
+            await self._clear_pending(doc)
             if vrid:
                 # Set first: a sync that raises or is cancelled may already
                 # have written some of the points.

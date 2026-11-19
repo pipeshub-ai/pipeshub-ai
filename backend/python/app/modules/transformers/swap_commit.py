@@ -34,7 +34,10 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.conditions import EQ, ONE_OF, Cond
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
+from app.modules.indexing.stray_sweep import BLOCK_ID_FIELD, sweep_max_points
+from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
 from app.services.vector_db.filters import org_for_filter
+from app.services.vector_db.models import ScrollWindowExceededError, VectorChunkPayload
 from app.services.vector_db.membership import (
     rewrite_or_delete_virtual_record,
     sync_vector_membership,
@@ -60,7 +63,11 @@ class SwapCommitter:
     # ------------------------------------------------------------------ commit
 
     async def commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> bool:
-        """Move the record to the new copy together with ``fields`` (its status). False when the record no longer exists."""
+        """Move the record to the new copy together with ``fields`` (its status). False when the record no longer exists.
+
+        The set is read before the write (every block that was given a point is there) and its presence is confirmed after it: once the
+        record names the copy no sweep can take it, so that second read is final, and a copy that was taken in between is rolled back
+        to the old one, which is still held for the grace."""
         record = ctx.record
         await self._require_points(ctx, swap)
         conditions = [
@@ -77,18 +84,41 @@ class SwapCommitter:
                 unset=[PENDING_VIRTUAL_RECORD_ID],
             )
         if won:
+            await self._confirm_after_commit(ctx, swap, fields)
             return True
-        await self._refused(swap)
-        return False
+        return await self._refused(swap)
 
-    async def _refused(self, swap: keep_old_copy.SwapRun) -> None:
-        """The commit matched nothing: the record is gone (deleted), or the run was superseded. The run's own copy is released."""
+    async def _confirm_after_commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> None:
+        """The record names the copy now. When nothing of it is in the store (a sweep took it between the read and the write, with the
+        record in a status that does not hold it), the move is undone while the old copy is still there, and the run is retried."""
+        if not self._pointed(ctx):
+            return
+        vs = self.o.vector_store
+        collection = vs.collection_registry.resolve_write_collection(vs._record_context(swap.org_id, ctx.record))
+        flt = await vs.vector_db_service.filter_collection(
+            must={"orgId": org_for_filter(swap.org_id, match_bound=True), "virtualRecordId": swap.new_vrid}
+        )
+        if await vs.vector_db_service.count_points(collection, flt) > 0:
+            return
+        await self.o.graph_provider.update_node_fields_if(
+            swap.record_id, _RECORDS,
+            {"virtualRecordId": swap.old_vrid, PENDING_VIRTUAL_RECORD_ID: swap.new_vrid, "indexingStatus": ProgressStatus.IN_PROGRESS.value},
+            [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", EQ, fields.get("indexingStatus", ProgressStatus.COMPLETED.value))],
+        )
+        raise IndexingError(
+            "The replacement copy was removed from the vector store while it was committed; the move is undone and the run is retried",
+            details={"record_id": swap.record_id, "virtual_record_id": swap.new_vrid},
+        )
+
+    async def _refused(self, swap: keep_old_copy.SwapRun) -> bool:
+        """The commit matched nothing. False: the record is gone (deleted). True: a redelivery of this very commit landed first, so the
+        copy is the record's. Otherwise the run was superseded and its own copy is released."""
         doc = await self.o.graph_provider.get_document(swap.record_id, _RECORDS, raise_on_error=True)
         if doc is None or not is_live_record(doc):
             await self._drop_own_copy(swap, swap.new_vrid)
-            return
+            return False
         if doc.get("virtualRecordId") == swap.new_vrid and keep_old_copy.pending_of(doc) is None:
-            return  # a redelivery of this very commit landed first: the copy is the record's
+            return True
         await self._drop_own_copy(swap, swap.new_vrid, only_if_pending=True)
         raise SupersededRun(swap.record_id)
 
@@ -101,24 +131,54 @@ class SwapCommitter:
             )
         await self._release_unheld(swap.org_id, vrid)
 
-    async def _require_points(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
-        """Defense in depth: a copy with none of its points is never committed, whatever removed them.
-
-        The holder rule is what keeps a running copy from being swept; this read turns a missing set into a retry instead of a
-        COMPLETED record with nothing to find."""
+    @staticmethod
+    def _pointed(ctx: TransformContext) -> frozenset[str]:
+        """The block ids the writers gave a point this run (D-179), recorded with the reconciliation metadata."""
         rc = ctx.reconciliation_context
         pointed = (rc.new_metadata or {}).get("pointedBlocks") if rc is not None and isinstance(rc.new_metadata, dict) else None
+        return frozenset(pointed or ())
+
+    async def _require_points(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
+        """Defense in depth: a copy is committed only with a point for every block that was given one, whatever removed the rest.
+
+        The holder rule is what keeps a running copy from being swept; this read turns a missing or partial set into a retry instead of a
+        COMPLETED record that cannot be found. A listing that stops at its bound (a very large record) proves only that something is there."""
+        pointed = self._pointed(ctx)
         if not pointed:
             return
         vs = self.o.vector_store
+        db = vs.vector_db_service
         collection = vs.collection_registry.resolve_write_collection(vs._record_context(swap.org_id, ctx.record))
-        flt = await vs.vector_db_service.filter_collection(
-            must={"orgId": org_for_filter(swap.org_id, match_bound=True), "virtualRecordId": swap.new_vrid}
-        )
-        if await vs.vector_db_service.count_points(collection, flt) <= 0:
+        flt = await db.filter_collection(must={"orgId": org_for_filter(swap.org_id, match_bound=True), "virtualRecordId": swap.new_vrid})
+        seen: set[str] = set()
+        offset: str | None = None
+        complete = False
+        limit = sweep_max_points()
+        scanned = 0
+        while True:
+            try:
+                page = await db.scroll(
+                    collection_name=collection, scroll_filter=flt, limit=min(500, max(1, limit - scanned)),
+                    offset=offset, with_payload=[VIRTUAL_RECORD_ID_FIELD, BLOCK_ID_FIELD],
+                )
+            except ScrollWindowExceededError:
+                break
+            for point in page.points or []:
+                scanned += 1
+                if block_id := VectorChunkPayload.from_dict(point.payload or {}).metadata.blockId:
+                    seen.add(block_id)
+            if not page.next_offset or page.next_offset == offset:
+                complete = True
+                break
+            offset = page.next_offset
+            if scanned >= limit:
+                break
+        missing = pointed - seen
+        if not seen or (complete and missing):
             raise IndexingError(
-                "The replacement copy has no points in the vector store; it is not committed and the run is retried",
-                details={"record_id": swap.record_id, "virtual_record_id": swap.new_vrid},
+                "The replacement copy is " + ("missing from" if not seen else "incomplete in")
+                + " the vector store; it is not committed and the run is retried",
+                details={"record_id": swap.record_id, "virtual_record_id": swap.new_vrid, "missing_blocks": len(missing)},
             )
 
     # ------------------------------------------------------------------ after the commit

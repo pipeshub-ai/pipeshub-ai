@@ -125,3 +125,51 @@ def test_the_running_copy_is_held_until_the_record_reaches_another_status() -> N
 
     assert holds_vrid(rec("X", "NOT_STARTED", pendingVirtualRecordId="Y"), "Y")  # edited faster than it indexes still commits
     assert not holds_vrid(rec("X", "FAILED", pendingVirtualRecordId="Y"), "Y")
+
+
+@pytest.mark.asyncio
+async def test_a_partial_copy_is_not_committed() -> None:
+    """Every block that was given a point must be there: a copy that lost some blocks (a partial delete) is retried, not served."""
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    swap, _ = committer(g, view=lambda vrid: ["b1"])
+    with pytest.raises(IndexingError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1", "b2"]), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "X" and g.records["A"]["pendingVirtualRecordId"] == "Y"
+
+
+@pytest.mark.asyncio
+async def test_a_copy_taken_between_the_read_and_the_write_is_undone_while_the_old_copy_is_there() -> None:
+    """The record names the copy once the write lands, so a read after it is final: nothing there means the move goes back to the old copy."""
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    reads = iter([["b1"], []])  # the read before the commit sees the set; the read after it does not
+    swap, _ = committer(g, view=lambda vrid: next(reads))
+    with pytest.raises(IndexingError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1"]), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "X"
+    assert g.records["A"]["pendingVirtualRecordId"] == "Y" and g.records["A"]["indexingStatus"] == "IN_PROGRESS"
+
+
+@pytest.mark.asyncio
+async def test_a_commit_that_loses_to_its_own_redelivery_is_a_commit_not_a_deletion() -> None:
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})  # the redelivery landed first: no pending field, the copy is the record's
+    swap, _ = committer(g)
+    assert await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"}) is True
+    swap._release_unheld.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_ends_a_run_as_a_copy_of_another_loses_its_pending_field() -> None:
+    """A later commit of an earlier run of the record expects the pending field, so removing it fences that commit."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.events.events import EventProcessor
+
+    g = FakeGraph({"A": rec("X", "IN_PROGRESS", pendingVirtualRecordId="Y")})
+    ep = EventProcessor(MagicMock(), MagicMock(), g, MagicMock())
+    doc = {"_key": "A", **g.records["A"]}
+    await ep._clear_pending(doc)
+    assert "pendingVirtualRecordId" not in g.records["A"] and "pendingVirtualRecordId" not in doc
+    ep.update_record_fields = AsyncMock(return_value=True)
+    g.records["A"]["pendingVirtualRecordId"] = "Y2"
+    await ep._discard_embed_marker({"_key": "A", **g.records["A"]}, {"embedVrid": None}, "o")
+    assert "pendingVirtualRecordId" not in g.records["A"]

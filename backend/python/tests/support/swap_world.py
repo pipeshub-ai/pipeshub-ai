@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from app.modules.transformers.swap_commit import SwapCommitter
 from app.services.graph_db.common.record_visibility import holds_vrid
 from app.services.graph_db.conditions import holds
+from app.services.vector_db.models import ScrollResult
 
 
 class FakeGraph:
@@ -48,16 +50,28 @@ class FakeGraph:
         return True
 
 
-def committer(graph: FakeGraph, *, collections: dict[str, str] | None = None, points: int = 3) -> tuple[SwapCommitter, SimpleNamespace]:
-    """A committer over the fake graph. ``collections`` maps a connector id to its write collection."""
+def committer(
+    graph: FakeGraph, *, collections: dict[str, str] | None = None, points: int = 3, view: Callable[[str], list[str]] | None = None,
+) -> tuple[SwapCommitter, SimpleNamespace]:
+    """A committer over the fake graph. ``collections`` maps a connector id to its write collection; ``view`` gives the block ids the
+    vector store holds for a virtual record (by default one block, unless ``points`` is 0)."""
     collections = collections or {}
+    view = view or (lambda vrid: ["b1"] if points > 0 else [])
     registry = MagicMock()
     registry.resolve_write_collection.side_effect = lambda ctx: collections.get(getattr(ctx, "connector_id", None), "c1")
+
+    async def scroll(collection_name: str, scroll_filter: dict, limit: int, offset: str | None = None, with_payload: list[str] | None = None) -> ScrollResult:
+        blocks = view(scroll_filter["virtualRecordId"])
+        return ScrollResult(points=[SimpleNamespace(payload={"metadata": {"blockId": b, "virtualRecordId": scroll_filter["virtualRecordId"]}}) for b in blocks])
+
+    async def count_points(collection_name: str, count_filter: dict) -> int:
+        return len(view(count_filter["virtualRecordId"]))
+
     vs = SimpleNamespace(
         collection_registry=registry,
         _record_context=lambda org, record: SimpleNamespace(connector_id=getattr(record, "connector_id", None)),
         vector_db_service=SimpleNamespace(
-            filter_collection=AsyncMock(return_value={}), count_points=AsyncMock(return_value=points),
+            filter_collection=AsyncMock(side_effect=lambda must=None, **_: must), scroll=scroll, count_points=count_points,
         ),
         collection_locator=MagicMock(),
         _resync_membership_after_write=AsyncMock(),
