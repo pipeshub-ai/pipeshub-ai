@@ -12,7 +12,7 @@ service search again by record id (``_narrow_shortfall``). Three worlds on a rea
 The share of fallback searches and the recall of the target record at 10 are measured; with the old copy kept, search is no worse than today's
 order and the control is clearly worse, so the test would catch the membership staying on.
 
-Needs a Qdrant REST endpoint: QDRANT_REST_URL (default http://localhost:6333). N and R come from KEEP_OLD_COPY_CROWDING_N (default 4000) and
+Needs a Qdrant REST endpoint: QDRANT_REST_URL, or QDRANT_IT_HOST and QDRANT_IT_PORT (the graph jobs' Qdrant). N and R come from KEEP_OLD_COPY_CROWDING_N (default 4000) and
 KEEP_OLD_COPY_CROWDING_RATE (default 5). Seeded, so the numbers repeat.
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ from qdrant_client.models import (  # noqa: E402
     VectorParams,
 )
 
-URL = os.environ.get("QDRANT_REST_URL", "http://localhost:6333")
+URL = os.environ.get("QDRANT_REST_URL") or f"http://{os.environ.get('QDRANT_IT_HOST', 'localhost')}:{os.environ.get('QDRANT_IT_PORT', '6343')}"
 N = int(os.environ.get("KEEP_OLD_COPY_CROWDING_N", "4000"))
 RATE = float(os.environ.get("KEEP_OLD_COPY_CROWDING_RATE", "5"))
 GRACE, INFLIGHT, DIM, FETCH, QUERIES, CHUNKS = 330, 7, 96, 30, 400, 3

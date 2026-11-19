@@ -5,7 +5,7 @@ record names its virtual record as its own ``virtualRecordId`` (the graph-first 
 pending vrid, is not what search uses). The commit is the real
 ``SwapCommitter`` against the real graph provider. This is the mechanism and the stores, not ``retrieval_service`` itself.
 
-Needs Neo4j or ArangoDB (NEO4J_IT_URI / ARANGO_IT_URL) and Qdrant over REST (QDRANT_REST_URL, default http://localhost:6333).
+Needs Neo4j or ArangoDB (NEO4J_IT_URI / ARANGO_IT_URL) and Qdrant over REST (QDRANT_REST_URL, or QDRANT_IT_HOST and QDRANT_IT_PORT as the other graph-job tests use).
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, P
 
 RECORDS = CollectionNames.RECORDS.value
 ORG = "org-search-it"
-URL = os.environ.get("QDRANT_REST_URL", "http://localhost:6333")
+URL = os.environ.get("QDRANT_REST_URL") or f"http://{os.environ.get('QDRANT_IT_HOST', 'localhost')}:{os.environ.get('QDRANT_IT_PORT', '6343')}"
 logger = logging.getLogger("keep-old-copy-search-it")
 OLD_TEXT, NEW_TEXT = "the old copy of the document", "the new copy of the document"
 
