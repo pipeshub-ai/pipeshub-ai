@@ -174,7 +174,10 @@ async def _unseed(provider: IGraphDBProvider, run: str) -> None:
 
 async def _plan_operators(provider: IGraphDBProvider) -> tuple[set[str], str]:
     """The operators of the plan, and the text of the indexes it seeks (their fields), of the correlated batch lookup (the form the orphan sweep asks), as the store plans it."""
-    from app.services.graph_db.common.record_visibility import aql_holds_vrid, cypher_holds_vrid
+    from app.services.graph_db.common.record_visibility import (
+        aql_holds_vrid,
+        cypher_holds_vrid,
+    )
 
     if isinstance(provider, Neo4jProvider):
         query = f"EXPLAIN UNWIND ['a', 'b'] AS vrid MATCH (r:Record) WHERE {cypher_holds_vrid('r', 'vrid')} RETURN DISTINCT vrid"

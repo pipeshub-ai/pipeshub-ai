@@ -206,7 +206,7 @@ async def _reuse_in_other_collection(ep: EventProcessor, gp: AsyncMock, doc: dic
 
 
 @pytest.mark.asyncio
-async def test_a_twin_in_another_collection_is_not_attached_before_the_run_when_the_old_copy_is_kept(swap_on):
+async def test_a_twin_in_another_collection_is_not_attached_before_the_run_when_the_old_copy_is_kept(swap_on) -> None:
     """The eager identity write is what dropped the old copy: the record would name the twin's vrid with none of its own points."""
     ep, _processor_mock, gp = _processor()
     decision = await _reuse_in_other_collection(ep, gp, _doc())
@@ -215,7 +215,7 @@ async def test_a_twin_in_another_collection_is_not_attached_before_the_run_when_
 
 
 @pytest.mark.asyncio
-async def test_a_twin_in_another_collection_is_attached_as_before_when_the_old_copy_is_not_kept(monkeypatch):
+async def test_a_twin_in_another_collection_is_attached_as_before_when_the_old_copy_is_not_kept(monkeypatch) -> None:
     monkeypatch.setattr(keep_old_copy, "swap_allowed", AsyncMock(return_value=False))
     ep, _processor_mock, gp = _processor()
     gp.update_node = AsyncMock(return_value=True)
