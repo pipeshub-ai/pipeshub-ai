@@ -283,6 +283,29 @@ def test_a_recount_in_the_middle_of_a_walk_is_the_total_of_the_whole_listing(mon
     assert (second.total, second.counts_by_type) == (4, {"record": 3, "folder": 1})
 
 
+def test_a_connector_not_ready_when_the_total_is_counted_again_refuses_the_cursor(monkeypatch) -> None:
+    """The recount reads every connector, also one the page skips because it ran out: counted as 0 there, it would carry an understated total for five more minutes."""
+    from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
+
+    class NotReadyWhenCounted(FakeProvider):
+        preparing: set[str] = set()
+
+        async def get_knowledge_hub_connector_page_v3(self, *, app_id, **kwargs) -> dict:
+            if app_id in self.preparing and kwargs.get("include_total"):
+                raise KnowledgeHubListingNotReady
+            return await super().get_knowledge_hub_connector_page_v3(app_id=app_id, **kwargs)
+
+    clock = _clock(monkeypatch)
+    provider = NotReadyWhenCounted({"rg-1": [row("a1", "apple"), row("a3", "cherry"), row("a4", "date")], "kb-1": [row("a2", "banana")]})
+    first = asyncio.run(_search(provider, limit=2))
+    second = asyncio.run(_search(provider, limit=2, cursor_token=first.next_cursor))
+    assert ids(second) == ["a3", "a4"]          # kb-1 ran out on the first page: later pages do not read it
+    provider.preparing = {"kb-1"}
+    clock[0] += 301_000
+    with pytest.raises(CursorError):
+        asyncio.run(_search(provider, limit=2, cursor_token=second.prev_cursor))
+
+
 @pytest.mark.parametrize("ca", [None, 0, -1, "soon", 1.5, True, [1], {"a": 1}])
 def test_a_count_time_that_is_missing_or_not_a_time_is_an_unknown_age_and_the_total_is_counted_again(ca) -> None:
     wire = KnowledgeHubCursor(boundary=Boundary(0, "a", "a1"), total=5, counts_by_type={"record": 5}, counted_at_ms=1_000).to_wire()

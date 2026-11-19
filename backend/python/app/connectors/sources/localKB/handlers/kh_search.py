@@ -151,8 +151,9 @@ async def search_page(
     )
     counted = results
     if recount:
+        recounted = [app_id for app_id in connectors if app_id not in left_out]
         counted = await _run(
-            provider, [app_id for app_id in connectors if app_id not in left_out],
+            provider, recounted,
             org_id=org_id, access=access, limit=1,
             sort_field=sort_field, sort_dir=sort_dir, filters=filters,
             after=None, direction="next", include_total=True,
@@ -162,7 +163,9 @@ async def search_page(
     if grants_read is not None:
         access = {**access, "by_connector": grants_read}
     refused = {app_id for app_id, payload in zip(targets, results) if payload.get("notReady")}
-    if cursor is not None and refused - left_out:
+    # The recount also reads connectors the page skipped (they ran out): one not ready there would count as 0 and carry an understated total.
+    recount_refused = {app_id for app_id, payload in zip(recounted, counted) if payload.get("notReady")} if recount else set()
+    if cursor is not None and (refused - left_out or recount_refused):
         # A connector this listing counted and has been listing stopped being ready: its rows past the boundary cannot be read, so the total carried from the first
         # page is no longer this listing's. The cursor is refused (the caller answers 400, as for any cursor that no longer applies) and the listing starts again,
         # counted afresh, with the connector named as not ready. Before the not-ready answer below: a caller retries that one with the same cursor.
