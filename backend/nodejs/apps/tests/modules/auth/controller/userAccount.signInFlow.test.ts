@@ -39,6 +39,7 @@ import {
   InternalServerError,
   NotFoundError,
   UnauthorizedError,
+  WrongCredentialError,
 } from '../../../../src/libs/errors/http.errors';
 import { deriveUserActionSecret } from '../../../../src/libs/utils/jwtKeys';
 import type { ICacheService } from '../../../../src/libs/services/cache/cacheService.interface';
@@ -1505,7 +1506,7 @@ describe('UserAccountController sign-in flow', () => {
       await giveOtp(sam, '123456');
       const token = await initAuth([['otp']], sam.email);
       const { error } = await authenticate(token, { method: 'otp', credentials: { otp: '123456' } });
-      expect(error).to.be.instanceOf(UnauthorizedError);
+      expect(error).to.be.instanceOf(WrongCredentialError);
       expect(error.message).to.equal(WRONG_SIGN_IN_CODE);
     });
 

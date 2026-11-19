@@ -2200,11 +2200,17 @@ export class UserAccountController {
         };
         if (method === AuthMethodType.OTP) {
           await compareWithDecoyHash(submitted.otp);
-          throw new UnauthorizedError(WRONG_SIGN_IN_CODE);
+          throw authRefusal(
+            new WrongCredentialError(WRONG_SIGN_IN_CODE),
+            'unknown_user',
+          );
         }
         if (method === AuthMethodType.PASSWORD) {
           await compareWithDecoyHash(submitted.password);
-          throw new BadRequestError(WRONG_EMAIL_OR_PASSWORD);
+          throw authRefusal(
+            new BadRequestError(WRONG_EMAIL_OR_PASSWORD),
+            'unknown_user',
+          );
         }
         throw new ForbiddenError(SLACK_ONLY_SIGN_IN_MESSAGE);
       }

@@ -92,6 +92,8 @@ export const users: CollectionMapping = {
     { col: 'designation', path: 'designation', type: 'text' },
     { col: 'kind', path: 'kind', type: 'text', readAbsentAs: 'human' },
     { col: 'description', path: 'description', type: 'text' },
+    { col: 'slack_user_id', path: 'slackUserId', type: 'text' },
+    { col: 'slack_team_id', path: 'slackTeamId', type: 'text' },
     {
       col: 'is_disabled',
       path: 'isDisabled',
@@ -262,6 +264,7 @@ export const userActivities: CollectionMapping = {
     { col: 'activity_type', path: 'activityType', type: 'text' },
     { col: 'login_mode', path: 'loginMode', type: 'text' },
     { col: 'ip_address', path: 'ipAddress', type: 'text' },
+    { col: 'details', path: 'details', type: 'text' },
     { col: 'is_deleted', path: 'isDeleted', type: 'bool', readAbsentAs: false },
     { col: 'created_at', path: 'createdAt', type: 'date' },
     { col: 'updated_at', path: 'updatedAt', type: 'date' },
