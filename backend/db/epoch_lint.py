@@ -19,7 +19,12 @@ def revision_attrs(f: Path) -> dict:
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if isinstance(t, ast.Name) and t.id in ("revision", "down_revision", "depends_on", "min_code_epoch"):
-                    vals[t.id] = ast.literal_eval(node.value)
+                    try:
+                        vals[t.id] = ast.literal_eval(node.value)
+                    except ValueError:
+                        if t.id in ("revision", "down_revision"):
+                            raise
+                        # the id lint never read these: a computed one is skipped here, not a crash of the lint
     return vals
 
 
