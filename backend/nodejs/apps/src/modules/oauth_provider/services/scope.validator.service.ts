@@ -7,6 +7,7 @@ import {
   getAllowedScopeNamesForRole,
   getScopesGroupedByCategoryForRole,
   getScopeDefinition,
+  consentScopesForRole,
 } from '../config/scopes.config'
 import { InvalidScopeError } from '../../../libs/errors/oauth.errors'
 
@@ -147,6 +148,22 @@ export class ScopeValidatorService {
 
   getAllowedScopeNamesForRole(isAdmin: boolean): string[] {
     return getAllowedScopeNamesForRole(isAdmin)
+  }
+
+  /**
+   * The granted scopes a person of this role is asked for on the consent
+   * page and gets on the code. Throws when nothing is left, as
+   * resolveGrantedScopes does when nothing is granted.
+   */
+  consentScopesForRole(granted: string[], isAdmin: boolean): string[] {
+    const scopes = consentScopesForRole(granted, isAdmin);
+    if (granted.length > 0 && scopes.length === 0) {
+      throw new InvalidScopeError(
+        'None of the requested scopes are available to this user',
+        { disallowedScopes: granted },
+      );
+    }
+    return scopes;
   }
 
   /**

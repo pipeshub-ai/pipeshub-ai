@@ -47,6 +47,7 @@ import { NO_CONTROL_CHARACTERS } from '../validators/oauth.validators';
 import { getUserRepository } from '../../../libs/repositories/user';
 import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { getOrgRepository } from '../../../libs/repositories/org';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import {
   isKnowledgeLimitWithin,
   toKnowledgeLimit,
@@ -149,17 +150,23 @@ export class OAuthProviderController {
     }
 
     try {
+      const user = req.user;
       this.oauthTokenService.audienceFor(query.resource);
 
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(
         query.scope,
       );
-      const { granted, notGranted } =
-        this.scopeValidatorService.resolveGrantedScopes(
-          requestedScopes,
-          app.allowedScopes,
-        );
+      const resolved = this.scopeValidatorService.resolveGrantedScopes(
+        requestedScopes,
+        app.allowedScopes,
+      );
+      const { notGranted } = resolved;
+      // Not listed as refused either: the person is simply not asked.
+      const granted = this.scopeValidatorService.consentScopesForRole(
+        resolved.granted,
+        await isUserOrgAdmin(user.userId, user.orgId),
+      );
 
       // RFC 9700: PKCE is REQUIRED for public clients
       if (!app.isConfidential && !query.code_challenge) {
@@ -177,7 +184,6 @@ export class OAuthProviderController {
       }
 
       // Build consent data
-      const user = req.user;
       const toScopeInfo = (scopes: string[]): ConsentData['scopes'] =>
         this.scopeValidatorService.getScopeDefinitions(scopes).map((s) => ({
           name: s.name,
@@ -325,9 +331,12 @@ export class OAuthProviderController {
 
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(scope);
-      const { granted } = this.scopeValidatorService.resolveGrantedScopes(
-        requestedScopes,
-        app.allowedScopes,
+      const granted = this.scopeValidatorService.consentScopesForRole(
+        this.scopeValidatorService.resolveGrantedScopes(
+          requestedScopes,
+          app.allowedScopes,
+        ).granted,
+        await isUserOrgAdmin(user.userId, user.orgId),
       );
 
       // A metadata document client is stored only now, once the person has consented.
