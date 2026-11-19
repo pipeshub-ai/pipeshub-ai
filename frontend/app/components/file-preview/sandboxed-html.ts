@@ -62,7 +62,9 @@ const BRIDGE_SCRIPT = `(function () {
     var matches = document.getElementsByClassName('highlight-' + id);
     if (!matches.length) return;
     matches[0].classList.add(ACTIVE);
-    matches[0].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    // Instant: the frame is told the active citation more than once as it loads, and in Chromium a smooth scroll
+    // started while another runs can end hundreds of lines past the highlight.
+    matches[0].scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' });
   }
   window.addEventListener('message', function (event) {
     if (event.source !== window.parent) return;

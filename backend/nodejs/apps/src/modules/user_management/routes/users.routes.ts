@@ -929,7 +929,7 @@ export function createUserRouter(container: Container) {
         });
 
         container.rebind<AuthService>('AuthService').toDynamicValue(() => {
-          return new AuthService(updatedConfig, logger);
+          return new AuthService(updatedConfig);
         });
 
         // Rebind controllers

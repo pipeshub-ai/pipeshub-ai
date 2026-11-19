@@ -11,22 +11,23 @@ The expansion is replaced by a counter, so the tests are fast.
 
 from __future__ import annotations
 
-import contextlib
 import io
-import signal
+import logging
 import time
 import zipfile
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.modules.parsers.excel import excel_parser as module
-from app.modules.parsers.excel import workbook_model
 from app.modules.parsers.excel.workbook_model import (
     WorkbookRefused,
     load_workbook_model,
 )
+from app.services.parsing.interface import ParseError
+from app.utils import user_errors
 from tests.support.excel_workbooks import workbook_zip
 
 if TYPE_CHECKING:
@@ -117,22 +118,18 @@ LOAD_SECONDS = 3
 SLACK_SECONDS = 30
 
 
-def _refused_within_the_bound(body: str) -> None:
-    # Per the owner's scope for round 6, no per-path cap: the load's CPU/time bound ends it.
+def _refused_within_the_bound(body: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Per the owner's scope for round 6, no per-path cap: the load's time bound ends it, in a worker.
+    monkeypatch.setattr(module, "EXCEL_LOAD_MAX_SECONDS", LOAD_SECONDS)
+    parser = module.ExcelParser(logging.getLogger("excel-test"), MagicMock())
     started = time.monotonic()
-    with pytest.raises(WorkbookRefused) as refused:
-        load_workbook_model(
-            workbook_zip(body),
-            module.EXCEL_LOAD_MAX_BYTES,
-            module.EXCEL_MAX_SHEET_XML_BYTES,
-            module.EXCEL_MAX_TEXT_CHARS,
-            LOAD_SECONDS,
-        )
-    assert refused.value.too_large
+    with pytest.raises(ParseError) as refused:
+        parser.load_workbook_from_binary(workbook_zip(body))
+    assert refused.value.message == user_errors.EXCEL_TOO_LARGE
     assert time.monotonic() - started < LOAD_SECONDS + SLACK_SECONDS
 
 
-def test_hyperlinks_on_merged_cells_are_refused_within_the_time_bound() -> None:
+def test_hyperlinks_on_merged_cells_are_refused_within_the_time_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     # openpyxl resolves a hyperlink on a merged cell by scanning every merged range
     # (WorksheetReader.normalize_merged_cell_link): H hyperlinks x M merges, quadratic, flat memory.
     # 20 000 x 20 000 (a 60 KB sheet part) would hold a worker for about 27 minutes.
@@ -140,16 +137,18 @@ def test_hyperlinks_on_merged_cells_are_refused_within_the_time_bound() -> None:
     _refused_within_the_bound(
         '<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData>'
         f'<mergeCells count="{merges}">' + "".join(f'<mergeCell ref="A{r}:B{r}"/>' for r in range(3, 3 + merges)) + "</mergeCells>"
-        "<hyperlinks>" + "".join(f'<hyperlink ref="B{3 + (i % merges)}" location="S!A1"/>' for i in range(links)) + "</hyperlinks>"
+        "<hyperlinks>" + "".join(f'<hyperlink ref="B{3 + (i % merges)}" location="S!A1"/>' for i in range(links)) + "</hyperlinks>",
+        monkeypatch,
     )
 
 
-def test_overlapping_hyperlink_ranges_are_refused_within_the_time_bound() -> None:
+def test_overlapping_hyperlink_ranges_are_refused_within_the_time_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     # openpyxl visits (and copies the hyperlink onto) every cell of every hyperlink range, overlaps
     # included; memory stays flat. 2000 ranges of 26 000 cells (a 120 KB sheet part) are 52 M visits.
     _refused_within_the_bound(
         '<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData>'
-        "<hyperlinks>" + "".join('<hyperlink ref="A1:Z1000" location="S!A1"/>' for _ in range(2000)) + "</hyperlinks>"
+        "<hyperlinks>" + "".join('<hyperlink ref="A1:Z1000" location="S!A1"/>' for _ in range(2000)) + "</hyperlinks>",
+        monkeypatch,
     )
 
 
@@ -166,46 +165,3 @@ def test_an_operator_who_lowers_the_heavy_parse_working_set_is_still_honoured(mo
     snap = _snapshot(cpu_quota=16.0, mem_limit_bytes=32 * 1024**3)
     monkeypatch.setattr(policy_mod, "HEAVY_PARSE_WORKING_SET_GB", 0.5)
     assert policy_mod.heavy_memory_cap(snap) == int(31 / 0.5)  # 32 GiB limit, 1 GiB resident
-
-
-def _require_cpu_limit_handler() -> None:
-    # With no handler installed (no RLIMIT_CPU, setup failed, not the main thread) SIGXCPU kills the process.
-    handler = signal.getsignal(signal.SIGXCPU)
-    if not callable(handler):
-        pytest.skip("the CPU-limit handler is not installed here")
-
-
-def test_a_cpu_limit_swallowed_by_a_bare_except_in_openpyxl_is_still_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
-    # openpyxl's descriptors.base._convert has a bare `except:` that turns whatever interrupts it into a
-    # TypeError; the SIGXCPU handler's exception landing there must not be reported as a loader failure
-    def extract(_data: bytes) -> None:
-        _require_cpu_limit_handler()
-        try:
-            signal.raise_signal(signal.SIGXCPU)
-        except:  # noqa: E722 - the clause under test
-            raise TypeError("expected <class 'bool'>") from None
-
-    monkeypatch.setattr(workbook_model, "_extract", extract)
-    with pytest.raises(WorkbookRefused) as refused:
-        load_workbook_model(
-            workbook_zip("<sheetData/>"), module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS, LOAD_SECONDS
-        )
-    assert refused.value.too_large
-
-
-def test_a_cpu_limit_swallowed_silently_does_not_return_a_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_extract = workbook_model._extract
-
-    def extract(data: bytes) -> workbook_model.WorkbookModel:
-        model = real_extract(data)  # a valid model, so only the fired limit can stop the load
-        _require_cpu_limit_handler()
-        with contextlib.suppress(BaseException):  # a swallowed interrupt, as in openpyxl
-            signal.raise_signal(signal.SIGXCPU)
-        return model
-
-    monkeypatch.setattr(workbook_model, "_extract", extract)
-    args = (module.EXCEL_LOAD_MAX_BYTES, module.EXCEL_MAX_SHEET_XML_BYTES, module.EXCEL_MAX_TEXT_CHARS)
-    data = workbook_zip('<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData>')
-    with pytest.raises(WorkbookRefused) as refused:
-        load_workbook_model(data, *args, LOAD_SECONDS)
-    assert refused.value.too_large

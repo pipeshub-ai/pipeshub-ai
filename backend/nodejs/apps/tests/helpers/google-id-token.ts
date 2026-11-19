@@ -5,6 +5,7 @@ import { OAuth2Client } from 'google-auth-library';
 export const stubGoogleIdTokenCheck = () => {
   sinon
     .stub(OAuth2Client.prototype, 'getFederatedSignonCertsAsync')
-    .resolves({ certs: {} } as Awaited<ReturnType<OAuth2Client['getFederatedSignonCertsAsync']>>);
+    // One key: an empty set is refused as Google's failure. The stubbed check never reads it.
+    .resolves({ certs: { g1: 'stubbed-key' } } as Awaited<ReturnType<OAuth2Client['getFederatedSignonCertsAsync']>>);
   return sinon.stub(OAuth2Client.prototype, 'verifySignedJwtWithCertsAsync');
 };
