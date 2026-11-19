@@ -3591,6 +3591,7 @@
         "disconnected": "Disconnected successfully",
         "disconnectError": "Failed to disconnect",
         "credentialsSaveError": "Server saved, but credentials could not be saved. You can add them later from Manage.",
+        "accessSaveError": "The server was saved, but who can use it was not. Save again to apply access.",
         "logoSaveError": "Server saved, but its logo could not be saved. You can try again from Manage.",
         "credentialsSaved": "Credentials saved",
         "credentialsReset": "MCP server updated. Saved credentials were removed because the connection changed; connect again to use it.",
