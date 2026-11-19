@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 
     from app.services.resource_governor import ResourceGovernor
 
+from app.config.constants.docling_models import (
+    docling_artifacts_path,
+    effective_table_mode,
+)
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.services.resource_governor.lanes import (
@@ -145,10 +149,14 @@ def _get_converter() -> "DocumentConverter":
     # Stage batch sizes and queue depth are held far below docling's defaults (4 / 100)
     # to cap how many pages the threaded pipeline keeps in flight, trading throughput
     # for a lower CPU and RAM ceiling on low-resource deployments.
+    table_mode = TableFormerMode(effective_table_mode(_get_table_mode(TableFormerMode).value))
     pipeline_options = ThreadedPdfPipelineOptions(
         do_ocr=False,
+        # The models baked into the image, loaded by path so Docling never contacts the
+        # Hub; None (a from-source install) leaves Docling's own download in place.
+        artifacts_path=docling_artifacts_path(table_mode.value),
         table_structure_options=TableStructureOptions(
-            mode=_get_table_mode(TableFormerMode),
+            mode=table_mode,
         ),
         generate_picture_images=True,
         layout_batch_size=1,
