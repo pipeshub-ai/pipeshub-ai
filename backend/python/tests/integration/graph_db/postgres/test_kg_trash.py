@@ -489,8 +489,10 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
             got, _ = await kg_trash.page(tx, org, KB, org, files_only=False, skip=0, limit=26, after=None, count_cap=None)
             ran = got[0]["QUERY PLAN"]
             plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
-            return [f"{n['Relation Name']}: {plan_gate.bounds(n)}" for n in plan_gate.scans(plan, "edges")
-                    if "nodeRelations" in str(plan_gate.bounds(n)) and str(n.get("Index Name")).endswith("_pkey")]
+            # every edge read is bounded by an endpoint (a sequential or bitmap read included); the parent read must not be the primary key in from_id order
+            loose = plan_gate.violations(plan, {"edges": r"\b(to_id|from_id) (=|>=) "})
+            return loose + [f"{n['Relation Name']}: {plan_gate.bounds(n)}" for n in plan_gate.scans(plan, "edges")
+                            if "nodeRelations" in str(plan_gate.bounds(n)) and str(n.get("Index Name")).endswith("_pkey")]
         with ctx(org), monkeypatch.context() as m:
             m.setattr(kg_trash, "ROWS", "EXPLAIN (ANALYZE, FORMAT JSON) " + kg_trash.ROWS)
             bad = await pg_db.run(rows, custom_plan=True)

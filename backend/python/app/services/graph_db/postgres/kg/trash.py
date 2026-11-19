@@ -65,8 +65,9 @@ ROWS = """/* pipeshub:kg.trash_rows */ WITH page AS (SELECT * FROM jsonb_to_reco
             LEFT JOIN LATERAL (SELECT pn.id, pn.doc FROM (SELECT e.org_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
                 AND e.to_id >= r.id AND e.to_id <= r.id AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') ORDER BY e.to_id) e
               JOIN graph.nodes pn ON pn.org_id = e.org_id AND pn.coll = e.from_coll AND pn.id = e.from_id ORDER BY e.from_id LIMIT 1) p ON true
-            LEFT JOIN LATERAL (SELECT t.doc, t.coll AS tcoll FROM graph.edges e JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
-    WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
+            LEFT JOIN LATERAL (SELECT t.doc, t.coll AS tcoll FROM (SELECT e.org_id, e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType'
+                AND e.from_id >= r.id AND e.from_id <= r.id ORDER BY e.from_id) e
+              JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id LIMIT 1) ty ON true
             LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.deleted_by
             ORDER BY page.o"""
 ORG_APPS = "/* pipeshub:kg.trash_org_apps */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id <> $2"
