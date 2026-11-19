@@ -1615,6 +1615,7 @@ index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=fals
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_external_any on graph.nodes unique=false exclusion=false valid=true def=6bf577338a8f5cc6491718d073f1ec00
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
+index graph.nodes_record_pending_vrid on graph.nodes unique=false exclusion=false valid=true def=e9cf8f4cc709d7da6cb0f813649cc954
 index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid=true def=dfea55500a23daf82e044379884face6
 index graph.nodes_record_unsupported on graph.nodes unique=false exclusion=false valid=true def=7eaf118ae019fc9d31cd549544e76e1e
 index graph.nodes_record_virtual_rev on graph.nodes unique=false exclusion=false valid=true def=a10c3897ff0363e31ff8ae7c8069dcea
