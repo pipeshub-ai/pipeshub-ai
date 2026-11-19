@@ -9,12 +9,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.permissions.currency import (
+    MODE_KEY,
     StampCurrency,
     app_is_exact,
     app_is_served,
 )
 from app.services.permissions.errors import ViewerScopesUnavailable
-from app.services.permissions.mode import ENV_ACL_FILTER_MODE
+from app.services.permissions.mode import ENV_ACL_FILTER_MODE, AclFilterMode
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     set_resolved_generation,
@@ -48,8 +49,10 @@ def scopes(**kw: object) -> ViewerScopes:
 
 
 def graph(docs: dict[str, dict]) -> MagicMock:
+    """Reads by id, and the organisation's apps (all of ``docs``) as the switched-connector read asks."""
     g = MagicMock()
     g.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, ids, **k: [{"_key": i, **docs[i]} for i in ids if i in docs])
+    g.get_org_apps = AsyncMock(side_effect=lambda org, **k: [{"_key": i, **d} for i, d in docs.items()] if org == ORG else [])
     return g
 
 
@@ -62,14 +65,158 @@ def planner(docs: dict[str, dict], held: ViewerScopes | Exception | None = None)
 
 async def test_the_default_mode_builds_no_planner(monkeypatch: pytest.MonkeyPatch) -> None:
     g = MagicMock()
-    for raw in (None, "", "off", "legacy", "shadow", "typo"):
+    for raw in (None, "", "off", "legacy", "typo"):
         monkeypatch.delenv(ENV_ACL_FILTER_MODE, raising=False)
         if raw is not None:
             monkeypatch.setenv(ENV_ACL_FILTER_MODE, raw)
         assert build_serving_planner(g) is None, raw
     g.permission_hierarchy_view.assert_not_called()
-    monkeypatch.setenv(ENV_ACL_FILTER_MODE, "scopes")
-    assert build_serving_planner(g) is not None
+    for raw in ("shadow", "scopes"):      # under shadow only a connector an admin switched to `scopes` is served
+        monkeypatch.setenv(ENV_ACL_FILTER_MODE, raw)
+        assert build_serving_planner(g)._default is AclFilterMode(raw)
+
+
+def _with_mode(doc: dict, mode: object) -> dict:
+    return {**doc, MODE_KEY: mode} if mode is not None else doc
+
+
+@pytest.mark.parametrize(("default", "c1", "c2", "served"), [
+    (AclFilterMode.SCOPES, None, None, {"c1", "c2"}),                 # every connector inherits the deployment's `scopes`
+    (AclFilterMode.SCOPES, "legacy", "inherit", {"c2"}),             # an admin's rollback takes c1 out on the next search
+    (AclFilterMode.SCOPES, "LEGACY ", "typo", set()),       # a value that is not a mode reads as legacy, never as on
+    (AclFilterMode.SHADOW, None, None, set()),                        # shadow: nobody served unless switched
+    (AclFilterMode.SHADOW, "scopes", "inherit", {"c1"}),             # an admin opted c1 in
+    (AclFilterMode.SHADOW, "scopes", "Scopes", {"c1"}),             # only the exact value the switch writes counts
+    (AclFilterMode.SCOPES, "inherit", "Scopes", {"c1"}),
+])
+async def test_a_connector_is_served_only_when_its_own_mode_resolves_to_scopes(default: AclFilterMode, c1: object, c2: object, served: set) -> None:
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    docs = {"c1": _with_mode(current(**{K["exact"]: True}), c1), "c2": _with_mode(current(**{K["exact"]: True}), c2)}
+    flt, exact = await ServingPlanner(svc, StampCurrency(graph(docs)), default=default).plan_exact(ORG, USER)
+    assert (flt.current if flt else set()) == served
+    assert exact is (served == {"c1", "c2"}), "a connector read by the legacy filter makes the plan over-fetch"
+
+
+@pytest.mark.parametrize("mode", [None, "legacy", "inherit"], ids=["never switched", "switched back", "inherit"])
+async def test_a_shadow_search_with_no_connector_switched_reads_one_mode_query_per_interval_and_nothing_per_search(mode: str | None) -> None:
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    g = graph({"c1": _with_mode(current(), mode), "c2": current()})
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW)
+    for _ in range(200):
+        assert await p.plan_exact(ORG, USER) == (None, False)
+    svc.scopes.assert_not_awaited()
+    g.get_nodes_by_field_in.assert_not_awaited()
+    assert g.get_org_apps.await_count == 1                # the next read is SWITCHED_TTL_SECONDS later
+
+
+async def test_searches_that_find_the_memo_expired_together_share_one_read() -> None:
+    import asyncio
+
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    docs = {"c1": _with_mode(current(), "scopes"), "c2": current()}
+    g = graph(docs)
+    release = asyncio.Event()
+    real = g.get_org_apps.side_effect
+
+    async def slow(org: str, **k: object) -> list[dict]:
+        await release.wait()
+        return real(org, **k)
+
+    g.get_org_apps.side_effect = slow
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW)
+    searches = [asyncio.create_task(p.plan(ORG, USER)) for _ in range(20)]
+    await asyncio.sleep(0.01)
+    release.set()
+    plans = await asyncio.gather(*searches)
+    assert g.get_org_apps.await_count == 1
+    assert all(f is not None and f.current == {"c1"} for f in plans)
+
+
+async def test_a_switched_read_that_fails_or_is_slow_is_the_classic_check_and_is_tried_again_after_the_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import app.services.permissions.serving as serving
+
+    monkeypatch.setattr(serving, "SWITCHED_TTL_SECONDS", -1.0)      # every search reads again (the event loop's clock must keep running here)
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    g = graph({"c1": _with_mode(current(), "scopes")})
+    g.get_org_apps.side_effect = RuntimeError("down")
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW, budget_seconds=0.05)
+    assert await p.plan(ORG, USER) is None
+
+    async def hang(org: str, **k: object) -> list[dict]:
+        await asyncio.sleep(1)
+        return []
+
+    g.get_org_apps.side_effect = hang
+    assert await p.plan(ORG, USER) is None                # slower than the budget: none switched
+    g.get_org_apps.side_effect = lambda org, **k: [{"_key": "c1", **_with_mode(current(), "scopes")}]
+    assert (await p.plan(ORG, USER)).current == {"c1"}
+
+
+async def test_the_switched_connectors_are_those_of_the_viewer_s_organisation_whose_document_says_scopes() -> None:
+    from app.services.permissions.currency import switched_connectors
+
+    g = MagicMock()
+    g.get_org_apps = AsyncMock(return_value=[      # the organisation's apps by its org-to-app edges, inactive ones too
+        {"_key": "c1", MODE_KEY: "scopes"}, {"id": "c2", MODE_KEY: "scopes", "isActive": False},
+        {"_key": "c3", MODE_KEY: "legacy"}, {"_key": "c4", MODE_KEY: "Scopes"}, {"_key": "c5"}])
+    assert await switched_connectors(g, ORG) == {"c1", "c2"}
+    assert g.get_org_apps.await_args.args == (ORG,) and g.get_org_apps.await_args.kwargs == {"active_only": False, "raise_on_error": True}
+
+
+async def test_a_shadow_search_reads_only_the_documents_of_the_switched_connectors_and_an_opt_in_arrives_within_the_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.permissions.serving as serving
+
+    clock = [1000.0]
+    monkeypatch.setattr(serving.time, "monotonic", lambda: clock[0])
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes())
+    docs = {"c1": current(), "c2": current()}
+    g = graph(docs)
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW)
+    assert await p.plan(ORG, USER) is None
+    docs["c1"] = _with_mode(current(), "scopes")          # the admin's switch writes the document
+    clock[0] += serving.SWITCHED_TTL_SECONDS
+    assert await p.plan(ORG, USER) is None                # still inside the interval
+    clock[0] += 1
+    assert (await p.plan(ORG, USER)).current == {"c1"}
+    assert g.get_nodes_by_field_in.await_args.args[2] == ["c1"]      # c2 is not switched: its document is not read per search
+    docs["c1"] = _with_mode(current(), "legacy")          # a rollback: the remembered set still names c1, the document decides at once
+    assert await p.plan(ORG, USER) is None
+
+
+@pytest.mark.parametrize("default", [AclFilterMode.SCOPES, AclFilterMode.SHADOW])
+@pytest.mark.parametrize(("name", "over"), [
+    ("running", {K["state"]: "running"}), ("failed pass", {K["state"]: "failed"}), ("moved on", {"scopeProjectionGeneration": 6}),
+    ("unsafe", {"scopeProjectionUnsafe": True}), ("pending roots", {"scopeProjectionPendingRoots": '{"r":5}'}),
+    ("unreadable roots", {"scopeProjectionPendingRoots": "x"}), ("an unclosed write", {"scopeProjectionOpened": 2, "scopeProjectionClosed": 1}),
+    ("other generation", {K["generation"]: GEN - 1}), ("other version", {K["version"]: SCOPE_FIELDS_VERSION - 1}),
+    ("a sync running", {"status": "SYNCING"}), ("never back-filled", {K["state"]: None}),
+])
+async def test_a_connector_switched_to_scopes_is_never_served_from_stamps_that_are_not_current(default: AclFilterMode, name: str, over: dict) -> None:
+    """`scopes` is accepted while the stamps are not current, and reads `effective: legacy`: the plan reads the app document for each search and
+    serves the connector only once the stamps are current again."""
+    from app.services.permissions.access_status import filter_state
+
+    svc = MagicMock()
+    svc.scopes = AsyncMock(return_value=scopes(gated_apps=frozenset({"c1"})))
+    docs = {"c1": _with_mode(current(**{**over, K["exact"]: True}), "scopes")}
+    p = ServingPlanner(svc, StampCurrency(graph(docs)), default=default)
+    assert await p.plan_exact(ORG, USER) == (None, False), name
+    assert filter_state(docs["c1"], default, store_serves=True)["effective"] == "legacy", name
+    docs["c1"] = _with_mode(current(**{K["exact"]: True}), "scopes")
+    assert (await p.plan(ORG, USER)).current == {"c1"}
+    assert filter_state(docs["c1"], default, store_serves=True)["effective"] == "scopes"
+
+
+async def test_the_shadow_comparison_reads_the_stamps_whatever_a_connector_s_mode() -> None:
+    docs = {"c1": _with_mode(current(), "legacy"), "c2": current()}
+    assert await StampCurrency(graph(docs)).served({"c1", "c2"}) == {"c1", "c2"}
 
 
 @pytest.mark.parametrize(("name", "over"), [

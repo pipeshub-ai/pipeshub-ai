@@ -180,6 +180,8 @@ from app.services.featureflag.platform_settings import (
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.permissions import access_status
+from app.services.permissions.currency import MODE_KEY, chosen_mode
+from app.services.permissions.mode import AclFilterMode
 from app.services.storage_documents import BoundReadChanged, BoundReadOutOfRange, StorageDocumentInfo
 from app.utils.byte_range import ByteRange, resolve_range
 from app.utils.content_tag import SERVED_VERSION_TIMEOUT_SECONDS, content_tag, if_none_match_matches, preview_pdf_pipeline
@@ -10738,12 +10740,10 @@ async def _sync_interval_minutes(request: Request, connector_id: str) -> int | N
         return None
 
 
-@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-async def get_permission_status(
-    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> dict[str, Any]:
-    """Admin only. Everyone who may not read the connector gets the 404 of a missing one: a non-admin, another organisation's connector, another
-    user's personal connector (the registry's read gate), and a connected app whose limit does not name the whole connector (its counts could not be limited)."""
+async def _admin_connector_app(request: Request, connector_id: str, graph_provider: IGraphDBProvider) -> dict[str, Any]:
+    """The connector's app document, for an admin who may read the whole connector. Everyone else gets the 404 of a missing one: a non-admin,
+    another organisation's connector, another user's personal connector (the registry's read gate), and a connected app whose limit does not
+    name the whole connector (its counts could not be limited)."""
     not_found_error = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
     org_id = current_org_id()
     user_id = request.state.user.get("userId")
@@ -10756,4 +10756,36 @@ async def get_permission_status(
         whole, _ = await connection_apps(request, graph_provider, org_id, user_id)
         if connector_id not in whole:
             raise not_found_error
+    return app
+
+
+@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+async def get_permission_status(
+    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only (`_admin_connector_app`)."""
+    app = await _admin_connector_app(request, connector_id, graph_provider)
     return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))
+
+
+class PermissionFilterRequest(BaseModel):
+    mode: Literal["inherit", "legacy", "scopes"]
+
+
+@router.patch("/api/v1/connectors/{connector_id}/permissions/filter", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+async def set_permission_filter(
+    connector_id: str, body: PermissionFilterRequest, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only (`_admin_connector_app`). Sets the connector's own permission filter mode and answers with its `filter` status. `scopes` is
+    refused (409, with the blockers) when this deployment cannot search any connector with the scope filter; `legacy` and `inherit` are always
+    accepted, so a rollback never depends on the state it rolls back from."""
+    app = await _admin_connector_app(request, connector_id, graph_provider)
+    default, store_serves = AclFilterMode.from_env(), access_status.store_serves_scope_filter()
+    if body.mode == "scopes" and (found := access_status.blockers(default, store_serves=store_serves)):
+        raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail={"error": "not_switchable", "blockers": found})
+    # the app document is the one record of the mode: the serving plan reads it (`currency.switched_connectors`), so there is nothing to keep in step
+    if not await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {MODE_KEY: body.mode}):
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
+    logger.info("audit: permission filter of connector %s set from %s to %s by user %s",
+                connector_id, chosen_mode(app), body.mode, request.state.user.get("userId"))
+    return access_status.filter_state({**app, MODE_KEY: body.mode}, default, store_serves=store_serves)
