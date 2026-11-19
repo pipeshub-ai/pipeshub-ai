@@ -662,6 +662,7 @@ class MockTransactionStore:
 
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types=(),
     ) -> None:
         for to_collection in to_collections:
             self._s.delete_edges_between_collections(
