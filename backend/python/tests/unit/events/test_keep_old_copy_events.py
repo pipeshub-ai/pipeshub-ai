@@ -65,7 +65,7 @@ async def _run(ep, processor, gp, doc, **payload):
     gp.get_document.return_value = doc
     gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
     processor.process_excel_document = MagicMock(side_effect=_gen)
-    processor.process_pdf_document_with_ocr = MagicMock(side_effect=_gen)
+    processor.process_md_document = MagicMock(side_effect=_gen)
     with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=DedupDecision()), \
          patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock) as rewrite, \
          patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
@@ -144,3 +144,51 @@ async def test_an_earlier_pending_copy_is_released_only_after_the_new_pending_wr
         await _drain(ep.on_event(_payload(EventTypes.REINDEX_RECORD.value, MimeTypes.XLSX.value, ExtensionTypes.XLSX.value)))
     assert order == ["cas", "release P"]
     assert gp.update_node_fields_if_match.await_args.args[3] == {"virtualRecordId": "X", "pendingVirtualRecordId": "P"}
+
+
+@pytest.mark.asyncio
+async def test_a_reconciled_record_with_stored_metadata_is_diffed_in_place(swap_on):
+    ep, processor, gp = _processor()
+    await _run(ep, processor, gp, _doc(), event_type=EventTypes.UPDATE_RECORD.value,
+               mime=MimeTypes.MARKDOWN.value, ext=ExtensionTypes.MD.value)
+    gp.update_node_fields_if_match.assert_not_called()  # nothing is replaced: the diff keeps the copy it has
+
+
+@pytest.mark.asyncio
+async def test_a_reconciled_record_with_no_stored_metadata_writes_a_new_copy_instead_of_purging_the_old(swap_on):
+    ep, processor, gp = _processor()
+    processor.sink_orchestrator.blob_storage.get_reconciliation_metadata = AsyncMock(return_value=None)
+    await _run(ep, processor, gp, _doc(), event_type=EventTypes.UPDATE_RECORD.value,
+               mime=MimeTypes.MARKDOWN.value, ext=ExtensionTypes.MD.value)
+    pending = gp.update_node_fields_if_match.await_args
+    assert pending is not None and pending.args[3] == {"virtualRecordId": "X", "pendingVirtualRecordId": None}
+    kwargs = processor.process_md_document.call_args[1]
+    assert kwargs["virtual_record_id"] != "X" and kwargs["prev_virtual_record_id"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_metadata_store_fails_the_event_instead_of_reading_as_no_metadata(swap_on):
+    ep, processor, gp = _processor()
+    processor.sink_orchestrator.blob_storage.get_reconciliation_metadata = AsyncMock(side_effect=RuntimeError("down"))
+    with pytest.raises(RuntimeError):
+        await _run(ep, processor, gp, _doc(), event_type=EventTypes.UPDATE_RECORD.value,
+                   mime=MimeTypes.MARKDOWN.value, ext=ExtensionTypes.MD.value)
+    gp.update_node_fields_if_match.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_forced_run_never_rebuilds_a_shared_copy_in_place_and_leaves_the_twin_its_points(swap_on):
+    ep, processor, gp = _processor()
+    gp.get_document.return_value = _doc()
+    gp.find_duplicates = AsyncMock(return_value=[])
+    twin = {"_key": "twin", "virtualRecordId": "X", "indexingStatus": "COMPLETED", "md5Checksum": "m", "orgId": "org-1"}
+    from unittest.mock import MagicMock as _M
+
+    from app.events.dedup import DuplicateMatch
+
+    match = DuplicateMatch(record=twin, same_collection=True, is_processed=True)
+    with patch.object(ep, "_find_duplicate_records", new_callable=AsyncMock, return_value=[twin]), \
+         patch("app.events.events.select_duplicate", _M(return_value=match)), \
+         patch.object(ep, "_resolve_write_collection", return_value="c1"):
+        decision = await ep._check_duplicate_by_md5(b"hello", _doc(), force_index=True)
+    assert decision.rebuild_shared_vrid is False and not decision.skip_indexing
