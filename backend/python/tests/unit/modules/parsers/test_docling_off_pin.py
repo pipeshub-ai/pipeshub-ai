@@ -48,6 +48,11 @@ PROCESSOR_ADDED = {
 #  - the table-structure mode is a behaviour change, not an import move: ``_get_table_mode`` (added)
 #    reads PDF_DOCLING_TABLE_MODE and ``_get_converter`` passes its result, so the default model is
 #    ACCURATE where main used FAST. ``test_docling_table_mode.py`` pins that behaviour;
+#  - ``_get_converter`` also passes ``artifacts_path=docling_artifacts_path(mode)`` and takes the mode from
+#    ``effective_table_mode`` (app.config.constants.docling_models), so the image's baked models are loaded by
+#    path. Where no models directory exists (every test run, a from-source install) the path is None and the
+#    mode is the requested one, so the converter is built exactly as before; only the Docker image takes the
+#    new branch. ``test_baked_docling_models.py`` pins both branches;
 #  - the other entries are re-pinned to the hash they have now. Apart from the table mode above,
 #    each differs from main only by the moved imports (``_get_converter``,
 #    ``_parse_document_in_worker``), by the lazily built
@@ -62,7 +67,7 @@ LAZY_IMPORT_IMPORTS = {
 LAZY_IMPORT_REPINNED = {
     "DoclingProcessor.__init__": "2530d7f496cd4485",
     "if:TYPE_CHECKING": "e2172f92759e8033",
-    "_get_converter": "5d6cda477aab1783",
+    "_get_converter": "b31f8ef71e1451f8",
     "_parse_document_in_worker": "c506f30760b63571",
     "assign:DOCLING_ROUTED_FORMATS": None,  # removed: ``docling_routed_formats()`` returns the same tuple
 }
