@@ -560,7 +560,8 @@ async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_un
     await w.nodes("teams", {"_key": f"all_{w.org}"})
     for who in ("m", "s"):
         await w.member(who, f"all_{w.org}", coll="teams")
-    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    # the link decision reads and saves the connector's account state through the config service, which is async
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), InMemoryConfigService())
     processor.org_id = w.org
     processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
     await processor.on_new_app_users([app_user("m@x.com", "m")])
