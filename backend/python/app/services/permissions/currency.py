@@ -49,8 +49,9 @@ if TYPE_CHECKING:
 MODE_KEY = "aclFilterMode"
 MODES = ("inherit", "legacy", "scopes")
 #: Config key: the ids of the connectors whose own mode is `scopes`. Only a deployment whose default is not `scopes` reads it, so that a search
-#: that no admin switch can concern reads nothing; the app document stays the answer for each connector it names.
-SCOPES_CONNECTORS_KEY = "/services/permissions/scopesConnectors"
+#: that no admin switch can concern reads nothing; the app document stays the answer for each connector it names. Under /services/scopeFields/,
+#: which the PostgreSQL key-value grants already let the connectors service write and query read (platform.kv_may).
+SCOPES_CONNECTORS_KEY = "/services/scopeFields/scopesConnectors"
 
 
 def chosen_mode(app: Mapping[str, object] | None) -> str:

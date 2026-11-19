@@ -844,6 +844,9 @@ KV_MATRIX = [
     ("query", "/services/mcp/credentials/i1/u1", True, True), ("query", "/services/agents/parked-turns/c1", True, True),
     ("query", "/services/aiModelApiModes", True, True), ("query", "/services/vectordb/collection_strategy", True, True),
     ("query", "/services/scopeFields/enabled", True, True), ("query", "state:counter:retry:fail:m1", True, True),
+    # the connectors switched to `scopes`: written by the connectors service's switch route, read by query's serving plan
+    ("connectors", "/services/scopeFields/scopesConnectors", True, True), ("query", "/services/scopeFields/scopesConnectors", True, True),
+    ("indexing", "/services/scopeFields/scopesConnectors", True, True), ("kv", "/services/scopeFields/scopesConnectors", False, False),
     ("query", "/migrations/node_relation_v1", True, False), ("query", "/services/smtp", False, False),
     ("query", "/services/toolset-instancesx", True, False),
     ("indexing", "/services/secretKeys", True, False), ("indexing", "/services/aiModels", True, False),
