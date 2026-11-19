@@ -130,7 +130,7 @@ def test_no_interleaving_loses_a_served_copy_or_leaks_one() -> None:
             pytest.fail(f"seed {seed}: {exc}")
 
 
-def _names_only(record, vrid):
+def _names_only(record: dict, vrid: str) -> bool:
     return record.get("virtualRecordId") == vrid
 
 
@@ -152,7 +152,7 @@ def test_negative_control_a_commit_that_does_not_match_the_status_loses_a_copy(m
     from app.modules.transformers import swap_commit
 
     real = swap_commit.COMMITTABLE if hasattr(swap_commit, "COMMITTABLE") else None
-    monkeypatch.setattr(keep_old_copy, "COMMITTABLE", tuple(["IN_PROGRESS", "QUEUED", "NOT_STARTED", "COMPLETED", "FAILED", "EMPTY"]))
+    monkeypatch.setattr(keep_old_copy, "COMMITTABLE", ("IN_PROGRESS", "QUEUED", "NOT_STARTED", "COMPLETED", "FAILED", "EMPTY"))
     failures = 0
     for seed in range(SEEDS):
         try:

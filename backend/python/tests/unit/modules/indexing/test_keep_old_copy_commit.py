@@ -7,23 +7,23 @@ from tests.support.swap_world import FakeGraph, committer, ctx_for
 
 
 @pytest.fixture(autouse=True)
-def _no_vector_membership_io(monkeypatch):
+def _no_vector_membership_io(monkeypatch) -> None:
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock())
 
 
-def rec(vrid, status="IN_PROGRESS", **more):
+def rec(vrid: str, status: str = "IN_PROGRESS", **more: object) -> dict:
     return {"orgId": "o", "virtualRecordId": vrid, "indexingStatus": status, "md5Checksum": "m", "connectorId": "k1", **more}
 
 
-def run(forced=False):
+def run(forced: bool = False) -> keep_old_copy.SwapRun:
     return keep_old_copy.SwapRun("A", "o", "X", "Y", forced)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["IN_PROGRESS", "QUEUED", "NOT_STARTED"])
-async def test_the_commit_moves_the_record_and_removes_the_pending_field(status):
+async def test_the_commit_moves_the_record_and_removes_the_pending_field(status) -> None:
     g = FakeGraph({"A": rec("X", status, pendingVirtualRecordId="Y")})
     swap, _ = committer(g)
     assert await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})
@@ -33,7 +33,7 @@ async def test_the_commit_moves_the_record_and_removes_the_pending_field(status)
 
 
 @pytest.mark.asyncio
-async def test_a_record_that_changed_state_refuses_the_commit_and_the_run_ends_superseded():
+async def test_a_record_that_changed_state_refuses_the_commit_and_the_run_ends_superseded() -> None:
     g = FakeGraph({"A": rec("X", "FAILED", pendingVirtualRecordId="Y")})
     swap, _ = committer(g)
     with pytest.raises(SupersededRun):
@@ -44,7 +44,7 @@ async def test_a_record_that_changed_state_refuses_the_commit_and_the_run_ends_s
 
 
 @pytest.mark.asyncio
-async def test_a_commit_does_not_land_on_a_record_another_run_took_over():
+async def test_a_commit_does_not_land_on_a_record_another_run_took_over() -> None:
     g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y2")})
     swap, _ = committer(g)
     with pytest.raises(SupersededRun):
@@ -53,7 +53,7 @@ async def test_a_commit_does_not_land_on_a_record_another_run_took_over():
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_record_returns_false_and_releases_the_run_copy():
+async def test_a_deleted_record_returns_false_and_releases_the_run_copy() -> None:
     g = FakeGraph({})
     swap, _ = committer(g)
     assert not await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})
@@ -61,7 +61,7 @@ async def test_a_deleted_record_returns_false_and_releases_the_run_copy():
 
 
 @pytest.mark.asyncio
-async def test_a_copy_whose_points_are_gone_is_not_committed():
+async def test_a_copy_whose_points_are_gone_is_not_committed() -> None:
     g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
     swap, _ = committer(g, points=0)
     with pytest.raises(IndexingError):
@@ -70,7 +70,7 @@ async def test_a_copy_whose_points_are_gone_is_not_committed():
 
 
 @pytest.mark.asyncio
-async def test_a_forced_commit_moves_the_matching_twin_in_the_same_collection_only():
+async def test_a_forced_commit_moves_the_matching_twin_in_the_same_collection_only() -> None:
     g = FakeGraph({
         "A": rec("Y", pendingVirtualRecordId=None),
         "B": rec("X", "COMPLETED"),                                  # same bytes, same collection: moved
@@ -86,7 +86,7 @@ async def test_a_forced_commit_moves_the_matching_twin_in_the_same_collection_on
 
 
 @pytest.mark.asyncio
-async def test_the_old_copy_is_deleted_in_this_records_collection_only_while_another_collection_holds_it():
+async def test_the_old_copy_is_deleted_in_this_records_collection_only_while_another_collection_holds_it() -> None:
     g = FakeGraph({"A": rec("Y", "COMPLETED"), "C": rec("X", "COMPLETED", connectorId="k2")})
     swap, vs = committer(g, collections={"k1": "c1", "k2": "c2"})
     await swap.release_old_copy(run(), ctx_for("A", "Y").record)
@@ -95,7 +95,7 @@ async def test_the_old_copy_is_deleted_in_this_records_collection_only_while_ano
 
 
 @pytest.mark.asyncio
-async def test_the_old_copy_is_kept_while_a_holder_uses_the_same_collection():
+async def test_the_old_copy_is_kept_while_a_holder_uses_the_same_collection() -> None:
     g = FakeGraph({"A": rec("Y", "COMPLETED"), "B": rec("X", "COMPLETED")})
     swap, vs = committer(g)
     await swap.release_old_copy(run(), ctx_for("A", "Y").record)
@@ -104,7 +104,7 @@ async def test_the_old_copy_is_kept_while_a_holder_uses_the_same_collection():
 
 
 @pytest.mark.asyncio
-async def test_an_unheld_old_copy_is_released_whole():
+async def test_an_unheld_old_copy_is_released_whole() -> None:
     g = FakeGraph({"A": rec("Y", "COMPLETED")})
     swap, _ = committer(g)
     await swap.release_old_copy(run(), ctx_for("A", "Y").record)
@@ -112,7 +112,7 @@ async def test_an_unheld_old_copy_is_released_whole():
 
 
 @pytest.mark.asyncio
-async def test_a_record_that_failed_for_good_releases_its_pending_copy():
+async def test_a_record_that_failed_for_good_releases_its_pending_copy() -> None:
     g = FakeGraph({"A": rec("X", "FAILED", pendingVirtualRecordId="Y")})
     swap, _ = committer(g)
     await swap.release_failed("A", "o")
@@ -120,7 +120,7 @@ async def test_a_record_that_failed_for_good_releases_its_pending_copy():
     swap._release_unheld.assert_awaited_once_with("o", "Y")
 
 
-def test_the_running_copy_is_held_until_the_record_reaches_another_status():
+def test_the_running_copy_is_held_until_the_record_reaches_another_status() -> None:
     from app.services.graph_db.common.record_visibility import holds_vrid
 
     assert holds_vrid(rec("X", "NOT_STARTED", pendingVirtualRecordId="Y"), "Y")  # edited faster than it indexes still commits

@@ -15,21 +15,21 @@ class FakeGraph:
         self.records = records
         self.mapping: dict[str, dict[str, Any]] = {}
 
-    async def get_document(self, key: str, collection: str, **_: Any) -> dict[str, Any] | None:
+    async def get_document(self, key: str, collection: str, **_: object) -> dict[str, Any] | None:
         if collection != "records":
             return self.mapping.get(key)
         doc = self.records.get(key)
         return dict(doc) if doc else None
 
-    async def get_records_by_virtual_record_id(self, vrid: str, *_: Any, **__: Any) -> list[str]:
+    async def get_records_by_virtual_record_id(self, vrid: str, *_: object, **__: object) -> list[str]:
         return [k for k, d in self.records.items() if d.get("isDeleted") is not True and holds_vrid(d, vrid)]
 
-    async def update_node(self, key: str, collection: str, fields: dict[str, Any], *_: Any) -> bool:
+    async def update_node(self, key: str, collection: str, fields: dict[str, Any], *_: object) -> bool:
         target = self.records if collection == "records" else self.mapping
         target.setdefault(key, {}).update(fields)
         return True
 
-    async def update_node_fields_if(self, key, collection, updates, conditions, transaction=None, *, unset=()):
+    async def update_node_fields_if(self, key, collection, updates, conditions, transaction=None, *, unset=()) -> bool:
         doc = self.records.get(key)
         if doc is None or not all(holds(c, doc) for c in conditions):
             return False
@@ -38,7 +38,7 @@ class FakeGraph:
             doc.pop(name, None)
         return True
 
-    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None, *, clock_at_most=None, unset=()):
+    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None, *, clock_at_most=None, unset=()) -> bool:
         doc = self.records.get(key)
         if doc is None or any(doc.get(f) != v for f, v in expected.items()):
             return False
@@ -69,7 +69,7 @@ def committer(graph: FakeGraph, *, collections: dict[str, str] | None = None, po
     return swap, vs
 
 
-def ctx_for(record_id: str, vrid: str, pointed: list[str] | None = None, connector_id: str = "k1") -> Any:
+def ctx_for(record_id: str, vrid: str, pointed: list[str] | None = None, connector_id: str = "k1") -> SimpleNamespace:
     record = SimpleNamespace(id=record_id, virtual_record_id=vrid, connector_id=connector_id, connector_name="X", external_record_group_id=None)
     rc = SimpleNamespace(new_metadata={"pointedBlocks": pointed if pointed is not None else ["b1"]})
     return SimpleNamespace(record=record, reconciliation_context=rc)

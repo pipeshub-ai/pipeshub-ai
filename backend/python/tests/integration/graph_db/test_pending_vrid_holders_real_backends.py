@@ -19,7 +19,11 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.models.entities import Record, RecordType
 from app.services.graph_db.conditions import EQ, ONE_OF, Cond
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
-from tests.integration.real_graph import backend_unavailable, connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
