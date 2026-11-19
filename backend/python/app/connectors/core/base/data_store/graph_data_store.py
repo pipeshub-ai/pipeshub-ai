@@ -429,6 +429,13 @@ class GraphTransactionStore(TransactionStore):
             {"defaultKnowledgeBaseId": expected}, transaction=self.txn,
         )
 
+    async def lock_app_if_unchanged(self, connector_id: str, expected: dict) -> bool:
+        """Whether the connector's app document still holds ``expected``. It is write-locked until this transaction ends,
+        so a sync cannot start between this check and the commit."""
+        return await self.graph_provider.update_node_fields_if_match(
+            connector_id, CollectionNames.APPS.value, {}, expected, transaction=self.txn,
+        )
+
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
@@ -2032,6 +2039,8 @@ _HARMLESS_WRITERS = frozenset({
     "replace_record_entity_relations",
     # which knowledge base a user calls their default: a field of the user node, never an edge or an access rule
     "name_default_knowledge_base",
+    # an empty write that only locks the app document
+    "lock_app_if_unchanged",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 
