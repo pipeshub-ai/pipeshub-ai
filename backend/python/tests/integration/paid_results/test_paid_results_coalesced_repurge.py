@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -27,8 +28,14 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
 # The storage job of backend-matrix.yml runs the files that read ARTIFACTS_IT_STORAGE_URL, and it starts the Redis these tests
-# need (PAID_RESULTS_IT_REDIS_URL); these tests need no storage service themselves.
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
+# need (PAID_RESULTS_IT_REDIS_URL). These tests need no storage service themselves, but they follow the other paid-result
+# integration files: the offline integration job (no services) does not set the storage URL, so they are not run there; where
+# the URL is set the Redis fixture asserts its URL, so a missing Redis fails loudly instead of skipping.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.timeout(600),
+    pytest.mark.skipif(not os.environ.get("ARTIFACTS_IT_STORAGE_URL"), reason="set ARTIFACTS_IT_STORAGE_URL (the storage job does)"),
+]
 NOW = 1_700_000_000_000
 
 
@@ -69,7 +76,7 @@ async def test_two_hundred_concurrent_deleters_have_one_claimant_and_every_id_la
     first = await _gather([store.open_or_append(org, 5, f"t{i:04x}", f"e{i}", f"r{i}", NOW) for i in range(200)])
     assert sum(r.state == CLAIMED for r in first) == 1 and sum(r.state == BUSY for r in first) == 199
     winner = next(i for i, r in enumerate(first) if r.state == CLAIMED)
-    assert await store.mark_published(org, 5, f"t{winner:04x}", f"e{winner}", NOW + 330_000)
+    assert await store.mark_published(org, 5, f"t{winner:04x}", f"e{winner}", NOW + 330_000, NOW)
     again = await _gather([store.open_or_append(org, 5, f"t{i:04x}", f"e{i}", f"r{i}", NOW) for i in range(200)])
     assert {r.state for r in again} == {APPENDED}
     read = await store.seal_read(org, 5, f"e{winner}", NOW + 400_000)
@@ -81,7 +88,7 @@ async def test_a_seal_reads_a_large_list_in_chunks_on_a_real_server(redis: Redis
     monkeypatch.setattr(repurge_window, "SEAL_READ_CHUNK", 1000)
     store, org = _store(redis)
     assert (await store.open_or_append(org, 5, "t", "e1", "seed", NOW)).state == CLAIMED
-    assert await store.mark_published(org, 5, "t", "e1", NOW + 330_000)
+    assert await store.mark_published(org, 5, "t", "e1", NOW + 330_000, NOW)
     await _gather([store.open_or_append(org, 5, "z", "e", f"r{i}", NOW) for i in range(5000)])
     read = await store.seal_read(org, 5, "e1", NOW + 400_000)
     assert read.ids == tuple(f"r{i}" for i in range(5000)) or sorted(read.ids) == sorted(f"r{i}" for i in range(5000))
@@ -90,8 +97,9 @@ async def test_a_seal_reads_a_large_list_in_chunks_on_a_real_server(redis: Redis
 async def test_a_bulk_delete_of_2000_records_makes_four_pages_whose_hops_purge_every_record(redis: Redis, monkeypatch: pytest.MonkeyPatch) -> None:
     store, org = _store(redis)
     broker = Broker()
+    now = time.time()                                       # the claim's expiry is checked against the real clock
     for i in range(2000):
-        assert await repurge_window.coalesce_successor(broker, org, first_hop(org, f"rec-{i}", 1000.0), store=store, now=1000.0 + REPURGE_HOP_S)
+        assert await repurge_window.coalesce_successor(broker, org, first_hop(org, f"rec-{i}", now - REPURGE_HOP_S), store=store, now=now)
     seals = [m for m in broker.sent if m.type == "purgePaidResultsBatch"]
     assert len(seals) == 1
     broker.sent.clear()

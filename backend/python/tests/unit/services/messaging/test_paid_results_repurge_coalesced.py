@@ -409,7 +409,7 @@ async def test_the_memory_store_agrees_with_the_redis_scripts() -> None:
     a, b = MemoryWindowStore(), redis_store()
     ops = [
         ("open_or_append", ("o", 1, "t1", "e1", "r1", 1000)), ("open_or_append", ("o", 1, "t2", "e2", "r2", 1001)),
-        ("mark_published", ("o", 1, "t1", "e1", 9000)), ("open_or_append", ("o", 1, "t2", "e2", "r2", 1002)),
+        ("mark_published", ("o", 1, "t1", "e1", 9000, 1001)), ("open_or_append", ("o", 1, "t2", "e2", "r2", 1002)),
         ("seal_read", ("o", 1, "e1", 9500)), ("seal_read", ("o", 1, "x", 9500)), ("open_or_append", ("o", 1, "t3", "e3", "r3", 9600)),
         ("mark_done", ("o", 1, "e1")), ("seal_read", ("o", 1, "e1", 9700)),
     ]
@@ -471,3 +471,63 @@ async def test_a_burst_of_failing_first_hops_logs_one_warning_and_counts_every_f
             ) is False
     warnings = [r for r in caplog.records if "Re-purge window unavailable" in r.getMessage()]
     assert len(warnings) == 1 and counted == ["error"] * 500
+
+
+async def test_a_record_whose_chain_carries_a_longer_horizon_than_the_live_one_keeps_its_own_chain(world: Any, clock: list[float]) -> None:  # noqa: ANN401
+    """A page chain ends at the live horizon from its seal; a record started under a longer one must not be cut short."""
+    hop = {**first_hop(ORG, "rec-1", clock[0]), "horizonS": repurge_horizon_s() + 3600}
+    world.window.open_or_append = AsyncMock(return_value=repurge_window.Opened(repurge_window.APPENDED))   # would take the id
+    assert await repurge_window.coalesce_successor(Broker(clock), ORG, hop, store=world.window, now=clock[0] + 300) is False
+    world.window.open_or_append.assert_not_awaited()
+
+
+async def test_a_seal_published_while_the_claim_lapses_is_not_marked_published_and_the_record_keeps_its_chain(
+    world: Any, clock: list[float],  # noqa: ANN401
+) -> None:
+    class Stalling(Broker):
+        async def send_event(self, *a: Any, **k: Any) -> bool:  # noqa: ANN401
+            clock[0] += repurge_window.CLAIM_TTL_MS / 1000 + 5                       # the worker pauses past its claim
+            return await super().send_event(*a, **k)
+
+    broker = Stalling(clock)
+    hop = first_hop(ORG, "rec-1", clock[0] - 300)
+    assert await repurge_window.coalesce_successor(broker, ORG, hop, store=world.window, now=clock[0]) is False
+    window = repurge_window.window_of(clock[0] - repurge_window.CLAIM_TTL_MS / 1000 - 5)
+    own = await world.window._client.inner.get(world.window._keys(ORG, window)[0])
+    assert own is None or own.startswith("claim:")                                     # never "published": nothing was appended
+    assert await world.window._client.inner.llen(world.window._keys(ORG, window)[1]) == 0
+
+
+async def test_a_seal_counts_the_ids_a_lost_list_no_longer_holds(world: Any, clock: list[float], monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
+    counted: list[str] = []
+    monkeypatch.setattr(repurge_window, "WINDOW_LOST", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])))
+    broker = Broker(clock)
+    for i in range(3):
+        assert await repurge_window.coalesce_successor(broker, ORG, first_hop(ORG, f"rec-{i}", clock[0] - 300), store=world.window, now=clock[0])
+    seal = broker.sent[0].payload
+    window = seal["window"]
+    await world.window._client.inner.ltrim(world.window._keys(ORG, window)[1], 2, -1)  # Redis evicted part of the list
+    broker.sent.clear()
+    await repurge_window.handle_seal(broker, ORG, seal, store=world.window, now=seal["_retry_not_before"])
+    assert counted == ["ids"] and broker.sent[0].payload["recordIds"] == ["rec-2"]    # what is left is still paged
+
+
+async def test_a_window_that_never_accepted_an_id_finishes_without_a_loss(world: Any, clock: list[float], monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
+    counted: list[str] = []
+    monkeypatch.setattr(repurge_window, "WINDOW_LOST", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])))
+    store = world.window
+    assert (await store.open_or_append(ORG, 5, "aaaa", "e1", "seed", 1000)).state == repurge_window.CLAIMED
+    assert await store.mark_published(ORG, 5, "aaaa", "e1", 9000, 1001)
+    await repurge_window.handle_seal(Broker(clock), ORG, repurge_window.seal_payload(ORG, 5, "e1", due_s=0.0), store=store, now=clock[0])
+    assert counted == []
+
+
+def test_the_window_never_outlives_the_envelope_age_a_seal_must_survive(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.envelope import max_age_seconds
+
+    monkeypatch.setenv("PAID_RESULT_REPURGE_WINDOW_S", "900")
+    assert repurge_window.window_s() + repurge_window.SEAL_GRACE_S <= max_age_seconds() - 300
+    monkeypatch.setenv("PAID_RESULT_REPURGE_WINDOW_S", "10")
+    assert repurge_window.window_s() == 60
+    monkeypatch.setenv("PAID_RESULT_REPURGE_WINDOW_S", "300")
+    assert repurge_window.window_s() == 300

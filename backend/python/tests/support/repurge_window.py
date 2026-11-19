@@ -269,10 +269,10 @@ class MemoryWindowStore:
         self.ids[k].append(rid)
         return Opened(APPENDED)
 
-    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int) -> bool:
+    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int, now_ms: int = 0) -> bool:
         k = (org_id, window)
         parsed = repurge_window.parse_own(self.own.get(k))
-        if parsed is None or parsed[0] != "claim" or parsed[1] != token or parsed[2] != epoch:
+        if parsed is None or parsed[0] != "claim" or parsed[1] != token or parsed[2] != epoch or parsed[3] <= now_ms:
             return False
         self.own[k] = f"published:{epoch}:{due_ms}"
         self.open.setdefault(org_id, {})[(window, epoch)] = due_ms
@@ -291,7 +291,7 @@ class MemoryWindowStore:
         if k in self.done:
             return repurge_window.SealRead(repurge_window.SEAL_DONE, (), len(self.ids.get(k, [])))
         self.sealed.add(k)
-        return repurge_window.SealRead(repurge_window.SEAL_OK, tuple(self.ids.get(k, [])))
+        return repurge_window.SealRead(repurge_window.SEAL_OK, tuple(self.ids.get(k, [])), expected=len(self.ids.get(k, [])))
 
     async def mark_done(self, org_id: str, window: int, epoch: str) -> None:
         self.done.add((org_id, window))

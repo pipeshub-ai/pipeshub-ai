@@ -132,7 +132,10 @@ def coalesce_enabled() -> bool:
 
 
 def window_s() -> int:
-    return int(min(max(env_seconds(WINDOW_ENV, DEFAULT_WINDOW_S), 60.0), 900.0))
+    """The window length: 60 s up to 900 s, and never so long that a seal signed at the start of a window is older than the
+    envelope accepts when it falls due (the age limit less ``SEAL_GRACE_S`` and the 300 s of consumer lag a hop is allowed)."""
+    longest = max(60.0, min(900.0, max_age_seconds() - 300.0 - SEAL_GRACE_S))
+    return int(min(max(env_seconds(WINDOW_ENV, DEFAULT_WINDOW_S), 60.0), longest))
 
 
 def page_size() -> int:
@@ -168,6 +171,8 @@ class SealRead:
     ids: tuple[str, ...] = ()
     #: How many ids the window held when its seal found it replaced or absent (0 when none can be seen).
     seen: int = 0
+    #: How many ids the window accepted (its own counter): more than the list holds means the list lost some.
+    expected: int = 0
 
 
 def parse_own(own: str | None) -> tuple[str, str, str, int] | None:
@@ -212,7 +217,7 @@ def decide_seal(own: str | None, epoch: str, now_ms: int) -> str:
 class WindowStore(Protocol):
     async def open_or_append(self, org_id: str, window: int, token: str, epoch: str, rid: str, now_ms: int) -> Opened: ...
 
-    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int) -> bool: ...
+    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int, now_ms: int) -> bool: ...
 
     async def release_claim(self, org_id: str, window: int, token: str) -> None: ...
 
@@ -233,6 +238,8 @@ if own and string.sub(own, 1, 10) == 'published:' then
   if redis.call('LLEN', KEYS[2]) >= tonumber(ARGV[5]) then return {'FULL'} end
   redis.call('RPUSH', KEYS[2], ARGV[4])
   redis.call('EXPIRE', KEYS[2], ARGV[6])
+  redis.call('INCR', KEYS[4])
+  redis.call('EXPIRE', KEYS[4], ARGV[6])
   return {'APPENDED'}
 end
 if own then
@@ -249,8 +256,9 @@ return {'CLAIMED', ARGV[2]}
 _MARK_PUBLISHED = """
 local own = redis.call('GET', KEYS[1])
 if not own then return 0 end
-local tok, ep = string.match(own, '^claim:([^:]*):([^:]*):%d+$')
+local tok, ep, exp = string.match(own, '^claim:([^:]*):([^:]*):(%d+)$')
 if (not tok) or tok ~= ARGV[1] or ep ~= ARGV[2] then return 0 end
+if tonumber(exp) <= tonumber(ARGV[6]) then return 0 end
 redis.call('SET', KEYS[1], 'published:' .. ep .. ':' .. ARGV[3], 'EX', ARGV[4])
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[5])
 redis.call('EXPIRE', KEYS[2], ARGV[4])
@@ -281,7 +289,7 @@ if kind == 'claim' then
 end
 if redis.call('EXISTS', KEYS[4]) == 1 then return {'DONE', n} end
 redis.call('SET', KEYS[3], '1', 'EX', ARGV[3], 'NX')
-return {'OK', n}
+return {'OK', n, tonumber(redis.call('GET', KEYS[5]) or '0')}
 """
 
 _MARK_DONE = """
@@ -309,6 +317,10 @@ class RedisWindowStore:
         base = self._base(org_id, window)
         return tuple(self._key_of(f"{base}:{part}") for part in ("own", "ids", "sealed", "done"))  # type: ignore[return-value]
 
+    def _count_key(self, org_id: str, window: int) -> str:
+        """How many ids the window accepted, kept apart from the list: a list Redis lost (eviction) is then seen as a loss."""
+        return self._key_of(f"{self._base(org_id, window)}:count")
+
     def _open_key(self, org_id: str) -> str:
         return self._key_of(f"pc:rpw:{{{org_id}}}:open")
 
@@ -316,17 +328,18 @@ class RedisWindowStore:
         own, ids, sealed, _done = self._keys(org_id, window)
         ttl = window_s() + KEY_TTL_AFTER_S
         res = await self._client.eval(  # type: ignore[misc]
-            _OPEN_OR_APPEND, 3, own, ids, sealed, token, epoch, now_ms, rid, WINDOW_CAP, ttl, CLAIM_TTL_MS,
+            _OPEN_OR_APPEND, 4, own, ids, sealed, self._count_key(org_id, window), token, epoch, now_ms, rid, WINDOW_CAP, ttl,
+            CLAIM_TTL_MS,
         )
         # ARGV order: 1 token, 2 epoch, 3 now, 4 rid, 5 cap, 6 ttl, 7 claim ttl
         state = _decode(res[0])
         return Opened(state, _decode(res[1]) if len(res) > 1 else None)
 
-    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int) -> bool:
+    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int, now_ms: int) -> bool:
         own, _ids, _sealed, _done = self._keys(org_id, window)
         ttl = window_s() + KEY_TTL_AFTER_S
         return bool(await self._client.eval(  # type: ignore[misc]
-            _MARK_PUBLISHED, 2, own, self._open_key(org_id), token, epoch, due_ms, ttl, f"{window}:{epoch}",
+            _MARK_PUBLISHED, 2, own, self._open_key(org_id), token, epoch, due_ms, ttl, f"{window}:{epoch}", now_ms,
         ))
 
     async def release_claim(self, org_id: str, window: int, token: str) -> None:
@@ -336,7 +349,7 @@ class RedisWindowStore:
     async def seal_read(self, org_id: str, window: int, epoch: str, now_ms: int) -> SealRead:
         own, ids, sealed, done = self._keys(org_id, window)
         ttl = window_s() + KEY_TTL_AFTER_S
-        res = await self._client.eval(_SEAL, 4, own, ids, sealed, done, epoch, now_ms, ttl)  # type: ignore[misc]
+        res = await self._client.eval(_SEAL, 5, own, ids, sealed, done, self._count_key(org_id, window), epoch, now_ms, ttl)  # type: ignore[misc]
         state = _decode(res[0])
         if state != SEAL_OK:
             return SealRead(state, (), int(res[1]) if len(res) > 1 else 0)
@@ -345,7 +358,7 @@ class RedisWindowStore:
         out: list[str] = []
         for start in range(0, int(res[1]), SEAL_READ_CHUNK):
             out.extend(_decode(x) for x in await self._client.lrange(ids, start, start + SEAL_READ_CHUNK - 1))
-        return SealRead(SEAL_OK, tuple(out))
+        return SealRead(SEAL_OK, tuple(out), expected=int(res[2]))
 
     async def mark_done(self, org_id: str, window: int, epoch: str) -> None:
         _own, _ids, _sealed, done = self._keys(org_id, window)
@@ -406,12 +419,12 @@ class PgWindowStore:
             await tx.set(f"{base}:ids:{seq:010d}", rid, ttl)
             return Opened(APPENDED)
 
-    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int) -> bool:
+    async def mark_published(self, org_id: str, window: int, token: str, epoch: str, due_ms: int, now_ms: int) -> bool:
         base = self._base(org_id, window)
         ttl = float(window_s() + KEY_TTL_AFTER_S)
         async with self._state.locked(base) as tx:
             parsed = parse_own(await tx.get(f"{base}:own"))
-            if parsed is None or parsed[0] != "claim" or parsed[1] != token or parsed[2] != epoch:
+            if parsed is None or parsed[0] != "claim" or parsed[1] != token or parsed[2] != epoch or parsed[3] <= now_ms:
                 return False
             await tx.set(f"{base}:own", f"published:{epoch}:{due_ms}", ttl)
             await tx.set(f"rpw:{{{org_id}}}:open:{window}:{epoch}", str(due_ms), ttl)
@@ -448,7 +461,7 @@ class PgWindowStore:
             if len(page) < SEAL_READ_CHUNK:
                 break
             after = page[-1][0]
-        return SealRead(SEAL_OK, tuple(ids))
+        return SealRead(SEAL_OK, tuple(ids), expected=min(seen, WINDOW_CAP))
 
     async def mark_done(self, org_id: str, window: int, epoch: str) -> None:
         base = self._base(org_id, window)
@@ -536,6 +549,12 @@ async def coalesce_successor(
     if store is None:
         FALLBACK.inc("no_store")
         return False
+    carried = payload.get("horizonS")
+    if isinstance(carried, int | float) and not isinstance(carried, bool) and carried > repurge_horizon_s():
+        # This record's chain was started under a longer horizon than the live one (a budget was lowered since): a page chain
+        # would end at the live horizon from its seal, so the record keeps the chain that carries its own.
+        FALLBACK.inc("carried_horizon")
+        return False
     token, window, now_ms = claim_token(org_id, payload), window_of(now), int(now * 1000)
     try:
         opened = await store.open_or_append(org_id, window, token, secrets.token_hex(8), rid, now_ms)
@@ -551,7 +570,10 @@ async def coalesce_successor(
             await _release_quietly(store, org_id, window, token)
             raise
         try:
-            await store.mark_published(org_id, window, token, opened.epoch, int(due * 1000))
+            if not await store.mark_published(org_id, window, token, opened.epoch, int(due * 1000), int(now_s() * 1000)):
+                # The claim lapsed (or was taken) while the seal was being published: the window is not this deleter's to open.
+                FALLBACK.inc("claim_lost")
+                return False
             opened = await store.open_or_append(org_id, window, token, secrets.token_hex(8), rid, now_ms)
         except Exception as exc:
             FALLBACK.inc("error")
@@ -641,6 +663,14 @@ async def handle_seal(
             window, read.state, read.seen,
         )
         return
+    if read.expected > len(read.ids):
+        # The window accepted more ids than its list holds (Redis evicted or lost part of it): counted, and the ids that
+        # remain are still paged. The ones lost keep only their first hop.
+        WINDOW_LOST.inc("ids")
+        log.error(
+            "Re-purge window %s of an org lost part of its id list: %d accepted, %d left; the rest keep only their first hop",
+            window, read.expected, len(read.ids),
+        )
     valid = [i for i in dict.fromkeys(read.ids) if valid_record_id(i)]
     if len(valid) != len(read.ids):
         INVALID_IDS.inc("seal")

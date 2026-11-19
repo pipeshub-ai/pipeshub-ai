@@ -36,14 +36,14 @@ def stores(runtime) -> tuple[PgWindowStore, PgWindowStore]:
 
 async def _publish(store: PgWindowStore, org: str, window: int = 5, epoch: str = "e1", token: str = "t1") -> None:
     assert (await store.open_or_append(org, window, token, epoch, "seed", NOW)).state == CLAIMED
-    assert await store.mark_published(org, window, token, epoch, NOW + 330_000)
+    assert await store.mark_published(org, window, token, epoch, NOW + 330_000, NOW)
 
 
 async def test_the_postgres_store_answers_like_the_memory_store_over_the_same_operations(stores, uid) -> None:
     pg, memory, org = stores[0], MemoryWindowStore(), f"org-{uid}"
     ops = [
         ("open_or_append", (org, 1, "t1", "e1", "r1", 1000)), ("open_or_append", (org, 1, "t2", "e2", "r2", 1001)),
-        ("mark_published", (org, 1, "t1", "e1", 9000)), ("open_or_append", (org, 1, "t2", "e2", "r2", 1002)),
+        ("mark_published", (org, 1, "t1", "e1", 9000, 1001)), ("open_or_append", (org, 1, "t2", "e2", "r2", 1002)),
         ("seal_read", (org, 1, "e1", 9500)), ("seal_read", (org, 1, "x", 9500)),
         ("open_or_append", (org, 1, "t3", "e3", "r3", 9600)), ("mark_done", (org, 1, "e1")), ("seal_read", (org, 1, "e1", 9700)),
     ]

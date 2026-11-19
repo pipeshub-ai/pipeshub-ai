@@ -45,7 +45,7 @@ def _on(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _open_window(store: Any, window: int = 5, token: str = "a" * 8, epoch: str = "e1", now: int = NOW) -> None:  # noqa: ANN401
     got = await store.open_or_append(ORG, window, token, epoch, "seed", now)
     assert got.state == CLAIMED
-    assert await store.mark_published(ORG, window, token, epoch, now + 330_000)
+    assert await store.mark_published(ORG, window, token, epoch, now + 330_000, now)
 
 
 async def test_exactly_one_of_200_concurrent_deleters_claims_and_every_id_lands_once_after_publish() -> None:
@@ -53,7 +53,7 @@ async def test_exactly_one_of_200_concurrent_deleters_claims_and_every_id_lands_
     first = await asyncio.gather(*(store.open_or_append(ORG, 5, f"t{i:04x}", f"e{i}", f"r{i}", NOW) for i in range(200)))
     assert sum(r.state == CLAIMED for r in first) == 1 and sum(r.state == BUSY for r in first) == 199
     winner = next(i for i, r in enumerate(first) if r.state == CLAIMED)
-    assert await store.mark_published(ORG, 5, f"t{winner:04x}", f"e{winner}", NOW + 330_000)
+    assert await store.mark_published(ORG, 5, f"t{winner:04x}", f"e{winner}", NOW + 330_000, NOW)
     again = await asyncio.gather(*(store.open_or_append(ORG, 5, f"t{i:04x}", f"e{i}", f"r{i}", NOW) for i in range(200)))
     assert {r.state for r in again} == {APPENDED}
     read = await store.seal_read(ORG, 5, f"e{winner}", NOW + 400_000)
@@ -70,7 +70,7 @@ async def test_a_deleter_never_trusts_another_deleters_live_claim() -> None:
     # a lapsed claim is taken over, with the new deleter's epoch
     lapsed = await store.open_or_append(ORG, 5, "bbbb", "e2", "r2", NOW + repurge_window.CLAIM_TTL_MS + 5)
     assert (lapsed.state, lapsed.epoch) == (CLAIMED, "e2")
-    assert not await store.mark_published(ORG, 5, "aaaa", "e1", NOW + 1)      # the old claimant lost it
+    assert not await store.mark_published(ORG, 5, "aaaa", "e1", NOW + 1, NOW + 1)      # the old claimant lost it
 
 
 async def test_a_sealed_or_full_window_answers_closed_or_full_and_never_moves_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,7 +89,7 @@ async def test_a_seal_hands_back_while_its_own_epoch_is_still_claimed_then_runs(
     assert (await store.open_or_append(ORG, 5, "aaaa", "e1", "r1", NOW)).state == CLAIMED
     assert (await store.seal_read(ORG, 5, "e1", NOW + 1_000)).state == SEAL_HANDBACK       # published before mark_published
     assert (await store.seal_read(ORG, 5, "other", NOW + 1_000)).state == SEAL_LOST_EPOCH
-    await store.mark_published(ORG, 5, "aaaa", "e1", NOW + 2_000)
+    await store.mark_published(ORG, 5, "aaaa", "e1", NOW + 2_000, NOW + 1_000)
     assert (await store.open_or_append(ORG, 5, "aaaa", "e1", "r1", NOW)).state == APPENDED
     read = await store.seal_read(ORG, 5, "e1", NOW + 3_000)
     assert (read.state, read.ids) == (SEAL_OK, ("r1",))
