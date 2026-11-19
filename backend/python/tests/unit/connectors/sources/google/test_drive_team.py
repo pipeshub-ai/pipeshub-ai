@@ -1077,6 +1077,14 @@ class TestTeamDriveItemSharedWith:
         assert result.record.authored_by is not None and result.record.authored_by.email == "test@ext.test"
 
 
+def _drives(state: dict) -> dict:
+    import json
+
+    stored = state.get("foreign_shared_drives") or {}
+    assert all(not isinstance(v, dict) for v in stored.values()), "a sync point holds no nested map"
+    return json.loads(stored.get("drives") or "{}")
+
+
 class TestForeignSharedDrive:
     """A shared drive a user reaches that the domain's admin listing does not have (another organization's)."""
 
@@ -1151,7 +1159,7 @@ class TestForeignSharedDrive:
 
         delete.assert_awaited_once()
         assert delete.await_args.args[2] == "0APG"
-        assert state["foreign_shared_drives"]["drives"] == {}
+        assert _drives(state) == {}
 
     async def test_a_failed_delete_still_revokes_access_and_is_retried(self, connector) -> None:
         state = self._store(connector)
@@ -1161,12 +1169,12 @@ class TestForeignSharedDrive:
         with patch("app.connectors.sources.google.drive.team.connector.delete_shared_drive_records", new=delete):
             await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
             assert self._last_group_write(connector)[1] == []
-            assert "0APG" in state["foreign_shared_drives"]["drives"]
+            assert "0APG" in _drives(state)
 
             await connector._note_foreign_drives_reached(self._user("b@example.com"), [])
 
         assert delete.await_count == 2
-        assert state["foreign_shared_drives"]["drives"] == {}
+        assert _drives(state) == {}
 
     async def test_a_deleted_drive_forgets_every_users_change_token(self, connector) -> None:
         self._store(connector)
@@ -1199,7 +1207,7 @@ class TestForeignSharedDrive:
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
 
         connector._sync_ledger.note_incomplete.assert_called_once()
-        assert state["foreign_shared_drives"]["drives"]["0APG"]["members"] == ["a@example.com"]
+        assert _drives(state)["0APG"]["members"] == ["a@example.com"]
 
     async def test_concurrent_user_syncs_keep_both_members(self, connector) -> None:
         state = self._store(connector)
@@ -1217,7 +1225,7 @@ class TestForeignSharedDrive:
             connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN]),
         )
 
-        assert sorted(state["foreign_shared_drives"]["drives"]["0APG"]["members"]) == ["a@example.com", "b@example.com"]
+        assert sorted(_drives(state)["0APG"]["members"]) == ["a@example.com", "b@example.com"]
 
     async def test_an_admin_listed_drive_is_never_treated_as_foreign(self, connector) -> None:
         state = self._store(connector)
@@ -1232,7 +1240,7 @@ class TestForeignSharedDrive:
 
         delete.assert_not_awaited()
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
-        assert state["foreign_shared_drives"]["drives"] == {}
+        assert _drives(state) == {}
 
     async def test_an_unchanged_membership_writes_nothing(self, connector) -> None:
         self._store(connector)

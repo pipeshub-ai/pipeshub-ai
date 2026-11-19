@@ -6954,9 +6954,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         active = {u.email.lower() for u in self.synced_users if u.is_active and u.email}
         async with self._foreign_drives_lock:
             stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
+            # Kept as one JSON string: a sync point on Neo4j cannot hold a nested map.
+            raw = stored.get("drives") or "{}"
+            known = json.loads(raw) if isinstance(raw, str) else {}
             drives = {
                 drive_id: {"name": entry.get("name") or drive_id, "members": list(entry.get("members") or [])}
-                for drive_id, entry in (stored.get("drives") or {}).items()
+                for drive_id, entry in known.items()
                 # A drive the admin listing now has is synced, and removed, by the admin path.
                 if drive_id not in self._listed_shared_drive_ids
             }
@@ -6982,9 +6985,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 except Exception as e:
                     self._sync_ledger.note_incomplete()
                     self.logger.error(f"Foreign shared drive {drive_id} not updated: {e}", exc_info=True)
-            await self.drive_delta_sync_point.update_sync_point(
-                FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": drives}
-            )
+            if drives != known:
+                await self.drive_delta_sync_point.update_sync_point(
+                    FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(drives, sort_keys=True)}
+                )
 
     async def _write_foreign_drive(self, drive_id: str, entry: dict) -> bool:
         """Write a foreign drive's group with its members' grants; with none, revoke and delete it.
