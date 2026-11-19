@@ -21,6 +21,7 @@ import app.services.graph_db.postgres.permissions as permissions_module
 from .test_access import World, _org
 from .test_access import w as w
 from .test_grants import in_org
+from .test_kg_read import flip
 
 pytestmark = pytest.mark.integration
 
@@ -193,10 +194,12 @@ async def oracle(w: World, uid: str, recs: dict[str, dict], keep: Any = lambda _
     return out
 
 
-async def check(w: World, pg_db, seed: int, *, n: int, users: tuple[str, ...]) -> None:
+async def check(w: World, pg_db, seed: int, *, n: int, users: tuple[str, ...], promote: bool = False) -> int:
+    """Returns how many connectors kg serves (``promote``: every connector copied, verified and promoted first)."""
     rng = random.Random(seed)
     recs = await build(w, rng, w.org, n=n)
     await extras(w, rng, recs)
+    promoted = (await flip(pg_db, w.org))[0] if promote else 0
     other = _org()
     try:
         with in_org(other):       # another organization's records under the same ids, open to nobody here
@@ -220,6 +223,7 @@ async def check(w: World, pg_db, seed: int, *, n: int, users: tuple[str, ...]) -
         with in_org(other):
             await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1", other), write=True)
             await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
+    return promoted
 
 
 @pytest.mark.parametrize("chunk", [1, 100000])      # 1: every app is read as a whole, in sets; 100000: only the per-record check
@@ -239,3 +243,20 @@ async def test_the_search_scope_of_apps_of_more_than_a_chunk_of_records_is_exact
     monkeypatch.setattr(access_module, "records_below_app", spy)
     await check(w, pg_db, 3, n=2800, users=("uid-u1", "uid-u2"))
     assert WIDE in whole      # the unfiltered searches read the app whole (more than a chunk of the candidates, at least half of its records), as the real threshold says
+
+
+@pytest.mark.timeout(300)      # copying, verifying and promoting every connector of the world first
+@pytest.mark.parametrize("seed", range(8))
+async def test_the_search_scope_of_connectors_kg_serves_is_read_from_their_classes_and_is_what_the_per_record_check_admits(
+        w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int) -> None:
+    """Once kg serves the record-level connectors, their candidates are the records their classes admit and the rows kg does not decide, never a walk of the graph."""
+    walked: list[str] = []
+    real = access_module.reachable_records
+
+    async def spy(tx: object, org: str, access: dict, app_ids: list[str]) -> tuple:
+        walked.extend(app_ids)
+        return await real(tx, org, access, app_ids)
+    monkeypatch.setattr(access_module, "reachable_records", spy)
+    promoted = await check(w, pg_db, seed, n=40, users=("uid-u1", "uid-u2", "uid-u3", "uid-nobody"), promote=True)
+    assert promoted, "the world was not promoted: the test proves nothing"
+    assert LVL not in walked and LVL2 not in walked, walked

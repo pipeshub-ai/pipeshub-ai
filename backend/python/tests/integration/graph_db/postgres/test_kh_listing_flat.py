@@ -15,6 +15,7 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingTooLarge,
 )
 from app.services.graph_db.postgres import kh_listing
+from app.services.graph_db.postgres import permissions as permissions_module
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
@@ -382,6 +383,43 @@ async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_
         plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.page_sql("updatedAt", "DESC", "next", where, None, admit), *q.values))
         joined = _joined_reads(plan_gate.root(plan), "nodes")
         assert plan_gate.scans(plan, "nodes") and not joined, f"indexing status ({'after' if analyzed else 'before'} ANALYZE) joins the organisation's nodes: {joined}"
+    finally:
+        await con.close()
+
+
+@pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
+async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, unvouched) -> None:
+    """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none.
+    Judged with statistics, as kg's tables are once copied (kg_0016): with statistics older than an organisation's rows the planner may take any index of the org."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        await con.execute("SET enable_seqscan = off")      # the planner's guess at a table this small is a scan; the gate is about which index bounds the read
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.undecided_sql("", "$4"), org, app_sk, 201, unvouched))
+        used = {name for s in plan_gate.scans(plan, "records") for name, _ in plan_gate.bounds(s)}
+        # the classes' read may take any range of the connector when a class holds most of it (as in this world); never the organisation
+        loose = plan_gate.unkeyed(plan, "records", r"app_sk")
+        assert "records_undecided" in used and not loose, f"undecided rows read by {used}: {loose}"
+    finally:
+        await con.close()
+
+
+async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:
+    """Search's record-id path reads the records a connector kg serves admits by class, within the connector (with statistics, as kg's tables are once copied:
+    kg_0016): never a read of the organisation by records_id or records_pkey."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        await con.execute("SET enable_seqscan = off")      # as above: the gate is about which index bounds the read
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + permissions_module._KG_ADMITTED, org, app_sk, [], [1, 2], [3], ["r0001"]))
+        loose = plan_gate.unkeyed(plan, "records", r"app_sk")
+        assert plan_gate.scans(plan, "records") and not loose, f"admitted records read by {loose}"
     finally:
         await con.close()
 
