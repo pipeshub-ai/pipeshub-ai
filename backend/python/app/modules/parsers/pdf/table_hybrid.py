@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import re
 import statistics
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -739,3 +740,201 @@ def topology_from_rows(rows: list[tuple[float, float]], cells: list[list[tuple[f
             last = (cols[j + 1] - 1) if j + 1 < len(cols) else (ncols - 1 if present else c)  # None positions after a cell are its span
             out.append(Cell(r, c, r, max(c, last), (float(x0), float(top), float(x1), float(bot))))
     return Topology(len(rows), ncols, out)
+
+
+# --- structure model: per-box plan and checks on the returned grid ------------------------------------------------
+
+# Frozen constants of the model request. A test pins them against the evaluation configuration.
+LINE_JOIN_H = 0.5  # a word joins the current line when its centre is within this many median heights of the line's first centre
+SEGMENT_GAP_H = 1.0  # consecutive words further apart than this many median heights are separate segments
+PREFILTER_MIN_LINES = 2
+CAP_K = 2.0
+CAP_MARGIN = 16
+CAP_CEILING = 1024
+MODEL_LIBRARY_VERSION = "4.0.4"
+MODEL_MODE = "accurate"
+MODEL_REVISION = "fc0f2d45e2218ea24bce5045f58a389aed16dc23"  # the weights commit the measured grids came from
+# Hash of the weight files the measured grids came from: the sha256 of each weight file in the mode folder (sha256 2a7d6c92...74d9 for the accurate file), combined by name (see ``weights_sha256`` in the child module).
+MODEL_WEIGHTS_SHA256 = "b7682f9ea68ca3c7e1f87a8054e4d7923789cb6e37284ea44e5c985f54004dff"
+WORD_LOSS_MAX = 0.01
+
+REASONS = (
+    "none", "prefilter", "budget", "deadline", "service_busy", "shadow_busy", "service_down", "unsupported",
+    "version_mismatch", "mode_fast", "timeout", "error", "malformed", "cap_hit", "small_grid", "word_loss",
+    "collect_error", "spool_full",
+)
+# The reasons that make the result depend on load rather than on the document.
+LOAD_REASONS = ("service_busy", "deadline", "timeout", "service_down", "error")
+GLYPH_DENY = frozenset("•◦‣⁃∙▪■□●○")
+
+
+def lines_cols(words: list[Word]) -> tuple[int, int]:
+    """Text lines in the words and the most segments on one line (the column estimate)."""
+    if not words:
+        return 0, 0
+    hs = sorted(w["bottom"] - w["top"] for w in words)
+    h = hs[len(hs) // 2] or 8.0
+    lines: list[list[Any]] = []
+    for w in sorted(words, key=lambda w: (w["top"] + w["bottom"]) / 2):
+        cy = (w["top"] + w["bottom"]) / 2
+        if lines and abs(cy - lines[-1][0]) <= LINE_JOIN_H * h:
+            lines[-1][1].append(w)
+        else:
+            lines.append([cy, [w]])
+    cols = 0
+    for _, ln in lines:
+        ln.sort(key=lambda w: w["x0"])
+        cols = max(cols, 1 + sum(1 for a, b in zip(ln, ln[1:], strict=False) if b["x0"] - a["x1"] >= SEGMENT_GAP_H * h))
+    return len(lines), cols
+
+
+def step_cap(lines: int, cols: int) -> int:
+    return int(min(CAP_CEILING, CAP_K * lines * (cols + 1) + CAP_MARGIN))
+
+
+@dataclass(frozen=True)
+class BoxPlan:
+    reason: str  # "none" (send it), "prefilter" or "cap_hit"
+    lines: int
+    cols_est: int
+    cap: int
+    cap_reason: str | None = None
+
+
+def plan_box(words: list[Word]) -> BoxPlan:
+    """Whether a box is sent to the model, and with what step cap. Same order as the evaluation harness."""
+    lines, cols = lines_cols(words)
+    cap = step_cap(lines, cols)
+    if lines < PREFILTER_MIN_LINES:
+        return BoxPlan("prefilter", lines, cols, cap)
+    if lines * (cols + 1) + 1 > CAP_CEILING:  # the table's own tokens cannot fit under the ceiling
+        return BoxPlan("cap_hit", lines, cols, cap, "ceiling")
+    return BoxPlan("none", lines, cols, cap)
+
+
+@dataclass(frozen=True)
+class GridCheck:
+    ok: bool
+    reason: str | None  # why it is malformed, else None
+    overlaps: int  # grid positions covered by more than one cell (counted, resolved last wins)
+    n_rows: int
+    n_cols: int
+
+
+def validate_cells(cells: list[dict[str, Any]], n_rows: int, n_cols: int, token_ids: set[int]) -> GridCheck:
+    """Structure checks on a returned grid. Overlapping cells are counted, not malformed."""
+    if not cells:
+        return GridCheck(False, "no_cells", 0, n_rows, n_cols)
+    seen_tokens: set[int] = set()
+    covered: set[tuple[int, int]] = set()
+    overlaps = 0
+    for c in cells:
+        r0, r1, c0, c1 = c["r0"], c["r1"], c["c0"], c["c1"]
+        if r0 < 0 or c0 < 0 or r1 > n_rows or c1 > n_cols:
+            return GridCheck(False, "index_range", overlaps, n_rows, n_cols)
+        if r1 <= r0 or c1 <= c0:
+            return GridCheck(False, "empty_span", overlaps, n_rows, n_cols)
+        for t in c.get("tokens", []):
+            if t not in token_ids:
+                return GridCheck(False, "unknown_token", overlaps, n_rows, n_cols)
+            if t in seen_tokens:
+                return GridCheck(False, "token_twice", overlaps, n_rows, n_cols)
+            seen_tokens.add(t)
+        for r in range(r0, r1):
+            for k in range(c0, c1):
+                if (r, k) in covered:
+                    overlaps += 1
+                covered.add((r, k))
+    return GridCheck(True, None, overlaps, n_rows, n_cols)
+
+
+def model_shape(cells: list[dict[str, Any]]) -> tuple[int, int]:
+    """Rows and columns that hold at least one cell with a word (empty rows and columns dropped)."""
+    rows = {r for c in cells if c.get("tokens") for r in range(c["r0"], c["r1"])}
+    cols = {k for c in cells if c.get("tokens") for k in range(c["c0"], c["c1"])}
+    return len(rows), len(cols)
+
+
+def _has_content(text: str) -> bool:
+    return any(ch.isalnum() for ch in text)
+
+
+def word_losses(token_texts: dict[int, str], cells: list[dict[str, Any]]) -> tuple[float, float]:
+    """Share of the request's words listed in no cell: over all words, and over words with a letter or a digit."""
+    listed = {t for c in cells for t in c.get("tokens", [])}
+    lost = [t for t in token_texts if t not in listed]
+    all_share = len(lost) / len(token_texts) if token_texts else 0.0
+    content = [t for t, text in token_texts.items() if _has_content(text)]
+    content_lost = [t for t in content if t not in listed]
+    return all_share, (len(content_lost) / len(content) if content else 0.0)
+
+
+def would_route(failure: str | None, check: GridCheck | None, shape: tuple[int, int] | None, content_loss: float) -> tuple[str, str]:
+    """What a model-first mode would do with this table: ``("model" | "evidence", reason)``. First match wins,
+    in the order the reasons are listed: a request failure, malformed, a grid under 2 x 2, word loss above 1 %."""
+    if failure and failure != "none":
+        return "evidence", failure
+    if check is None or not check.ok:
+        return "evidence", "malformed"
+    if shape is None or shape[0] < 2 or shape[1] < 2:
+        return "evidence", "small_grid"
+    if content_loss > WORD_LOSS_MAX:
+        return "evidence", "word_loss"
+    return "model", "none"
+
+
+def box_class(box_ids: set[int], evidence_tables: list[set[int]]) -> str:
+    """How the box's word set relates to the tables the evidence path emits for it (word sets by id)."""
+    hits = [t for t in evidence_tables if t & box_ids]
+    if not hits:
+        return "no_table"
+    if len(hits) > 1:
+        return "multi"
+    t = hits[0]
+    if t == box_ids:
+        return "same_words"
+    if box_ids - t:
+        return "box_extra"
+    return "table_extra"
+
+
+def glyph_candidates(token_texts: dict[int, str], cells: list[dict[str, Any]]) -> int:
+    """Bullet-like tokens that sit in an otherwise numeric cell. Counted only; nothing is changed."""
+    n = 0
+    for c in cells:
+        texts = [(t, token_texts.get(t, "")) for t in c.get("tokens", [])]
+        for t, text in texts:
+            if not (text in GLYPH_DENY or (len(text) == 1 and unicodedata.category(text) in ("So", "Co"))):
+                continue
+            others = [x for u, x in texts if u != t]
+            if others and all(is_number(x) or is_dash(x) or x in LEFT_SYMBOLS | RIGHT_SYMBOLS for x in others):
+                n += 1
+    return n
+
+
+def hard_flags(words_by_id: dict[int, Word], cells: list[dict[str, Any]], shape: tuple[int, int]) -> dict[str, bool]:
+    """Flag-only checks: ``bij`` every word in exactly one cell, ``mono`` row and column starts follow the cell
+    boxes, ``size`` at least 2 x 2, ``gap`` no cell holds an aligned wide gap (a currency sign or bracket binds to
+    the word on its right first). True means the check holds."""
+    listed = [t for c in cells for t in c.get("tokens", [])]
+    bij = sorted(listed) == sorted(words_by_id)
+    tops: dict[int, list[float]] = {}
+    lefts: dict[int, list[float]] = {}
+    for c in cells:
+        if c.get("bbox"):
+            tops.setdefault(c["r0"], []).append(c["bbox"][1])
+            lefts.setdefault(c["c0"], []).append(c["bbox"][0])
+    mono = all(
+        statistics.median(tops[a]) <= statistics.median(tops[b]) + 1e-6 for a, b in zip(sorted(tops), sorted(tops)[1:], strict=False)
+    ) and all(
+        statistics.median(lefts[a]) <= statistics.median(lefts[b]) + 1e-6 for a, b in zip(sorted(lefts), sorted(lefts)[1:], strict=False)
+    )
+    gap_ok = True
+    for c in cells:
+        ws = sorted((words_by_id[t] for t in c.get("tokens", []) if t in words_by_id), key=lambda w: (round((w["top"] + w["bottom"]) / 2), w["x0"]))
+        for a, b in zip(ws, ws[1:], strict=False):
+            h = max(a["bottom"] - a["top"], 1.0)
+            same_line = abs((a["top"] + a["bottom"]) / 2 - (b["top"] + b["bottom"]) / 2) <= LINE_JOIN_H * h
+            if same_line and a["text"] not in LEFT_SYMBOLS and b["text"] not in RIGHT_SYMBOLS and b["x0"] - a["x1"] >= GAP_UNSPLIT_H * h:
+                gap_ok = False
+    return {"bij": bij, "mono": mono, "size": shape[0] >= 2 and shape[1] >= 2, "gap": gap_ok}
