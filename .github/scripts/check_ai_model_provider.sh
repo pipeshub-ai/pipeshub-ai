@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Say which AI model provider the integration helper will configure, and fail fast when its
-# credentials are missing. TEST_AI_MODEL_PROVIDER may come from a secret, so the log masks its
-# value; this prints the provider by name instead of echoing the variable.
+# credentials are missing, before the stack build rather than at model setup.
 set -euo pipefail
 
 provider="${TEST_AI_MODEL_PROVIDER:-}"

@@ -76,11 +76,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # The provider may come from a secret, whose value the log masks, so say which one
-      # this run uses, and stop before the app build if its key is missing.
+      # Stop before the app build when the chosen provider's key is missing.
       - name: Check the AI model provider
         env:
-          TEST_AI_MODEL_PROVIDER: ${{ secrets.TEST_AI_MODEL_PROVIDER || vars.TEST_AI_MODEL_PROVIDER || 'azureOpenAI' }}
+          TEST_AI_MODEL_PROVIDER: openAI
           TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
           TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
           TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
@@ -223,9 +222,8 @@ jobs:
         env:
           PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          # Same provider choice as integration-tests.yml: the repository secret or variable
-          # TEST_AI_MODEL_PROVIDER (openAI or azureOpenAI), Azure when neither is set.
-          TEST_AI_MODEL_PROVIDER: ${{ secrets.TEST_AI_MODEL_PROVIDER || vars.TEST_AI_MODEL_PROVIDER || 'azureOpenAI' }}
+          # Same provider as integration-tests.yml; keep the two in step.
+          TEST_AI_MODEL_PROVIDER: openAI
           TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
           TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
           TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
