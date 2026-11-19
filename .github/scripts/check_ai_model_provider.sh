@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Say which AI model provider the integration helper will configure, and fail fast when its
+# credentials are missing. TEST_AI_MODEL_PROVIDER may come from a secret, so the log masks its
+# value; this prints the provider by name instead of echoing the variable.
+set -euo pipefail
+
+provider="${TEST_AI_MODEL_PROVIDER:-}"
+case "$provider" in
+  openAI)
+    echo "AI model provider: OpenAI"
+    if [ -z "${TEST_OPENAI_API_KEY:-}" ]; then
+      echo "::error::TEST_AI_MODEL_PROVIDER is openAI but the secret TEST_OPENAI_API_KEY is not set."
+      exit 1
+    fi
+    ;;
+  azureOpenAI)
+    echo "AI model provider: Azure OpenAI"
+    if [ -z "${TEST_AZURE_OPENAI_API_KEY:-}" ] || [ -z "${TEST_AZURE_OPENAI_ENDPOINT:-}" ]; then
+      echo "::error::TEST_AI_MODEL_PROVIDER is azureOpenAI but TEST_AZURE_OPENAI_API_KEY or TEST_AZURE_OPENAI_ENDPOINT is not set."
+      exit 1
+    fi
+    ;;
+  gemini | groq | ollama)
+    echo "AI model provider: $provider"
+    ;;
+  *)
+    echo "::error::TEST_AI_MODEL_PROVIDER is not one of openAI, azureOpenAI, gemini, groq, ollama (check its case)."
+    exit 1
+    ;;
+esac

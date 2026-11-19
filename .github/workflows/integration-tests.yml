@@ -337,11 +337,14 @@ jobs:
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-      # Azure OpenAI is where the credits are, and TEST_AI_MODEL_PROVIDER names
-      # it outright: the helper falls back to the next provider on a health
-      # check failure, so without this an Azure problem retries against the
-      # OpenAI key and reports that instead.
-      TEST_AI_MODEL_PROVIDER: azureOpenAI
+      TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      # TEST_AI_MODEL_PROVIDER names the provider outright (openAI or azureOpenAI):
+      # the helper falls back to the next provider on a health check failure, so
+      # without it a problem with one provider retries against the other and
+      # reports that instead. It comes from the repository secret or variable of
+      # that name, so switching provider needs no workflow change; unset is Azure.
+      TEST_AI_MODEL_PROVIDER: ${{ secrets.TEST_AI_MODEL_PROVIDER || vars.TEST_AI_MODEL_PROVIDER || 'azureOpenAI' }}
       # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
       # needs key, endpoint and deployment together — miss one and Azure is dropped
       # from the candidates silently, leaving OpenAI as the only provider tried.
@@ -576,6 +579,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
+
+      # The provider may come from a secret, whose value the log masks, so say
+      # which one this run uses, and stop before the stack build if its key is missing.
+      - name: Check the AI model provider
+        run: .github/scripts/check_ai_model_provider.sh
 
       # The runner shares ~15.7 GB with the Docker stack. If the kernel's out-of-memory
       # killer picks the runner, the job ends with no steps, no log and no reports. This
