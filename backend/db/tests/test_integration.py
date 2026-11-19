@@ -725,8 +725,9 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0008", min_code=None):
+def _as_newer_build(cluster, name, revision=None, min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
+    revision = revision or next(r for r in REVISION_HEADS if r.startswith("platform_"))   # the platform head of this tree
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))
         if min_code is not None:
