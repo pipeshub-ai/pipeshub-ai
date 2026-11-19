@@ -74,6 +74,12 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
             continue
         due[(org, app)] = _NEVER                                  # until the outcome says otherwise
         try:
+            # Before anything verifies it: a copy of epoch 7 code is filled in place and relabelled (an enforced one is then done), never copied again.
+            if await bf.fill_trash(db, org, app, page=PAGE, stop=stop) == "enforce":
+                PROMOTED.inc("filled")
+                due.pop((org, app), None)
+                progress += 1
+                continue
             out = await bf.backfill(db, org, app, page=PAGE, max_batches=BATCHES, drain_rounds=DRAIN_ROUNDS, stop=stop, stamp_pages=STAMP_PAGES, stamp_page=STAMP_PAGE, stamp_after=_STAMP_AFTER.get((org, app)))
             _STAMP_AFTER[(org, app)] = out.stamp_after
             if not out.flipped:

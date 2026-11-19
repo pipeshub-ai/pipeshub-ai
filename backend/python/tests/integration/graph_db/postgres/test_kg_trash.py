@@ -200,31 +200,32 @@ async def test_a_connector_copied_by_older_projection_code_takes_the_walk(pg_pro
     assert tally.c[("trash", "not_served")] and not tally.c[("trash", "kg")], dict(tally.c)
 
 
-def _fill_sql() -> str:
-    """kg_0019's in-place fill of the copies made before it (the revision's own text, read without importing the migration package)."""
-    import ast
-    from pathlib import Path
-    tree = ast.parse((Path(__file__).resolve().parents[5] / "db" / "versions" / "kg" / "0019_trash.py").read_text(encoding="utf-8"))
-    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "FILL" for t in n.targets))
-
-
-async def test_a_copy_of_epoch_7_code_upgraded_by_kg_0019_stays_enforced_and_served(pg_provider, pg_db, tally, caplog) -> None:
-    """The upgrade path: a connector copied, verified and enforced by epoch 7 code (no trash columns) holds trashed records. kg_0019 fills the columns in place and
-    relabels the copy; the bootstrap worker then leaves it as it is: still enforced, served, never demoted or copied again, and the listing is kg's and the walk's."""
+async def test_a_copy_of_epoch_7_code_is_filled_in_place_by_the_bootstrap_and_stays_enforced_and_served(pg_provider, pg_db, tally, caplog) -> None:
+    """The upgrade path: a connector copied, verified and enforced by epoch 7 code (no trash columns) holds trashed records and documents whose delete fields only Python
+    reads as it does (a number past a double, one below it, a boolean batch). The bootstrap fills the columns in place exactly as the projection derives them and relabels
+    the copy: still enforced and served, never demoted or copied again, and the listing is kg's and the walk's."""
     import logging
 
     from app.services.graph_db.postgres.kg import bootstrap
     org = new_org()
     await _tree(pg_provider, pg_db, org)
+    await _admin("""UPDATE graph.nodes SET doc = doc || jsonb_build_object('deletedAtTimestamp', '1e999999', 'deleteBatchId', true) WHERE org_id = $1 AND coll = 'records' AND id = 'a'""", org)
+    await _admin("""UPDATE graph.nodes SET doc = doc || jsonb_build_object('deletedAtTimestamp', '1e-20000') WHERE org_id = $1 AND coll = 'records' AND id = 'd'""", org)
     await _trash(pg_provider, org, ["b"])
     await _trash(pg_provider, org, ["e"])
     await flip(pg_db, org)
+
+    async def columns(tx: Any) -> dict:  # noqa: ANN401
+        return {r["id"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch("SELECT id, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1", org)}
+    with ctx(org):
+        derived = await pg_db.run(columns)                                          # what this code's projection derives
+    assert derived["a"] == (None, "True") and derived["d"] == (0, None) and derived["c"][1] == derived["b"][1]
     await _admin("UPDATE kg.records SET deleted_ms = NULL, delete_batch = NULL WHERE org_id = $1", org)               # what epoch 7 code copied
-    await _admin("UPDATE kg.projection_state SET code_epoch = 7 WHERE org_id = $1", org)
-    await _admin(_fill_sql())
+    await _admin("UPDATE kg.projection_state SET code_epoch = 7 WHERE org_id = $1 AND app_sk <> 0", org)
     caplog.set_level(logging.WARNING, logger=bootstrap.logger.name)
     await bootstrap.bring_to_enforce(pg_db, org, {})
     with ctx(org):
+        assert await pg_db.run(columns) == derived
         state = await pg_db.run(lambda tx: tx.fetch("""SELECT k.id, s.mode, s.code_epoch FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
             AND k.coll = 1 WHERE s.org_id = $1 ORDER BY k.id""", org))
     assert [tuple(r) for r in state] == [(KB, "enforce", 8), ("kb2", "enforce", 8)]
@@ -261,7 +262,7 @@ async def test_a_live_records_projection_writes_no_trash_columns(pg_provider, pg
 
 
 async def test_a_slow_trash_read_hands_over_to_the_walk(pg_provider, pg_db, tally, monkeypatch) -> None:
-    """A statement past the read's limit (here a count made slow on purpose under a 1 ms limit) is the walk's read, not an error."""
+    """A statement past the read's limit (here a count made slow on purpose under a 1 ms limit) is the walk's read, counted as slow, not an error."""
     org = new_org()
     await _tree(pg_provider, pg_db, org)
     await _trash(pg_provider, org, ["e"])
@@ -271,7 +272,7 @@ async def test_a_slow_trash_read_hands_over_to_the_walk(pg_provider, pg_db, tall
     tally.c.clear()
     with ctx(org):
         assert [i["record"]["id"] for i in (await pg_provider.list_trashed_records(KB, org))["items"]] == ["e"]
-    assert tally.c[("trash", "error")] and not tally.c[("trash", "kg")], dict(tally.c)
+    assert tally.c[("trash", "slow")] and not tally.c[("trash", "kg")] and not tally.c[("trash", "error")], dict(tally.c)
 
 
 async def test_older_projection_code_cannot_write_into_kg_any_more(pg_provider, pg_db) -> None:

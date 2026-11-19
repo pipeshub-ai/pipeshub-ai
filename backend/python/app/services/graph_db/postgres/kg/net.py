@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.kg import backfill, bootstrap, drainer, locks
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.verify import (
     Cursor,
     verify_chunk,
@@ -63,8 +64,9 @@ LAST_VERIFIED = METRICS_BACKEND.gauge("pipeshub_kg_net_last_verified_seconds", "
 OVERDUE = METRICS_BACKEND.gauge("pipeshub_kg_net_verify_overdue", "Enforced connectors whose full verify has not completed within 24 verify intervals", ["org"])
 DEMOTED = METRICS_BACKEND.counter("pipeshub_kg_net_demoted_total", "Connectors taken back to the walk because kg differs from it", ["source"])
 
+# A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
-    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
+    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' AND s.code_epoch = $2 ORDER BY k.id"""
 
 _SAMPLES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task]] = weakref.WeakKeyDictionary()     # per loop: a loop that died leaves no sample counted as in flight
 _RETRY: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Task] = weakref.WeakKeyDictionary()
@@ -338,8 +340,9 @@ async def settle() -> None:
 
 # ---- the periodic verify --------------------------------------------------------------------------------------------------------------------
 
+# A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
-    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
+    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' AND s.code_epoch = $2 ORDER BY k.id"""
 
 
 # The planner profile of the reader (no bitmap or sequential scans: with no statistics, or a connector that holds most of the org's rows, one can read the whole org to sort a page) and the limit of one page.
@@ -398,7 +401,7 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
         return 0
 
     async def enforced(tx: Tx) -> list[str]:
-        return [r["id"] for r in await tx.fetch(ENFORCED, org)]
+        return [r["id"] for r in await tx.fetch(ENFORCED, org, CODE_EPOCH)]
     try:
         with bind(drainer._ctx(org)):
             apps = await db.run(enforced, isolation="repeatable_read")

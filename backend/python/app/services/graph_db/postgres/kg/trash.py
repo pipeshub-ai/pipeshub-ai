@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from app.core.db.errors import DbTimeout
 from app.services.graph_db.common.utils import TRASH_LIST_OTHER_ROOT_NAMES
 from app.services.graph_db.postgres.kg.hierarchy import Fallback, _node, _served
 
@@ -75,10 +76,13 @@ async def page(tx: Tx, org: str, connector_id: str, org_id: str, *, files_only: 
     await tx.fetchval(LIMITS)
     app_sk = await _served(tx, org, connector_id)
     ts, batch = after or (None, None)
-    found = await tx.fetch(PAGE, org, app_sk, connector_id, org_id, files_only, ts, batch, skip + limit, TRASH_LIST_OTHER_ROOT_NAMES)
-    counted = await tx.fetchrow(COUNT, org, app_sk, connector_id, org_id, files_only, None, None, None if count_cap is None else count_cap + 1)
-    if counted["odd"] or any(r["odd"] for r in found):
-        raise Fallback("odd")
-    shown = [{"o": r["n"], **{c: r[c] for c in ("batch", "deleted_at", "first_id", "root_count", "batch_size", "other_names")}} for r in found[skip:]]
-    rows = await tx.fetch(ROWS, org, json.dumps(shown)) if shown else []
+    try:
+        found = await tx.fetch(PAGE, org, app_sk, connector_id, org_id, files_only, ts, batch, skip + limit, TRASH_LIST_OTHER_ROOT_NAMES)
+        counted = await tx.fetchrow(COUNT, org, app_sk, connector_id, org_id, files_only, None, None, None if count_cap is None else count_cap + 1)
+        if counted["odd"] or any(r["odd"] for r in found):
+            raise Fallback("odd")
+        shown = [{"o": r["n"], **{c: r[c] for c in ("batch", "deleted_at", "first_id", "root_count", "batch_size", "other_names")}} for r in found[skip:]]
+        rows = await tx.fetch(ROWS, org, json.dumps(shown)) if shown else []
+    except DbTimeout:
+        raise Fallback("slow") from None                # past LIMITS (or a lock wait): the walk's read, an expected outcome and no error
     return [dict(r) for r in rows], counted["total"]

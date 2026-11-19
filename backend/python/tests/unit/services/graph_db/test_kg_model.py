@@ -276,21 +276,3 @@ def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> No
     assert by_sort.index("\U00010000x") < by_sort.index("x") < by_sort.index("�x")
     assert sorted(names, key=str.lower).index("\U00010000x") > sorted(names, key=str.lower).index("�x")      # by code point it is the other way round
 
-
-# backend/db/tests/test_kg_downgrade.py TRASH_PROBES (kg_0019's in-place fill): (deletedAtTimestamp, deleteBatchId) as JSON and what the fill writes. The fill must
-# write what the projection derives, or every upgraded connector differs at its next verify.
-FILL_PROBES = [
-    ('1790000000000', '"bt1"', (1790000000000, "bt1")), ("1.5", "7", (1, "7")), ("-1.5", "true", (-1, "True")), ('"1790000000000"', "false", (1790000000000, "False")),
-    ('" 12 "', "null", (12, None)), ('"1e3"', '"x"', (1000, "x")), ('"abc"', '"x"', (None, "x")), ('"inf"', '"x"', (None, "x")), ('" NaN"', '"x"', (None, "x")),
-    ("true", '"x"', (None, "x")), ("null", '"x"', (None, "x")), ("9223372036854775807", '"x"', (9223372036854775807, "x")),
-    ("9223372036854775808", '"x"', (None, "x")), ('"9223372036854775807"', '"x"', (None, "x")), ("0.1", '"x"', (0, "x")), ('{"a": 1}', '"x"', (None, "x")),
-    ('""', '"x"', (None, "x")), ("1" + "0" * 400, '"x"', (None, "x")), ('"1e-400"', '"x"', (0, "x")),
-]
-
-
-@pytest.mark.parametrize("ts, batch, want", FILL_PROBES)
-def test_the_trash_fill_of_kg_0019_writes_what_the_projection_derives(ts: str, batch: str, want: tuple) -> None:
-    import json
-    snap = world({APP: {}, REC: {"connectorId": "a", "isDeleted": True, "deletedAtTimestamp": json.loads(ts), "deleteBatchId": json.loads(batch)}}, [])
-    row = derive({REC}, snap).records[snap.sk[REC]]
-    assert (row["deleted_ms"], row["delete_batch"]) == want
