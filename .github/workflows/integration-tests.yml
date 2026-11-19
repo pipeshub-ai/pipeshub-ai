@@ -345,21 +345,13 @@ jobs:
       # with one provider retries against another and reports that instead. Kept
       # here, not in a secret, so the provider a run uses is visible in review.
       TEST_AI_MODEL_PROVIDER: openAI
-      # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
-      # needs key, endpoint and deployment together — miss one and Azure is dropped
-      # from the candidates silently, leaving OpenAI as the only provider tried.
-      # secrets || vars so the non-secret names work from either store.
-      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
-      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
-      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
-      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
-      # Optional. Unset falls back to the LLM deployment above, which is what a
-      # local .env run does today.
-      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
-      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # TEST_AZURE_OPENAI_* are not passed: that Azure account is gone, and while
+      # its key was set the live Azure specs and the Playwright helper (which
+      # tries Azure first) kept using it. The secrets stay, so switching back is
+      # these variables plus the provider above.
       # The demo test's answer judge. With no JUDGE_PROVIDER it uses Azure OpenAI
       # whenever TEST_AZURE_OPENAI_API_KEY is set, so name OpenAI, the provider
-      # above; it then reads TEST_OPENAI_API_KEY and TEST_OPENAI_LLM_MODEL.
+      # above, outright; it reads TEST_OPENAI_API_KEY and TEST_OPENAI_LLM_MODEL.
       # Required: without it, facts a question lists for the judge would go
       # unchecked yet pass.
       EVAL_PROVIDER: openai
