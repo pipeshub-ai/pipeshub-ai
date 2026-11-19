@@ -13,6 +13,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import yaml
+
 import pytest
 
 from helper.source_credentials import REQUIRE_ENV
@@ -47,6 +49,7 @@ def _spec_for(provider_id: str):
 
 def _clear_keys(monkeypatch) -> None:
     for name in (
+        "TEST_AI_MODEL_PROVIDER",
         "TEST_OPENAI_API_KEY", "OPENAI_API_KEY", "TEST_GROQ_API_KEY",
         "TEST_GEMINI_API_KEY", "TEST_AZURE_OPENAI_API_KEY",
         "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
@@ -54,23 +57,40 @@ def _clear_keys(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_a_missing_openai_key_fails_a_run_meant_to_cover_it(monkeypatch) -> None:
+def _set_azure(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_AZURE_OPENAI_API_KEY", "k")
+    monkeypatch.setenv("TEST_AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "d")
+
+
+@pytest.mark.parametrize(
+    ("run_provider", "key"),
+    [(None, "TEST_OPENAI_API_KEY"), ("openAI", "TEST_OPENAI_API_KEY"),
+     ("azureOpenAI", "TEST_AZURE_OPENAI_API_KEY")],
+)
+def test_a_missing_key_for_the_run_s_provider_fails_the_run(monkeypatch, run_provider, key) -> None:
+    """The provider TEST_AI_MODEL_PROVIDER names (OpenAI when unset) must not skip."""
     suite = _suite()
     _clear_keys(monkeypatch)
     monkeypatch.setenv(REQUIRE_ENV, "1")
+    if run_provider:
+        monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", run_provider)
+    provider = run_provider or suite._PROVIDER_OPENAI
 
     with pytest.raises(BaseException) as caught:
-        suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_OPENAI))
+        suite._skip_if_no_live_credentials(_spec_for(provider))
 
     assert caught.typename == "Failed"
-    assert "TEST_OPENAI_API_KEY" in str(caught.value)
+    assert key in str(caught.value)
 
 
-def test_a_provider_the_run_no_longer_funds_only_skips(monkeypatch) -> None:
-    """Azure OpenAI's account is gone, so the nightly must not still demand it."""
+def test_the_other_provider_skips_even_with_its_key_set(monkeypatch) -> None:
+    """Both providers' keys are passed; only the named one may be used."""
     suite = _suite()
     _clear_keys(monkeypatch)
+    _set_azure(monkeypatch)
     monkeypatch.setenv(REQUIRE_ENV, "1")
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "openAI")
 
     with pytest.raises(BaseException) as caught:
         suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_AZURE_OPENAI))
@@ -100,22 +120,43 @@ def test_an_ordinary_run_skips_every_provider(monkeypatch) -> None:
         assert caught.typename == "Skipped"
 
 
-def test_the_test_jobs_no_longer_pass_the_gone_azure_key() -> None:
-    """The skip-or-fail rule only decides what happens when a key is absent.
+_PROVIDER_FROM_VARIABLE = "${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}"
 
-    While a job passes TEST_AZURE_OPENAI_API_KEY, every live Azure spec, and
-    the Playwright helper (which tries Azure first), goes on running against
-    the account that no longer exists. Unsetting the variable in a test cannot
-    catch that, because the test controls its own environment and CI does not;
-    the workflows are the thing to assert on. The perf and answer-quality
-    workflows still name Azure and are out of this check until they move too.
+
+def _env_blocks(doc: dict):
+    """Every env mapping in a workflow: top level, each job, each step."""
+    if isinstance(doc.get("env"), dict):
+        yield "env", doc["env"]
+    for job_name, job in (doc.get("jobs") or {}).items():
+        if isinstance(job.get("env"), dict):
+            yield job_name, job["env"]
+        for step in job.get("steps") or []:
+            if isinstance(step.get("env"), dict):
+                yield f"{job_name}/{step.get('name', '?')}", step["env"]
+
+
+def test_switching_provider_is_one_repository_variable() -> None:
+    """Every job that names an AI provider takes it from the repository variable
+    and gets both providers' keys, so switching needs no workflow change.
+
+    The Ollama workflow runs a local model and is the one exception.
     """
     workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
-    passing_it = sorted(
-        name
-        for name in ("integration-tests.yml", "sdk-tests.yml")
-        if "TEST_AZURE_OPENAI_API_KEY: ${{ secrets." in (workflows / name).read_text()
-    )
-    assert passing_it == [], (
-        "these jobs still hand the tests the gone Azure OpenAI key: " + ", ".join(passing_it)
-    )
+    problems, checked = [], 0
+    for path in sorted(workflows.glob("*.yml")):
+        if path.name == "integration-tests-ollama.yml":
+            continue
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for where, env in _env_blocks(doc):
+            if "TEST_AI_MODEL_PROVIDER" not in env:
+                continue
+            checked += 1
+            if env["TEST_AI_MODEL_PROVIDER"] != _PROVIDER_FROM_VARIABLE:
+                problems.append(f"{path.name} {where}: TEST_AI_MODEL_PROVIDER is {env['TEST_AI_MODEL_PROVIDER']!r}")
+            for key in ("TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY"):
+                if key not in env:
+                    problems.append(f"{path.name} {where}: does not pass {key}")
+            if "EVAL_PROVIDER" in env:
+                problems.append(f"{path.name} {where}: EVAL_PROVIDER overrides the run's provider")
+    assert checked, "no workflow sets TEST_AI_MODEL_PROVIDER"
+    assert problems == [], "\n".join(problems)
