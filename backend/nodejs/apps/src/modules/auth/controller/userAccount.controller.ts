@@ -54,7 +54,10 @@ import {
   microsoftAccountIdentity,
   validateAzureAdUser,
 } from '../utils/azureAdTokenValidation';
-import { verifyGoogleIdToken } from '../utils/googleIdTokenValidation';
+import {
+  GOOGLE_SIGN_IN_FAILED,
+  verifyGoogleIdToken,
+} from '../utils/googleIdTokenValidation';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 
@@ -1718,9 +1721,7 @@ export class UserAccountController {
     const payload = ticket.getPayload();
     if (!payload) {
       throw authRefusal(
-        new WrongCredentialError(
-          "Sign-in with Google didn't complete. Try again, or use another sign-in method.",
-        ),
+        new WrongCredentialError(GOOGLE_SIGN_IN_FAILED),
         'sso_token_invalid',
       );
     }
@@ -2236,7 +2237,7 @@ export class UserAccountController {
       // the event, which is how a failed event write is retried.
       if (await getUserRepository().emailTakenElsewhere(email, userId)) {
         throw authRefusal(
-          new BadRequestError(`Email already in use: ${newEmail}`),
+          new BadRequestError('Email already in use'),
           'email_taken',
         );
       }

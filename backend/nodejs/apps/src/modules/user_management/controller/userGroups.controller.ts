@@ -17,6 +17,8 @@ import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { isUserOrgAdmin } from '../services/user-admin.service';
+import { audit } from '../../../libs/services/audit';
+import { auditMemberships, foundGroupIds } from '../utils/user-audit';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
 const GROUP_EXISTS_MESSAGE = 'Group already exists';
@@ -120,6 +122,7 @@ export class UserGroupController {
       }),
     );
 
+    audit('group.create', { target: group._id, outcome: 'success' });
     res.status(201).json(group);
   }
 
@@ -241,6 +244,11 @@ export class UserGroupController {
     }
 
     if (group.type == 'admin' || group.type == 'everyone') {
+      audit('group.update', {
+        target: groupId,
+        outcome: 'failure',
+        reason: 'protected_group',
+      });
       throw new ForbiddenError('Not Allowed');
     }
 
@@ -262,6 +270,7 @@ export class UserGroupController {
       throw new NotFoundError('User group not found');
     }
 
+    audit('group.update', { target: groupId, outcome: 'success' });
     res.status(200).json(renamed);
   }
 
@@ -281,10 +290,16 @@ export class UserGroupController {
     }
 
     if (group.type !== 'custom') {
+      audit('group.delete', {
+        target: groupId,
+        outcome: 'failure',
+        reason: 'protected_group',
+      });
       throw new ForbiddenError('Only custom groups can be deleted');
     }
 
     const deleted = await groups.softDelete(orgId, groupId, userId as string);
+    audit('group.delete', { target: groupId, outcome: 'success' });
 
     res.status(200).json(deleted);
   }
@@ -304,10 +319,21 @@ export class UserGroupController {
       throw new BadRequestError('groupIds array is required');
     }
 
-    const modified = await getGroupRepository().addMembers(
+    const groups = getGroupRepository();
+    const found = await foundGroupIds(groupIds as string[], (id) =>
+      groups.getLive(orgId, id),
+    );
+    const modified = await groups.addMembers(
       orgId,
       groupIds as string[],
       userIds as string[],
+    );
+    auditMemberships(
+      'group.member.add',
+      userIds as string[],
+      groupIds as string[],
+      found,
+      modified === 0 ? 'already_member' : undefined,
     );
 
     if (modified === 0) {
@@ -332,10 +358,21 @@ export class UserGroupController {
       throw new BadRequestError('Group IDs are required');
     }
 
-    const modified = await getGroupRepository().removeMembers(
+    const groups = getGroupRepository();
+    const found = await foundGroupIds(groupIds as string[], (id) =>
+      groups.getLive(orgId, id),
+    );
+    const modified = await groups.removeMembers(
       orgId,
       groupIds as string[],
       userIds as string[],
+    );
+    auditMemberships(
+      'group.member.remove',
+      userIds as string[],
+      groupIds as string[],
+      found,
+      modified === 0 ? 'not_member' : undefined,
     );
 
     if (modified === 0) {

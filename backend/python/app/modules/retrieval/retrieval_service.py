@@ -5,7 +5,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -265,6 +265,15 @@ class _RecordIdSearch:
 _SHADOW_SCOPE_FILTER: contextvars.ContextVar[Any] = contextvars.ContextVar("acl_shadow_scope_filter", default=None)
 
 
+def _served(plan: "_QueryPlan", scope_connector_ids: Collection[str] | None) -> bool:
+    """Whether the real search went through the serving plan's filter: it carried one and, for a request limited to some connectors, the filter
+    decides at least one of them (a request that reaches only connectors on the classic check was not filtered, so its comparison stays valid)."""
+    flt = plan.scope_filter
+    if flt is None:
+        return False
+    return scope_connector_ids is None or bool(set(scope_connector_ids) & set(flt.current))
+
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -505,7 +514,7 @@ class RetrievalService:
         self.collection_registry = collection_registry
         # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
         self._shadow = self._build_shadow(graph_provider)
-        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE=scopes); None in every other mode.
+        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE scopes, or shadow for a connector an admin switched); None in legacy.
         self._planner = self._build_planner(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
@@ -567,7 +576,7 @@ class RetrievalService:
             return set(found.records_by_vrid)
 
         try:
-            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check)
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check, served=_served(plan, scope_connector_ids))
         except Exception as exc:  # the shadow must never cost a search
             self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 

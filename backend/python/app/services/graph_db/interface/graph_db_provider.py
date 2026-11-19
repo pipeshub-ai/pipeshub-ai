@@ -867,6 +867,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional["Record"]:
         """
         Get record by internal ID (_key) with associated type document (file/mail/etc.).
@@ -874,6 +876,9 @@ class IGraphDBProvider(ABC):
         Args:
             record_id: Internal record ID (_key)
             transaction: Optional transaction ID
+            raise_on_error: Propagate a failed read instead of answering None, so a graph that
+                cannot be reached does not read as a missing record. A record that is there but
+                will not build into a typed Record is still None: that is not a failed read.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None

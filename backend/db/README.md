@@ -86,6 +86,8 @@ through `lib/ddl.py` (`ensure_index`, `ensure_partitioned_index`), partitions th
 - a `DO` block with `EXECUTE` (dynamic SQL cannot be parsed).
 Review item for every revision: run the previous release's code against the new schema in your head (inserts, updates, reads, function calls) and write the answer into the waiver. A development downgrade (`PG_MIGRATE_ALLOW_DOWNGRADE`) keeps the contract: below the contract revision the branch row reads, for example, epoch 1 with `min_code_epoch` 11, and every build refuses that database until it is upgraded again. Not parsed: function names passed to `run_vetted` through a variable, SQL that reaches a database through an object other than those above, and the waiver's truth.
 
+**Released heads.** `released_heads.json` holds each branch's head epoch in the last release, and `tests/test_unit.py::test_no_released_head_is_gone` fails when a branch's head is below it (a shipped revision deleted or renumbered). Only the release process edits the file: when a release is tagged, set `release` to the tag and `epochs` to that tag's heads, `python -c "from db import epoch_lint, locations; print({b: e for b, (e, _) in epoch_lint.expected_heads(locations.version_locations())[0].items()})"` from `backend/` on the tagged tree, in the same pull request as the release notes.
+
 CI: `python -m db.epoch_lint`, `python -m db.lint`; `python -m db.schema_requirements kernel,platform > schema_requirements.json`
 writes a build artifact's requirements, checked at boot by `boot_assert.py` (Python) and `nodejs/apps/src/libs/db/schema-assert.ts` (Node).
 
