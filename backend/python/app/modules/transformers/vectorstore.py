@@ -148,8 +148,9 @@ from app.utils.embedding_retry import (
     signal_backpressure_if_rate_limited,
 )
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
+from app.utils.error_class import innermost_type
 from app.utils.image_utils import normalize_image_to_base64
-from app.utils.indexing_timing import stage
+from app.utils.indexing_timing import note, stage
 from app.utils.llm import load_ai_models
 from app.utils.openai_hosts import is_openai_api_url
 from app.utils.precision_witness import get_precision_witness
@@ -1943,7 +1944,7 @@ class VectorStore(Transformer):
             # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
             await self._resync_membership_after_write(virtual_record_id, record_id)
             await self._check_for_leaks(collection_name, org_id, virtual_record_id)
-        self.logger.debug("✅ Indexed record summary for record %s", record_id)
+        self.logger.debug("Indexed record summary for record %s", record_id)
 
     async def _collection_with_model(self, org_id: str, record: Optional["Record"]) -> str:
         """The record's collection, with the embedding model built on this instance first: a path
@@ -2245,11 +2246,6 @@ class VectorStore(Transformer):
             record_group_ids = state.record_group_ids
             root_record_group_ids = state.root_record_group_ids
         except Exception as e:
-            self.logger.error(
-                "Failed to resolve vector membership for %s: %s",
-                virtual_record_id,
-                e,
-            )
             raise VectorStoreError(
                 f"Could not resolve vector membership for virtual record {virtual_record_id}",
                 details={"virtual_record_id": virtual_record_id, "error": str(e)},
@@ -2502,13 +2498,12 @@ class VectorStore(Transformer):
             async with _fenced("a delete of replaced blocks"):
                 await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
-                f"✅ Deleted {len(block_ids)} blocks from vector store "
+                f"Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"
             )
         except LeaseLost:
             raise
         except Exception as e:
-            self.logger.error(f"Error deleting blocks by IDs: {e}")
             raise VectorStoreError(
                 "Failed to delete blocks by IDs", details={"error": str(e)}
             ) from e
@@ -2526,12 +2521,11 @@ class VectorStore(Transformer):
             async with _fenced("a delete of the record's embeddings"):
                 await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
-                f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
+                f"Deleted embeddings for virtual record '{virtual_record_id}'"
             )
         except LeaseLost:
             raise
         except Exception as e:
-            self.logger.error(f"Error deleting embeddings: {e}")
             raise VectorStoreError(
                 "Failed to delete embeddings", details={"error": str(e)}
             ) from e
@@ -2659,7 +2653,7 @@ class VectorStore(Transformer):
             )
             _note_points(points[i:i + batch_size])
         self.logger.info(
-            f"✅ Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
+            f"Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
         )
 
     # ------------------------------------------------------------------
@@ -2824,14 +2818,14 @@ class VectorStore(Transformer):
                 # The gateway's full-jitter wait, already capped to the call's sleep allowance: no fixed floor.
                 delay = decision.delay_s
                 slept_s += delay
-            # The chain, not str(): the OpenAI SDK reports every transport
-            # failure as "Connection error." and keeps the httpx exception that
-            # says which one as __cause__; a bare timeout's message is empty.
+            # The innermost cause, not the text: the OpenAI SDK reports every transport failure as
+            # "Connection error." with the httpx error that says which one as __cause__, and a
+            # provider's text is its response body, which can echo the chunks.
             self.logger.warning(
                 f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
                 f"failed for batch of {len(texts)} texts / {total_chars} chars "
-                f"(record {record_id}); retrying in {delay:.1f}s: "
-                f"{format_exception_chain(last_error)}"
+                f"(record {record_id}); retrying in {delay:.1f}s: {type(last_error).__name__}",
+                extra={"error_type": type(last_error).__name__, "cause_type": innermost_type(last_error)},
             )
             # A failing provider is not a stalled record: the stall timer waits out the retry.
             if progress is not None:
@@ -2945,7 +2939,7 @@ class VectorStore(Transformer):
         fence: Fence | None = None,
     ) -> None:
         self.logger.debug(
-            f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
+            f"Embedding {len(langchain_document_chunks)} document chunks"
         )
         # One epoch for every batch of the call: the ids of its points are derived from it.
         if fence is None:
@@ -2963,14 +2957,10 @@ class VectorStore(Transformer):
         )
 
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
-            try:
-                await self._embed_and_upsert_documents(
-                    batch, record_id, collection_name, presence, fence
-                )
-                return len(batch)
-            except Exception as e:
-                self.logger.warning(f"Batch at {batch_start} failed: {e}")
-                raise
+            await self._embed_and_upsert_documents(
+                batch, record_id, collection_name, presence, fence
+            )
+            return len(batch)
 
         if not use_local_sequential and self._batches_by_tokens():
             batches = await asyncio.to_thread(
@@ -2988,9 +2978,12 @@ class VectorStore(Transformer):
             for idx, (start, batch) in enumerate(batches):
                 try:
                     await process_batch(start, batch)
-                except (NonRetryableError, PrecisionFlip):
+                except PrecisionFlip:
                     raise
                 except Exception as e:
+                    note(failed_batches=1)  # sequential: the first failure stops the rest
+                    if isinstance(e, NonRetryableError):
+                        raise
                     raise VectorStoreError(
                         f"Failed to store batch {idx}",
                         details={"error": str(e), "batch_index": idx},
@@ -3005,6 +2998,8 @@ class VectorStore(Transformer):
             results = await asyncio.gather(
                 *[limited(s, b) for s, b in batches], return_exceptions=True
             )
+            # Only the first failure is raised; the count says how many batches went with it.
+            note(failed_batches=sum(isinstance(r, Exception) for r in results) or None)
             for idx, result in enumerate(results):
                 if isinstance(result, (NonRetryableError, PrecisionFlip)):
                     raise result
@@ -3226,7 +3221,8 @@ class VectorStore(Transformer):
                     "Failed to store documents in vector store",
                     details={"error": str(e)},
                 ) from e
-            self.logger.info(f"Embeddings created and stored for record '{record_id}'")
+            note(chunks=len(langchain_docs) + len(image_chunks))
+            self.logger.debug(f"Embeddings created and stored for record '{record_id}'")
             return
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
@@ -3235,7 +3231,7 @@ class VectorStore(Transformer):
             await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
         self.logger.debug(
-            f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
+            f"Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
 
         if image_chunks:
@@ -3257,7 +3253,8 @@ class VectorStore(Transformer):
                 ) from e
 
         await self._check_for_leaks(collection_name, org_id, virtual_record_id)
-        self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
+        note(chunks=len(langchain_docs) + len(image_chunks))
+        self.logger.debug(f"Embeddings created and stored for record '{record_id}'")
 
     async def _confirm_batch(
         self, guard: PrecisionGuard, collection_name: str, precision: str, fence: Fence, documents: list[Document],
@@ -3447,7 +3444,7 @@ class VectorStore(Transformer):
                     table_blocks.append(block)
 
             self.logger.debug(
-                f"📊 Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
+                f"Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
             )
             self.logger.debug(
                 f"Block classification: text={len(text_blocks)}, image={len(image_blocks)}, "
@@ -3468,7 +3465,7 @@ class VectorStore(Transformer):
                         _record_context_line(record), member_blocks=member_blocks,
                     )
                 )
-                self.logger.info("✅ Added code documents for embedding")
+                self.logger.info("Added code documents for embedding")
 
             # ── Text blocks ──
             if text_blocks:
@@ -3482,7 +3479,7 @@ class VectorStore(Transformer):
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
                     documents_to_embed.extend(text_documents)
-                    self.logger.debug("✅ Added text documents for embedding")
+                    self.logger.debug("Added text documents for embedding")
                 except asyncio.TimeoutError:
                     raise DocumentProcessingError(
                         f"Text processing timed out after {_TEXT_PROCESSING_TIMEOUT_S}s "
@@ -3581,7 +3578,7 @@ class VectorStore(Transformer):
                                 "\n\n".join(parts), sql_base_metadata,
                             ))
                             self.logger.info(
-                                f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
+                                f"Added SQL TABLE DDL+Summary for embedding: {fqn}"
                             )
 
                     elif sub_type == "sql_view":
@@ -3618,11 +3615,11 @@ class VectorStore(Transformer):
                                 view_context, sql_base_metadata,
                             ))
                             self.logger.info(
-                                f"📊 Added SQL VIEW for embedding: {fqn}"
+                                f"Added SQL VIEW for embedding: {fqn}"
                             )
                         else:
                             self.logger.warning(
-                                f"⚠️ SQL VIEW {fqn} has no embeddable content, skipping"
+                                f"SQL VIEW {fqn} has no embeddable content, skipping"
                             )
 
                 elif block_group_type == "table":
@@ -3664,7 +3661,7 @@ class VectorStore(Transformer):
                     ))
                     sql_rows_embedded += 1
             if sql_rows_embedded > 0:
-                self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
+                self.logger.debug(f"Added {sql_rows_embedded} SQL row(s) for embedding")
 
             # ── Regular table blocks ──
             for block in table_blocks:
@@ -3726,7 +3723,7 @@ class VectorStore(Transformer):
                 )
 
             if not documents_to_embed:
-                self.logger.warning("⚠️ No documents to embed after filtering by block type")
+                self.logger.warning("No documents to embed after filtering by block type")
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
@@ -3766,12 +3763,12 @@ class VectorStore(Transformer):
                 progress.finish()
 
             if block_ids_to_delete:
-                self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
+                self.logger.debug(f"Deleting {len(block_ids_to_delete)} removed blocks")
                 with stage("vector.delete"):
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
 
             self.logger.debug(
-                f"✅ Indexing complete for record {record_id}: "
+                f"Indexing complete for record {record_id}: "
                 f"{len(documents_to_embed)} documents"
             )
 

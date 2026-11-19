@@ -6,6 +6,7 @@ to one top-K (merging). Both must leave a `single` deployment behaving exactly
 as it did before either existed.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from app.services.vector_db.strategies.per_connector_type import (
     PerConnectorTypeStrategy,
 )
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
+from app.utils.logger import TextFormatter
 from tests.support.vector_db import make_collection_registry
 
 pytestmark = pytest.mark.asyncio
@@ -115,16 +117,21 @@ class TestNarrowing:
         ctx = svc.collection_registry.resolve_for_query.await_args.args[0]
         assert ctx.accessible_connector_names is None
 
-    async def test_a_graph_failure_widens_rather_than_failing_the_search(self):
+    async def test_a_graph_failure_widens_rather_than_failing_the_search(self, caplog):
         svc = _service(strategy=PerConnectorTypeStrategy())
+        svc.logger = logging.getLogger("tests.retrieval.fanout")
         svc.graph_provider.get_accessible_connector_types = AsyncMock(
             side_effect=ConnectionError("graph down")
         )
 
-        collections = await svc._resolve_search_collections("org-1", "user-1")
+        with caplog.at_level(logging.DEBUG, logger="tests.retrieval.fanout"):
+            collections = await svc._resolve_search_collections("org-1", "user-1")
 
         assert collections == ["records"]
-        svc.logger.warning.assert_called()
+        assert [(r.getMessage(), r.error_class) for r in caplog.records] == [
+            ("search.connector_types_unreadable", "unavailable")
+        ]
+        assert not [r for r in caplog.records if "graph down" in TextFormatter().format(r)]
 
     async def test_no_user_id_skips_narrowing(self):
         svc = _service(strategy=PerConnectorTypeStrategy())

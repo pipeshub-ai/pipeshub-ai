@@ -36,12 +36,14 @@ from app.modules.named_entities.domain.config import (
 from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
 from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
+    extraction_error_class,
 )
 from app.services.llm_gateway import remote_usage
 from app.services.llm_gateway.gateway import JobTrace, llm_job
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.utils.env_utils import env_positive_int
+from app.utils.error_class import log_failure
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -210,15 +212,25 @@ async def classify(
                 fallback_service="extraction",
                 config_service=_config_service(request),
             ):
-                with llm_job(body.job_key or "", allowance=body.send_allowance) as trace:
-                    metadata = await document_extraction.classify(
-                        blocks=body.block_container.blocks,
-                        org_id=org_id,
-                        departments=body.departments or None,
-                        record_name=body.record_name,
-                        record_type=body.record_type,
-                        block_groups=body.block_container.block_groups,
+                try:
+                    with llm_job(body.job_key or "", allowance=body.send_allowance) as trace:
+                        metadata = await document_extraction.classify(
+                            blocks=body.block_container.blocks,
+                            org_id=org_id,
+                            departments=body.departments or None,
+                            record_name=body.record_name,
+                            record_type=body.record_type,
+                            block_groups=body.block_container.block_groups,
+                        )
+                except (LLMUnavailableError, ExtractionLLMError) as exc:
+                    # Logged here, while the call scope still binds the org; the handlers below answer. A refusal by
+                    # an open breaker sent nothing: every paused job meets it on every wake, so it is not news.
+                    log_failure(
+                        logger, "document_classify.failed", exc, include_error_text=False,
+                        error_class=extraction_error_class(exc),
+                        level=None if getattr(exc, "sent", True) else logging.DEBUG,
                     )
+                    raise
         except LLMNotConfiguredError as exc:
             # 4xx: a configuration state, not an outage — the client must neither retry it
             # nor count it against its circuit breaker.
@@ -229,17 +241,9 @@ async def classify(
                 ).model_dump(),
             )
         except LLMUnavailableError as exc:
-            # A refusal by an open breaker sent nothing: every paused job meets it on every wake, so it is not news.
-            logger.log(
-                logging.WARNING if getattr(exc, "sent", True) else logging.DEBUG,
-                "Model provider unavailable while classifying for org '%s': %s",
-                org_id,
-                exc,
-            )
             return _unavailable_response(exc, trace.usage() if trace is not None else None)
         except ExtractionLLMError as exc:
             # The model answered but produced nothing usable for this document: retried a few times.
-            logger.warning("LLM failed to classify a document for org '%s': %s", org_id, exc)
             return JSONResponse(
                 status_code=status.HTTP_424_FAILED_DEPENDENCY,
                 content=ClassifyResponse(

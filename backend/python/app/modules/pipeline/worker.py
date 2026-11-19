@@ -56,7 +56,8 @@ from app.services.messaging.config import (
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.messaging.precision_flip import precision_flip_in
 from app.services.spend_guard.retry_policy import clamp_retry_after
-from app.utils.indexing_timing import ADMITTED, begin_record, end_record
+from app.utils.error_class import log_failure, quotes_content
+from app.utils.indexing_timing import note
 
 # Called once a stage's headline is final on the records it updated, e.g. to release the
 # records' QUEUED md5 copies, which wait for the enrichment to end. Raising makes the
@@ -162,28 +163,18 @@ class StageJobHandler:
 
     async def __call__(self, message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
         job, stage = self._parse(message)
-        # One timings line per job, like a record's: the stage's steps time themselves.
-        timeline, token = begin_record(job.record_ids[0], f"stage:{job.stage}")
-        timeline.mark(ADMITTED)
-        outcome = "failed"
+        # The delivery's index.end is the job's one line; the stage's steps time themselves on it.
+        note(stage=job.stage, job=job.job_id, record_id=job.record_ids[0])
         try:
             await self._handle(job, stage)
-            outcome = "ok"
-        except StagePaused:
-            outcome = "paused"
-            raise
-        except StageRetry:
-            outcome = "retry"
+        except (StagePaused, StageRetry):
             raise
         except Exception as exc:
             # A flip of the weight precision may sit under any wrapper the stage put around it.
             flip = precision_flip_in(exc)
             if flip is None:
                 raise
-            outcome = "paused"
             raise StageWaitsForPrecision(str(flip), delay_s=flip.delay_s) from exc
-        finally:
-            end_record(timeline, token, outcome=outcome, logger=self._logger)
         # The consumer releases the job's permit on INDEXING_COMPLETE; nothing held a parse slot.
         data = PipelineEventData(record_id=job.job_id)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=data)
@@ -332,7 +323,11 @@ class StageJobHandler:
             # The consumer classifies it (retry or dead-letter); the reason stays for whoever looks next.
             self._count(job.stage, "error")
             if not await self._settle(job, ProgressStatus.QUEUED, attempt=run_attempt, reason=f"{type(exc).__name__}: {exc}"):
-                # Another run owns the job now; this delivery has nothing left to report.
+                # Another run owns the job now; this line is the failure's only trace.
+                log_failure(
+                    self._logger, "stage.run_failed", exc, level=logging.WARNING, reason="superseded",
+                    include_error_text=not quotes_content(exc),
+                )
                 return
             raise
         if result.outcome is not StageOutcome.PAUSED:

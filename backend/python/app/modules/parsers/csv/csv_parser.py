@@ -40,6 +40,7 @@ from app.services.parsing.interface import ParseResult
 from app.services.resource_governor.kinds import ParseKind
 from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm, table_row_batch_size
+from app.utils.error_class import log_failure
 from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.indexing_metrics import note_rows_over_budget
 from app.utils.is_truncated import is_truncated
@@ -803,7 +804,7 @@ class CSVParser:
         except NonRetryableError:
             raise
         except Exception as e:
-            logger.warning("Table summary unavailable (%s); using a plain one", e)
+            log_failure(logger, "table_summary.failed", e, include_error_text=False, parser="csv")
             return fallback_table_summary(list(rows[0].keys()) if rows else [], len(rows))
 
     async def get_rows_text(

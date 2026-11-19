@@ -24,7 +24,6 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from aiokafka import TopicPartition
 
-from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -35,6 +34,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
+    _BACKPRESSURE_CLEAR_SETTLE_SECONDS,
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )
@@ -200,7 +200,11 @@ class TestApplyBackpressure:
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_action_when_no_paused_and_below_capacity(self, consumer):
         """No resume needed when nothing is paused."""
@@ -283,7 +287,11 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer._IndexingKafkaConsumer__apply_backpressure()
 
         consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_coordinator_behaves_as_before(self, consumer):
         consumer.consumer = MagicMock()
@@ -1224,22 +1232,6 @@ class TestProcessMessageWrapper:
         assert consumer.indexing_semaphore._value == 1
 
     @pytest.mark.asyncio
-    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self, consumer) -> None:
-        consumer.parsing_semaphore = asyncio.Semaphore(1)
-        consumer.indexing_semaphore = asyncio.Semaphore(1)
-        consumer.logger = MagicMock()
-
-        async def handler(parsed) -> AsyncGenerator[PipelineEvent, None]:
-            raise RecordDeletedError("r1")
-            yield
-
-        consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
-        await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert not any("process_message_wrapper" in str(c.args[0]) for c in consumer.logger.error.call_args_list)
-        assert any("ended as expected" in str(c.args[0]) for c in consumer.logger.info.call_args_list)
-
-    @pytest.mark.asyncio
     async def test_shutdown_during_parsing_slot_wait_does_not_increment_retry(
         self, consumer
     ) -> None:
@@ -1925,7 +1917,7 @@ class TestProcessMessageWrapperWithGovernor:
             assert await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(
                 _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             ) is False
-        handed_back = [r.levelno for r in caplog.records if "handed back without counting an attempt" in r.getMessage()]
+        handed_back = [r.levelno for r in caplog.records if r.getMessage() == "index.end"]  # the hand-back's one line
         assert handed_back == [logging.WARNING, logging.DEBUG]
 
     @pytest.mark.asyncio
@@ -2374,7 +2366,11 @@ class TestApplyBackpressureFullCoverage:
         consumer._backpressure_logged = True
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
 
 class TestInitialize:

@@ -6,6 +6,7 @@ import pytest
 
 from app.utils.request_deadline import (
     deadline_after,
+    knowledge_hub_deadline_seconds,
     search_deadline_seconds,
     seconds_left,
 )
@@ -55,3 +56,16 @@ def test_the_search_deadline_setting(monkeypatch: pytest.MonkeyPatch, raw: str |
     else:
         monkeypatch.setenv("SEARCH_DEADLINE_SECONDS", raw)
     assert search_deadline_seconds() == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, 80.0), ("", 80.0), ("45", 45.0), ("0", None), ("-1", None), ("soon", 80.0), ("nan", 80.0)],
+)
+def test_the_knowledge_hub_deadline_setting(monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: float | None) -> None:
+    """Inside the web app's 90 s request timeout by default; 0 or less turns it off."""
+    if raw is None:
+        monkeypatch.delenv("KNOWLEDGE_HUB_DEADLINE_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("KNOWLEDGE_HUB_DEADLINE_SECONDS", raw)
+    assert knowledge_hub_deadline_seconds() == expected
