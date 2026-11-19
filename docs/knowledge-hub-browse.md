@@ -1,6 +1,6 @@
-# Knowledge Hub browse on Neo4j: access from compiled classes
+# Knowledge Hub browse on Neo4j: the split browse
 
-Status: proposal. Read it before touching `get_knowledge_hub_connector_page_v3` (browse, `flatten=false`) on Neo4j.
+Status: implemented behind `KH_BROWSE_MODE` (default `legacy`). Read it before touching `get_knowledge_hub_connector_page_v3` (browse, `flatten=false`) on Neo4j.
 
 ## Why
 
@@ -23,7 +23,8 @@ the planner show the time in `SubqueryExpressionSolver`. So planning cost grows 
 Cached plans don't last. A sync shifts index statistics and Neo4j discards the plan ("Discarded stale query", 1,029 times
 in one day on the demo server). Every correctness fix to the rule made every browse dearer to plan.
 
-#6024 (the request deadline) stops an abandoned page from holding the database. It does not make a page cheaper.
+#6027 (one planner per statement) and #6024 (the request deadline) stop a cold plan from piling up and an abandoned page from holding the
+database. Neither makes a page cheaper to plan.
 
 ## What a browse must return
 
@@ -38,105 +39,89 @@ It is defined by the Knowledge Hub conformance layer, `tests/permissions/kh_laye
 5. nothing of another App.
 
 A row's arrow is on exactly when opening the row lists something. `totalItems` and `counts` count each row once. The
-known gaps the layer reports rather than fails are unchanged: the hop cap (`refused_by_cap`) and the undecided-children
-sample (`_KH_UNDECIDED_MAX`).
+layer reports two known gaps of the legacy statement rather than failing them: a row past the hop cap that it lists and then
+refuses to open (`refused_by_cap`), and a stub whose readable child lies past the undecided-children sample (`_KH_UNDECIDED_MAX`).
 
 So **a browse is a function of per-node admission and the structure**. Only the admission depends on the viewer.
 
 ## The approach
 
-Decide admission per node with the class compiler (`app/services/permissions/classes.py`). Compose the page in Python from
-small reads.
+Decide the listing in Python from small fixed statements, with admission from the canonical batch check
+(`IGraphDBProvider.check_access`, through `_kh_v3_admitted`). The page statement then reads the decided ids, and keeps
+everything else as it was: start, trail, filters, order, cursor, counts and rows.
 
-The compiler turns a node's access into a viewer-independent formula:
+For a browse of `N` (`flatten=false`), in `get_knowledge_hub_connector_page_v3`:
 
-- the App's gate, AND
-- an OR of clauses, where each clause is a set of nodes the viewer must hold a grant on (`SELF` is the node's own grant).
-
-It mirrors the oracle's arms R7–R12 and is held to the oracle by `tests/permissions/test_classes_oracle.py`. What it can't
-express exactly it **refuses**:
-
-- too many clauses or paths;
-- a seed it can't prove exact in an App with record-group-level groups;
-- a node missing from the map.
-
-A refused node is decided by the canonical batch check, as PostgreSQL's listing already does (`_kh_class_split`). PostgreSQL
-stamps classes in its typed graph. On Neo4j they are compiled per request, from a structure read with
-`Neo4jStampGraph.nodes` (`neo4j/permission_stamps.py`, about 1 KB of Cypher).
-
-Per request, for a browse of `N`:
-
-| Step | Statement | Size |
+| Step | What | Statement |
 | --- | --- | --- |
-| 1. Viewer: grantees, gated Apps, other connectors' grantees | the existing access reads | unchanged |
-| 2. Start admitted (the start's breadcrumb, as today) | the existing batch check | unchanged |
-| 3. Candidates: `N`'s hierarchy children with sort keys and display fields | one indexed match on `N`'s edges | < 1 KB |
-| 4. Structure: candidates and their ancestors, level by level up to the App | `Neo4jStampGraph.nodes` per level | ~1 KB |
-| 5. Compile each candidate's class | Python (`classes.Compiler`) | – |
-| 6. Which of the classes' literal nodes the viewer holds a grant on | one statement: `n.id IN $lits` with the grant test written by `_kh_grants_by_probe`, as today | < 2 KB |
-| 7. Admit by class; refused → batch check (bounded, as `_KH_UNDECIDED_MAX`) | the existing batch check | unchanged |
-| 8. Chain-tops placed under `N` | the existing shared rule (`_kh_v3_chain_tops`) | unchanged |
-| 9. Hidden-by-navigation, stubs, sort, keyset, page, counts | Python | – |
-| 10. Arrows: for each page row, "does opening it list something" | steps 3–7 one level down, stopping at the first row found | < 1 KB each |
+| 1 | The viewer, the start's admission and the chain-tops placed under `N` | unchanged |
+| 2 | `N`'s live hierarchy children of `N`'s App, each with its stub flag and whether a hiding group holds it or lies above it | `_kh_split_children_cypher`, under 1.7 KB, at most 3 `EXISTS` |
+| 3 | Which of the visible real children the check admits | the batch check |
+| 4 | Which stub children list something: the same question one level down, recursively, to the walks' hop cap | steps 2–3 for the stubs |
+| 5 | The listed ids: admitted visible children, stubs that list something, chain-tops placed under `N` | Python (`_kh_split_listed`) |
+| 6 | The page | the page statement, reading `$kh_listed` by id in place of the walk |
+| 7 | Each page row's arrow: does opening it list something | `_kh_split_lists`, windows of children of 64, then ×4, stopping at the first admitted |
 
-Every statement has a fixed text, so it plans once, in milliseconds, and stays planned. A statistics eviction then costs
-milliseconds, not minutes.
+A group's arrow also counts a chain-top the walk places under it. Only groups holding a granted live record are asked of
+that walk (`_kh_split_held`, then `_kh_v3_lists_a_chain_top`). The sidebar keeps a row exactly where its arrow is on.
 
-### Freshness
+Every statement has a fixed text, so it plans once, in milliseconds, and a statistics eviction costs milliseconds.
+Nothing is cached between requests, so a page is as current as the legacy one.
 
-Nothing is cached in the first version. Structure and grants are read with each request, so a page is exactly as current
-as today's. A revoked grant or a moved node shows on the next request.
-
-Caching the compiled classes per connector can come later. It would be keyed by the connector's structure generation
-(`permissions/structure_generation.py`), which moves inside the transaction that writes a structural change.
+The class compiler (`app/services/permissions/classes.py`) could replace step 3 for most children with no check at all.
+It is not needed for the cost: the check is a fixed statement already.
 
 ### Bounds
 
-- **Children per node.** Large folders are read a window at a time in sort order until the page is full, with a row and
-  time budget. The same shape as PostgreSQL's `BUDGET_S` / `MAX_SCANNED`, with the same "resume" contract.
-- **Ancestors.** Read level by level with a visited set (never a variable-length path, which enumerates paths). Shared
-  ancestors are read once per request.
-- **Refusals.** The batch check gets at most the sample it gets today.
+- **Children read per node:** `_KH_SPLIT_MAX_CHILDREN` (5,000), first by id. A browse whose start has more is answered by the legacy statement
+  for that request: its rules decide in the database, and its check is windowed with a budget and a resume cursor. A row's arrow asks about that
+  many children, as legacy's asks about `_KH_UNDECIDED_MAX`.
+- **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
+- **One request asks about a row once** (a memo shared by the listing and the arrows).
+
+Shortcut: a wide start should be read in windows of the page's order, with a resume cursor, rather than handed to legacy. A
+folder with many children, each page also recomputes the start's whole child admission (about 0.35 s per page for 343
+children on the live copy); carrying the admitted window in the cursor would remove that.
+
+## Where it differs from legacy
+
+Each difference is where legacy breaks the definition above and the split browse keeps it:
+
+- **A row past the hop cap.** Legacy lists `dp-50` under `dp-49` (51 hops below the App), and opening it is refused. The split browse lists only
+  what the check admits (`test_provider_v3_shapes.py::test_the_deep_pages_agree`).
+- **A record filed under a record in an App that opens everything.** Legacy shows an arrow on the holder, and opening it lists nothing: the
+  filed record has no hierarchy parent, so no browse lists it (the layer's `unlisted` shortcut). The split browse shows no arrow
+  (`test_provider_v3_arrow_matches_expansion.py`).
+- **A stub whose readable child lies past legacy's sample.** Legacy leaves the stub out. The split browse lists it, because opening it lists the
+  child (`test_conformance_kh.py`, CAPSTUB).
+- **No time budget.** Legacy ends a page at the last child it had time to ask about and resumes there. The split browse lists a start's children
+  in one page sequence, within the bound above.
 
 ## Correctness
 
-The bar is that nothing a viewer may not read is listed, and nothing they may read is left out. Each check holds the new
-path to it:
-
-1. **The conformance layer:**
-   - `test_conformance_kh` (golden worlds, the review shapes, generated worlds from every generator) passes unchanged on Neo4j;
-   - it checks rows, totals, counts, facets, arrows, stubs and chain-tops against the oracle.
-2. **The real-store permission suite** (`tests/integration/graph_permissions/`): its browse, arrow, stub, chain-top, declared, seed,
-   placeholder and parity modules pass unchanged.
-3. **A parity harness:** for every world and viewer, the old statement and the new path return the same pages: rows, order, cursors,
-   totals, counts, arrows and stubs. Any difference fails, whichever side the oracle favours, so it can be examined.
-4. **The compiler's own oracle tests**, plus a test that a refused class always reaches the batch check, and never an empty or a full answer.
-5. **Shadow mode in production** (below). Over-admits are alerts.
+1. **The real-store permission suite** (`tests/integration/graph_permissions/`): its 18 browse, arrow, stub, chain-top, declared, seed,
+   placeholder, sidebar and parity modules pass with `KH_BROWSE_MODE=split`. The modules that pin legacy's statement text or its
+   gaps say so.
+2. **The conformance layer** (`tests/permissions/test_conformance_kh.py`): golden worlds, review shapes and generated worlds against the oracle.
+3. **Live data.** A read-only copy of the demo server's graph: 33,096 nodes, 66,685 relationships, its 163 indexes and constraints. All 11 active
+   users were taken through `KnowledgeHubService.get_nodes`, 40 opens each, every page, as a listing and as a sidebar, in both modes. Over 440
+   opens and 789 reads, no row, order, arrow, stub flag, total or count differed. From a cold start the worst open took 70.2 s on legacy and
+   11.3 s on split; opening an App took 70.2 s against 2.5 s.
+4. **Legacy unchanged.** Six browse modules, recorded on the base and on this change: the same 2,901 statements, of 200 distinct texts.
+5. **Shadow mode in production** (below).
 
 ## Rollout
 
 `KH_BROWSE_MODE`:
 
-- **`legacy`** (default first): today's statement.
-- **`shadow`:**
-  - answers with today's statement;
-  - for a sampled fraction of browses, also runs the new path in a detached task, with its own budget, and compares;
-  - counts rows only in one side, plus arrow and total differences;
-  - logs counts and the organisation, never record ids.
-- **`classes`:** the new path, falling back to today's statement on any error of its own.
+- **`legacy`** (the default): today's statement, byte for byte.
+- **`shadow`:** answers with legacy. For a sampled fraction of browses (`KH_BROWSE_SHADOW_SAMPLE`, default 0.1), it also runs the split browse in
+  a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids.
+- **`split`:** the split browse.
 
-Switch a deployment to `classes` after shadow reports no differences over a representative period. The demo server
-first.
+Switch a deployment to `split` after shadow reports no differences over a representative period. The demo server first.
 
 ## Out of scope
 
-- **The global flatten (All Records)** keeps `kh_scope` and today's statement. The same approach can follow.
-- **ArangoDB.**
-
-## Risks
-
-| Risk | Mitigation |
-| --- | --- |
-| A difference between the compiler and the walk the oracle doesn't see | Parity harness and shadow mode compare against today's statement, not only the oracle |
-| A folder with hundreds of thousands of children | Windowed reads with a budget and a resume cursor, as on PostgreSQL |
-| Grant reads for viewers with very many grants | Only the literals of the candidates' classes are asked, through the same probe test as today |
+- **The global flatten (All Records)** keeps `kh_scope` and the legacy statement.
+- **ArangoDB and PostgreSQL** are unchanged.

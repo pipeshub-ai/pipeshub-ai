@@ -1,0 +1,171 @@
+"""The split browse's definition, on a graph in memory (`KH_BROWSE_MODE=split`, docs/knowledge-hub-browse.md).
+
+A browse of N lists N's live hierarchy children of N's App that the batch check admits and that no group hiding its
+children holds or lies above, the chain-tops placed under N, and a stub child only where opening the stub lists
+something. A row's arrow is on exactly where opening the row lists something. The real stores hold the page to the
+oracle (tests/permissions/test_conformance_kh.py); this pins the definition's pieces and their costs.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import pytest
+
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+
+class World:
+    """children: parent -> [(child, stub, hidden)]; admitted: what the check admits; groups; held groups and the chain-tops
+    the walk places under them."""
+
+    def __init__(self, children: dict[str, list[tuple[str, bool, bool]]], admitted: set[str], *, groups: set[str] = frozenset(),
+                 held: set[str] = frozenset(), tops_under: set[str] = frozenset(), refused_stubs: set[str] = frozenset()) -> None:
+        self.children, self.admitted, self.groups, self.held, self.tops_under = children, admitted, set(groups), set(held), set(tops_under)
+        self.refused_stubs = set(refused_stubs)      # stubs a browse of would refuse to open (the rest open by the walk from the App)
+        self.checked: list[set[str]] = []
+        self.walked: list[str] = []
+
+
+def _provider(world: World) -> Neo4jProvider:
+    p = object.__new__(Neo4jProvider)
+    p.logger = logging.getLogger("test_kh_split_browse")
+
+    async def kh_query(query: str, parameters: dict[str, Any] | None = None, txn_id: str | None = None) -> list[dict]:
+        ids = (parameters or {}).get("ids") or []
+        if "kh_c:Record|RecordGroup" in query:
+            per_parent = parameters["per_parent"]
+            return [{"parent": i, "id": c, "stub": stub, "hidden": hidden, "isGroup": c in world.groups}
+                    for i in ids for c, stub, hidden in sorted(world.children.get(i, []))[:per_parent]]
+        if "RETURN g.id AS id" in query:
+            return [{"id": i} for i in ids if i in world.groups]
+        if "RETURN start.id AS id" in query:
+            return [{"id": i} for i in ids if i not in world.refused_stubs]
+        if "RETURN node.id AS id" in query:
+            return [{"id": i} for i in ids if i in world.held]
+        raise AssertionError(query)
+
+    async def admitted(ids: Any, **_k: Any) -> frozenset[str]:  # noqa: ANN401
+        ids = set(ids)
+        world.checked.append(ids)
+        return frozenset(ids & world.admitted)
+
+    async def lists_a_chain_top(_app: str, _org: str, group: str, *_a: Any) -> bool:  # noqa: ANN401
+        world.walked.append(group)
+        return group in world.tops_under
+
+    p._kh_query = kh_query  # type: ignore[method-assign]
+    p._kh_v3_admitted = admitted  # type: ignore[method-assign]
+    p._kh_v3_lists_a_chain_top = lists_a_chain_top  # type: ignore[method-assign]
+    return p
+
+
+async def _listed(world: World, start: str = "N", placed: list[str] | None = None) -> list[str]:
+    return await _provider(world)._kh_split_listed(start, app_id="A", org_id="o", access={}, placed=placed or [], transaction=None,
+                                                    memo={})
+
+
+async def _lists(world: World, ids: list[str]) -> set[str]:
+    return await _provider(world)._kh_split_lists(ids, app_id="A", org_id="o", access={}, transaction=None, memo={})
+
+
+@pytest.mark.asyncio
+async def test_a_browse_lists_the_admitted_children_no_hiding_group_holds() -> None:
+    world = World({"N": [("a", False, False), ("b", False, False), ("h", False, True)]}, admitted={"a", "h"})
+    assert await _listed(world) == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_a_stub_is_listed_only_where_opening_it_lists_something() -> None:
+    world = World({"N": [("s1", True, False), ("s2", True, False), ("s3", True, False)],
+                   "s1": [("x", False, False)],              # admitted below: listed
+                   "s2": [("y", False, False)],              # refused below: not listed
+                   "s3": [("s4", True, False)], "s4": [("z", False, False)]},   # a stub below a stub, then admitted
+                  admitted={"x", "z"})
+    assert await _listed(world) == ["s1", "s3"]
+
+
+@pytest.mark.asyncio
+async def test_a_stub_the_browse_refuses_to_open_is_not_listed_and_lights_no_arrow() -> None:
+    # golden-188: the stub below a seed is STRICT, so opening it is refused, though the check admits the record below it.
+    world = World({"N": [("s", True, False), ("t", True, False)], "s": [("z", False, False)], "t": [("y", False, False)],
+                   "r": [("s", True, False)]}, admitted={"z", "y"}, refused_stubs={"s"})
+    assert await _listed(world) == ["t"]
+    assert await _lists(world, ["r"]) == set()
+
+
+@pytest.mark.asyncio
+async def test_the_chain_tops_placed_under_the_start_are_listed_once() -> None:
+    world = World({"N": [("a", False, False)]}, admitted={"a"})
+    assert await _listed(world, placed=["t", "a", "N"]) == ["a", "t"]
+
+
+@pytest.mark.asyncio
+async def test_an_arrow_is_on_where_opening_the_row_lists_something() -> None:
+    world = World({"r1": [("a", False, False)], "r2": [("b", False, False)], "r3": [("c", False, True)], "r4": []},
+                  admitted={"a", "c"})
+    assert await _lists(world, ["r1", "r2", "r3", "r4"]) == {"r1"}
+
+
+@pytest.mark.asyncio
+async def test_a_row_whose_children_are_all_refused_is_read_to_its_end_a_window_at_a_time() -> None:
+    kids = [(f"k{i:04d}", False, False) for i in range(1000)]
+    world = World({"r": kids, "q": [("only", False, False)]}, admitted={"k0999", "only"})
+    assert await _lists(world, ["r", "q"]) == {"r", "q"}
+    # Windows of 64, 256, 1024: the row answered by its first child is not asked again.
+    assert [len(c) for c in world.checked] == [65, 256, 680]
+
+
+@pytest.mark.asyncio
+async def test_a_group_lists_a_chain_top_only_when_it_holds_a_granted_record_and_the_walk_places_one() -> None:
+    world = World({"g1": [], "g2": [], "g3": []}, admitted=set(), groups={"g1", "g2", "g3"}, held={"g1", "g2"}, tops_under={"g1"})
+    assert await _lists(world, ["g1", "g2", "g3"]) == {"g1"}
+    assert sorted(world.walked) == ["g1", "g2"]      # g3 holds no granted record: never walked
+
+
+@pytest.mark.asyncio
+async def test_one_request_asks_about_a_row_once() -> None:
+    world = World({"r": [("a", False, False)]}, admitted={"a"})
+    p, memo = _provider(world), {}
+    for _ in range(3):
+        assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo=memo) == {"r"}
+    assert len(world.checked) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_start_with_more_children_than_the_bound_is_left_to_legacy() -> None:
+    world = World({"N": [(f"c{i}", False, False) for i in range(4)], "M": [(f"d{i}", False, False) for i in range(3)]},
+                  admitted={"c0", "d0"})
+    p = _provider(world)
+    p._KH_SPLIT_MAX_CHILDREN = 3
+    kw = {"app_id": "A", "org_id": "o", "access": {}, "placed": [], "transaction": None, "memo": {}}
+    assert await p._kh_split_listed("N", **kw) is None
+    assert await p._kh_split_listed("M", **kw) == ["d0"]
+    assert world.checked == [{"d0", "d1", "d2"}]      # the wide start asked the check nothing
+
+
+@pytest.mark.asyncio
+async def test_an_arrow_asks_about_the_first_children_by_id_up_to_the_bound() -> None:
+    world = World({"r": [(f"k{i}", False, False) for i in range(5)][::-1]}, admitted={"k4"})
+    p = _provider(world)
+    p._KH_SPLIT_MAX_CHILDREN = 3
+    assert await p._kh_split_lists(["r"], app_id="A", org_id="o", access={}, transaction=None, memo={}) == set()
+    assert set().union(*world.checked) == {"k0", "k1", "k2"}
+
+
+def test_the_mode_is_legacy_unless_split_is_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    for raw, mode in [(None, "legacy"), ("split", "split"), (" SPLIT ", "split"), ("classes", "legacy"), ("", "legacy")]:
+        if raw is None:
+            monkeypatch.delenv("KH_BROWSE_MODE", raising=False)
+        else:
+            monkeypatch.setenv("KH_BROWSE_MODE", raw)
+        assert Neo4jProvider.kh_browse_mode() == mode
+
+
+def test_the_split_statements_are_small() -> None:
+    """Fixed texts that plan in milliseconds: no browse rule, no walk."""
+    p = object.__new__(Neo4jProvider)
+    text = p._kh_split_children_cypher()
+    assert len(text) < 1700 and text.count("EXISTS") <= 3 and "$grantedIds" not in text
+    assert "LIMIT $per_parent" in text      # a wide node is read to the bound, not to its end
