@@ -9,9 +9,10 @@ Code and SQL kinds, forced reindexes, vector-store rebuilds and named-stage re-r
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -129,7 +130,8 @@ async def test_k_queued_updates_parse_once(k: int) -> None:
 
 @pytest.mark.asyncio
 async def test_same_bytes_update_side_effects() -> None:
-    world = _World(node={"reason": "an earlier failure", "contentRev": content_revision(NEW)})
+    world = _World(node={"reason": "an earlier failure", "contentRev": content_revision(NEW), "parsingStatus": "COMPLETED"})
+    world.state["md5Checksum"] = _md5(world, NEW)
     noted: list[tuple[str, int]] = []
 
     async def remember(record_id: str, completed_at_ms: int) -> None:
@@ -149,6 +151,7 @@ async def test_same_bytes_update_side_effects() -> None:
     world.ingress.redrive.assert_not_awaited()
     # Nothing of the record is written: statuses and `reason` stay as they were.
     world.graph.update_node.assert_not_awaited()
+    world.graph.update_node_fields_if_match.assert_not_awaited()
     world.graph.compare_and_set_record_fields.assert_not_awaited()
     assert world.state["reason"] == "an earlier failure"
     world.ep._rewrite_or_delete_vrid_vectors.assert_not_awaited()
@@ -353,3 +356,84 @@ def test_the_give_up_reason_names_a_same_bytes_hand_back_and_only_that() -> None
 
     assert SAME_BYTES_GIVE_UP_LABEL in named and "11" in named and "10" in named
     assert SAME_BYTES_GIVE_UP_LABEL not in plain and "without being admitted" in plain
+
+
+def _md5(world: _World, content: bytes) -> str:
+    return world.ep._hash_for_dedup(content, world.state["recordType"], world.state["mimeType"])
+
+
+@pytest.mark.asyncio
+async def test_a_skip_restores_the_parsing_status_and_checksum_a_re_save_reset() -> None:
+    """A Collection file replaced with the same bytes is saved again with NOT_STARTED and no checksum; the skip runs no
+    parse, so it puts both back, or the record reads as never parsed and drops out of duplicate detection."""
+    world = _World(node={"contentRev": content_revision(NEW), "parsingStatus": "NOT_STARTED", "md5Checksum": None})
+
+    events = await world.run(world.event(NEW))
+
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert world.parses == 0
+    assert world.state["parsingStatus"] == "COMPLETED"
+    assert world.state["md5Checksum"] == _md5(world, NEW)
+    assert world.state["indexingStatus"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_a_skip_writes_only_the_fields_that_differ() -> None:
+    world = _World(node={"contentRev": content_revision(NEW), "parsingStatus": "COMPLETED", "md5Checksum": None})
+
+    await world.run(world.event(NEW))
+
+    world.graph.update_node_fields_if_match.assert_awaited_once()
+    _key, _coll, fields, match = world.graph.update_node_fields_if_match.await_args.args
+    assert fields == {"md5Checksum": _md5(world, NEW)}
+    assert match == {"contentRev": content_revision(NEW), "indexingStatus": "COMPLETED"}
+
+
+@pytest.mark.asyncio
+async def test_a_skip_of_a_record_already_current_writes_nothing() -> None:
+    world = _World(node={"contentRev": content_revision(NEW), "parsingStatus": "COMPLETED"})
+    world.state["md5Checksum"] = _md5(world, NEW)
+
+    await world.run(world.event(NEW))
+
+    world.graph.update_node_fields_if_match.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moved", [{"contentRev": "another"}, {"indexingStatus": "IN_PROGRESS"}], ids=["revision", "status"])
+async def test_a_record_that_moved_on_keeps_its_own_values(moved: dict[str, Any]) -> None:
+    """A run of other bytes that started after the skip read the record owns its parsing status and checksum."""
+    world = _World(node={"contentRev": content_revision(NEW), "parsingStatus": "NOT_STARTED", "md5Checksum": None})
+    read = dict(world.state)
+    world.state.update(moved)
+
+    await world.ep._restore_indexed_fields(read, "rec-1", NEW, content_revision(NEW))
+
+    assert world.state["parsingStatus"] == "NOT_STARTED"
+    assert world.state["md5Checksum"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_restore_still_settles_the_update() -> None:
+    world = _World(node={"contentRev": content_revision(NEW), "parsingStatus": "NOT_STARTED"})
+    world.graph.update_node_fields_if_match = AsyncMock(side_effect=RuntimeError("graph down"))
+    world.ep.logger = MagicMock()
+
+    events = await world.run(world.event(NEW))
+
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert world.parses == 0
+    world.ep.logger.warning.assert_any_call(
+        "Record %s: could not restore the parsing status and checksum after a same-bytes skip: %s", "rec-1", ANY)
+
+
+@pytest.mark.asyncio
+async def test_a_skip_of_an_html_record_stores_the_checksum_of_the_normalised_content() -> None:
+    """The same hash as a full run's `_check_duplicate_by_md5`, so duplicate detection keeps matching the record."""
+    html = b"<p local-id='1'>Same text</p>"
+    world = _World(node={"recordType": "CONFLUENCE_PAGE", "mimeType": MimeTypes.HTML.value,
+                         "contentRev": content_revision(html), "parsingStatus": "COMPLETED"})
+
+    await world.ep._restore_indexed_fields(dict(world.state), "rec-1", html, content_revision(html))
+
+    assert world.state["md5Checksum"] == _md5(world, html) != hashlib.md5(html).hexdigest()
