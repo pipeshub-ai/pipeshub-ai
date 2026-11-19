@@ -40,8 +40,7 @@ def legacy_region() -> ola.LayoutRegion:
 def broken_legacy(page: pdfplumber.page.Page) -> tq.Cand:
     """A legacy grid whose cuts run through the words of the first column."""
     words = [w for w in page.extract_words() if tr._in_box(w, BOX)]
-    cand = tq.candidate_from_cuts("legacy", 0, [[ln] for ln in band_lines(words)], [XS[0] + 6.0, XS[1] + 6.0], BOX)
-    return cand
+    return tq.candidate_from_cuts("legacy", 0, [[ln] for ln in band_lines(words)], [XS[0] + 6.0, XS[1] + 6.0], BOX)
 
 
 def test_text_alignment_replaces_a_defective_legacy_table_with_the_aligned_grid() -> None:

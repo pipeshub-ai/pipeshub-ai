@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from pdfplumber.page import Page
     from pdfplumber.table import Table
 
+    from app.modules.parsers.pdf.table_quality import Cand
+
 logger = logging.getLogger(__name__)
 
 ENV_MODE = "PDF_TABLE_EXTRACTION"
@@ -588,7 +590,7 @@ _LEGACY_STRATEGIES: tuple[dict[str, Any] | None, ...] = (
 )
 
 
-def legacy_candidate(page: Page, region: ola.LayoutRegion, page_w: float, page_h: float) -> Any:
+def legacy_candidate(page: Page, region: ola.LayoutRegion, page_w: float, page_h: float) -> Cand | None:
     """The candidate behind a legacy table region: the pdfplumber table, by the strategies the legacy path tries, whose
     grid is the region's. None when none reproduces it (the legacy grid came from somewhere else): the caller keeps it."""
     from app.modules.parsers.pdf import table_quality
