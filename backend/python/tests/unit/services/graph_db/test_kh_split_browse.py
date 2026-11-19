@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.neo4j.neo4j_provider import LISTED, Neo4jProvider
 
 
 class World:
@@ -169,3 +169,34 @@ def test_the_split_statements_are_small() -> None:
     text = p._kh_split_children_cypher()
     assert len(text) < 1700 and text.count("EXISTS") <= 3 and "$grantedIds" not in text
     assert "LIMIT $per_parent" in text      # a wide node is read to the bound, not to its end
+
+
+def test_what_the_walk_never_lists_the_split_browse_never_reads() -> None:
+    """A group that carries access only (a Jira security level) is never a row, and an id decided by an earlier statement is dropped
+    if it has since been deleted or moved to another App: the children read and the page's read of the decided ids both test it."""
+    p = object.__new__(Neo4jProvider)
+    for text, v in ((p._kh_split_children_cypher(), "kh_c"), (LISTED, "kh_x")):
+        for test in (f"{v}.connectorId = $app_id", f"NOT coalesce({v}.accessOnly, false)", f"NOT coalesce({v}.isDeleted, false)",
+                     f"{v}.orgId = $org_id"):
+            assert test in text, (v, test)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "folder"), [(True, "AND NOT n:KhFolder"), (False, "AND NOT (coalesce(n.mimeType IN $folder_mime_types, false)")])
+async def test_the_sidebar_asks_an_arrow_only_of_records_that_are_not_folders(state: bool, folder: str) -> None:
+    """The sidebar keeps every group and folder whatever lies below it, so only a plain record's arrow decides whether it is kept; a folder
+    is decided as the page decides it, by its label once the listing state is ready."""
+    seen: list[tuple[str, dict]] = []
+
+    async def kh_query(query: str, parameters: dict[str, Any] | None = None, txn_id: str | None = None) -> list[dict]:
+        seen.append((query, parameters or {}))
+        return [{"id": "r1"}]
+
+    p = object.__new__(Neo4jProvider)
+    p._kh_query = kh_query  # type: ignore[method-assign]
+    assert await p._kh_split_plain_records([], org_id="o", state=state, transaction=None) == []
+    assert seen == []                                   # nothing listed, nothing asked
+    assert await p._kh_split_plain_records(["r1", "f1", "r1"], org_id="o", state=state, transaction=None) == ["r1"]
+    (query, params), = seen
+    assert "NOT n:RecordGroup" in query and "n.orgId = $org_id" in query and folder in query
+    assert params["ids"] == ["f1", "r1"] and params["org_id"] == "o"

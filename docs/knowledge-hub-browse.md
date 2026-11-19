@@ -55,15 +55,19 @@ For a browse of `N` (`flatten=false`), in `get_knowledge_hub_connector_page_v3`:
 | Step | What | Statement |
 | --- | --- | --- |
 | 1 | The viewer, the start's admission and the chain-tops placed under `N` | unchanged |
-| 2 | `N`'s live hierarchy children of `N`'s App, each with its stub flag and whether a hiding group holds it or lies above it | `_kh_split_children_cypher`, under 1.7 KB, at most 3 `EXISTS` |
+| 2 | `N`'s live hierarchy children of `N`'s App, less a group that carries access only (a Jira security level: never a row), each with its stub flag and whether a hiding group holds it or lies above it | `_kh_split_children_cypher`, under 1.7 KB, at most 3 `EXISTS` |
 | 3 | Which of the visible real children the check admits | the batch check |
 | 4 | Which stub children list something: the same question one level down, recursively, to the walks' hop cap | steps 2–3 for the stubs |
 | 5 | The listed ids: admitted visible children, stubs that list something, chain-tops placed under `N` | Python (`_kh_split_listed`) |
-| 6 | The page | the page statement, reading `$kh_listed` by id in place of the walk |
+| 6 | The page | the page statement, reading `$kh_listed` by id in place of the walk, and dropping any of them deleted or moved to another App since step 2 |
 | 7 | Each page row's arrow: does opening it list something | `_kh_split_lists`, windows of children of 64, then ×4, stopping at the first admitted |
 
 A group's arrow also counts a chain-top the walk places under it. Only groups holding a granted live record are asked of
-that walk (`_kh_split_held`, then `_kh_v3_lists_a_chain_top`). The sidebar keeps a row exactly where its arrow is on.
+that walk (`_kh_split_held`, then `_kh_v3_lists_a_chain_top`, `_KH_SPLIT_WALKS_AT_ONCE` at a time). The sidebar keeps every group and
+folder, and a record exactly where its arrow is on, so it asks only the plain records (`_kh_split_plain_records`).
+
+Admission is decided by the check, one statement that reads structure and grants together. The structure read of step 2 only proposes
+candidates, so no decision combines a stale path with a current grant.
 
 Every statement has a fixed text, so it plans once, in milliseconds, and a statistics eviction costs milliseconds.
 Nothing is cached between requests, so a page is as current as the legacy one.
@@ -79,9 +83,15 @@ It is not needed for the cost: the check is a fixed statement already.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
 
-Shortcut: a wide start should be read in windows of the page's order, with a resume cursor, rather than handed to legacy. A
-folder with many children, each page also recomputes the start's whole child admission (about 0.35 s per page for 343
-children on the live copy); carrying the admitted window in the cursor would remove that.
+Shortcuts, each bounded by the above:
+
+- A wide start should be read in windows of the page's order, with a resume cursor, rather than handed to legacy.
+- Each page of a folder with many children recomputes the start's whole child admission (about 0.35 s per page for 343 children on
+  the live copy); carrying the admitted window in the cursor would remove that.
+- An arrow asks the check in growing windows, but reads each row's children to the bound at once (with their hidden-ancestor tests);
+  reading the children in the same windows would cut the rows read for a page of wide folders.
+- A row whose only admitted child lies past the first 5,000 by id has no arrow (legacy's stub walk has no such bound), and a row decided
+  at the stub depth cap is remembered as listing nothing for the rest of the request.
 
 ## Where it differs from legacy
 
@@ -103,6 +113,7 @@ Each difference is where legacy breaks the definition above and the split browse
    placeholder, sidebar and parity modules pass with `KH_BROWSE_MODE=split`. The modules that pin legacy's statement text or its
    gaps say so.
 2. **The conformance layer** (`tests/permissions/test_conformance_kh.py`): golden worlds, review shapes and generated worlds against the oracle.
+   CI runs it a second time with Neo4j on split (`permission-conformance.yml`, shards 8 and 9).
 3. **Live data.** A read-only copy of the demo server's graph: 33,096 nodes, 66,685 relationships, its 163 indexes and constraints. All 11 active
    users were taken through `KnowledgeHubService.get_nodes`, 40 opens each, every page, as a listing and as a sidebar, in both modes. Over 440
    opens and 789 reads, no row, order, arrow, stub flag, total or count differed. From a cold start the worst open took 70.2 s on legacy and
@@ -118,7 +129,7 @@ Each difference is where legacy breaks the definition above and the split browse
 - **`shadow`:** answers with legacy. For a sampled fraction of browses (`KH_BROWSE_SHADOW_SAMPLE`, default 0.1), it also runs the split browse in
   a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids. At most
   `_KH_SHADOW_MAX_RUNNING` (2) comparisons run at once per process; a sampled browse past that is not compared, so shadow adds a bounded
-  load however busy the server is.
+  load however busy the server is. A legacy page cut by its time budget is not compared: split has no budget, so they differ by construction.
 - **`split`:** the split browse.
 
 Switch a deployment to `split` after shadow reports no differences over a representative period. The demo server first.

@@ -74,6 +74,16 @@ async def test_a_difference_is_logged_by_its_counts_never_its_ids(caplog: pytest
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cut", [{"totalCapped": True}, {"resume": {"id": "secret-b"}, "hasMore": True}])
+async def test_a_legacy_page_cut_by_its_time_budget_is_not_compared(caplog: pytest.LogCaptureFixture, cut: dict) -> None:
+    # Split has no budget, so the pages would differ by construction: no split browse is run and no difference is reported.
+    p, asked = _provider(LEGACY)
+    with caplog.at_level(logging.INFO):
+        await p._kh_shadow_compare({**LEGACY, **cut}, {})
+    assert asked == [] and "not compared" in caplog.text and "differ" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_a_split_failure_is_logged_and_kept_from_the_viewer(caplog: pytest.LogCaptureFixture) -> None:
     p, _ = _provider(RuntimeError("secret-a is broken"))
     await p._kh_shadow_compare(LEGACY, {})

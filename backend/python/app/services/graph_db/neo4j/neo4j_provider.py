@@ -861,10 +861,13 @@ def _unique_id_constraint(label: str) -> str:
 
 _EXISTING_KEYS_CHUNK = 20000
 
-# The ids a split browse decided to list (`Neo4jProvider._kh_split_listed`), read by id in place of the walk.
+# The ids a split browse decided to list (`Neo4jProvider._kh_split_listed`), read by id in place of the walk. They were decided by
+# earlier statements, so a node deleted or moved to another App since then is dropped here, as the walk would drop it.
 LISTED = """CALL () {{
                 UNWIND $kh_listed AS kh_lid
-                MATCH (kh_x:Record|RecordGroup {{id: kh_lid}}) WHERE kh_x.orgId = $org_id
+                MATCH (kh_x:Record|RecordGroup {{id: kh_lid}})
+                WHERE kh_x.orgId = $org_id AND kh_x.connectorId = $app_id AND NOT coalesce(kh_x.accessOnly, false)
+                  AND NOT coalesce(kh_x.isDeleted, false)
                 RETURN collect(DISTINCT kh_x) AS {name}
             }}"""
 
@@ -21948,6 +21951,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     _KH_SPLIT_MAX_CHILDREN = 5_000
     # Stubs below stubs: a chain of them is followed this deep (the walks' hop cap).
     _KH_SPLIT_STUB_DEPTH = 50
+    # Chain-top walks one arrow question runs at once (each is a few statements).
+    _KH_SPLIT_WALKS_AT_ONCE = 8
 
     @staticmethod
     def kh_browse_mode() -> str:
@@ -21988,6 +21993,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """The same page computed by ``split``, held to the page ``legacy`` answered with: the rows in order, their arrows and
         placeholder flags, the total and the counts. Only counts are logged (an id the split path listed could be one the viewer
         may not read)."""
+        if legacy.get("totalCapped") or legacy.get("resume"):
+            # Legacy ended this page at its time budget, and split has none: the pages differ by construction, so neither is run.
+            self.logger.info("kh browse shadow: legacy page cut by its time budget, not compared")
+            return
         try:
             split = await self.get_knowledge_hub_connector_page_v3(**{**args, "browse_mode": "split", "grants_out": None})
         except Exception as e:
@@ -22009,14 +22018,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             legacy.get("total"), split.get("total"))
 
     def _kh_split_children_cypher(self) -> str:
-        """The live hierarchy children of the nodes ``$ids`` that belong to ``$app_id``, each with whether a group that hides its
+        """The live hierarchy children of the nodes ``$ids`` that belong to ``$app_id``, less a group that carries access only (never a row,
+        `_cypher_read_by_app`), each with whether a group that hides its
         children holds it or lies above it (`kh_layer.hidden_by_navigation`): a display flag the check ignores and a browse honours."""
         return f"""
         MATCH (kh_p:App|RecordGroup|Record) WHERE kh_p.id IN $ids AND kh_p.orgId = $org_id
         CALL (kh_p) {{
             MATCH (kh_p)-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup)
             WHERE kh_r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_c.orgId = $org_id AND kh_c.connectorId = $app_id
-              AND NOT coalesce(kh_c.isDeleted, false) AND kh_c.id IS NOT NULL AND kh_c <> kh_p
+              AND NOT coalesce(kh_c.accessOnly, false) AND NOT coalesce(kh_c.isDeleted, false) AND kh_c.id IS NOT NULL AND kh_c <> kh_p
             WITH DISTINCT kh_c ORDER BY kh_c.id LIMIT $per_parent
             RETURN kh_c
         }}
@@ -22136,9 +22146,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Only a group has chain-tops placed under it, and only one holding a granted record is asked of the walk.
             groups = await self._kh_split_group_ids([i for i in todo if i not in found], org_id=org_id, transaction=transaction)
             held = await self._kh_split_held(sorted(groups), app_id=app_id, org_id=org_id, access=access, transaction=transaction)
-            for g in sorted(held):
-                if await self._kh_v3_lists_a_chain_top(app_id, org_id, g, access, transaction):
-                    found.add(g)
+            gate = asyncio.Semaphore(self._KH_SPLIT_WALKS_AT_ONCE)
+
+            async def places_a_chain_top(group: str) -> bool:
+                async with gate:
+                    return await self._kh_v3_lists_a_chain_top(app_id, org_id, group, access, transaction)
+
+            walked = sorted(held)
+            found |= {g for g, places in zip(walked, await asyncio.gather(*map(places_a_chain_top, walked)), strict=True) if places}
             for i in todo:
                 memo[i] = i in found
         return {i for i in ids if memo.get(i)}
@@ -22149,6 +22164,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_query("MATCH (g:RecordGroup) WHERE g.id IN $ids AND g.orgId = $org_id RETURN g.id AS id",
                                     parameters={"ids": sorted(ids), "org_id": org_id}, txn_id=transaction)
         return {r["id"] for r in rows}
+
+    async def _kh_split_plain_records(
+        self, ids: Iterable[str], *, org_id: str, state: bool, transaction: str | None,
+    ) -> list[str]:
+        """Of ``ids``, the records that are not folders. The sidebar keeps every group and folder whatever lies below it
+        (`_kh_v2_filters_cypher`), so only these need an arrow to be kept; a folder is decided as the page decides it."""
+        asked = sorted(set(ids))
+        if not asked:
+            return []
+        folder = ("n:KhFolder" if state else
+                  "(coalesce(n.mimeType IN $folder_mime_types, false) OR toUpper(coalesce(n.recordType, '')) = 'FOLDER')")
+        rows = await self._kh_query(f"""
+        MATCH (n:Record) WHERE n.id IN $ids AND n.orgId = $org_id AND NOT n:RecordGroup AND NOT {folder}
+        RETURN n.id AS id
+        """, parameters={"ids": asked, "org_id": org_id, "folder_mime_types": FOLDER_MIME_TYPES}, txn_id=transaction)
+        return [r["id"] for r in rows]
 
     async def _kh_split_listed(
         self, start_id: str, *, app_id: str, org_id: str, access: dict[str, Any], placed: list[str], transaction: str | None,
@@ -23262,8 +23293,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return await self.get_knowledge_hub_connector_page_v3(**shadow_args, browse_mode="legacy")
             params["kh_listed"] = listed
             # The sidebar keeps a row exactly where its arrow is on, and decides that before the page is cut.
-            params["kh_arrows"] = sorted(await self._kh_split_lists(
-                listed, app_id=app_id, org_id=org_id, access=split_access, transaction=transaction, memo=split_memo)) if sidebar else []
+            if sidebar:
+                plain = await self._kh_split_plain_records(listed, org_id=org_id, state=state, transaction=transaction)
+                params["kh_arrows"] = sorted(await self._kh_split_lists(
+                    plain, app_id=app_id, org_id=org_id, access=split_access, transaction=transaction, memo=split_memo))
+            else:
+                params["kh_arrows"] = []
         if not use_scope:
             try:
                 walk_started = time.monotonic()
