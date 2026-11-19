@@ -36,9 +36,15 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.conditions import EQ, ONE_OF, Cond
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
-from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+    ROOT_RECORD_GROUP_IDS_FIELD,
+    VIRTUAL_RECORD_ID_FIELD,
+)
 from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.membership import (
+    mark_scope_stale,
     rewrite_or_delete_virtual_record,
     sync_vector_membership,
 )
@@ -213,6 +219,10 @@ class SwapCommitter:
                 await self._repoint_twins(ctx, swap)
             except Exception as exc:
                 self.logger.warning("Twins of record %s not re-pointed: %s", record.id, type(exc).__name__)
+        try:
+            await self._retire_membership(swap)
+        except Exception as exc:
+            self.logger.warning("Membership of the old copy %s not retired: %s", swap.old_vrid, type(exc).__name__)
         await notify_record_vrid_moved(
             connector_name=getattr(record, "connector_name", None), connector_id=getattr(record, "connector_id", None),
             external_record_group_id=getattr(record, "external_record_group_id", None), org_id=swap.org_id,
@@ -223,6 +233,25 @@ class SwapCommitter:
             )
         spawn_detached(self._release_after_grace(swap, record), name=f"release-old-copy-{swap.old_vrid}")
         keep_old_copy.end_swap()
+
+    async def _retire_membership(self, swap: keep_old_copy.SwapRun) -> None:
+        """Take the connectors and groups of the records that left the old copy off its points, now rather than after the grace.
+
+        The points stay for a reader whose cached map still names the old copy (they are found by virtual record id), but a container
+        search no longer matches them: they would otherwise sit beside the served copy in every search of the connector until the grace
+        is over and be denied after the fetch, crowding it for as long as records are being re-indexed. A holder that remains (a twin
+        not moved) keeps its membership: the arrays are recomputed from the graph then."""
+        graph, vs = self.o.graph_provider, self.o.vector_store
+        db = vs.vector_db_service
+        if await graph.get_records_by_virtual_record_id(swap.old_vrid, raise_on_error=True):
+            await sync_vector_membership(db, vs.collection_locator, graph, swap.old_vrid, self.logger)
+            return
+        org = org_for_filter(swap.org_id, match_bound=True)
+        flt = await db.filter_collection(must={"orgId": org, "virtualRecordId": swap.old_vrid})
+        empty = {CONNECTOR_IDS_FIELD: [], RECORD_GROUP_IDS_FIELD: [], ROOT_RECORD_GROUP_IDS_FIELD: []}
+        for collection in await vs.collection_locator.all_collections(fresh=True, strict=True):
+            await db.set_payload(collection, empty, flt)
+        await mark_scope_stale(db, vs.collection_locator, swap.old_vrid, self.logger)
 
     async def _repoint_twins(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
         """Move the records that held the old copy with the same bytes, and the same write collection, to the new one.

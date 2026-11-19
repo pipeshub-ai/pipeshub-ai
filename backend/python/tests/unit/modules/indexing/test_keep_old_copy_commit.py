@@ -199,3 +199,34 @@ async def test_an_empty_result_moves_the_record_to_the_empty_copy_and_releases_t
     assert g.records["A"]["virtualRecordId"] == "Y" and g.records["A"]["indexingStatus"] == "EMPTY"
     assert "pendingVirtualRecordId" not in g.records["A"]
     swap_committer.finish.assert_awaited_once()  # the old copy is released from there, after the grace
+
+
+@pytest.mark.asyncio
+async def test_the_old_copys_points_lose_their_membership_at_the_commit_not_after_the_grace() -> None:
+    """Scenario 30: retired points that still carry the connector's membership sit beside the served copy in every container search of
+    that connector until the grace is over."""
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    swap, vs = committer(g)
+    vs.vector_db_service.set_payload = AsyncMock()
+    vs.collection_locator.all_collections = AsyncMock(return_value=["c1", "c2"])
+    with patch("app.modules.transformers.swap_commit.org_for_filter", return_value="o"), \
+         patch("app.modules.transformers.swap_commit.mark_scope_stale", AsyncMock()):
+        await swap._retire_membership(run())
+    assert [c.args[0] for c in vs.vector_db_service.set_payload.await_args_list] == ["c1", "c2"]
+    payload = vs.vector_db_service.set_payload.await_args_list[0].args[1]
+    assert payload == {"connectorIds": [], "recordGroupIds": [], "rootRecordGroupIds": []}
+
+
+@pytest.mark.asyncio
+async def test_a_holder_that_remains_keeps_the_membership_of_the_old_copy() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({"A": rec("Y", "COMPLETED"), "B": rec("X", "COMPLETED")})  # B was not moved
+    swap, vs = committer(g)
+    vs.vector_db_service.set_payload = AsyncMock()
+    with patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()) as sync:
+        await swap._retire_membership(run())
+    sync.assert_awaited_once()
+    vs.vector_db_service.set_payload.assert_not_called()
