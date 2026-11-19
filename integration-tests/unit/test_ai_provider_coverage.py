@@ -121,6 +121,8 @@ def test_an_ordinary_run_skips_every_provider(monkeypatch) -> None:
 
 
 _PROVIDER_FROM_VARIABLE = "${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}"
+# gpt-5.4-nano (the helper's local default) skipped tools in the agent tests.
+_OPENAI_MODEL_FROM_VARIABLE = "${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}"
 
 
 def _env_blocks(doc: dict):
@@ -148,6 +150,9 @@ def test_switching_provider_is_one_repository_variable() -> None:
             continue
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for where, env in _env_blocks(doc):
+            # Checked on every mapping: a step can override a job's provider on its own.
+            if "EVAL_PROVIDER" in env:
+                problems.append(f"{path.name} {where}: EVAL_PROVIDER overrides the run's provider")
             if "TEST_AI_MODEL_PROVIDER" not in env:
                 continue
             checked += 1
@@ -156,7 +161,7 @@ def test_switching_provider_is_one_repository_variable() -> None:
             for key in ("TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY"):
                 if key not in env:
                     problems.append(f"{path.name} {where}: does not pass {key}")
-            if "EVAL_PROVIDER" in env:
-                problems.append(f"{path.name} {where}: EVAL_PROVIDER overrides the run's provider")
+            if env.get("TEST_OPENAI_LLM_MODEL") != _OPENAI_MODEL_FROM_VARIABLE:
+                problems.append(f"{path.name} {where}: TEST_OPENAI_LLM_MODEL is {env.get('TEST_OPENAI_LLM_MODEL')!r}")
     assert checked, "no workflow sets TEST_AI_MODEL_PROVIDER"
     assert problems == [], "\n".join(problems)

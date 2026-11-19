@@ -343,7 +343,10 @@ jobs:
       # only the named provider; the other's key may belong to an unfunded account.
       TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
       TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
-      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+      # gpt-5.6-luna unless the repository variable says otherwise: on the helper's
+      # gpt-5.4-nano default the agent tests' model skipped tools (no docx skill,
+      # no knowledge search). The same default is in every workflow that sets it.
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}
       TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
       # secrets || vars so the non-secret names work from either store.
       TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
