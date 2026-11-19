@@ -3600,7 +3600,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER (newest || 0) < @before
                         LET held = (
                             FOR record IN {CollectionNames.RECORDS.value}
-                                FILTER record.virtualRecordId == v AND record.contentRev == rev
+                                FILTER record.virtualRecordId == v
+                                    AND (record.contentRev == rev OR (record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                                 LIMIT 1
                                 RETURN 1
                         )
@@ -3627,7 +3628,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR pair IN @pairs
                     LET held = (
                         FOR record IN {CollectionNames.RECORDS.value}
-                            FILTER record.virtualRecordId == pair[0] AND record.contentRev == pair[1]
+                            FILTER record.virtualRecordId == pair[0]
+                                AND (record.contentRev == pair[1] OR (record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                             LIMIT 1
                             RETURN 1
                     )

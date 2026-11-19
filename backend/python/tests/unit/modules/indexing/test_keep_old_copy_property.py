@@ -16,6 +16,19 @@ from app.services.graph_db.common.record_visibility import holds_vrid
 from tests.support.swap_world import FakeGraph, committer, ctx_for
 
 SEEDS = 1500
+_RETENTION_RULE = {0: None}  # the rule the model's retention uses (None: the real one)
+
+
+def _revision_held(record: dict, vrid: str, rev: str) -> bool:
+    """The retention rule: a record holds a revision of the virtual record it names when it is on that revision, or when it is not
+    COMPLETED (a replacement in flight or failed: its revision is the attempt's, not the served copy's)."""
+    if record.get("virtualRecordId") != vrid:
+        return False
+    return record.get("contentRev") == rev or record.get("indexingStatus") not in (None, "COMPLETED")
+
+
+def _revision_held_by_content_rev_only(record: dict, vrid: str, rev: str) -> bool:
+    return record.get("virtualRecordId") == vrid and record.get("contentRev") == rev
 
 
 def _held(graph: FakeGraph, vrid: str) -> bool:
@@ -26,7 +39,9 @@ class World:
     def __init__(self, rng: random.Random, twin: bool) -> None:
         self.rng = rng
         base = {"orgId": "o", "md5Checksum": "m", "connectorId": "k1"}
-        self.graph = FakeGraph({"A": {**base, "virtualRecordId": "X", "indexingStatus": "COMPLETED", "hasIndexedCopy": True}})
+        self.graph = FakeGraph({"A": {**base, "virtualRecordId": "X", "indexingStatus": "COMPLETED", "hasIndexedCopy": True, "contentRev": "r0"}})
+        self.states: set[tuple[str, str]] = {("X", "r0")}  # the stage states of the served copy
+        self.served_rev = "r0"
         if twin:
             self.graph.records["B"] = {**base, "virtualRecordId": "X", "indexingStatus": "COMPLETED", "hasIndexedCopy": True}
         self.points: dict[str, str] = {"X": "complete"}  # vrid -> "complete" | "partial"
@@ -43,6 +58,13 @@ class World:
         if not _held(self.graph, vrid):  # the holder-checked deleters: a held copy is kept
             self.points.pop(vrid, None)
 
+    def retention(self, held=None) -> None:
+        """Delete the stage states of a revision no record holds."""
+        held = held or _revision_held
+        for state in list(self.states):
+            if not any(held(d, *state) for d in self.graph.records.values()):
+                self.states.discard(state)
+
     async def sweep(self) -> None:
         for vrid in list(self.points):
             await self._release("o", vrid)
@@ -53,6 +75,7 @@ class World:
         if action == "start" and st is None:
             self.n += 1
             g.records["A"]["indexingStatus"] = "IN_PROGRESS"  # the attempt start, as update_record_fields writes it
+            g.records["A"]["contentRev"] = f"r{self.n}"
             doc = {**g.records["A"], "_key": "A"}
             y = f"Y{self.n}"
             st = {"y": y, "x": doc["virtualRecordId"], "doc": doc, "written": False}
@@ -70,6 +93,9 @@ class World:
         elif action == "commit" and st["written"]:
             try:
                 await self.swap.commit(ctx_for("A", st["y"]), keep_old_copy.SwapRun("A", "o", st["x"], st["y"]), {"indexingStatus": "COMPLETED", "hasIndexedCopy": True})
+                if g.records["A"]["virtualRecordId"] == st["y"]:
+                    self.served_rev = g.records["A"]["contentRev"]
+                    self.states.add((st["y"], self.served_rev))  # the stages of the new copy run after its commit
                 await self.swap._release_unheld("o", st["x"]) if not _held(g, st["x"]) else None
             except SupersededRun:
                 pass
@@ -88,11 +114,20 @@ class World:
         # a save mid-run stores NOT_STARTED; another path (a twin's attach, a status repair) can finish the record without touching
         # the pending field, which releases the copy for every lookup
         doc["indexingStatus"] = self.rng.choice(["NOT_STARTED", "QUEUED", "IN_PROGRESS", "COMPLETED"])
+        if doc["indexingStatus"] == "COMPLETED":
+            self.served_rev = doc["contentRev"]  # the path that finished it serves what the record now names
+            self.states.add((doc["virtualRecordId"], self.served_rev))
 
     def serve(self) -> None:
         for key, doc in self.graph.records.items():
             if doc.get("hasIndexedCopy") and doc["indexingStatus"] not in ("EMPTY",):
                 assert self.points.get(doc["virtualRecordId"]) == "complete", (key, doc, self.points)
+
+    def served_states(self) -> None:
+        """The stage states of the copy a searchable record serves are never retained away."""
+        doc = self.graph.records["A"]
+        if doc.get("hasIndexedCopy"):
+            assert (doc["virtualRecordId"], self.served_rev) in self.states, ("a served copy lost its stage states", doc, self.states)
 
     def leak(self) -> None:
         for vrid in self.points:
@@ -112,6 +147,9 @@ async def _one(seed: int) -> None:
         else:
             await w.step(action, run)
         w.serve()
+        if rng.random() < 0.3:
+            w.retention(_RETENTION_RULE[0])
+        w.served_states()
     # nothing is left running: the records end in a settled state and the sweep has run
     w.runs.clear()
     for doc in w.graph.records.values():
@@ -160,4 +198,16 @@ def test_negative_control_a_commit_that_does_not_match_the_status_loses_a_copy(m
         except AssertionError:
             failures += 1
     assert real is None
+    assert failures > 0
+
+
+def test_negative_control_retention_by_content_revision_alone_loses_the_served_states(monkeypatch) -> None:
+    """The rule the retention queries had: the states of the served revision are deleted while a replacement of the record is in flight."""
+    monkeypatch.setitem(_RETENTION_RULE, 0, _revision_held_by_content_rev_only)
+    failures = 0
+    for seed in range(SEEDS):
+        try:
+            asyncio.run(_one(seed))
+        except AssertionError:
+            failures += 1
     assert failures > 0
