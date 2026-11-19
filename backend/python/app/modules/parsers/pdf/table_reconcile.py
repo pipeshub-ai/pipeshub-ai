@@ -556,7 +556,7 @@ def decide_box(
             why = f"tier 2: {bad}"
         else:
             ruled = score(cand)
-            if (ruled.q or 0.0) >= table_quality.Q_MIN:
+            if (ruled.q or 0.0) >= table_quality.Q_MIN and not legacy_scores_higher(page, legacy, box, ruled, text_words, hrules, vrules, page_w, page_h):
                 return region_of(ruled, "ruled_rows")
     if not any(ola._boxes_overlap(r.bbox, box) for r in legacy):
         return Decision(box, "none", reason=why)  # the text tiers replace a table; they never make a new one
@@ -581,6 +581,34 @@ def decide_box(
     if not table_quality.replaces_legacy(kept.q or 0.0, best.q or 0.0, strong_defect=bool(harm["strong"])):
         return Decision(box, "none", reason=f"legacy kept: q={kept.q:.2f} new {best.q:.2f} defects {harm['strong']}")
     return region_of(best, "text_tier")
+
+
+def legacy_scores_higher(
+    page: Page, legacy: Sequence[ola.LayoutRegion], box: tuple[float, float, float, float], new: Cand,
+    words: list[dict[str, Any]], hrules: Sequence[Rule], vrules: Sequence[Rule], page_w: float, page_h: float,
+) -> bool:
+    """True when the legacy table of ``box`` can be re-read and its score Q is higher than the new candidate's: rows that
+    are one text line each look like wrapped lines to the record rule, and the legacy grid then keeps them apart."""
+    from app.modules.parsers.pdf import table_quality
+
+    olds = [r for r in legacy if ola._boxes_overlap(r.bbox, box)]
+    if not olds:
+        return False
+    old = max(olds, key=lambda r: ola._iou(r.bbox, box))
+    kept = legacy_candidate(page, old, page_w, page_h)
+    if kept is None:
+        return False
+    legacy_words = [w for w in words if _in_box(w, kept.bbox)] or words
+    kept.f = table_quality.features(kept, legacy_words, hrules, vrules, kept.bbox)
+    kept.q = table_quality.quality(kept.f)
+    if (kept.q or 0.0) > (new.q or 0.0) + 1e-9:
+        return True
+    # a new grid that shows a strong defect (continuation lines as rows, cut through words) does not replace a
+    # legacy grid that shows none
+    return bool(
+        table_quality.defects(new, words, hrules, vrules, new.bbox)["strong"]
+        and not table_quality.defects(kept, legacy_words, hrules, vrules, kept.bbox)["strong"]
+    )
 
 
 _LEGACY_STRATEGIES: tuple[dict[str, Any] | None, ...] = (

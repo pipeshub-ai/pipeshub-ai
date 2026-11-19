@@ -127,3 +127,38 @@ def test_a_cut_through_a_word_moves_to_a_free_channel_or_fails() -> None:
     assert moved is not None and 38.0 < moved[0] < 110.0  # in the whitespace between the columns
     assert tt.repair_cuts([13.0], lines[:1], 0.0, 300.0) is not None
     assert tt.repair_cuts([30.0], _lines([("Alphabet", 10, 0), ("Gammaray", 10, 12)]), 0.0, 100.0) is None  # no free channel
+
+
+def _scored(cand: tq.Cand, words: list[dict]) -> tq.Cand:
+    cand.f = tq.features(cand, words, [], [], BOX)
+    cand.q = tq.quality(cand.f)
+    return cand
+
+
+def test_a_new_grid_that_scores_lower_or_is_defective_does_not_replace_the_legacy_one() -> None:
+    """A grid that scores lower than the legacy grid, or shows continuation rows where the legacy one shows none, does not
+    replace it (rows of one text line at a uniform pitch look like wrapped lines to the record rule)."""
+    pdf, page = borderless()
+    try:
+        words = [w for w in page.extract_words() if tr._in_box(w, BOX)]
+        lines = band_lines(words)
+        good = _scored(tq.candidate_from_cuts("good", 2, [[ln] for ln in lines], [150.0, 240.0], BOX), words)
+        merged = tq.candidate_from_cuts("sparse", 2, [[ln] for ln in lines], [150.0, 240.0], BOX)
+        for ri, k in ((1, 1), (2, 2), (3, 1), (4, 2)):
+            merged.cells[ri][k] = (merged.cells[ri][k][0], merged.cells[ri][k][1], "")
+        merged = _scored(merged, words)
+        assert merged.q < good.q and not tq.defects(merged, words, [], [], BOX)["strong"]
+        frag = tq.candidate_from_cuts("frag", 2, [[ln] for ln in lines], [150.0, 240.0], BOX)
+        for row in frag.cells[1:]:
+            row[0] = (row[0][0], row[0][1], "")
+        frag = _scored(frag, words)
+        region = legacy_region()
+        with patch.object(tr, "legacy_candidate", return_value=good):
+            assert tr.legacy_scores_higher(page, [region], BOX, merged, words, [], [], W, H)
+            assert not tr.legacy_scores_higher(page, [region], BOX, good, words, [], [], W, H)
+            assert tr.legacy_scores_higher(page, [region], BOX, frag, words, [], [], W, H)
+        with patch.object(tr, "legacy_candidate", return_value=None):
+            assert not tr.legacy_scores_higher(page, [region], BOX, merged, words, [], [], W, H)
+        assert not tr.legacy_scores_higher(page, [], BOX, merged, words, [], [], W, H)
+    finally:
+        pdf.close()

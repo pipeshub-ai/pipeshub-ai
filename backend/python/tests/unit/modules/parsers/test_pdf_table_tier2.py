@@ -159,3 +159,4 @@ def test_a_single_column_of_text_between_rules_is_not_made_a_table(monkeypatch) 
         assert d.kind == "none"
     finally:
         pdf.close()
+
