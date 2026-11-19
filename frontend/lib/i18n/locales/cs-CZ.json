@@ -2909,7 +2909,32 @@
       "tools": {
         "title": "Nástroje",
         "subtitle": "Vypněte jednotlivé nástroje. Vypnutý nástroj se klientům MCP nenabízí a jeho volání jsou odmítnuta.",
-        "writes": "Zapisuje"
+        "writes": "Zapisuje",
+        "descriptions": {
+          "pipeshub_sources": "Vypíše konektory a kolekce, které může uživatel číst, a modely AI nastavené v pracovním prostoru. Klienti podle toho volí, kde hledat a se kterým modelem chatovat.",
+          "pipeshub_search": "Prohledává indexované dokumenty podle významu v konektorech a kolekcích, které může uživatel číst, a vrací odpovídající pasáže s jejich záznamy.",
+          "pipeshub_get_record_content": "Přečte celý text jednoho záznamu. Umí také najít záznam podle adresy URL, klíče požadavku nebo externího ID, procházet obsah složky, prostoru nebo epiku a přečíst celé vlákno ve Slacku.",
+          "pipeshub_download_record": "Stáhne původní soubor uložený k záznamu, volitelně převedený do PDF.",
+          "pipeshub_directory": "Vyhledá přihlášeného uživatele, uživatele a skupiny pracovního prostoru a týmy, do kterých uživatel patří. Nic nemění.",
+          "pipeshub_create_collection": "Vytvoří novou prázdnou kolekci ve vlastnictví uživatele, připravenou pro nahrávání.",
+          "pipeshub_upload": "Nahraje dokumenty do kolekce, aby se indexovaly a daly se vyhledat. Nejvýše 20 dokumentů a přibližně 3 MB na jedno volání.",
+          "pipeshub_indexing_status": "Hlásí, jak daleko je indexování kolekce a které dokumenty selhaly a proč.",
+          "pipeshub_connect_source": "Vrátí odkaz, který uživatel otevře v prohlížeči, aby připojil zdroj, například Slack, Google Drive nebo Jira. Nástroj sám nic nepřipojuje.",
+          "pipeshub_chat": "Zeptá se vlastního asistenta PipesHub nebo některého agenta pracovního prostoru a vrátí jeho odpověď s citacemi. Když jsou nástroje pro zápis vypnuté, nespouští připojené akce. Jeho vypnutím se vypne i seznam agentů.",
+          "pipeshub_agents": "Vypíše agenty pracovního prostoru s jejich nástroji a znalostmi, aby s některým z nich mohl klient chatovat. Nabízí se, jen když je zapnutý chat s PipesHub.",
+          "pipeshub_code_repos": "Vypíše indexované repozitáře kódu, které může uživatel číst. Nástroje pro kód se nabízejí jen uživatelům s indexovaným kódem; aplikace OAuth nebo přístupový token navíc potřebuje oprávnění code:read.",
+          "pipeshub_code_symbols": "Ukáže, co obsahuje adresář nebo soubor v indexovaném repozitáři: podadresáře a soubory, nebo symboly, které soubor definuje.",
+          "pipeshub_code_neighbours": "Ukáže okolí souboru nebo symbolu v grafu kódu: kdo ho volá, co volá on, jeho importy a dědičnost.",
+          "pipeshub_code_read": "Čte indexovaný zdrojový kód: jeden symbol, rozsah řádků nebo celý soubor. Čte indexovanou kopii, která může být oproti repozitáři pozadu.",
+          "pipeshub_code_path": "Krok za krokem ukáže, jak se v repozitáři jeden symbol dostane k druhému.",
+          "pipeshub_code_search": "Najde kód podle přesného názvu, řetězce nebo regulárního výrazu.",
+          "pipeshub_code_semantic_search": "Najde kód, který stojí za funkcí nebo chováním, podle popisu v běžném jazyce, když nejsou známy jeho názvy.",
+          "pipeshub_code_outline": "Vypíše třídy, funkce a metody souboru s jejich signaturami a rozsahy řádků, bez těl.",
+          "pipeshub_code_impact": "Ukáže, co na symbolu závisí: vše, co ho volá, importuje nebo na něm staví, včetně testů, které k němu vedou. Odpovídá na to, kdo ho volá a co se rozbije, když se změní.",
+          "pipeshub_code_impact_of_diff": "Vezme diff nebo pull request a ukáže symboly, které mění, soubory a testy, které k nim vedou, a volající, které nepokrývá žádný test.",
+          "pipeshub_code_history": "Vypíše indexované pull requesty, které změnily soubor, s autorem, recenzenty, tím, kdo je sloučil, a s tikety, které zmiňují.",
+          "pipeshub_code_entry_points": "Vypíše, kde do repozitáře vstupuje běh programu, například trasy, nástroje příkazového řádku, úlohy a hooky. Výchozí bod pro čtení neznámého kódu."
+        }
       },
       "appliesNote": "Změny se na nové požadavky MCP uplatní během několika sekund.",
       "loadError": "Nastavení přístupu MCP se nepodařilo načíst. Zkuste stránku načíst znovu.",
