@@ -9,8 +9,8 @@ this test against such an instance with the models it already has.
 A golden question may list plain-English facts (``answer_must_state``) that an
 AI judge checks the answer against; see ``answer_judge`` in the demo harness.
 The judge uses the ``JUDGE_*`` settings when ``JUDGE_PROVIDER`` is set (an
-incomplete set is a judge error), otherwise the same ``TEST_AZURE_OPENAI_*``
-settings the suite gives the instance (``EVAL_PROVIDER`` overrides). Without
+incomplete set is a judge error), otherwise the provider the suite gives the
+instance (``TEST_AI_MODEL_PROVIDER``; ``EVAL_PROVIDER`` overrides). Without
 any, those facts are "not judged", which fails when
 ``PIPESHUB_REQUIRE_JUDGE=1``, as the workflow sets it.
 """
