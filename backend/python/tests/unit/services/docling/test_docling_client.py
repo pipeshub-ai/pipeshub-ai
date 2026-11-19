@@ -212,9 +212,10 @@ class TestParsePdfBatched:
             ),
             pytest.raises(DoclingUnavailableError) as raised,
         ):
-            await client.parse_pdf_batched("doc.pdf", small_pdf)
+            await client.parse_pdf_batched("Quarterly-Secret-Plan.pdf", small_pdf)
 
         assert isinstance(raised.value, IndexingError)
+        assert "Quarterly-Secret-Plan" not in str(raised.value)  # its text can reach index.end
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
 
 
@@ -280,6 +281,13 @@ class TestParsePdf:
             new=AsyncMock(side_effect=ServiceAuthRefusedError("refused", status_code=401)),
         ), pytest.raises(DoclingUnavailableError):
             await client.parse_pdf("doc.pdf", small_pdf)
+
+    @pytest.mark.asyncio
+    async def test_the_operation_does_not_name_the_record(self, client, small_pdf) -> None:
+        post = AsyncMock(side_effect=ServiceCallError("failed", status_code=503))
+        with patch.object(client, "_post_multipart", new=post), pytest.raises(DoclingUnavailableError):
+            await client.parse_pdf("Quarterly-Secret-Plan.pdf", small_pdf)
+        assert "Quarterly-Secret-Plan" not in post.await_args.kwargs["operation"]
 
     @pytest.mark.parametrize("status", [502, 503, 504])
     @pytest.mark.asyncio

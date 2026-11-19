@@ -25,29 +25,41 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-__all__ = ["deadline_after", "search_deadline_seconds", "seconds_left"]
+__all__ = ["deadline_after", "knowledge_hub_deadline_seconds", "search_deadline_seconds", "seconds_left"]
 
 _DEADLINE: ContextVar[float | None] = ContextVar("request_deadline", default=None)
 
 # Inside the MCP server's default 60 s, with room for the gateway to save the
 # search and send it on.
 _DEFAULT_SEARCH_DEADLINE_SECONDS = 50.0
+# Inside the web app's 90 s request timeout (`API_TIMEOUT` in frontend/lib/api/axios-instance.ts), with room for
+# the gateway to send the answer on. Past it nobody reads the listing: the browser has already shown a failure.
+_DEFAULT_KNOWLEDGE_HUB_DEADLINE_SECONDS = 80.0
 
 
-def search_deadline_seconds() -> float | None:
-    """How long a search may take, from ``SEARCH_DEADLINE_SECONDS``; ``None``
-    (no deadline) when it is ``0`` or less. A value that isn't a finite number
-    (unreadable, ``nan``, ``inf``) gives the default."""
-    raw = os.getenv("SEARCH_DEADLINE_SECONDS", "").strip()
+def _deadline_from_env(name: str, default: float) -> float | None:
+    """Seconds from ``name``; ``None`` (no deadline) when it is ``0`` or less. A value that isn't a finite number
+    (unreadable, ``nan``, ``inf``) gives ``default``."""
+    raw = os.getenv(name, "").strip()
     if not raw:
-        return _DEFAULT_SEARCH_DEADLINE_SECONDS
+        return default
     try:
         value = float(raw)
     except ValueError:
-        return _DEFAULT_SEARCH_DEADLINE_SECONDS
+        return default
     if not math.isfinite(value):
-        return _DEFAULT_SEARCH_DEADLINE_SECONDS
+        return default
     return value if value > 0 else None
+
+
+def search_deadline_seconds() -> float | None:
+    """How long a search may take, from ``SEARCH_DEADLINE_SECONDS``."""
+    return _deadline_from_env("SEARCH_DEADLINE_SECONDS", _DEFAULT_SEARCH_DEADLINE_SECONDS)
+
+
+def knowledge_hub_deadline_seconds() -> float | None:
+    """How long a knowledge-hub listing may take, from ``KNOWLEDGE_HUB_DEADLINE_SECONDS``."""
+    return _deadline_from_env("KNOWLEDGE_HUB_DEADLINE_SECONDS", _DEFAULT_KNOWLEDGE_HUB_DEADLINE_SECONDS)
 
 
 @contextlib.contextmanager
