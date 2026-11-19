@@ -22,11 +22,16 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import ProgressStatus
 from app.services.graph_db.common.record_visibility import PENDING_VIRTUAL_RECORD_ID
+from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger("keep_old_copy")
+swap_refusals = METRICS_BACKEND.counter(
+    "pipeshub_keep_old_copy_refused_total",
+    "Runs that used the order they always had because the fleet could not be confirmed for keeping the old copy", ["reason"],
+)
 
 ENV_ENABLED = "INDEXING_KEEP_OLD_COPY"
 #: Added to the accessible-records cache TTL for the time an old copy is kept after its commit.
@@ -52,6 +57,37 @@ def grace_seconds() -> float:
     return float(ttl) + GRACE_MARGIN_SECONDS
 
 
+ENV_PG_BROKER_CONFIRMED = "INDEXING_KEEP_OLD_COPY_FLEET_CONFIRMED"
+_refusals_logged: set[str] = set()
+
+
+def _refused(reason: str, detail: str = "") -> bool:
+    """Counted every time, logged once per process and reason (never once per record)."""
+    swap_refusals.inc(reason)
+    if reason not in _refusals_logged:
+        _refusals_logged.add(reason)
+        logger.warning("Keep-old-copy swap refused (%s)%s; runs use the order they always had", reason, f": {detail}" if detail else "")
+    return False
+
+
+async def _postgres_broker_allowed() -> bool:
+    """The PostgreSQL broker keeps no member list: a pod that holds no claim leaves no trace in its queue tables. So the answer has two
+    parts: no live claim by a consumer without the protocol tag (an older pod that is working), and the operator's statement that no
+    older pod runs at all (``INDEXING_KEEP_OLD_COPY_FLEET_CONFIRMED``), without which the swap stays refused."""
+    if os.getenv(ENV_PG_BROKER_CONFIRMED, "off").strip().lower() not in {"1", "true", "yes", "on"}:
+        return _refused("pg_broker_unconfirmed", f"set {ENV_PG_BROKER_CONFIRMED} once no older pod runs")
+    try:
+        from app.services.messaging.postgres.queue import PgQueue
+        from app.services.messaging.storage_protocol import STORAGE_PROTOCOL_TAG
+
+        untagged = await PgQueue().untagged_claimants(STORAGE_PROTOCOL_TAG)
+    except Exception as exc:
+        return _refused("pg_broker_unreadable", type(exc).__name__)
+    if untagged:
+        return _refused("older_consumer", ", ".join(untagged))
+    return True
+
+
 async def swap_allowed(config_service: Any) -> bool:  # noqa: ANN401
     """The flag is on and the fleet is confirmed to count a pending virtual record as held.
 
@@ -59,6 +95,10 @@ async def swap_allowed(config_service: Any) -> bool:  # noqa: ANN401
     tag. Anything unknown, an unreadable result, no config service, refuses: the run then uses the order it always had."""
     if not enabled():
         return False
+    from app.services.messaging.config import MessageBrokerType, get_message_broker_type
+
+    if get_message_broker_type() == MessageBrokerType.POSTGRES:
+        return await _postgres_broker_allowed()
     try:
         from app.services.messaging.membership import reader_for
 
@@ -67,14 +107,10 @@ async def swap_allowed(config_service: Any) -> bool:  # noqa: ANN401
             return False
         verdict = await reader.strict_verdict()
     except Exception as exc:
-        logger.warning("Keep-old-copy swap refused: the fleet could not be confirmed (%s)", type(exc).__name__)
-        return False
+        return _refused("membership_unreadable", type(exc).__name__)
     if not verdict.ok:
-        logger.warning(
-            "Keep-old-copy swap refused: fleet not confirmed (%s%s); the old order is used",
-            verdict.reason, f": {', '.join(verdict.untagged)}" if verdict.untagged else "",
-        )
-    return verdict.ok
+        return _refused(verdict.reason or "unconfirmed", ", ".join(verdict.untagged))
+    return True
 
 
 def pending_of(doc: Mapping[str, Any]) -> str | None:

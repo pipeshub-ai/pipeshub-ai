@@ -63,3 +63,34 @@ def test_the_postgres_statements_carry_the_shared_fragment_verbatim():
     text = Path("app/services/graph_db/postgres/records.py").read_text(encoding="utf-8")
     assert text.count(sql_holds_vrid("n", "$2")) == 1
     assert text.count(sql_holds_vrid("n", "w.v")) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_postgres_broker_needs_the_operators_statement_and_no_older_claimant(monkeypatch):
+    from unittest.mock import AsyncMock, patch
+
+    from app.services.messaging.config import MessageBrokerType
+
+    monkeypatch.setenv(keep_old_copy.ENV_ENABLED, "on")
+    monkeypatch.setattr("app.services.messaging.config.get_message_broker_type", lambda: MessageBrokerType.POSTGRES)
+    monkeypatch.delenv(keep_old_copy.ENV_PG_BROKER_CONFIRMED, raising=False)
+    assert not await keep_old_copy.swap_allowed(None)  # no statement: refused
+    monkeypatch.setenv(keep_old_copy.ENV_PG_BROKER_CONFIRMED, "on")
+    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(return_value=["old-pod"])):
+        assert not await keep_old_copy.swap_allowed(None)  # a working older pod: refused
+    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(side_effect=RuntimeError("down"))):
+        assert not await keep_old_copy.swap_allowed(None)  # unknown: refused
+    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(return_value=[])):
+        assert await keep_old_copy.swap_allowed(None)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_is_logged_once_not_per_run(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv(keep_old_copy.ENV_ENABLED, "on")
+    keep_old_copy._refusals_logged.clear()
+    with caplog.at_level(logging.WARNING, logger="keep_old_copy"):
+        for _ in range(5):
+            await keep_old_copy.swap_allowed(None)
+    assert sum("Keep-old-copy swap refused" in r.getMessage() for r in caplog.records) == 1
