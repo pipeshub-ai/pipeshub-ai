@@ -28,7 +28,12 @@ from app.core import org_context
 from app.core.envelope import ctx_of
 from app.utils.error_class import classify_error, level_for, log_failure, logged_level
 from app.utils.logging_fields import log_event, log_fields
-from app.utils.request_context import bind_context, context_from_envelope, reset_context
+from app.utils.request_context import (
+    RequestContext,
+    bind_context,
+    context_from_envelope,
+    reset_context,
+)
 
 EVENT_END = "message.end"
 
@@ -100,17 +105,18 @@ def end(disposition: str, **facts: object) -> None:
 
 
 @contextmanager
-def bound_message(message: Any) -> Iterator[None]:  # noqa: ANN401 - a parsed StreamMessage, or None
-    """The same root, org and ids as a delivery binds, for a block with no ``message.end``."""
-    if message is None:
+def bound_message(message: Any, root: RequestContext | None = None) -> Iterator[None]:  # noqa: ANN401 - a parsed StreamMessage, or None
+    """The same root, org and ids as a delivery binds, for a block with no ``message.end``. ``root``: the context the
+    delivery already ran in, when there is one (an envelope with no request id would get a fresh root here)."""
+    if message is not None:
+        root = root or context_from_envelope({"requestId": message.requestId, "orgId": message.orgId})
+    with ExitStack() as stack:
+        if root is not None:  # also for a message that could not be read: its line keeps the delivery's root
+            stack.callback(reset_context, bind_context(root))
+        if message is not None:
+            stack.enter_context(org_context.bind_optional(ctx_of(message)))
+            stack.enter_context(log_fields(**_ids(message.eventType, message.payload)))
         yield
-        return
-    token = bind_context(context_from_envelope({"requestId": message.requestId, "orgId": message.orgId}))
-    try:
-        with org_context.bind_optional(ctx_of(message)), log_fields(**_ids(message.eventType, message.payload)):
-            yield
-    finally:
-        reset_context(token)
 
 
 def _open() -> _Delivery:

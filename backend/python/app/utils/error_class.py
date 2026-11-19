@@ -28,7 +28,7 @@ from app.utils.log_redaction import (
     redact_error_for_log,
     redact_secrets_in_text,
 )
-from app.utils.logging_fields import event_fields
+from app.utils.logging_fields import event_fields, log_event
 from app.utils.oauth_errors import is_permanent_grant_rejection
 
 ERROR_CLASSES: frozenset[str] = frozenset({
@@ -99,6 +99,35 @@ def first_leaf(exc: BaseException) -> BaseException:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     return exc
+
+
+def has_chain(exc: BaseException) -> bool:
+    """Whether ``exc`` was raised from, or while handling, another exception: when ``cause_type`` says something."""
+    return exc.__cause__ is not None or (exc.__context__ is not None and not exc.__suppress_context__)
+
+
+def quotes_content(exc: BaseException) -> bool:
+    """Whether a link of the chain, or a member of an exception group in it, is a content error or a validation error:
+    its text, and every text above it, can quote the document's name or the message's values."""
+    # The parsing service's error message quotes the record's name, and its client copies it (ParsingClientError).
+    quoting = (*CONTENT_ERRORS, *_types("pydantic", "ValidationError"),
+               *_types("app.services.parsing.client", "ParsingClientError"))
+    return any(isinstance(link, quoting) for link in _links_and_members(exc))
+
+
+def _links_and_members(exc: BaseException) -> Iterator[BaseException]:
+    """Each link of ``exc``'s chain and, through exception groups, of every member's chain, once each: one visited set
+    across cause, context and member edges, so a member that points back at its group cannot loop."""
+    seen: set[int] = set()
+    pending = [exc]
+    while pending:
+        for link in _chain(pending.pop()):
+            if id(link) in seen:
+                continue
+            seen.add(id(link))
+            yield link
+            if isinstance(link, BaseExceptionGroup):
+                pending.extend(link.exceptions)
 
 
 def innermost_type(exc: BaseException) -> str:
@@ -192,13 +221,8 @@ def is_stamped(exc: BaseException) -> bool:
 
 def _hides_text(exc: BaseException) -> bool:
     """A link of the chain, or a member of an exception group in it, was stamped as able to quote sent values."""
-    for link in _chain(exc):
-        if getattr(link, "log_hide_text", False) is True:
-            return True
-        # every member, not only the first (first_leaf): the stamped one may be any of them
-        if isinstance(link, BaseExceptionGroup) and any(_hides_text(member) for member in link.exceptions):
-            return True
-    return False
+    # every member, not only the first (first_leaf): the stamped one may be any of them
+    return any(getattr(link, "log_hide_text", False) is True for link in _links_and_members(exc))
 
 
 def _chain_text(exc: BaseException) -> str:
@@ -306,3 +330,20 @@ def log_failure(
         # Text-free on purpose: this path skips the masking and include_error_text.
         with contextlib.suppress(Exception):
             logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=2)
+
+
+def log_unit_end(
+    logger: logging.Logger, event: str, exc: BaseException | None, /, *,
+    level: int, error_class: str | None = None, include_error_text: bool = True, **fields: object,
+) -> None:
+    """The end line of one unit of work, at ``level``. Without an exception, the event with ``error_class`` when
+    given. With one not yet logged this high, :func:`log_failure` (the stack once, at ERROR). With one already
+    logged at ``level`` or higher, the event with its class and type: no text and no second stack."""
+    if exc is None:
+        log_event(logger, event, level=level, error_class=error_class, **fields)
+        return
+    cls = error_class or classify_error(exc)
+    if already_logged(exc, level):
+        log_event(logger, event, level=level, error_class=cls, error_type=type(exc).__name__, **fields)
+        return
+    log_failure(logger, event, exc, level=level, error_class=cls, include_error_text=include_error_text, **fields)
