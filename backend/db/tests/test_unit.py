@@ -1,4 +1,5 @@
 """Unit tests: no database needed."""
+import json
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,40 @@ def test_epoch_lint_rejects_bad_id_and_file_prefix(branch):
     (branch / "0005_mismatch.py").write_text('revision = "identity_0004"\ndown_revision = "identity_0003"\n')
     msgs = "\n".join(epoch_lint.lint_branch(branch))
     assert "is not identity_NNNN" in msgs and "file prefix does not match" in msgs
+
+
+def test_expected_heads_read_from_the_files(branch):
+    _rev(branch, "identity", 4, 3)
+    assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 3)}, {"identity_0004"})
+
+
+def test_expected_heads_refuse_a_second_head(branch):
+    _rev(branch, "identity", 4, 3, name="this_pr")
+    (branch / "0005_other_pr.py").write_text('revision = "identity_0005"\ndown_revision = "identity_0003"\n')
+    with pytest.raises(ValueError, match="2 heads"):
+        epoch_lint.expected_heads([branch])
+
+
+def test_expected_heads_refuse_a_head_whose_id_is_not_its_files_epoch(branch):
+    (branch / "0004_wrong.py").write_text('revision = "identity_0005"\ndown_revision = "identity_0003"\n')
+    with pytest.raises(ValueError, match="is not epoch 4"):
+        epoch_lint.expected_heads([branch])
+
+
+def test_a_computed_depends_on_or_contract_does_not_break_the_lint(branch):
+    _rev(branch, "identity", 4, 3, extra='depends_on = PARENTS\nmin_code_epoch = int("4")')
+    assert epoch_lint.lint_branch(branch) == []
+    with pytest.raises(ValueError, match="depends_on, min_code_epoch must be a literal"):
+        epoch_lint.expected_heads([branch])
+
+
+def test_no_released_head_is_gone():
+    """A branch never goes below the head the last release shipped (``released_heads.json``, edited only by the release
+    process): a shipped revision deleted or renumbered would leave installed databases ahead of the files."""
+    released = json.loads((locations.DB_DIR / "released_heads.json").read_text())["epochs"]
+    heads, _ = epoch_lint.expected_heads(locations.version_locations())
+    below = {b: (heads.get(b, (0, 0))[0], n) for b, n in released.items() if heads.get(b, (0, 0))[0] < n}
+    assert not below, f"branch heads below the released ones (now, released): {below}"
 
 
 def test_shipped_branches_pass_both_lints():
