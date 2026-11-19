@@ -505,13 +505,17 @@ def decide_box(
         return Decision(box, "none", reason="a table of the group is not ruled evidence: " + "; ".join(why for r, _, why in parts if r is None))
     matching = sorted((t for t in lattices if same_table(_bbox(t), box)), key=lambda t: -ola._iou(_bbox(t), box))
     why = ""
+    hints: list[float] = []
     if matching and all(id(t) in claimed for t in matching):
         return Decision(box, "none", reason="ruled table used by another box")
     for t in matching:
         if id(t) in claimed:
             continue
         if is_sub_area(t, box, words):
-            return Decision(box, "none", reason="partial lattice")
+            hints = [c[2] for r in t.rows for c in [c for c in r.cells if c is not None][:-1]]
+            box = (min(box[0], _bbox(t)[0]), min(box[1], _bbox(t)[1]), max(box[2], _bbox(t)[2]), max(box[3], _bbox(t)[3]))
+            why = "partial lattice"
+            break
         region, notes, why = ruled_table(t, words, vrules, box, others, hrules)
         if region is not None:
             claimed.add(id(t))
@@ -525,6 +529,21 @@ def decide_box(
             return Decision(box, "not_table", not_table="toc")
         if len(ys) < 3 and is_margin_prose(lines):  # ruled rows are table evidence; tagged prose has none
             return Decision(box, "not_table", not_table="margin_prose")
+    if len(ys) >= 3:
+        from app.modules.parsers.pdf import table_quality, table_tiers
+
+        cand, bad = table_tiers.ruled_rows(extent, ys, lines, hrules, hints)
+        if cand is None:
+            return Decision(box, "none", reason=f"tier 2: {bad}")
+        text_words = [w for w in words if _in_box(w, extent)]
+        cand.f = table_quality.features(cand, text_words, hrules, vrules, extent)
+        cand.q = table_quality.quality(cand.f)
+        if cand.q >= table_quality.Q_MIN:
+            grid = ola._trim_empty_rows_cols(cand.grid)
+            region = ola.LayoutRegion(
+                type=ola.LayoutRegionType.TABLE, bbox=extent, text=ola._grid_to_text(grid), table_grid=grid,
+            )
+            return Decision(box, "ruled_rows", [region], reason=f"q={cand.q:.2f}")
     return Decision(box, "none", reason=why or "no ruled table")
 
 
