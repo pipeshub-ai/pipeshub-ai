@@ -2934,7 +2934,7 @@
           "pipeshub_code_semantic_search": "Najde kód, který stojí za funkcí nebo chováním, podle popisu v běžném jazyce, když nejsou známy jeho názvy.",
           "pipeshub_code_outline": "Vypíše třídy, funkce a metody souboru s jejich signaturami a rozsahy řádků, bez těl.",
           "pipeshub_code_impact": "Ukáže, co na symbolu závisí: vše, co ho volá, importuje nebo na něm staví, včetně testů, které k němu vedou. Odpovídá na to, kdo ho volá a co se rozbije, když se změní.",
-          "pipeshub_code_impact_of_diff": "Vezme diff nebo pull request a ukáže symboly, které mění, soubory a testy, které k nim vedou, a volající, které nepokrývá žádný test.",
+          "pipeshub_code_impact_of_diff": "Vezme unified diff, například výstup příkazu git diff nebo diff pull requestu, a ukáže symboly, které mění, soubory a testy, které k nim vedou, a volající, které nepokrývá žádný test.",
           "pipeshub_code_history": "Vypíše indexované pull requesty, které změnily soubor, s autorem, recenzenty, tím, kdo je sloučil, a s tikety, které zmiňují.",
           "pipeshub_code_entry_points": "Vypíše, kde do repozitáře vstupuje běh programu, například trasy, nástroje příkazového řádku, úlohy a hooky. Výchozí bod pro čtení neznámého kódu."
         }

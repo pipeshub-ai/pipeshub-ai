@@ -2818,7 +2818,7 @@
           "pipeshub_code_semantic_search": "在不知道名稱時，根據自然語言描述尋找某個功能或行為背後的程式碼。",
           "pipeshub_code_outline": "列出檔案中的類別、函式和方法及其簽章和行範圍，不含函式主體。",
           "pipeshub_code_impact": "顯示相依於某個符號的內容：所有呼叫、匯入或以它為基礎的程式碼，以及涵蓋到它的測試。可回答誰呼叫了它、修改後會影響什麼。",
-          "pipeshub_code_impact_of_diff": "接收一個 diff 或拉取請求，顯示它變更的符號、涉及這些符號的檔案和測試，以及沒有測試涵蓋的呼叫端。",
+          "pipeshub_code_impact_of_diff": "接收一個統一格式的 diff，例如 git diff 的輸出或拉取請求的 diff，顯示它變更的符號、涉及這些符號的檔案和測試，以及沒有測試涵蓋的呼叫端。",
           "pipeshub_code_history": "列出修改過某個檔案的已索引拉取請求，包括作者、審閱者、合併者及其提到的工單。",
           "pipeshub_code_entry_points": "列出執行進入儲存庫的位置，例如路由、命令列工具、工作和掛鉤。是閱讀陌生程式碼的起點。"
         }

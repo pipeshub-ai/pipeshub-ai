@@ -2675,7 +2675,7 @@
           "pipeshub_code_semantic_search": "Findet den Code hinter einer Funktion oder einem Verhalten anhand einer Beschreibung in normaler Sprache, wenn die Namen nicht bekannt sind.",
           "pipeshub_code_outline": "Listet die Klassen, Funktionen und Methoden einer Datei mit Signaturen und Zeilenbereichen auf, ohne deren Inhalt.",
           "pipeshub_code_impact": "Zeigt, was von einem Symbol abhängt: alles, was es aufruft, importiert oder darauf aufbaut, samt der Tests, die es erreichen. Beantwortet, wer es aufruft und was bei einer Änderung bricht.",
-          "pipeshub_code_impact_of_diff": "Nimmt einen Diff oder Pull Request und zeigt die geänderten Symbole, die Dateien und Tests, die sie erreichen, und die Aufrufer, die kein Test abdeckt.",
+          "pipeshub_code_impact_of_diff": "Nimmt einen Unified Diff, etwa die Ausgabe von git diff oder den Diff eines Pull Requests, und zeigt die geänderten Symbole, die Dateien und Tests, die sie erreichen, und die Aufrufer, die kein Test abdeckt.",
           "pipeshub_code_history": "Listet die indexierten Pull Requests auf, die eine Datei geändert haben, mit Autor, Reviewern, wer gemergt hat und den genannten Tickets.",
           "pipeshub_code_entry_points": "Listet auf, wo die Ausführung in ein Repository eintritt, etwa Routen, Kommandozeilenwerkzeuge, Jobs und Hooks. Ein Einstieg in unbekannten Code."
         }

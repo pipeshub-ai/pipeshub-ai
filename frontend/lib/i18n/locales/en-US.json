@@ -2836,7 +2836,7 @@
           "pipeshub_code_semantic_search": "Finds the code behind a feature or behaviour from a plain-language description, when its names are not known.",
           "pipeshub_code_outline": "Lists a file's classes, functions and methods with their signatures and line ranges, without the bodies.",
           "pipeshub_code_impact": "Shows what depends on a symbol: everything that calls, imports or builds on it, with the tests that reach it. It answers who calls this and what breaks if it changes.",
-          "pipeshub_code_impact_of_diff": "Takes a diff or pull request and shows the symbols it changes, the files and tests that reach them, and the callers no test covers.",
+          "pipeshub_code_impact_of_diff": "Takes a unified diff, such as git diff output or the diff of a pull request, and shows the symbols it changes, the files and tests that reach them, and the callers no test covers.",
           "pipeshub_code_history": "Lists the indexed pull requests that changed a file, with author, reviewers, who merged it and the tickets it names.",
           "pipeshub_code_entry_points": "Lists where control enters a repository, such as routes, command-line tools, jobs and hooks. A starting point for reading unfamiliar code."
         }
