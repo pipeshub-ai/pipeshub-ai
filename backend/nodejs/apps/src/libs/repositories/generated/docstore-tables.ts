@@ -556,6 +556,7 @@ export interface PlatformNotifications {
   deleted_by: string | null;
   version: Generated<number>;
   updated_at: Date;
+  visible_at: Date | null;
 }
 
 export interface PlatformOutbox {
