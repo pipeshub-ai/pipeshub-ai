@@ -221,3 +221,41 @@ async def test_a_twin_in_another_collection_is_attached_as_before_when_the_old_c
     gp.update_node = AsyncMock(return_value=True)
     decision = await _reuse_in_other_collection(ep, gp, _doc())
     assert decision.virtual_record_id == "T"
+
+
+@pytest.mark.asyncio
+async def test_a_redelivery_resumes_into_the_pending_copy_not_into_the_vrid_the_record_names(swap_on):
+    """Scenario 25: the marker names the copy the interrupted run was writing, which the record only has as its pending vrid."""
+    from app.modules.indexing.embed_resume import DELIVERY_ID_KEY
+
+    ep, processor, gp = _processor()
+    seen: dict = {}
+
+    def spy(marker, **kwargs):
+        seen.update(kwargs)
+        return False
+
+    doc = _doc(pendingVirtualRecordId="Y", embedVrid="Y", embedRev="rev", embedDeliveryId="d1", embedDigest="dg")
+    gp.get_document.return_value = doc
+    gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    processor.process_excel_document = MagicMock(side_effect=_gen)
+    data = _payload(EventTypes.REINDEX_RECORD.value, MimeTypes.XLSX.value, ExtensionTypes.XLSX.value)
+    data["payload"][DELIVERY_ID_KEY] = "d1"
+    with patch("app.events.events.may_resume", spy), \
+         patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=DedupDecision()), \
+         patch.object(ep, "_spawn_abandoned_vrid_cleanup"), patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock):
+        await _drain(ep.on_event(data))
+    assert seen["node_vrid"] == "Y"  # not "X", which the record names
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_is_replacing_its_copy_has_nothing_to_parse_now() -> None:
+    """Scenario 31: a parse-now request for a record that serves an indexed copy while its replacement is written is refused as redundant, so the
+    parse-now marker (written before the commit, on a parse-now run only) is never written under the revision of a swap in flight."""
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
+
+    handler = RecordEventHandler.__new__(RecordEventHandler)
+    record = {"_key": "r1", "orgId": "o1", "virtualRecordId": "X", "pendingVirtualRecordId": "Y", "hasIndexedCopy": True,
+              "indexingStatus": "IN_PROGRESS", "contentRev": "r2"}
+    refusal = await handler._parse_now_refusal(record, {"recordId": "r1", "orgId": "o1"})
+    assert refusal == ("the record is already readable", True)

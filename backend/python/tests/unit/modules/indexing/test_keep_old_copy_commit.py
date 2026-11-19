@@ -275,3 +275,32 @@ async def test_the_old_copy_is_marked_for_its_grace_before_the_move_so_a_crash_b
     assert await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})  # finish never runs: the process died
     assert order[:2] == [f"mark X {CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value}", "move"]
     assert keep_old_copy.RETIRED_AT_FIELD in g.mapping["X"]
+
+
+@pytest.mark.asyncio
+async def test_a_commit_does_not_land_on_a_record_that_names_another_copy_than_the_one_it_replaces() -> None:
+    """The commit also matches the vrid it replaces: a record that moved on (a twin's attach, a rebuild) is not moved again."""
+    g = FakeGraph({"A": rec("Z", pendingVirtualRecordId="Y")})
+    swap, _ = committer(g)
+    with pytest.raises(SupersededRun):
+        await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "Z"
+
+
+@pytest.mark.asyncio
+async def test_finish_drops_the_records_cache_entry_and_marks_the_old_copy() -> None:
+    """The invalidation is not left to the coalesced path or to the cache's TTL: the finish of a commit calls it."""
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    swap, vs = committer(g)
+    vs.vector_db_service.set_payload = AsyncMock()
+    vs.collection_locator.all_collections = AsyncMock(return_value=[])
+    with patch("app.modules.transformers.swap_commit.notify_record_vrid_moved", AsyncMock()) as moved, \
+         patch("app.modules.transformers.swap_commit.spawn_detached", lambda coro, name=None: coro.close()), \
+         patch("app.modules.transformers.swap_commit.org_for_filter", return_value="o"), \
+         patch("app.modules.transformers.swap_commit.mark_scope_stale", AsyncMock()):
+        await swap.finish(ctx_for("A", "Y", connector_id="k1"), run())
+    moved.assert_awaited_once()
+    assert moved.await_args.kwargs["connector_id"] == "k1" and moved.await_args.kwargs["org_id"] == "o"
+    assert keep_old_copy.RETIRED_AT_FIELD in g.mapping["X"]

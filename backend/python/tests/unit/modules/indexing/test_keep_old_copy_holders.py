@@ -209,3 +209,17 @@ async def test_the_publisher_writes_what_the_idle_inclusive_check_found() -> Non
     await publisher.publish_once()
     entry = put.await_args.args[1]
     assert entry["untagged"] == [] and entry["untaggedAny"] == ["idle-old-pod"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "QUEUED", "FAILED", "NOT_STARTED"])
+async def test_the_reextract_script_leaves_a_record_that_is_not_indexed_alone(status: str) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.scripts.named_entity_reextract import Tally, _wants_reextract
+
+    blob = MagicMock()
+    blob.get_record_from_storage = AsyncMock()
+    record = {"virtualRecordId": "x", "indexingStatus": status, "orgId": "o"}
+    assert not await _wants_reextract(record, MagicMock(), blob, Tally(), everything=True)
+    blob.get_record_from_storage.assert_not_called()
