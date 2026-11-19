@@ -3,6 +3,7 @@ cannot search with the scope filter; `legacy` and `inherit` are always written."
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,36 +11,14 @@ from fastapi import HTTPException
 
 from app.connectors.api import router as r
 from app.core import org_context
-from app.services.permissions.currency import SCOPES_CONNECTORS_KEY
+from app.services.permissions.currency import switched_connectors
 from app.services.permissions.mode import ENV_ACL_FILTER_MODE
 
 
-class Config:
-    """The config store of the switched list; ``down`` makes every read and write fail."""
-
-    def __init__(self, listed: list[str] | None = None) -> None:
-        self.listed, self.down, self.writes = listed, False, 0
-
-    async def get_config(self, key: str, default: object = None, **_: object) -> object:
-        if self.down:
-            raise RuntimeError("store down")
-        return self.listed if key == SCOPES_CONNECTORS_KEY and self.listed is not None else default
-
-    async def set_config(self, key: str, value: object, **_: object) -> bool:
-        if self.down:
-            raise RuntimeError("store down")
-        assert key == SCOPES_CONNECTORS_KEY
-        self.listed, self.writes = value, self.writes + 1      # type: ignore[assignment]
-        return True
-
-
 @pytest.fixture(autouse=True)
-def cfg(monkeypatch: pytest.MonkeyPatch) -> Config:
+def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ENV_ACL_FILTER_MODE, "shadow")
     monkeypatch.setenv("VECTOR_DB_TYPE", "pgvector")
-    c = Config()
-    monkeypatch.setattr(r, "resolve_config_service", lambda *_: c)
-    return c
 
 
 @pytest.fixture(autouse=True)
@@ -115,80 +94,61 @@ async def test_an_unknown_mode_is_refused_by_the_request_model() -> None:
         r.PermissionFilterRequest(mode="shadow")
 
 
-async def test_scopes_lists_the_connector_before_its_document_and_a_store_that_is_down_stores_nothing(cfg: Config) -> None:
-    cfg.listed = ["c0"]
-    g = _graph({"status": "IDLE"})
-    await _patch("scopes", g=g)
-    assert cfg.listed == ["c0", "c1"]
-    cfg.down = True
-    g2 = _graph({"status": "IDLE"})
+class Apps:
+    """The app documents as a store holds them: each write lands whole; ``pause`` holds a write of that mode until released, to order requests."""
+
+    def __init__(self, mode: str | None = None) -> None:
+        self.docs: dict[str, dict] = {"c1": {"_key": "c1", "orgId": "o1", "status": "IDLE", **({"aclFilterMode": mode} if mode else {})}}
+        self.gates: dict[str, asyncio.Event] = {}
+
+    def graph(self) -> MagicMock:
+        g = MagicMock()
+        g.get_document = AsyncMock(side_effect=lambda key, coll, **k: dict(self.docs[key]) if key in self.docs else None)
+
+        async def update(key: str, coll: str, fields: dict, **k: object) -> bool:
+            if gate := self.gates.get(fields.get("aclFilterMode")):
+                await gate.wait()
+            if key not in self.docs:
+                return False
+            self.docs[key].update(fields)
+            return True
+
+        g.update_node = AsyncMock(side_effect=update)
+        g.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, values, **k: [d for d in self.docs.values() if d.get(field) in values])
+        return g
+
+
+@pytest.mark.parametrize("first", ["scopes", "legacy"])
+async def test_two_concurrent_switches_end_with_the_plan_reading_whatever_the_document_says(first: str) -> None:
+    """There is no second record to keep in step: whichever write lands last, the switched connectors are read from that document."""
+    second = "legacy" if first == "scopes" else "scopes"
+    apps = Apps()
+    g = apps.graph()
+    apps.gates[first] = asyncio.Event()
+    a = asyncio.create_task(r.set_permission_filter("c1", r.PermissionFilterRequest(mode=first), _req(), g))
+    await asyncio.sleep(0)
+    await r.set_permission_filter("c1", r.PermissionFilterRequest(mode=second), _req(), g)      # lands first
+    apps.gates[first].set()
+    await a                                                                                        # lands last
+    assert apps.docs["c1"]["aclFilterMode"] == first
+    assert await switched_connectors(g, "o1") == ({"c1"} if first == "scopes" else set())
+
+
+async def test_a_delete_racing_an_opt_in_leaves_nothing_switched_once_the_document_is_gone() -> None:
+    apps = Apps()
+    g = apps.graph()
+    apps.gates["scopes"] = asyncio.Event()
+    opt_in = asyncio.create_task(r.set_permission_filter("c1", r.PermissionFilterRequest(mode="scopes"), _req(), g))
+    await asyncio.sleep(0)
+    del apps.docs["c1"]                                       # the delete removes the app document
+    apps.gates["scopes"].set()
     with pytest.raises(HTTPException) as e:
-        await _patch("scopes", g=g2)
-    assert e.value.status_code == 503
-    g2.update_node.assert_not_called()
+        await opt_in
+    assert e.value.status_code == 404
+    assert await switched_connectors(g, "o1") == set()
+    apps2 = Apps("scopes")                                   # the other order: switched first, then deleted
+    g2 = apps2.graph()
+    assert await switched_connectors(g2, "o1") == {"c1"}
+    del apps2.docs["c1"]
+    assert await switched_connectors(g2, "o1") == set()
 
-
-async def test_a_rollback_takes_the_connector_off_the_list_and_still_succeeds_when_the_list_cannot_be_written(cfg: Config) -> None:
-    cfg.listed = ["c1", "c2"]
-    await _patch("legacy")
-    assert cfg.listed == ["c2"]
-    cfg.listed, cfg.down = ["c1"], True
-    g = _graph({"status": "IDLE", "aclFilterMode": "scopes"})
-    assert (await _patch("inherit", g=g))["mode"] == "inherit"      # the document decides; a list that still names c1 costs a read, never access
-    g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": "inherit"})
-
-
-async def test_setting_the_mode_it_already_has_does_not_rewrite_the_list(cfg: Config) -> None:
-    cfg.listed = ["c1"]
-    await _patch("scopes")
-    assert cfg.writes == 0
-
-
-async def test_scopes_again_puts_back_an_entry_the_list_lost(cfg: Config) -> None:
-    """A concurrent change can drop an entry; setting `scopes` again repairs it even though the document already says so."""
-    cfg.listed = []
-    g = _graph({"status": "IDLE", "aclFilterMode": "scopes"})
-    await _patch("scopes", g=g)
-    assert cfg.listed == ["c1"]
-
-
-@pytest.mark.parametrize(("listed", "effective"), [(["c1"], "scopes"), ([], "legacy"), (None, "legacy")])
-async def test_the_status_says_scopes_under_shadow_only_for_a_listed_connector(cfg: Config, monkeypatch: pytest.MonkeyPatch,
-                                                                                listed: list[str] | None, effective: str) -> None:
-    monkeypatch.setattr(r, "store_now", AsyncMock(return_value=None))
-    monkeypatch.setattr(r.access_status, "app_is_served", lambda app: True)
-    cfg.listed = listed
-    out = await r.get_permission_status("c1", _req(), _graph({"status": "IDLE", "aclFilterMode": "scopes"}))
-    assert out["filter"]["effective"] == effective
-
-
-async def test_a_list_that_cannot_be_read_says_legacy_in_the_status(cfg: Config, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(r, "store_now", AsyncMock(return_value=None))
-    monkeypatch.setattr(r.access_status, "app_is_served", lambda app: True)
-    cfg.listed, cfg.down = ["c1"], True
-    out = await r.get_permission_status("c1", _req(), _graph({"status": "IDLE", "aclFilterMode": "scopes"}))
-    assert out["filter"]["effective"] == "legacy"
-
-
-async def test_deleting_a_connector_takes_it_off_the_list(cfg: Config) -> None:
-    from unittest.mock import patch
-
-    from tests.unit.connectors.api.test_router_part2 import (
-        _make_instance,
-        _make_request,
-    )
-
-    cfg.listed = ["c1", "c2"]
-    req = _make_request(is_admin=True)
-    req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(return_value=_make_instance(scope="team", created_by="u1"))
-    graph_provider = AsyncMock()
-    graph_provider.check_connector_in_use = AsyncMock(return_value=[])
-    req.app.container.messaging_producer.send_message = AsyncMock()
-    with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
-         patch("app.connectors.api.router._validate_connector_deletion_permissions"):
-        result = await r.delete_connector_instance("c1", req, graph_provider=graph_provider)
-    assert result.status_code == 202 and cfg.listed == ["c2"]
-    cfg.listed, cfg.down = ["c1"], True
-    with patch("app.connectors.api.router.check_beta_connector_access", new_callable=AsyncMock), \
-         patch("app.connectors.api.router._validate_connector_deletion_permissions"):
-        assert (await r.delete_connector_instance("c1", req, graph_provider=graph_provider)).status_code == 202      # a list that is down never fails a delete

@@ -5,7 +5,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -263,6 +263,15 @@ class _RecordIdSearch:
 
 # The scope filter of the shadow comparison's search, set only inside that task: a real search never sees one.
 _SHADOW_SCOPE_FILTER: contextvars.ContextVar[Any] = contextvars.ContextVar("acl_shadow_scope_filter", default=None)
+
+
+def _served(plan: "_QueryPlan", scope_connector_ids: Collection[str] | None) -> bool:
+    """Whether the real search went through the serving plan's filter: it carried one and, for a request limited to some connectors, the filter
+    decides at least one of them (a request that reaches only connectors on the classic check was not filtered, so its comparison stays valid)."""
+    flt = plan.scope_filter
+    if flt is None:
+        return False
+    return scope_connector_ids is None or bool(set(scope_connector_ids) & set(flt.current))
 
 
 @dataclass
@@ -538,7 +547,7 @@ class RetrievalService:
     def _build_planner(self, graph_provider: IGraphDBProvider) -> object | None:
         from app.services.permissions.wiring import build_serving_planner
 
-        return build_serving_planner(graph_provider, self.config_service)
+        return build_serving_planner(graph_provider)
 
     def _submit_shadow(
         self, queries, filter, asked: int, org_id: str, user_id: str | None, user_key: str | None,  # noqa: A002, ANN001
@@ -567,7 +576,7 @@ class RetrievalService:
             return set(found.records_by_vrid)
 
         try:
-            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check, served=plan.scope_filter is not None)
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check, served=_served(plan, scope_connector_ids))
         except Exception as exc:  # the shadow must never cost a search
             self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 

@@ -10,7 +10,6 @@ import pytest
 
 from app.services.permissions.currency import (
     MODE_KEY,
-    SCOPES_CONNECTORS_KEY,
     StampCurrency,
     app_is_exact,
     app_is_served,
@@ -50,8 +49,13 @@ def scopes(**kw: object) -> ViewerScopes:
 
 
 def graph(docs: dict[str, dict]) -> MagicMock:
+    """Reads by id, and by mode as the switched-connector read asks (every organisation's apps, as Neo4j and ArangoDB answer)."""
+    def read(coll: str, field: str, values: list, **k: object) -> list[dict]:
+        if field == MODE_KEY:
+            return [{"_key": i, "orgId": ORG, **d} for i, d in docs.items() if d.get(MODE_KEY) in values]
+        return [{"_key": i, **docs[i]} for i in values if i in docs]
     g = MagicMock()
-    g.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, ids, **k: [{"_key": i, **docs[i]} for i in ids if i in docs])
+    g.get_nodes_by_field_in = AsyncMock(side_effect=read)
     return g
 
 
@@ -85,35 +89,39 @@ def _with_mode(doc: dict, mode: object) -> dict:
     (AclFilterMode.SCOPES, "LEGACY ", "typo", set()),       # a value that is not a mode reads as legacy, never as on
     (AclFilterMode.SHADOW, None, None, set()),                        # shadow: nobody served unless switched
     (AclFilterMode.SHADOW, "scopes", "inherit", {"c1"}),             # an admin opted c1 in
-    (AclFilterMode.SHADOW, "scopes", "Scopes", {"c1", "c2"}),
+    (AclFilterMode.SHADOW, "scopes", "Scopes", {"c1"}),             # only the exact value the switch writes counts
+    (AclFilterMode.SCOPES, "inherit", "Scopes", {"c1"}),
 ])
 async def test_a_connector_is_served_only_when_its_own_mode_resolves_to_scopes(default: AclFilterMode, c1: object, c2: object, served: set) -> None:
     svc = MagicMock()
     svc.scopes = AsyncMock(return_value=scopes())
     docs = {"c1": _with_mode(current(**{K["exact"]: True}), c1), "c2": _with_mode(current(**{K["exact"]: True}), c2)}
-    listed = [k for k, m in (("c1", c1), ("c2", c2)) if str(m).strip().lower() == "scopes"]      # what the switch route lists
-    flt, exact = await ServingPlanner(svc, StampCurrency(graph(docs)), default=default, config=config(listed)).plan_exact(ORG, USER)
+    flt, exact = await ServingPlanner(svc, StampCurrency(graph(docs)), default=default).plan_exact(ORG, USER)
     assert (flt.current if flt else set()) == served
     assert exact is (served == {"c1", "c2"}), "a connector read by the legacy filter makes the plan over-fetch"
 
 
-def config(listed: list[str] | None) -> MagicMock:
-    c = MagicMock()
-    c.get_config = AsyncMock(side_effect=lambda key, default=None, **k: (listed if key == SCOPES_CONNECTORS_KEY else default) if listed is not None else default)
-    return c
-
-
-@pytest.mark.parametrize("listed", [None, []], ids=["never switched", "switched back"])
-async def test_a_shadow_search_with_no_connector_switched_reads_nothing_but_one_config_key_per_interval(listed: list[str] | None) -> None:
+@pytest.mark.parametrize("mode", [None, "legacy", "inherit"], ids=["never switched", "switched back", "inherit"])
+async def test_a_shadow_search_with_no_connector_switched_reads_one_mode_query_per_interval_and_nothing_per_search(mode: str | None) -> None:
     svc = MagicMock()
     svc.scopes = AsyncMock(return_value=scopes())
-    g, cfg = graph({"c1": current(), "c2": current()}), config(listed)
-    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW, config=cfg)
+    g = graph({"c1": _with_mode(current(), mode), "c2": current()})
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW)
     for _ in range(200):
         assert await p.plan_exact(ORG, USER) == (None, False)
     svc.scopes.assert_not_awaited()
-    g.get_nodes_by_field_in.assert_not_awaited()
-    assert cfg.get_config.await_count == 1                # the next read is SWITCHED_TTL_SECONDS later
+    assert [c.args[1] for c in g.get_nodes_by_field_in.await_args_list] == [MODE_KEY]      # the next read is SWITCHED_TTL_SECONDS later
+
+
+async def test_the_switched_connectors_are_those_of_the_viewer_s_organisation_whose_document_says_scopes() -> None:
+    from app.services.permissions.currency import switched_connectors
+
+    g = MagicMock()
+    g.get_nodes_by_field_in = AsyncMock(return_value=[
+        {"_key": "c1", "orgId": ORG, MODE_KEY: "scopes"}, {"id": "c2", "orgId": ORG, MODE_KEY: "scopes"},
+        {"_key": "x1", "orgId": "other-org", MODE_KEY: "scopes"}, {"_key": "c3", MODE_KEY: "scopes"}])      # Neo4j and ArangoDB answer every org
+    assert await switched_connectors(g, ORG) == {"c1", "c2"}
+    assert g.get_nodes_by_field_in.await_args.args[1:3] == (MODE_KEY, ["scopes"])
 
 
 async def test_a_shadow_search_reads_only_the_documents_of_the_switched_connectors_and_an_opt_in_arrives_within_the_interval(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -123,18 +131,17 @@ async def test_a_shadow_search_reads_only_the_documents_of_the_switched_connecto
     monkeypatch.setattr(serving.time, "monotonic", lambda: clock[0])
     svc = MagicMock()
     svc.scopes = AsyncMock(return_value=scopes())
-    listed: list[str] = []
-    docs = {"c1": _with_mode(current(), "scopes"), "c2": current()}
+    docs = {"c1": current(), "c2": current()}
     g = graph(docs)
-    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW, config=config(listed))
+    p = ServingPlanner(svc, StampCurrency(g), default=AclFilterMode.SHADOW)
     assert await p.plan(ORG, USER) is None
-    listed.append("c1")                                   # the admin's switch lists c1
+    docs["c1"] = _with_mode(current(), "scopes")          # the admin's switch writes the document
     clock[0] += serving.SWITCHED_TTL_SECONDS
     assert await p.plan(ORG, USER) is None                # still inside the interval
     clock[0] += 1
     assert (await p.plan(ORG, USER)).current == {"c1"}
     assert g.get_nodes_by_field_in.await_args.args[2] == ["c1"]      # c2 is not switched: its document is not read
-    docs["c1"] = _with_mode(current(), "legacy")          # a rollback: the list still names c1, the document decides at once
+    docs["c1"] = _with_mode(current(), "legacy")          # a rollback: the remembered set still names c1, the document decides at once
     assert await p.plan(ORG, USER) is None
 
 
@@ -154,12 +161,12 @@ async def test_a_connector_switched_to_scopes_is_never_served_from_stamps_that_a
     svc = MagicMock()
     svc.scopes = AsyncMock(return_value=scopes(gated_apps=frozenset({"c1"})))
     docs = {"c1": _with_mode(current(**{**over, K["exact"]: True}), "scopes")}
-    p = ServingPlanner(svc, StampCurrency(graph(docs)), default=default, config=config(["c1"]))
+    p = ServingPlanner(svc, StampCurrency(graph(docs)), default=default)
     assert await p.plan_exact(ORG, USER) == (None, False), name
-    assert filter_state(docs["c1"], default, store_serves=True, listed=True)["effective"] == "legacy", name
+    assert filter_state(docs["c1"], default, store_serves=True)["effective"] == "legacy", name
     docs["c1"] = _with_mode(current(**{K["exact"]: True}), "scopes")
     assert (await p.plan(ORG, USER)).current == {"c1"}
-    assert filter_state(docs["c1"], default, store_serves=True, listed=True)["effective"] == "scopes"
+    assert filter_state(docs["c1"], default, store_serves=True)["effective"] == "scopes"
 
 
 async def test_the_shadow_comparison_reads_the_stamps_whatever_a_connector_s_mode() -> None:

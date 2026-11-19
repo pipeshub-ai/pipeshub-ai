@@ -20,15 +20,12 @@ from typing import TYPE_CHECKING
 
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
 
-from .currency import SCOPES_CONNECTORS_KEY
 from .errors import ViewerScopesUnavailable
 from .metrics import SCOPES_UNAVAILABLE, SERVING_PLAN
 from .mode import AclFilterMode
 from .scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
 
 if TYPE_CHECKING:
-    from app.config.configuration_service import ConfigurationService
-
     from .currency import StampCurrency
     from .scopes import ViewerScopes
     from .service import ViewerScopeService
@@ -43,8 +40,9 @@ PLAN_BUDGET_SECONDS = 0.25
 #: 34 vs 85. The cap is the count at which serving stays within about 3x of the legacy request on the small table and level on the large one.
 # shortcut: array overlap against the viewer's lists, fine to a few hundred ids; a probe against a hashed set per viewer removes the cap.
 MAX_SERVED_TERMS = 300
-#: How long a process trusts its read of the connectors switched to `scopes`, on a deployment whose default is not `scopes`: an admin's opt-in
-#: reaches search within this. A rollback is not delayed: a connector it names is still decided by its app document, read for each search.
+#: How long a process trusts its read of the connectors switched to `scopes` (their app documents), on a deployment whose default is not `scopes`:
+#: an admin's opt-in reaches search within this. A rollback is not delayed: a connector it names is still decided by its app document, read for
+#: each search.
 SWITCHED_TTL_SECONDS = 30.0
 
 
@@ -59,25 +57,22 @@ def stamp_filter(scopes: ViewerScopes, served: frozenset[str], *, defer: bool) -
 
 class ServingPlanner:
     def __init__(self, scopes: ViewerScopeService, currency: StampCurrency, budget_seconds: float = PLAN_BUDGET_SECONDS,
-                 default: AclFilterMode = AclFilterMode.SCOPES, config: ConfigurationService | None = None) -> None:
-        """``default``: the deployment's mode, which a connector whose own mode is `inherit` takes. ``config``: where the connectors switched to
-        `scopes` are listed, read only when ``default`` is not `scopes`."""
-        self._scopes, self._currency, self._budget, self._default, self._config = scopes, currency, budget_seconds, default, config
+                 default: AclFilterMode = AclFilterMode.SCOPES) -> None:
+        """``default``: the deployment's mode, which a connector whose own mode is `inherit` takes."""
+        self._scopes, self._currency, self._budget, self._default = scopes, currency, budget_seconds, default
         self._switched_by_org: dict[str, tuple[float, frozenset[str]]] = {}
 
     async def _switched(self, org_id: str) -> frozenset[str]:
-        """The connectors an admin switched to `scopes`, as this process last read them (at most ``SWITCHED_TTL_SECONDS`` ago). A read that fails or
-        is slow is none switched: the legacy request."""
+        """The connectors an admin switched to `scopes`, read from their app documents (no cache in between) at most every ``SWITCHED_TTL_SECONDS``.
+        A read that fails or is slow is none switched: the legacy request."""
         at, ids = self._switched_by_org.get(org_id, (float("-inf"), frozenset()))
         if time.monotonic() - at <= SWITCHED_TTL_SECONDS:
             return ids
-        raw: object = []
-        if self._config is not None:
-            try:
-                raw = await asyncio.wait_for(self._config.get_config(SCOPES_CONNECTORS_KEY, default=[], use_cache=True), self._budget)
-            except Exception as exc:
-                _logger.warning("switched connectors not read: %s", type(exc).__name__)
-        ids = frozenset(str(i) for i in raw) if isinstance(raw, list) else frozenset()
+        try:
+            ids = await asyncio.wait_for(self._currency.switched(org_id), self._budget)
+        except Exception as exc:
+            _logger.warning("switched connectors not read: %s", type(exc).__name__)
+            ids = frozenset()
         self._switched_by_org[org_id] = (time.monotonic(), ids)
         return ids
 

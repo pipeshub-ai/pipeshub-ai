@@ -48,24 +48,29 @@ if TYPE_CHECKING:
 #: The connector's own choice, set by an admin: `inherit` (the deployment's ``ACL_FILTER_MODE``), `legacy` or `scopes`.
 MODE_KEY = "aclFilterMode"
 MODES = ("inherit", "legacy", "scopes")
-#: Config key: the ids of the connectors whose own mode is `scopes`. Only a deployment whose default is not `scopes` reads it, so that a search
-#: that no admin switch can concern reads nothing; the app document stays the answer for each connector it names. Under /services/scopeFields/,
-#: which the PostgreSQL key-value grants already let the connectors service write and query read (platform.kv_may).
-SCOPES_CONNECTORS_KEY = "/services/scopeFields/scopesConnectors"
 
 
 def chosen_mode(app: Mapping[str, object] | None) -> str:
-    """Missing is `inherit`; a value that is not a mode (a hand edit) is `legacy`, so nothing unreadable ever turns the filter on."""
+    """Missing is `inherit`; a value that is not exactly a mode (a hand edit, "Scopes") is `legacy`, so nothing unreadable ever turns the filter on,
+    and every reader (the status, the plan, the switched-connector read, which matches the stored text) agrees on it."""
     raw = (app or {}).get(MODE_KEY)
     if raw is None or raw == "":
         return "inherit"
-    mode = str(raw).strip().lower()
-    return mode if mode in MODES else "legacy"
+    return raw if raw in MODES else "legacy"
 
 
 def effective_mode(app: Mapping[str, object] | None, default: AclFilterMode) -> AclFilterMode:
     chosen = chosen_mode(app)
     return default if chosen == "inherit" else AclFilterMode(chosen)
+
+
+async def switched_connectors(graph: IGraphDBProvider, org_id: str) -> frozenset[str]:
+    """The connectors of ``org_id`` whose own mode is `scopes`, from their app documents (one statement over the apps). Neo4j and ArangoDB answer
+    for every organisation, so the organisation is checked on each document. A value other than exactly `scopes` (a hand edit) is not found,
+    which leaves that connector on the classic check."""
+    docs = await graph.get_nodes_by_field_in(CollectionNames.APPS.value, MODE_KEY, ["scopes"], raise_on_error=True)
+    return frozenset(str(d.get("_key") or d.get("id")) for d in docs or []
+                     if isinstance(d, dict) and str(d.get("orgId") or "") == org_id and chosen_mode(d) == "scopes")
 
 
 def app_is_current(app: Mapping[str, object] | None) -> bool:
@@ -116,6 +121,9 @@ def app_is_exact(app: Mapping[str, object] | None) -> bool:
 class StampCurrency:
     def __init__(self, graph_provider: IGraphDBProvider) -> None:
         self._graph = graph_provider
+
+    async def switched(self, org_id: str) -> frozenset[str]:
+        return await switched_connectors(self._graph, org_id)
 
     async def served(self, connector_ids: Iterable[str]) -> frozenset[str]:
         return (await self.read(connector_ids))[0]
