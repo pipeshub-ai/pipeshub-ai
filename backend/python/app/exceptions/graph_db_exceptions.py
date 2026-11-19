@@ -91,8 +91,10 @@ class KnowledgeHubListingBusy(GraphDBError):
     """The listing could not get what it needs right now: a walk waited too long for a turn, or the database ran
     out of transaction memory because other requests held it. Nothing is wrong with the request; retry."""
 
-    def __init__(self, *, out_of_memory: bool = False) -> None:
+    def __init__(self, *, out_of_memory: bool = False, ran_s: float | None = None) -> None:
         self.out_of_memory = out_of_memory
+        # How long the statement itself ran before the database gave up, when that excludes a wait for its plan.
+        self.ran_s = ran_s
         super().__init__("The listing is busy right now. Please try again in a few seconds.")
 
 
