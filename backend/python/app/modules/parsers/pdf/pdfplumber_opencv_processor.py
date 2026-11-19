@@ -236,7 +236,22 @@ class PDFPlumberOpenCVProcessor:
             self.logger.debug(
                 f"Page {pd.page_number}: detected {len(pd.regions)} layout regions"
             )
+        self._log_table_hybrid(pages_data)
         return pages_data
+
+    def _log_table_hybrid(self, pages_data: list[ParsedPageData]) -> None:
+        """Shadow mode only: one line per document with the routed share and the reasons (no cell text)."""
+        reports = [r.table_hybrid for pd in pages_data for r in pd.regions if r.type == LayoutRegionType.TABLE and r.table_hybrid]
+        if not reports:
+            return
+        reasons: dict[str, int] = {}
+        for rep in reports:
+            for reason in rep.get("reasons", []):
+                reasons[reason] = reasons.get(reason, 0) + 1
+        self.logger.info(
+            "table hybrid shadow: tables=%d would_route=%d q_unknown=%d reasons=%s",
+            len(reports), sum(1 for r in reports if r.get("would_route")), sum(1 for r in reports if r.get("q") is None), dict(sorted(reasons.items())),
+        )
 
     async def create_blocks(
         self,

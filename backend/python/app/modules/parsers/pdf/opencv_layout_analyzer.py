@@ -74,6 +74,8 @@ class LayoutRegion:
     from_evidence: bool = False
     # TABLE only: the grid-quality score Q of the grid when read by the order of evidence (None otherwise).
     table_q: float | None = None
+    # TABLE only, shadow mode: the hybrid defect report of the emitted grid (table_hybrid.Report.log_fields()); never read by the emitters.
+    table_hybrid: dict[str, Any] | None = None
 
 
 @dataclass
@@ -3054,6 +3056,8 @@ def _apply_table_evidence(
     from app.modules.parsers.pdf import table_reconcile
 
     mode = table_reconcile.table_extraction_mode()
+    if mode == "shadow":
+        table_reconcile.shadow_hybrid(page, page_w, page_h, legacy, all_words)
     if mode == "legacy" or not boxes:
         return legacy, []
     pixel = [

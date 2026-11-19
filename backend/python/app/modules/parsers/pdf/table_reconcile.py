@@ -737,3 +737,26 @@ def apply(
         if d.kind == "not_table":
             suppressed.append(d.box)
     return out, suppressed
+
+
+def shadow_hybrid(page: Page, page_w: float, page_h: float, regions: Sequence[ola.LayoutRegion], words: list[dict[str, Any]]) -> None:
+    """Shadow mode: attach the hybrid defect report (Q, strong defects, would-route) to each emitted table region.
+    Nothing the emitters read changes. A region whose grid cannot be re-read has Q unknown and is routed."""
+    from app.modules.parsers.pdf import table_hybrid
+
+    for region in regions:
+        if region.type != ola.LayoutRegionType.TABLE or not region.table_grid:
+            continue
+        try:
+            cand = legacy_candidate(page, region, page_w, page_h)
+            if cand is None:
+                report = table_hybrid.unknown_report()
+            else:
+                topo = table_hybrid.topology_from_rows(
+                    cand.rows, [[(x0, x1) for x0, x1, _ in row] for row in cand.cells], [[c is not None for c in row] for row in cand.grid],
+                )
+                topo_words = [w for w in words if _in_box(w, cand.bbox)]
+                report = table_hybrid.evaluate(topo_words, topo)
+            region.table_hybrid = report.log_fields()
+        except Exception:  # shadow never changes the parse
+            logger.warning("Hybrid defect report failed for a table; skipped", exc_info=True)
