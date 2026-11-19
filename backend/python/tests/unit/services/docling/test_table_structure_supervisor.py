@@ -208,7 +208,11 @@ async def test_a_child_that_ignores_terminate_is_killed_after_the_grace_period(m
         await s.run_table(spec("a"), PNG)
         pid = s.child_pid
         t0 = time.monotonic()
-        assert (await s.run_table(spec("sleep-30"), PNG)) == {"status": "error", "err": "timeout"}
+        try:
+            result = await asyncio.wait_for(s.run_table(spec("sleep-30"), PNG), 10)  # bounded: a missing kill fails here, fast
+        except TimeoutError:
+            pytest.fail("the child that ignores SIGTERM was never killed")
+        assert result == {"status": "error", "err": "timeout"}
         assert time.monotonic() - t0 < 8 and not alive(pid)  # SIGTERM is ignored: only the kill after the grace ends it
     finally:
         monkeypatch.delenv("PIPESHUB_TABLE_FAKE_IGNORE_TERM")

@@ -191,3 +191,12 @@ def test_a_page_whose_crop_box_is_not_its_media_box_is_measured_and_the_box_land
     assert rec["dx"] == pytest.approx(18.0) and rec["dy"] == pytest.approx(0.94, abs=0.2)
     crop = cv2.imdecode(np.frombuffer((Path(spool) / rec["png"]).read_bytes(), np.uint8), cv2.IMREAD_COLOR)
     assert crop.mean() < 60  # the crop is the black block (the white text is a small share), not the margin beside it
+    # The box and the tokens are shifted together: every word's token lands inside the crop's box in the resized page.
+    toks = flow._tokens(rec)
+    sf, tb = rec["scale_factor"], rec["table_bbox"]
+    assert len(toks) == len(rec["words"]) >= 12
+    for t, w in zip(toks, rec["words"], strict=True):
+        assert t["bbox"][0] == pytest.approx((w[1] - rec["dx"]) * 2) and t["bbox"][1] == pytest.approx((w[2] - rec["dy"]) * 2)
+    for t in toks:
+        x0, y0, x1, y1 = (v * sf for v in t["bbox"])
+        assert tb[0] - 1 <= x0 and x1 <= tb[2] + 1 and tb[1] - 1 <= y0 and y1 <= tb[3] + 1, (t, tb)
