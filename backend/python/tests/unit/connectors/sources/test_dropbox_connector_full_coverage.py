@@ -11,9 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from dropbox.exceptions import ApiError
-from fastapi import HTTPException
-from dropbox.files import DeletedMetadata, FileMetadata, FolderMetadata, ListFolderResult
+from dropbox.files import (
+    DeletedMetadata,
+    FileMetadata,
+    FolderMetadata,
+    ListFolderResult,
+)
 from dropbox.team_log import EventCategory
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -22,6 +27,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_processor.source_accounts import _bucket
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -45,6 +51,9 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import Permission, PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +293,7 @@ def connector(mock_logger, mock_data_entities_processor,
             scope="personal",
             created_by="test-user-id",
         )
+    conn.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
     conn.data_source = AsyncMock()
@@ -1429,6 +1439,38 @@ class TestHandleGroupChangeMemberRoleEvent:
 # _update_user_group_permission
 # ===========================================================================
 class TestUpdateUserGroupPermission:
+    @pytest.fixture(autouse=True)
+    def _accounts(self, connector) -> None:
+        stub_source_accounts(connector)
+
+    async def test_a_reused_address_is_updated_only_for_the_member_holding_it(self, connector) -> None:
+        """The event log can still list a change for the earlier account of an address."""
+        connector.source_accounts.reused = {"user@test.com": "dbmid:new"}
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="ug1"))
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
+
+        for member, written in (("dbmid:old", False), (None, False), ("dbmid:new", True)):
+            assert await connector._update_user_group_permission(
+                "g1", "user@test.com", PermissionType.OWNER, member
+            ) is written
+        connector.data_entities_processor.upsert_permission_edge.assert_called_once()
+
+    async def test_a_role_change_for_a_deleted_accounts_address_is_written_only_for_the_linked_account(self, connector) -> None:
+        """The source still lists a deleted account with the address and no listing has shown it since: an event
+        naming the deleted account changes nothing, one naming the linked account does."""
+        connector.source_accounts._deleted = {_bucket("user@test.com"): {"user@test.com": "dbmid:gone"}}
+        connector.source_accounts._linked = {_bucket("user@test.com"): {"user@test.com": "dbmid:linked"}}
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        connector.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="ug1"))
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
+
+        for member, written in (("dbmid:gone", False), ("dbmid:linked", True)):
+            assert await connector._update_user_group_permission(
+                "g1", "user@test.com", PermissionType.OWNER, member
+            ) is written
+        connector.data_entities_processor.upsert_permission_edge.assert_called_once()
+
     async def test_user_not_found(self, connector):
         connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
 
@@ -1515,7 +1557,7 @@ class TestCreateAndSyncSingleRecordGroup:
     async def test_success(self, connector):
         user_membership = MagicMock()
         user_membership.access_type = MagicMock(_tag="editor")
-        user_membership.user = MagicMock(email="u@t.com")
+        user_membership.user = MagicMock(email="u@t.com", account_id="dbid:u", team_member_id="dbmid:u")
 
         group_membership = MagicMock()
         group_membership.access_type = MagicMock(_tag="viewer")
@@ -1546,7 +1588,7 @@ class TestCreateAndSyncSingleRecordGroup:
     async def test_members_pagination(self, connector):
         user1 = MagicMock()
         user1.access_type = MagicMock(_tag="owner")
-        user1.user = MagicMock(email="u1@t.com")
+        user1.user = MagicMock(email="u1@t.com", account_id="dbid:u1", team_member_id="dbmid:u1")
 
         page1_data = MagicMock()
         page1_data.users = [user1]
@@ -1556,7 +1598,7 @@ class TestCreateAndSyncSingleRecordGroup:
 
         user2 = MagicMock()
         user2.access_type = MagicMock(_tag="editor")
-        user2.user = MagicMock(email="u2@t.com")
+        user2.user = MagicMock(email="u2@t.com", account_id="dbid:u2", team_member_id="dbmid:u2")
 
         page2_data = MagicMock()
         page2_data.users = [user2]

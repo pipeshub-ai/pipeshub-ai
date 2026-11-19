@@ -92,7 +92,10 @@ from app.connectors.sources.dropbox.team_directory import read_team_members, wit
 from app.connectors.sources.dropbox.weblinks import WebLinks
 from app.connectors.sources.dropbox.shared_folders import (
     SharedFolder,
+    event_member_id,
     folder_grants,
+    member_grant_id,
+    outside_members,
     outside_namespace,
     parents_first,
     plan_shared_folders,
@@ -355,6 +358,7 @@ class DropboxConnector(BaseConnector):
 
         self.connector_name = Connectors.DROPBOX
         self.connector_id = connector_id
+        self.source_accounts = data_entities_processor.source_accounts(connector_id)
 
 
 
@@ -1028,7 +1032,7 @@ class DropboxConnector(BaseConnector):
                         continue
 
                     permissions.append(Permission(
-                        external_id=user_info.account_id,
+                        external_id=member_grant_id(user_info),
                         email=email,
                         type=permission_type,
                         entity_type=EntityType.USER
@@ -1071,6 +1075,9 @@ class DropboxConnector(BaseConnector):
             self.logger.warning(f"Error converting Dropbox permissions for {file_or_folder_id}: {e}")
             return None
 
+        outside = outside_members(getattr(members_result.data, "users", None) or [])
+        if outside and not await self.source_accounts.before_grants(outside):
+            raise RuntimeError(f"The stored users could not be read; {file_or_folder_id} keeps its grants")
         return DropboxGrants(permissions, covered_emails=covered_emails)
 
 
@@ -1368,6 +1375,8 @@ class DropboxConnector(BaseConnector):
             groups.extend(response.data.groups)
             invitees.extend(response.data.invitees)
             cursor = _next_cursor(response.data)
+        if (outside := outside_members(users)) and not await self.source_accounts.before_grants(outside):
+            raise RuntimeError(f"The stored users could not be read; shared folder {folder_id} keeps its grants")
         return folder_grants(users, groups, invitees)
 
     async def _refresh_shared_folder(self, folder_id: str, event_member_id: str) -> None:
@@ -2074,7 +2083,7 @@ class DropboxConnector(BaseConnector):
 
     async def _handle_group_membership_event(self, event, event_type: str) -> None:
         group_id, group_name = None, None
-        member_email, member_name = None, None
+        member_email, member_name, member_id = None, None, None
 
         # 1. Extract common information (group and user details)
         try:
@@ -2087,6 +2096,7 @@ class DropboxConnector(BaseConnector):
                     user_info = participant.get_user()
                     member_email = user_info.email
                     member_name = user_info.display_name
+                    member_id = event_member_id(user_info)
         except Exception as e:
             self.logger.error(f"Failed to parse participants for event {event_type}: {e}", exc_info=True)
             return
@@ -2109,7 +2119,8 @@ class DropboxConnector(BaseConnector):
                 external_group_id=group_id,
                 user_email=member_email,
                 permission_type=permission_type,
-                connector_id=self.connector_id
+                connector_id=self.connector_id,
+                source_user_id=member_id,
             )
 
         elif event_type == "group_remove_member":
@@ -2347,6 +2358,7 @@ class DropboxConnector(BaseConnector):
         group_id = None
         group_name = None
         user_email = None
+        member_id = None
 
         for participant in event.participants:
             if participant.is_group():
@@ -2356,6 +2368,7 @@ class DropboxConnector(BaseConnector):
             elif participant.is_user():
                 user_info = participant.get_user()
                 user_email = user_info.email
+                member_id = event_member_id(user_info)
 
         # Extract new role from event details
         new_is_owner = None
@@ -2389,7 +2402,7 @@ class DropboxConnector(BaseConnector):
 
         try:
             success = await self._update_user_group_permission(
-                group_id, user_email, new_permission_type
+                group_id, user_email, new_permission_type, member_id
             )
 
             if success:
@@ -2411,14 +2424,22 @@ class DropboxConnector(BaseConnector):
         self,
         group_id: str,
         user_email: str,
-        new_permission_type: PermissionType
+        new_permission_type: PermissionType,
+        member_id: str | None = None,
     ) -> bool:
-        """Update a user's permission level within a group."""
+        """Update a user's permission level within a group. ``member_id`` is the team member the event names: for an
+        address another account held before, only the account holding it now is updated."""
         try:
             user = await self.data_entities_processor.get_user_by_email(user_email)
             if not user:
                 self.logger.warning(
                     f"Cannot update group permission: User with email {user_email} not found"
+                )
+                return False
+            await self.source_accounts.ensure_loaded([user_email])
+            if not self.source_accounts.admits(user_email, member_id):
+                self.logger.info(
+                    "Skipped a group role change for user %s: the event names an earlier account of the address", user.id
                 )
                 return False
 
@@ -2567,6 +2588,8 @@ class DropboxConnector(BaseConnector):
             }
 
             permissions_list = []
+            if (outside := outside_members(all_users_list)) and not await self.source_accounts.before_grants(outside):
+                raise RuntimeError(f"The stored users could not be read; team folder {folder_id} keeps its grants")
 
             for user_info in all_users_list:
                 access_level_tag = user_info.access_type._tag
@@ -2574,6 +2597,7 @@ class DropboxConnector(BaseConnector):
 
                 user_permission = Permission(
                     email=user_info.user.email,
+                    external_id=member_grant_id(user_info.user),
                     type=permission_type,
                     entity_type=EntityType.USER
                 )

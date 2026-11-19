@@ -19,6 +19,7 @@ import base64
 import copy
 import itertools
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -29,6 +30,11 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
 
+from app.connectors.core.base.data_processor.source_accounts import (
+    SourceAccounts,
+    _bucket,
+    source_accounts_key,
+)
 from app.models.entities import Record
 from app.models.permission import EntityType, PermissionType
 from app.services.graph_db.common.record_visibility import (
@@ -36,6 +42,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     matches_visibility,
 )
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     import pytest
@@ -316,6 +323,24 @@ class FakeEntitiesProcessor:
         self.deleted_groups: list[str] = []
         # The record ids the running full sync wrote or noted kept; None when no full sync runs.
         self.full_sync_seen: set[str] | None = None
+        self._accounts: dict[str, SourceAccounts] = {}
+
+    def source_accounts(self, connector_id: str) -> SourceAccounts:
+        """The real per-address account state, kept in memory: no address changed hands unless ``reuse_address``."""
+        if connector_id not in self._accounts:
+            self._accounts[connector_id] = SourceAccounts(self, connector_id, InMemoryConfigService(), logging.getLogger("fake"))
+        return self._accounts[connector_id]
+
+    def reuse_address(self, connector_id: str, email: str, holder: str) -> None:
+        """Stage what the processor saves when ``email`` passed from another account to the account ``holder``."""
+        accounts = self.source_accounts(connector_id)
+        bucket = _bucket(email.lower())
+        accounts.config_service.values[source_accounts_key(connector_id, bucket)] = {
+            "linked": {email.lower(): holder}, "reused": {email.lower(): holder},
+        }
+        # As the processor's own check on linking does, the next read sees the saved state.
+        accounts._read.discard(bucket)
+        accounts.loaded = False
 
     def _check_write(self, external_id: str | None) -> None:
         if external_id in self.fail_writes_for:
@@ -439,6 +464,13 @@ class FakeEntitiesProcessor:
             ),
             None,
         )
+
+    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+                                   *, raise_on_error: bool = False) -> list[dict[str, Any]]:
+        """Stored record groups as the graph returns them, matched field by field."""
+        assert collection == "recordGroups", collection
+        docs = [group.to_arango_base_record_group() for group in self.record_groups.values()]
+        return [d for d in docs if all(d.get(k) == v for k, v in filters.items())]
 
     async def get_record_group_by_external_id(self, connector_id: str, external_group_id: str) -> Any | None:
         group = self.record_groups.get(external_group_id)
@@ -714,6 +746,15 @@ class FakeEntitiesProcessor:
         self.user_groups.pop(external_group_id, None)
         self.deleted_groups.append(external_group_id)
         return True
+
+    async def get_app_user_links(self, connector_id: str) -> list[Any]:
+        return [SimpleNamespace(id=email, email=email, source_user_id=u.source_user_id) for email, u in self.app_users.items()]
+
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        return list(self.app_users.values())
+
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        return SimpleNamespace(id=email.lower(), email=email)
 
     async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
         """Drop the user's own grants on records and record groups, and their group memberships."""

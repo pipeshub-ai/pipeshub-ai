@@ -87,3 +87,47 @@ async def test_a_link_already_rewritten_to_the_new_account_still_takes_the_old_a
 
     assert "ben" not in await drive.readers("Plans") and "ben" not in await drive.readers("plan.pdf")
     assert await drive.readers("budget.pdf") == {"ana", "cal"}
+
+
+async def test_a_grant_naming_the_new_accounts_other_id_is_written_and_the_old_accounts_is_not(drive: Drive) -> None:
+    """A source that names a grantee by another id than the one users are listed with (Google Drive's permissionId):
+    the connector notes the new holder's other id, and only a grant naming it reaches the user."""
+    await drive.write()
+    await _ben_reused(drive)
+    await drive.processor.source_accounts(drive.connector_id).note_other_ids(
+        {drive.emails["ben"]: ("u-ben-new", "perm-ben-new")}
+    )
+    owner = _grant(drive.emails["ana"], "u-ana", PermissionType.OWNER)
+    plans = drive.records["Plans"]
+
+    await drive.processor.on_updated_record_permissions(plans, [owner, _grant(drive.emails["ben"], "perm-ben-old")])
+    assert await drive.readers("Plans") == {"ana"}, "the deleted account's permission id"
+
+    await drive.processor.on_updated_record_permissions(plans, [owner, _grant(drive.emails["ben"], "perm-ben-new")])
+    assert await drive.readers("Plans") == {"ana", "ben"}, "the new account's permission id"
+    assert await drive.readers("budget.pdf") == {"ana", "cal"}
+
+
+async def test_a_member_added_by_an_event_is_written_only_for_the_account_the_event_names(drive: Drive) -> None:
+    """An event log (Dropbox's) may still list an addition for the deleted account; only the account holding the
+    address now is added."""
+    await drive.write()
+    group = AppUserGroup(source_user_group_id=f"g:{_suffix()}", app_name=Connectors.ONEDRIVE,
+                         connector_id=drive.connector_id, name="Planners")
+    await drive.processor.on_new_user_groups([(group, [_member(drive, "dee", "u-dee")])])
+    budget = drive.records["budget.pdf"]
+    owner = _grant(drive.emails["ana"], "u-ana", PermissionType.OWNER)
+    to_group = Permission(external_id=group.source_user_group_id, type=PermissionType.READ, entity_type=EntityType.GROUP)
+    await drive.processor.on_updated_record_permissions(budget, [owner, to_group])
+    await _ben_reused(drive)
+
+    async def added(source_id: str | None) -> set[str]:
+        await drive.processor.on_user_group_member_added(
+            group.source_user_group_id, drive.emails["ben"], PermissionType.READ, drive.connector_id,
+            source_user_id=source_id,
+        )
+        return await drive.readers("budget.pdf")
+
+    assert await added("u-ben") == {"ana", "dee"}, "an event naming the deleted account"
+    assert await added(None) == {"ana", "dee"}, "an event naming no account"
+    assert await added("u-ben-new") == {"ana", "ben", "dee"}, "the new account"

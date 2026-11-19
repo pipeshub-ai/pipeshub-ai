@@ -42,7 +42,6 @@ from app.connectors.sources.dropbox.connector import (
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType, RecordType
 
-
 # ===========================================================================
 # Helpers
 # ===========================================================================
@@ -406,6 +405,8 @@ class TestCreateAndSyncSingleRecordGroup:
 
         user_member = MagicMock()
         user_member.user.email = "u@test.com"
+        user_member.user.account_id = "dbid:u"
+        user_member.user.team_member_id = "dbmid:u"
         user_member.access_type._tag = "editor"
 
         group_member = MagicMock()

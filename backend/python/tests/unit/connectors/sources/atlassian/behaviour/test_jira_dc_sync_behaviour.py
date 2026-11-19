@@ -366,7 +366,7 @@ class TestFullSync:
             (EntityType.GROUP, "devs"),
             (EntityType.GROUP, "jira-software-users"),
             (EntityType.ROLE, "ENG_10002"),
-            (EntityType.USER, "bob@example.com"),
+            (EntityType.USER, "bob-key"),       # the user key names the account
             (EntityType.ROLE, "ENG_projectLead"),
         }
         assert len(acl) == 5, "duplicate grants collapse; non-browse grants (EDIT_ISSUES to admins) are ignored"
@@ -2022,7 +2022,7 @@ class TestUnfinishedUserRead:
         connector, _ = await make_connector(db, store)
         await connector.run_sync()
         before = acl_summary(db.record_group_permissions["10000"])
-        assert ("EntityType.USER", "PermissionType.READ", None, "carol@example.com") in before
+        assert ("EntityType.USER", "PermissionType.READ", "carol-key", "carol@example.com") in before
 
         # The same project (id 10000) now has the key NEW.
         jira.on("GET", f"{API}/project", json_response([{"id": "10000", "key": "NEW", "name": "Engineering"}]))

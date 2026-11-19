@@ -443,6 +443,7 @@ class TestJiraDataCenter:
         await JiraDataCenterConnector._register_authenticated_identity(conn)
 
         assert _registered(conn) == ("dev@corp.com", "JIRAUSER10100")
+        assert conn._authenticated_user_key == "JIRAUSER10100"     # names the account on its fallback grants
 
     async def test_a_refused_read_never_reaches_the_link(self) -> None:
         conn = self._conn(HttpStatusCode.UNAUTHORIZED.value)

@@ -4175,10 +4175,12 @@ class TestFallbackPermissionsForForbiddenSchemeCloud:
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
         conn._authenticated_jira_email = "dev@jira.com"
+        conn._authenticated_jira_account_id = "acc-dev"
         result = await conn._fallback_permissions_for_forbidden_scheme("PROJ", 403, "permission scheme")
         assert len(result) == 1
         assert result[0].entity_type == EntityType.USER
         assert result[0].email == "dev@jira.com"
+        assert result[0].external_id == "acc-dev"     # names the account, for a re-used address
         assert result[0].type == PermissionType.READ
 
     @pytest.mark.asyncio

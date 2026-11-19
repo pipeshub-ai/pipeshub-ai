@@ -15,6 +15,9 @@ from app.connectors.sources.google.common.impersonation import (
     MAX_IMPERSONATION_CANDIDATES,
 )
 from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import (
+    stub_source_accounts,
+)
 
 
 @pytest.fixture
@@ -29,6 +32,7 @@ def connector() -> GoogleDriveTeamConnector:
             scope="team",
             created_by="admin",
         )
+        stub_source_accounts(conn)
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
     return conn

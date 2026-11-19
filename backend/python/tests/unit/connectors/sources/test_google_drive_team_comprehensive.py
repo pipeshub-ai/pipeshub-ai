@@ -26,6 +26,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from tests.unit.connectors.sources.microsoft.source_accounts_stub import stub_source_accounts
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +144,7 @@ def connector():
             scope="personal",
             created_by="test-user-id",
         )
+        stub_source_accounts(c)
         c.admin_data_source = AsyncMock()
         c.drive_data_source = AsyncMock()
         c.sync_filters = FilterCollection()

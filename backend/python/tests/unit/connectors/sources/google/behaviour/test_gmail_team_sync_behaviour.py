@@ -172,6 +172,62 @@ async def test_each_mailbox_is_read_as_its_owner_and_only_its_owner_gets_access(
     assert all(req.identity == BOB for req in ws.http.requests if "/users/bob@example.com/" in req.path)
 
 
+async def test_the_new_holder_of_a_reused_address_gets_its_own_mailbox_and_never_the_earlier_accounts(ws: Harness) -> None:
+    """Alice's address passed to a new account. The new account's mail goes to groups keyed by its Directory id,
+    granted to that id; the earlier account's mailbox, which nobody can read any more, is removed."""
+    ws.gmail.deliver(ALICE, "old-mail", sender=OUTSIDER)
+    await ws.sync()
+    new_id = ws.directory.users[ALICE].user_id
+    ws.records.reuse_address(CONNECTOR_ID, ALICE, new_id)
+    ws.records.record_group_permissions[f"mailbox:{ALICE}"] = []        # the processor stripped the earlier grants
+    ws.gmail.add_mailbox(ALICE)                                           # the new account's own, new mailbox
+    ws.gmail.deliver(ALICE, "new-mail", sender=OUTSIDER)
+
+    await ws.sync()
+
+    owned = f"mailbox:{ALICE}#{new_id}"
+    assert [(p.email, p.external_id, p.type) for p in ws.records.record_group_permissions[owned]] == [
+        (ALICE, new_id, PermissionType.OWNER)
+    ]
+    assert ws.records.records["new-mail"].external_record_group_id == f"{ALICE}#{new_id}:INBOX"
+    assert ws.records.record_groups[f"{ALICE}#{new_id}:INBOX"].parent_external_group_id == owned
+    # The earlier account's mailbox goes, with its labels and mail (the processor deletes the subtree); the new
+    # holder's mailbox is not touched, and the next run removes nothing more.
+    assert ws.records.deleted_groups == [f"mailbox:{ALICE}"]
+    assert owned in ws.records.record_groups
+    await ws.sync()
+    assert ws.records.deleted_groups == [f"mailbox:{ALICE}"]
+    assert GoogleGmailTeamConnector._owner_email_from_group(f"{ALICE}#{new_id}:INBOX") == ALICE
+    assert GoogleGmailTeamConnector._owner_email_from_group(owned) == ALICE
+
+
+async def test_a_mailbox_of_a_middle_account_goes_even_when_the_saved_state_is_lost(ws: Harness) -> None:
+    """Alice's address passed to a second account and then a third. Whatever the sync point says, every mailbox the
+    connector stored for the address except the current holder's is removed."""
+    ws.gmail.deliver(ALICE, "first-mail", sender=OUTSIDER)
+    await ws.sync()
+    ws.records.reuse_address(CONNECTOR_ID, ALICE, "second-account")
+    ws.gmail.add_mailbox(ALICE)
+    ws.gmail.deliver(ALICE, "second-mail", sender=OUTSIDER)
+    await ws.sync()
+    assert f"mailbox:{ALICE}#second-account" in ws.records.record_groups
+
+    for key in [k for k in ws.sync_points.sync_points if k.endswith("mailboxes")]:
+        del ws.sync_points.sync_points[key]                               # the saved mailbox state is lost
+    third = ws.directory.users[ALICE].user_id
+    ws.records.reuse_address(CONNECTOR_ID, ALICE, third)
+    ws.gmail.add_mailbox(ALICE)
+    ws.gmail.deliver(ALICE, "third-mail", sender=OUTSIDER)
+    await ws.sync()
+
+    mailboxes = {g for g in ws.records.record_groups if g.startswith("mailbox:")}
+    assert f"mailbox:{ALICE}#second-account" not in mailboxes
+    assert f"mailbox:{ALICE}" not in mailboxes
+    assert f"mailbox:{ALICE}#{third}" in mailboxes
+    assert f"mailbox:{BOB}" in mailboxes                                  # never re-used: untouched
+
+
+
 async def test_a_user_the_service_account_may_not_impersonate_does_not_stop_the_others(ws: Harness) -> None:
     ws.gmail.deliver(ALICE, "a-1", sender=OUTSIDER)
     ws.gmail.deliver(BOB, "b-1", sender=OUTSIDER)

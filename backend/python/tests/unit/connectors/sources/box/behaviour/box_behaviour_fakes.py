@@ -22,7 +22,9 @@ import requests
 from requests.adapters import BaseAdapter
 from requests.structures import CaseInsensitiveDict
 
+from app.connectors.core.base.data_processor.source_accounts import SourceAccounts
 from app.services.graph_db.common.record_visibility import is_live_record
+from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -490,8 +492,26 @@ class FakeBoxRecordsDb:
             stored = self.app_users.get(user.email.lower())
             self.app_users[user.email.lower()] = user.model_copy(update={"id": stored.id}) if stored else user
 
-    async def get_all_app_users(self, connector_id: str) -> list[Any]:
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.app_users.values())
+
+    def source_accounts(self, connector_id: str) -> SourceAccounts:
+        """The real per-address account check, kept in memory."""
+        if not hasattr(self, "_accounts"):
+            self._accounts = SourceAccounts(self, connector_id, InMemoryConfigService(), logging.getLogger("fake"))
+        return self._accounts
+
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        return SimpleNamespace(id=email.lower(), email=email)
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Drop the user's own grants on this connector's records."""
+        removed = 0
+        for stored in self.permissions.values():
+            for key in [k for k, p in stored.items() if (getattr(p, "email", None) or "").lower() == user_email.lower()]:
+                del stored[key]
+                removed += 1
+        return removed
 
     async def get_app_user_links(self, connector_id: str) -> list[Any]:
         return [SimpleNamespace(id=u.id, source_user_id=u.source_user_id, email=u.email) for u in self.app_users.values()]

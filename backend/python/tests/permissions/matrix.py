@@ -231,7 +231,7 @@ ANCHORS: dict[str, str] = {
     'rss': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'web': '.with_permission_model(PermissionModel.APP_LEVEL)',
     'box': 'entity_type=EntityType.ORG,',
-    'dropbox': 'grants.append(Permission(external_id=user.account_',
+    'dropbox': 'grants.append(Permission(external_id=member_grant_',
     'salesforce': 'inherit_permissions=False,',
     'servicenow/servicenow': 'article_record.inherit_permissions = inherit',
     'zendesk': 'inherit_permissions=False,',

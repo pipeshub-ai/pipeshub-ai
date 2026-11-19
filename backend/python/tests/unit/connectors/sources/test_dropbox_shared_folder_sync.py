@@ -34,6 +34,7 @@ def connector() -> DropboxConnector:
             scope="team",
             created_by="admin",
         )
+    conn.source_accounts = MagicMock(before_grants=AsyncMock(return_value=True))  # the account check has its own tests
     conn.sync_filters = FilterCollection()
     conn.indexing_filters = FilterCollection()
     conn.data_source = AsyncMock()
