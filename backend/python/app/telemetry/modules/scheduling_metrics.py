@@ -154,12 +154,16 @@ class _WaitsOwner:
     this registration?). By id alone, a dropped owner's queued notice took
     away the count of a new owner that got the same id before the drain."""
 
-    __slots__ = ("count", "ref", "token")
+    __slots__ = ("count", "finalizer", "ref", "token")
 
-    def __init__(self, owner: object, token: int, count: int) -> None:
+    def __init__(self, owner: object, token: int, count: int, finalizer: weakref.finalize) -> None:
         self.ref = weakref.ref(owner)
         self.token = token
         self.count = count
+        # Detached by a stop: a consumer stopped and started again would
+        # otherwise gather one finalizer, and one notice at collection, per
+        # restart.
+        self.finalizer = finalizer
 
 
 _record_waits_by_owner: dict[str, dict[int, _WaitsOwner]] = {}
@@ -178,8 +182,8 @@ def record_record_waits(broker: str, owner: object, count: int) -> None:
         registered = owners.get(id(owner))
         if registered is None or registered.ref() is not owner:
             token = next(_record_waits_tokens)
-            weakref.finalize(owner, _record_waits_collected.append, (broker, id(owner), token))
-            owners[id(owner)] = _WaitsOwner(owner, token, count)
+            finalizer = weakref.finalize(owner, _record_waits_collected.append, (broker, id(owner), token))
+            owners[id(owner)] = _WaitsOwner(owner, token, count, finalizer)
         else:
             registered.count = count
         _publish_record_waits_locked(broker)
@@ -190,6 +194,7 @@ def forget_record_waits(broker: str, owner: object) -> None:
         owners = _record_waits_by_owner.setdefault(broker, {})
         registered = owners.get(id(owner))
         if registered is not None and registered.ref() is owner:
+            registered.finalizer.detach()
             del owners[id(owner)]
         _publish_record_waits_locked(broker)
 

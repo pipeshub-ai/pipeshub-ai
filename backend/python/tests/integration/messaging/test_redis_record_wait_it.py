@@ -163,3 +163,38 @@ class TestALongRunHoldsItsRecord:
         assert await redis_client.xpending(stream, group) == {
             "pending": 0, "min": None, "max": None, "consumers": []
         }
+
+
+class TestATrimmedWaiterIsNotKept:
+    async def test_a_waiting_entry_whose_body_is_gone_is_not_confirmed_by_the_refresh(
+        self, redis_available: tuple[str, int], redis_client: Redis, stream: str, unique_suffix: str
+    ) -> None:
+        """On Redis before 7, XCLAIM JUSTID still returns an id whose entry
+        was trimmed or deleted (Redis 7 drops it from the pending list): the
+        refresh must not keep such a wait."""
+        host, port = redis_available
+        group = f"it-trimmed-{unique_suffix}"
+        consumer = IndexingRedisStreamsConsumer(
+            logging.getLogger(LOGGER_NAME),
+            RedisStreamsConfig(
+                host=host, port=port, client_id=f"{group}-client", group_id=group,
+                topics=[stream], batch_size=10, block_ms=200, claim_min_idle_ms=3_000,
+            ),
+        )
+        consumer.redis = Redis(host=host, port=port, decode_responses=True)
+        try:
+            await redis_client.xgroup_create(stream, group, id="0", mkstream=True)
+            gone = await _add(redis_client, stream, "R", 1)
+            kept = await _add(redis_client, stream, "R", 2)
+            await redis_client.xreadgroup(group, consumer.consumer_name, {stream: ">"}, count=10)
+            assert consumer._claim_record("R")
+            assert not consumer._claim_record_or_wait("R", stream, gone)
+            assert not consumer._claim_record_or_wait("R", stream, kept)
+            await redis_client.xdel(stream, gone)
+
+            consumer._last_ownership_refresh = 0.0
+            await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
+
+            assert list(consumer._record_waits) == [(stream, kept)]
+        finally:
+            await consumer.redis.aclose()

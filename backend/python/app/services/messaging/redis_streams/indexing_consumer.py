@@ -193,12 +193,18 @@ return 1
 # Resets the idle time of the given entries still pending under this
 # consumer, and only those (JUSTID, so no delivery is counted). Returns the
 # ids refreshed: an id it leaves out was acknowledged, trimmed, or claimed by
-# a peer, which keeps it.
+# a peer, which keeps it. With ARGV[3] = '1' an entry whose body is gone is
+# left out too: before Redis 7, XCLAIM still returns such an id (7 drops it
+# from the pending list), and a wait refreshed on one would be kept for as
+# long as its record's run, holding a wait place for an entry with nothing
+# left to process. Own-pending recovery acknowledges it instead.
 _REFRESH_OWN_SCRIPT = """
 local args = {KEYS[1], ARGV[1], ARGV[2], 0}
-for i = 3, #ARGV do
+for i = 4, #ARGV do
     local entry = redis.call('XPENDING', KEYS[1], ARGV[1], ARGV[i], ARGV[i], 1)[1]
-    if entry and entry[2] == ARGV[2] then
+    if entry and entry[2] == ARGV[2] and (
+        ARGV[3] ~= '1' or #redis.call('XRANGE', KEYS[1], ARGV[i], ARGV[i], 'COUNT', 1) > 0
+    ) then
         args[#args + 1] = ARGV[i]
     end
 end
@@ -1207,7 +1213,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         woken: tuple[str, str] | None = None
         with self._in_flight_lock:
             busy = record_id in self._in_flight_record_ids
-            oldest = self.__oldest_local_waiter_locked(record_id) if not busy else None
+            oldest = self.__oldest_waiter_locked(record_id) if not busy else None
             # A newer event for the record (read fresh, or a lease wait come
             # due) must not overtake the older ones waiting for it.
             behind_older = oldest is not None and oldest != key and (
@@ -1374,6 +1380,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     def __oldest_local_waiter_locked(self, record_id: str) -> tuple[str, str] | None:
         waiters = self._record_waiters.get(record_id)
         return waiters.local[0][2] if waiters is not None and waiters.local else None
+
+    def __oldest_waiter_locked(self, record_id: str) -> tuple[str, str] | None:
+        """The record's oldest waiting entry, lease waits included: a newer
+        event must not run ahead of an older one only because that one waits
+        on a lease held elsewhere. Lease waits are few, so they are compared
+        directly."""
+        waiters = self._record_waiters.get(record_id)
+        if waiters is None:
+            return None
+        candidates = [waiters.local[0][2]] if waiters.local else []
+        candidates.extend(key for key in waiters.keys if self._record_waits[key].on_lease)
+        return min(candidates, key=lambda key: (_entry_order(key[1]), key[0]), default=None)
 
     def __has_active_waiter_locked(self, record_id: str) -> bool:
         waiters = self._record_waiters.get(record_id)
@@ -2335,9 +2353,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # entries wait for their records has nothing to recover; counted as
         # unheld, a full buffer would give up a held entry of another lane for
         # room nothing then uses.
-        tracked = self._tracked_ids_by_stream()
-        for stream, message_id in self._held_entries:
-            tracked.setdefault(stream, set()).add(message_id)
         unheld: set[str] = set()
         for topic in topics:
             try:
@@ -2346,7 +2361,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.debug("Could not summarise pending list of %s: %s", topic, e)
                 continue
             own, _others = self.__pending_by_owner(summary)
-            if own - len(tracked.get(topic, ())) > 0:
+            # Taken after the summary: a waiter woken while XPENDING ran is
+            # no longer subtracted, so its lane is not skipped for it.
+            tracked = self._tracked_ids_by_stream().get(topic, set())
+            tracked.update(m for s, m in self._held_entries if s == topic)
+            if own - len(tracked) > 0:
                 unheld.add(topic)
             elif own > 0 and await self.__tracked_ids_may_be_stale(topic, now):
                 # The counts say nothing is unheld, but an id tracked here may
@@ -2833,17 +2852,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             by_stream.setdefault(stream, []).extend(message_ids)
         for stream, message_ids in by_stream.items():
             unique = list(dict.fromkeys(message_ids))
+            # Waits only (not also held or in flight) have their body checked:
+            # an entry being worked on already has its body in hand.
+            working = set(message_ids[: len(message_ids) - len(waits.get(stream, ()))])
+            batches = [
+                (check, ids[start:start + _REFRESH_CLAIM_CHUNK])
+                for check, ids in (
+                    ("0", [i for i in unique if i in working]),
+                    ("1", [i for i in unique if i not in working]),
+                )
+                for start in range(0, len(ids), _REFRESH_CLAIM_CHUNK)
+            ]
             failed = 0
             lost = 0
-            for start in range(0, len(unique), _REFRESH_CLAIM_CHUNK):
-                chunk = unique[start:start + _REFRESH_CLAIM_CHUNK]
+            for body_check, chunk in batches:
                 try:
                     # Only what is still pending under this consumer: a peer
                     # that claimed an entry while this one stalled past the
                     # claim window keeps it. A plain XCLAIM took it back, and
                     # the peer's own dispatch then skipped it as not its own.
                     reply = await self.redis.eval(  # type: ignore[union-attr]
-                        _REFRESH_OWN_SCRIPT, 1, stream, self.config.group_id, self.consumer_name, *chunk
+                        _REFRESH_OWN_SCRIPT, 1, stream, self.config.group_id, self.consumer_name,
+                        body_check, *chunk,
                     )
                 except Exception as e:
                     failed += len(chunk)

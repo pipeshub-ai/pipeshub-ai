@@ -366,11 +366,12 @@ class TestHeldEntriesAreNotReclaimed:
 
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
 
-        script, numkeys, stream, group, name, *ids = consumer.redis.eval.call_args.args
+        script, numkeys, stream, group, name, body_check, *ids = consumer.redis.eval.call_args.args
         assert script == _REFRESH_OWN_SCRIPT
         assert "'JUSTID'" in script and "entry[2] == ARGV[2]" in script
-        assert (numkeys, stream, group, name, ids) == (
-            1, "record-events", consumer.config.group_id, consumer.consumer_name, ["0-0"]
+        # A held entry is being worked on: its body is not checked.
+        assert (numkeys, stream, group, name, body_check, ids) == (
+            1, "record-events", consumer.config.group_id, consumer.consumer_name, "0", ["0-0"]
         )
 
     async def test_refresh_is_rate_limited(self, logger, config):

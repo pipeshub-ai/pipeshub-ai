@@ -622,7 +622,7 @@ class TestAtScale:
         real = consumer.redis.eval
 
         async def counting(script: str, numkeys: int, *args: Any) -> Any:  # noqa: ANN401
-            calls.append(len(args) - 3)  # stream, group, consumer, then the ids
+            calls.append(len(args) - 4)  # stream, group, consumer, body check, then the ids
             return await real(script, numkeys, *args)
 
         consumer.redis.eval = counting  # type: ignore[method-assign]
@@ -1165,3 +1165,63 @@ class TestTheGaugeAcrossIdReuse:
             scheduling_metrics.record_record_waits("reuse", candidate, 5)
             scheduling_metrics.refresh_record_waits("reuse")
         assert published[-1] == 5
+
+
+@pytest.mark.asyncio
+class TestReviewOfTheWaitsRoundFive:
+    async def test_a_waiter_woken_while_its_lane_is_summarised_is_offered_that_pass(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        (waiter,) = await _park(harness, 1)
+        harness.dispatched.clear()
+        # The lane's ids were checked against the pending list moments ago.
+        consumer._tracked_checked_at[LANE] = time.monotonic()
+        real_xpending = consumer.redis.xpending
+
+        async def released_meanwhile(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            consumer._release_record("r1")  # the run holding r1 ends during XPENDING
+            return await real_xpending(*args, **kwargs)
+
+        consumer.redis.xpending = released_meanwhile  # type: ignore[method-assign]
+        await harness.passes(1)
+
+        assert harness.dispatched == [waiter]
+
+    async def test_a_newer_event_does_not_overtake_an_older_one_waiting_on_a_lease(
+        self, harness: Harness
+    ) -> None:
+        consumer = harness.consumer
+        consumer._wait_for_record_lease("r1", LANE, "1-0")
+        # The lease is free now; a newer event for r1 arrives first.
+        assert not consumer._claim_record_or_wait("r1", LANE, "2-0")
+        assert not consumer._is_record_in_flight("r1")
+
+        _expire(consumer)
+        # The older one, its delay up, takes the record; the newer waits on it.
+        assert consumer._claim_record_or_wait("r1", LANE, "1-0")
+        assert consumer._is_waiting_for_record("2-0", LANE)
+        consumer._end_record_wait(LANE, "1-0")
+        consumer._release_record("r1", (LANE, "1-0"))
+        assert not consumer._is_waiting_for_record("2-0", LANE)
+        _assert_index_matches(consumer)
+
+
+class TestTheGaugeAcrossRestarts:
+    def test_a_consumer_stopped_and_restarted_leaves_no_finalizer_behind(self) -> None:
+        class Owner:
+            pass
+
+        owner = Owner()
+        owner_id = id(owner)
+        for _ in range(5):
+            scheduling_metrics.record_record_waits("restart", owner, 1)
+            scheduling_metrics.forget_record_waits("restart", owner)
+        scheduling_metrics.record_record_waits("restart", owner, 1)  # running, then dropped
+        scheduling_metrics._record_waits_collected.clear()
+        del owner
+        gc.collect()
+
+        notices = [n for n in scheduling_metrics._record_waits_collected if n[:2] == ("restart", owner_id)]
+        # One for the registration it was dropped with; none for the stopped ones.
+        assert len(notices) == 1

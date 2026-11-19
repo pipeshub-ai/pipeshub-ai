@@ -74,7 +74,7 @@ def _consumer(**fair: object) -> IndexingRedisStreamsConsumer:
 
     async def scripts(script: str, _numkeys: int, *args: object) -> object:
         # The ownership refresh answers with the ids it refreshed: all of them.
-        return list(args[3:]) if script == _REFRESH_OWN_SCRIPT else 1
+        return list(args[4:]) if script == _REFRESH_OWN_SCRIPT else 1
 
     consumer.redis.eval = AsyncMock(side_effect=scripts)
     consumer.redis.xinfo_consumers = AsyncMock(return_value=[])
@@ -407,7 +407,7 @@ class TestHeldEntriesAreKeyedByStream:
             (call.args[2], message_id)
             for call in consumer.redis.eval.await_args_list
             if call.args[0] == _REFRESH_OWN_SCRIPT
-            for message_id in call.args[5:]
+            for message_id in call.args[6:]
         }
         assert {(LANES[0], "5-0"), (LANES[1], "5-0")} <= refreshed
 
