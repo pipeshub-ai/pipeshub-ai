@@ -14,10 +14,9 @@ import logging
 import re
 import time
 from collections import defaultdict
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -39,6 +38,9 @@ from app.services.messaging.scheduling.interface import (
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
 from app.services.messaging.scheduling.slot_share import SlotShare
 from tests.support import record_consumer_world as world
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 from tests.support.mutated_method import mutate
 
 pytestmark = pytest.mark.timeout(240)

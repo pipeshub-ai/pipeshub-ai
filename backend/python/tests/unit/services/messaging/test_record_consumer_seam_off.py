@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from tests.support import record_consumer_world as world
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 GOLDENS = Path(__file__).parent / "goldens" / "record_consumer_seam_off"
 
