@@ -81,7 +81,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
 )
-from app.connectors.sources.google.common.drive_people import drive_file_people
+from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -319,6 +319,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # Empty _tracked_folder_ids means no folder filter, so everything syncs.
         self._folder_seed_ids: set = set()
         self._tracked_folder_ids: set = set()
+        # Per folder, this run: its sharing, None when it cannot be read.
+        self._parent_grant_cache: dict[str, list[dict] | None] = {}
         self._blocked_folder_ids: set = set()
         # Selected folders this account cannot see at all: a wrong ID, deleted, or not shared.
         self._unseen_folder_ids: set = set()
@@ -563,7 +565,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             parent_external_record_id = (metadata.get("parents") or [None])[0]
 
-            people = drive_file_people(metadata)
+            # Drive omits `permissions` when this user cannot see the file's sharing.
+            grants = metadata.get("permissions") if "permissions" in metadata else None
+            people = drive_file_people(metadata, grants)
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -604,6 +608,14 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 owners=people.owners,
             )
 
+            if grants is not None:
+                file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
+            if existing_record and file_record.shared_with is not None:
+                # A share or unshare moves nothing else on an uploaded file: written as a metadata
+                # update, the record's person edges follow its sharing.
+                is_updated = True
+                metadata_changed = True
+
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
                 file_record.parsing_status = existing_record.parsing_status
@@ -634,6 +646,35 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             self._sync_ledger.fail_item(metadata.get("id"))
             return None
+
+    async def _shared_with(self, metadata: dict, grants: list[dict], owners: list) -> list | None:
+        """The people the file was shared with directly; None when its folder's sharing is unknown."""
+        parent_id = (metadata.get("parents") or [None])[0]
+        if parent_id:
+            parent_grants = await self._parent_grants(parent_id)
+        else:
+            # Only the owner can tell a root item from one whose folder is hidden from them.
+            parent_grants = [] if metadata.get("ownedByMe") else None
+        return drive_shared_with(
+            grants,
+            owner_ids={o.source_id for o in owners if o.source_id},
+            parent_grants=parent_grants,
+            has_details=False,
+        )
+
+    async def _parent_grants(self, parent_id: str) -> list[dict] | None:
+        if parent_id not in self._parent_grant_cache:
+            try:
+                folder = await self.drive_data_source.files_get(
+                    fileId=parent_id, supportsAllDrives=True,
+                    fields="id, permissions(id, type, role, emailAddress, deleted)",
+                )
+                grants = folder.get("permissions") if "permissions" in folder else None
+            except HttpError as e:
+                self.logger.debug(f"Sharing of folder {parent_id} not readable: {e}")
+                grants = None
+            self._parent_grant_cache[parent_id] = grants
+        return self._parent_grant_cache[parent_id]
 
     async def _content_changed(self, existing: Record, metadata: dict, source: GoogleDriveDataSource) -> bool:
         """Whether a file whose Drive revision moved has new content. A native file's `version` also moves
@@ -2305,6 +2346,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         folder_ids_filter = self.sync_filters.get_value(SyncFilterKey.FOLDER_IDS)
         self._folder_seed_ids = set(folder_ids_filter or ())
         self._tracked_folder_ids = set(self._folder_seed_ids)
+        self._parent_grant_cache = {}
         self._blocked_folder_ids = set()
         self._unseen_folder_ids = set()
         self._sync_ledger = FullSyncLedger()

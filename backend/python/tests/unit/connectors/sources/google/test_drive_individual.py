@@ -802,3 +802,98 @@ class TestDriveItemPeople:
         assert record.last_modified_by is not None
         assert record.last_modified_by.source_id == "p-bob"
         assert record.created_by is None
+
+
+class TestPersonalDriveSharedWith:
+    """Personal Drive reads sharing from its own listing and links who a file was shared with directly."""
+
+    @staticmethod
+    def _shared_file(**extra) -> dict:
+        metadata = _make_file_metadata(parents=["folder-1"])
+        metadata["owners"] = [{"displayName": "Alice", "emailAddress": "alice@example.com", "permissionId": "p-alice"}]
+        metadata["ownedByMe"] = True
+        metadata["permissions"] = [
+            {"id": "p-alice", "type": "user", "role": "owner", "emailAddress": "alice@example.com"},
+            {"id": "p-bob", "type": "user", "role": "writer", "emailAddress": "bob@example.com"},
+        ]
+        metadata.update(extra)
+        return metadata
+
+    @staticmethod
+    def _parent(grants: list[dict]):
+        calls: list[str] = []
+
+        async def files_get(**params):
+            calls.append(params["fileId"])
+            return {"id": params["fileId"], "permissions": grants}
+
+        return files_get, calls
+
+    async def test_a_file_shared_with_one_person_names_them(self, connector) -> None:
+        connector.drive_data_source.files_get, _ = self._parent(
+            [{"id": "p-alice", "type": "user", "role": "owner", "emailAddress": "alice@example.com"}]
+        )
+
+        result = await connector._process_drive_item(
+            metadata=self._shared_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert [(p.source_id, p.email) for p in result.record.shared_with] == [("p-bob", "bob@example.com")]
+
+    async def test_a_listing_without_permissions_leaves_shared_with_unknown(self, connector) -> None:
+        metadata = self._shared_file()
+        metadata.pop("permissions")
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert result.record.shared_with is None
+
+    async def test_parent_sharing_is_read_once_per_folder(self, connector) -> None:
+        connector.drive_data_source.files_get, calls = self._parent([])
+
+        for file_id in ("file-1", "file-2"):
+            await connector._process_drive_item(
+                metadata=self._shared_file(id=file_id), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+            )
+
+        assert calls == ["folder-1"]
+
+    async def test_an_existing_file_with_known_sharing_is_written_as_a_metadata_update(self, connector) -> None:
+        connector.drive_data_source.files_get, _ = self._parent([])
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.record_name = "test.txt"
+        existing.external_revision_id = "rev-1"
+        existing.external_record_group_id = "drive-1"
+        existing.parent_external_record_id = "folder-1"
+        existing.version = 0
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.extraction_status = ProgressStatus.COMPLETED.value
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        result = await connector._process_drive_item(
+            metadata=self._shared_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert result.is_updated is True
+        assert result.metadata_changed is True
+
+    async def test_hidden_owner_email_is_filled(self, connector) -> None:
+        connector.drive_data_source.files_get, _ = self._parent([])
+        metadata = self._shared_file(owners=[{"displayName": "test", "permissionId": "p-alice"}])
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert result.record.owners[0].email == "alice@example.com"
+
+
+def test_personal_listing_asks_for_permissions() -> None:
+    from app.connectors.sources.google.common import drive_file_fields as fields
+
+    for mask in (fields.DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS, fields.DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
+                 fields.DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS):
+        assert "permissions(id, type, role, emailAddress, displayName, deleted)" in mask
