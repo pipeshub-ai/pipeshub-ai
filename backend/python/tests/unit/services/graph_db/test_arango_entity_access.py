@@ -430,11 +430,12 @@ class TestFilterNodesWithPermissionRoleRaiseOnError:
         """The batch access check behind it raises one error for every failure,
         carrying the cause, so a caller can tell it from "no access"."""
         provider.http_client.execute_aql.side_effect = RuntimeError("boom")
-        with pytest.raises(PermissionVerificationUnavailableError, match="boom") as raised:
+        with pytest.raises(PermissionVerificationUnavailableError) as raised:
             await provider.filter_nodes_with_permission_role(
                 self.NODES, "uk1", "org1", raise_on_error=True
             )
         assert isinstance(raised.value.__cause__, RuntimeError)
+        assert str(raised.value.__cause__) == "boom" and "boom" not in str(raised.value)
         provider.logger.error.assert_called()
         provider.logger.warning.assert_not_called()
 

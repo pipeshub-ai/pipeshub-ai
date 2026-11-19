@@ -28,7 +28,14 @@ class PermissionVerificationUnavailableError(Exception):
     Raised rather than returning an empty map, because an empty map is also the
     honest answer when every candidate is denied — and the two need opposite
     responses: retry later versus "nothing you can read matched".
+
+    Raise it ``from`` the failure with the default message, never ``str(exc)``:
+    a driver's text (host, query, values) would travel in it to every log line
+    and tool result that prints this error. The cause keeps type and text.
     """
+
+    def __init__(self, message: str = "The graph could not verify access.") -> None:
+        super().__init__(message)
 
 
 class GraphLockUnavailableError(GraphDBError):
