@@ -499,7 +499,7 @@ class TestGetAgent:
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
-            side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
+            side_effect=lambda node, _collection, **_: {**node, "_key": node.get("id")}
         )
 
         result = await neo4j_provider.get_agent("agent-1", org_id="org-1", transaction="txn-1")
@@ -581,7 +581,7 @@ class TestGetAgent:
             ]
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
-            side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
+            side_effect=lambda node, _collection, **_: {**node, "_key": node.get("id")}
         )
 
         result = await neo4j_provider.get_agent("agent-1", org_id="org-1")
