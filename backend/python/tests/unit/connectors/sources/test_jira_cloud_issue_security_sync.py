@@ -708,13 +708,13 @@ class TestReindexAppliesTheLevel:
         c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
         saved = TestTheRetryListKeepsWhatAReindexAdds._store(c, ["7"])
         await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
-        assert json.loads(saved["issues_to_retry"]) == ["1001", "7"]
+        assert (json.loads(saved["issues_to_retry"]), TestTheRetryListKeepsWhatAReindexAdds._queued(saved)) == (["7"], ["1001"])
 
         nxt = _connector()
         nxt.issues_sync_point = MagicMock()
         nxt.issues_sync_point.read_sync_point = AsyncMock(return_value={
             "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
-            "issues_to_retry": saved["issues_to_retry"]})
+            "issues_to_retry": saved["issues_to_retry"], "reindex_retry": saved["reindex_retry"]})
         nxt.issues_sync_point.update_sync_point = AsyncMock()
         nxt._load_issue_security = AsyncMock(return_value=_present())
         read: list = []
@@ -3343,12 +3343,13 @@ class TestLevelReadersFollowTheMembersRead:
 
 
 class TestTheRetryListKeepsWhatAReindexAdds:
-    """An id a reindex puts on a project's retry list survives any overlapping write; a sync removes only the ids it read."""
+    """An issue a reindex queues for the next sync survives any overlapping write; a sync removes a queued issue only for the
+    request its read covered, so one queued again after that read stays."""
 
     @staticmethod
-    def _store(c: JiraConnector, initial: list[str]) -> dict:
+    def _store(c: JiraConnector, initial: list[str], requests: dict | None = None) -> dict:
         """A checkpoint store that yields between a read and a write, as a real one may."""
-        point: dict = {"issues_to_retry": json.dumps(initial)}
+        point: dict = {"issues_to_retry": json.dumps(initial), "reindex_retry": json.dumps(requests or {})}
 
         async def read(_key: str) -> dict:
             await asyncio.sleep(0)
@@ -3362,31 +3363,46 @@ class TestTheRetryListKeepsWhatAReindexAdds:
         c.issues_sync_point.update_sync_point = AsyncMock(side_effect=write)
         return point
 
+    @staticmethod
+    def _queued(point: dict) -> list[str]:
+        return sorted(json.loads(point["reindex_retry"]))
+
     @pytest.mark.asyncio
-    async def test_a_sync_write_after_a_reindex_add_keeps_the_id(self) -> None:
+    async def test_a_sync_write_after_a_reindex_add_keeps_the_issue(self) -> None:
         c = _connector()
         point = self._store(c, [])
-        c._issues_to_retry, c._retry_read = {"5"}, set()  # the sync read an empty list, and could not finish issue 5
+        c._issues_to_retry, c._retry_read = {"5"}, {}  # the sync read nothing queued, and could not finish issue 5
         await c._retry_in_next_sync("PROJ", "9")  # a reindex during that sync
         await c._update_project_sync_checkpoint("PROJ", last_issue_updated=10)
-        assert json.loads(point["issues_to_retry"]) == ["5", "9"]
+        assert (json.loads(point["issues_to_retry"]), self._queued(point)) == (["5"], ["9"])
 
     @pytest.mark.asyncio
-    async def test_a_sync_removes_only_the_ids_it_read(self) -> None:
+    async def test_a_sync_removes_only_the_requests_it_read(self) -> None:
         c = _connector()
-        point = self._store(c, ["3", "9"])
-        c._issues_to_retry, c._retry_read = set(), {"3"}
-        assert await c._save_issues_to_retry("PROJ", ["3"]) == []
-        assert json.loads(point["issues_to_retry"]) == ["9"]
+        point = self._store(c, [], {"3": "r3", "9": "r9"})
+        c._issues_to_retry, c._retry_read = set(), {"3": "r3"}
+        assert await c._save_issues_to_retry("PROJ", []) == []
+        assert self._queued(point) == ["9"]
 
     @pytest.mark.asyncio
-    async def test_overlapping_writes_keep_every_id(self) -> None:
+    async def test_an_issue_queued_again_after_the_sync_read_it_stays(self) -> None:
+        """The sync read issue 1001's request; a reindex queues 1001 again before the sync acknowledges its read."""
         c = _connector()
         point = self._store(c, [])
-        c._issues_to_retry, c._retry_read = {"5"}, set()
+        await c._retry_in_next_sync("PROJ", "1001")
+        c._issues_to_retry, c._retry_read = set(), json.loads(point["reindex_retry"])  # the sync read that request
+        await c._retry_in_next_sync("PROJ", "1001")  # queued again: a newer request
+        await c._save_issues_to_retry("PROJ", [])
+        assert self._queued(point) == ["1001"]
+
+    @pytest.mark.asyncio
+    async def test_overlapping_writes_keep_every_issue(self) -> None:
+        c = _connector()
+        point = self._store(c, [])
+        c._issues_to_retry, c._retry_read = {"5"}, {}
         await asyncio.gather(c._retry_in_next_sync("PROJ", "7"), c._retry_in_next_sync("PROJ", "8"),
                              c._update_project_sync_checkpoint("PROJ", last_issue_updated=10))
-        assert json.loads(point["issues_to_retry"]) == ["5", "7", "8"]
+        assert (json.loads(point["issues_to_retry"]), self._queued(point)) == (["5"], ["7", "8"])
 
     @pytest.mark.asyncio
     async def test_a_retry_reads_its_issues_whatever_the_date_filters(self) -> None:
