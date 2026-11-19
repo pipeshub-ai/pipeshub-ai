@@ -107,3 +107,45 @@ async def test_a_record_that_is_not_indexed_is_left_to_a_later_pass_by_the_named
     graph = MagicMock()
     graph.get_document = AsyncMock(return_value={"virtualRecordId": "x", "indexingStatus": "IN_PROGRESS", "orgId": "o"})
     assert await _complete_one(graph, MagicMock(), MagicMock(), "r1", "o", 0, 0) is _BUSY
+
+
+def test_idle_consumers_count_as_live_for_the_strict_fleet_verdict() -> None:
+    from app.services.messaging.membership import evaluate_strict
+
+    fresh = {"checkedAt": 1000, "untagged": [], "groupsChecked": ["g"], "groupsExpected": ["g"]}
+    # an entry that did not measure idle members proves nothing
+    assert evaluate_strict([fresh], 1000).reason == "stale"
+    assert evaluate_strict([{**fresh, "untaggedAny": []}], 1000).ok
+    verdict = evaluate_strict([{**fresh, "untaggedAny": ["old-pod"]}], 1000)
+    assert not verdict.ok and verdict.untagged == ("old-pod",) and verdict.reason == "untagged"
+
+
+@pytest.mark.asyncio
+async def test_a_redis_consumer_idle_for_hours_is_live_when_idle_ones_count() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.services.messaging.membership import redis_untagged
+
+    redis = MagicMock()
+    redis.xinfo_consumers = AsyncMock(return_value=[{"name": "old-pod", "pending": 0, "idle": 3 * 3600 * 1000}])
+    assert await redis_untagged(redis, {"g": ["s"]}) == []
+    assert await redis_untagged(redis, {"g": ["s"]}, idle_live_ms=None) == ["old-pod"]
+
+
+@pytest.mark.asyncio
+async def test_a_record_failing_for_good_releases_its_pending_copy_through_the_handler() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
+
+    handler = RecordEventHandler.__new__(RecordEventHandler)
+    handler.logger = MagicMock()
+    swap = MagicMock()
+    swap.release_failed = AsyncMock()
+    handler.event_processor = MagicMock()
+    handler.event_processor.processor.sink_orchestrator.swap = swap
+    await handler._release_pending_copy("r1", "o1")
+    swap.release_failed.assert_awaited_once_with("r1", "o1")
+    swap.release_failed = AsyncMock(side_effect=RuntimeError("down"))
+    await handler._release_pending_copy("r1", "o1")  # logged, never raised: the orphan sweep reclaims the copy
+    handler.logger.warning.assert_called()
