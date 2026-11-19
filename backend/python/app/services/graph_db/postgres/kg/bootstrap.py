@@ -43,6 +43,7 @@ CANDIDATES = """/* pipeshub:kg.bootstrap_candidates */ SELECT a.id FROM graph.no
 _NEVER = float("inf")
 _HELD: dict[tuple[str, str], float] = {}                  # connectors the net took back to the walk: not tried again before this time
 _STAMP_AFTER: dict[tuple[str, str], str | None] = {}      # where a connector's unfinished stamping goes on (in this process; a restart stamps again from the start)
+_FILL_AFTER: dict[tuple[str, str], str] = {}              # where a connector's unfinished trash fill goes on (in this process; a restart fills again from the start)
 
 
 def hold(org: str, app: str, seconds: float) -> None:
@@ -75,7 +76,16 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
         due[(org, app)] = _NEVER                                  # until the outcome says otherwise
         try:
             # Before anything verifies it: a copy of epoch 7 code is filled in place and relabelled (an enforced one is then done), never copied again.
-            if await bf.fill_trash(db, org, app, page=PAGE, stop=stop) == "enforce":
+            # Bounded to BATCHES pages per pass, as a copy is: an unfinished fill keeps its cursor and is never verified meanwhile.
+            mode, more = await bf.fill_trash(db, org, app, page=PAGE, after=_FILL_AFTER.get((org, app), ""), max_pages=BATCHES, stop=stop)
+            if more is not None:
+                _FILL_AFTER[(org, app)] = more
+                due[(org, app)] = 0.0
+                PROMOTED.inc("filling")
+                progress += 1
+                continue
+            _FILL_AFTER.pop((org, app), None)
+            if mode == "enforce":
                 PROMOTED.inc("filled")
                 due.pop((org, app), None)
                 progress += 1

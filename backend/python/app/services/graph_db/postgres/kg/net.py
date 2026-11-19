@@ -62,6 +62,7 @@ HOLD_S = 300.0                   # after a demotion by the net, the bootstrap le
 NET = METRICS_BACKEND.counter("pipeshub_kg_net_total", "Checks of an enforced connector against the walk, by where they ran and what they found (over: kg admitted what the walk denies; under: kg denied what the walk admits; same; skipped; busy: a sample found the process at its limit; error)", ["source", "result"])
 LAST_VERIFIED = METRICS_BACKEND.gauge("pipeshub_kg_net_last_verified_seconds", "Unix time a connector's last complete verify against the graph finished (alert when it is older than a few verify intervals)", ["org", "connector"])
 OVERDUE = METRICS_BACKEND.gauge("pipeshub_kg_net_verify_overdue", "Enforced connectors whose full verify has not completed within 24 verify intervals", ["org"])
+OLDER = METRICS_BACKEND.gauge("pipeshub_kg_net_older_epoch", "Enforced connectors whose copy is of an older projection code epoch: not served or verified until the bootstrap brings them up to date (alert when it stays above 0)", ["org"])
 DEMOTED = METRICS_BACKEND.counter("pipeshub_kg_net_demoted_total", "Connectors taken back to the walk because kg differs from it", ["source"])
 
 # A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
@@ -343,6 +344,7 @@ async def settle() -> None:
 # A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
     WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' AND s.code_epoch = $2 ORDER BY k.id"""
+OLDER_EPOCH = """/* pipeshub:kg.net_older_epoch */ SELECT count(*) FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0 AND mode = 'enforce' AND code_epoch <> $2"""
 
 
 # The planner profile of the reader (no bitmap or sequential scans: with no statistics, or a connector that holds most of the org's rows, one can read the whole org to sort a page) and the limit of one page.
@@ -400,11 +402,11 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
     if every <= 0:
         return 0
 
-    async def enforced(tx: Tx) -> list[str]:
-        return [r["id"] for r in await tx.fetch(ENFORCED, org, CODE_EPOCH)]
+    async def enforced(tx: Tx) -> tuple[list[str], int]:
+        return [r["id"] for r in await tx.fetch(ENFORCED, org, CODE_EPOCH)], await tx.fetchval(OLDER_EPOCH, org, CODE_EPOCH)
     try:
         with bind(drainer._ctx(org)):
-            apps = await db.run(enforced, isolation="repeatable_read")
+            apps, older = await db.run(enforced, isolation="repeatable_read")
     except Exception:
         NET.inc("verify", "error")
         logger.warning("kg verify could not list the enforced connectors of an org", exc_info=True)
@@ -423,6 +425,7 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 st.flagged = True
                 logger.error("kg connector %s of org %s has not completed a verify in %d intervals", app, org, OVERDUE_INTERVALS)
     OVERDUE.set(org, value=overdue)
+    OLDER.set(org, value=older)
     turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now), key=lambda a: states[(org, a)].due)[:VERIFY_PER_PASS]
     completed = 0
     for app in turn:

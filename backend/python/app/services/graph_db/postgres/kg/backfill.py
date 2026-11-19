@@ -216,9 +216,11 @@ async def _copied(db: KernelDB, org: str, app_id: str) -> bool:
 # as the projection derives them and written where they differ, then the copy is relabelled this code's epoch with its mode and its verify. It is never copied again.
 FILL_FROM = 7
 FILL_STATE = """/* pipeshub:kg.trash_fill_state */ SELECT code_epoch, backfill_cursor, mode, verify_digest, verified_at FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2"""
-FILL_RECORDS = """/* pipeshub:kg.trash_fill_records */ SELECT n.coll, n.id, n.doc->'deletedAtTimestamp' AS ts, n.doc->'deleteBatchId' AS batch FROM graph.nodes n
-    WHERE n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'connectorId') = $2 AND n.id > $3 AND (n.doc ? 'deletedAtTimestamp' OR n.doc ? 'deleteBatchId')
-    ORDER BY (n.doc->>'connectorId'), n.id LIMIT $4"""
+# One page of the connector's records in id order, whatever they hold (``has``: a delete time or batch to derive): a page reads at most ``page`` rows, so a large connector with
+# few deleted records never scans past its page under the connector's lock.
+FILL_RECORDS = """/* pipeshub:kg.trash_fill_records */ SELECT n.coll, n.id, n.doc->'deletedAtTimestamp' AS ts, n.doc->'deleteBatchId' AS batch,
+    (n.doc ? 'deletedAtTimestamp' OR n.doc ? 'deleteBatchId') AS has FROM graph.nodes n
+    WHERE n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'connectorId') = $2 AND n.id > $3 ORDER BY (n.doc->>'connectorId'), n.id LIMIT $4"""
 # The connector's groups (no index by connector: the org's groups are few beside its records) and the connector itself.
 FILL_REST = """/* pipeshub:kg.trash_fill_rest */ SELECT n.coll, n.id, n.doc->'deletedAtTimestamp' AS ts, n.doc->'deleteBatchId' AS batch FROM graph.nodes n
     WHERE n.org_id = $1 AND ((n.coll = 'recordGroups' AND (n.doc->>'connectorId') = $2) OR (n.coll = 'apps' AND n.id = $2))
@@ -227,13 +229,17 @@ FILL_HELD = """/* pipeshub:kg.trash_fill_held */ SELECT k.sk, k.coll, k.id, k.ki
     JOIN kg.records k ON k.org_id = $1 AND k.coll = q.coll AND k.id = q.id"""
 
 
-async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, stop: asyncio.Event | None = None) -> str | None:
-    """Bring a copy finished by epoch 7 code up to this code's epoch in place. Returns the mode it was relabelled with, or None when the connector holds no such copy (or ``stop``
-    came first: the next call starts again, writing only what still differs). Each page holds the connector's lock, as a copy batch does, so the drain never interleaves with it."""
-    after = ""
+async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, after: str = "", max_pages: int | None = None,
+                     stop: asyncio.Event | None = None) -> tuple[str | None, str | None]:
+    """Bring a copy finished by epoch 7 code up to this code's epoch in place, from ``after`` (a record id) for at most ``max_pages`` pages. Returns (the mode it was relabelled
+    with, None) when done, (None, where to go on) when a bound or ``stop`` came first, and (None, None) when the connector holds no such copy. Each page holds the connector's
+    lock, as a copy batch does, so the drain never interleaves with it; a call started again from the beginning writes only what still differs."""
+    pages = 0
 
     async def write(tx: Tx, rows: list) -> None:
         derived = {(COLL_CODE[r["coll"]], r["id"]): (_ms(_json(r["ts"])), _s(_json(r["batch"]))) for r in rows}
+        if not derived:
+            return
         held = await tx.fetch(FILL_HELD, org, [k[0] for k in derived], [k[1] for k in derived])
         await KgWriter(tx).trash_set([(h["sk"], h["coll"], h["id"], h["kind"], *derived[(h["coll"], h["id"])]) for h in held
                                       if (h["deleted_ms"], h["delete_batch"]) != derived[(h["coll"], h["id"])]])
@@ -245,7 +251,7 @@ async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, s
         if state is None or state["code_epoch"] != FILL_FROM or state["backfill_cursor"] != "done":
             return None
         rows = await tx.fetch(FILL_RECORDS, org, app_id, after, page)
-        await write(tx, rows)
+        await write(tx, [r for r in rows if r["has"]])
         if len(rows) == page:
             after = rows[-1]["id"]
             return True
@@ -254,11 +260,13 @@ async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, s
                                           verified_at=state["verified_at"])
         return state["mode"]
     with bind(_ctx(org)):
-        while not (stop is not None and stop.is_set()):
+        while True:
+            if (stop is not None and stop.is_set()) or (max_pages is not None and pages >= max_pages):
+                return None, after
             out = await db.run(step, write=True)
             if out is not True:
-                return out
-    return None
+                return out, None
+            pages += 1
 
 
 def _json(v: object) -> object:

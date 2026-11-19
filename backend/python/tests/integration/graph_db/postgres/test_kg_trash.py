@@ -236,6 +236,26 @@ async def test_a_copy_of_epoch_7_code_is_filled_in_place_by_the_bootstrap_and_st
     assert tally.c[("trash", "kg")] and not tally.c[("trash", "not_served")], dict(tally.c)
 
 
+async def test_a_fill_page_reads_at_most_a_page_of_records_even_when_none_carries_a_delete(pg_provider, pg_db) -> None:
+    """A page of the fill is a page of the connector's records in id order, whatever they hold: on a connector with no deleted record a page of two scans two records and
+    goes on past them, without relabelling the copy; the last, short page relabels it."""
+    from app.services.graph_db.postgres.kg import backfill as bf
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await flip(pg_db, org)
+    await _admin("UPDATE kg.projection_state SET code_epoch = 7 WHERE org_id = $1 AND app_sk <> 0", org)
+
+    async def epoch(tx: Any) -> int:  # noqa: ANN401
+        return await tx.fetchval("""SELECT s.code_epoch FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1
+            WHERE s.org_id = $1 AND k.id = $2""", org, KB)
+    assert await bf.fill_trash(pg_db, org, KB, page=2, max_pages=1) == (None, "b")         # a and b scanned, neither carries a delete
+    with ctx(org):
+        assert await pg_db.run(epoch) == 7
+    assert await bf.fill_trash(pg_db, org, KB, page=2, after="b") == ("enforce", None)
+    with ctx(org):
+        assert await pg_db.run(epoch) == 8
+
+
 async def test_a_live_records_projection_writes_no_trash_columns(pg_provider, pg_db, monkeypatch) -> None:
     """The trash columns are written only where they change: renaming a live record writes none, trashing one writes its row, restoring it clears it."""
     from app.services.graph_db.postgres.kg import writers

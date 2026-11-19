@@ -403,8 +403,9 @@ def test_the_trash_revision_moves_the_floor_and_its_downgrade_takes_back_its_col
 
 
 def test_the_trash_revision_never_touches_the_graph_tables_nor_their_row_security():
-    """kg_0019 locks kg.records (its columns and indexes) and no other table: the graph stays readable and writable through the upgrade, and the copies made before it
-    are brought up to date by the bootstrap job, connector by connector (kg.backfill.fill_trash)."""
+    """kg_0019 changes kg.records (its columns and indexes), replaces kg.proj_doc and writes the kernel's registry and pin rows of its writers; it reads no graph row and
+    changes no row security, so no graph read or write waits for it. The copies made before it are brought up to date by the bootstrap job, connector by connector
+    (kg.backfill.fill_trash)."""
     from pathlib import Path
     d = Path(__file__).resolve().parents[1] / "versions" / "kg"
     text = (d / "0019_trash.py").read_text(encoding="utf-8") + (d / "0019_trash.sql").read_text(encoding="utf-8")
