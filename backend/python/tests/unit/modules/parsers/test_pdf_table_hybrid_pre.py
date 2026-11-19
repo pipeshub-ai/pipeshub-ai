@@ -145,3 +145,33 @@ def test_hard_flags_detect_a_token_in_two_cells() -> None:
     assert th.hard_flags(words, good, (1, 2))["bij"] is True
     dup = [cell(0, 1, 0, 1, [0, 1]), cell(0, 1, 1, 2, [1])]
     assert th.hard_flags(words, dup, (1, 2))["bij"] is False
+
+
+def test_glyph_candidates_count_what_the_review_counts() -> None:
+    texts = {0: "•", 1: "•", 2: "38", 3: "•", 4: "text", 5: "•", 6: "$", 7: "1", 8: "!="}
+    cells = [
+        cell(0, 1, 0, 1, [0, 1, 2]),  # two bullets before a number: both count
+        cell(0, 1, 1, 2, [3]),  # a bullet alone in a cell
+        cell(0, 1, 2, 3, [5, 4]),  # a bullet in a cell of words: not counted
+        cell(0, 1, 3, 4, [6, 7]),  # no bullet
+        cell(0, 1, 4, 5, [8]),
+    ]
+    assert th.glyph_candidates(texts, cells) == 3
+
+
+def test_a_made_up_word_is_recognised_by_its_origin() -> None:
+    assert th.is_synthetic({"text": "•", "fontname": th.SYNTHETIC_BULLET_FONT})
+    assert not th.is_synthetic({"text": "•", "fontname": "Arial"})
+    assert not th.is_synthetic({"text": "•"})
+
+
+def test_a_cell_with_words_on_both_sides_of_a_spanning_rule_is_a_crossing() -> None:
+    words = {0: w("a", 10, 0, 20), 1: w("b", 10, 30, 20)}
+    one_cell = [cell(0, 1, 0, 1, [0, 1])]
+    assert th.rule_crossings(words, one_cell, [(25.0, 0.0, 100.0)], []) == 1
+    assert th.rule_crossings(words, one_cell, [(25.0, 60.0, 100.0)], []) == 0  # a rule beside the words
+    assert th.rule_crossings(words, one_cell, [(5.0, 0.0, 100.0)], []) == 0  # a rule through the first word only
+    two_cells = [cell(0, 1, 0, 1, [0]), cell(1, 2, 0, 1, [1])]
+    assert th.rule_crossings(words, two_cells, [(25.0, 0.0, 100.0)], []) == 0
+    side = {0: w("a", 10, 0, 20), 1: w("b", 60, 0, 70)}
+    assert th.rule_crossings(side, [cell(0, 1, 0, 1, [0, 1])], [], [(40.0, -5.0, 20.0)]) == 1

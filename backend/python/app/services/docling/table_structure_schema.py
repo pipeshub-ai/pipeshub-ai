@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = 1
+TOKEN_DEFINITION = "text-layer-v2"  # what a token is (see table_hybrid.TOKEN_DEFINITION); part of the hash
 MODEL_REPO = "docling-project/docling-models"
 MODEL_REVISION = "fc0f2d45e2218ea24bce5045f58a389aed16dc23"  # a commit, never a branch: the measured weights
 MAX_TABLES_PER_REQUEST = 16
@@ -73,6 +74,8 @@ class CellOut(BaseModel):
     c1: int
     bbox: list[float] | None = None
     tokens: list[int] = Field(default_factory=list)
+    column_header: bool | None = None  # the model's header tags; absent = null
+    row_header: bool | None = None
 
 
 class TableResult(BaseModel):
@@ -98,6 +101,7 @@ class ModelInfo(BaseModel):
     mode: str
     weights_sha256: str
     model_revision: str | None = None
+    token_definition: str | None = None
     config_sha256: str
 
 
@@ -109,7 +113,10 @@ class TableResponse(BaseModel):
     model: ModelInfo | None = None
 
 
-def config_hash(library_version: str, mode: str, weights_sha256: str, revision: str = MODEL_REVISION) -> str:
-    """sha256 of the library version, the mode, the weights hash and the model revision, serialised with sorted keys."""
-    payload = {"model_revision": revision, "weights_sha256": weights_sha256, "mode": mode, "docling_ibm_models": library_version}
+def config_hash(
+    library_version: str, mode: str, weights_sha256: str, revision: str = MODEL_REVISION, token_definition: str = TOKEN_DEFINITION
+) -> str:
+    """sha256 of the library version, the mode, the weights hash, the model revision and the token definition, serialised
+    with sorted keys."""
+    payload = {"token_definition": token_definition, "model_revision": revision, "weights_sha256": weights_sha256, "mode": mode, "docling_ibm_models": library_version}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

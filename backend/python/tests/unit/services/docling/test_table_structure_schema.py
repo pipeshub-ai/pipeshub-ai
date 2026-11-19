@@ -60,14 +60,30 @@ def test_a_response_cannot_carry_text() -> None:
 def test_config_hash_serialises_with_sorted_keys_and_covers_every_part() -> None:
     base = sch.config_hash("4.0.4", "accurate", "w")
     assert base == sch.config_hash("4.0.4", "accurate", "w")
-    others = {sch.config_hash("4.0.5", "accurate", "w"), sch.config_hash("4.0.4", "fast", "w"), sch.config_hash("4.0.4", "accurate", "x"), sch.config_hash("4.0.4", "accurate", "w", "other-revision")}
-    assert len(others | {base}) == 5
+    others = {sch.config_hash("4.0.5", "accurate", "w"), sch.config_hash("4.0.4", "fast", "w"), sch.config_hash("4.0.4", "accurate", "x"), sch.config_hash("4.0.4", "accurate", "w", "other-revision"), sch.config_hash("4.0.4", "accurate", "w", token_definition="other")}
+    assert len(others | {base}) == 6
     import hashlib
 
-    assert base == hashlib.sha256(('{"docling_ibm_models":"4.0.4","mode":"accurate","model_revision":"' + sch.MODEL_REVISION + '","weights_sha256":"w"}').encode()).hexdigest()
+    assert base == hashlib.sha256(('{"docling_ibm_models":"4.0.4","mode":"accurate","model_revision":"' + sch.MODEL_REVISION + '","token_definition":"' + sch.TOKEN_DEFINITION + '","weights_sha256":"w"}').encode()).hexdigest()
 
 
 def test_response_model_block_carries_the_three_parts_and_the_hash() -> None:
     info = sch.ModelInfo(docling_ibm_models="4.0.4", mode="accurate", weights_sha256="w", config_sha256=sch.config_hash("4.0.4", "accurate", "w"))
     resp = sch.TableResponse(tables=[], model=info)
-    assert set(resp.model_dump()["model"]) == {"docling_ibm_models", "mode", "weights_sha256", "model_revision", "config_sha256"}
+    assert set(resp.model_dump()["model"]) == {"docling_ibm_models", "mode", "weights_sha256", "model_revision", "token_definition", "config_sha256"}
+
+
+def test_a_cell_without_header_flags_validates_and_the_flags_are_null() -> None:
+    cell = sch.CellOut.model_validate({"r0": 0, "r1": 1, "c0": 0, "c1": 1, "tokens": [0]})
+    assert cell.column_header is None and cell.row_header is None
+    flagged = sch.CellOut.model_validate({"r0": 0, "r1": 1, "c0": 0, "c1": 1, "tokens": [0], "column_header": True, "row_header": False})
+    assert (flagged.column_header, flagged.row_header) == (True, False)
+    # a whole response written before the flags existed
+    old = {"v": 1, "tables": [{"id": "a", "status": "ok", "cells": [{"r0": 0, "r1": 1, "c0": 0, "c1": 1, "tokens": [0]}]}]}
+    assert sch.TableResponse.model_validate(old).tables[0].cells[0].column_header is None
+
+
+def test_the_token_definition_is_the_same_on_both_sides() -> None:
+    from app.modules.parsers.pdf import table_hybrid as th
+
+    assert th.TOKEN_DEFINITION == sch.TOKEN_DEFINITION

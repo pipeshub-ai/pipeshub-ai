@@ -116,6 +116,15 @@ async def test_a_library_that_prints_on_stdout_does_not_corrupt_the_answers() ->
         await s.shutdown()
 
 
+async def test_the_child_runs_with_one_thread_unless_told_otherwise() -> None:
+    assert ts.DEFAULT_THREADS == 1
+    s = supervisor()
+    try:
+        assert (await s.run_table(spec("a"), PNG))["threads"] == 1
+    finally:
+        await s.shutdown()
+
+
 async def test_a_cap_hit_is_counted() -> None:
     s = supervisor()
     try:

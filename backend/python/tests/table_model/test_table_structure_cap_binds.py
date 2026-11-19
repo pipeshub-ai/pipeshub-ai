@@ -29,3 +29,12 @@ def test_the_decode_loop_reads_the_attribute_the_service_sets(harness) -> None:
     from importlib.metadata import version
 
     assert version("docling-ibm-models") == "4.0.4"
+
+
+def test_cells_carry_the_models_header_tags_or_null(supervisor) -> None:
+    page_no, box, words, plan = first_table()
+    spec, png = support.product_request(str(support.FIXTURES / "tables.pdf"), page_no, words, box, plan.cap)
+    result = support.run_async(supervisor.run_table({k: v for k, v in spec.items() if k != "image"}, png))
+    flags = [(c["column_header"], c["row_header"]) for c in result["cells"]]
+    assert all(a in (True, False, None) and b in (True, False, None) for a, b in flags)
+    print("header tags seen:", sorted(set(flags), key=str))

@@ -282,3 +282,35 @@ async def test_an_unknown_record_id_is_logged_as_null(caplog) -> None:
 def test_the_measured_constants_are_what_the_clean_service_reports() -> None:
     info = measured_model_info()
     assert (info.docling_ibm_models, info.mode) == (th.MODEL_LIBRARY_VERSION, th.MODEL_MODE)
+
+
+async def test_f8c_a_different_token_definition_is_a_mismatch_and_the_document_line_names_the_definition(caplog) -> None:
+    from app.services.docling.table_structure_schema import config_hash
+
+    good = measured_model_info()
+    moved = ModelInfo(
+        docling_ibm_models=good.docling_ibm_models, mode=good.mode, weights_sha256=good.weights_sha256, model_revision=good.model_revision,
+        token_definition="text-layer-v1", config_sha256=config_hash(good.docling_ibm_models, good.mode, good.weights_sha256, good.model_revision, "text-layer-v1"),
+    )
+    await run_doc(Service(model_info=moved), 2)
+    tables, docs = parse_logs(caplog)
+    assert set(reasons(tables)) == {"version_mismatch"}
+    assert "token_definition" in next(r.getMessage() for r in caplog.records if "identity differs" in r.getMessage())
+    assert docs[0]["token_definition"] == th.TOKEN_DEFINITION
+
+
+def test_the_rule_crossing_count_is_reported_and_changes_no_route() -> None:
+    from app.services.docling.table_structure_schema import TableResult
+
+    rec = {
+        "words": [["a", 10.0, 0.0, 20.0, 10.0], ["b", 10.0, 30.0, 20.0, 40.0], ["c", 60.0, 0.0, 70.0, 10.0], ["d", 60.0, 30.0, 70.0, 40.0]],
+        "rules": {"h": [[25.0, 0.0, 100.0]], "v": []}, "evidence_shape": [2, 2], "synthetic": [[1.0, 1.0, 2.0, 2.0]],
+    }
+    cells = [{"r0": r, "r1": r + 1, "c0": c, "c1": c + 1, "tokens": [r * 2 + c]} for r in range(2) for c in range(2)]
+    clean = flow.analyse_table(rec, TableResult(id="t", status="ok", n_rows=2, n_cols=2, cells=cells), None)
+    assert clean["rule_crossings"] == 0 and clean["would_route"] == "model" and clean["synthetic_excluded"] == 1
+    merged = [{"r0": 0, "r1": 2, "c0": 0, "c1": 1, "tokens": [0, 1]}, {"r0": 0, "r1": 2, "c0": 1, "c1": 2, "tokens": [2, 3]}]
+    crossed = flow.analyse_table(rec, TableResult(id="t", status="ok", n_rows=2, n_cols=2, cells=merged), None)
+    assert crossed["rule_crossings"] == 2 and crossed["would_route"] == clean["would_route"] == "model"  # reported only
+    unknown = flow.analyse_table({**rec, "rules": None}, TableResult(id="t", status="ok", n_rows=2, n_cols=2, cells=cells), None)
+    assert unknown["rule_crossings"] is None

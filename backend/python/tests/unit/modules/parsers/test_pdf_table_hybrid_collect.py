@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Never
 
 import numpy as np
@@ -93,3 +94,53 @@ def test_the_request_the_worker_builds_is_a_page_resize_then_crop() -> None:
     back = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
     rz, _ = flow.resize_page(img)
     assert np.array_equal(back, rz[round(tb[1]) : round(tb[3]), round(tb[0]) : round(tb[2])])
+
+
+def bullet(x0: float, top: float, font: str | None = "_synthetic_bullet") -> dict:
+    w = {"text": "•", "x0": x0, "x1": x0 + 1.2, "top": top, "bottom": top + 1.2}
+    if font:
+        w["fontname"] = font
+    return w
+
+
+def test_made_up_vector_bullets_are_never_tokens_and_their_origin_is_recorded(spool) -> None:
+    """The shape of a shaded row of figures: a bullet the layout pass drew from a vector shape sits left of a number."""
+    box = BOX
+    words = grid_words(box)
+    words.append({"text": "1,515", "x0": 200.0, "x1": 230.0, "top": 30.0, "bottom": 40.0})
+    synthetic = bullet(190.0, 33.0)
+    col = flow.TableJobCollector(spool, "x.pdf", renderer=blank_renderer)
+    col.collect_page(0, PAGE_W, PAGE_H, [FakeDecision(box)], [], None, [*words, synthetic])
+    rec = read_index(spool)[0]
+    assert rec["reason"] == "none" and col.sent == 1
+    assert "•" not in [x[0] for x in rec["words"]] and "1,515" in [x[0] for x in rec["words"]]
+    assert rec["ntok"] == len(words) and rec["synthetic"] == [[190.0, 33.0, 191.2, 34.2]]
+    # the same box without the bullet plans the same request
+    other = spool + "-b"
+    os.mkdir(other)
+    flow.TableJobCollector(other, "x.pdf", renderer=blank_renderer).collect_page(0, PAGE_W, PAGE_H, [FakeDecision(box)], [], None, words)
+    assert {k: read_index(other)[0][k] for k in ("cap", "lines", "cols_est", "ntok")} == {k: rec[k] for k in ("cap", "lines", "cols_est", "ntok")}
+
+
+def test_a_bullet_that_is_in_the_text_layer_stays_a_token(spool) -> None:
+    box = BOX
+    words = [*grid_words(box), bullet(190.0, 33.0, font="Arial")]
+    flow.TableJobCollector(spool, "x.pdf", renderer=blank_renderer).collect_page(0, PAGE_W, PAGE_H, [FakeDecision(box)], [], None, words)
+    rec = read_index(spool)[0]
+    assert "•" in [x[0] for x in rec["words"]] and rec["synthetic"] == []
+
+
+def test_the_strokes_of_a_ruled_page_are_spooled_for_the_crossing_count(spool) -> None:
+    import json
+
+    import pdfplumber
+
+    fixtures = Path(__file__).resolve().parents[3] / "fixtures" / "table_hybrid"
+    boxes = json.loads((fixtures / "tables.boxes.json").read_text())
+    with pdfplumber.open(str(fixtures / "tables.pdf")) as pdf:
+        page = pdf.pages[0]
+        words = page.extract_words(extra_attrs=["fontname", "size"])
+        col = flow.TableJobCollector(spool, "x.pdf", renderer=blank_renderer)
+        col.collect_page(0, PAGE_W, PAGE_H, [FakeDecision(tuple(boxes["1"][0]))], [], None, words, page)
+    rec = read_index(spool)[0]
+    assert len(rec["rules"]["h"]) >= 9 and len(rec["rules"]["v"]) >= 6  # the ruled table of page 1

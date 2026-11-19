@@ -753,6 +753,10 @@ CAP_MARGIN = 16
 CAP_CEILING = 1024
 MODEL_LIBRARY_VERSION = "4.0.4"
 MODEL_MODE = "accurate"
+# What a model token is: a word of the PDF text layer. Words the layout pass makes up (vector bullets) are not tokens. A change
+# of this definition changes every measured grid, so it is part of the configuration hash and of the document log line.
+TOKEN_DEFINITION = "text-layer-v2"
+SYNTHETIC_BULLET_FONT = "_synthetic_bullet"  # the font name the layout pass gives the words it makes up from vector shapes
 MODEL_REVISION = "fc0f2d45e2218ea24bce5045f58a389aed16dc23"  # the weights commit the measured grids came from
 # Hash of the weight files the measured grids came from: the sha256 of each weight file in the mode folder (sha256 2a7d6c92...74d9 for the accurate file), combined by name (see ``weights_sha256`` in the child module).
 MODEL_WEIGHTS_SHA256 = "b7682f9ea68ca3c7e1f87a8054e4d7923789cb6e37284ea44e5c985f54004dff"
@@ -898,17 +902,61 @@ def box_class(box_ids: set[int], evidence_tables: list[set[int]]) -> str:
     return "table_extra"
 
 
+def _is_glyph(text: str) -> bool:
+    return text in GLYPH_DENY or (len(text) == 1 and unicodedata.category(text) in ("So", "Co"))
+
+
 def glyph_candidates(token_texts: dict[int, str], cells: list[dict[str, Any]]) -> int:
-    """Bullet-like tokens that sit in an otherwise numeric cell. Counted only; nothing is changed."""
+    """Bullet-like tokens in a cell whose other tokens, not counting more bullet-like ones, are all numbers, dashes or
+    bound symbols, or that has no other token (a cell of bullets alone). Two bullets before a number count twice. A
+    bullet in a cell of words is not counted. Counted only; nothing is changed."""
     n = 0
     for c in cells:
-        texts = [(t, token_texts.get(t, "")) for t in c.get("tokens", [])]
-        for t, text in texts:
-            if not (text in GLYPH_DENY or (len(text) == 1 and unicodedata.category(text) in ("So", "Co"))):
-                continue
-            others = [x for u, x in texts if u != t]
-            if others and all(is_number(x) or is_dash(x) or x in LEFT_SYMBOLS | RIGHT_SYMBOLS for x in others):
-                n += 1
+        texts = [token_texts.get(t, "") for t in c.get("tokens", [])]
+        glyphs = sum(1 for x in texts if _is_glyph(x))
+        if not glyphs:
+            continue
+        rest = [x for x in texts if not _is_glyph(x)]
+        if all(is_number(x) or is_dash(x) or x in LEFT_SYMBOLS | RIGHT_SYMBOLS for x in rest):
+            n += glyphs
+    return n
+
+
+def is_synthetic(word: Word) -> bool:
+    """A word the layout pass made up from a vector shape: not in the text layer, never a model token."""
+    return word.get("fontname") == SYNTHETIC_BULLET_FONT
+
+
+Stroke = tuple[float, float, float]  # a horizontal stroke (y, x0, x1) or a vertical one (x, y0, y1)
+
+
+def rule_crossings(words_by_id: dict[int, Word], cells: list[dict[str, Any]], h_rules: list[Stroke], v_rules: list[Stroke]) -> int:
+    """Cells holding words on both sides of a drawn stroke that spans them (every word on one side or the other).
+    Reported only; the stroke must run over the cell's words, so a rule beside the cell never counts."""
+    n = 0
+    for c in cells:
+        ws = [words_by_id[t] for t in c.get("tokens", []) if t in words_by_id]
+        if len(ws) < 2:
+            continue
+        x0, x1 = min(w["x0"] for w in ws), max(w["x1"] for w in ws)
+        t0, b0 = min(w["top"] for w in ws), max(w["bottom"] for w in ws)
+        bad = False
+        for y, a, d in h_rules:
+            if t0 + 1 < y < b0 - 1 and a <= x0 + 2 and d >= x1 - 2:
+                up = [w for w in ws if w["bottom"] <= y + 1.0]
+                dn = [w for w in ws if w["top"] >= y - 1.0]
+                if up and dn and len(up) + len(dn) == len(ws):
+                    bad = True
+                    break
+        if not bad:
+            for x, a, d in v_rules:
+                if x0 + 1 < x < x1 - 1 and a <= t0 + 2 and d >= b0 - 2:
+                    le = [w for w in ws if w["x1"] <= x + 1.0]
+                    ri = [w for w in ws if w["x0"] >= x - 1.0]
+                    if le and ri and len(le) + len(ri) == len(ws):
+                        bad = True
+                        break
+        n += bad
     return n
 
 

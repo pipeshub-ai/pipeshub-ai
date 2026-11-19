@@ -69,7 +69,7 @@ async def test_one_permit_of_cost_one_and_one_reservation_per_table(wired) -> No
     assert [t["status"] for t in r.json()["tables"]] == ["ok", "ok", "ok"]
     assert gate.acquires == [1, 1, 1] and gate.in_use == 0
     assert reservations == ["reserve", "release"] * 3
-    assert r.json()["model"]["config_sha256"] == sup.model_info.config_sha256 and set(r.json()["model"]) == {"docling_ibm_models", "mode", "weights_sha256", "model_revision", "config_sha256"}
+    assert r.json()["model"]["config_sha256"] == sup.model_info.config_sha256 and set(r.json()["model"]) == {"docling_ibm_models", "mode", "weights_sha256", "model_revision", "token_definition", "config_sha256"}
 
 
 async def test_the_response_carries_no_text(wired) -> None:

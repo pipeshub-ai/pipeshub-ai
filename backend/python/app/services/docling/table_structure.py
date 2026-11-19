@@ -21,6 +21,7 @@ from app.services.docling import table_structure_child as wire
 from app.services.docling.table_structure_schema import (
     MODEL_REPO,
     MODEL_REVISION,
+    TOKEN_DEFINITION,
     ModelInfo,
     TableRequestMeta,
     TableResult,
@@ -31,7 +32,9 @@ logger = logging.getLogger(__name__)
 
 CHILD_MODULE = "app.services.docling.table_structure_child"
 ARTIFACTS_PATH_ENV = "DOCLING_ARTIFACTS_PATH"  # one name for the artifacts folder; align with the image setting
-DEFAULT_THREADS = 4
+# One thread in the child: decoding is sequential, so four threads bought 12 % of wall time for 14 % more CPU on 17 boxes (1,888
+# steps, identical grids at 1, 2 and 4); scale by processes. Measured on an arm host; confirm on x86.
+DEFAULT_THREADS = 1
 IDLE_EXIT_SECONDS = 600.0
 KILL_GRACE_SECONDS = 5.0
 START_TIMEOUT_SECONDS = 180.0
@@ -189,8 +192,8 @@ class TableSupervisor:
         info = frame[0]["info"]
         self._info = ModelInfo(
             docling_ibm_models=info["docling_ibm_models"], mode=info["mode"], weights_sha256=info["weights_sha256"],
-            model_revision=MODEL_REVISION,
-            config_sha256=config_hash(info["docling_ibm_models"], info["mode"], info["weights_sha256"], MODEL_REVISION),
+            model_revision=MODEL_REVISION, token_definition=TOKEN_DEFINITION,
+            config_sha256=config_hash(info["docling_ibm_models"], info["mode"], info["weights_sha256"], MODEL_REVISION, TOKEN_DEFINITION),
         )
         self.stats["starts"] += 1
         if self._ever_started:

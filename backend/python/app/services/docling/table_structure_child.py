@@ -145,10 +145,17 @@ class StructureModelRunner:
                 "c0": el["start_col_offset_idx"], "c1": el["end_col_offset_idx"],
                 "bbox": [bb["l"], bb["t"], bb["r"], bb["b"]] if isinstance(bb, dict) else None,
                 "tokens": members,
+                "column_header": _flag(el.get("column_header")),
+                "row_header": _flag(el.get("row_header")),
             })
         out.update(status="ok", n_rows=int(det.get("num_rows", nrow)), n_cols=int(det.get("num_cols", ncol)), cells=cells)
         out["wall_ms"] = round((time.time() - wall0) * 1000, 2)
         return out
+
+
+def _flag(value: object) -> bool | None:
+    """A header tag as the model gives it, or ``None`` when it gives none."""
+    return value if isinstance(value, bool) else None
 
 
 def build_runner(weights_dir: str, mode: str, threads: int) -> StructureModelRunner:

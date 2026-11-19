@@ -46,8 +46,8 @@ def measured_model_info() -> ModelInfo:
 
     return ModelInfo(
         docling_ibm_models=th.MODEL_LIBRARY_VERSION, mode=th.MODEL_MODE, weights_sha256=th.MODEL_WEIGHTS_SHA256,
-        model_revision=th.MODEL_REVISION,
-        config_sha256=config_hash(th.MODEL_LIBRARY_VERSION, th.MODEL_MODE, th.MODEL_WEIGHTS_SHA256, th.MODEL_REVISION),
+        model_revision=th.MODEL_REVISION, token_definition=th.TOKEN_DEFINITION,
+        config_sha256=config_hash(th.MODEL_LIBRARY_VERSION, th.MODEL_MODE, th.MODEL_WEIGHTS_SHA256, th.MODEL_REVISION, th.TOKEN_DEFINITION),
     )
 
 

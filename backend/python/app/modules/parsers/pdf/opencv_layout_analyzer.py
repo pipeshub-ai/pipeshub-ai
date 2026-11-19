@@ -3093,7 +3093,7 @@ def _apply_table_evidence(
                 evidence, _ = table_reconcile.apply(legacy, decisions)
             except Exception:
                 evidence = None
-            collector.collect_page(page_index, page_w, page_h, decisions, legacy, evidence, all_words)
+            collector.collect_page(page_index, page_w, page_h, decisions, legacy, evidence, all_words, page)
         return legacy, []
     return table_reconcile.apply(legacy, decisions)
 

@@ -273,6 +273,42 @@ def _default_renderer(pdf_path: str) -> Callable[[int], tuple[Any, float, float]
     return render
 
 
+def _page_strokes(page: object) -> tuple[list[th.Stroke], list[th.Stroke]] | None:
+    """Drawn strokes of a page: thin lines and thin rectangles, and the edges of stroked rectangles. ``None`` when the
+    page cannot be read."""
+    try:
+        h: list[th.Stroke] = []
+        v: list[th.Stroke] = []
+        for ln in page.lines or []:  # type: ignore[attr-defined]
+            x0, x1, t, b = ln["x0"], ln["x1"], ln["top"], ln["bottom"]
+            if abs(b - t) <= 1.5 and x1 - x0 >= 8:
+                h.append(((t + b) / 2, x0, x1))
+            elif abs(x1 - x0) <= 1.5 and b - t >= 6:
+                v.append(((x0 + x1) / 2, t, b))
+        for r in page.rects or []:  # type: ignore[attr-defined]
+            x0, x1, t, b = r["x0"], r["x1"], r["top"], r["bottom"]
+            w, hh = x1 - x0, b - t
+            if hh <= 1.5 and w >= 8:
+                h.append(((t + b) / 2, x0, x1))
+            elif w <= 1.5 and hh >= 6:
+                v.append(((x0 + x1) / 2, t, b))
+            elif r.get("stroke") and w >= 8 and hh >= 6 and r.get("linewidth", 0) > 0 and r.get("stroking_color") is not None:
+                h += [(t, x0, x1), (b, x0, x1)]
+                v += [(x0, t, b), (x1, t, b)]
+        return h, v
+    except Exception:
+        return None
+
+
+def _strokes_in(strokes: tuple[list[th.Stroke], list[th.Stroke]] | None, box: tuple[float, ...]) -> dict[str, list[list[float]]] | None:
+    """The strokes that touch *box*, for the parent's rule-crossing count; ``None`` when the page's strokes are unknown."""
+    if strokes is None:
+        return None
+    h = [[round(y, 1), round(a, 1), round(c, 1)] for y, a, c in strokes[0] if box[1] <= y <= box[3] and c >= box[0] and a <= box[2]]
+    v = [[round(x, 1), round(a, 1), round(c, 1)] for x, a, c in strokes[1] if box[0] <= x <= box[2] and c >= box[1] and a <= box[3]]
+    return {"h": h, "v": v}
+
+
 class TableJobCollector:
     """Renders and spools one job per eligible table box and an index line per box. Per box, any exception is
     recorded as ``collect_error`` and the parse continues; nothing from here reaches the caller."""
@@ -331,20 +367,26 @@ class TableJobCollector:
         legacy: list[Any],
         evidence: list[Any] | None,
         all_words: list[dict[str, Any]],
+        page: object | None = None,
     ) -> None:
         """Never raises."""
         try:
-            self._collect_page(page_index, page_w, page_h, decisions, legacy, evidence, all_words)
+            self._collect_page(page_index, page_w, page_h, decisions, legacy, evidence, all_words, page)
         except Exception as exc:
             self._warn_once(type(exc).__name__)
 
     def _collect_page(
         self, page_index: int, page_w: float, page_h: float, decisions: list[Any], legacy: list[Any],
-        evidence: list[Any] | None, all_words: list[dict[str, Any]],
+        evidence: list[Any] | None, all_words: list[dict[str, Any]], page: object | None = None,
     ) -> None:
         eligible = [d for d in decisions if d.kind != "not_table"]
         eligible.sort(key=lambda d: (d.box[1], d.box[0]))
-        words_all = [w for w in all_words if str(w.get("text", "")).strip()]
+        # Origin: words the layout pass made up from vector shapes are not in the text layer, so they are not tokens.
+        # They are kept apart (by an explicit flag, not by font name later) and their count is reported per box.
+        text_words = [w for w in all_words if str(w.get("text", "")).strip()]
+        words_all = [w for w in text_words if not th.is_synthetic(w)]
+        synthetic = [w for w in text_words if th.is_synthetic(w)]
+        strokes = _page_strokes(page) if page is not None else None
         for bi, d in enumerate(eligible):
             box = tuple(float(v) for v in d.box)
             rec: dict[str, Any] = {
@@ -352,6 +394,8 @@ class TableJobCollector:
             }
             try:
                 self._one_box(rec, page_index, page_w, page_h, box, legacy, evidence, words_all)
+                rec["synthetic"] = [[round(w["x0"], 1), round(w["top"], 1), round(w["x1"], 1), round(w["bottom"], 1)] for w in synthetic if _in_box(w, box)]
+                rec["rules"] = _strokes_in(strokes, box)
             except Exception as exc:
                 self._warn_once(type(exc).__name__)
                 rec.update(reason="collect_error", png=None)
@@ -504,7 +548,10 @@ def analyse_table(rec: dict[str, Any], result: TableResult | None, failure: str 
         tf_shape=list(shape), shape_equal=(rec.get("evidence_shape") == list(shape)) if rec.get("evidence_shape") else None,
         would_route=would, would_reason=why, reason=why, word_loss_all=round(loss_all, 4), word_loss_content=round(loss_content, 4),
         glyph_candidates=th.glyph_candidates(texts, cells), overlaps=check.overlaps, checks=th.hard_flags(words, cells, shape),
+        synthetic_excluded=len(rec.get("synthetic") or []),
     )
+    rules = rec.get("rules")
+    out["rule_crossings"] = None if rules is None else th.rule_crossings(words, cells, [tuple(x) for x in rules["h"]], [tuple(x) for x in rules["v"]])
     out["route"] = "model" if would == "model" else "evidence"
     return out
 
@@ -705,7 +752,11 @@ class ShadowCoordinator:
             moved.append("weights")
         if model.model_revision != th.MODEL_REVISION:
             moved.append("revision")
-        if model.config_sha256 != config_hash(th.MODEL_LIBRARY_VERSION, th.MODEL_MODE, th.MODEL_WEIGHTS_SHA256, th.MODEL_REVISION):
+        if model.token_definition != th.TOKEN_DEFINITION:
+            moved.append("token_definition")
+        if model.config_sha256 != config_hash(
+            th.MODEL_LIBRARY_VERSION, th.MODEL_MODE, th.MODEL_WEIGHTS_SHA256, th.MODEL_REVISION, th.TOKEN_DEFINITION
+        ):
             moved.append("config")
         return moved
 
@@ -726,6 +777,7 @@ class ShadowCoordinator:
         reasons = stats.fallback_by_reason
         doc = {
             "record_id": stats.record_id, "request_id": stats.request_id, "outcome": stats.outcome,
+            "token_definition": th.TOKEN_DEFINITION,
             "tables_seen": stats.tables_seen if not stats.outcome.startswith("shadow_busy") else None,
             "prefiltered": stats.prefiltered, "sent": stats.sent, "budget": stats.budget, "deadline_hit": stats.deadline_hit,
             "fallback_by_reason": dict(sorted(reasons.items())),
