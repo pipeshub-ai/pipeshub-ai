@@ -274,26 +274,13 @@ async def _unheld_revisions(query: Callable[..., Awaitable[Any]], org: str, ids:
                 break
             out += list(zip(row["vs"] or [], row["revs"] or [], strict=True))
         else:
-            return await _without_replacing_holders(query, org, out)
+            return out
     rows = await query(lambda tx: tx.fetch("""/* pipeshub:graph.stage_states_unheld_revisions */ WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev,
             max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = $2
             AND s.doc->>'virtualRecordId' = ANY($3::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
         SELECT g.v, g.rev FROM g WHERE g.newest < $4::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev""",
                                               org, _STAGES, ids, updated_before_ms), None)
     return [(r["v"], r["rev"]) for r in rows]
-
-
-async def _without_replacing_holders(query: Callable[..., Awaitable[Any]], org: str, pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """``pairs`` without those of a virtual record held by a record that is not COMPLETED (it is replacing its copy, or failed doing so): its
-    revision is the attempt's, so the stage states of the revision the served copy has are still held. The vetted read of graph_0010 states the
-    older rule (a record's content revision alone); this is the other half of it."""
-    if not pairs:
-        return pairs
-    rows = await query(lambda tx: tx.fetch("""/* pipeshub:graph.stage_states_replacing_holders */ SELECT DISTINCT r.doc->>'virtualRecordId' AS v FROM graph.nodes r
-        WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = ANY($2::text[])
-        AND (r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true')""", org, sorted({v for v, _ in pairs})), None)
-    held = {r["v"] for r in rows}
-    return [p for p in pairs if p[0] not in held]
 
 
 class CodeGraphMixin(PgBase):

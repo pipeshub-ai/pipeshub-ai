@@ -86,42 +86,45 @@ async def test_the_pending_write_is_a_compare_and_set(pg_provider, org, org_ctx)
 async def test_the_holder_lookups_use_an_index_on_each_arm(org) -> None:
     """With enough rows that a scan would lose, the single and the batch lookup plan to index scans on both arms, never a sequential scan.
 
-    Seeded and planned as the administrator: the table's owner is the only role that can ANALYZE it, and a plan made on stale statistics proves nothing."""
-    import asyncio
+    Seeded and planned as the administrator, on the driver the other PostgreSQL tests use: the table's owner is the only role that can
+    ANALYZE it, and a plan made on stale statistics proves nothing."""
     import os
 
-    import psycopg
+    import asyncpg
 
     from app.services.graph_db.common.record_visibility import sql_holds_vrid
 
     admin_url = os.environ.get("PG_ADMIN_URL")
     if not admin_url:
-        pytest.skip("PG_ADMIN_URL is not set")
+        pytest.fail("PG_ADMIN_URL is not set")
     lit = chr(39)
+    single = f"SELECT n.id FROM graph.nodes n WHERE n.org_id = {lit}{org}{lit} AND n.coll = 'records' AND {sql_holds_vrid('n', lit + 'v77' + lit)}"
+    batch = (f"SELECT DISTINCT w.v FROM unnest(ARRAY[{lit}v1{lit},{lit}v2{lit}]) AS w(v) JOIN graph.nodes n "
+             f"ON n.org_id = {lit}{org}{lit} AND n.coll = 'records' AND {sql_holds_vrid('n', 'w.v')}")
 
-    def explain(drop_index: bool = False) -> tuple[str, str]:
-        with psycopg.connect(admin_url, autocommit=True) as c:
-            c.execute("DELETE FROM graph.nodes WHERE org_id = %s", (org,))
-            c.execute(
-                """INSERT INTO graph.nodes (org_id, coll, id, doc)
-                   SELECT %s, 'records', 'r' || g, jsonb_build_object('virtualRecordId', 'v' || g, 'orgId', %s::text, 'indexingStatus', 'COMPLETED')
-                   FROM generate_series(1, 30000) g""", (org, org))
-            if drop_index:
-                c.execute("DROP INDEX graph.nodes_record_pending_vrid")
-            try:
-                c.execute("ANALYZE graph.nodes")
-                single = f"SELECT n.id FROM graph.nodes n WHERE n.org_id = {lit}{org}{lit} AND n.coll = 'records' AND {sql_holds_vrid('n', lit + 'v77' + lit)}"
-                batch = (f"SELECT DISTINCT w.v FROM unnest(ARRAY[{lit}v1{lit},{lit}v2{lit}]) AS w(v) JOIN graph.nodes n "
-                         f"ON n.org_id = {lit}{org}{lit} AND n.coll = 'records' AND {sql_holds_vrid('n', 'w.v')}")
-                return tuple("\n".join(r[0] for r in c.execute("EXPLAIN " + q).fetchall()) for q in (single, batch))  # type: ignore[return-value]
-            finally:
-                if drop_index:
-                    c.execute("CREATE INDEX nodes_record_pending_vrid ON graph.nodes (org_id, (doc->>'pendingVirtualRecordId')) WHERE coll = 'records' AND doc ? 'pendingVirtualRecordId'")
+    async def explain(con: asyncpg.Connection) -> list[str]:
+        return ["\n".join(r[0] for r in await con.fetch("EXPLAIN " + q)) for q in (single, batch)]
 
-    for text in await asyncio.to_thread(explain):
-        assert "Seq Scan" not in text, text
-        assert "pending_vrid" in text or "BitmapOr" in text, text
-
-    # the control: with the index dropped the plans no longer use it, so the assertion above would have caught its absence
-    for text in await asyncio.to_thread(explain, True):
-        assert "pending_vrid" not in text, text
+    con = await asyncpg.connect(admin_url)
+    try:
+        await con.execute("DELETE FROM graph.nodes WHERE org_id = $1", org)
+        await con.execute(
+            """INSERT INTO graph.nodes (org_id, coll, id, doc)
+               SELECT $1, 'records', 'r' || g, jsonb_build_object('virtualRecordId', 'v' || g, 'orgId', $1::text, 'indexingStatus', 'COMPLETED')
+               FROM generate_series(1, 30000) g""", org)
+        await con.execute("ANALYZE graph.nodes")
+        for text in await explain(con):
+            assert "Seq Scan" not in text, text
+            assert "pending_vrid" in text or "BitmapOr" in text, text
+        # the control: with the index dropped the plans no longer use it, so the assertion above catches its absence
+        await con.execute("DROP INDEX graph.nodes_record_pending_vrid")
+        try:
+            await con.execute("ANALYZE graph.nodes")
+            for text in await explain(con):
+                assert "pending_vrid" not in text, text
+        finally:
+            await con.execute(
+                "CREATE INDEX nodes_record_pending_vrid ON graph.nodes (org_id, (doc->>'pendingVirtualRecordId')) WHERE coll = 'records' AND doc ? 'pendingVirtualRecordId'"
+            )
+    finally:
+        await con.close()
