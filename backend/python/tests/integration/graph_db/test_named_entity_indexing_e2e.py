@@ -120,7 +120,9 @@ async def test_indexed_values_are_queryable_and_only_for_readable_in_scope_recor
     stored = await provider.get_named_entities_for_record(readable)
     kinds = {row["kind"] for row in stored}
     assert {"organization", "currency", "date"} <= kinds
-    assert not any("4111" in json.dumps(row, default=str) for row in stored)
+    # The declined card's digits are in no stored value. Ids are left out: a random block id or revision can hold "4111".
+    without_ids = [{k: v for k, v in row.items() if not (k.startswith("_") or k.lower().endswith(("id", "ids")))} for row in stored]
+    assert not any("4111" in json.dumps(value, default=str) for value in without_ids)
     doc = await provider.get_document(readable, "records")
     assert doc.get("entityExtractionStatus") is None
 
