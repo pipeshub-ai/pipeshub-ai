@@ -20,20 +20,15 @@ blocks the event loop.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import List, Optional
 
 from app.services.vector_db.models import SparseVector, to_generic_sparse_vector
+from app.utils.env_utils import hf_hub_offline
 from app.utils.logger import create_logger
 
 logger = create_logger("sparse_embeddings")
 
 _MODEL_NAME = "Qdrant/bm25"
-
-
-def _hf_hub_offline_enabled() -> bool:
-    # Mirror huggingface_hub exactly (no strip(), "ON" accepted) so both agree on offline mode.
-    return os.environ.get("HF_HUB_OFFLINE", "").upper() in {"1", "ON", "YES", "TRUE"}
 
 
 class SparseEmbedder:
@@ -82,7 +77,7 @@ class SparseEmbedder:
         try:
             return SparseTextEmbedding(model_name=self._model_name, local_files_only=True)
         except Exception:
-            if _hf_hub_offline_enabled():
+            if hf_hub_offline():
                 raise
             logger.info(
                 "Sparse model '%s' not in local cache; downloading from Hub",

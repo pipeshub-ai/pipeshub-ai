@@ -51,7 +51,7 @@ from app.core.org_context import spawn_detached
 from app.edition import check_runtime_settings
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
-from app.utils.env_utils import env_positive_int
+from app.utils.env_utils import env_positive_int, hf_hub_offline
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1029,12 +1029,7 @@ class ModelManager:
                             model_name, status, self._download_status_lock
                         )
                     except Exception as download_exc:
-                        offline = os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
-                            "1",
-                            "true",
-                            "yes",
-                        }
-                        if offline:
+                        if hf_hub_offline():
                             err = RuntimeError(
                                 "HuggingFace offline mode is on (HF_HUB_OFFLINE=1), so "
                                 f"'{model_name}' cannot be downloaded. Set HF_HUB_OFFLINE=0 "
