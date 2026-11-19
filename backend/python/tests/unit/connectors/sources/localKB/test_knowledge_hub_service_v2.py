@@ -1052,3 +1052,31 @@ async def test_an_origin_sort_reaches_the_folder_query(service, provider) -> Non
     assert result.success is True
     kwargs = provider.get_knowledge_hub_connector_page_v3.call_args.kwargs
     assert (kwargs["sort_field"], kwargs["sort_dir"]) == ("origin", "DESC")
+
+
+@pytest.mark.asyncio
+async def test_a_browse_total_older_than_five_minutes_is_counted_again_without_the_boundary(service, provider, monkeypatch) -> None:
+    """The page's own query counts only the rows past its boundary, so an aged total is asked for again from the start of the folder."""
+    import app.utils.kh_cursor as kh_cursor
+    from app.connectors.sources.localKB.handlers import knowledge_hub_service as khs
+
+    clock = [1_000_000_000_000]
+    monkeypatch.setattr(kh_cursor.time, "time", lambda: clock[0] / 1000)
+    monkeypatch.setattr(khs.time, "time", lambda: clock[0] / 1000)
+    browse = {"user_id": "u1", "org_id": "o1", "parent_id": "p1", "parent_type": "recordGroup", "limit": 1}
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([row("r1", "Record")], total=5, has_more=True, scope=admitted_scope())
+    first = await service.get_nodes(**browse)
+
+    clock[0] += 299_000
+    recent = await service.get_nodes(**browse, cursor=first.pagination.nextCursor)
+    assert recent.pagination.totalItems == 5
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["include_total"] is False
+
+    clock[0] += 2_000
+    provider.get_knowledge_hub_connector_page_v3.reset_mock()
+    provider.get_knowledge_hub_connector_page_v3.side_effect = lambda **kw: page_of(
+        [row("r2", "Second")], total=2 if kw["after"] is None else 1, has_more=kw["after"] is None, scope=admitted_scope())
+    aged = await service.get_nodes(**browse, cursor=first.pagination.nextCursor)
+    assert aged.pagination.totalItems == 2, "the whole folder, as the viewer may read it now"
+    whole = provider.get_knowledge_hub_connector_page_v3.call_args_list[-1].kwargs
+    assert (whole["after"], whole["include_total"]) == (None, True)

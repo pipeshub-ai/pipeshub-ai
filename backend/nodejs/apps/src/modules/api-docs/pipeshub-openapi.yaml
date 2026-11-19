@@ -8633,8 +8633,12 @@ components:
                 Items in the whole result. For a search by a connected app
                 limited to spaces, folders or files, the matches found so far: it can
                 grow from page to page and is final once `hasNext` is false.
-                Otherwise exact unless `totalCapped` is `true`. Never counts an item the
-                caller cannot read.
+                Otherwise exact unless `totalCapped` is `true`. Counted on the first page
+                and carried by the cursor, so it reflects access when it was counted: a
+                later page carries that count even if the caller has since lost access to
+                an item in it (the page's rows are always checked). The next page
+                requested once the carried count is more than five minutes old counts
+                again; nothing recounts between requests.
             totalCapped:
               type: boolean
               description: |
