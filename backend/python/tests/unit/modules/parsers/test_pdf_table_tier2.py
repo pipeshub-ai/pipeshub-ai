@@ -160,3 +160,28 @@ def test_a_single_column_of_text_between_rules_is_not_made_a_table(monkeypatch) 
     finally:
         pdf.close()
 
+
+
+def test_a_header_with_no_rule_above_it_does_not_swallow_the_first_body_row(monkeypatch) -> None:
+    """H1: when the text above the first rule is the header, the band under the rule is body even if its first row looks
+    like a wrap of the long labels above it."""
+    xs = [64.0, 164.0, 264.0]
+
+    def draw(c: canvas.Canvas) -> None:
+        for y in (314, 350, 386):
+            hrule(c, y)
+        c.setFont("Helvetica", 8)
+        for x, t in zip(xs, ("Quantity-label-xyz", "Another-long-label", "Third-long-label-ab")):
+            c.drawString(x, top(308), t)
+        for k, y in enumerate((332, 368)):
+            for x, t in zip(xs, (f"R{k}", f"v{k}", f"w{k}")):
+                c.drawString(x, top(y), t)
+
+    pdf, page = page_of(draw)
+    try:
+        ts = evidence_tables(page, (60, 296, 440, 390), monkeypatch)
+        assert len(ts) == 1
+        g = ts[0].table_grid
+        assert g[0][0].startswith("Quantity") and g[1][0] == "R0" and g[2][0] == "R1", g
+    finally:
+        pdf.close()

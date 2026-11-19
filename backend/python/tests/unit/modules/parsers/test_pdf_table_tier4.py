@@ -93,7 +93,8 @@ def test_defects_see_words_split_by_a_cut_and_fragment_rows() -> None:
         frag = tq.candidate_from_cuts("frag", 0, [[ln] for ln in band_lines(words)], [150.0, 240.0], BOX)
         for row in frag.cells[1:]:
             row[0] = (row[0][0], row[0][1], "")
-        assert tq.defects(frag, words, [], [], BOX)["fragment_rows"] == 1.0
+        d = tq.defects(frag, words, [], [], BOX)
+        assert d["fragment_rows"] == 1.0 and d["strong"] and d["word_split"] == 0 and d["under_split"] == 0
     finally:
         pdf.close()
 
@@ -162,3 +163,10 @@ def test_a_new_grid_that_scores_lower_or_is_defective_does_not_replace_the_legac
         assert not tr.legacy_scores_higher(page, [], BOX, merged, words, [], [], W, H)
     finally:
         pdf.close()
+
+
+def test_a_wrapped_key_line_joins_the_row_above_even_though_its_key_cell_has_text() -> None:
+    bounds = [(0.0, 100.0), (100.0, 300.0)]
+    lines = _lines([("Alpha beta gamma", 10, 0), ("delta", 10, 9), ("Next", 10, 40), ("value", 110, 40)])
+    rows = tt.continuation_rows(lines, [100.0], ruled_band=False, bounds=bounds)
+    assert [len(r) for r in rows] == [2, 1]
