@@ -3044,7 +3044,7 @@ def _apply_table_evidence(
         if not any(_boxes_overlap(b, k) for k in kept):
             kept.append(b)
     try:
-        decisions = table_reconcile.reconcile(page, all_words, kept)
+        decisions = table_reconcile.reconcile(page, all_words, kept, legacy)
     except Exception:  # the evidence path never loses the legacy tables
         logger.warning("Table evidence failed; keeping the legacy tables", exc_info=True)
         return legacy, []

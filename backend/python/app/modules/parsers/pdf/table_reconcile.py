@@ -485,9 +485,11 @@ def ruled_table(
 
 
 def decide_box(
+    page: Page, page_w: float, page_h: float,
     box: tuple[float, float, float, float], words: list[dict[str, Any]],
     lattices: list[Table], hrules: Sequence[Rule], vrules: Sequence[Rule],
     others: Sequence[tuple[float, float, float, float]] = (), claimed: set[int] | None = None,
+    legacy: Sequence[ola.LayoutRegion] = (),
 ) -> Decision:
     """What the model box ``box`` holds (module docstring)."""
     claimed = claimed if claimed is not None else set()
@@ -529,26 +531,49 @@ def decide_box(
             return Decision(box, "not_table", not_table="toc")
         if len(ys) < 3 and is_margin_prose(lines):  # ruled rows are table evidence; tagged prose has none
             return Decision(box, "not_table", not_table="margin_prose")
-    if len(ys) >= 3:
-        from app.modules.parsers.pdf import table_quality, table_tiers
+    from app.modules.parsers.pdf import table_quality, table_tiers
 
+    if not lines:
+        return Decision(box, "none", reason=why)
+    text_words = [w for w in words if _in_box(w, extent)]
+
+    def score(c: table_quality.Cand) -> table_quality.Cand:
+        c.f = table_quality.features(c, text_words, hrules, vrules, extent)
+        c.q = table_quality.quality(c.f)
+        return c
+
+    def region_of(c: table_quality.Cand, kind: str) -> Decision:
+        grid = ola._trim_empty_rows_cols(c.grid)
+        region = ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=extent, text=ola._grid_to_text(grid), table_grid=grid)
+        return Decision(box, kind, [region], reason=f"tier {c.tier} {c.name} q={c.q:.2f}")
+
+    ruled: table_quality.Cand | None = None
+    if len(ys) >= 3:
         cand, bad = table_tiers.ruled_rows(extent, ys, lines, hrules, hints)
         if cand is None:
-            return Decision(box, "none", reason=f"tier 2: {bad}")
-        text_words = [w for w in words if _in_box(w, extent)]
-        cand.f = table_quality.features(cand, text_words, hrules, vrules, extent)
-        cand.q = table_quality.quality(cand.f)
-        if cand.q >= table_quality.Q_MIN:
-            grid = ola._trim_empty_rows_cols(cand.grid)
-            region = ola.LayoutRegion(
-                type=ola.LayoutRegionType.TABLE, bbox=extent, text=ola._grid_to_text(grid), table_grid=grid,
-            )
-            return Decision(box, "ruled_rows", [region], reason=f"q={cand.q:.2f}")
-    return Decision(box, "none", reason=why or "no ruled table")
+            why = f"tier 2: {bad}"
+        else:
+            ruled = score(cand)
+            if (ruled.q or 0.0) >= table_quality.Q_MIN:
+                return region_of(ruled, "ruled_rows")
+    if not any(ola._boxes_overlap(r.bbox, box) for r in legacy):
+        return Decision(box, "none", reason=why)  # the text tiers replace a table; they never make a new one
+    best = ruled
+    for c in table_tiers.text_alignment(page, extent, lines, page_w, page_h):
+        score(c)
+        # ties go to more rows, then more columns; never to list order
+        if best is None or (c.q or 0.0) > (best.q or 0.0) + 1e-9 or (
+            abs((c.q or 0.0) - (best.q or 0.0)) <= 1e-9 and (len(c.rows), c.ncols) > (len(best.rows), best.ncols)
+        ):
+            best = c
+    if best is not None and (best.q or 0.0) >= table_quality.Q_MIN:
+        return region_of(best, "text_tier")
+    return Decision(box, "none", reason=why)
 
 
 def reconcile(
     page: Page, words: list[dict[str, Any]], boxes: list[tuple[float, float, float, float]],
+    legacy: Sequence[ola.LayoutRegion] = (),
 ) -> list[Decision]:
     """One decision per model box (pixel boxes, page coordinates)."""
     if not boxes:
@@ -566,7 +591,7 @@ def reconcile(
     claimed: set[int] = set()
     done: dict[int, Decision] = {}
     for i in sorted(range(len(boxes)), key=lambda i: -best_iou(boxes[i])):
-        done[i] = decide_box(boxes[i], words, lattices, hrules, vrules, boxes, claimed)
+        done[i] = decide_box(page, float(page.width), float(page.height), boxes[i], words, lattices, hrules, vrules, boxes, claimed, legacy)
     return [done[i] for i in range(len(boxes))]
 
 

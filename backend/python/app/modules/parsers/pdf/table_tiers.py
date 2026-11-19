@@ -8,6 +8,7 @@ a rule that closes a cell of one column has cut it first.
 """
 from __future__ import annotations
 
+import statistics
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -16,16 +17,22 @@ from app.modules.parsers.pdf import opencv_layout_analyzer as ola
 from app.modules.parsers.pdf.table_quality import (
     Cand,
     candidate_from_cuts,
+    candidate_from_table,
     col_bounds,
     cx,
     cy,
+    filled_set,
+    seg_by_col,
     split_header,
+    wraps_into,
 )
 from app.modules.parsers.pdf.table_reconcile import SNAP, Rule, segments
 from app.modules.parsers.pdf.table_rows import split_band_records
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from pdfplumber.page import Page
 
 Word = dict[str, Any]
 Line = dict[str, Any]
@@ -175,3 +182,63 @@ def ruled_rows(
     if len(groups) < 2:
         return None, "under 2 rows"
     return candidate_from_cuts("ruled_rows", 2, groups, cuts, extent, header_rows=nhead), ""
+
+
+PAD = 2.0  # pt the extent grows by for the text-alignment finder
+TEXT_TEXT = {"vertical_strategy": "text", "horizontal_strategy": "text", "intersection_tolerance": 5}
+CONT_GAP = 0.6  # line heights: a wrapped line sits closer than this to the line above
+CONT_BIMODAL = 2.0  # the gaps between lines are bimodal when the largest is this many times the smallest
+CONT_SMALL = 0.4  # line heights: with bimodal gaps a continuation line sits closer than this
+
+
+def continuation_rows(
+    lines: list[Line], cuts: Sequence[float], *, ruled_band: bool, bounds: Sequence[tuple[float, float]] | None = None,
+) -> list[list[Line]]:
+    """Lines to rows. A line joins the row above when every segment of it sits in a column where the line above
+    wrapped, or its key column is empty and (inside a ruled band, or with bimodal gaps and a small gap)."""
+    if not lines:
+        return []
+    gaps = [b["top"] - a["bottom"] for a, b in zip(lines, lines[1:])]
+    h = statistics.median(ln["h"] for ln in lines)
+    bimodal = bool(gaps) and max(gaps) >= CONT_BIMODAL * max(0.5, min(gaps))
+    rows = [[lines[0]]]
+    for g, prev, ln in zip(gaps, lines, lines[1:]):
+        key_empty = 0 not in filled_set(ln, cuts)
+        wrap = False
+        if bounds is not None:
+            up, lo = seg_by_col(prev, cuts), seg_by_col(ln, cuts)
+            wrap = bool(lo) and all(k in up and wraps_into(up[k], lo[k], k, bounds) for k in lo) and g <= CONT_GAP * h
+        if wrap or (key_empty and (ruled_band or (bimodal and g <= CONT_SMALL * h and 2.0 * g <= max(gaps)))):
+            rows[-1].append(ln)
+        else:
+            rows.append([ln])
+    return rows
+
+
+def text_alignment(page: Page, extent: Box, lines: list[Line], page_w: float, page_h: float) -> list[Cand]:
+    """Tier 4: candidates from the text's own alignment: the text-strategy table of the padded extent, the whitespace
+    projection with one row per line, and the projection with wrapped lines joined. A text-strategy table whose cuts
+    run through words is dropped."""
+    cands: list[Cand] = []
+    padded = ola._clamp_bbox((extent[0] - PAD, extent[1] - PAD, extent[2] + PAD, extent[3] + PAD), page_w, page_h)
+    try:
+        found = page.within_bbox(padded).find_tables(TEXT_TEXT)
+    except Exception:
+        found = []
+    body = lines[1:] if len(lines) > 2 else lines
+    if found:
+        t = min(found, key=lambda t: (-len(t.cells), t.bbox[1]))
+        try:
+            c = candidate_from_table("text_text", 4, t)
+            cc = sorted({x1 for row in c.cells for (_, x1, _) in row[:-1]})
+            if repair_cuts(cc, body, extent[0], extent[2]) == cc:
+                cands.append(c)
+        except Exception:
+            pass
+    rc = repair_cuts(proj_cuts(lines), body, extent[0], extent[2])
+    if rc is not None:
+        cands.append(candidate_from_cuts("projection", 4, [[ln] for ln in lines], rc, extent))
+        cands.append(candidate_from_cuts(
+            "projection_merged", 4, continuation_rows(lines, rc, ruled_band=False, bounds=col_bounds(rc, extent[0], extent[2])), rc, extent,
+        ))
+    return cands
