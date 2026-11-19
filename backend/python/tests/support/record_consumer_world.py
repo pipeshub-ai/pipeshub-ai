@@ -83,7 +83,9 @@ def injected_clock(*modules: Any) -> Iterator[FakeTime]:  # noqa: ANN401
 
 
 def clock_modules() -> list[Any]:
-    from app.services.messaging.kafka.consumer import indexing_consumer as kafka_consumer
+    from app.services.messaging.kafka.consumer import (
+        indexing_consumer as kafka_consumer,
+    )
     from app.services.messaging.redis_streams import indexing_consumer as redis_consumer
     from app.services.messaging.scheduling import drr_scheduler
 
@@ -211,9 +213,13 @@ async def kafka_world(
     produce: bool = True,
     config_topics: list[str] | None = None,
 ) -> AsyncIterator[KafkaRun]:
-    from app.services.messaging.kafka.consumer import indexing_consumer as kafka_consumer
+    from app.services.messaging.kafka.consumer import (
+        indexing_consumer as kafka_consumer,
+    )
     from app.services.messaging.kafka.consumer import remembered as remembered_module
-    from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
+    from app.services.messaging.kafka.consumer.indexing_consumer import (
+        IndexingKafkaConsumer,
+    )
 
     broker = FakeKafkaBroker()
     factory = broker.consumer_factory()
@@ -317,7 +323,9 @@ async def redis_world(
 ) -> AsyncIterator[RedisRun]:
     import fakeredis.aioredis as fakeredis_aio
 
-    from app.services.messaging.redis_streams.indexing_consumer import IndexingRedisStreamsConsumer
+    from app.services.messaging.redis_streams.indexing_consumer import (
+        IndexingRedisStreamsConsumer,
+    )
 
     stream_names = topics or [f"{KAFKA_TOPIC}.{i}" for i in range(lanes)]
     redis = fakeredis_aio.FakeRedis(decode_responses=True)
@@ -348,6 +356,7 @@ async def redis_world(
         acks: list[tuple[str, str]] = []
 
         async def ack(stream: str, message_id: str, *_a: Any, **_k: Any) -> None:  # noqa: ANN401
+            await redis.xack(stream, GROUP, message_id)  # as the real one does, so nothing is handed out twice
             acks.append((stream, message_id))
 
         consumer._ack_message = ack
@@ -492,7 +501,7 @@ async def run_pg(
     task = asyncio.create_task(consumer._consume_loop())
     deadline = real_time.monotonic() + max_seconds
     try:
-        while len(handler.seen) < len(messages) and real_time.monotonic() < deadline:
+        while len(handler.seen) < len(messages) and real_time.monotonic() < deadline:  # noqa: ASYNC110 - polls the consumer's own loop
             await asyncio.sleep(0.005)
         await asyncio.sleep(0.02)
     finally:
@@ -549,7 +558,9 @@ def constructor_state(kind: str) -> dict[str, Any]:
         consumer = PgMessagingConsumer(LOGGER, RedisStreamsConfig(topics=["a", "b"], group_id="g"), indexing=True)
         return {"topics": list(consumer.config.topics), "ordered": consumer._ordered, "indexing": consumer.indexing}
     if kind == "kafka":
-        from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
+        from app.services.messaging.kafka.consumer.indexing_consumer import (
+            IndexingKafkaConsumer,
+        )
 
         consumer = IndexingKafkaConsumer(
             LOGGER,
@@ -561,7 +572,9 @@ def constructor_state(kind: str) -> dict[str, Any]:
         )
         topics = list(consumer.kafka_config.topics)
     else:
-        from app.services.messaging.redis_streams.indexing_consumer import IndexingRedisStreamsConsumer
+        from app.services.messaging.redis_streams.indexing_consumer import (
+            IndexingRedisStreamsConsumer,
+        )
 
         consumer = IndexingRedisStreamsConsumer(
             LOGGER, RedisStreamsConfig(host="h", port=1, client_id="c", group_id="g", topics=["t"]),
