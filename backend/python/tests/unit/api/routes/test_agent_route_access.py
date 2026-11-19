@@ -1496,6 +1496,10 @@ class TestUnboundServiceAgentKnowledgeByNonOwner:
     @pytest.fixture
     def service_agent(self, graph: InMemoryGraph) -> InMemoryGraph:
         graph.nodes[AGENTS]["shared"]["isServiceAccount"] = True
+        # A service agent may only be given the org's team connectors; the save checks they exist.
+        for key in ("conn-1", "conn-owner-only"):
+            graph.add_node("apps", {"_key": key, "name": key, "type": "DRIVE", "scope": "team", "orgId": "org-1",
+                                    "createdBy": "u-alice"})
         graph.add_node("agentKnowledge", {"_key": "kn-1", "connectorId": "conn-1", "filters": '{"recordGroups": ["g2", "g1"]}'})
         graph.add_edge("agentHasKnowledge", {"_from": f"{AGENTS}/shared", "_to": "agentKnowledge/kn-1"})
         graph.add_edge(PERMISSION, {
