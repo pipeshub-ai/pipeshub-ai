@@ -217,27 +217,81 @@ class PDFPlumberOpenCVProcessor:
         self.config = config
 
     async def parse_document(
-        self, doc_name: str, content: bytes | BytesIO
+        self,
+        doc_name: str,
+        content: bytes | BytesIO,
+        *,
+        table_model: bool = False,
+        record_id: str | None = None,
     ) -> List[ParsedPageData]:
+        """Parse the layout of a PDF.
+
+        ``table_model=True`` (the record-indexing callers) lets the structure-model shadow run collect its jobs while
+        the layout is parsed and start after the parse has returned; it changes nothing in the result. ``record_id``
+        names the record in that run's log lines; ``None`` means unknown.
+        """
         stream = content if isinstance(content, BytesIO) else BytesIO(content)
         stream.seek(0)
         pdf_bytes = stream.read()
 
+        coordinator, admission, request_id = self._shadow_admit(record_id, table_model=table_model)
         # The worker may run as long as the PDF record it parses for.
-        pages_data = await parse_pool.submit(
-            parse_pdf_layout,
-            pdf_bytes,
-            label=doc_name,
-            size=len(pdf_bytes),
-            timeout=messaging_env.pdf_record_processing_timeout,
-            kind=ParseKind.PDF_LAYOUT,
-        )
+        try:
+            if admission is None:
+                pages_data = await parse_pool.submit(
+                    parse_pdf_layout,
+                    pdf_bytes,
+                    label=doc_name,
+                    size=len(pdf_bytes),
+                    timeout=messaging_env.pdf_record_processing_timeout,
+                    kind=ParseKind.PDF_LAYOUT,
+                )
+            else:
+                pages_data = await parse_pool.submit(
+                    parse_pdf_layout,
+                    pdf_bytes,
+                    admission.spool_dir,
+                    label=doc_name,
+                    size=len(pdf_bytes),
+                    timeout=messaging_env.pdf_record_processing_timeout,
+                    kind=ParseKind.PDF_LAYOUT,
+                )
+        except BaseException:
+            if admission is not None:
+                coordinator.abandon(admission)
+            raise
+        if admission is not None:
+            try:
+                coordinator.start(admission, record_id, request_id)
+            except Exception:
+                coordinator.abandon(admission)
         for pd in pages_data:
             self.logger.debug(
                 f"Page {pd.page_number}: detected {len(pd.regions)} layout regions"
             )
         self._log_table_hybrid(pages_data)
         return pages_data
+
+    def _shadow_admit(self, record_id: str | None, *, table_model: bool):  # noqa: ANN202
+        """(coordinator, admission, request id) for the structure-model shadow run, decided before the parse; all
+        ``None`` when the run is off, not asked for, or this document is not shadowed."""
+        if not table_model:
+            return None, None, None
+        try:
+            from app.modules.parsers.pdf.table_hybrid_flow import (
+                get_coordinator,
+                shadow_active,
+            )
+            from app.utils.request_context import current_display_id
+
+            if not shadow_active():
+                return None, None, None
+            request_id = current_display_id()
+            coordinator = get_coordinator()
+            return coordinator, coordinator.admit(record_id, request_id), request_id
+        except Exception:
+            self.logger.warning("table hybrid shadow: not started", exc_info=True)
+            return None, None, None
 
     def _log_table_hybrid(self, pages_data: list[ParsedPageData]) -> None:
         """Shadow mode only: one line per document with the routed share and the reasons (no cell text)."""

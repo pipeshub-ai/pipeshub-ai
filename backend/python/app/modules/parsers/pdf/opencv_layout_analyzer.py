@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from pdfplumber.page import Page
     from pdfplumber.table import Row, Table
 
+    from app.modules.parsers.pdf.table_hybrid_flow import TableJobCollector
+
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
@@ -1548,6 +1550,8 @@ def extract_layout_regions(
     pdf_path: Optional[str] = None,
     raster_cache: Optional[DocumentRasterCache] = None,
     model_raster_cache: Optional[DocumentRasterCache] = None,
+    table_collector: "TableJobCollector | None" = None,
+    page_index: int = 0,
 ) -> List[LayoutRegion]:
     page_w = float(page.width)
     page_h = float(page.height)
@@ -1608,6 +1612,7 @@ def extract_layout_regions(
         )
         table_regions, suppressed_boxes = _apply_table_evidence(
             page, page_w, page_h, table_regions, all_words, model_boxes["table"],
+            collector=table_collector, page_index=page_index,
         )
 
     # Lazy raster cache: rasterization is expensive, so we set up the
@@ -3049,6 +3054,8 @@ def _apply_table_evidence(
     legacy: list[LayoutRegion],
     all_words: list[dict[str, Any]],
     boxes: list[Any],
+    collector: "TableJobCollector | None" = None,
+    page_index: int = 0,
 ) -> tuple[list[LayoutRegion], list[tuple[float, float, float, float]]]:
     """``PDF_TABLE_EXTRACTION``: legacy (the default) returns ``legacy``; shadow computes and logs the
     ruled-table decisions and returns ``legacy``; evidence applies them (see ``table_reconcile``).
@@ -3080,6 +3087,13 @@ def _apply_table_evidence(
             "table evidence (shadow): %s",
             [(d.kind, d.not_table or d.reason, len(d.tables)) for d in decisions],
         )
+        if collector is not None:
+            # Jobs for the structure model, spooled for the parent; the regions returned are the legacy ones, as before.
+            try:
+                evidence, _ = table_reconcile.apply(legacy, decisions)
+            except Exception:
+                evidence = None
+            collector.collect_page(page_index, page_w, page_h, decisions, legacy, evidence, all_words)
         return legacy, []
     return table_reconcile.apply(legacy, decisions)
 
