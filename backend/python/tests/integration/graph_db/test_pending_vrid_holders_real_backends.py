@@ -242,3 +242,38 @@ async def test_the_batch_holder_lookup_plans_to_index_seeks_and_the_plan_stops_u
                 assert await client.ensure_persistent_index(RECORDS, ["pendingVirtualRecordId"], sparse=True)
     finally:
         await _unseed(provider, run)
+
+
+async def test_a_swapped_record_stays_writable_under_the_older_strict_schema(world) -> None:
+    """Scenario 21 (ArangoDB): the commit removes the pending attribute, so a process that re-applies the schema of the release before this one
+    can still write to every record that swapped (a stored null would be rejected by its closed rule). A record mid-swap carries the attribute
+    and is the one that waits for a process of the new release."""
+    provider, run = world
+    if isinstance(provider, Neo4jProvider):
+        pytest.skip("the older strict schema is ArangoDB's")
+    import copy
+
+    from app.schema.arango.documents import record_schema
+
+    x, y, key = f"{run}-x", f"{run}-y", f"{run}-a"
+    await _put(provider, key, x, "IN_PROGRESS", pendingVirtualRecordId=y)
+    assert await provider.update_node_fields_if(
+        key, RECORDS, {"virtualRecordId": y, "indexingStatus": "COMPLETED"},
+        [Cond("virtualRecordId", EQ, x), Cond("pendingVirtualRecordId", EQ, y), Cond("indexingStatus", ONE_OF, RUNNING)], unset=["pendingVirtualRecordId"],
+    )
+    older = copy.deepcopy(record_schema)
+    del older["rule"]["properties"]["pendingVirtualRecordId"]
+    client = provider.http_client
+    session = await client._get_session()
+    url = f"{client.base_url}/_db/{client.database}/_api/collection/{RECORDS}/properties"
+    async with session.put(url, json={"schema": older}) as resp:
+        assert resp.status == 200
+    try:
+        assert await provider.update_node(key, RECORDS, {"indexingStatus": "FAILED", "reason": "x"})  # the older rule accepts the committed record
+        # the control: the same rule rejects a record that still carries the attribute
+        await _put(provider, f"{run}-b", x, "IN_PROGRESS")
+        with pytest.raises(Exception, match="schema|1620"):
+            await provider.update_node(f"{run}-b", RECORDS, {"pendingVirtualRecordId": y})
+    finally:
+        async with session.put(url, json={"schema": record_schema}) as resp:
+            assert resp.status == 200
