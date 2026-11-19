@@ -28,7 +28,7 @@ import { LoginTicket, OAuth2Client } from 'google-auth-library';
 import { createUserAccountRouter } from '../../../src/modules/auth/routes/userAccount.routes';
 import { createOrgAuthConfigRouter } from '../../../src/modules/auth/routes/orgAuthConfig.routes';
 import * as userAdmin from '../../../src/modules/user_management/services/user-admin.service';
-import { UserAccountController } from '../../../src/modules/auth/controller/userAccount.controller';
+import { GOOGLE_ID_TOKEN_MISSING, UserAccountController } from '../../../src/modules/auth/controller/userAccount.controller';
 import { SessionService } from '../../../src/modules/auth/services/session.service';
 import { JitProvisioningService } from '../../../src/modules/auth/services/jit-provisioning.service';
 import { IamService } from '../../../src/modules/auth/services/iam.service';
@@ -131,6 +131,7 @@ describe('auth audit lines (HTTP)', function () {
   let iam: Record<string, (...args: any[]) => Promise<any>>;
   let savedLevel: string;
   let maxAuthRequestsPerMinute: number;
+  let googleCheck: sinon.SinonStub;
 
   const root = () => (Logger.getInstance() as any).logger as winston.Logger;
   const audits = () =>
@@ -360,7 +361,7 @@ describe('auth audit lines (HTTP)', function () {
     sinon.stub(groupRepo, 'getGroupRepository').returns({ addToEveryone: async () => undefined } as any);
     sinon.stub(resetLinkRepo, 'getResetLinkRepository').returns({ claim: async () => resetLinkClaimed, release: async () => undefined } as any);
     // `email|second` tokens: Google verifies the token twice per sign-in (provider flow, then the method step).
-    stubGoogleIdTokenCheck().callsFake((async (idToken: string) => {
+    googleCheck = stubGoogleIdTokenCheck().callsFake((async (idToken: string) => {
       // google-auth-library quotes the token it refuses.
       if (idToken.startsWith('eyJ')) throw new Error(`Invalid token signature: ${idToken}`);
       const [, email] = idToken.split('|');
@@ -618,6 +619,72 @@ describe('auth audit lines (HTTP)', function () {
         { event: 'auth.sign_in', outcome: 'success', actor: created, auth_method: 'google' },
       ]);
       expectNoPrivateData();
+    });
+
+    describe('T31 Google: the ID token sent bare or as { credential } (F60)', () => {
+      const token = `${GOOGLE_TOKEN}|${bob.email}`;
+      for (const [form, credentials] of [
+        ['bare', token],
+        // Google's sign-in button response, passed on as is.
+        ['{ credential, select_by }', { credential: token, select_by: 'btn' }],
+      ] as const) {
+        it(`a ${form} token signs in: 200, one success line, and both checks are handed the token string`, async () => {
+          const r = await attempt({ method: 'google', credentials });
+          expect(r.status).to.equal(200);
+          expect(r.body.message).to.equal('Fully authenticated');
+          expect(audits()).to.deep.equal([{ event: 'auth.sign_in', outcome: 'success', actor: bob._id, auth_method: 'google' }]);
+          expect(googleCheck.args.map((a) => a[0])).to.deep.equal([token, token]);
+          expect(failureLines()).to.deep.equal([]);
+          expectNoPrivateData();
+        });
+      }
+
+      it('JIT with { credential }: the new account, then its sign-in (not an account created and then a 500)', async () => {
+        jit = true;
+        const newcomerToken = `${GOOGLE_TOKEN}|${NEWCOMER}`;
+        const r = await attempt({ method: 'google', credentials: { credential: newcomerToken } });
+        expect(r.status).to.equal(200);
+        const created = directory[NEWCOMER]!._id;
+        expect(audits()).to.deep.equal([
+          { event: 'auth.jit_provision', outcome: 'success', actor: created, auth_method: 'google' },
+          { event: 'auth.sign_in', outcome: 'success', actor: created, auth_method: 'google' },
+        ]);
+        expect(googleCheck.args.map((a) => a[0])).to.deep.equal([newcomerToken, newcomerToken]);
+        expect(failureLines()).to.deep.equal([]);
+        expectNoPrivateData();
+      });
+
+      for (const [name, credentials] of [
+        ['no credential', {}],
+        ['only a Microsoft idToken', { idToken: token }],
+        ['an empty credential', { credential: '' }],
+        ['a null credential', { credential: null }],
+        ['a numeric credential', { credential: 123 }],
+        ['a boolean credential', { credential: true }],
+        ['the token inside an array', { credential: [token] }],
+        ['the token one object deeper', { credential: { credential: token } }],
+      ] as const) {
+        it(`${name}: 400 bad request, one sso_token_invalid line at WARN, and Google is never asked`, async () => {
+          const r = await attempt({ method: 'google', credentials });
+          expect(r.status).to.equal(400);
+          expect(r.body.error).to.include({ code: 'HTTP_BAD_REQUEST', message: GOOGLE_ID_TOKEN_MISSING });
+          expect(audits()).to.deep.equal([signInFailure('sso_token_invalid', undefined, 'google')]);
+          expect(failureLines()).to.have.length(1);
+          expect(failureLines()[0]).to.include({ level: 'warning', status: 400, error_class: 'bad_request', error_type: 'BadRequestError' });
+          expect(googleCheck.called).to.equal(false);
+          expectNoPrivateData();
+        });
+      }
+
+      it('[guard] an empty or non-string bare credential is still refused by validation, not audited', async () => {
+        for (const credentials of ['', 42]) {
+          const r = await attempt({ method: 'google', credentials });
+          expect(r.status).to.equal(400);
+          expect(r.body.error.code).to.equal('VALIDATION_ERROR');
+          expect(audits()).to.deep.equal([]);
+        }
+        expect(googleCheck.called).to.equal(false);
+      });
     });
 
     it('T11 Microsoft success; Microsoft unreachable is no audit line and one error line with the cause', async () => {
