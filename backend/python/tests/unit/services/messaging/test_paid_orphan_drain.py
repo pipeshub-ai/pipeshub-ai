@@ -202,3 +202,39 @@ async def test_with_the_check_off_nothing_is_bound_and_the_run_is_what_it_was(mo
 
 
 _ = logging
+
+
+async def test_a_run_that_starts_under_a_marker_reads_the_record_once_before_its_first_paid_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QA-G32B-4 (M7): the handler itself sets ``confirm_first`` when a marker is there at the start, so a graph delete that
+    came before the marker write (the marker never changes for this run) is found at the first paid call, by one read."""
+    run = Run(monkeypatch, marker_at_start="100")
+    seen: dict[str, Any] = {}
+
+    async def parse(r: Run, *_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        guard = current_guard(ORG, REC)
+        assert guard is not None
+        seen["confirm_first"] = guard.confirm_first
+        r.gone = True                                                              # deleted in the graph, the marker is unchanged
+        await r.cache.get_or_compute(KEY, r.pay)
+        seen["paid"] = r.paid
+
+    gp, (_, raised) = await run.drive(parse)
+    assert seen == {"confirm_first": True} and isinstance(raised, RecordGone)
+    assert run.paid == 0 and run.failed_writes(gp) == []
+    # the record read at the start, one confirming read at the first paid call, and the processor's own re-read
+    assert gp.get_document.await_count >= 2
+
+
+async def test_a_run_that_starts_with_no_marker_does_not_confirm_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = Run(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    async def parse(r: Run, *_a: Any, **_k: Any) -> Any:  # noqa: ANN401
+        guard = current_guard(ORG, REC)
+        assert guard is not None
+        seen["confirm_first"] = guard.confirm_first
+        await r.cache.get_or_compute(KEY, r.pay)
+        raise ValueError("bad file")
+
+    await run.drive(parse)
+    assert seen == {"confirm_first": False} and run.paid == 1

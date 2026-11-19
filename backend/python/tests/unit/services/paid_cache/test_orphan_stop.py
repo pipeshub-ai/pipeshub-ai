@@ -300,3 +300,41 @@ async def test_the_markers_are_read_with_single_key_gets_so_a_cluster_serves_the
     assert client.seen == ["GET", "GET"]                                          # one key per command
     assert await cache._deleted(ORG, REC) is True                                 # the fence is untouched
     assert "EXISTS" in client.seen
+
+
+async def test_parallel_checks_when_the_read_fails_make_one_read_and_share_the_failure(world: Any) -> None:  # noqa: ANN401
+    """QA-G32B-2: the failed read opens the retry window for every caller that waited on it; no one reads again."""
+    world.guard.wm_record = "100"
+    await _delete_marker(world, "200")
+    world.graph.delay = 0.05
+    world.graph.answer = ConnectionError("graph down")
+    backend = await world.cache._backend()
+    results = await asyncio.gather(*(world.guard.check(backend) for _ in range(8)))
+    assert world.graph.reads == 1 and results == [False] * 8
+    assert world.guard.wm_record == "100" and not world.guard.gone       # R4-2: no watermark advance
+
+
+async def test_a_hung_graph_read_is_bounded_fails_open_and_stalls_no_caller_beyond_the_bound(world: Any) -> None:  # noqa: ANN401
+    """QA-G32B-2: 8 parallel callers, the graph never answers. One read, the timeout fails it open, the watermark stays,
+    nothing is stopped, and the next calls inside the retry window do not wait at all."""
+    assert DeliveryGuard.__dataclass_fields__["probe_timeout_s"].default == orphan.PROBE_TIMEOUT_S <= 5.0
+    world.guard.probe_timeout_s = 0.2
+    world.guard.wm_record = "100"
+    await _delete_marker(world, "200")
+    world.graph.delay = 3600
+    backend = await world.cache._backend()
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    results = await asyncio.gather(*(world.guard.check(backend) for _ in range(8)))
+    assert loop.time() - t0 < 1.5, "8 callers waited one after another on the hung read"
+    assert world.graph.reads == 1 and results == [False] * 8
+    assert world.guard.wm_record == "100" and not world.guard.gone
+    t1 = loop.time()
+    paid = Paid()
+    await world.cache.get_or_compute(_key(0), paid)                     # inside the retry window: no read, no wait
+    assert loop.time() - t1 < 0.1 and paid.calls == 1 and world.graph.reads == 1
+    world.clock[0] += orphan.RETRY_S + 1                                 # the graph is back and the record is gone
+    world.graph.delay = 0
+    world.graph.answer = ProbeResult(found=False)
+    with pytest.raises(RecordGone):
+        await world.cache.get_or_compute(_key(1), paid)

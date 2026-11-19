@@ -1917,7 +1917,10 @@ class RecordEventHandler(BaseEventService):
         guard = DeliveryGuard(
             org_id=org_id, record_id=record_id,
             wm_record=markers[0] if markers else None, wm_org=markers[1] if markers else None,
-            created=record.get("createdAtTimestamp"), probe=probe,
+            # The stamp tells a delete plus a re-upload apart for an uploaded record only: a connector that sets
+            # ``created_at`` to now rewrites it on every re-sync of a live record (D-186).
+            created=record.get("createdAtTimestamp") if record.get("origin") == OriginTypes.UPLOAD.value else None,
+            probe=probe,
             confirm_first=bool(markers and (markers[0] or markers[1])),
             backend_of=getattr(cache, "_backend", None),
         )

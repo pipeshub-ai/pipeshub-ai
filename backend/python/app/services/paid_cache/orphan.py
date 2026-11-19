@@ -46,6 +46,11 @@ log = logging.getLogger(__name__)
 RECHECK_S = 30.0
 #: After a failed read the next one waits this long.
 RETRY_S = 30.0
+#: The graph read has a bound of its own, far below the store's client timeout (minutes), so a slow graph never holds a live
+#: record's paid calls. A keyed point read takes milliseconds, a paid call (an OCR page, an LLM or embedding call) seconds to
+#: minutes: 3 s is two orders over the read and, with the single flight and ``RETRY_S``, costs a live run at most one 3 s wait
+#: per 30 s however many calls run in parallel, and only while the graph is sick.
+PROBE_TIMEOUT_S = 3.0
 #: Parses repeated after a 410 for a record that proved live; the next one disables the parsing service's stop.
 MAX_REPARSES = 2
 #: How long a delivery handed back for an unconfirmed 410 waits before it is redelivered.
@@ -112,8 +117,12 @@ class DeliveryGuard:
     wm_org: str | None = None
     created: Any = None
     probe: Callable[[], Awaitable[ProbeResult]] | None = None
-    #: The parse request said not to stop (a record re-parsed too often after a 410, or an older caller).
+    #: The parsing service's guard: the request said not to stop (a record re-parsed too often after a 410, or an older caller).
     stop_disabled: bool = False
+    #: The consumer's guard after the re-parse cap: the next parse request carries ``stop_disabled``. Only the parsing
+    #: service's stop is disabled; the consumer's own checks and the fence remain (design 3.3).
+    service_stop_disabled: bool = False
+    probe_timeout_s: float = PROBE_TIMEOUT_S
     #: The run started under a marker: its first check reads the record whatever the markers say.
     confirm_first: bool = False
     gone: bool = False
@@ -189,14 +198,15 @@ class DeliveryGuard:
             return False
         generation = self._generation
         async with self._read_lock():
-            if self._generation != generation:           # another caller read while this one waited
+            # Another caller read while this one waited, or its read failed (the retry window is open): share that outcome.
+            if self._generation != generation or self.clock() < self._retry_at:
                 return self.gone
             return await self._read(seen, changed=changed)
 
     async def _read(self, seen: tuple[str | None, str | None], *, changed: bool) -> bool:
         assert self.probe is not None
         try:
-            result = await self.probe()
+            result = await asyncio.wait_for(self.probe(), self.probe_timeout_s)
         except Exception as exc:
             self._retry_at = self.clock() + RETRY_S
             CHECKS.inc("graph", "error")
@@ -224,7 +234,7 @@ class DeliveryGuard:
         seen = markers if markers is not None else (self.wm_record, self.wm_org)
         async with self._read_lock():
             try:
-                result = await self.probe()
+                result = await asyncio.wait_for(self.probe(), self.probe_timeout_s)
             except Exception as exc:
                 CHECKS.inc("graph", "error")
                 log.debug("Existence read after a 410 failed (%s); the delivery is handed back", type(exc).__name__)
@@ -244,7 +254,7 @@ class DeliveryGuard:
             self.reparses += 1
             REPARSES.inc("stop_disabled" if self.reparses > MAX_REPARSES else "reparse")
             if self.reparses > MAX_REPARSES:
-                self.stop_disabled = True
+                self.service_stop_disabled = True
             CHECKS.inc("graph", "live_after_410")
             return "live"
 
@@ -256,7 +266,7 @@ class DeliveryGuard:
     def request_fields(self) -> dict[str, str]:
         """The form fields the parsing client sends: the strings this run started under, and whether to stop."""
         fields = {"orphan_guard": "1", "record_marker": self.wm_record or "", "org_marker": self.wm_org or ""}
-        if self.stop_disabled:
+        if self.stop_disabled or self.service_stop_disabled:
             fields["stop_disabled"] = "true"
         return fields
 

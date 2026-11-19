@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -96,3 +97,36 @@ async def test_a_parse_with_no_guard_or_another_error_is_unchanged() -> None:
     with pytest.raises(ParsingClientError):
         await rig.parse()
     assert rig.guard.reparses == 0 and not rig.guard.hand_back
+
+
+async def test_a_410_whose_confirming_read_hangs_is_handed_back_within_the_probe_bound() -> None:
+    async def hang() -> ProbeResult:
+        await asyncio.sleep(3600)
+        return ProbeResult(True, True, 1)
+
+    rig = Rig([_gone()], hang)
+    rig.guard.probe_timeout_s = 0.2
+    with pytest.raises(RecordHandBack):
+        await asyncio.wait_for(rig.parse(), 2.0)
+    assert len(rig.sent) == 1 and rig.guard.hand_back and not rig.guard.gone
+
+
+async def test_after_the_reparse_cap_the_consumers_own_checks_still_stop_a_real_delete() -> None:
+    """Design 3.3: ``stopDisabled`` disables the parsing service's stop only; the consumer's checks and the fence remain."""
+    from app.services.paid_cache.orphan import ensure_record_alive
+
+    state = {"live": True}
+
+    async def probe() -> ProbeResult:
+        return ProbeResult(True, True, 1) if state["live"] else ProbeResult(found=False)
+
+    rig = Rig([_gone(), _gone(), _gone(), _ok()], probe, wm="100")
+    await rig.locks.mark(deleted_name(ORG, REC), DELETED_TTL_MS, "200")
+    rig.guard.closed = False
+    await rig.client.parse(b"x", "a.pdf", "application/pdf", "pdf", ORG)        # not finished: the guard is still bound
+    assert rig.guard.reparses == MAX_REPARSES + 1 and rig.sent[-1].get("stop_disabled") == "true"
+    state["live"] = False                                                       # now a real delete of this record
+    await rig.locks.mark(deleted_name(ORG, REC), DELETED_TTL_MS, "300")
+    rig.guard.clock = lambda: 10_000.0
+    with pytest.raises(RecordGone):
+        await ensure_record_alive(ORG, REC, "embed")
