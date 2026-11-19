@@ -14,6 +14,7 @@ import logging
 import os
 import uuid
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -42,7 +43,6 @@ from qdrant_client.models import (  # noqa: E402
     PointStruct,
     VectorParams,
 )
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
