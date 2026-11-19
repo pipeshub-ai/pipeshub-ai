@@ -6,6 +6,9 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 import type { McpMyServerEntry, McpServerTemplate } from '../../../types';
 
 // These tests cover the default notices, whatever the build's config provides.
+// The Enterprise notices these screens show are for admins; render them as an admin would see them.
+vi.mock('@/lib/hooks/use-enterprise-prompt', () => ({ useEnterprisePrompt: () => true }));
+
 vi.mock('@/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/config')>()),
   EnterpriseFeatureNotice: (await import('@/app/components/ui/enterprise-badge')).EnterpriseFeatureNotice,
