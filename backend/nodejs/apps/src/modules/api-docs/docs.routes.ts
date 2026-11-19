@@ -34,6 +34,18 @@ export function createApiDocsRouter(container: Container): Router {
   });
 
   /**
+   * The OpenAPI spec this instance documents, as a file to download
+   */
+  router.get('/openapi.yaml', (_req: Request, res: Response) => {
+    const spec = apiDocsService.getSpecYaml();
+    if (!spec) {
+      res.status(404).json({ error: 'OpenAPI spec not available' });
+      return;
+    }
+    res.attachment('pipeshub-openapi.yaml').type('application/yaml').send(spec);
+  });
+
+  /**
    * Serve the custom API documentation UI
    * This handles both / and any sub-paths for SPA routing
    */
@@ -437,6 +449,10 @@ function getDocumentationHtml(): string {
     .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 
     .menu-toggle { display: none; }
+
+    .spec-download { flex-shrink: 0; height: 32px; text-decoration: none; }
+
+    .spec-download .material-icons-outlined { font-size: 16px; }
 
     .theme-toggle .sun-icon { display: none; }
     [data-theme="dark"] .theme-toggle .sun-icon { display: inline; }
@@ -1354,84 +1370,6 @@ function getDocumentationHtml(): string {
 
     .module-card-arrow { color: var(--text-3); }
 
-    /* Health */
-    .health-section {
-      margin-top: 28px;
-      padding: 20px;
-      background: var(--bg-panel);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-5);
-    }
-
-    .health-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-
-    .health-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
-
-    .health-title-icon {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 30px;
-      height: 30px;
-      color: var(--accent-11);
-      background: var(--accent-a3);
-      border-radius: var(--radius-3);
-    }
-
-    .health-refresh-btn { flex-shrink: 0; }
-
-    .health-refresh-btn.loading { pointer-events: none; opacity: 0.7; }
-
-    .health-refresh-btn.loading .material-icons-outlined { animation: spin 0.8s linear infinite; }
-
-    .health-overall {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 14px;
-    }
-
-    .health-overall-label { font-size: 13px; color: var(--text-2); }
-
-    .health-overall-status { padding: 1px 10px; font-size: 12px; font-weight: 700; line-height: 20px; border-radius: 999px; }
-
-    .health-overall-status.healthy { background: var(--accent-a3); color: var(--accent-11); }
-    .health-overall-status.degraded { background: var(--amber-3); color: var(--amber-11); }
-    .health-overall-status.unhealthy { background: var(--red-3); color: var(--red-11); }
-
-    .health-timestamp { margin-left: auto; font-size: 12px; color: var(--text-3); }
-
-    .health-services { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
-
-    .health-service-card {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-4);
-    }
-
-    .health-service-indicator { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-
-    .health-service-indicator.healthy { background: var(--accent-9); box-shadow: 0 0 0 3px var(--accent-a3); }
-    .health-service-indicator.unhealthy { background: var(--red-9); box-shadow: 0 0 0 3px var(--red-3); }
-    .health-service-indicator.unknown { background: var(--gray-8); }
-
-    [data-theme="dark"] .health-service-indicator.healthy { background: var(--accent-11); }
-
-    .health-service-info { flex: 1; min-width: 0; }
-
-    .health-service-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-    .health-service-details { font-size: 12px; color: var(--text-3); text-transform: capitalize; }
-
-    .health-loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--text-3); }
-
-    .health-loading .spinner { width: 18px; height: 18px; }
-
     /* Responsive: below 1100px the Try It panel stacks under the docs */
     @media (max-width: 1100px) {
       .content-body { flex-direction: column; overflow-y: auto; }
@@ -1460,6 +1398,7 @@ function getDocumentationHtml(): string {
       .menu-toggle { display: inline-flex; }
       .breadcrumb-link, .breadcrumb-separator { display: none; }
       .content-header { padding: 0 12px; }
+      .spec-download-label { display: none; }
       .doc-panel { padding: 20px 16px 28px; }
       .code-content { padding: 16px 12px; }
       .endpoint-title h1 { font-size: 20px; }
@@ -1517,6 +1456,10 @@ function getDocumentationHtml(): string {
         <div class="breadcrumb" id="breadcrumb">
           <span class="breadcrumb-current">API Reference</span>
         </div>
+        <a class="secondary-btn spec-download" href="/api/v1/docs/openapi.yaml" download="pipeshub-openapi.yaml" title="Download the OpenAPI spec" aria-label="Download the OpenAPI spec">
+          <span class="material-icons-outlined" aria-hidden="true">download</span>
+          <span class="spec-download-label">OpenAPI spec</span>
+        </a>
         <button class="icon-btn theme-toggle" id="themeToggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">
           <span class="material-icons-outlined moon-icon">dark_mode</span>
           <span class="material-icons-outlined sun-icon">light_mode</span>
@@ -1604,6 +1547,16 @@ function getDocumentationHtml(): string {
     let currentModule = null;
     let currentEndpoint = null;
     let currentTab = 'tryit';
+
+    // The host the examples show. They never show this page's own host: the docs are public,
+    // and the host they are served from says which deployment they belong to.
+    const EXAMPLE_BASE_URL = 'https://your-pipeshub-host';
+
+    // Base URL for the code examples: the one the reader typed in Try It, else the placeholder
+    function exampleBaseUrl() {
+      const typed = (document.getElementById('baseUrlInput')?.value || config.baseUrl || '').trim().replace(/\\/+$/, '');
+      return typed && typed !== window.location.origin ? typed : EXAMPLE_BASE_URL;
+    }
 
     // Default configuration - can be changed by user
     const config = {
@@ -3165,86 +3118,6 @@ function getDocumentationHtml(): string {
     }
 
 
-    // Fetch and render health status
-    // Infrastructure from /api/v1/health, the Python services from /api/v1/health/services.
-    async function fetchHealthStatus() {
-      const get = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const [platform, python] = await Promise.all([get('/api/v1/health'), get('/api/v1/health/services')]);
-      if (!platform && !python) return null;
-      const services = [];
-      const add = (group, names) => {
-        for (const [key, status] of Object.entries((group && group.services) || {})) {
-          services.push({ name: (names && names[key]) || key, status: status === 'healthy' || status === 'unhealthy' ? status : 'unknown' });
-        }
-      };
-      add(platform, platform && platform.serviceNames);
-      add(python, { query: 'Query', connector: 'Connectors', indexing: 'Indexing', docling: 'Docling', embedding: 'Embedding', parsing: 'Parsing', extraction: 'Extraction' });
-      const platformDown = !platform || platform.status !== 'healthy';
-      const anyDown = !python || services.some((svc) => svc.status !== 'healthy');
-      return {
-        overallStatus: platformDown ? 'unhealthy' : anyDown ? 'degraded' : 'healthy',
-        timestamp: (platform && platform.timestamp) || (python && python.timestamp) || new Date().toISOString(),
-        services,
-      };
-    }
-
-    function renderHealthSection(healthData) {
-      const header = (action) =>
-        '<div class="health-header">' +
-        '<div class="health-title"><span class="health-title-icon">' + icon('monitor_heart') + '</span><span>Service health</span></div>' +
-        action +
-        '</div>';
-      const refresh = (label) =>
-        '<button type="button" class="secondary-btn health-refresh-btn" onclick="refreshHealth()">' + icon('refresh', null, 16) + '<span>' + label + '</span></button>';
-
-      if (healthData === undefined) {
-        return '<div class="health-section">' + header('') +
-          '<div class="health-loading"><div class="spinner"></div><span>Checking service health...</span></div></div>';
-      }
-      if (healthData === null) {
-        return '<div class="health-section">' + header(refresh('Retry')) +
-          '<div class="health-overall"><span class="health-overall-label">Status</span>' +
-          '<span class="health-overall-status unhealthy">Unable to check</span></div></div>';
-      }
-
-      const label = healthData.overallStatus.charAt(0).toUpperCase() + healthData.overallStatus.slice(1);
-      let html = '<div class="health-section">' + header(refresh('Refresh'));
-      html += '<div class="health-overall">' +
-        '<span class="health-overall-label">Overall status</span>' +
-        '<span class="health-overall-status ' + escapeHtml(healthData.overallStatus) + '">' + escapeHtml(label) + '</span>' +
-        '<span class="health-timestamp">Checked at ' + escapeHtml(new Date(healthData.timestamp).toLocaleTimeString()) + '</span>' +
-        '</div>';
-
-      html += '<div class="health-services">';
-      for (const service of healthData.services) {
-        html += '<div class="health-service-card">' +
-          '<div class="health-service-indicator ' + escapeHtml(service.status) + '"></div>' +
-          '<div class="health-service-info">' +
-          '<div class="health-service-name">' + escapeHtml(service.name) + '</div>' +
-          '<div class="health-service-details">' + escapeHtml(service.status) + '</div>' +
-          '</div></div>';
-      }
-      html += '</div></div>';
-
-      return html;
-    }
-
-    async function refreshHealth() {
-      const btn = document.querySelector('.health-refresh-btn');
-      if (btn) {
-        btn.classList.add('loading');
-      }
-
-      const healthData = await fetchHealthStatus();
-      const healthSection = document.querySelector('.health-section');
-      if (healthSection) {
-        healthSection.outerHTML = renderHealthSection(healthData);
-      }
-    }
-
-    // Make refreshHealth globally accessible
-    window.refreshHealth = refreshHealth;
-
     // Show welcome screen
     function showWelcomeScreen() {
       currentModule = null;
@@ -3257,19 +3130,17 @@ function getDocumentationHtml(): string {
       document.getElementById('breadcrumb').innerHTML = '<span class="breadcrumb-current">API Reference</span>';
       hideCodePanel();
 
-      const origin = window.location.origin;
       let html = '<div class="welcome-screen">' +
         '<div class="welcome-icon">' + LOGO_SVG + '</div>' +
         '<h1 class="welcome-title">' + escapeHtml(apiDocs?.info?.title || 'PipesHub API') + '</h1>' +
         '<p class="welcome-description">Every endpoint this PipesHub instance serves. Pick a module in the sidebar, or search, ' +
         'and send requests from the Try It panel with your own token.</p>' +
         '<div class="quickstart">' +
-        '<div class="quickstart-card">' + icon('link') + '<h3>Base URL</h3><p><code>' + escapeHtml(origin) + '/api/v1</code></p></div>' +
+        '<div class="quickstart-card">' + icon('link') + '<h3>Base URL</h3><p><code>' + escapeHtml(EXAMPLE_BASE_URL) + '/api/v1</code></p></div>' +
         '<div class="quickstart-card">' + icon('key') + '<h3>Authentication</h3><p>Send <code>Authorization: Bearer &lt;token&gt;</code> with a personal access token or an OAuth access token.</p></div>' +
         '<div class="quickstart-card">' + icon('play_circle') + '<h3>Try It</h3><p>Requests go straight from your browser to the base URL. The token is kept in this browser only.</p></div>' +
         '</div>' +
-        '</div>' +
-        renderHealthSection(undefined);
+        '</div>';
 
       if (apiDocs?.info?.description) {
         html += '<div class="doc-section"><h2 class="section-title">Overview</h2><div class="md">' + renderMarkdown(apiDocs.info.description) + '</div></div>';
@@ -3277,13 +3148,6 @@ function getDocumentationHtml(): string {
 
       document.getElementById('docPanel').innerHTML = html;
       document.getElementById('docPanel').scrollTop = 0;
-
-      fetchHealthStatus().then(healthData => {
-        const healthSection = document.querySelector('.health-section');
-        if (healthSection) {
-          healthSection.outerHTML = renderHealthSection(healthData);
-        }
-      });
     }
 
     function hideCodePanel() {
@@ -3466,7 +3330,7 @@ function getDocumentationHtml(): string {
       html += '</div>';
       html += '<div class="endpoint-path">';
       html += '<span><span class="endpoint-path-base">' + escapeHtml(ep.basePath) + '</span>' + escapeHtml(ep.path) + '</span>';
-      html += copyButton((isFullUrl ? '' : window.location.origin) + ep.basePath + ep.path);
+      html += copyButton(ep.basePath + ep.path);
       html += '</div>';
       if (ep.description) {
         html += '<div class="endpoint-description md">' + renderMarkdown(ep.description) + '</div>';
@@ -3549,9 +3413,8 @@ function getDocumentationHtml(): string {
     function updateCodeExample(lang) {
       if (!currentEndpoint) return;
       const ep = currentEndpoint;
-      const configuredBaseUrl = document.getElementById('baseUrlInput')?.value || config.baseUrl || window.location.origin;
       const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
-      const url = (isFullUrl ? ep.basePath : configuredBaseUrl + ep.basePath) + ep.path;
+      const url = (isFullUrl ? ep.basePath : exampleBaseUrl() + ep.basePath) + ep.path;
       const body = ep.requestBody ? bodyContent(ep) : null;
       const isMultipart = body?.type === 'multipart/form-data';
       const example = body?.schema ? generateExample(body.schema) : {};

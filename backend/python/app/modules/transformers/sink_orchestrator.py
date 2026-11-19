@@ -86,7 +86,7 @@ from app.telemetry.modules.record_storage_metrics import (
     record_property_projection,
 )
 from app.utils.image_utils import INDEX_RECORD_IMAGE_BYTES, fit_image_for_index
-from app.utils.indexing_timing import stage
+from app.utils.indexing_timing import note, stage
 from app.utils.llm import LLMUnavailableError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -200,7 +200,7 @@ class SinkOrchestrator(Transformer):
             limited_block_groups.append(bg_copy)
 
         self.logger.info(
-            "📦 SQL blob-storage limit applied: %d / %d row blocks kept",
+            "SQL blob-storage limit applied: %d / %d row blocks kept",
             len(limited_blocks),
             len(row_blocks),
         )
@@ -272,6 +272,8 @@ class SinkOrchestrator(Transformer):
         embeds every block) and no entity points.
         """
         record = ctx.record
+        if record.block_containers is not None:
+            note(blocks=len(record.block_containers.blocks))
         store_only = bool(ctx.settings.get(STORE_ONLY))
         skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
@@ -322,12 +324,12 @@ class SinkOrchestrator(Transformer):
             )
             if not success:
                 self.logger.warning(
-                    "⚠️ Failed to update record %s status - record may not exist in database",
+                    "Failed to update record %s status - record may not exist in database",
                     record_id,
                 )
                 return
             self.logger.info(
-                "✅ Sink-only mode completed for record %s (vector indexing skipped)",
+                "Sink-only mode completed for record %s (vector indexing skipped)",
                 record_id,
             )
             return
@@ -345,7 +347,7 @@ class SinkOrchestrator(Transformer):
                     record_id=record_id,
                 )
 
-            self.logger.debug(f"✅ Vector store indexing succeeded for record {record_id}")
+            self.logger.debug(f"Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
@@ -918,7 +920,7 @@ class SinkOrchestrator(Transformer):
         )
         if not updated:
             self.logger.warning(
-                "⚠️ Record %s no longer exists; indexingStatus=COMPLETED not recorded",
+                "Record %s no longer exists; indexingStatus=COMPLETED not recorded",
                 record.id,
             )
             return False
@@ -926,7 +928,7 @@ class SinkOrchestrator(Transformer):
         record.indexing_status = ProgressStatus.COMPLETED.value
         record.parsing_status = ProgressStatus.COMPLETED.value
         self.logger.debug(
-            "✅ indexingStatus=COMPLETED recorded for %s", record.id
+            "indexingStatus=COMPLETED recorded for %s", record.id
         )
         ctx.indexed_at_ms = timestamp
         # The record is only searchable now, so the accessible-record map that
@@ -1039,7 +1041,7 @@ class SinkOrchestrator(Transformer):
         with stage("graph.enrich"):
             touched_entities = await self.graphdb.apply(ctx)
         self.logger.debug(
-            "✅ Graph enrichment completed for record %s", ctx.record.id
+            "Graph enrichment completed for record %s", ctx.record.id
         )
         await self._upsert_touched_entities(ctx, touched_entities)
 
@@ -1222,11 +1224,8 @@ class SinkOrchestrator(Transformer):
             )
         except Exception as e:
             # Not an absent document: leaving the recorded set as it was could keep naming a block this run gives no point (an image
-            # on a model that does not embed it), and every later run would carry it. The record fails and is retried.
-            self.logger.warning(
-                "Record %s: the stored reconciliation metadata could not be read (%s); the reindex is retried",
-                record.id, type(e).__name__,
-            )
+            # on a model that does not embed it), and every later run would carry it. The record fails and is retried; its
+            # index.end writes the failure once.
             raise IndexingError(
                 message=f"The stored reconciliation metadata of record {record.id} could not be read", record_id=record.id
             ) from e

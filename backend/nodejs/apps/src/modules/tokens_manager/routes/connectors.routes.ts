@@ -59,6 +59,7 @@ import {
   getActiveAgentInstances,
   getConnectorStats,
   getPermissionStatus,
+  setPermissionFilter,
   getRecordContent,
   navigateKnowledgeGraph,
   lookupRecord,
@@ -164,6 +165,10 @@ const connectorIdParamSchema = z.object({
         'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
       ),
   }),
+});
+
+const permissionFilterSchema = connectorIdParamSchema.extend({
+  body: z.object({ mode: z.enum(['inherit', 'legacy', 'scopes']) }).strict(),
 });
 
 /**
@@ -805,6 +810,19 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(connectorIdParamSchema),
     getPermissionStatus(config),
+  );
+
+  /**
+   * PATCH /:connectorId/permissions/filter
+   * The connector's own permission filter mode (inherit, legacy or scopes). Admin only, decided by the
+   * connector service as for the status.
+   */
+  router.patch(
+    '/:connectorId/permissions/filter',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(permissionFilterSchema),
+    setPermissionFilter(config),
   );
 
   /**

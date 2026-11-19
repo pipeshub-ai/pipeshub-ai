@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.utils.error_class import log_failure
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -213,18 +215,18 @@ async def resolve_ancestor_locations(
                     )).node_ids)
                 except Exception as exc:
                     # Trails lose names, never gain them.
-                    logger.warning("resolve_ancestor_locations: access check failed — %s", exc)
+                    log_failure(logger, "search.location_access_failed", exc, include_error_text=False)
                     accessible = set()
-                if not accessible:
-                    # ACL search just returned hits for this user, so zero
-                    # accessible ancestors is contradictory — likely a
-                    # user_key mixup that soft-fail would otherwise hide.
-                    logger.warning(
-                        "resolve_ancestor_locations: 0/%d ancestors accessible for "
-                        "user %s despite ACL-filtered hits — check user_key wiring",
-                        len(candidates),
-                        user_key,
-                    )
+                else:
+                    if not accessible:
+                        # ACL search just returned hits for this user, so zero
+                        # accessible ancestors is contradictory — likely a
+                        # user_key mixup that soft-fail would otherwise hide.
+                        logger.warning(
+                            "resolve_ancestor_locations: 0/%d ancestors accessible "
+                            "despite ACL-filtered hits — check user_key wiring",
+                            len(candidates),
+                        )
 
         result: dict[str, str] = {}
         for rid, trail in trails.items():
@@ -236,11 +238,7 @@ async def resolve_ancestor_locations(
                 result[rid] = rendered
         return result
     except Exception as exc:
-        logger.warning(
-            "resolve_ancestor_locations: failed — App-only fallback (%s)",
-            exc,
-            exc_info=True,
-        )
+        log_failure(logger, "search.location_failed", exc, include_error_text=False)
         return _app_only_fallback_map(ids, fallback_docs)
 
 

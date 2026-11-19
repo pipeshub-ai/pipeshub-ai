@@ -228,7 +228,9 @@ class ImageDescriber:
                 except Exception as exc:
                     # One unreadable image must not cost the record its other
                     # descriptions, so this is logged and skipped, not raised.
-                    self.logger.debug("Could not describe image block %s: %s", block.index, exc)
+                    self.logger.debug(
+                        "Could not describe image block %s", block.index, extra={"error_type": type(exc).__name__},
+                    )
                     return False
             if not description:
                 return False

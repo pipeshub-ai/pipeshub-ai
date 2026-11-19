@@ -12,8 +12,10 @@ scheduling is disabled.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -417,31 +419,26 @@ class TestParallelPartitionDispatch:
 
         assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 1
         assert consumer._in_flight_records == {"rec-1"}
-        # Held back, not dropped.
-        assert consumer._scheduler.pending_count == 1
+        # Held back, not dropped: it waits beside the scheduler for its record.
+        assert consumer._scheduler.pending_count == 0
+        assert consumer._record_waiting_count == 1
 
-    async def test_a_blocked_record_holds_its_own_key_queue(
+    async def test_a_blocked_record_does_not_hold_its_key_queue(
         self, logger, plain_config
     ):
-        """Documents the limit of parallel dispatch, so it is a known
-        trade-off rather than a surprise.
-
-        A key's virtual queue is FIFO, so a blocked head blocks that key --
-        a second event for the same record parks everything behind it for
-        that connector until the first finishes. That is the pre-Phase-4
-        behaviour for that one connector, never worse, and it is rare: a
-        sync emits distinct records, so adjacent same-record events mostly
-        arise from re-queues. Other keys are unaffected.
-        """
+        """A key's queue is judged by its head, so a duplicate left at the head
+        stalled every later event of its connector until the first finished
+        (hours, for a long reindex). It waits for its record instead."""
         consumer = self._consumer(logger, plain_config, parallel=True)
         tp = TopicPartition("record-events", 0)
         await self._buffer(consumer, tp, ["rec-1", "rec-1", "rec-2"])
 
         await consumer._IndexingKafkaConsumer__dispatch_phase()
 
-        assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 1
-        # rec-2 sits behind the duplicate in the same key's FIFO queue.
-        assert consumer._scheduler.pending_count == 2
+        assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 2
+        assert consumer._in_flight_records == {"rec-1", "rec-2"}
+        assert consumer._scheduler.pending_count == 0
+        assert consumer._record_waiting_count == 1
 
     async def test_another_key_is_not_blocked_by_it(self, logger, plain_config):
         consumer = self._consumer(logger, plain_config, parallel=True)
@@ -463,7 +460,7 @@ class TestParallelPartitionDispatch:
         tp = TopicPartition("record-events", 0)
         await self._buffer(consumer, tp, ["rec-1", "rec-1"])
         await consumer._IndexingKafkaConsumer__dispatch_phase()
-        assert consumer._scheduler.pending_count == 1
+        assert consumer._record_waiting_count == 1
 
         consumer._IndexingKafkaConsumer__finish_partition(
             _make_message(offset=0, record_id="rec-1"),
@@ -474,6 +471,7 @@ class TestParallelPartitionDispatch:
 
         assert consumer._IndexingKafkaConsumer__start_processing_task.await_count == 2
         assert consumer._scheduler.is_empty
+        assert consumer._record_waiting_count == 0
 
     async def test_events_without_a_record_id_never_block_each_other(
         self, logger, plain_config
@@ -1149,6 +1147,143 @@ class TestFailedHandBackKeepsTheMessage:
         assert consumer._scheduler.pending_count == 0
         for call in consumer.consumer.commit.await_args_list:
             assert call.args[0][tp] <= 0
+
+
+class TestFailedRepublishOfATransientFailureKeepsTheMessage:
+    """F62: a transient failure whose retry copy could not be published has no copy on the topic, so this offset is
+    the only one left. Under fair scheduling it goes back in the buffer; a redelivery floor would be swept past."""
+
+    def _consumer(self, logger, plain_config, *, attempt: int = 1, handler=None) -> IndexingKafkaConsumer:
+        retry_manager = MagicMock()
+        retry_manager.increment_and_check = AsyncMock(return_value=(attempt, False))
+        retry_manager.get_count = AsyncMock(return_value=attempt - 1)
+        retry_manager.clear = AsyncMock()
+        retry_manager.unfinished_attempts = AsyncMock(return_value=0)
+        retry_manager.start_attempt = AsyncMock(return_value=0)
+        retry_manager.finish_attempt = AsyncMock()
+        consumer = _make_consumer(logger, plain_config, _fair_config(), retry_manager=retry_manager)
+        consumer.consumer = MagicMock()
+        consumer.consumer.commit = AsyncMock()
+        consumer.main_loop = None
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer._requeue_message = AsyncMock(side_effect=ConnectionError("broker unavailable"))
+
+        async def failing(_message) -> AsyncGenerator[None, None]:
+            raise ConnectionError("vector store unreachable")
+            yield
+
+        consumer.message_handler = handler or failing
+        return consumer
+
+    async def _fail(self, consumer, tp) -> tuple[_InFlightOffset, object]:
+        tracker = consumer._offset_tracker
+        tracker.track(tp, 0)
+        tracker.mark_dispatched(tp, 0)
+        tracker.track(tp, 1)
+        message = _make_message(offset=0, record_id="rec-1")
+        parsed = await consumer._IndexingKafkaConsumer__parse_message(message)
+        in_flight = _InFlightOffset(tp, 0, 0)
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(
+            message, parsed_message=parsed, in_flight=in_flight
+        )
+        assert result is False
+        return in_flight, parsed
+
+    async def test_it_goes_back_in_the_buffer_and_nothing_commits_past_it(
+        self, logger, plain_config, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        consumer = self._consumer(logger, plain_config)
+        tp = TopicPartition("record-events", 0)
+
+        with caplog.at_level(logging.INFO, logger=logger.name):
+            in_flight, _ = await self._fail(consumer, tp)
+
+        assert in_flight.resolved
+        assert consumer._scheduler.pending_count == 1
+        assert consumer._scheduler.dequeue(can_dispatch=lambda _item: True) is None  # waits out its backoff
+        assert consumer._offset_tracker.stale_offsets(0.0) == []  # a buffered offset has no dwell clock
+        await consumer._IndexingKafkaConsumer__resolve_offset(_InFlightOffset(tp, 1, 0), done=True)
+        for call in consumer.consumer.commit.await_args_list:
+            assert call.args[0][tp] <= 0
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages.count("index.requeue_failed") == 1
+        assert not any(m.startswith("Committed offset for record-events-0-0") for m in messages)
+
+    async def test_its_backoff_is_the_one_its_copy_would_have_had(self, logger, plain_config) -> None:
+        consumer = self._consumer(logger, plain_config, attempt=2)
+        tp = TopicPartition("record-events", 0)
+        before = time.time()
+
+        with patch(
+            "app.services.messaging.kafka.consumer.indexing_consumer._compute_retry_backoff_seconds",
+            lambda count: 100.0 * count,
+        ):
+            _, parsed = await self._fail(consumer, tp)
+
+        assert before + 199.0 <= parsed.payload["_retry_not_before"] <= time.time() + 201.0
+
+    async def test_a_full_buffer_parks_it_instead_of_dropping_it(self, logger, plain_config) -> None:
+        consumer = self._consumer(logger, plain_config)
+        consumer._scheduler.enqueue = MagicMock(return_value=EnqueueResult.BUFFER_FULL)
+        tp = TopicPartition("record-events", 0)
+
+        await self._fail(consumer, tp)
+
+        assert [entry[1].offset for entry in consumer._deferred_messages] == [0]
+        assert consumer._offset_tracker.stale_offsets(0.0) == []
+
+    async def test_a_stop_before_it_is_rebuffered_leaves_it_for_the_next_process(self, logger, plain_config) -> None:
+        consumer = self._consumer(logger, plain_config)
+
+        async def stop_then_fail(*_args, **_kwargs) -> None:
+            consumer.running = False
+            raise ConnectionError("broker unavailable")
+
+        consumer._requeue_message = AsyncMock(side_effect=stop_then_fail)
+        tp = TopicPartition("record-events", 0)
+
+        in_flight, _ = await self._fail(consumer, tp)
+
+        assert in_flight.resolved
+        assert consumer._scheduler.pending_count == 0
+        assert 0 in consumer._offset_tracker._redeliver[tp]
+        await consumer._IndexingKafkaConsumer__resolve_offset(_InFlightOffset(tp, 1, 0), done=True)
+        for call in consumer.consumer.commit.await_args_list:
+            assert call.args[0][tp] <= 0
+
+    async def test_a_revoked_partition_is_left_to_its_next_owner(self, logger, plain_config) -> None:
+        consumer = self._consumer(logger, plain_config)
+        tp = TopicPartition("record-events", 0)
+
+        async def revoke_then_fail(*_args, **_kwargs) -> None:
+            consumer._revoked_since_poll.add(tp)
+            raise ConnectionError("broker unavailable")
+
+        consumer._requeue_message = AsyncMock(side_effect=revoke_then_fail)
+
+        in_flight, _ = await self._fail(consumer, tp)
+
+        assert in_flight.resolved
+        assert consumer._scheduler.pending_count == 0
+        consumer.consumer.commit.assert_not_awaited()
+
+    async def test_an_unfinished_run_is_counted_and_republished_once(self, logger, plain_config) -> None:
+        async def ends_without_indexing(_message) -> AsyncGenerator[None, None]:
+            return
+            yield
+
+        consumer = self._consumer(logger, plain_config, handler=ends_without_indexing)
+        tp = TopicPartition("record-events", 0)
+
+        # On main the failed publish escapes into the wrapper's own except, which counts and publishes again.
+        with contextlib.suppress(ConnectionError):
+            await self._fail(consumer, tp)
+
+        assert consumer.retry_manager.increment_and_check.await_count == 1
+        assert consumer._requeue_message.await_count == 1
+        assert consumer._scheduler.pending_count == 1
 
 
 class TestDwellNeverSkipsUnprocessedMessages:

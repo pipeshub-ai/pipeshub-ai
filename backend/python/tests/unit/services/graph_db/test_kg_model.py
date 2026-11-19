@@ -213,7 +213,17 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     from app.services.graph_db.postgres.kg.writers import RECORD_COLS
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
-    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort"}      # the listing columns have a writer of their own (w_listing_set)
+    # the listing columns and the trash columns have writers of their own (w_listing_set, w_trash_set)
+    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort", "deleted_ms", "delete_batch"}
+
+
+def test_the_trash_columns_are_the_delete_time_and_batch_as_the_walk_reads_them() -> None:
+    nodes = {APP: {}, REC: {"connectorId": "a", "isDeleted": True, "deletedAtTimestamp": 1790000000000, "deleteBatchId": "bt1"},
+             ("records", "live"): {"connectorId": "a"}, ("records", "odd"): {"connectorId": "a", "deletedAtTimestamp": "12", "deleteBatchId": 7}}
+    snap = world(nodes, [])
+    rows = derive(set(nodes), snap).records
+    assert {k[1]: (rows[snap.sk[k]]["deleted_ms"], rows[snap.sk[k]]["delete_batch"]) for k in nodes if k[0] == "records"} == {
+        REC[1]: (1790000000000, "bt1"), "live": (None, None), "odd": (12, "7")}       # doc->>'deletedAtTimestamp' cast to bigint, doc->>'deleteBatchId' as text
 
 
 def test_the_listing_columns_follow_the_hub_types_the_hidden_children_and_the_organisation() -> None:
@@ -265,3 +275,4 @@ def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> No
     assert by_sort == sorted(names, key=lambda n: n.lower().encode("utf-16-be", "surrogatepass"))
     assert by_sort.index("\U00010000x") < by_sort.index("x") < by_sort.index("�x")
     assert sorted(names, key=str.lower).index("\U00010000x") > sorted(names, key=str.lower).index("�x")      # by code point it is the other way round
+
