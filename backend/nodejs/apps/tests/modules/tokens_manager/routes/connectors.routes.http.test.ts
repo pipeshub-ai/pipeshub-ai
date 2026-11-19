@@ -163,6 +163,55 @@ describe('Connector routes over HTTP', () => {
     })
   })
 
+  describe('PATCH /:connectorId/permissions/filter', () => {
+    const PATH = `/api/v1/connectors/${CONNECTOR_ID}/permissions/filter`
+
+    it('forwards only the mode with the caller\'s own token and returns the status as it comes', async () => {
+      h.backend.on('PATCH', PATH, { status: 200, body: { filter: { mode: 'legacy' } } })
+
+      const r = await call(h, 'PATCH', `/${CONNECTOR_ID}/permissions/filter`, sessionToken(h, admin), { mode: 'legacy' })
+
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ filter: { mode: 'legacy' } })
+      const sent = single(h.backend.callsTo('PATCH', PATH))
+      expect(sent.headers.authorization).to.match(/^Bearer /)
+      expect(sent.body).to.deep.equal({ mode: 'legacy' })
+    })
+
+    it('passes on the refusal of scopes with its blockers', async () => {
+      h.backend.on('PATCH', PATH, { status: 409, body: { detail: { error: 'not_switchable', blockers: ['serving_off'] } } })
+
+      const r = await call(h, 'PATCH', `/${CONNECTOR_ID}/permissions/filter`, sessionToken(h, admin), { mode: 'scopes' })
+
+      expect(r.status).to.equal(409)
+      expect(r.body).to.deep.equal({ error: 'not_switchable', blockers: ['serving_off'] })
+    })
+
+    it('passes on the 404 the connector service gives a non-admin', async () => {
+      h.backend.on('PATCH', PATH, { status: 404, body: { detail: 'This connector was removed, or you no longer have access.' } })
+
+      const r = await call(h, 'PATCH', `/${CONNECTOR_ID}/permissions/filter`, sessionToken(h, member), { mode: 'legacy' })
+
+      expect(r.status).to.equal(404)
+    })
+
+    for (const body of [{ mode: 'shadow' }, {}, { mode: 'legacy', extra: 1 }]) {
+      it(`refuses ${JSON.stringify(body)} without asking the connector service`, async () => {
+        const r = await call(h, 'PATCH', `/${CONNECTOR_ID}/permissions/filter`, sessionToken(h, admin), body)
+
+        expect(r.status).to.equal(400)
+        expect(h.backend.calls).to.have.length(0)
+      })
+    }
+
+    it('rejects a request with no token without asking the connector service', async () => {
+      const r = await call(h, 'PATCH', `/${CONNECTOR_ID}/permissions/filter`, undefined, { mode: 'legacy' })
+
+      expect(r.status).to.equal(401)
+      expect(h.backend.calls).to.have.length(0)
+    })
+  })
+
   describe('GET /record/:recordId/content', () => {
     it('returns the parsed content for a record', async () => {
       h.backend.on('GET', `/api/v1/records/${CONNECTOR_ID}/content`, { status: 200, body: { content: 'hello' } })

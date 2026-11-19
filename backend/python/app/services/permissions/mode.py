@@ -24,7 +24,7 @@ _logger = logging.getLogger(__name__)
 
 class AclFilterMode(str, Enum):
     LEGACY = "legacy"  # graph check only: container filter plus post-check
-    SHADOW = "shadow"  # legacy answers; ViewerScopes are computed and compared on the side
+    SHADOW = "shadow"  # legacy answers, except for a connector an admin switched to `scopes`; ViewerScopes are compared on the side
     SCOPES = "scopes"  # ViewerScopes pre-filter, post-check still authoritative
 
     @classmethod

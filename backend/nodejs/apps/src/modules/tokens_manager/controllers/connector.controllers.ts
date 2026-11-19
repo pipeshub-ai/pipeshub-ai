@@ -1740,6 +1740,43 @@ export const getPermissionStatus =
     }
   };
 
+/** Admin only, decided by the connector service as for the status: it writes the connector's own permission filter mode and answers with the status. */
+export const setPermissionFilter =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { mode } = req.body as { mode: string };
+      const response = await executeConnectorCommand<{
+        detail?: { error?: string };
+      }>(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/permissions/filter`,
+        HttpMethod.PATCH,
+        buildProxyHeaders(req),
+        { mode },
+      );
+      // The refusal carries the blockers the card lists; the generic mapper would flatten them to a message.
+      if (
+        response.statusCode === 409 &&
+        response.data?.detail?.error === 'not_switchable'
+      ) {
+        res.status(409).json(response.data.detail);
+        return;
+      }
+      handleConnectorResponse(
+        response,
+        res,
+        'Setting the permission filter',
+        'Connector not found',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'set permission filter'));
+    }
+  };
+
 export const getConnectorStats =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

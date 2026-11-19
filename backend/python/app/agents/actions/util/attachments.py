@@ -31,10 +31,12 @@ from app.services.record_content import (
     RecordAccessDeniedError,
     RecordContentError,
     RecordContentResolver,
+    RecordContentUnavailableError,
     RecordNotFoundError,
     RecordTooLargeError,
     ResolvedRecordContent,
 )
+from app.utils.error_class import is_stamped, log_failure
 
 logger = logging.getLogger(__name__)
 _audit_logger = logging.getLogger("pipeshub.attachment_audit")
@@ -240,6 +242,11 @@ async def resolve_attachments(
                 return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordAccessDeniedError")
             except RecordTooLargeError as exc:
                 return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordTooLargeError")
+            except RecordContentUnavailableError as exc:
+                # db.query.failed stamps what it logged; a failure before any statement (no pooled connection) has no line yet.
+                if not is_stamped(exc.__cause__):
+                    log_failure(logger, "attachment.resolve.failed", exc, ref=ref, include_error_text=False)
+                return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordContentError")
             except RecordContentError as exc:
                 return AttachmentFailure(ref=ref, error=str(exc), error_type="RecordContentError")
             except Exception as exc:

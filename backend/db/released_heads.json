@@ -1,0 +1,16 @@
+{
+  "release": "v1.1.0",
+  "epochs": {
+    "content": 3,
+    "conversation": 2,
+    "graph": 13,
+    "identity": 5,
+    "integrations": 2,
+    "kernel": 18,
+    "kg": 17,
+    "oauth": 4,
+    "platform": 8,
+    "platform_data": 4,
+    "retrieval": 4
+  }
+}

@@ -899,6 +899,28 @@ class TestCreateFetchSlackNearbyMessagesTool:
         assert kwargs["org_id"] == "org1"
         assert kwargs["user_id"] == "user1"
 
+    async def test_a_failed_access_check_keeps_the_graph_error_out_of_the_tool_result(self):
+        """The tool result goes to the model; the graph's text (host, query, values) must not."""
+        secret = "neo4j://graph-db.internal.example:7687 MATCH (u:User {id: 'gk-7f3a9c'})"
+        graph = _graph()
+
+        async def get_user(user_id, *, raise_on_error=False):
+            if raise_on_error:  # the strict read behind the access check; the lenient one answers
+                raise ConnectionError(secret)
+            return {"id": "user-key"}
+
+        graph.get_user_by_user_id = AsyncMock(side_effect=get_user)
+        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(config_service=MagicMock(), graph_provider=graph, **_ACCESS)
+        with patch.object(fsn, "SlackClient") as mock_client_cls:
+            mock_client_cls.build_from_services = AsyncMock(return_value=MagicMock())
+            result = await tool_fn.ainvoke({
+                "timestamp": "2023-11-14T22:13:20Z", "direction": "before",
+                "channel_id": "C123", "connector_id": "conn-1",
+            })
+        assert result.ok is False and "Failed to fetch nearby Slack messages" in result.error
+        assert "graph-db.internal" not in result.error
+        mock_client_cls.build_from_services.assert_not_called()
+
     async def test_tool_catches_unexpected_exception(self):
         config = MagicMock()
         tool_fn = fsn.create_fetch_slack_nearby_messages_tool(config_service=config)

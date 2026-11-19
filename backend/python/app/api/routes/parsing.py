@@ -82,6 +82,8 @@ from app.services.resource_governor.memory_domain import (
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
+from app.utils.error_class import already_logged, classify_error, level_for, log_failure
+from app.utils.logging_fields import log_event
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
@@ -594,14 +596,20 @@ async def _parse_file(
                     },
                 },
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             parse_ms = (time.monotonic() - parse_start) * 1000
-            logger.exception(
-                "Unexpected error parsing '%s' (provider=%s, parse_ms=%.0f)",
-                record_name, provider_enum.value, parse_ms,
-            )
-            # The exception and its type stay in the log above: the text can quote the
-            # document or a path, and the caller only needs to correlate.
+            # Class and frames only: the text can quote the document, a path, or (VLM OCR) the model
+            # provider's response body; the caller only needs to correlate.
+            fields = {"provider": provider_enum.value, "parse_ms": round(parse_ms)}
+            cls = classify_error(exc)
+            if already_logged(exc, level_for(cls)):
+                # VLM OCR re-raises the last page's error once every page failed: the 500 keeps its line, no second stack.
+                log_event(
+                    logger, "parse.failed", level=level_for(cls), outcome="failure", error_class=cls,
+                    error_type=type(exc).__name__, **fields,
+                )
+            else:
+                log_failure(logger, "parse.failed", exc, error_class=cls, include_error_text=False, **fields)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={

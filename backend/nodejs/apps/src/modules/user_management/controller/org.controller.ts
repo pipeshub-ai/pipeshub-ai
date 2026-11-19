@@ -44,6 +44,8 @@ import {
   signupSource,
 } from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
+import { audit } from '../../../libs/services/audit';
+import { withCause } from '../../../libs/errors/base.error';
 
 const ADDRESS_FIELDS = [
   'addressLine1',
@@ -264,6 +266,11 @@ export class OrgController {
       );
       // The admin signs in and calls next; the poll interval would leave their graph user missing until then.
       kickOutbox();
+      audit('org.create', {
+        actor: adminUserId,
+        org: org._id,
+        outcome: 'success',
+      });
       recordEvent(ORG_CREATED_EVENT, {
         orgId: org._id,
         userId: adminUserId,
@@ -302,10 +309,12 @@ export class OrgController {
       if (error instanceof BadRequestError || error instanceof NotFoundError) {
         throw error;
       }
-      this.logger.error('Creating the organisation failed', { error });
       throw markClientSafe(
-        new InternalServerError(
-          serverFailureMessage('create the organisation'),
+        withCause(
+          new InternalServerError(
+            serverFailureMessage('create the organisation'),
+          ),
+          error,
         ),
       );
     }
@@ -317,7 +326,6 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     const orgId = req.user?.orgId;
-    this.logger.debug(orgId);
     try {
       const org = await getOrgRepository().getLive(orgId as string);
 

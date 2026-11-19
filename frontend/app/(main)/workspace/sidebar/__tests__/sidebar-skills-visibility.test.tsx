@@ -24,6 +24,8 @@ let userState = { profile: { isAdmin: false } as { isAdmin: boolean } | null };
 vi.mock('@/lib/store/user-store', () => ({
   useUserStore: (selector: (s: typeof userState) => unknown) => selector(userState),
   selectIsAdmin: (s: typeof userState) => s.profile?.isAdmin ?? null,
+  // The profile here has finished loading, so the refreshed role is the stored one.
+  selectRefreshedIsAdmin: (s: typeof userState) => s.profile?.isAdmin ?? null,
 }));
 
 let flagsState: { flags: Record<string, boolean> | null } = { flags: null };
