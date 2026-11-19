@@ -347,17 +347,16 @@ async def test_the_limit_check_and_the_stored_deadline_use_one_delay(monkeypatch
 
     draws = iter([120.0, 132.0, 140.0, 150.0])
     monkeypatch.setattr(record_module, "handback_delay_s", lambda *a, **k: next(draws))
+    # The handler's clock is held still, so the stored deadline is exact however slow the host: a later draw cannot pass for it.
+    now_ms = 1_800_000_000_000
+    monkeypatch.setattr(record_module, "get_epoch_timestamp_in_ms", lambda: now_ms)
     harness = Harness(_record(indexingStatus="QUEUED"))
     harness.fail_with = RateLimited("model busy", provider="p", retry_after=5.0)
-    before = int(time.time() * 1000)
     with pytest.raises(ProviderRateLimitRequeue) as raised:
         await harness.run(_payload(parseNow=False, is_final_failure=False))
-    after = int(time.time() * 1000)
     stored = [w["deferredUntilMs"] for w in harness.writes() if w.get("deferredUntilMs")][-1]
     assert raised.value.delay_s == 120.0
-    # The deadline is stamped during the run: 120 s after a moment between these two, however slow the host. The next draw
-    # (132 s) would land at least 12 s past the upper bound.
-    assert before + 120_000 <= stored <= after + 120_000, "the stored deadline is not the delay that was checked"
+    assert stored == now_ms + 120_000, "the stored deadline is not the delay that was checked"
 
 
 async def test_the_limit_check_counts_the_stored_jittered_delay_not_the_providers_wait(monkeypatch: pytest.MonkeyPatch) -> None:
