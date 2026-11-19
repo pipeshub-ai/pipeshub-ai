@@ -394,9 +394,6 @@ def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
 # Only an org-wide share's edge types grant access through the organization: a
 # domain or "anyone" edge left by an older version grants nothing.
 _ORG_SHARE_TYPES_CYPHER = "[" + ", ".join(f"'{t}'" for t in ORG_SHARE_PERMISSION_TYPES) + "]"
-# Who holds a grant a knowledge hub grant test reads by id from $kh_grantees: one label expression, as each test is planned on its
-# own. A SourceAccount is named by its id like the others: that id is a uuid5 in its own namespace, never another holder's.
-_KH_HOLDER_LABELS = "User|SourceAccount|Group|Role|Teams"
 
 
 def _cypher_grant_edge(grantee: str, edge: str) -> str:
@@ -20967,6 +20964,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             parameters = {**{k: v for k, v in parameters.items() if k != "kh_cross"}, "kh_x": cross}
         elif "$kh_cross" in query and cross is None:
             parameters = {**parameters, "kh_cross": []}
+        accounts = [g[len(self._KH_ACCOUNT):] for g in parameters.get("kh_grantees") or [] if g.startswith(self._KH_ACCOUNT)]
+        if accounts:
+            # A viewer linked to a source account: each grant probe (`_kh_grants_by_probe`) also tests a SourceAccount holder, under its
+            # label, against the account's bare id. Every other viewer runs the probe without source accounts, so it plans as before them.
+            query = self._KH_PROBE_HOLDERS.sub(
+                r"WHERE (\1:User|Group|Role|Teams OR \2) AND \1.id IN $kh_grantees OR \1:SourceAccount AND \1.id IN $kh_sa }", query)
+            parameters = {**parameters, "kh_sa": accounts}
         names = tuple(sorted(k for k, v in parameters.items() if isinstance(v, list)))
         if names:
             # Only the lists this statement reads are sent: callers share one
@@ -21063,6 +21067,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     _KH_PROBE_GROUP_MAX = 20000
     _KH_GRANT_TEST = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.id IN \$grantedIds\b")
 
+    # How `_kh_holder_key` names a SourceAccount among the grantees, and the holder test of each grant probe (`_kh_grants_by_probe`).
+    _KH_ACCOUNT = "sourceAccounts/"
+    _KH_PROBE_HOLDERS = re.compile(
+        r"WHERE \((kh_gr\d+):User OR \1:Group OR \1:Role OR \1:Teams OR (\(\1:Organization AND kh_gp\d+\.type IN \[[^\]]*\]\))\)"
+        r" AND \1\.id IN \$kh_grantees \}")
+
+    @staticmethod
+    def _kh_holder_key(g: str) -> str:
+        """How a holder of grants is named in ``$kh_grantees`` and the cross lists: a SourceAccount as ``sourceAccounts/<id>``, every
+        other holder by its id. Ids are unique per label only, so a SourceAccount and a User may share one; the name keeps them apart."""
+        return f"(CASE WHEN {g}:SourceAccount THEN 'sourceAccounts/' + {g}.id ELSE {g}.id END)"
+
     @staticmethod
     @lru_cache(maxsize=256)
     def _kh_grants_by_probe(query: str) -> str:
@@ -21082,7 +21098,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return (f"(({v}:Record OR {v}:RecordGroup) AND {v}.connectorId = $kh_conn"
                     f" AND NOT coalesce({v}.isDeleted, false)"
                     f" AND EXISTS {{ ({v})<-[{p}:PERMISSION]-({g})"
-                    f" WHERE ({g}:{_KH_HOLDER_LABELS} OR ({g}:Organization AND {p}.type IN {_ORG_SHARE_TYPES_CYPHER}))"
+                    f" WHERE ({g}:User OR {g}:Group OR {g}:Role OR {g}:Teams"
+                    f" OR ({g}:Organization AND {p}.type IN {_ORG_SHARE_TYPES_CYPHER}))"
                     f" AND {g}.id IN $kh_grantees }})")
 
         out = Neo4jProvider._KH_GRANT_TEST.sub(probe, query)
@@ -21118,8 +21135,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             g, p = f"kh_xg_{v}", f"kh_xp_{v}"
             return (f"({v}.connectorId IN $kh_x.probe AND ({v}:Record OR {v}:RecordGroup) AND NOT coalesce({v}.isDeleted, false)"
                     f" AND EXISTS {{ ({v})<-[{p}:PERMISSION]-({g})"
-                    f" WHERE ({g}:{_KH_HOLDER_LABELS} OR ({g}:Organization AND {p}.type IN {_ORG_SHARE_TYPES_CYPHER}))"
-                    f" AND ({g}.id IN $kh_x.common OR {g}.id IN coalesce($kh_x.scoped[{v}.connectorId], [])) }})")
+                    f" WHERE ({g}:User OR {g}:SourceAccount OR {g}:Group OR {g}:Role OR {g}:Teams"
+                    f" OR ({g}:Organization AND {p}.type IN {_ORG_SHARE_TYPES_CYPHER}))"
+                    f" AND ({Neo4jProvider._kh_holder_key(g)} IN $kh_x.common"
+                    f" OR {Neo4jProvider._kh_holder_key(g)} IN coalesce($kh_x.scoped[{v}.connectorId], [])) }})")
 
         return Neo4jProvider._KH_CROSS_TEST.sub(probe, query)
 
@@ -21165,7 +21184,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(kh_src:User|SourceAccount) WHERE coalesce(kh_src.state, '') <> 'withdrawn'
                 OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_lb)
                 WHERE (kh_lb:Group OR kh_lb:Role OR kh_lb:Teams) AND kh_e.type = 'USER'
-                RETURN collect(DISTINCT [kh_link.connectorId, kh_src.id])
+                RETURN collect(DISTINCT [kh_link.connectorId, CASE WHEN kh_src:SourceAccount THEN 'sourceAccounts/' + kh_src.id ELSE kh_src.id END])
                        + collect(DISTINCT [kh_link.connectorId, kh_lb.id]) AS kh_linked
             }
             RETURN u.id AS user, kh_badges AS badges, kh_orgs AS orgs, kh_linked AS linked
@@ -21185,7 +21204,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         granted = await self.client.execute_query(
             f"""
             UNWIND $holders AS kh_h
-            MATCH (kh_g:{_KH_HOLDER_LABELS}|Organization {{id: kh_h[0]}})
+            // a SourceAccount is named sourceAccounts/<id> (_kh_holder_key): the label is matched with the id
+            CALL (kh_h) {{
+                MATCH (kh_g:SourceAccount {{id: substring(kh_h[0], 15)}}) WHERE kh_h[0] STARTS WITH 'sourceAccounts/' RETURN kh_g
+                UNION
+                MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}}) WHERE NOT kh_h[0] STARTS WITH 'sourceAccounts/' RETURN kh_g
+            }}
             MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
             WHERE kh_n.connectorId IN $others AND (kh_h[1] IS NULL OR kh_n.connectorId = kh_h[1])
               AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
@@ -21239,7 +21263,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE kh_link.connectorId = $connector_id AND coalesce(kh_src.state, '') <> 'withdrawn'
                 OPTIONAL MATCH (kh_src)-[kh_e:PERMISSION]->(kh_b)
                 WHERE (kh_b:Group OR kh_b:Role OR kh_b:Teams) AND kh_e.type = 'USER'
-                RETURN collect(DISTINCT kh_src.id) + collect(DISTINCT kh_b.id) AS kh_linked
+                RETURN collect(DISTINCT CASE WHEN kh_src:SourceAccount THEN 'sourceAccounts/' + kh_src.id ELSE kh_src.id END)
+                       + collect(DISTINCT kh_b.id) AS kh_linked
             }
             RETURN [u.id] + kh_badges + kh_orgs + kh_linked AS grantees
             """,
@@ -21269,8 +21294,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND NOT coalesce(c.isPlaceholder, false)
               AND coalesce(c.accessRule, 'OPEN') = 'OPEN'
               AND EXISTS {{ (c)<-[kh_gp:PERMISSION]-(kh_gr)
-                             WHERE (kh_gr:{_KH_HOLDER_LABELS} OR (kh_gr:Organization AND kh_gp.type IN {_ORG_SHARE_TYPES_CYPHER}))
-                               AND kh_gr.id IN $kh_grantees }}
+                             WHERE (kh_gr:User OR kh_gr:SourceAccount OR kh_gr:Group OR kh_gr:Role OR kh_gr:Teams
+                                    OR (kh_gr:Organization AND kh_gp.type IN {_ORG_SHARE_TYPES_CYPHER}))
+                               AND {self._kh_holder_key("kh_gr")} IN $kh_grantees }}
             WITH DISTINCT c
             WITH [g IN {self._kh_v3_chain_top_owns("c")} | g.id] AS ownGroups, collect(c.id) AS ids
             RETURN collect({{ownGroups: ownGroups, ids: ids}}) AS byGroups
