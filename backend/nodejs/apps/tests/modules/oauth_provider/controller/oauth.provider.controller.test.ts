@@ -345,6 +345,29 @@ describe('OAuthProviderController', () => {
       expect(mockAuthCodeService.generateCode.firstCall.args[4]).to.deep.equal(['user:read'])
     })
 
+    it('is not listed as refused to a non-admin when the app does not allow it', async () => {
+      stubOrgLookup(null)
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockScopeValidatorService.parseScopes.returns(['user:read', 'usergroup:read', 'kb:read'])
+      mockScopeValidatorService.resolveGrantedScopes.returns({ granted: ['user:read'], notGranted: ['usergroup:read', 'kb:read'] })
+      await controller.authorize(authorizeReq(), mockRes, mockNext)
+      expect(mockRes.json.firstCall.args[0].consentData.notGrantedScopes.map((s: any) => s.name))
+        .to.deep.equal(['kb:read'])
+    })
+
+    it('sends a non-admin left with no scopes back to the client as invalid_scope', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      mockScopeValidatorService.parseScopes.returns(['usergroup:read'])
+      mockScopeValidatorService.resolveGrantedScopes.returns({ granted: ['usergroup:read'], notGranted: [] })
+      await controller.authorizeConsent(consentReq(), mockRes, mockNext)
+      const url = new URL(mockRes.json.firstCall.args[0].redirectUrl)
+      expect(url.origin + url.pathname).to.equal('https://example.com/cb')
+      expect(url.searchParams.get('error')).to.equal('invalid_scope')
+      expect(url.searchParams.get('state')).to.equal('s')
+      expect(mockAuthCodeService.generateCode.called).to.be.false
+      expect(mockNext.called).to.be.false
+    })
+
     it('is still shown to and granted to an admin', async () => {
       stubOrgLookup(null)
       await controller.authorize(authorizeReq(), mockRes, mockNext)
