@@ -201,3 +201,13 @@ def test_an_unset_heavy_parse_setting_follows_the_excel_figure(monkeypatch: pyte
     monkeypatch.setattr(policy_mod, "HEAVY_PARSE_WORKING_SET_GB", 1.5)
     monkeypatch.setenv("EXCEL_MAX_TEXT_MB", "2048")
     assert policy_mod.heavy_parse_working_set_gb() == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("non_dumpable", [True, False])
+def test_the_cpu_limit_is_armed_only_in_a_worker_that_cannot_dump_core(monkeypatch: pytest.MonkeyPatch, non_dumpable: bool) -> None:
+    # A piped core_pattern ignores RLIMIT_CORE: a worker the kernel could still dump is ended only by the pool's timeout.
+    from app.modules.parsers import parse_worker
+
+    monkeypatch.delenv(parse_worker._IN_WORKER_ENV, raising=False)
+    parse_worker.allow_cpu_limit(non_dumpable=non_dumpable)
+    assert parse_worker.in_worker() is non_dumpable
