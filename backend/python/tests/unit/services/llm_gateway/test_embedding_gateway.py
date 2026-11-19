@@ -31,6 +31,27 @@ def _status_error(status: int, retry_after: str | None = None) -> openai.APIStat
     return cls("failed", response=response, body=None)
 
 
+def _quota_error(code: str = "insufficient_quota") -> openai.RateLimitError:
+    response = httpx.Response(429, request=httpx.Request("POST", "http://x/v1/embeddings"))
+    return openai.RateLimitError(
+        "Error code: 429", response=response, body={"error": {"message": "no credit", "type": code, "code": code}},
+    )
+
+
+@pytest.mark.parametrize("code", ["insufficient_quota", "credit_balance_exhausted"])
+def test_an_empty_balance_is_not_retried_although_it_is_a_429(code: str) -> None:
+    exc = _quota_error(code)
+    assert EmbeddingGateway.retry_kind(exc) is None
+    wrapped = RuntimeError("embedding failed")
+    wrapped.__cause__ = exc
+    assert EmbeddingGateway.retry_kind(wrapped) is None
+    assert not EmbeddingGateway(retry_budget=RetryBudget()).decide(0, exc).retry
+
+
+def test_a_rate_limit_is_still_a_throttle() -> None:
+    assert EmbeddingGateway.retry_kind(_status_error(429)) is RetryKind.THROTTLE
+
+
 @pytest.fixture
 def slept(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     waits: list[float] = []

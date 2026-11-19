@@ -35,13 +35,44 @@ _RETRIABLE_HTTP_STATUS_CODES = frozenset({429, 502, 503, 504})
 # stall the pipeline behind it.
 _MAX_RETRY_DELAY_SECONDS = 30.0
 
+# What a provider says when the account has no credit left. OpenAI answers it with the same 429 as a rate limit
+# (``insufficient_quota``), Anthropic with a 400 ("credit balance is too low"). No wait fixes it, so it is never retried.
+# Deliberately narrow: Gemini words an ordinary per-minute limit as "You exceeded your current quota", which a wait
+# does fix.
+_QUOTA_EXHAUSTED_MARKERS = (
+    "insufficient_quota",
+    "credit_balance",
+    "credit balance is too low",
+    "billing_hard_limit_reached",
+    "billing_not_active",
+)
+
+
+def is_quota_exhausted(exc: BaseException) -> bool:
+    """Whether ``exc`` or one of its causes is a provider saying the account is out of credit."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        # The OpenAI SDK keeps the answer's code and type on the error and its JSON on ``body``; the message alone does
+        # not always quote them.
+        parts = [getattr(current, name, None) for name in ("code", "type", "body")]
+        text = " ".join([str(current), *(str(part) for part in parts if isinstance(part, (str, dict)))]).lower()
+        if any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS):
+            return True
+        current = current.__cause__
+    return False
+
 
 def is_retriable_embedding_error(exc: BaseException) -> bool:
     """Return True only for transient embedding failures worth retrying.
 
     Application-level 500 responses (e.g. missing trust_remote_code, bad model
-    name) are not retried — they will fail the same way on every attempt.
+    name) are not retried — they will fail the same way on every attempt. Nor
+    is an exhausted credit balance, although OpenAI answers it with a 429.
     """
+    if is_quota_exhausted(exc):
+        return False
     if isinstance(
         exc,
         (
