@@ -387,6 +387,28 @@ def _may_parent_an_issue(fields: dict[str, Any]) -> bool:
     return not issue_type.get("subtask") and issue_type.get("hierarchyLevel") != -1
 
 
+_RETRY_LIST_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _retry_list_lock(connector_id: str) -> asyncio.Lock:
+    """Serializes the read-modify-write of a connector's project checkpoints in this process (as ``connector_sync_lock``),
+    so a reindex's retry entry and a sync's write cannot overwrite each other."""
+    return _RETRY_LIST_LOCKS.setdefault(connector_id, asyncio.Lock())
+
+
+def _retry_ids(stored: object) -> set[str]:
+    """The issue ids a project checkpoint's retry list holds."""
+    try:
+        return {str(i) for i in json.loads(stored or "[]")}
+    except (TypeError, ValueError):
+        return set()
+
+
+def _with_email(members: list[AppUser]) -> list[AppUser]:
+    """The members a group or role write can hold: it resolves a member by email, so one without is left out, as it would be."""
+    return [m for m in members if m.email]
+
+
 @ConnectorBuilder("Jira")\
     .in_group(AppGroups.ATLASSIAN.value)\
     .with_description("Sync issues from Jira Cloud")\
@@ -688,6 +710,8 @@ class JiraConnector(BaseConnector):
         # Ids of issues this sync could not write in full (a build that failed, or comments, their grants or files
         # not written); saved with the project checkpoint before the cursor passes them, and read first by the next sync.
         self._issues_to_retry: set[str] = set()
+        # The retry ids this project's sync read: only those may leave the stored list (``_update_project_sync_checkpoint``).
+        self._retry_read: set[str] = set()
         # Sub-tasks among the issues just built, which have no children to read again.
         self._subtask_ids: set[str] = set()
 
@@ -1719,6 +1743,9 @@ class JiraConnector(BaseConnector):
         issues_to_retry: str | None = None,
         people_reread: str | None = None,
         people_read: int | None = None,
+        *,
+        retry_from_sync: bool = False,
+        add_retry: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1729,27 +1756,30 @@ class JiraConnector(BaseConnector):
             last_issue_updated: Updated timestamp of last processed issue (used for resume AND next incremental sync)
         """
         sync_point_key = f"project_{project_key}"
+        async with _retry_list_lock(self.connector_id):
+            # Read existing to preserve values not being updated
+            existing = await self._get_project_sync_checkpoint(project_key) or {}
+            stored_retry = _retry_ids(existing.get("issues_to_retry"))
+            if add_retry is not None:
+                issues_to_retry = json.dumps(sorted(stored_retry | {add_retry}))
+            elif retry_from_sync or (last_issue_updated is not None and issues_to_retry is None):
+                # The cursor never moves past an issue this sync could not write in full without that issue being saved,
+                # in the same write, for the next sync to read first. One it did not read (a reindex added it meanwhile)
+                # stays.
+                issues_to_retry = json.dumps(sorted((stored_retry - self._retry_read) | self._issues_to_retry))
+            sync_point_data = {
+                "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
+                "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated"),
+                "security_levels": security_levels if security_levels is not None else existing.get("security_levels"),
+                "issue_placement": issue_placement if issue_placement is not None else existing.get("issue_placement"),
+                "subtask_parents": subtask_parents if subtask_parents is not None else existing.get("subtask_parents"),
+                "browse_holders": browse_holders if browse_holders is not None else existing.get("browse_holders"),
+                "issues_to_retry": issues_to_retry if issues_to_retry is not None else existing.get("issues_to_retry"),
+                "people_reread": people_reread if people_reread is not None else existing.get("people_reread"),
+                "people_read": people_read if people_read is not None else existing.get("people_read"),
+            }
 
-        # Read existing to preserve values not being updated
-        existing = await self._get_project_sync_checkpoint(project_key) or {}
-        if last_issue_updated is not None and issues_to_retry is None:
-            # The cursor never moves past an issue this sync could not write in full without that issue being saved,
-            # in the same write, for the next sync to read first.
-            issues_to_retry = json.dumps(sorted(self._issues_to_retry))
-
-        sync_point_data = {
-            "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
-            "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated"),
-            "security_levels": security_levels if security_levels is not None else existing.get("security_levels"),
-            "issue_placement": issue_placement if issue_placement is not None else existing.get("issue_placement"),
-            "subtask_parents": subtask_parents if subtask_parents is not None else existing.get("subtask_parents"),
-            "browse_holders": browse_holders if browse_holders is not None else existing.get("browse_holders"),
-            "issues_to_retry": issues_to_retry if issues_to_retry is not None else existing.get("issues_to_retry"),
-            "people_reread": people_reread if people_reread is not None else existing.get("people_reread"),
-            "people_read": people_read if people_read is not None else existing.get("people_read"),
-        }
-
-        await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
+            await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     # ============================================================================
     # Deletion Handling
@@ -3788,7 +3818,10 @@ class JiraConnector(BaseConnector):
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
 
             # Create accountId -> AppUser lookup (accountId is always present in group member responses)
-            user_by_account_id = {user.source_user_id: user for user in jira_users if user.source_user_id}
+            # The accounts an issue's people resolve against (``_grant_directory``), so a level's members include a linked
+            # account with product access whose email is hidden; the graph write below holds members by email only.
+            user_by_account_id = self._grant_directory(
+                {user.source_user_id: user for user in jira_users if user.source_user_id})
 
             # Fetch members concurrently (read-only); assemble + single write below.
             results = await self._map_bounded(
@@ -3814,7 +3847,7 @@ class JiraConnector(BaseConnector):
                 if app_users is None or user_group is None:
                     continue
                 # Add group to batch (with or without members)
-                user_groups_batch.append((user_group, app_users))
+                user_groups_batch.append((user_group, _with_email(app_users)))
 
             self._group_members = {k: v for k, v in groups_members_map.items() if v is not None}
 
@@ -4186,12 +4219,12 @@ class JiraConnector(BaseConnector):
             if user.email
         }
 
-        # Also build accountId -> AppUser lookup
-        user_by_account_id: dict[str, AppUser] = {
+        # Also build accountId -> AppUser lookup, as an issue's people resolve (``_sync_user_groups``)
+        user_by_account_id: dict[str, AppUser] = self._grant_directory({
             user.source_user_id: user
             for user in jira_users
             if user.source_user_id
-        }
+        })
 
         roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
         total_roles = 0
@@ -4239,7 +4272,7 @@ class JiraConnector(BaseConnector):
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
-            await self.data_entities_processor.on_new_app_roles(roles_to_sync)
+            await self.data_entities_processor.on_new_app_roles([(role, _with_email(m)) for role, m in roles_to_sync])
             self.logger.info(
                 f"✅ Synced {total_roles} project roles with {total_members} direct user members"
             )
@@ -4255,12 +4288,12 @@ class JiraConnector(BaseConnector):
         Sync project lead as AppRole for each project.
         """
 
-        # Build accountId -> AppUser lookup
-        user_by_account_id: dict[str, AppUser] = {
+        # Build accountId -> AppUser lookup, as an issue's people resolve (``_sync_user_groups``)
+        user_by_account_id: dict[str, AppUser] = self._grant_directory({
             user.source_user_id: user
             for user in jira_users
             if user.source_user_id
-        }
+        })
 
         lead_roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
         # Lead role id -> (project key, project id) for leads the short user list did not have.
@@ -4327,7 +4360,7 @@ class JiraConnector(BaseConnector):
 
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
-            await self.data_entities_processor.on_new_app_roles(lead_roles_to_sync)
+            await self.data_entities_processor.on_new_app_roles([(role, _with_email(m)) for role, m in lead_roles_to_sync])
         else:
             self.logger.info("No project leads to sync")
 
@@ -4836,6 +4869,7 @@ class JiraConnector(BaseConnector):
         self._issue_build_failures = 0
         self._parents_to_retry = set()
         self._issues_to_retry = set()
+        self._retry_read = set()
         readable = security.knowledge == SchemeKnowledge.PRESENT and security.members_readable
         if (reason := unreadable_reason(security)) is not None:
             self._unreadable_security[project_key] = reason
@@ -4926,6 +4960,7 @@ class JiraConnector(BaseConnector):
                         if replayed:
                             unsettled_parents = await self._settle_subtasks(
                                 project_key, project_id, jira_users, stats, replayed, unsettled_parents)
+            self._retry_read = set(retry_ids)
         saved_retry = await self._save_issues_to_retry(project_key, retry_ids)
 
         async for issues_batch, _has_more, last_issue_timestamp in self._fetch_issues_batched(
@@ -5217,20 +5252,14 @@ class JiraConnector(BaseConnector):
 
     async def _retry_in_next_sync(self, project_key: str, issue_id: str) -> None:
         """Add an issue written outside a sync to the project's retry list (``_save_issues_to_retry``): the next sync reads it first."""
-        stored = (await self._get_project_sync_checkpoint(project_key) or {}).get("issues_to_retry") or "[]"
-        try:
-            ids = {str(i) for i in json.loads(stored)}
-        except (TypeError, ValueError):
-            ids = set()
-        if issue_id not in ids:
-            await self._update_project_sync_checkpoint(project_key, issues_to_retry=json.dumps(sorted(ids | {issue_id})))
+        await self._update_project_sync_checkpoint(project_key, add_retry=issue_id)
 
     async def _save_issues_to_retry(self, project_key: str, saved: list[str]) -> list[str]:
         """Save the issues this sync could not finish (``_issues_to_retry``) in the project checkpoint, in place of
         ``saved``, the list it holds; the next sync reads them first. Returns what it holds now."""
         now = sorted(self._issues_to_retry)
         if now != sorted(saved):
-            await self._update_project_sync_checkpoint(project_key, issues_to_retry=json.dumps(now))
+            await self._update_project_sync_checkpoint(project_key, retry_from_sync=True)
         return now
 
     async def _save_parents_to_retry(self, project_key: str, unsettled: list[str]) -> list[str]:
@@ -5493,8 +5522,9 @@ class JiraConnector(BaseConnector):
         elif last_sync_time:
             modified_after = last_sync_time
 
-        if stored_only:
-            # The security pass must reach every stored issue, whatever the date filters.
+        if stored_only or issue_ids:
+            # The security pass must reach every stored issue, and a retry the issues it names (a reindex may have written
+            # one the date window no longer returns), whatever the date filters.
             jql_conditions = [f'project = "{project_key}"']
         else:
             jql_conditions = self._issue_scope_conditions(project_key, modified_after=modified_after)

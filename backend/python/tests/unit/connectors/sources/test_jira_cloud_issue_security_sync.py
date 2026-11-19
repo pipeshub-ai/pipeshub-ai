@@ -4,6 +4,7 @@ Fixtures are shaped like Jira Cloud's answers (project/{key}/issuesecuritylevels
 issuesecurityschemes/level/member, issue.fields.security); the same shapes come from the connector simulator.
 """
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -705,12 +706,7 @@ class TestReindexAppliesTheLevel:
         """Its `updated` predates the cursor and the level digests match, so only the retry list makes the next sync read it."""
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
         c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
-        saved: dict = {"issues_to_retry": json.dumps(["7"])}
-        c._get_project_sync_checkpoint = AsyncMock(side_effect=lambda _key: dict(saved))
-
-        async def update(_key: str, **kw: object) -> None:
-            saved.update({k: v for k, v in kw.items() if v is not None})
-        c._update_project_sync_checkpoint = update
+        saved = TestTheRetryListKeepsWhatAReindexAdds._store(c, ["7"])
         await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
         assert json.loads(saved["issues_to_retry"]) == ["1001", "7"]
 
@@ -3298,6 +3294,36 @@ class TestLevelReadersFollowTheMembersRead:
         assert self._reporter_grant(c)[0] == ["rep@x.com"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("licensed", [True, False], ids=["product_access", "no_product_access"])
+    async def test_a_browse_named_group_member_whose_email_is_hidden_reads_it_by_account(self, licensed: bool) -> None:
+        """The reporter is a linked account whose email Jira hides (``_listed_without_email``) and a member of the level's
+        group: they read the issue alone, granted by account. Without product access they are anonymous to Jira: no grant."""
+        hidden = AppUser(app_name="JIRA", connector_id="conn-sec", source_user_id="acc-h", org_id="org-1", email="",
+                         full_name="H", is_active=True)
+        c = _connector()
+        c._stored_app_users = [hidden]
+        c._listed_account_ids = {"acc-h"}
+        c._licensed_account_ids = {"acc-h", self.OTHER.source_user_id} if licensed else {self.OTHER.source_user_id}
+        c._fetch_groups = AsyncMock(return_value=([{"groupId": "group-1", "name": "G1"}], False))
+        c._fetch_group_members = AsyncMock(return_value=(["acc-h"], True))
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        await c._sync_user_groups([self.OTHER])
+        assert c.data_entities_processor.on_new_user_groups.await_args.args[0][0][1] == []  # the graph holds members by email
+        ctx = _present({"10102": [{"type": "group", "value": "group-1"}]})
+        ctx.browse_holders = self.REPORTER
+        directory = {self.OTHER.source_user_id: self.OTHER}
+        users = c._grant_directory(directory)
+        ctx.level_readers = c._level_readers(ctx, "PROJ", users)
+        fields = _issue({"id": "10102"})["fields"]
+        fields["reporter"] = {"accountId": "acc-h"}
+        rec = _stored_ticket()
+        grants, _, _ = apply_issue_access_settled(rec, fields, is_subtask=False, project_key="PROJ", context=ctx,
+                                                  user_by_account_id=users, project_id=PROJECT_ID)
+        grants = c._directory_grants(grants, directory)
+        assert [(g.email, g.external_id) for g in grants] == ([(None, "acc-h")] if licensed else [])
+        assert rec.access_rule == (AccessRule.OPEN if licensed else AccessRule.STRICT)
+
+    @pytest.mark.asyncio
     async def test_a_member_removed_by_a_link_pass_is_reread_by_the_next_sync(self) -> None:
         c = _connector()
         stored = self._stored_digests(c)
@@ -3314,3 +3340,73 @@ class TestLevelReadersFollowTheMembersRead:
         await c._link_users_groups_and_roles()
         assert await self._next_issue_pass(c, stored) == [
             {"resume": None, "is_new_project": True, "level_ids": ["10102"], "leveled_only": False, "stored_only": True}]
+
+
+class TestTheRetryListKeepsWhatAReindexAdds:
+    """An id a reindex puts on a project's retry list survives any overlapping write; a sync removes only the ids it read."""
+
+    @staticmethod
+    def _store(c: JiraConnector, initial: list[str]) -> dict:
+        """A checkpoint store that yields between a read and a write, as a real one may."""
+        point: dict = {"issues_to_retry": json.dumps(initial)}
+
+        async def read(_key: str) -> dict:
+            await asyncio.sleep(0)
+            return dict(point)
+
+        async def write(_key: str, data: dict) -> None:
+            await asyncio.sleep(0)
+            point.update(data)
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=read)
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=write)
+        return point
+
+    @pytest.mark.asyncio
+    async def test_a_sync_write_after_a_reindex_add_keeps_the_id(self) -> None:
+        c = _connector()
+        point = self._store(c, [])
+        c._issues_to_retry, c._retry_read = {"5"}, set()  # the sync read an empty list, and could not finish issue 5
+        await c._retry_in_next_sync("PROJ", "9")  # a reindex during that sync
+        await c._update_project_sync_checkpoint("PROJ", last_issue_updated=10)
+        assert json.loads(point["issues_to_retry"]) == ["5", "9"]
+
+    @pytest.mark.asyncio
+    async def test_a_sync_removes_only_the_ids_it_read(self) -> None:
+        c = _connector()
+        point = self._store(c, ["3", "9"])
+        c._issues_to_retry, c._retry_read = set(), {"3"}
+        assert await c._save_issues_to_retry("PROJ", ["3"]) == []
+        assert json.loads(point["issues_to_retry"]) == ["9"]
+
+    @pytest.mark.asyncio
+    async def test_overlapping_writes_keep_every_id(self) -> None:
+        c = _connector()
+        point = self._store(c, [])
+        c._issues_to_retry, c._retry_read = {"5"}, set()
+        await asyncio.gather(c._retry_in_next_sync("PROJ", "7"), c._retry_in_next_sync("PROJ", "8"),
+                             c._update_project_sync_checkpoint("PROJ", last_issue_updated=10))
+        assert json.loads(point["issues_to_retry"]) == ["5", "7", "8"]
+
+    @pytest.mark.asyncio
+    async def test_a_retry_reads_its_issues_whatever_the_date_filters(self) -> None:
+        """A reindex may have written an issue the date window no longer returns; the retry names it, so it is read."""
+        c = _connector()
+        modified = MagicMock()
+        modified.get_value = MagicMock(return_value=(1_600_000_000_000, 1_650_000_000_000))
+        created = MagicMock()
+        created.get_value = MagicMock(return_value=(1_500_000_000_000, None))
+        c.sync_filters = MagicMock()
+        c.sync_filters.get = MagicMock(side_effect=lambda key: {"modified": modified, "created": created}.get(
+            getattr(key, "value", key)))
+        c.data_source = MagicMock()
+        seen: list = []
+
+        async def search(**kw: object) -> MagicMock:
+            seen.append(kw["jql"])
+            return _resp(200, {"issues": []})
+
+        c._search_issues_with_retry = search
+        async for _ in c._fetch_issues_batched("PROJ", PROJECT_ID, [], None, None, issue_ids=["1001", "1002"]):
+            pass
+        assert seen[0].split("ORDER BY")[0] == 'project = "PROJ" AND id in (1001, 1002) '
