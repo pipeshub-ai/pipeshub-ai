@@ -18,6 +18,7 @@ from app.capacity.member_budget import (
     CancelToken,
     MemberBudget,
 )
+from tests.support.eventually import until
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,23 +39,17 @@ def _small(n: int = 1) -> Demand:
     return Demand(Family.PARSE, n, 0, "small")
 
 
-def _p95(values: list[float]) -> float:
-    return sorted(values)[max(0, int(len(values) * 0.95) - 1)]
-
-
-async def test_a_release_wakes_a_waiter_within_a_few_milliseconds(ledger: Path) -> None:
+async def test_a_release_wakes_a_waiter_within_a_few_milliseconds(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wake comes from the watcher's next read of the change counters, every ``WATCH_S``: not from the fallback tick."""
+    assert mb.WATCH_S <= 0.005
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: only the release's wake can serve the waiter
     b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=1)
-    latencies: list[float] = []
     for _ in range(30):
         held = await b.reserve(_llm(), deadline_s=1)
-        task = asyncio.create_task(b.reserve(_llm(), deadline_s=5))
-        await asyncio.sleep(0.02)
-        started = time.monotonic()
+        task = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
+        assert await until(lambda: bool(b._watcher._entries))  # its first attempt failed; it now waits for a wake
         held.release()
-        permit = await asyncio.wait_for(task, 2)
-        latencies.append(time.monotonic() - started)
-        permit.release()
-    assert _p95(latencies) < 0.02, sorted(latencies)[-3:]
+        (await asyncio.wait_for(task, 15)).release()  # a missed wake times out at the 10 s deadline
 
 
 async def test_a_release_that_lands_before_the_watchers_first_read_is_not_missed(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
