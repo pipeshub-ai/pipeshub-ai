@@ -402,11 +402,40 @@ def test_the_trash_revision_moves_the_floor_and_its_downgrade_takes_back_its_col
 
 
 
-def test_the_trash_revision_never_touches_the_graph_tables_nor_their_row_security():
-    """kg_0019 changes kg.records (its columns and indexes), replaces kg.proj_doc and writes the kernel's registry and pin rows of its writers; it reads no graph row and
-    changes no row security, so no graph read or write waits for it. The copies made before it are brought up to date by the bootstrap job, connector by connector
-    (kg.backfill.fill_trash)."""
+def test_the_trash_revision_never_touches_the_graph_tables():
+    """kg_0019 changes kg.records (its columns and indexes), replaces kg.proj_doc, writes the kernel's registry and pin rows of its writers and relabels kg.projection_state
+    (whose row security alone it lifts, for that statement); it reads no graph row and changes no graph table, so no graph read or write waits for it. The copies made before
+    it are brought up to date by the bootstrap job, connector by connector (kg.backfill.fill_trash)."""
+    import re
     from pathlib import Path
     d = Path(__file__).resolve().parents[1] / "versions" / "kg"
     text = (d / "0019_trash.py").read_text(encoding="utf-8") + (d / "0019_trash.sql").read_text(encoding="utf-8")
-    assert "graph." not in text and "ROW LEVEL SECURITY" not in text.upper() and "projection_state" not in text
+    assert "graph." not in text
+    assert set(re.findall(r"ALTER TABLE (\S+) (?:NO )?FORCE ROW LEVEL SECURITY", text)) == {"kg.projection_state"}
+
+
+def test_a_copy_labelled_epoch_8_when_the_trash_columns_are_added_is_relabelled_7_for_the_fill(db):
+    """After a downgrade to kg_0018 and an upgrade back, the trash columns are new and empty: a copy labelled epoch 8 (or later) must not be served from them. Both directions
+    label it epoch 7, which the bootstrap fills in place before serving it again; kg_0018's code serves epoch 7 copies."""
+    from .rls_fixture import ORG_A as org
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+
+    def epochs(c) -> list[int]:
+        return [r[0] for r in c.execute("SELECT code_epoch FROM kg.projection_state WHERE org_id = %s ORDER BY app_sk", (org,))]
+    with connect(cluster, name) as c:
+        c.execute("INSERT INTO kg.projection_state (org_id, app_sk, code_epoch, mode, backfill_cursor, verified_at) VALUES (%s, 1, 8, 'enforce', 'done', now()), (%s, 2, 6, 'legacy', 'done', NULL)",
+                  (org, org))
+    r = run_migrate(url, "downgrade", "kg_0018", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert epochs(c) == [7, 6]
+        c.execute("UPDATE kg.projection_state SET code_epoch = 8 WHERE org_id = %s AND app_sk = 1", (org,))      # as a downgrade that did not relabel left it
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert epochs(c) == [7, 6]
+        assert c.execute("SELECT mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s AND app_sk = 1", (org,)).fetchone() == ("enforce", "done", True)
+        assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.projection_state'::regclass").fetchone()[0] is True
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []

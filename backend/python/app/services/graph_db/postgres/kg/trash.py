@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.db.errors import DbTimeout
 from app.services.graph_db.common.utils import TRASH_LIST_OTHER_ROOT_NAMES
+from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.hierarchy import Fallback, _node, _served
 
 if TYPE_CHECKING:
@@ -66,6 +67,7 @@ ROWS = """/* pipeshub:kg.trash_rows */ WITH page AS (SELECT * FROM jsonb_to_reco
     WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_id = r.id LIMIT 1) ty ON true
             LEFT JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = r.deleted_by
             ORDER BY page.o"""
+ORG_APPS = "/* pipeshub:kg.trash_org_apps */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id <> $2"
 # A count asked with no cap reads every batch of the connector: as the access check's reads (``read.PROFILE``), a slow statement hands the read to the walk at once.
 LIMITS = "/* pipeshub:kg.trash_limits */ SELECT set_config('statement_timeout', '2s', true)"
 
@@ -75,6 +77,12 @@ async def page(tx: Tx, org: str, connector_id: str, org_id: str, *, files_only: 
     """``list_trashed_records``'s rows and total, as the walk's statements return them. Raises Fallback."""
     await tx.fetchval(LIMITS)
     app_sk = await _served(tx, org, connector_id)
+    if files_only:
+        # The single-file rule counts a batch's records across the organisation (the walk's ``cnt``): kg holds them all only for connectors it serves, so a connector it does
+        # not (an older copy, a change waiting) could hide a record of the batch and make a batch of two look like one.
+        for r in await tx.fetch(ORG_APPS, org, connector_id):
+            if not await kg_read.serves(tx, org, r["id"]):
+                raise Fallback("org")
     ts, batch = after or (None, None)
     try:
         found = await tx.fetch(PAGE, org, app_sk, connector_id, org_id, files_only, ts, batch, skip + limit, TRASH_LIST_OTHER_ROOT_NAMES)

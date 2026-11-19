@@ -256,6 +256,130 @@ async def test_a_fill_page_reads_at_most_a_page_of_records_even_when_none_carrie
         assert await pg_db.run(epoch) == 8
 
 
+def _relabel_sql() -> str:
+    """kg_0019's relabel of copies labelled epoch 8 or later (the revision's own text, read without importing the migration package)."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).resolve().parents[5] / "db" / "versions" / "kg" / "0019_trash.py").read_text(encoding="utf-8"))
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "RELABEL" for t in n.targets))
+
+
+async def _trash_columns(db: Any, org: str) -> dict:  # noqa: ANN401
+    with ctx(org):
+        return await db.run(lambda tx: _rows(tx, org))
+
+
+async def _rows(tx: Any, org: str) -> dict:  # noqa: ANN401
+    return {r["id"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch("SELECT id, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1 AND coll = 3", org)}
+
+
+async def test_a_filled_copy_taken_down_to_kg_0018_and_up_again_is_filled_again_before_it_is_served(pg_provider, pg_db, tally) -> None:
+    """A copy filled and enforced at epoch 8, after a downgrade to kg_0018 and an upgrade back: the columns are new and empty, and kg_0019 relabels the copy epoch 7. The
+    bootstrap fills it again: enforced and served, and its listing is the walk's (before the relabel it was served with empty columns and listed nothing)."""
+    from app.services.graph_db.postgres.kg import bootstrap
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _trash(pg_provider, org, ["b"])
+    await _trash(pg_provider, org, ["e"])
+    await flip(pg_db, org)
+    filled = await _trash_columns(pg_db, org)
+    await _admin("UPDATE kg.records SET deleted_ms = NULL, delete_batch = NULL WHERE org_id = $1", org)            # the columns as an upgrade brings them back
+    await _admin(_relabel_sql())
+    await bootstrap.bring_to_enforce(pg_db, org, {})
+    assert await _trash_columns(pg_db, org) == filled
+    tally.c.clear()
+    walk, got = await _both(pg_provider, org)
+    assert got == walk and walk["cursor False 50"][0]["total"] == 2
+    assert tally.c[("trash", "kg")], dict(tally.c)
+
+
+async def test_a_fill_unit_retried_after_its_writes_reads_the_same_page_again(pg_provider, pg_db, monkeypatch) -> None:
+    """A retryable failure after a page's writes and before its commit (the pre-commit hook): the unit is run again from the same cursor, so no page is skipped and the
+    relabelled copy holds every trashed record's columns."""
+    from app.core.db.errors import SerializationConflict
+    from app.services.graph_db.postgres.kg import backfill as bf
+    from app.services.graph_db.postgres.kg import writers
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _trash(pg_provider, org, ["b"])                   # b and c, in two pages of two (a b | c d | e)
+    await _trash(pg_provider, org, ["e"])
+    await flip(pg_db, org)
+    filled = await _trash_columns(pg_db, org)
+    await _admin("UPDATE kg.records SET deleted_ms = NULL, delete_batch = NULL WHERE org_id = $1", org)
+    await _admin("UPDATE kg.projection_state SET code_epoch = 7 WHERE org_id = $1 AND app_sk <> 0", org)
+    armed = {"wrote": False, "failed": False}
+    real_set, real_hook = writers.KgWriter.trash_set, pg_db.pre_commit_hook
+
+    async def spy(self: Any, rows: list) -> int:  # noqa: ANN401
+        armed["wrote"] = armed["wrote"] or bool(rows)
+        return await real_set(self, rows)
+
+    async def hook(tx: Any) -> None:  # noqa: ANN401
+        if real_hook is not None:
+            await real_hook(tx)
+        if armed["wrote"] and not armed["failed"]:
+            armed["failed"] = True
+            raise SerializationConflict("injected after the page's writes")
+    monkeypatch.setattr(writers.KgWriter, "trash_set", spy)
+    monkeypatch.setattr(pg_db, "pre_commit_hook", hook)
+    assert await bf.fill_trash(pg_db, org, KB, page=2) == ("enforce", None)
+    assert armed["failed"]
+    assert await _trash_columns(pg_db, org) == filled
+
+
+async def test_a_single_file_listing_takes_the_walk_while_another_connector_of_the_org_is_not_served(pg_provider, pg_db, tally) -> None:
+    """One delete batch across two connectors: the walk counts both records and lists no single file for it. While the other connector's copy is not served (here an epoch 7
+    copy with no trash columns yet), kg cannot see its record of the batch, so the single-file listing is the walk's; with every connector served, a genuine one-record batch
+    is still kg's."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    with ctx(org):
+        await pg_provider.batch_upsert_nodes([{"_key": "f", "recordName": "F", "connectorId": "kb2", "orgId": org, "recordType": "FILE", "origin": "UPLOAD",
+                                               "mimeType": "text/plain"}], "records")
+        await pg_provider.batch_upsert_nodes([{"_key": "f-f", "isFile": True, "mimeType": "text/plain", "sizeInBytes": 1, "orgId": org}], "files")
+        await pg_provider.batch_create_edges([edge("f", "records", "kb2", "apps")], "belongsTo")
+        await pg_provider.batch_create_edges([edge("f", "records", "f-f", "files")], "isOfType")
+    await _trash(pg_provider, org, ["d"])                                                   # a genuine single file
+    await flip(pg_db, org)
+    tally.c.clear()
+    with _switch("0"), ctx(org):
+        walk = await pg_provider.list_trashed_records(KB, org, single_file_batches_only=True)
+    with ctx(org):
+        assert await pg_provider.list_trashed_records(KB, org, single_file_batches_only=True) == walk
+    assert [i["record"]["id"] for i in walk["items"]] == ["d"] and tally.c[("trash", "kg")], dict(tally.c)
+    batch = await _trash(pg_provider, org, ["e"])
+    with ctx(org):
+        await pg_provider.soft_delete_records(["f"], "kb2", delete_source="USER", batch_id=batch, deleted_by_user_id="u1")
+    await flip(pg_db, org)
+    await _admin("""UPDATE kg.records SET deleted_ms = NULL, delete_batch = NULL WHERE org_id = $1 AND app_sk = (SELECT app_sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'f')""", org)
+    await _admin("""UPDATE kg.projection_state s SET code_epoch = 7 FROM kg.node_keys k WHERE s.org_id = $1 AND k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1 AND k.id = 'kb2'""", org)
+    tally.c.clear()
+    with _switch("0"), ctx(org):
+        walk = await pg_provider.list_trashed_records(KB, org, single_file_batches_only=True)
+    with ctx(org):
+        assert await pg_provider.list_trashed_records(KB, org, single_file_batches_only=True) == walk
+    assert [i["record"]["id"] for i in walk["items"]] == ["d"] and tally.c[("trash", "org")] and not tally.c[("trash", "kg")], dict(tally.c)
+
+
+async def test_the_walk_reads_a_page_and_its_total_in_one_snapshot(pg_provider, pg_db, monkeypatch) -> None:
+    """With no caller transaction the walk's page and total are one repeatable-read unit: a restore committed between the two statements changes neither."""
+    from app.core.db import uow
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _trash(pg_provider, org, ["e"])
+    real = uow.Tx.fetch
+
+    async def fetch(self: Any, sql: str, *args: Any) -> Any:  # noqa: ANN401
+        out = await real(self, sql, *args)
+        if "pipeshub:graph.list_trashed_records */" in sql:
+            await _admin("UPDATE graph.nodes SET doc = jsonb_set(doc, '{isDeleted}', 'false') WHERE org_id = $1 AND coll = 'records' AND id = 'e'", org)
+        return out
+    monkeypatch.setattr(uow.Tx, "fetch", fetch)
+    with _switch("0"), ctx(org):
+        got = await pg_provider.list_trashed_records(KB, org)
+    assert [i["record"]["id"] for i in got["items"]] == ["e"] and got["total"] == 1
+
+
 async def test_a_live_records_projection_writes_no_trash_columns(pg_provider, pg_db, monkeypatch) -> None:
     """The trash columns are written only where they change: renaming a live record writes none, trashing one writes its row, restoring it clears it."""
     from app.services.graph_db.postgres.kg import writers

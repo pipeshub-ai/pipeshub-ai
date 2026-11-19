@@ -244,8 +244,7 @@ async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, a
         await KgWriter(tx).trash_set([(h["sk"], h["coll"], h["id"], h["kind"], *derived[(h["coll"], h["id"])]) for h in held
                                       if (h["deleted_ms"], h["delete_batch"]) != derived[(h["coll"], h["id"])]])
 
-    async def step(tx: Tx) -> str | bool | None:
-        nonlocal after
+    async def step(tx: Tx) -> tuple[str, str] | str | None:
         await lock_apps(tx, org, {app_id}, org_wide=False)
         state = await tx.fetchrow(FILL_STATE, org, await _app_sk(tx, app_id))
         if state is None or state["code_epoch"] != FILL_FROM or state["backfill_cursor"] != "done":
@@ -253,8 +252,7 @@ async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, a
         rows = await tx.fetch(FILL_RECORDS, org, app_id, after, page)
         await write(tx, [r for r in rows if r["has"]])
         if len(rows) == page:
-            after = rows[-1]["id"]
-            return True
+            return ("next", rows[-1]["id"])           # the cursor moves only once this unit has committed: a retried unit reads the same page again
         await write(tx, await tx.fetch(FILL_REST, org, app_id))
         await KgWriter(tx).projection_set(await _app_sk(tx, app_id), epoch=CODE_EPOCH, mode=state["mode"], digest=state["verify_digest"], cursor="done",
                                           verified_at=state["verified_at"])
@@ -264,8 +262,9 @@ async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, a
             if (stop is not None and stop.is_set()) or (max_pages is not None and pages >= max_pages):
                 return None, after
             out = await db.run(step, write=True)
-            if out is not True:
+            if not isinstance(out, tuple):
                 return out, None
+            after = out[1]
             pages += 1
 
 

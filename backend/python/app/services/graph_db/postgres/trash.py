@@ -15,7 +15,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.core.org_context import current_org_id
+from app.core.org_context import current_or_system, current_org_id
 from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.services.graph_db.common.utils import (
     TRASH_LIST_OTHER_ROOT_NAMES,
@@ -216,7 +216,11 @@ class TrashMixin(PgBase):
             return [dict(r) for r in rows], total
         got = await kg_hier.answer(self, "trash", transaction, lambda tx: kg_trash.page(tx, org, connector_id, org_id, files_only=single_file_batches_only,
                                                                                        skip=max(skip, 0), limit=limit, after=after, count_cap=count_cap), walk=walk)
-        rows, total = got if got is not None else await self._q(walk, transaction)
+        if got is None:
+            # The page and its total in one snapshot: a caller's transaction is one already; otherwise one repeatable-read unit, with the role _q would choose.
+            got = await (self._q(walk, transaction) if transaction else
+                         self._db.run(walk, isolation="repeatable_read", custom_plan=True, jobs=current_or_system().kind == "system"))
+        rows, total = got
         items = [{"record": _rec(r["rec"]), "parentId": r["parent_id"], "parentName": r["parent_name"],
                   "parentIsDeleted": (r["parent_deleted"] == "true") if r["parent_id"] else None,
                   "isFile": None if r["is_file"] is None else r["is_file"] == "true", "fileMimeType": r["file_mime"],

@@ -27,6 +27,17 @@ INDEXES = [
     ("records_trash_batch", "org_id, delete_batch", "coll = 3 AND deleted AND delete_batch IS NOT NULL"),
 ]
 
+# A copy labelled epoch 8 or later cannot have these columns filled when this revision adds them (a downgrade dropped them and an upgrade brings them back empty): it is
+# labelled epoch 7 so that the bootstrap fills it in place (kg.backfill.fill_trash) before it is served or verified. The downgrade does the same, so the code of kg_0018
+# serves again what it can read. A small table, and no graph table: its row security is lifted for this statement alone, as retrieval_0002 does.
+RELABEL = "UPDATE kg.projection_state SET code_epoch = 7 WHERE code_epoch >= 8"
+
+
+def _relabel() -> None:
+    op.execute("ALTER TABLE kg.projection_state NO FORCE ROW LEVEL SECURITY")
+    op.execute(RELABEL)
+    op.execute("ALTER TABLE kg.projection_state FORCE ROW LEVEL SECURITY")
+
 
 def _mine() -> list[Fn]:
     names = {"kg." + n for n in EPOCH_WRITERS}
@@ -55,6 +66,7 @@ def upgrade():
         ensure_partitioned_index(op.get_bind(), "kg.records", name, cols, where=where, blocking=True)
     _drop(_mine())
     run_vetted(__file__, *WRITERS, *EPOCH_WRITERS)
+    _relabel()                                          # last: the table's lock is held only to the commit
 
 
 def downgrade():
@@ -72,3 +84,4 @@ def downgrade():
     for name, *_ in INDEXES:
         op.execute(f"DROP INDEX IF EXISTS kg.{name}")
     op.execute("ALTER TABLE kg.records DROP COLUMN deleted_ms, DROP COLUMN delete_batch")
+    _relabel()
