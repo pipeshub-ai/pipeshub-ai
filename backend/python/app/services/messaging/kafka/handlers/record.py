@@ -2982,7 +2982,7 @@ class RecordEventHandler(BaseEventService):
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
-                        await self._release_pending_copy(record_id, record.get("orgId"))
+                        await self._release_pending_copy(record_id, RecordContext.from_graph_document(record).org_id)
 
                         # Decide duplicate handling based on error type
                         if (last_exception and 

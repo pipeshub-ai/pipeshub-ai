@@ -163,14 +163,15 @@ class SwapCommitter:
         async def one(key: str) -> bool:
             async with gate:
                 twin = await graph.get_document(key, _RECORDS, raise_on_error=True)
-                if not twin or twin.get("orgId") != swap.org_id or not is_live_record(twin):
+                twin_context = RecordContext.from_graph_document(twin or {})
+                if not twin or twin_context.org_id != swap.org_id or not is_live_record(twin):
                     return False
                 if twin.get("md5Checksum") is None or twin.get("md5Checksum") != me.get("md5Checksum"):
                     return False
                 if twin.get("indexingStatus") != ProgressStatus.COMPLETED.value or keep_old_copy.pending_of(twin):
                     return False
                 try:
-                    theirs = vs.collection_registry.resolve_write_collection(RecordContext.from_graph_document(twin))
+                    theirs = vs.collection_registry.resolve_write_collection(twin_context)
                 except Exception:
                     return False  # a collection that cannot be resolved counts as different: the twin keeps the old copy
                 if theirs != mine:
