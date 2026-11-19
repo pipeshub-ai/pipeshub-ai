@@ -176,7 +176,11 @@ DECIDED = "r.r13 IS FALSE AND r.path IS NOT NULL AND r.class_id IS NOT NULL AND 
 
 def undecided_sql(where: str, classes_param: str) -> str:
     """The ids of the rows kg does not decide (or whose class names a literal kg cannot vouch for), for the walk: ``$3`` of them at most."""
-    return f"/* pipeshub:kg.listing_undecided */ SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE}{where} AND (NOT ({DECIDED}) OR r.class_id = ANY({classes_param}::bigint[])) LIMIT $3"
+    # Two disjoint reads, each by its own index: as one OR the plan read every row of the connector, or the organisation's fenced rows. The classes are read one key each
+    # (records_list_class), so an empty list reads nothing.
+    rows = f"SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE}{where}"
+    return (f"/* pipeshub:kg.listing_undecided */ SELECT u.id FROM (({rows} AND NOT ({DECIDED}) LIMIT $3) "
+            f"UNION ALL (SELECT r.id FROM unnest({classes_param}::bigint[]) AS c(id) CROSS JOIN LATERAL ({rows} AND {DECIDED} AND r.class_id = c.id LIMIT $3) r LIMIT $3)) u LIMIT $3")
 
 
 def count_sql(where: str, plain: str, own: str, granted: str, unvouched: str) -> str:

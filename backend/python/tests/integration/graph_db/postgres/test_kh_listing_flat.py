@@ -303,6 +303,27 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
         await con.close()
 
 
+@pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
+@pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
+async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, analyzed, unvouched) -> None:
+    """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        if analyzed:
+            await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        await con.execute("SET enable_seqscan = off")      # the planner's guess at a table this small is a scan; the gate is about which index bounds the read
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.undecided_sql("", "$4"), org, app_sk, 201, unvouched))
+        used = {name for s in plan_gate.scans(plan, "records") for name, _ in plan_gate.bounds(s)}
+        # with no statistics (and scans off) the planner may read a class kg cannot vouch for by any index, as the single statement did; such a class is rare
+        loose = plan_gate.unkeyed(plan, "records", r"app_sk", r"records_(undecided|list_class)") if analyzed else []
+        assert "records_undecided" in used and not loose, f"undecided rows ({'after' if analyzed else 'before'} ANALYZE) read by {used}: {loose}"
+    finally:
+        await con.close()
+
+
 @pytest.mark.parametrize(("kind", "kept"), [("KB", ["g1"]), ("DRIVE", ["g1", "g2"])])
 async def test_the_record_group_filter_narrows_a_collections_groups_only(pg_db, kind: str, kept: list[str]) -> None:
     """As the other stores do: ``record_group_ids`` keeps only the listed record groups of a collection; a connector's groups, and every record, pass."""
