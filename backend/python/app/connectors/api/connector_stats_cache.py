@@ -14,6 +14,8 @@ import time
 import weakref
 from typing import Any
 
+from app.core.org_context import spawn_in_request
+
 TTL_S = 2.0
 MAX_KEYS = 1024        # (org, connector) pairs kept per provider; the oldest goes first
 
@@ -30,7 +32,8 @@ async def connector_stats(graph: Any, org_id: str, connector_id: str) -> dict:  
         entries.pop(key, None)        # re-inserted last, so the dict stays oldest-first
         while len(entries) >= MAX_KEYS:
             entries.pop(next(iter(entries)))
-        hit = entries[key] = (now, asyncio.ensure_future(graph.get_connector_stats(org_id, connector_id)))
+        # the caller's context: every caller sharing this count is of the same org (it is in the key)
+        hit = entries[key] = (now, spawn_in_request(graph.get_connector_stats(org_id, connector_id), name="connector-stats"))
 
         def forget_failure(task: asyncio.Task, entry: tuple = hit) -> None:
             if (task.cancelled() or task.exception() is not None or not task.result().get("success")) and entries.get(key) is entry:
