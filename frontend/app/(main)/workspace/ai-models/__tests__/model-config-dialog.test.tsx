@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { Theme } from '@radix-ui/themes';
 import type { SSEStreamingOptions } from '@/lib/api/streaming';
 import type { AIModelProvider, ConfiguredModel } from '../types';
+import { ErrorType } from '@/lib/api/api-error';
 
 const api = vi.hoisted(() => ({
   addProvider: vi.fn(),
@@ -546,6 +547,28 @@ describe('ModelConfigDialog on edit with a model list', () => {
     const configuration = await savedConfiguration();
     expect(configuration).toMatchObject({ model: 'gpt-5-mini' });
     expect(configuration).not.toHaveProperty('deploymentName');
+  });
+});
+
+describe('ModelConfigDialog when the health check rejects an edit', () => {
+  it("shows the provider's reason and scrolls it into view", async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: LISTED_MODELS });
+    const reason =
+      'OpenAI turned down the test call for gpt-5.4 because of a rate limit or an exhausted quota. ' +
+      'OpenAI said: "You exceeded your current quota, please check your plan and billing details."';
+    api.updateProvider.mockRejectedValue({ type: ErrorType.VALIDATION_ERROR, message: reason, statusCode: 400 });
+    renderDialog(vi.fn(), vi.fn(), {
+      mode: 'edit',
+      provider: LISTING_PROVIDER,
+      editModel: configuredModel(),
+    });
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update model' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe(reason);
+    await waitFor(() => expect(scrollIntoView.mock.contexts).toContain(alert));
   });
 });
 
