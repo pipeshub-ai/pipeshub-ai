@@ -1,10 +1,10 @@
 """Which AI providers a run is held to, and which it may skip.
 
-Three of the four live providers have no key in the integration workflow, so
-holding the nightly to them would only produce permanent red. OpenAI has one
-(Azure OpenAI's account is gone), so a run that was meant to cover it must fail
-rather than skip when the key is gone — a rotated key otherwise reads as a
-passing run.
+The workflows pass both OpenAI's and Azure OpenAI's keys and name one of them in
+the repository variable TEST_AI_MODEL_PROVIDER (openAI when unset). The named
+provider must fail rather than skip when its key is gone — a rotated key
+otherwise reads as a passing run — and every other provider skips, even with a
+key set, because that key may belong to an account nobody is paying for.
 """
 
 from __future__ import annotations
