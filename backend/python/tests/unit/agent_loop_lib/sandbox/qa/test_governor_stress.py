@@ -94,10 +94,10 @@ def opened() -> list[Any]:
 
 
 def _gov(
-    slots: SharedSlots | LocalTaggedSlots, *, limit: int, per_org: int | None = None, poll_s: float = 0.02,
+    slots: SharedSlots | LocalTaggedSlots, *, limit: int, org_cap: int | None = None, poll_s: float = 0.02,
     observers: tuple[Any, ...] = (), provider: type[FixedLimit] = FixedLimit,
 ) -> SandboxResourceGovernor:
-    capacity = SandboxCapacity.fixed(limit, per_org, slot_files=slots.capacity)
+    capacity = SandboxCapacity.fixed(limit, org_cap, slot_files=slots.capacity)
     return SandboxResourceGovernor(
         capacity, slots, limit_provider=provider(capacity), observers=observers, poll_s=poll_s,
         rng=random.Random(7),
@@ -170,7 +170,7 @@ class TestStorm:
         for recorder in recorders:
             slots = SharedSlots(tmp_path / "slots", 16)
             opened.append(slots)
-            governors.append(_gov(slots, limit=5, per_org=3, observers=(recorder,)))
+            governors.append(_gov(slots, limit=5, org_cap=3, observers=(recorder,)))
 
         tally, ends = await _storm(governors, runs=300, orgs=["a", "b", "c", ""], seed=seed)
 
@@ -190,7 +190,7 @@ class TestStorm:
 
     async def test_the_in_process_slots_hold_the_same_invariants(self) -> None:
         recorder = _Outcomes()
-        governor = _gov(LocalTaggedSlots(16), limit=4, per_org=2, observers=(recorder,))
+        governor = _gov(LocalTaggedSlots(16), limit=4, org_cap=2, observers=(recorder,))
 
         tally, ends = await _storm([governor], runs=300, orgs=["a", "b"], seed=5)
 
@@ -355,7 +355,7 @@ class TestSlotErrors:
         assert governor.held_total() == 0
         # The mutex was given back: the next call is served.
         lease = await governor.acquire(org_id="o")
-        assert governor.snapshot()["per_org"] == {org_tag("o").decode(): 1}
+        assert governor.snapshot()["by_org"] == {org_tag("o").decode(): 1}
         await governor.release(lease)
 
     async def test_releasing_after_close_is_harmless(self, tmp_path: Path) -> None:

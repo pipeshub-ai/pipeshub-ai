@@ -99,7 +99,7 @@ class ChaosConfig:
     cpus: float = 8.0
     min_total: int = 2
     overcommit: float = 1.0
-    per_org: int | None = None
+    org_cap: int | None = None
     orgs: int = 3
     expected_ceiling: int = 2
     live_interval_s: float = 1.0
@@ -131,10 +131,10 @@ PRESETS: dict[str, dict[str, Any]] = {
     "c1": {"machine_gib": 16.0, "cpus": 0.7, "min_total": 1, "expected_ceiling": 1, "workers": 4},
     # 1.4 CPUs: ceiling 2, with a floor of 1 and of 2 (and a per-org cap of 1).
     "c2m1": {"machine_gib": 16.0, "cpus": 1.4, "min_total": 1, "expected_ceiling": 2, "workers": 5},
-    "c2": {"machine_gib": 16.0, "cpus": 1.4, "min_total": 2, "expected_ceiling": 2, "workers": 5, "per_org": 1},
+    "c2": {"machine_gib": 16.0, "cpus": 1.4, "min_total": 2, "expected_ceiling": 2, "workers": 5, "org_cap": 1},
     # Memory binds at 8 (16 GiB x 0.25 / 512 MiB); per-org cap 3.
     "c8": {"machine_gib": 16.0, "cpus": 12.0, "min_total": 2, "expected_ceiling": 8, "workers": 6,
-           "per_org": 3, "indexers": 2},
+           "org_cap": 3, "indexers": 2},
     # The same machine with an over-commit of 2: 16 (the CPU term is 18).
     "c8k2": {"machine_gib": 16.0, "cpus": 12.0, "min_total": 2, "overcommit": 2.0, "expected_ceiling": 16,
              "workers": 8, "indexers": 2},
@@ -383,7 +383,7 @@ async def query_worker(run_dir: Path, cfg: ChaosConfig, index: int) -> None:
     host_path = run_dir / "host.json"
 
     capacity = SandboxCapacity(
-        "compose", CapacitySettings(min_total=cfg.min_total, max_per_org=cfg.per_org), slot_files=SLOT_FILES,
+        "compose", CapacitySettings(min_total=cfg.min_total, max_per_org=cfg.org_cap), slot_files=SLOT_FILES,
     )
     capacity._apply(MachineSize(int(cfg.machine_gib * GiB), cfg.cpus, None, "docker_info"), None)
 
@@ -1343,15 +1343,15 @@ def analyse(run_dir: Path, cfg: ChaosConfig) -> dict[str, Any]:
     if missing_end:
         problems.append(f"{len(missing_end)} runs of live workers never ended: {missing_end[:5]}")
     per_org_peak = {}
-    if cfg.per_org:
+    if cfg.org_cap:
         by_org: dict[str, list[tuple[float, float, str]]] = defaultdict(list)
         for start, end, rid in intervals:
             by_org[starts[rid]["org"]].append((start, end, rid))
         for org, items in by_org.items():
             n, at, ids = _max_overlap(items)
             per_org_peak[org] = n
-            if n > cfg.per_org:
-                problems.append(f"org {org}: {n} concurrent holders > per-org cap {cfg.per_org} at {at}: {ids}")
+            if n > cfg.org_cap:
+                problems.append(f"org {org}: {n} concurrent holders > per-org cap {cfg.org_cap} at {at}: {ids}")
 
     # 2. Exactly one outcome per acquire.
     outcome_counts: Counter[str] = Counter()

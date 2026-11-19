@@ -540,7 +540,7 @@ class SandboxCapacity:
 
     @classmethod
     def fixed(
-        cls, total: int, per_org: int | None = None, *, mode: Mode = "compose",
+        cls, total: int, org_cap: int | None = None, *, mode: Mode = "compose",
         slot_files: int | None = None,
     ) -> SandboxCapacity:
         """A capacity with an explicit ceiling (and per-org cap; ``None``
@@ -550,7 +550,7 @@ class SandboxCapacity:
             total = MAX_SLOT_FILES
         files = slot_files if slot_files is not None else total
         capacity = cls(
-            mode, CapacitySettings(max_total=total, max_per_org=per_org), slot_files=files,
+            mode, CapacitySettings(max_total=total, max_per_org=org_cap), slot_files=files,
         )
         capacity._measured = True
         return capacity
@@ -715,14 +715,14 @@ class SandboxCapacity:
         machine = plan.machine
         terms = " ".join(f"{k}={v if v is not None else '-'}" for k, v in plan.terms.items())
         split = f" (each / {plan.divisor} pods sharing the daemon)" if plan.divisor > 1 else ""
-        per_org = self.per_org_limit(plan.ceiling)
+        org_cap = self.per_org_limit(plan.ceiling)
         logger.info(
             "sandbox capacity: mode=%s source=%s mem=%s cpus=%s pid_limit=%s same_machine=%s "
-            "-> terms %s%s -> ceiling=%d (%s) floor=%d slot_files=%d per_org=%s",
+            "-> terms %s%s -> ceiling=%d (%s) floor=%d slot_files=%d org_cap=%s",
             self.mode, machine.source, _gib(machine.memory_bytes),
             f"{machine.cpus:g}" if machine.cpus is not None else "?", machine.pid_limit,
             machine.same_machine, terms, split, plan.ceiling, plan.binding, plan.floor,
-            plan.slot_files, per_org if per_org is not None else "all",
+            plan.slot_files, org_cap if org_cap is not None else "all",
         )
         known = {k: v for k, v in plan.terms.items() if v is not None}
         if plan.explicit and known:

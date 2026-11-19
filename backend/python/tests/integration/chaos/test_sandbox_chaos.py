@@ -30,7 +30,7 @@ def test_capacity_invariants_hold_under_chaos(tmp_path: Path) -> None:
     # cap counts as its share, not as host load, and would not raise the alert checked below.
     cfg = ChaosConfig(
         name="ci", seed=11, duration_s=42.0, workers=5, indexers=1,
-        machine_gib=16.0, cpus=1.4, min_total=1, per_org=1, orgs=8, expected_ceiling=2,
+        machine_gib=16.0, cpus=1.4, min_total=1, org_cap=1, orgs=8, expected_ceiling=2,
         alert=AlertCfg(window_s=10, eval_s=1.0, warn_busy_pct=40, warn_min_waited=3,
                        crit_min_refused=3, crit_refused_pct=5, cooldown_s=30),
         fault_every_s=0.0,

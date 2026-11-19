@@ -254,7 +254,7 @@ class TestB7PerOrgFairnessApplies:
         with pytest.raises(SandboxLimitExceeded):
             await mgr.get_or_create(SandboxType.CODING)
 
-        assert gov.snapshot()["per_org"] == {org_tag("orgA").decode(): 2}
+        assert gov.snapshot()["by_org"] == {org_tag("orgA").decode(): 2}
 
     async def test_org_counter_drains_on_destroy(self) -> None:
         class _Factory:
@@ -268,7 +268,7 @@ class TestB7PerOrgFairnessApplies:
         )
         sid, _ = await mgr.get_or_create(SandboxType.CODING)
         await mgr.destroy(SandboxType.CODING, sid)
-        assert gov.snapshot()["per_org"] == {}
+        assert gov.snapshot()["by_org"] == {}
 
 
 class TestB1TypedBackendConfigReachesTheFactory:

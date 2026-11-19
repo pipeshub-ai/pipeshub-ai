@@ -270,7 +270,7 @@ def test_a_killed_workers_subprocess_does_not_keep_its_slots(tmp_path: Path) -> 
         proc.join(10)
         os.kill(child_pid, 0)  # the child still runs
         assert governor.held_total(1.0) == 0
-        assert governor.snapshot()["per_org"] == {}
+        assert governor.snapshot()["by_org"] == {}
     finally:
         governor.close()
         with contextlib.suppress(ProcessLookupError):

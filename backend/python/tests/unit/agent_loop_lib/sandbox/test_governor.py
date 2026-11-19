@@ -86,7 +86,7 @@ class TestSandboxResourceGovernor:
         ly = await governor.acquire(org_id="y")
 
         snap = governor.snapshot()
-        assert snap["per_org"] == {org_tag("x").decode(): 1, org_tag("y").decode(): 1}
+        assert snap["by_org"] == {org_tag("x").decode(): 1, org_tag("y").decode(): 1}
 
         await governor.release(lx)
         await governor.release(ly)
@@ -94,7 +94,7 @@ class TestSandboxResourceGovernor:
     async def test_release_cleans_up_zero_orgs(self, governor: SandboxResourceGovernor) -> None:
         lease = await governor.acquire(org_id="a")
         await governor.release(lease)
-        assert "a" not in governor.snapshot()["per_org"]
+        assert "a" not in governor.snapshot()["by_org"]
 
     async def test_default_limits_leave_the_caps_to_the_environment(self) -> None:
         limits = GovernorLimits()
@@ -213,10 +213,10 @@ def opened() -> list[SharedSlots]:
 
 
 def _gov(
-    tmp_path: Path, opened: list[SharedSlots], *, limit: int = 2, per_org: int | None = None,
+    tmp_path: Path, opened: list[SharedSlots], *, limit: int = 2, org_cap: int | None = None,
     observers=(), provider: type[_Provider] | None = None, poll_s: float = 0.05,
 ) -> SandboxResourceGovernor:
-    capacity = SandboxCapacity.fixed(limit, per_org, slot_files=8)
+    capacity = SandboxCapacity.fixed(limit, org_cap, slot_files=8)
     slots = SharedSlots(tmp_path, 8)
     opened.append(slots)
     limit_provider = (provider or FixedLimit)(capacity)
@@ -236,7 +236,7 @@ class TestSharedAcrossWorkers:
         assert a.snapshot()["total"] == 2 and a.snapshot()["shared"] is True
 
     async def test_two_workers_share_the_org_cap(self, tmp_path: Path, opened) -> None:
-        a, b = _gov(tmp_path, opened, limit=6, per_org=2), _gov(tmp_path, opened, limit=6, per_org=2)
+        a, b = _gov(tmp_path, opened, limit=6, org_cap=2), _gov(tmp_path, opened, limit=6, org_cap=2)
         await a.acquire(org_id="o")
         await b.acquire(org_id="o")
         with pytest.raises(SandboxLimitExceeded) as caught:
@@ -249,8 +249,8 @@ class TestSharedAcrossWorkers:
         self, tmp_path: Path, opened,
     ) -> None:
         rec = _Recorder()
-        a = _gov(tmp_path, opened, limit=4, per_org=2, observers=[rec], provider=_Provider)
-        b = _gov(tmp_path, opened, limit=4, per_org=2)
+        a = _gov(tmp_path, opened, limit=4, org_cap=2, observers=[rec], provider=_Provider)
+        b = _gov(tmp_path, opened, limit=4, org_cap=2)
         for _ in range(2):
             await a.acquire(org_id="a")
             await b.acquire(org_id="b")
@@ -264,7 +264,7 @@ class TestSharedAcrossWorkers:
         assert ("wait_reason", HoldReason.SLOTS_FULL) not in rec.events
 
     async def test_an_org_cap_equal_to_the_limit_is_still_slots_full(self, tmp_path: Path, opened) -> None:
-        a = _gov(tmp_path, opened, limit=2, per_org=2)
+        a = _gov(tmp_path, opened, limit=2, org_cap=2)
         await a.acquire(org_id="a")
         await a.acquire(org_id="a")
         with pytest.raises(SandboxLimitExceeded) as caught:
@@ -570,7 +570,7 @@ class TestAcquireLoop:
         assert snap["stale"] is True and snap["total"] == 1
         assert gov.held_total() == 1
         assert set(snap) == {
-            "total", "per_org", "stale", "limit", "ceiling", "floor", "mode", "sized",
+            "total", "by_org", "stale", "limit", "ceiling", "floor", "mode", "sized",
             "slot_files", "shared", "waiting_here", "live",
         }
         assert snap["live"] is None

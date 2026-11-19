@@ -83,12 +83,12 @@ class _Provider(FixedLimit):
 
 
 def _gov(
-    tmp_path: Path, opened: list, *, limit: int, per_org: int | None = None, poll_s: float = 0.02,
+    tmp_path: Path, opened: list, *, limit: int, org_cap: int | None = None, poll_s: float = 0.02,
     observers: tuple = (),
 ) -> tuple[SandboxResourceGovernor, _CountingSlots]:
     slots = _CountingSlots(tmp_path / "slots", 16)
     opened.append(slots)
-    capacity = SandboxCapacity.fixed(limit, per_org, slot_files=16)
+    capacity = SandboxCapacity.fixed(limit, org_cap, slot_files=16)
     governor = SandboxResourceGovernor(
         capacity, slots, limit_provider=_Provider(capacity), observers=observers, poll_s=poll_s,
         rng=random.Random(1),
@@ -148,8 +148,8 @@ async def test_a_local_release_wakes_one_waiter_in_arrival_order(tmp_path: Path,
 
 
 async def test_a_freed_slot_skips_a_waiter_held_by_its_org_share(tmp_path: Path, opened) -> None:
-    governor, _ = _gov(tmp_path, opened, limit=3, per_org=1, poll_s=0.02)
-    other, _ = _gov(tmp_path, opened, limit=3, per_org=1)
+    governor, _ = _gov(tmp_path, opened, limit=3, org_cap=1, poll_s=0.02)
+    other, _ = _gov(tmp_path, opened, limit=3, org_cap=1)
     a_held = await governor.acquire(org_id="a")
     blockers = [await other.acquire(org_id="b"), await other.acquire()]
     first = asyncio.ensure_future(governor.acquire(org_id="a", wait_s=5))  # held back by its share

@@ -32,11 +32,11 @@ def opened() -> list[SharedSlots]:
 
 
 def _gov(
-    directory: Path, opened: list, *, limit: int = 3, per_org: int | None = 2, files: int = 4,
+    directory: Path, opened: list, *, limit: int = 3, org_cap: int | None = 2, files: int = 4,
 ) -> tuple[SandboxResourceGovernor, SharedSlots]:
     slots = SharedSlots(directory, files)
     opened.append(slots)
-    capacity = SandboxCapacity.fixed(limit, per_org, slot_files=files)
+    capacity = SandboxCapacity.fixed(limit, org_cap, slot_files=files)
     return SandboxResourceGovernor(capacity, slots, limit_provider=FixedLimit(capacity), poll_s=0.02), slots
 
 
@@ -74,7 +74,7 @@ class TestForeignContent:
         lease = await a.acquire(org_id="o")
         os.ftruncate(a_slots._slot_fds[lease.hold._indices[0]], 0)
         assert b.snapshot()["total"] == 1
-        assert b.snapshot()["per_org"] == {}
+        assert b.snapshot()["by_org"] == {}
         await a.release(lease)
 
     async def test_a_stale_tag_in_a_free_file_is_never_counted(self, tmp_path, opened) -> None:
@@ -93,13 +93,13 @@ class TestStateDirectory:
     async def test_a_removed_directory_splits_old_and_new_workers(self, tmp_path, opened) -> None:
         """Known limit (module docstring): a worker started after the
         directory was removed does not see slots held on the old files."""
-        old, _ = _gov(tmp_path / "slots", opened, limit=1, per_org=None)
+        old, _ = _gov(tmp_path / "slots", opened, limit=1, org_cap=None)
         lease = await old.acquire()
         shutil.rmtree(tmp_path / "slots")
         # The old worker still counts its own and frees it normally.
         with pytest.raises(SandboxLimitExceeded):
             await old.acquire()
-        new, _ = _gov(tmp_path / "slots", opened, limit=1, per_org=None)
+        new, _ = _gov(tmp_path / "slots", opened, limit=1, org_cap=None)
         extra = await new.acquire()
         assert new.held_total() == 1  # the old worker's slot is invisible here
         await new.release(extra)
@@ -136,20 +136,20 @@ class TestSlotFileCount:
         """Known limit: every worker must open the same number of files
         (``slot_file_count()`` reads only the environment). A worker restarted
         with fewer files than one still running cannot see the higher ones."""
-        big, _ = _gov(tmp_path / "slots", opened, limit=8, per_org=None, files=8)
+        big, _ = _gov(tmp_path / "slots", opened, limit=8, org_cap=None, files=8)
         leases = [await big.acquire() for _ in range(6)]
         for lease in leases[:4]:
             await big.release(lease)  # slots 4 and 5 stay held
-        small, _ = _gov(tmp_path / "slots", opened, limit=4, per_org=None, files=4)
+        small, _ = _gov(tmp_path / "slots", opened, limit=4, org_cap=None, files=4)
         assert big.held_total() == 2
         assert small.held_total() == 0
         for lease in leases[4:]:
             await big.release(lease)
 
     async def test_a_worker_with_more_files_sees_every_low_slot(self, tmp_path, opened) -> None:
-        small, _ = _gov(tmp_path / "slots", opened, limit=4, per_org=None, files=4)
+        small, _ = _gov(tmp_path / "slots", opened, limit=4, org_cap=None, files=4)
         leases = [await small.acquire() for _ in range(4)]
-        big, _ = _gov(tmp_path / "slots", opened, limit=4, per_org=None, files=8)
+        big, _ = _gov(tmp_path / "slots", opened, limit=4, org_cap=None, files=8)
         assert big.held_total() == 4
         with pytest.raises(SandboxLimitExceeded):
             await big.acquire()
@@ -158,8 +158,8 @@ class TestSlotFileCount:
 
 
 async def test_held_slots_are_dropped_with_the_closed_files(tmp_path, opened) -> None:
-    a, _ = _gov(tmp_path / "slots", opened, limit=2, per_org=None)
-    b, _ = _gov(tmp_path / "slots", opened, limit=2, per_org=None)
+    a, _ = _gov(tmp_path / "slots", opened, limit=2, org_cap=None)
+    b, _ = _gov(tmp_path / "slots", opened, limit=2, org_cap=None)
     await a.acquire()
     await a.acquire()
     assert b.held_total() == 2

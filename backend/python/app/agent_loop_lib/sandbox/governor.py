@@ -609,7 +609,7 @@ class SandboxResourceGovernor:
         live_block = getattr(self.limit_provider, "live_block", None)
         return {
             "total": sum(counts.values()),
-            "per_org": {tag.decode(errors="replace"): n for tag, n in counts.items() if tag},
+            "by_org": {tag.decode(errors="replace"): n for tag, n in counts.items() if tag},
             "stale": stale,
             "limit": view.limit,
             "ceiling": self.capacity.ceiling(),
