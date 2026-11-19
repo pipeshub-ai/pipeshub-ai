@@ -47,7 +47,8 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
 
   const forced = process.env.TEST_AI_MODEL_PROVIDER?.trim();
   if (forced === 'azureOpenAI') return azureConfig(type);
-  if (forced !== 'openAI') {
+  if (forced && forced !== 'openAI') return null; // a provider this helper can't configure
+  if (!forced) {
     const azure = azureConfig(type);
     if (azure) return azure;
   }

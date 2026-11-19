@@ -243,12 +243,13 @@ def _dedicated_judge(provider: str) -> JudgeModel:
 
 
 # TEST_AI_MODEL_PROVIDER (the integration helper's provider ids) -> this module's.
-_RUN_PROVIDERS = {"openAI": "openai", "azureOpenAI": "azure_openai"}
+# Matched without case, so `openai` doesn't quietly send the judge to Azure.
+_RUN_PROVIDERS = {"openai": "openai", "azureopenai": "azure_openai"}
 
 
 def run_provider() -> str | None:
     """The eval provider matching the run's TEST_AI_MODEL_PROVIDER, if it names one here."""
-    return _RUN_PROVIDERS.get(os.getenv("TEST_AI_MODEL_PROVIDER", "").strip())
+    return _RUN_PROVIDERS.get(os.getenv("TEST_AI_MODEL_PROVIDER", "").strip().lower())
 
 
 def judge_model_from_env() -> JudgeModel:

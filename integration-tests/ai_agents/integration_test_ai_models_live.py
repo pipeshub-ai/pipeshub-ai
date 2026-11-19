@@ -2,7 +2,7 @@
 
 CTO list, AI Models: model friendly name, health check, change default model,
 indexing model vs query models, reasoning effort, and context length. Runs
-against whichever provider the run has (Azure OpenAI in CI; the weekly Ollama
+against the run's provider (TEST_AI_MODEL_PROVIDER in CI; the weekly Ollama
 job runs this same file against a local model with ``-m ai_models``).
 
 Model calls are kept to a handful: one pinned chat serves the friendly name

@@ -84,18 +84,31 @@ def test_a_missing_key_for_the_run_s_provider_fails_the_run(monkeypatch, run_pro
     assert key in str(caught.value)
 
 
-def test_the_other_provider_skips_even_with_its_key_set(monkeypatch) -> None:
+@pytest.mark.parametrize(("run_provider", "other"), [("openAI", "azureOpenAI"), ("azureOpenAI", "openAI")])
+def test_the_other_provider_skips_even_with_its_key_set(monkeypatch, run_provider, other) -> None:
     """Both providers' keys are passed; only the named one may be used."""
     suite = _suite()
     _clear_keys(monkeypatch)
     _set_azure(monkeypatch)
+    monkeypatch.setenv("TEST_OPENAI_API_KEY", "k")
     monkeypatch.setenv(REQUIRE_ENV, "1")
-    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "openAI")
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", run_provider)
 
     with pytest.raises(BaseException) as caught:
-        suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_AZURE_OPENAI))
+        suite._skip_if_no_live_credentials(_spec_for(other))
 
     assert caught.typename == "Skipped"
+
+
+def test_a_named_provider_without_its_key_is_not_swapped_for_another(monkeypatch) -> None:
+    """The spec for "any live provider" is the named one even when only the other
+    provider's key is set, so the missing key fails instead of being skipped."""
+    suite = _suite()
+    _clear_keys(monkeypatch)
+    _set_azure(monkeypatch)
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "openAI")
+
+    assert suite._spec_for_a_live_provider().provider_id == suite._PROVIDER_OPENAI
 
 
 def test_a_provider_with_no_key_in_ci_still_skips(monkeypatch) -> None:
@@ -126,15 +139,18 @@ _OPENAI_MODEL_FROM_VARIABLE = "${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' 
 
 
 def _env_blocks(doc: dict):
-    """Every env mapping in a workflow: top level, each job, each step."""
-    if isinstance(doc.get("env"), dict):
-        yield "env", doc["env"]
+    """Every env mapping in a workflow (top level, each job, each step), with the
+    mappings it inherits from."""
+    top = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+    if top:
+        yield "env", top, {}
     for job_name, job in (doc.get("jobs") or {}).items():
-        if isinstance(job.get("env"), dict):
-            yield job_name, job["env"]
+        job_env = job.get("env") if isinstance(job.get("env"), dict) else {}
+        if job_env:
+            yield job_name, job_env, top
         for step in job.get("steps") or []:
             if isinstance(step.get("env"), dict):
-                yield f"{job_name}/{step.get('name', '?')}", step["env"]
+                yield f"{job_name}/{step.get('name', '?')}", step["env"], {**top, **job_env}
 
 
 def test_switching_provider_is_one_repository_variable() -> None:
@@ -149,16 +165,24 @@ def test_switching_provider_is_one_repository_variable() -> None:
         if path.name == "integration-tests-ollama.yml":
             continue
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for where, env in _env_blocks(doc):
+        for where, env, inherited in _env_blocks(doc):
             # Checked on every mapping: a step can override a job's provider on its own.
             if "EVAL_PROVIDER" in env:
                 problems.append(f"{path.name} {where}: EVAL_PROVIDER overrides the run's provider")
             if "TEST_AI_MODEL_PROVIDER" not in env:
+                # A key with no provider named sends the helpers back to Azure-first.
+                if {"TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY"} & env.keys() and (
+                    "TEST_AI_MODEL_PROVIDER" not in inherited
+                ):
+                    problems.append(f"{path.name} {where}: passes an AI key without TEST_AI_MODEL_PROVIDER")
                 continue
             checked += 1
             if env["TEST_AI_MODEL_PROVIDER"] != _PROVIDER_FROM_VARIABLE:
                 problems.append(f"{path.name} {where}: TEST_AI_MODEL_PROVIDER is {env['TEST_AI_MODEL_PROVIDER']!r}")
-            for key in ("TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY"):
+            for key in (
+                "TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY",
+                "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
+            ):
                 if key not in env:
                     problems.append(f"{path.name} {where}: does not pass {key}")
             if env.get("TEST_OPENAI_LLM_MODEL") != _OPENAI_MODEL_FROM_VARIABLE:
