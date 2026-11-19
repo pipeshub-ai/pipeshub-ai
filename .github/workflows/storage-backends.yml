@@ -175,7 +175,7 @@ jobs:
           MONGO_IT_URI: ${{ matrix.uri }}
           REPLICA_SET_AVAILABLE: ${{ matrix.rs_available }}
           TS_NODE_PROJECT: tsconfig.test.json
-        run: npx mocha --no-config --require ts-node/register --exit --reporter xunit --reporter-option output="$RUNNER_TEMP/mongo-junit.xml" tests/stores/mongo-transactions.itest.ts tests/stores/mongoose-hooks.itest.ts tests/stores/mongo-document.itest.ts
+        run: npx mocha --no-config --require ts-node/register --exit --reporter xunit --reporter-option output="$RUNNER_TEMP/mongo-junit.xml" tests/stores/mongo-transactions.itest.ts tests/stores/mongoose-hooks.itest.ts tests/stores/mongo-document.itest.ts tests/stores/mongo-notification.itest.ts
 
       - name: No unexpected skips, and the document store contract ran
         if: ${{ always() }}

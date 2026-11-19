@@ -1,6 +1,7 @@
 import { Logger } from '../../../libs/services/logger.service';
 import { getNotificationRepository } from '../../../libs/repositories/notification';
 import { forOrg } from '../../../libs/context/orgContext';
+import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 import { NotificationService } from './notification.service';
 import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
 import {
@@ -43,6 +44,8 @@ export function deliverToOrg(
     const dispatchedUserIds: string[] = [];
 
     for (const saved of savedDocs) {
+      // stored, but a scheduled one is not pushed now and not queued; it is read from the list at its time
+      if (isNotYetVisible(saved.visibleAt)) continue;
       const userId = saved.assignedTo;
       notificationService.sendToUser(userId, 'newNotification', saved);
       savedIds.push(saved._id);

@@ -280,6 +280,45 @@ describe('notification/service/notification.consumer', () => {
         expect(handler.calledOnce).to.be.true;
       });
 
+      describe('scheduled notifications (visibleAt ahead)', () => {
+        const row = (id: string, visibleAt?: unknown) => ({ _id: id, orgId, assignedTo: user, type: 'X', ...(visibleAt === undefined ? {} : { visibleAt }) });
+        const pushed = () => (mockNotificationService.sendToUser as sinon.SinonStub).getCalls().map((c) => [c.args[1], c.args[2]._id]);
+
+        it('stores it but emits no newNotification and queues nothing; one that is already visible is pushed as before', async () => {
+          const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['setTimeout', 'setInterval', 'setImmediate', 'Date'] });
+          try {
+            const insertMany = sinon.stub().callsFake(async () => [
+              row('s1', new Date(Date.now() + 60_000)),
+              row('s2', new Date(Date.now() + 86_400_000).toISOString()),
+              row('v1', new Date(Date.now() - 1000)),
+              row('p1'),
+            ]);
+            const { outcome } = await run(insertMany, { ...event, visibleAt: new Date(Date.now() + 60_000).toISOString() });
+            const before = clock.countTimers();
+            await outcome;
+            expect(insertMany.calledOnce).to.be.true;
+            expect(pushed()).to.deep.equal([['newNotification', 'v1'], ['newNotification', 'p1']]);
+            // the consumer sets no timer to deliver it later, and nothing is pushed when the time comes
+            expect(clock.countTimers()).to.equal(before);
+            await clock.tickAsync(2 * 86_400_000);
+            expect(pushed()).to.deep.equal([['newNotification', 'v1'], ['newNotification', 'p1']]);
+          } finally {
+            clock.restore();
+          }
+        });
+
+        it('hands the store the visibleAt and createdAt the event carries (the store casts them to dates)', async () => {
+          const at = new Date(Date.now() + 60_000).toISOString();
+          const insertMany = sinon.stub().resolves([]);
+          const { outcome } = await run(insertMany, { ...event, visibleAt: at, createdAt: at });
+          await outcome;
+          const [doc] = insertMany.firstCall.args[0];
+          expect(doc.visibleAt).to.equal(at);
+          expect(doc.createdAt).to.equal(at);
+          expect(doc).to.not.have.property('recipientUserIds');
+        });
+      });
+
       for (const err of [new DocStoreReadOnlyError(), new DocStoreFencedError(), new ServiceUnavailableError('down'), new GatewayTimeoutError('slow')]) {
         it(`re-throws ${err.constructor.name} and does not mark the message handled`, async () => {
           const { handler, outcome } = await run(sinon.stub().rejects(err));
