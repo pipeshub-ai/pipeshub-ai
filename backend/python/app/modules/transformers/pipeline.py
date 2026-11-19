@@ -22,6 +22,7 @@ from app.modules.transformers.transformer import (
 )
 from app.modules.transformers.vectorstore import VirtualRecordBusy
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.paid_cache.orphan import ensure_record_alive
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
@@ -182,6 +183,8 @@ class IndexingPipeline:
         try:
             store_only = bool(ctx.settings.get(STORE_ONLY))
             record = ctx.record
+            # A record deleted while its run was in flight is not embedded or written (see paid_cache/orphan.py).
+            await ensure_record_alive(record.org_id, record.id, "embed")
             block_containers = record.block_containers
 
             if block_containers is not None:
