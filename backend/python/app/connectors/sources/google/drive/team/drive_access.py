@@ -30,9 +30,19 @@ def is_drive_organizer(permission: dict) -> bool:
 class DrivePermissionBatch(list):
     """The grants to store. ``saw_permission_details`` is false for My Drive and for a drive root."""
 
-    def __init__(self, permissions: list, *, saw_permission_details: bool) -> None:
+    def __init__(
+        self,
+        permissions: list,
+        *,
+        saw_permission_details: bool,
+        user_grants: list[dict] | None = None,
+        grant_details_seen: bool = False,
+    ) -> None:
         super().__init__(permissions)
         self.saw_permission_details = saw_permission_details
+        # The item's raw Drive entries, for who it was shared with; None when the list was not read whole.
+        self.user_grants = user_grants
+        self.grant_details_seen = grant_details_seen
 
 
 def grants_to_store(
