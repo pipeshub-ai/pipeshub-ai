@@ -1,0 +1,146 @@
+"""The swap decision of the event processor: which runs write a replacement copy and how the pending vrid is taken."""
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.config.constants.arangodb import EventTypes, ExtensionTypes, MimeTypes
+from app.events.events import DedupDecision, EventProcessor
+from app.exceptions.indexing_exceptions import IndexingError
+from app.modules.indexing import keep_old_copy
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
+from tests.unit.attempt_start import attempt_start_via
+
+
+def _processor():
+    processor = MagicMock()
+    processor.indexing_pipeline = AsyncMock()
+    processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
+    processor.sink_orchestrator.blob_storage.get_reconciliation_metadata = AsyncMock(return_value={"blocks": 1})
+    gp = AsyncMock()
+    gp.update_node = AsyncMock(return_value=True)
+    gp.write_attempt_start = attempt_start_via(gp)
+    gp.update_node_fields_if_match = AsyncMock(return_value=True)
+    return EventProcessor(MagicMock(), processor, gp, MagicMock()), processor, gp
+
+
+def _payload(event_type, mime, ext, vrid="X", force=False):
+    payload = {
+        "recordId": "rec-1", "orgId": "org-1", "virtualRecordId": vrid, "version": 1, "connectorName": "",
+        "extension": ext, "mimeType": mime, "recordName": "n", "buffer": b"hello",
+    }
+    if force:
+        payload.update({"forceReindex": True, "refreshPaidOutputs": True})
+    return {"payload": payload, "eventType": event_type}
+
+
+async def _gen(*_a, **_k):
+    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+
+
+async def _drain(gen):
+    return [e async for e in gen]
+
+
+@pytest.fixture(autouse=True)
+def _no_swap_left_over():
+    yield
+    keep_old_copy.end_swap()
+
+
+@pytest.fixture
+def swap_on(monkeypatch):
+    monkeypatch.setattr(keep_old_copy, "swap_allowed", AsyncMock(return_value=True))
+
+
+def _doc(**more):
+    return {"_key": "rec-1", "recordType": "FILE", "virtualRecordId": "X", "hasIndexedCopy": True, "indexingStatus": "COMPLETED", "orgId": "org-1", **more}
+
+
+async def _run(ep, processor, gp, doc, **payload):
+    gp.get_document.return_value = doc
+    gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    processor.process_excel_document = MagicMock(side_effect=_gen)
+    processor.process_pdf_document_with_ocr = MagicMock(side_effect=_gen)
+    with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=DedupDecision()), \
+         patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock) as rewrite, \
+         patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
+        await _drain(ep.on_event(_payload(**payload)))
+    return rewrite, cleanup
+
+
+@pytest.mark.asyncio
+async def test_an_update_of_an_unreconciled_type_leaves_the_record_on_its_old_copy_until_the_commit(swap_on):
+    ep, processor, gp = _processor()
+    rewrite, cleanup = await _run(ep, processor, gp, _doc(), event_type=EventTypes.REINDEX_RECORD.value,
+                                  mime=MimeTypes.XLSX.value, ext=ExtensionTypes.XLSX.value)
+    new_vrid = processor.process_excel_document.call_args[1]["virtual_record_id"]
+    assert new_vrid != "X"
+    # the pending vrid is written by a compare-and-set that names the vrid replaced, and virtualRecordId is not written
+    gp.update_node_fields_if_match.assert_awaited_once_with(
+        "rec-1", "records", {"pendingVirtualRecordId": new_vrid}, {"virtualRecordId": "X", "pendingVirtualRecordId": None},
+    )
+    assert not any("virtualRecordId" in (c.args[2] if len(c.args) > 2 else {}) for c in gp.update_node.await_args_list)
+    # the old copy is not removed before the parse
+    rewrite.assert_not_called()
+    cleanup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_with_the_swap_off_the_record_moves_and_the_old_copy_goes_first_as_it_always_did(monkeypatch):
+    monkeypatch.setattr(keep_old_copy, "swap_allowed", AsyncMock(return_value=False))
+    ep, processor, gp = _processor()
+    rewrite, cleanup = await _run(ep, processor, gp, _doc(), event_type=EventTypes.REINDEX_RECORD.value,
+                                  mime=MimeTypes.XLSX.value, ext=ExtensionTypes.XLSX.value)
+    gp.update_node_fields_if_match.assert_not_called()
+    rewrite.assert_awaited_once_with("X")
+    cleanup.assert_called_once_with("org-1", "X")
+
+
+@pytest.mark.asyncio
+async def test_a_record_without_an_indexed_copy_has_nothing_to_keep(swap_on):
+    ep, processor, gp = _processor()
+    await _run(ep, processor, gp, _doc(hasIndexedCopy=False, indexingStatus="NOT_STARTED", virtualRecordId=None),
+               event_type=EventTypes.NEW_RECORD.value, mime=MimeTypes.XLSX.value, ext=ExtensionTypes.XLSX.value, vrid=None)
+    gp.update_node_fields_if_match.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_forced_reindex_of_a_reconciled_record_writes_its_own_copy(swap_on):
+    ep, processor, gp = _processor()
+    await _run(ep, processor, gp, _doc(recordType="FILE"), event_type=EventTypes.REINDEX_RECORD.value,
+               mime=MimeTypes.MARKDOWN.value, ext=ExtensionTypes.MD.value, force=True)
+    pending = gp.update_node_fields_if_match.await_args
+    assert pending is not None and pending.args[3] == {"virtualRecordId": "X", "pendingVirtualRecordId": None}
+    assert pending.args[2]["pendingVirtualRecordId"] != "X"
+    run = keep_old_copy.current_swap()
+    assert run is not None and run.forced and run.old_vrid == "X"
+
+
+@pytest.mark.asyncio
+async def test_a_lost_pending_write_fails_the_event_so_it_is_retried(swap_on):
+    ep, processor, gp = _processor()
+    gp.update_node_fields_if_match = AsyncMock(return_value=False)
+    with pytest.raises(IndexingError):
+        await _run(ep, processor, gp, _doc(), event_type=EventTypes.REINDEX_RECORD.value,
+                   mime=MimeTypes.XLSX.value, ext=ExtensionTypes.XLSX.value)
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_pending_copy_is_released_only_after_the_new_pending_write_won(swap_on):
+    ep, processor, gp = _processor()
+    order = []
+    gp.update_node_fields_if_match = AsyncMock(side_effect=lambda *a, **k: order.append("cas") or True)
+    gp.get_document.return_value = _doc(pendingVirtualRecordId="P")
+    gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    processor.process_excel_document = MagicMock(side_effect=_gen)
+    with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=DedupDecision()), \
+         patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock, side_effect=lambda v: order.append(f"release {v}")), \
+         patch.object(ep, "_spawn_abandoned_vrid_cleanup"):
+        await _drain(ep.on_event(_payload(EventTypes.REINDEX_RECORD.value, MimeTypes.XLSX.value, ExtensionTypes.XLSX.value)))
+    assert order == ["cas", "release P"]
+    assert gp.update_node_fields_if_match.await_args.args[3] == {"virtualRecordId": "X", "pendingVirtualRecordId": "P"}
