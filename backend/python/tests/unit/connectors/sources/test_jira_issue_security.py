@@ -1198,6 +1198,19 @@ class TestBrowseNamedAndInTheLevelThroughItsMembers:
         assert level_readers(grants, {"g-1": None}, roles) is None
         assert level_readers(grants, groups, {"JUNI_10002": []}) is None
 
+    def test_a_reader_alone_beside_a_grant_that_needs_the_project_stays_strict(self) -> None:
+        """Browse names the reporter, who is in the level's group, but not the assignee, whom the level names: the assignee's grant
+        needs the project, so the issue is STRICT and the reporter, who reads it alone in Jira, needs the project too (DELTA-18).
+        OPEN would admit the assignee without the project."""
+        context = _present(members={"7": [self.HOLDERS[0], {"type": "assignee"}]})
+        context.browse_holders = [{"type": "reporter"}]
+        context.level_readers = {"7": frozenset({user_grant_key("in@x.com", None)})}
+        rec = _record()
+        grants, skipped, settled = apply_issue_access_settled(
+            rec, {"security": {"id": "7"}}, is_subtask=False, project_key="JUNI", context=context, project_id="p-1",
+            reporter_email="in@x.com", assignee_email="asg@x.com")
+        assert (rec.access_rule, [g.email for g in grants], skipped, settled) == (AccessRule.STRICT, ["asg@x.com"], [], True)
+
     def test_a_change_of_members_rereads_the_level_only_where_browse_names_people(self) -> None:
         def digest(readers: frozenset, browse: list) -> str:
             context = _present(members={"7": [self.HOLDERS[0]]})

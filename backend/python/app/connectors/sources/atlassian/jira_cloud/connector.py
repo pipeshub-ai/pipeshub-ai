@@ -576,9 +576,9 @@ class JiraConnector(BaseConnector):
         self._projects_naming_unread_roles: set[str] = set()
         # The role list security levels apply: the one read this sync, or the last one kept (``roles_for_levels``).
         self._level_roles: dict[str, list[dict[str, Any]]] = {}
-        # Members of each group (by id and name, None when unread) and role (``<key>_<role id>``, ``<key>_projectLead``)
-        # as last saved, so a level's members are known (``level_readers``).
-        self._group_members: dict[str, list[AppUser] | None] = {}
+        # Members of each group (by id and name) and role (``<key>_<role id>``, ``<key>_projectLead``) read in full by the
+        # last group and role read, so a level's members are known (``level_readers``). One not read then is unknown.
+        self._group_members: dict[str, list[AppUser]] = {}
         self._role_members: dict[str, list[AppUser]] = {}
         # True when the group list stopped on something other than 401/403 (rate limit, outage,
         # dropped connection): the groups are there and could not be read this time.
@@ -1082,6 +1082,7 @@ class JiraConnector(BaseConnector):
                     "Keeping the stored members of every project role: the group list could not be read in full"
                 )
                 self._role_ids = {}  # no role read this sync: a comment naming a role by name alone grants nobody
+                self._role_members = {}
             else:
                 await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
             await self._sync_project_lead_roles(raw_projects, jira_users)
@@ -2372,6 +2373,7 @@ class JiraConnector(BaseConnector):
                 await self._sync_project_roles([p["key"] for p in raw_projects if p.get("key")], jira_users, groups_members_map)
             else:
                 self._role_ids = {}  # no role read this sync: a comment naming a role by name alone grants nobody
+                self._role_members = {}
             await self._sync_project_lead_roles(raw_projects, jira_users)
 
     async def _fetch_users(
@@ -3755,6 +3757,8 @@ class JiraConnector(BaseConnector):
         group list itself could not be read in full, so roles can't be resolved this run.
         """
         self._group_ids_by_name = {}
+        # A group this read leaves unread is unknown to level readers, though the graph keeps its stored members.
+        self._group_members = {}
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
 
@@ -3779,7 +3783,6 @@ class JiraConnector(BaseConnector):
                 return None
             if not groups:
                 self.logger.info("ℹ️ No groups found in Jira")
-                self._group_members = {}
                 return {}
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
@@ -3813,11 +3816,7 @@ class JiraConnector(BaseConnector):
                 # Add group to batch (with or without members)
                 user_groups_batch.append((user_group, app_users))
 
-            # Level readers (``level_readers``) follow the members just read, even from a list cut short: one removed in
-            # Jira must leave them. A group not read this time keeps what it had, as the graph keeps its stored members.
-            kept = self._group_members if fetch_failed else {
-                k: v for k, v in self._group_members.items() if k in groups_members_map}
-            self._group_members = {**kept, **{k: v for k, v in groups_members_map.items() if v is not None}}
+            self._group_members = {k: v for k, v in groups_members_map.items() if v is not None}
 
             if self._user_read_unfinished:
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
@@ -4176,6 +4175,7 @@ class JiraConnector(BaseConnector):
             groups_members_map = {}
         # Role names from this read only: one an earlier sync read may since belong to another role (renamed).
         self._role_ids = {}
+        self._role_members = {}  # a role this read leaves unread is unknown to level readers (``_group_members``)
 
         self.logger.info(f"🔐 Syncing project roles for {len(project_keys)} projects...")
 
@@ -4209,7 +4209,7 @@ class JiraConnector(BaseConnector):
             if failed:
                 failed_project_keys.append(project_key)
             roles_to_sync.extend(project_roles)
-            # The members read, before a short user read keeps a role's stored ones in the graph (``_group_members``).
+            # The members read, before a short user read keeps a role's stored ones in the graph.
             self._role_members.update({role.source_role_id: members for role, members in project_roles})
             total_roles += len(project_roles)
             total_members += sum(len(members) for _, members in project_roles)
@@ -4318,7 +4318,10 @@ class JiraConnector(BaseConnector):
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
 
-        self._role_members.update({role.source_role_id: members for role, members in lead_roles_to_sync})
+        # A lead not read (its project failed, or the short user list lacks them) is unknown to level readers.
+        self._role_members = {k: v for k, v in self._role_members.items() if not k.endswith("_projectLead")}
+        self._role_members.update({role.source_role_id: members for role, members in lead_roles_to_sync
+                                   if role.source_role_id not in unresolved_leads})
         if unresolved_leads:
             lead_roles_to_sync = await self._without_unresolved_stored_leads(lead_roles_to_sync, unresolved_leads)
 
@@ -5211,6 +5214,16 @@ class JiraConnector(BaseConnector):
             await self._update_project_sync_checkpoint(
                 project_key, security_levels=json.dumps(levels, sort_keys=True)
             )
+
+    async def _retry_in_next_sync(self, project_key: str, issue_id: str) -> None:
+        """Add an issue written outside a sync to the project's retry list (``_save_issues_to_retry``): the next sync reads it first."""
+        stored = (await self._get_project_sync_checkpoint(project_key) or {}).get("issues_to_retry") or "[]"
+        try:
+            ids = {str(i) for i in json.loads(stored)}
+        except (TypeError, ValueError):
+            ids = set()
+        if issue_id not in ids:
+            await self._update_project_sync_checkpoint(project_key, issues_to_retry=json.dumps(sorted(ids | {issue_id})))
 
     async def _save_issues_to_retry(self, project_key: str, saved: list[str]) -> list[str]:
         """Save the issues this sync could not finish (``_issues_to_retry``) in the project checkpoint, in place of
@@ -8463,6 +8476,9 @@ class JiraConnector(BaseConnector):
                 )
                 return None
 
+            if members_pending:
+                # Its `updated` and the level digests do not move, so only the project's retry list brings it back.
+                await self._retry_in_next_sync(project.get("key") or project_ref, str(issue_id))
             if comments_wait or members_pending:
                 self.logger.info(
                     f"Issue {issue_id}: its access is written now and its restricted comments or level members by the next sync"

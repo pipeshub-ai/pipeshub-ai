@@ -950,6 +950,9 @@ def apply_issue_access_settled(
         if alone and all(_grant_key(g) in alone_keys for g in grants):
             record.access_rule = AccessRule.OPEN
             return alone, skipped, True
+        # Someone who reads alone beside a grant that needs the project (an assignee the level names whom Browse does not) cannot
+        # both be held: a rule is the record's, not the grant's. STRICT keeps the second exact and asks the first for the project
+        # too, an under-share (permission corpus DELTA-18); OPEN would admit the second without the project.
         record.access_rule = AccessRule.STRICT
         return grants, skipped, True
     record.access_rule = AccessRule.RESTRICTED

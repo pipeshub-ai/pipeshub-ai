@@ -1,0 +1,44 @@
+- id: REGR-16
+  title: 'A Jira reporter who reads a leveled issue alone beside an assignee whose grant needs the project: the reporter needs the project too'
+  source: >-
+    Review of the level readers. Browse names the reporter on the issue ("Grant for the user who reported the issue") and the level holds them
+    through a group; the level also names the assignee, whom Browse does not name per issue, so the assignee reads it through the project
+    (https://dac-static.atlassian.com/cloud/jira/platform/swagger-v3.v3.json, https://support.atlassian.com/jira/kb/jira-permissions-general-overview/)
+  rule: intersection
+  world:
+    principals:
+      - {id: a}
+      - {id: b}
+      - {id: dev}
+      - {id: admin}
+      - {id: g:admins, kind: group}
+    nodes:
+      - {id: J, kind: app, app_type: JIRA}
+      - {id: P, kind: group, connector: J, rule: OPEN, parents: [J], belongs: [J]}
+      - {id: L, kind: group, connector: J, rule: RESTRICTED, access_only: true, parents: [P], inherits: [P], belongs: [P]}
+      - {id: i, kind: record, connector: J, rule: STRICT, parents: [P, L], inherits: [L], belongs: [P]}
+    grants:
+      - [dev, P]
+      - [b, P]
+      - [g:admins, L]
+      - [b, i]
+    memberships:
+      - [a, g:admins]
+      - [admin, g:admins]
+    gates:
+      - [a, J]
+      - [b, J]
+      - [dev, J]
+      - [admin, J]
+  expect:
+    verdicts:
+      a: {i: admit}
+      b: {i: admit}
+      dev: {i: deny}
+      admin: {i: deny}
+    source_delta: DELTA-18
+  tags: [regression, jira, "cell:jira/level-holder"]
+  comment: >-
+    a reports i and is in g:admins, so Jira shows it to a without the project; b, the assignee the level names, browses the project. One
+    record cannot hold "a alone, or the project and b": the access rule belongs to the record. The connector keeps i STRICT with b's grant,
+    exact for b, and a needs the project too (DELTA-18). OPEN would admit b without the project.

@@ -15,12 +15,14 @@ import pytest
 
 from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    LEVEL_MEMBERS_UNREAD,
     UNREADABLE_AUTH,
     UNREADABLE_PERMISSION,
     UNREADABLE_SCOPE,
     UNREADABLE_TRANSIENT,
     IssueSecurityContext,
     SchemeKnowledge,
+    apply_issue_access_settled,
     browse_issue_holders,
     unreadable_reason,
 )
@@ -693,8 +695,41 @@ class TestReindexAppliesTheLevel:
     async def test_a_reindex_before_any_sync_grants_nobody_through_the_group_and_leaves_the_issue_to_the_sync(self) -> None:
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
         c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
+        c._get_project_sync_checkpoint = AsyncMock(return_value={})
+        c._update_project_sync_checkpoint = AsyncMock()
         record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
         assert (record.access_rule, perms, record.source_updated_at) == (AccessRule.STRICT, [], 1)
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_before_any_sync_puts_the_issue_on_the_retry_list_the_next_sync_reads(self) -> None:
+        """Its `updated` predates the cursor and the level digests match, so only the retry list makes the next sync read it."""
+        c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
+        c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
+        saved: dict = {"issues_to_retry": json.dumps(["7"])}
+        c._get_project_sync_checkpoint = AsyncMock(side_effect=lambda _key: dict(saved))
+
+        async def update(_key: str, **kw: object) -> None:
+            saved.update({k: v for k, v in kw.items() if v is not None})
+        c._update_project_sync_checkpoint = update
+        await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert json.loads(saved["issues_to_retry"]) == ["1001", "7"]
+
+        nxt = _connector()
+        nxt.issues_sync_point = MagicMock()
+        nxt.issues_sync_point.read_sync_point = AsyncMock(return_value={
+            "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+            "issues_to_retry": saved["issues_to_retry"]})
+        nxt.issues_sync_point.update_sync_point = AsyncMock()
+        nxt._load_issue_security = AsyncMock(return_value=_present())
+        read: list = []
+
+        async def fetch(*_a: object, issue_ids: list | None = None, **_kw: object) -> AsyncIterator:
+            read.append(issue_ids)
+            return
+            yield
+        nxt._fetch_issues_batched = fetch
+        await nxt._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert read[0] == ["1001", "7"]
 
     @pytest.mark.asyncio
     async def test_a_level_set_since_the_last_sync_is_applied_by_the_reindex(self) -> None:
@@ -3206,16 +3241,61 @@ class TestLevelReadersFollowTheMembersRead:
         assert await self._next_issue_pass(c, stored) == [
             {"resume": None, "is_new_project": True, "level_ids": ["10102"], "leveled_only": False, "stored_only": True}]
 
+    def _reporter_grant(self, c: JiraConnector) -> tuple[list, list]:
+        """What a leveled issue the reporter (``self.REP``) reports writes, with the level holding ``group-1`` and a role."""
+        ctx = _present({"10102": [{"type": "group", "value": "group-1"}, {"type": "projectLead"},
+                                  {"type": "projectRole", "parameter": "10003", "projectRole": {"id": "10003", "name": "Developers"}}]})
+        ctx.browse_holders = self.REPORTER
+        users = {self.REP.source_user_id: self.REP}
+        ctx.level_readers = c._level_readers(ctx, "PROJ", users)
+        rec = _stored_ticket()
+        grants, skipped, _ = apply_issue_access_settled(
+            rec, _issue({"id": "10102"})["fields"], is_subtask=False, project_key="PROJ", context=ctx,
+            user_by_account_id=users, project_id=PROJECT_ID)
+        return [g.email for g in grants], skipped
+
     @pytest.mark.asyncio
-    async def test_a_group_not_read_keeps_its_members_and_a_complete_list_drops_a_group_gone(self) -> None:
+    async def test_a_group_whose_members_were_not_read_grants_nobody_on_its_own(self) -> None:
+        """The reporter was in group-1 when an earlier read cached it; Jira has since removed them, and this read of the group
+        fails. The stale members must not give the reporter a grant of their own (the graph keeps the group's stored members)."""
         c = _connector()
-        c._group_members = {"group-2": [self.REP], "gone": [self.REP]}
-        self._group_read(c, [self.OTHER], cut_short=True)
+        c._role_members = {"PROJ_10003": [], "PROJ_projectLead": []}
+        c._group_members = {"group-1": [self.REP], "G1": [self.REP]}
+        assert self._reporter_grant(c)[0] == ["rep@x.com"]  # read in full: the reporter reads it alone
+        self._group_read(c, None, cut_short=False)  # the group's member read fails
         await c._sync_user_groups([self.REP, self.OTHER])
-        assert c._group_members["group-2"] == [self.REP] and "gone" in c._group_members
-        self._group_read(c, [], cut_short=False)
-        await c._sync_user_groups([self.REP, self.OTHER])
-        assert c._group_members == {"group-1": [], "G1": []}
+        assert "group-1" not in c._group_members
+        c._role_members = {"PROJ_10003": [], "PROJ_projectLead": []}
+        assert self._reporter_grant(c) == ([], [LEVEL_MEMBERS_UNREAD])
+
+    @pytest.mark.asyncio
+    async def test_a_group_list_that_fails_leaves_every_group_unknown(self) -> None:
+        c = _connector()
+        c._group_members = {"group-1": [self.REP]}
+        c._fetch_groups = AsyncMock(return_value=([], True))
+        c._group_fetch_interrupted = True
+        c.notify = AsyncMock()
+        assert await c._sync_user_groups([self.REP]) is None
+        assert c._group_members == {}
+
+    @pytest.mark.asyncio
+    async def test_a_role_or_lead_not_read_grants_nobody_on_its_own(self) -> None:
+        c = _connector()
+        c._group_members = {"group-1": []}
+        c._role_members = {"PROJ_10003": [self.REP], "PROJ_projectLead": []}
+        assert self._reporter_grant(c)[0] == ["rep@x.com"]
+        # The role's read fails this sync (left out, its stored members kept in the graph).
+        c._fetch_project_roles = AsyncMock(return_value=("PROJ", [], True))
+        c.notify = AsyncMock()
+        c.data_source = MagicMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        await c._sync_project_roles(["PROJ"], [self.REP], {})
+        await c._sync_project_lead_roles([{"key": "PROJ", "lead": {"accountId": "acc-1", "displayName": "R"}}], [self.REP])
+        assert self._reporter_grant(c) == ([], [LEVEL_MEMBERS_UNREAD])
+        # The lead is the reporter, read: they read it alone again through the lead holder.
+        c._role_members["PROJ_10003"] = []
+        assert c._role_members["PROJ_projectLead"] == [self.REP]
+        assert self._reporter_grant(c)[0] == ["rep@x.com"]
 
     @pytest.mark.asyncio
     async def test_a_member_removed_by_a_link_pass_is_reread_by_the_next_sync(self) -> None:
