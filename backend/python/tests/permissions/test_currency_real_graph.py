@@ -135,6 +135,11 @@ async def test_an_admin_s_mode_is_stored_on_the_app_document_and_decides_which_c
 
     _, conn, *_ = await _world(backend)
     await finish_pass(backend.provider, conn)
+    await backend.provider.batch_upsert_nodes(       # the org-to-app edge is what lists an app for its organisation
+        [{"_key": ORG, "name": ORG, "accountType": "enterprise", "isActive": True, "createdAtTimestamp": 1}], collection=CollectionNames.ORGS.value)
+    await backend.provider.batch_create_edges([{"from_id": ORG, "from_collection": CollectionNames.ORGS.value, "to_id": conn,
+                                                "to_collection": CollectionNames.APPS.value, "createdAtTimestamp": 1}],
+                                              collection=CollectionNames.ORG_APP_RELATION.value)
     currency = StampCurrency(backend.provider)
     assert (await currency.read([conn], default=AclFilterMode.SHADOW))[0] == frozenset()      # inherit under shadow: not served
     for mode, served in (("scopes", {conn}), ("legacy", set()), ("inherit", set())):

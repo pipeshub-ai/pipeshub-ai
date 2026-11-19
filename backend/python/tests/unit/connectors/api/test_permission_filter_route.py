@@ -70,16 +70,16 @@ async def test_scopes_is_refused_with_the_blocker_when_the_deployment_cannot_ser
 async def test_a_rollback_is_written_even_when_nothing_can_be_served(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     monkeypatch.setenv(ENV_ACL_FILTER_MODE, "legacy")
     monkeypatch.setenv("VECTOR_DB_TYPE", "qdrant")
-    g = _graph({"status": "IDLE", "orgId": "o1", "aclFilterMode": "scopes"})
+    g = _graph({"status": "IDLE", "aclFilterMode": "scopes"})
     out = await _patch(mode, g=g)
     g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": mode})
     assert out == {"mode": mode, "effective": "legacy", "blockers": ["serving_off", "store_unsupported"]}
 
 
 async def test_scopes_is_written_and_reads_legacy_until_the_connector_is_served() -> None:
-    g = _graph({"status": "IDLE"})                       # an instance created before `orgId` was stored
+    g = _graph({"status": "IDLE"})
     out = await _patch("scopes", g=g)
-    g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": "scopes", "orgId": "o1"})
+    g.update_node.assert_awaited_once_with("c1", "apps", {"aclFilterMode": "scopes"})
     assert out == {"mode": "scopes", "effective": "legacy", "blockers": []}
 
 
@@ -98,7 +98,7 @@ class Apps:
     """The app documents as a store holds them: each write lands whole; ``pause`` holds a write of that mode until released, to order requests."""
 
     def __init__(self, mode: str | None = None) -> None:
-        self.docs: dict[str, dict] = {"c1": {"_key": "c1", "orgId": "o1", "status": "IDLE", **({"aclFilterMode": mode} if mode else {})}}
+        self.docs: dict[str, dict] = {"c1": {"_key": "c1", "org": "o1", "status": "IDLE", **({"aclFilterMode": mode} if mode else {})}}
         self.gates: dict[str, asyncio.Event] = {}
 
     def graph(self) -> MagicMock:
@@ -114,7 +114,7 @@ class Apps:
             return True
 
         g.update_node = AsyncMock(side_effect=update)
-        g.get_nodes_by_field_in = AsyncMock(side_effect=lambda coll, field, values, **k: [d for d in self.docs.values() if d.get(field) in values])
+        g.get_org_apps = AsyncMock(side_effect=lambda org, **k: [d for d in self.docs.values() if d.get("org") == org])
         return g
 
 
