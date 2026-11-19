@@ -18,7 +18,7 @@ from app.core.org_context import current_org_id
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import Record
 from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
-from app.services.graph_db.common.record_visibility import RecordVisibility, sql_holds_vrid
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
 from app.services.graph_db.interface.graph_db_provider import UNSUPPORTED_PAGE_FIELDS
@@ -128,7 +128,7 @@ class RecordsMixin(PgBase):
         org = current_org_id()
         try:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_records_by_virtual_record_id */ SELECT n.id FROM graph.nodes n
-                WHERE n.org_id = $1 AND n.coll = 'records' AND """ + sql_holds_vrid("n", "$2") + """
+                WHERE n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = $2 OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = $2 AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED')))
                 AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2))
                 AND ($3::text[] IS NULL OR n.id = ANY($3::text[]))""",
                                                       org, virtual_record_id, list(accessible_record_ids) if accessible_record_ids is not None else None, _vis(visibility)),
@@ -250,7 +250,7 @@ class RecordsMixin(PgBase):
             return set()
         # One row per matched id: a record that holds a vrid through its pending field is reported under that id, not under its committed one.
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_ids_in_use */ SELECT DISTINCT w.v FROM unnest($2::text[]) AS w(v)
-            JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND """ + sql_holds_vrid("n", "w.v") + """
+            JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = w.v OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = w.v AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED')))
             AND ($3::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($3::int = 2))""", org, wanted, _vis(visibility)), transaction)
         return {r["v"] for r in rows}
 
@@ -263,7 +263,7 @@ class RecordsMixin(PgBase):
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_holders */ SELECT w.v AS v, jsonb_build_object('id', n.id,
               'connectorId', n.doc->'connectorId', 'connectorName', n.doc->'connectorName', 'recordGroupId', n.doc->'recordGroupId', 'recordName', n.doc->'recordName',
               'webUrl', n.doc->'webUrl', 'contentRev', n.doc->'contentRev', 'isDeleted', coalesce(n.doc->'isDeleted' = 'true'::jsonb, false)) AS h
-            FROM unnest($2::text[]) AS w(v) JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND """ + sql_holds_vrid("n", "w.v") + """ ORDER BY n.id""", org, wanted), transaction)
+            FROM unnest($2::text[]) AS w(v) JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = w.v OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = w.v AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED'))) ORDER BY n.id""", org, wanted), transaction)
         holders: dict[str, list[dict]] = {}
         for r in rows:
             holders.setdefault(r["v"], []).append(_doc(r["h"]))

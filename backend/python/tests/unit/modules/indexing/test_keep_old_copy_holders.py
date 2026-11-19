@@ -54,3 +54,12 @@ def test_the_grace_follows_the_cache_ttl(monkeypatch):
     assert keep_old_copy.grace_seconds() == 330.0
     monkeypatch.setenv("PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL", "100")
     assert keep_old_copy.grace_seconds() == 130.0
+
+
+def test_the_postgres_statements_carry_the_shared_fragment_verbatim():
+    """The provider's statements are literals (a test forbids building them), so the fragment is repeated there: it must not drift."""
+    from pathlib import Path
+
+    text = Path("app/services/graph_db/postgres/records.py").read_text(encoding="utf-8")
+    assert text.count(sql_holds_vrid("n", "$2")) == 1
+    assert text.count(sql_holds_vrid("n", "w.v")) == 2
