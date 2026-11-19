@@ -153,6 +153,20 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
       expect(JSON.parse(JSON.stringify(found))).to.have.all.keys('_id', 'orgId', 'userId', 'clientId', 'scopes', 'expiresAt');
     });
 
+    it('resolveToken carries the token\'s stored knowledge limit, as last set', async () => {
+      const user = fx.newId();
+      const client = uniq('pat');
+      const limit = { apps: ['app-1'], recordGroups: ['rg-1'], records: [] };
+      const input = access({ userId: user, clientId: client, knowledgeLimit: limit });
+      const dto = await tokens.issueAccess(input);
+      expect((await lookup.resolveToken(input.tokenHash))?.knowledgeLimit).to.deep.equal(limit);
+      const narrower = { apps: [], recordGroups: [], records: ['rec-1'] };
+      await tokens.setAccessKnowledgeLimit(dto._id, client, user, narrower);
+      expect((await lookup.resolveToken(input.tokenHash))?.knowledgeLimit).to.deep.equal(narrower);
+      await tokens.setAccessKnowledgeLimit(dto._id, client, user, null);
+      expect(await lookup.resolveToken(input.tokenHash)).to.not.have.property('knowledgeLimit');
+    });
+
     it('resolveToken does not find an unknown or revoked token, and takes the hash as a value', async () => {
       const input = access();
       await tokens.issueAccess(input);
@@ -372,6 +386,35 @@ export function describeOAuthTokenContract(fx: OAuthTokenFixture): void {
       const row = await fx.rawAccess(t._id);
       expect(row).to.include({ isRevoked: true, revokedReason: 'because' });
       expect(String(row?.revokedBy)).to.equal(admin);
+    });
+
+    it('setAccessKnowledgeLimit changes a live token of that client and user only; null removes the limit', async () => {
+      const user = fx.newId();
+      const client = uniq('pat');
+      const limit = { apps: ['app-1'], recordGroups: [], records: [] };
+      const t = await tokens.issueAccess(access({ userId: user, clientId: client }));
+      expect(await tokens.setAccessKnowledgeLimit('not-an-id', client, user, limit)).to.equal(null);
+      expect(await tokens.setAccessKnowledgeLimit(t._id, client, fx.newId(), limit)).to.equal(null);
+      expect(await tokens.setAccessKnowledgeLimit(t._id, 'other-client', user, limit)).to.equal(null);
+      const limited = await tokens.setAccessKnowledgeLimit(t._id, client, user, limit);
+      expect(limited?._id).to.equal(t._id);
+      expect(limited?.knowledgeLimit).to.deep.equal(limit);
+      expect((await tokens.listLiveAccessForUser(client, user, 10))[0]?.knowledgeLimit).to.deep.equal(limit);
+      const everything = await tokens.setAccessKnowledgeLimit(t._id, client, user, null);
+      expect(everything).to.not.equal(null);
+      expect(everything).to.not.have.property('knowledgeLimit');
+    });
+
+    it('setAccessKnowledgeLimit leaves a revoked or expired token alone', async () => {
+      const user = fx.newId();
+      const client = uniq('pat');
+      const limit = { apps: ['app-1'], recordGroups: [], records: [] };
+      const revoked = await tokens.issueAccess(access({ userId: user, clientId: client }));
+      await tokens.revokeAccessById(revoked._id, client, user, user);
+      expect(await tokens.setAccessKnowledgeLimit(revoked._id, client, user, limit)).to.equal(null);
+      const expired = await tokens.issueAccess(access({ userId: user, clientId: client, expiresAt: past() }));
+      expect(await tokens.setAccessKnowledgeLimit(expired._id, client, user, limit)).to.equal(null);
+      expect(await fx.rawAccess(expired._id)).to.not.have.property('knowledgeLimit');
     });
 
     it('revokeAccessByIdForClient revokes any user\'s token of that client (administrator)', async () => {

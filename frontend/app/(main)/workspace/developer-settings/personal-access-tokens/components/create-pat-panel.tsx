@@ -430,6 +430,9 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
               onChange={setKnowledgeLimit}
               idPrefix="pat"
             />
+            <Text as="p" size="1" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-3)' }}>
+              {t('workspace.personalAccessTokens.create.knowledgeLimitLaterHint')}
+            </Text>
           </Box>
 
           <Flex align="start" justify="between" gap="3" wrap="wrap">

@@ -47,3 +47,8 @@ export interface CreatePatApiResponse {
   message?: string;
   token: PatListItem & { accessToken: string };
 }
+
+/** PATCH /api/v1/personal-access-tokens/:id */
+export interface UpdatePatKnowledgeLimitResponse {
+  token: PatListItem;
+}

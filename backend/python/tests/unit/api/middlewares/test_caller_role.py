@@ -135,6 +135,33 @@ class TestFetchCallerRole:
             result = await fetch_caller_role(_request(_BEARER), _config_service())
         assert result == CallerRole(CallerRoleStatus.UNKNOWN)
 
+    async def test_a_personal_access_tokens_current_limit_comes_with_the_role(self) -> None:
+        """Node sends a PAT's stored limit, which its owner may have changed since it was issued."""
+        limit = {"apps": ["app-1"], "recordGroups": ["rg-1"], "records": []}
+        with _node(lambda _: httpx.Response(200, json={"role": "member", "knowledgeLimit": limit})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result.status is CallerRoleStatus.VALID
+        assert result.knowledge_limit_given is True
+        assert result.knowledge_limit == limit
+
+    async def test_a_null_limit_means_everything_the_owner_can_see(self) -> None:
+        with _node(lambda _: httpx.Response(200, json={"role": "member", "knowledgeLimit": None})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result.knowledge_limit_given is True
+        assert result.knowledge_limit is None
+
+    async def test_no_limit_key_leaves_the_tokens_own_claim_in_force(self) -> None:
+        with _node(lambda _: httpx.Response(200, json={"role": "member"})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result.knowledge_limit_given is False
+
+    @pytest.mark.parametrize("bad", ["everything", ["app-1"], 7, True])
+    async def test_an_unreadable_limit_fails_closed(self, bad) -> None:
+        """Taking a malformed limit as "none" would widen the token to everything its owner sees."""
+        with _node(lambda _: httpx.Response(200, json={"role": "member", "knowledgeLimit": bad})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result == CallerRole(CallerRoleStatus.UNKNOWN)
+
     async def test_forwards_only_the_authorization_header(self):
         seen = []
 

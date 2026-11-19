@@ -1,9 +1,11 @@
 import { apiClient } from '@/lib/api';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit';
 import type {
   CreatePatApiResponse,
   CreatePatPayload,
   PatListApiResponse,
   PatScopesApiResponse,
+  UpdatePatKnowledgeLimitResponse,
 } from './types';
 
 const BASE_URL = '/api/v1/personal-access-tokens';
@@ -38,6 +40,22 @@ export const PatApi = {
     const { data } = await apiClient.post<CreatePatApiResponse>(
       BASE_URL,
       body
+    );
+    return data;
+  },
+
+  /**
+   * Change what one of the calling user's own tokens can see; null for
+   * everything they can see. The token itself does not change.
+   * PATCH /api/v1/personal-access-tokens/:id
+   */
+  async updateKnowledgeLimit(
+    id: string,
+    knowledgeLimit: KnowledgeLimit | null
+  ): Promise<UpdatePatKnowledgeLimitResponse> {
+    const { data } = await apiClient.patch<UpdatePatKnowledgeLimitResponse>(
+      `${BASE_URL}/${id}`,
+      { knowledgeLimit }
     );
     return data;
   },

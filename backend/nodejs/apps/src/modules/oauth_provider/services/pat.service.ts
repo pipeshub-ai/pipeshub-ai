@@ -14,6 +14,7 @@ import { NotFoundError } from '../../../libs/errors/http.errors'
 import {
   AdminPatListItem,
   CreatePatRequest,
+  KnowledgeLimit,
   PaginatedResponse,
   PatListItem,
   PatWithSecret,
@@ -237,6 +238,53 @@ export class PatService {
       userId,
       tokenId,
     })
+  }
+
+  /**
+   * Change what one of *userId*'s own personal access tokens may see; null
+   * lets it see everything its owner can. The token and its secret stay the
+   * same: the limit is read from storage on every request it makes.
+   * @throws NotFoundError if the org has no PAT app yet, or the token
+   *   doesn't exist / isn't owned by *userId* / is revoked or expired.
+   */
+  async updateKnowledgeLimit(
+    orgId: string,
+    userId: string,
+    tokenId: string,
+    knowledgeLimit: KnowledgeLimit | null,
+  ): Promise<PatListItem> {
+    const clientId = patClientId(orgId);
+    const app = await getOAuthAppRepository().findByClientId(clientId);
+    if (!app) {
+      throw new NotFoundError('Personal access token not found');
+    }
+
+    const t = await this.oauthTokenService.setAccessTokenKnowledgeLimit(
+      tokenId,
+      clientId,
+      userId,
+      knowledgeLimit,
+    );
+    if (!t) {
+      throw new NotFoundError('Personal access token not found');
+    }
+
+    this.logger.info('Personal access token knowledge limit changed', {
+      orgId,
+      userId,
+      tokenId,
+      limited: knowledgeLimit !== null,
+    });
+
+    return {
+      id: t.id,
+      name: t.name ?? '(unnamed token)',
+      scopes: t.scopes,
+      createdAt: t.createdAt,
+      expiresAt: t.expiresAt,
+      lastUsedAt: t.lastUsedAt,
+      knowledgeLimit: t.knowledgeLimit,
+    };
   }
 
   /**

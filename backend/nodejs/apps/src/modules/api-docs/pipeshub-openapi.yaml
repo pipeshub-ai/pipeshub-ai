@@ -149,6 +149,14 @@ tags:
         are requested; `GET /personal-access-tokens/scopes` lists what's
         available.
 
+      **What a token can see**
+      - `knowledgeLimit` on create limits the token to the sources, record
+        groups, folders and records it names; omit it for everything the
+        owner can see.
+      - `PATCH /personal-access-tokens/{tokenId}` changes it later. The token
+        and its secret stay the same, and the new limit applies from the
+        token's next request.
+
       **Admin visibility**
       - Regular members only ever see and revoke their own tokens.
       - Org admins can list and revoke *any* member's token via
@@ -3313,7 +3321,10 @@ components:
         token's by its owner. Search, chat, agent chat and every record read by
         id stay inside it, and inside the connecting user's own permissions.
         Omit it for everything the user can see. Sent, it must name at least one id and at
-        most 50 in all, since it is signed into every token the app gets.
+        most 50 in all, since it is signed into every token the app gets. A
+        personal access token's owner can change its limit later with
+        `PATCH /personal-access-tokens/{tokenId}`; the stored limit, not the
+        signed one, is then what the token can reach.
       properties:
         apps:
           type: array
@@ -4733,6 +4744,32 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PatListItem'
+    UpdatePatKnowledgeLimitRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Request body for `PATCH /personal-access-tokens/{tokenId}`.
+        `knowledgeLimit` is required, so a body that leaves it out is refused
+        rather than read as "everything".
+      required:
+        - knowledgeLimit
+      properties:
+        knowledgeLimit:
+          description: |
+            What the token may see from now on, or `null` for everything its
+            owner can see (including sources added later).
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeLimit'
+    UpdatePatKnowledgeLimitResponse:
+      type: object
+      description: Response body for `PATCH /personal-access-tokens/{tokenId}` (`updateKnowledgeLimit`).
+      required:
+        - token
+      properties:
+        token:
+          $ref: '#/components/schemas/PatListItem'
     RevokePatRequest:
       type: object
       description: |
@@ -30694,6 +30731,96 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
   /personal-access-tokens/{tokenId}:
+    patch:
+      tags:
+        - Personal Access Tokens
+      summary: Change what one of your own personal access tokens can see
+      description: |
+        Replaces the token's knowledge limit, scoped to
+        `{tokenId, clientId, callerUserId}`: a caller can only change their own
+        live (not revoked, not expired) token. The token and its secret stay
+        the same, so nothing that uses it needs updating. The new limit applies
+        from the token's next request, and never reaches more than the owner
+        can see. Send `null` to let the token see everything its owner can.
+
+        Session only, like every `/personal-access-tokens/*` route: a token can
+        never change its own limit.
+      operationId: updatePersonalAccessTokenKnowledgeLimit
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: The token's new knowledge limit, or null for everything you can see
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePatKnowledgeLimitRequest'
+            examples:
+              onlyPicked:
+                summary: Limit the token to one source and one folder
+                value:
+                  knowledgeLimit:
+                    apps: ['3f1c2a4e-9b7d-4c1a-8e2f-5a6b7c8d9e0f']
+                    recordGroups: []
+                    records: ['8a7b6c5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d']
+      responses:
+        '200':
+          description: The token, with its new limit (`knowledgeLimit` absent means everything its owner can see)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatePatKnowledgeLimitResponse'
+        '400':
+          description: |
+            `tokenId` is not a 24-character hex id, `knowledgeLimit` is missing, or the limit names no ids, more than 50, or an id that is not a UUID (`VALIDATION_ERROR`)
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token, a personal access token (`phpat_`) or a service token (`phsvc_`) rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Token not found, revoked, expired, not owned by the caller, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many token management requests from this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Personal Access Tokens

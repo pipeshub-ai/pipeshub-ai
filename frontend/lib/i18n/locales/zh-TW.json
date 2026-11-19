@@ -2201,9 +2201,26 @@
         "pasteBlockLabel": "可直接貼入您的 MCP 設定",
         "copyPasteBlockAria": "複製貼上區塊",
         "copySuccessTitle": "已複製",
-        "copyErrorTitle": "無法複製"
+        "copyErrorTitle": "無法複製",
+        "knowledgeLimitLaterHint": "你之後可以變更此項，不需要更換權杖。"
       },
-      "scopeCount_other": "{{count}} 個權限範圍"
+      "scopeCount_other": "{{count}} 個權限範圍",
+      "access": {
+        "panelTitle": "變更存取權",
+        "intro": "選擇 {{name}} 可以檢視的內容。權杖會繼續有效，變更從它的下一個要求起生效，因此不需要更新任何使用它的地方。",
+        "save": "儲存",
+        "savedTitle": "存取權已變更",
+        "savedEverything": "{{name}} 現在可以檢視你能檢視的所有內容。",
+        "savedSome_other": "{{name}} 現在可以檢視所選的 {{count}} 項。",
+        "undo": "復原",
+        "undoneTitle": "已復原變更",
+        "undoErrorTitle": "無法復原變更。請開啟「變更存取權」重新設定。",
+        "errorTitle": "無法變更存取權",
+        "errorDescription": "沒有任何變更。請再試一次。",
+        "rowAction": "變更存取權",
+        "rowActionAria": "變更 {{name}} 可以檢視的內容",
+        "rowActionTooltip": "變更存取權：選擇此權杖可以檢視的內容"
+      }
     },
     "agentSignIns": {
       "title": "代理登入",

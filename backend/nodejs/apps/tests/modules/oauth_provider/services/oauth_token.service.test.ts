@@ -526,6 +526,58 @@ describe('OAuthTokenService', () => {
       expect(bareResult.userId).to.equal('user-1')
     })
 
+    describe('knowledge limit', () => {
+      const signedLimit = { apps: ['signed-app'], recordGroups: [], records: [] }
+      const storedLimit = { apps: [], recordGroups: ['stored-rg'], records: [] }
+      const signed = (clientId: string) =>
+        jwt.sign(
+          {
+            userId: 'user-1', orgId: 'org-1', iss: testIssuer, scope: 'org:read',
+            client_id: clientId, tokenType: 'oauth', jti: 'jti-kl', knowledgeLimit: signedLimit,
+          },
+          testSecret,
+          { algorithm: 'HS256' },
+        )
+
+      it("answers with a personal access token's stored limit, which its owner may have changed", async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false, knowledgeLimit: storedLimit } as any)
+
+        const result = await service.verifyAccessToken(`phpat_${signed('pat-system:org-1')}`)
+
+        expect(result.knowledgeLimit).to.deep.equal(storedLimit)
+      })
+
+      it('drops the signed limit of a personal access token whose owner removed it', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+
+        const result = await service.verifyAccessToken(signed('pat-system:org-1'))
+
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      it('verifies a token signed without a client id, leaving its claims alone', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false, knowledgeLimit: storedLimit } as any)
+        const token = jwt.sign(
+          { userId: 'user-1', orgId: 'org-1', iss: testIssuer, scope: 'org:read', tokenType: 'oauth', jti: 'jti-nc' },
+          testSecret,
+          { algorithm: 'HS256' },
+        )
+
+        const result = await service.verifyAccessToken(token)
+
+        expect(result.userId).to.equal('user-1')
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      it("keeps an OAuth app token's signed limit, the one its user agreed to", async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false, knowledgeLimit: storedLimit } as any)
+
+        const result = await service.verifyAccessToken(signed('client-1'))
+
+        expect(result.knowledgeLimit).to.deep.equal(signedLimit)
+      })
+    })
+
     it('should throw InvalidTokenError for refresh token used as access token', async () => {
       const payload = {
         userId: 'user-1',

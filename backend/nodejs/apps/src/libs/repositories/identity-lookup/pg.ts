@@ -6,6 +6,7 @@
 import { createHash } from 'crypto';
 import { goodKey, inKeyUnit, installOrg } from '../oauth-app/pg-org';
 import type { OAuthAppStatus } from '../oauth-app/types';
+import type { KnowledgeLimit } from '../../../modules/oauth_provider/types/oauth.types';
 import type {
   IdentityLookup,
   ResolvedAccessToken,
@@ -34,8 +35,9 @@ export class PgIdentityLookup implements IdentityLookup {
           scopes: string[];
           expires_at: Date;
           last_used_at: Date | null;
+          knowledge_limit: KnowledgeLimit | null;
         }>(
-          `/* pipeshub:oauth.resolve_token */ SELECT id, user_id, client_id, scopes, expires_at, last_used_at FROM oauth.access_tokens
+          `/* pipeshub:oauth.resolve_token */ SELECT id, user_id, client_id, scopes, expires_at, last_used_at, knowledge_limit FROM oauth.access_tokens
             WHERE org_id = $1 AND token_hash = $2 AND NOT is_revoked AND expires_at > now() LIMIT 1`,
           [k.orgId, tokenHash],
         );
@@ -49,6 +51,9 @@ export class PgIdentityLookup implements IdentityLookup {
               scopes: r.scopes,
               expiresAt: r.expires_at,
               lastUsedAt: r.last_used_at ?? undefined,
+              ...(r.knowledge_limit
+                ? { knowledgeLimit: r.knowledge_limit }
+                : {}),
             }
           : null;
       },

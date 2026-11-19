@@ -2217,10 +2217,28 @@
         "pasteBlockLabel": "Ready to paste into your MCP config",
         "copyPasteBlockAria": "Copy paste block",
         "copySuccessTitle": "Copied",
-        "copyErrorTitle": "Could not copy"
+        "copyErrorTitle": "Could not copy",
+        "knowledgeLimitLaterHint": "You can change this later without replacing the token."
       },
       "scopeCount_one": "{{count}} scope",
-      "scopeCount_other": "{{count}} scopes"
+      "scopeCount_other": "{{count}} scopes",
+      "access": {
+        "panelTitle": "Change access",
+        "intro": "Pick what {{name}} can see. The token keeps working, and the change applies from its next request, so you don't need to update anything that uses it.",
+        "save": "Save",
+        "savedTitle": "Access changed",
+        "savedEverything": "{{name}} can now see everything you can.",
+        "savedSome_one": "{{name}} can now see {{count}} picked item.",
+        "savedSome_other": "{{name}} can now see {{count}} picked items.",
+        "undo": "Undo",
+        "undoneTitle": "Change undone",
+        "undoErrorTitle": "Couldn't undo the change. Open Change access to set it again.",
+        "errorTitle": "Couldn't change access",
+        "errorDescription": "Nothing changed. Try again.",
+        "rowAction": "Change access",
+        "rowActionAria": "Change what {{name}} can see",
+        "rowActionTooltip": "Change access: pick what this token can see"
+      }
     },
     "agentSignIns": {
       "title": "Agent sign-ins",

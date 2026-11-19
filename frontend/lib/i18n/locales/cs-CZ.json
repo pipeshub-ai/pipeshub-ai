@@ -2309,12 +2309,32 @@
         "pasteBlockLabel": "Připraveno k vložení do vaší MCP konfigurace",
         "copyPasteBlockAria": "Kopírovat blok k vložení",
         "copySuccessTitle": "Zkopírováno",
-        "copyErrorTitle": "Nepodařilo se zkopírovat"
+        "copyErrorTitle": "Nepodařilo se zkopírovat",
+        "knowledgeLimitLaterHint": "Později to můžete změnit, aniž byste token nahradili."
       },
       "scopeCount_one": "{{count}} rozsah",
       "scopeCount_few": "{{count}} rozsahy",
       "scopeCount_many": "{{count}} rozsahu",
-      "scopeCount_other": "{{count}} rozsahů"
+      "scopeCount_other": "{{count}} rozsahů",
+      "access": {
+        "panelTitle": "Změnit přístup",
+        "intro": "Vyberte, co {{name}} uvidí. Token dál funguje a změna platí od jeho dalšího požadavku, takže nemusíte nic, co ho používá, aktualizovat.",
+        "save": "Uložit",
+        "savedTitle": "Přístup změněn",
+        "savedEverything": "{{name}} teď vidí všechno, co vidíte vy.",
+        "savedSome_one": "{{name}} teď vidí {{count}} vybranou položku.",
+        "savedSome_few": "{{name}} teď vidí {{count}} vybrané položky.",
+        "savedSome_many": "{{name}} teď vidí {{count}} vybrané položky.",
+        "savedSome_other": "{{name}} teď vidí {{count}} vybraných položek.",
+        "undo": "Zpět",
+        "undoneTitle": "Změna vrácena",
+        "undoErrorTitle": "Změnu se nepodařilo vrátit. Otevřete Změnit přístup a nastavte ji znovu.",
+        "errorTitle": "Přístup se nepodařilo změnit",
+        "errorDescription": "Nic se nezměnilo. Zkuste to znovu.",
+        "rowAction": "Změnit přístup",
+        "rowActionAria": "Změnit, co {{name}} uvidí",
+        "rowActionTooltip": "Změnit přístup: vyberte, co tento token uvidí"
+      }
     },
     "agentSignIns": {
       "title": "Přihlášení agentů",

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
-import { Button, Flex, Heading, IconButton, Text } from '@radix-ui/themes';
+import { Button, Flex, Heading, IconButton, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -16,6 +16,7 @@ import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '../../components/sett
 import { PatApi } from './api';
 import type { PatListItem } from './types';
 import { CreatePatPanel } from './components/create-pat-panel';
+import { EditPatAccessPanel } from './components/edit-pat-access-panel';
 import { AgentSignIns } from './components/agent-sign-ins';
 
 function formatDate(value: string, locale?: string): string {
@@ -52,6 +53,7 @@ function PersonalAccessTokensPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<PatListItem | null>(null);
+  const [accessTarget, setAccessTarget] = useState<PatListItem | null>(null);
   const [isRevoking, setIsRevoking] = useState(false);
 
   const fetchTokens = useCallback(async () => {
@@ -98,6 +100,12 @@ function PersonalAccessTokensPageContent() {
       setIsRevoking(false);
     }
   }, [revokeTarget, addToast, t, fetchTokens]);
+
+  // The server's answer is the whole row. Merging it instead would keep the old
+  // limit when the new answer has none ("everything").
+  const handleAccessSaved = useCallback((updated: PatListItem) => {
+    setTokens((prev) => prev.map((tok) => (tok.id === updated.id ? updated : tok)));
+  }, []);
 
   if (!isProfileInitialized) {
     return null;
@@ -230,24 +238,11 @@ function PersonalAccessTokensPageContent() {
                     gap="2"
                     style={{ padding: 'var(--space-3) var(--space-4)', borderBottom: '1px solid var(--olive-3)' }}
                   >
-                    <Flex align="start" justify="between" gap="3">
-                      <Flex direction="column" style={{ minWidth: 0 }}>
-                        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
-                          {token.name}
-                        </Text>
-                        <KnowledgeLimitSummary limit={token.knowledgeLimit} />
-                      </Flex>
-                      <Button
-                        type="button"
-                        variant="soft"
-                        color="red"
-                        size="2"
-                        aria-label={t('workspace.personalAccessTokens.revokeAria', { name: token.name })}
-                        onClick={() => setRevokeTarget(token)}
-                        style={{ cursor: 'pointer', flexShrink: 0, minHeight: 44 }}
-                      >
-                        {t('workspace.personalAccessTokens.revoke.confirmButton')}
-                      </Button>
+                    <Flex direction="column" style={{ minWidth: 0 }}>
+                      <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
+                        {token.name}
+                      </Text>
+                      <KnowledgeLimitSummary limit={token.knowledgeLimit} />
                     </Flex>
                     <Text size="1" style={{ color: 'var(--slate-11)' }}>
                       {scopeSummary(token)}
@@ -258,6 +253,30 @@ function PersonalAccessTokensPageContent() {
                           <span style={{ color: 'var(--slate-10)' }}>{label}</span> {value}
                         </Text>
                       ))}
+                    </Flex>
+                    <Flex gap="2" wrap="wrap" style={{ marginTop: 'var(--space-1)' }}>
+                      <Button
+                        type="button"
+                        variant="soft"
+                        color="gray"
+                        size="2"
+                        aria-label={t('workspace.personalAccessTokens.access.rowActionAria', { name: token.name })}
+                        onClick={() => setAccessTarget(token)}
+                        style={{ cursor: 'pointer', minHeight: 44 }}
+                      >
+                        {t('workspace.personalAccessTokens.access.rowAction')}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="soft"
+                        color="red"
+                        size="2"
+                        aria-label={t('workspace.personalAccessTokens.revokeAria', { name: token.name })}
+                        onClick={() => setRevokeTarget(token)}
+                        style={{ cursor: 'pointer', minHeight: 44 }}
+                      >
+                        {t('workspace.personalAccessTokens.revoke.confirmButton')}
+                      </Button>
                     </Flex>
                   </Flex>
                 ))
@@ -288,7 +307,7 @@ function PersonalAccessTokensPageContent() {
                 <Text
                   size="1"
                   weight="medium"
-                  style={{ color: 'var(--slate-11)', width: 40, textAlign: 'right' }}
+                  style={{ color: 'var(--slate-11)', width: 'calc(var(--space-8) + var(--space-5))', textAlign: 'right' }}
                 >
                   {' '}
                 </Text>
@@ -317,7 +336,22 @@ function PersonalAccessTokensPageContent() {
                       {value}
                     </Text>
                   ))}
-                  <Flex style={{ width: 40, justifyContent: 'flex-end' }}>
+                  <Flex gap="1" style={{ width: 'calc(var(--space-8) + var(--space-5))', justifyContent: 'flex-end' }}>
+                    <Tooltip content={t('workspace.personalAccessTokens.access.rowActionTooltip')}>
+                      <IconButton
+                        type="button"
+                        variant="ghost"
+                        color="gray"
+                        size="2"
+                        aria-label={t('workspace.personalAccessTokens.access.rowActionAria', {
+                          name: token.name,
+                        })}
+                        onClick={() => setAccessTarget(token)}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <MaterialIcon name="tune" size={18} color="var(--slate-11)" />
+                      </IconButton>
+                    </Tooltip>
                     <IconButton
                       type="button"
                       variant="ghost"
@@ -342,6 +376,14 @@ function PersonalAccessTokensPageContent() {
       </Flex>
 
       <AgentSignIns />
+
+      <EditPatAccessPanel
+        token={accessTarget}
+        onOpenChange={(open) => {
+          if (!open) setAccessTarget(null);
+        }}
+        onSaved={handleAccessSaved}
+      />
 
       <CreatePatPanel
         open={createPanelOpen}

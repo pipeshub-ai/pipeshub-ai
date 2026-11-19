@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import { PatController } from '../../../../src/modules/oauth_provider/controller/pat.controller'
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend'
+import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
 
 describe('PatController', () => {
   let controller: PatController
@@ -169,6 +170,48 @@ describe('PatController', () => {
       mockPatService.revokeToken.rejects(new Error('not found'))
       mockReq.params = { tokenId: 'tok-1' }
       await controller.revokeToken(mockReq, mockRes, mockNext)
+      expect(mockNext.calledOnce).to.be.true
+    })
+  })
+
+  describe('updateKnowledgeLimit', () => {
+    const inOrg = <T>(fn: () => T): T =>
+      runWithOrgContext(makeOrgContext({ orgId: 'org-1', userId: 'user-1', kind: 'user', source: 'jwt' }), fn)
+    const limit = {
+      apps: ['3f1c2a4e-9b7d-4c1a-8e2f-5a6b7c8d9e0f'],
+      recordGroups: [],
+      records: [],
+    }
+
+    it("changes what the caller's own token may see and returns the token", async () => {
+      const token = { id: 'tok-1', name: 'ci', scopes: ['kb:read'], knowledgeLimit: limit }
+      mockPatService.updateKnowledgeLimit = sinon.stub().resolves(token)
+      mockReq.params = { tokenId: 'tok-1' }
+      mockReq.body = { knowledgeLimit: limit }
+
+      // The org comes from the bound request context, not from req.user.
+      mockReq.user.orgId = 'org-from-the-token-claims'
+      await inOrg(() => controller.updateKnowledgeLimit(mockReq, mockRes, mockNext))
+
+      expect(mockPatService.updateKnowledgeLimit.calledWith('org-1', 'user-1', 'tok-1', limit)).to.be.true
+      expect(mockRes.json.calledWith({ token })).to.be.true
+    })
+
+    it('passes null through so the token sees everything its owner can', async () => {
+      mockPatService.updateKnowledgeLimit = sinon.stub().resolves({ id: 'tok-1' })
+      mockReq.params = { tokenId: 'tok-1' }
+      mockReq.body = { knowledgeLimit: null }
+
+      await inOrg(() => controller.updateKnowledgeLimit(mockReq, mockRes, mockNext))
+
+      expect(mockPatService.updateKnowledgeLimit.firstCall.args[3]).to.equal(null)
+    })
+
+    it('calls next on service error (e.g. NotFoundError)', async () => {
+      mockPatService.updateKnowledgeLimit = sinon.stub().rejects(new Error('not found'))
+      mockReq.params = { tokenId: 'tok-1' }
+      mockReq.body = { knowledgeLimit: null }
+      await inOrg(() => controller.updateKnowledgeLimit(mockReq, mockRes, mockNext))
       expect(mockNext.calledOnce).to.be.true
     })
   })

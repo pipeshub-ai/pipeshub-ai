@@ -258,6 +258,17 @@ export interface OAuthTokenRepository {
     revokedBy: string,
     reason?: string,
   ): Promise<boolean>;
+  /**
+   * Replace a live (not revoked, unexpired) access token's knowledge limit, by
+   * row id, only for this client and user; null removes it. Returns the
+   * updated token, or null when no such live token exists.
+   */
+  setAccessKnowledgeLimit(
+    id: string,
+    clientId: string,
+    userId: string,
+    limit: KnowledgeLimit | null,
+  ): Promise<AccessTokenDto | null>;
   /** By row id, only for this client (administrator). */
   revokeAccessByIdForClient(
     id: string,

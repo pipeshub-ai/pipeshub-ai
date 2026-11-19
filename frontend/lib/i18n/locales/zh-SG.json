@@ -2201,9 +2201,26 @@
         "pasteBlockLabel": "可直接粘贴到您的 MCP 配置中",
         "copyPasteBlockAria": "复制粘贴块",
         "copySuccessTitle": "已复制",
-        "copyErrorTitle": "无法复制"
+        "copyErrorTitle": "无法复制",
+        "knowledgeLimitLaterHint": "你之后可以更改此项，无需更换令牌。"
       },
-      "scopeCount_other": "{{count}} 个权限范围"
+      "scopeCount_other": "{{count}} 个权限范围",
+      "access": {
+        "panelTitle": "更改访问权限",
+        "intro": "选择 {{name}} 可以查看的内容。令牌会继续有效，更改从它的下一次请求起生效，因此无需更新任何使用它的地方。",
+        "save": "保存",
+        "savedTitle": "访问权限已更改",
+        "savedEverything": "{{name}} 现在可以查看你能查看的所有内容。",
+        "savedSome_other": "{{name}} 现在可以查看所选的 {{count}} 项。",
+        "undo": "撤销",
+        "undoneTitle": "已撤销更改",
+        "undoErrorTitle": "无法撤销更改。请打开“更改访问权限”重新设置。",
+        "errorTitle": "无法更改访问权限",
+        "errorDescription": "未做任何更改。请重试。",
+        "rowAction": "更改访问权限",
+        "rowActionAria": "更改 {{name}} 可以查看的内容",
+        "rowActionTooltip": "更改访问权限：选择此令牌可以查看的内容"
+      }
     },
     "agentSignIns": {
       "title": "代理登录",

@@ -3,8 +3,9 @@ import { Response, NextFunction } from 'express'
 import { Logger } from '../../../libs/services/logger.service'
 import { DEFAULT_EXPIRY_DAYS, PatService } from '../services/pat.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
-import { CreatePatRequest } from '../types/oauth.types'
+import { CreatePatRequest, UpdatePatKnowledgeLimitBody } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
+import { currentOrgContext } from '../../../libs/context/orgContext';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
 import {
   clientTags,
@@ -123,6 +124,33 @@ export class PatController {
       res.json({ message: 'Personal access token revoked successfully' })
     } catch (error) {
       next(error)
+    }
+  }
+
+  /**
+   * Change what one of the caller's own personal access tokens may see.
+   * The token keeps its secret; the new limit applies to its next request.
+   */
+  async updateKnowledgeLimit(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = String(currentOrgContext().orgId);
+      const userId = String(req.user?.userId ?? '');
+      const tokenId = req.params.tokenId ?? '';
+      // Validated by updatePatKnowledgeLimitSchema before this runs.
+      const { knowledgeLimit } = req.body as UpdatePatKnowledgeLimitBody;
+      const token = await this.patService.updateKnowledgeLimit(
+        orgId,
+        userId,
+        tokenId,
+        knowledgeLimit,
+      );
+      res.json({ token });
+    } catch (error) {
+      next(error);
     }
   }
 

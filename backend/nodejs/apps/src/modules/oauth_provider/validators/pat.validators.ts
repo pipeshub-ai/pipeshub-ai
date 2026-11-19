@@ -15,6 +15,16 @@ export const createPatTokenSchema = z.object({
   }),
 })
 
+export const updatePatKnowledgeLimitSchema = z.object({
+  params: z.object({
+    tokenId: z.string().regex(mongoIdRegex, 'Invalid token ID'),
+  }),
+  body: z.object({
+    // Required, and null spelled out, so a body that forgets it never widens a token.
+    knowledgeLimit: knowledgeLimitSchema.nullable(),
+  }),
+});
+
 export const tokenIdParamsSchema = z.object({
   params: z.object({
     tokenId: z.string().regex(mongoIdRegex, 'Invalid token ID'),

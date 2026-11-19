@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 logger = create_logger(__name__)
 
 CALLER_ROLE_PATH = "/api/v1/users/me/role"
+KNOWLEDGE_LIMIT_FIELD = "knowledgeLimit"
 _TIMEOUT_SECONDS = 5.0
 # Node authenticates the caller from the Authorization header, plus the /mcp relay header for a
 # token issued for /mcp, which Node accepts elsewhere only as part of an /mcp call. Nothing else
@@ -70,6 +71,11 @@ class CallerRoleStatus(Enum):
 class CallerRole:
     status: CallerRoleStatus
     role: Role = "member"
+    # A personal access token's limit as stored now: its owner can change it after
+    # the token is issued, so the signed claim may be stale. ``knowledge_limit_given``
+    # is False when Node sent none (an OAuth app's token), and the claim then stands.
+    knowledge_limit: dict[str, object] | None = None
+    knowledge_limit_given: bool = False
 
     @property
     def is_admin(self) -> bool:
@@ -174,7 +180,20 @@ async def fetch_caller_role(
     except ValueError:
         logger.warning("Caller role lookup returned a non-JSON body")
         return _UNKNOWN
-    return CallerRole(CallerRoleStatus.VALID, normalize_auth_role(_str_field(body, "role")))
+    role = normalize_auth_role(_str_field(body, "role"))
+    if not isinstance(body, dict) or KNOWLEDGE_LIMIT_FIELD not in body:
+        return CallerRole(CallerRoleStatus.VALID, role)
+    limit = body[KNOWLEDGE_LIMIT_FIELD]
+    if limit is not None and not isinstance(limit, dict):
+        # Read as "no limit", a malformed answer would widen the token to everything.
+        logger.warning("Caller role lookup returned an unreadable knowledge limit")
+        return _UNKNOWN
+    return CallerRole(
+        CallerRoleStatus.VALID,
+        role,
+        knowledge_limit=cast("dict[str, object] | None", limit),
+        knowledge_limit_given=True,
+    )
 
 
 async def fetch_own_identity(

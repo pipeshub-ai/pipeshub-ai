@@ -6,6 +6,7 @@ import { OAuthDeviceCode } from '../../../modules/oauth_provider/schema/oauth.de
 import { OAuthAgentRegistration } from '../../../modules/oauth_provider/schema/oauth.agent_registration.schema';
 import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
+import type { KnowledgeLimit } from '../../../modules/oauth_provider/types/oauth.types';
 import {
   AgentRegistrationStatus,
   OAuthDeviceCodeStatus,
@@ -275,6 +276,39 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
       },
     );
     return result.modifiedCount > 0;
+  }
+
+  async setAccessKnowledgeLimit(
+    id: string,
+    clientId: string,
+    userId: string,
+    limit: KnowledgeLimit | null,
+  ): Promise<AccessTokenDto | null> {
+    if (!Types.ObjectId.isValid(id) || !Types.ObjectId.isValid(userId)) {
+      return null;
+    }
+    const updated = await OAuthAccessToken.findOneAndUpdate(
+      {
+        _id: { $eq: oid(id) },
+        clientId: { $eq: clientId },
+        userId: { $eq: oid(userId) },
+        isRevoked: { $eq: false },
+        expiresAt: { $gt: new Date() },
+      },
+      limit
+        ? {
+            $set: {
+              knowledgeLimit: {
+                apps: [...limit.apps],
+                recordGroups: [...limit.recordGroups],
+                records: [...limit.records],
+              },
+            },
+          }
+        : { $unset: { knowledgeLimit: 1 } },
+      { new: true },
+    );
+    return updated ? toPlain<AccessTokenDto>(updated) : null;
   }
 
   async revokeAccessByIdForClient(
