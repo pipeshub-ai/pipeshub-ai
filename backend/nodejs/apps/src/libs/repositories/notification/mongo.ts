@@ -76,6 +76,8 @@ export class MongoNotificationRepository implements NotificationRepository {
     const now = new Date();
     // every row is checked before any is written, so a refused row leaves the others unstored
     const docs = rows.map((r) => stamped(r, now));
+    // the schema's own checks (required fields, enums) run on every document here: create() would otherwise store the first row of a batch and refuse a later one
+    for (const d of docs) await new Notifications(d).validate();
     const out = new Array<NotificationRow>(rows.length);
     const fresh: number[] = [];
     for (const [i, r] of rows.entries()) {
