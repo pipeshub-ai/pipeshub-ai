@@ -173,3 +173,29 @@ async def test_a_record_that_ends_a_run_as_a_copy_of_another_loses_its_pending_f
     g.records["A"]["pendingVirtualRecordId"] = "Y2"
     await ep._discard_embed_marker({"_key": "A", **g.records["A"]}, {"embedVrid": None}, "o")
     assert "pendingVirtualRecordId" not in g.records["A"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_result_moves_the_record_to_the_empty_copy_and_releases_the_old_one() -> None:
+    """The processor's EMPTY exits come after the pending write: without the commit the record stays on the old copy, which is kept for good."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.config.constants.arangodb import ProgressStatus
+    from app.events.processor import Processor
+
+    g = FakeGraph({"A": rec("X", "IN_PROGRESS", pendingVirtualRecordId="Y", hasIndexedCopy=True)})
+    swap_committer, _ = committer(g)
+    processor = Processor.__new__(Processor)
+    processor.graph_provider = g
+    processor.logger = MagicMock()
+    processor.sink_orchestrator = MagicMock()
+    processor.sink_orchestrator.swap = swap_committer
+    swap_committer.finish = AsyncMock()
+    keep_old_copy.begin_swap(keep_old_copy.SwapRun("A", "o", "X", "Y"))
+    try:
+        await processor._mark_record("A", ProgressStatus.EMPTY)
+    finally:
+        keep_old_copy.end_swap()
+    assert g.records["A"]["virtualRecordId"] == "Y" and g.records["A"]["indexingStatus"] == "EMPTY"
+    assert "pendingVirtualRecordId" not in g.records["A"]
+    swap_committer.finish.assert_awaited_once()  # the old copy is released from there, after the grace

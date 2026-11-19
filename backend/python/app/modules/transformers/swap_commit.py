@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
@@ -26,6 +27,7 @@ from app.exceptions.indexing_exceptions import (
     SupersededRun,
 )
 from app.modules.indexing import keep_old_copy
+from app.modules.indexing.stray_sweep import BLOCK_ID_FIELD, sweep_max_points
 from app.services.cache.invalidation_hooks import notify_record_vrid_moved
 from app.services.graph_db.common.record_visibility import (
     PENDING_VIRTUAL_RECORD_ID,
@@ -34,14 +36,13 @@ from app.services.graph_db.common.record_visibility import (
 from app.services.graph_db.conditions import EQ, ONE_OF, Cond
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
-from app.modules.indexing.stray_sweep import BLOCK_ID_FIELD, sweep_max_points
 from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
 from app.services.vector_db.filters import org_for_filter
-from app.services.vector_db.models import ScrollWindowExceededError, VectorChunkPayload
 from app.services.vector_db.membership import (
     rewrite_or_delete_virtual_record,
     sync_vector_membership,
 )
+from app.services.vector_db.models import ScrollWindowExceededError, VectorChunkPayload
 from app.services.vector_db.strategy import RecordContext
 
 if TYPE_CHECKING:
@@ -87,6 +88,21 @@ class SwapCommitter:
             await self._confirm_after_commit(ctx, swap, fields)
             return True
         return await self._refused(swap)
+
+    async def commit_document(self, doc: dict[str, Any], swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> bool:
+        """The commit and what follows it for a run that ends without a parse of its own to hand over (an empty result), from the record's
+        stored document. The new copy has no points, so nothing is read back; the record moves to it and the old copy is released."""
+        ctx = SimpleNamespace(
+            record=SimpleNamespace(
+                id=swap.record_id, connector_id=doc.get("connectorId"), connector_name=doc.get("connectorName"),
+                external_record_group_id=doc.get("externalGroupId"),
+            ),
+            reconciliation_context=None,
+        )
+        committed = await self.commit(ctx, swap, fields)  # type: ignore[arg-type]
+        if committed:
+            await self.finish(ctx, swap)  # type: ignore[arg-type]
+        return committed
 
     async def _confirm_after_commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> None:
         """The record names the copy now. When nothing of it is in the store (a sweep took it between the read and the write, with the
