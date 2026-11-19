@@ -180,6 +180,8 @@ from app.services.featureflag.platform_settings import (
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.permissions import access_status
+from app.services.permissions.currency import MODE_KEY, chosen_mode
+from app.services.permissions.mode import AclFilterMode
 from app.services.storage_documents import BoundReadChanged, BoundReadOutOfRange, StorageDocumentInfo
 from app.utils.byte_range import ByteRange, resolve_range
 from app.utils.content_tag import SERVED_VERSION_TIMEOUT_SECONDS, content_tag, if_none_match_matches, preview_pdf_pipeline
@@ -194,6 +196,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.render_budget import FETCH_MAX_CHARS
 from app.utils.egress_ips import get_egress_ips
+from app.utils.error_class import log_failure
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.utils.not_indexed import not_indexed_note
@@ -2806,6 +2809,22 @@ async def _schedule_upload_removal(
         ) from e
 
 
+def mark_user_forced_reindex(event_data: dict) -> None:
+    """A user's Force reindex re-parses and re-indexes: every stored paid result is bypassed and paid for again.
+
+    A record event carries it directly; a sync-events reindex carries ``force``, which the handler that walks the
+    records turns into the same flag on each record event it publishes.
+    """
+    payload = event_data.get("payload")
+    if not isinstance(payload, dict):
+        return
+    if event_data.get("topic") == "record-events":
+        payload["forceReindex"] = True
+        payload["refreshPaidOutputs"] = True
+    else:
+        payload["force"] = True
+
+
 def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
     """Parse depth and optional statusFilters from a reindex request body."""
     if not request_body:
@@ -2917,6 +2936,8 @@ async def reindex_single_record(
 
             event_data = result.get("eventData")
             event_published = False
+            if event_data and request_body and request_body.get("force") is True:
+                mark_user_forced_reindex(event_data)
             if event_data:
                 try:
                     timestamp = get_epoch_timestamp_in_ms()
@@ -8435,7 +8456,7 @@ async def _build_and_store_connector(
             # Connector surfaced a specific, actionable reason (e.g. multi-site OAuth
             # ambiguity). Show it to the user instead of the generic message.
             error_msg = str(init_error)  # user-written message
-            logger.error(f"❌ {error_msg}")
+            log_failure(logger, "connector.init_failed", init_error, connector_id=connector_id)
             with contextlib.suppress(Exception):
                 await dispose_connector(connector)
             raise HTTPException(
@@ -10719,12 +10740,10 @@ async def _sync_interval_minutes(request: Request, connector_id: str) -> int | N
         return None
 
 
-@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-async def get_permission_status(
-    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> dict[str, Any]:
-    """Admin only. Everyone who may not read the connector gets the 404 of a missing one: a non-admin, another organisation's connector, another
-    user's personal connector (the registry's read gate), and a connected app whose limit does not name the whole connector (its counts could not be limited)."""
+async def _admin_connector_app(request: Request, connector_id: str, graph_provider: IGraphDBProvider) -> dict[str, Any]:
+    """The connector's app document, for an admin who may read the whole connector. Everyone else gets the 404 of a missing one: a non-admin,
+    another organisation's connector, another user's personal connector (the registry's read gate), and a connected app whose limit does not
+    name the whole connector (its counts could not be limited)."""
     not_found_error = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
     org_id = current_org_id()
     user_id = request.state.user.get("userId")
@@ -10737,4 +10756,36 @@ async def get_permission_status(
         whole, _ = await connection_apps(request, graph_provider, org_id, user_id)
         if connector_id not in whole:
             raise not_found_error
+    return app
+
+
+@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+async def get_permission_status(
+    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only (`_admin_connector_app`)."""
+    app = await _admin_connector_app(request, connector_id, graph_provider)
     return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))
+
+
+class PermissionFilterRequest(BaseModel):
+    mode: Literal["inherit", "legacy", "scopes"]
+
+
+@router.patch("/api/v1/connectors/{connector_id}/permissions/filter", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+async def set_permission_filter(
+    connector_id: str, body: PermissionFilterRequest, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only (`_admin_connector_app`). Sets the connector's own permission filter mode and answers with its `filter` status. `scopes` is
+    refused (409, with the blockers) when this deployment cannot search any connector with the scope filter; `legacy` and `inherit` are always
+    accepted, so a rollback never depends on the state it rolls back from."""
+    app = await _admin_connector_app(request, connector_id, graph_provider)
+    default, store_serves = AclFilterMode.from_env(), access_status.store_serves_scope_filter()
+    if body.mode == "scopes" and (found := access_status.blockers(default, store_serves=store_serves)):
+        raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail={"error": "not_switchable", "blockers": found})
+    # the app document is the one record of the mode: the serving plan reads it (`currency.switched_connectors`), so there is nothing to keep in step
+    if not await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {MODE_KEY: body.mode}):
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
+    logger.info("audit: permission filter of connector %s set from %s to %s by user %s",
+                connector_id, chosen_mode(app), body.mode, request.state.user.get("userId"))
+    return access_status.filter_state({**app, MODE_KEY: body.mode}, default, store_serves=store_serves)

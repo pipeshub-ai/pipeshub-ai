@@ -16,7 +16,10 @@ import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
 import { getOrgRepository } from '../repositories/org';
-import { getOAuthAppRepository } from '../repositories/oauth-app';
+import {
+  getOAuthAppRepository,
+  NO_APP_CREATOR,
+} from '../repositories/oauth-app';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
@@ -34,6 +37,9 @@ const AUDITED_SCOPES: Readonly<Record<string, AuthRefusalEvent>> = {
   [TokenScopes.TOKEN_REFRESH]: 'auth.session.refresh',
   [TokenScopes.PASSWORD_RESET]: 'auth.password_reset.complete',
   [TokenScopes.VALIDATE_EMAIL]: 'auth.email.change',
+  // EE mounts these (org email verification at signup); OSS has no route for them.
+  [TokenScopes.ORG_EMAIL_VERIFY]: 'auth.email.verify',
+  [TokenScopes.EMAIL_VERIFIED]: 'auth.email.verify',
 };
 
 const CLIENT_NAME_HEADER = 'client-name';
@@ -202,6 +208,12 @@ export class AuthMiddleware {
           // Absent means the creator, which is how every app behaves until
           // someone points it at a service account.
           const resolved = app.tokenIdentityUserId ?? app.createdBy;
+          // An app no person created has nobody for its client_credentials tokens to act as.
+          if (resolved === NO_APP_CREATOR) {
+            throw new UnauthorizedError(
+              'This application does not act as a user',
+            );
+          }
 
           // The token carries the identity it was minted for. If the
           // application has been pointed somewhere else since, this token is

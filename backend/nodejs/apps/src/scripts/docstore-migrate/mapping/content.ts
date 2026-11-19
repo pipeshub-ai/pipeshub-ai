@@ -220,6 +220,7 @@ const notifications: CollectionMapping = {
     { col: 'payload', path: 'payload', type: 'json' },
     { col: 'is_deleted', path: 'isDeleted', type: 'bool', readAbsentAs: false },
     { col: 'deleted_by', path: 'deletedBy', type: 'oid' },
+    { col: 'visible_at', path: 'visibleAt', type: 'date' },
     ...CREATED,
   ],
   derived: [],
@@ -417,6 +418,7 @@ const oauthApps: CollectionMapping = {
       readAbsentAs: true,
     },
     { col: 'is_dynamic', path: 'isDynamic', type: 'bool', readAbsentAs: false },
+    { col: 'owner_format', path: 'ownerFormat', type: 'int' },
     {
       col: 'access_token_lifetime',
       path: 'accessTokenLifetime',

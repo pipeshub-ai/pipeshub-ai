@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -219,6 +220,16 @@ function virtualRecordIdOf(
 // TODO: Remove these globals
 let storageConfig:
   AzureBlobStorageConfig | LocalStorageConfig | S3StorageConfig | null = null;
+
+/**
+ * How far past this service's clock a purge cutoff may lie before it is refused. The cutoff is the object store's clock,
+ * which may differ from this host's, so the bound is one only a bug would exceed; a cutoff past the warning mark is
+ * accepted and logged.
+ */
+const PURGE_CUTOFF_FUTURE_LIMIT_MS = 15 * 60_000;
+const PURGE_CUTOFF_FUTURE_WARN_MS = 60_000;
+/** The record folder's sentinel area: listings leave it out and the purge that follows it removes it with the folder. */
+const PURGE_CUTOFF_FOLDER = 'purge-cutoff';
 
 @injectable()
 export class StorageController {
@@ -1386,7 +1397,12 @@ export class StorageController {
       });
       res.status(HTTP_STATUS.OK).json({
         objects: page.objects
-          .filter((o) => o.key.startsWith(`${root}/`))
+          // A purge-cutoff sentinel is the store's clock reading, never a result.
+          .filter(
+            (o) =>
+              o.key.startsWith(`${root}/`) &&
+              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`),
+          )
           .map((o) => ({
             path: o.key.slice(root.length + 1),
             size: o.size,
@@ -1435,9 +1451,121 @@ export class StorageController {
       if (typeof recordParam !== 'string' || recordParam === '') {
         throw new BadRequestError('recordId must be a single value');
       }
+      // The validator has coerced it to a positive integer; anything else (an array, a non-number) is refused here too.
+      const beforeQuery: unknown = req.query.before;
+      if (
+        beforeQuery !== undefined &&
+        typeof beforeQuery !== 'string' &&
+        typeof beforeQuery !== 'number'
+      ) {
+        throw new BadRequestError('before must be a single value');
+      }
       const adapter = await this.initializeStorageAdapter(req);
-      await adapter.deleteTree(paidResultsRecordRoot(orgId, recordParam));
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // The cutoff is an instant the store's own clock returned (`purge-cutoff`): one in the future is not one.
+      if (beforeQuery !== undefined) {
+        const aheadMs = Number(beforeQuery) - Date.now();
+        if (aheadMs > PURGE_CUTOFF_FUTURE_LIMIT_MS) {
+          throw new BadRequestError('before is in the future');
+        }
+        if (aheadMs > PURGE_CUTOFF_FUTURE_WARN_MS) {
+          this.logger.warn(
+            'Paid-result purge cutoff is ahead of this service clock',
+            { aheadMs },
+          );
+        }
+      }
+      if (beforeQuery === undefined) {
+        await adapter.deleteTree(root);
+      } else {
+        // A purge that started at this instant removes only what existed then: a late DELETE (its caller lost its
+        // lease and a newer one has stored results since) leaves the newer objects alone.
+        await this.deletePaidResultsOlderThan(
+          adapter,
+          root,
+          Number(beforeQuery),
+        );
+      }
       res.status(HTTP_STATUS.OK).json({ purged: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes the objects under `root` last written before `before` (ms). Object versions are not read: a store's
+   * write time is its own clock (whole seconds on S3 and Azure), so the caller passes an instant a margin earlier
+   * than its purge started. An object overwritten between the listing and the delete is the one gap (a conditional
+   * delete on the listed etag would close it, which the storage adapters do not offer yet).
+   */
+  private async deletePaidResultsOlderThan(
+    adapter: StorageServiceAdapter,
+    root: string,
+    before: number,
+  ): Promise<void> {
+    let after: string | undefined;
+    for (;;) {
+      const page = await adapter.listObjects(`${root}/`, {
+        after,
+        limit: PAID_RESULT_LIST_PAGE,
+      });
+      const doomed = page.objects
+        .filter(
+          (o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before,
+        )
+        .map((o) => o.key);
+      if (doomed.length > 0) {
+        await adapter.deleteObjects(doomed);
+      }
+      if (page.next === undefined) return;
+      after = page.next;
+    }
+  }
+
+  /**
+   * The store's current time, as a cutoff for a purge that follows: a sentinel object is written to the record's folder
+   * and its last-modified stamp (the object store's own clock, the one every stored result carries) is read back, so no
+   * clock of the caller or of this service decides which objects a purge may remove. The sentinel is deleted again.
+   */
+  async paidResultsPurgeCutoff(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const adapter = await this.initializeStorageAdapter(req);
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // A folder of its own, so the lookup never depends on how many other sentinels a crash left beside it.
+      const folder = `${root}/${PURGE_CUTOFF_FOLDER}/${randomUUID()}/`;
+      const key = `${folder}stamp.json`;
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('{}'),
+        documentPath: key,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      let cutoff: number;
+      try {
+        const page = await adapter.listObjects(folder, {
+          limit: PAID_RESULT_LIST_PAGE,
+        });
+        const written = page.objects.find((o) => o.key === key);
+        // A stamp that is not a positive number (an S3 object listed without LastModified reads as 0) is no stamp.
+        if (written === undefined || !(written.lastModifiedMs > 0)) {
+          throw new ServiceUnavailableError(
+            'The store did not stamp the cutoff',
+          );
+        }
+        cutoff = written.lastModifiedMs;
+      } finally {
+        await adapter.deleteObjects([key]).catch(() => undefined);
+      }
+      res.status(HTTP_STATUS.OK).json({ cutoff });
     } catch (error) {
       next(error);
     }

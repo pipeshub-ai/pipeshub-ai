@@ -537,6 +537,29 @@ describe('UserAccountController sign-in flow', () => {
         (jwt.verify(String(res.body?.accessToken), JWT_SECRET) as TokenClaims).userId,
       ).to.equal(alice._id);
     });
+
+    it("signs Alice in when step two is her Google account sent as Google's { credential } response", async () => {
+      await givePassword(alice);
+      configService.getConfig.resolves({ data: { clientId: 'google-client' } });
+      const token = await initAuth([['password'], ['google']]);
+      await authenticate(token, {
+        method: 'password',
+        credentials: { password: PASSWORD },
+      });
+      const verify = googleSignsInAs(alice.email);
+
+      const { res, error } = await authenticate(token, {
+        method: 'google',
+        credentials: { credential: 'alice-google-id-token', select_by: 'btn' },
+      });
+
+      expect(error).to.be.undefined;
+      expect(res.body?.message).to.equal('Fully authenticated');
+      expect(verify.args.map((a) => a[0])).to.deep.equal([
+        'alice-google-id-token',
+        'alice-google-id-token',
+      ]);
+    });
   });
 
   describe('a sign-in code works only once', () => {
