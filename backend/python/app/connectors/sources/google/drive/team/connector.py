@@ -212,6 +212,8 @@ FOLDER_FILTER_SYNC_POINT_KEY = "folder_filter"
 FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 # Shared drives this connector has synced, kept so a drive deleted from Workspace can be removed.
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
+# Shared drives users reach that the admin listing lacks (another organization's), with the users who reach them.
+FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY = "foreign_shared_drives"
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
 # Stored beside the member groups' digests: the drive's direct members, whom a members-only drive's grants depend on.
 DRIVE_DIRECT_MEMBERS_MARK = "drive-members"
@@ -648,6 +650,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
         # Per (user, folder), this run: the folder's sharing as that user reads it, None when unreadable.
         self._parent_grant_cache: dict[tuple[str, str], list[dict] | None] = {}
+        # User syncs run concurrently and each rewrites the stored foreign-drive membership.
+        self._foreign_drives_lock = asyncio.Lock()
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
         self._hidden_groups: dict[str, set[str]] = {}
@@ -6159,6 +6163,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # another user's individual grant into it. Unfiltered on purpose, so a drive
             # excluded by the DRIVE_IDS filter is not pulled back in this way either.
             user_drives = await self._list_user_shared_drives(user_drive_data_source)
+            await self._note_foreign_drives_reached(user, user_drives)
             member_drive_ids = {
                 member_drive_id
                 for drive in user_drives
@@ -6920,6 +6925,71 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.logger.info(
             f"✅ Synced {total_files} shared with me item(s) for user {user.email}"
         )
+
+    async def _note_foreign_drives_reached(self, user: AppUser, listed: list[dict]) -> None:
+        """Record which foreign shared drives this user reaches, from their complete drive listing.
+
+        The admin listing cannot see another organization's drive, so its record group never gets members and its
+        items, whose member access comes from that group, reach nobody. Each user who lists such a drive is a
+        member of its group; one who no longer lists it is removed, and a drive nobody reaches is deleted.
+        """
+        try:
+            await self._load_listed_shared_drives()
+        except _ItemReadFailed as e:
+            self.logger.warning(f"Foreign shared drives not updated for {user.email}: {e}")
+            return
+        email = (user.email or "").lower()
+        if not email:
+            return
+        reached = {
+            drive["id"]: drive.get("name") or drive["id"]
+            for drive in listed
+            if drive.get("id") and drive["id"] not in self._listed_shared_drive_ids
+            and self._pass_drive_ids_filter(drive["id"])
+        }
+        async with self._foreign_drives_lock:
+            stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
+            drives = {
+                drive_id: {"name": entry.get("name") or drive_id, "members": list(entry.get("members") or [])}
+                for drive_id, entry in (stored.get("drives") or {}).items()
+                # A drive the admin listing now has is synced, and removed, by the admin path.
+                if drive_id not in self._listed_shared_drive_ids
+            }
+            changed: set[str] = set()
+            for drive_id, name in reached.items():
+                entry = drives.setdefault(drive_id, {"name": name, "members": []})
+                if email not in entry["members"] or entry["name"] != name:
+                    entry["members"] = sorted({*entry["members"], email})
+                    entry["name"] = name
+                    changed.add(drive_id)
+            for drive_id, entry in drives.items():
+                if drive_id not in reached and email in entry["members"]:
+                    entry["members"].remove(email)
+                    changed.add(drive_id)
+            for drive_id in sorted(changed):
+                entry = drives[drive_id]
+                if entry["members"]:
+                    group = RecordGroup(
+                        name=entry["name"],
+                        org_id=self.data_entities_processor.org_id,
+                        external_group_id=drive_id,
+                        description="Shared Drive",
+                        connector_name=self.connector_name,
+                        connector_id=self.connector_id,
+                        group_type=RecordGroupType.DRIVE,
+                    )
+                    grants = [
+                        Permission(email=m, type=PermissionType.READ, entity_type=EntityType.USER)
+                        for m in entry["members"]
+                    ]
+                    await self.data_entities_processor.on_new_record_groups([(group, grants)])
+                elif await delete_shared_drive_records(
+                    self.data_entities_processor, self.connector_id, drive_id, self.logger
+                ):
+                    del drives[drive_id]
+            await self.drive_delta_sync_point.update_sync_point(
+                FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": drives}
+            )
 
     async def _list_user_shared_drives(
         self, user_drive_data_source: GoogleDriveDataSource

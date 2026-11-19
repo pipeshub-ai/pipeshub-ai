@@ -1,5 +1,6 @@
 """Tests for GoogleDriveTeamConnector (app/connectors/sources/google/drive/team/connector.py)."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1061,3 +1062,134 @@ class TestTeamDriveItemSharedWith:
 
         assert result.record.owners[0].email == "test@ext.test"
         assert result.record.authored_by is not None and result.record.authored_by.email == "test@ext.test"
+
+
+class TestForeignSharedDrive:
+    """A shared drive a user reaches that the domain's admin listing does not have (another organization's)."""
+
+    FOREIGN = {"id": "0APG", "name": "Untitled shared drive"}
+
+    @staticmethod
+    def _store(connector) -> dict:
+        state: dict = {}
+
+        async def read(key):
+            return state.get(key)
+
+        async def update(key, value):
+            state[key] = value
+
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(side_effect=read)
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock(side_effect=update)
+        connector._shared_drives_listed = True
+        connector._listed_shared_drive_ids = {"own-drive"}
+        return state
+
+    @staticmethod
+    def _user(email: str) -> AppUser:
+        return AppUser(app_name=Connectors.GOOGLE_DRIVE_WORKSPACE, connector_id="conn-1", source_user_id=email,
+                       org_id="org-123", email=email, full_name=email, is_active=True)
+
+    @staticmethod
+    def _last_group_write(connector) -> tuple:
+        (pairs,), _ = connector.data_entities_processor.on_new_record_groups.await_args
+        group, permissions = pairs[0]
+        return group, sorted(p.email for p in permissions)
+
+    def test_a_member_only_grant_on_a_shared_drive_item_is_not_stored_on_the_item(self) -> None:
+        """Why the files were unreachable: their members' access is meant to come from the drive's group."""
+        from app.connectors.sources.google.drive.team.drive_access import grants_to_store
+
+        member = Permission(email="v@example.com", type=PermissionType.READ, entity_type=EntityType.USER)
+
+        assert grants_to_store([member], [], saw_permission_details=True, inherited_permissions_disabled=False,
+                               is_drive=False) == []
+
+    async def test_a_drive_only_the_user_lists_gets_its_name_and_the_user(self, connector) -> None:
+        self._store(connector)
+
+        await connector._note_foreign_drives_reached(self._user("v@example.com"), [self.FOREIGN, {"id": "own-drive"}])
+
+        group, members = self._last_group_write(connector)
+        assert group.external_group_id == "0APG"
+        assert group.name == "Untitled shared drive"
+        assert group.group_type == RecordGroupType.DRIVE
+        assert members == ["v@example.com"]
+        connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+    async def test_a_user_who_leaves_loses_only_their_grant(self, connector) -> None:
+        self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        assert self._last_group_write(connector)[1] == ["b@example.com"]
+
+    async def test_the_last_member_leaving_deletes_the_drive(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.delete_shared_drive_records",
+            new=AsyncMock(return_value=True),
+        ) as delete:
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        delete.assert_awaited_once()
+        assert delete.await_args.args[2] == "0APG"
+        assert state["foreign_shared_drives"]["drives"] == {}
+
+    async def test_a_drive_whose_delete_fails_is_kept_for_next_run(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.delete_shared_drive_records",
+            new=AsyncMock(return_value=False),
+        ):
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        assert "0APG" in state["foreign_shared_drives"]["drives"]
+
+    async def test_concurrent_user_syncs_keep_both_members(self, connector) -> None:
+        state = self._store(connector)
+        read = connector.drive_delta_sync_point.read_sync_point.side_effect
+
+        async def slow_read(key):
+            value = await read(key)
+            await asyncio.sleep(0)
+            return value
+
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(side_effect=slow_read)
+
+        await asyncio.gather(
+            connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN]),
+            connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN]),
+        )
+
+        assert sorted(state["foreign_shared_drives"]["drives"]["0APG"]["members"]) == ["a@example.com", "b@example.com"]
+
+    async def test_an_admin_listed_drive_is_never_treated_as_foreign(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        connector._listed_shared_drive_ids = {"own-drive", "0APG"}
+        connector.data_entities_processor.on_new_record_groups.reset_mock()
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.delete_shared_drive_records", new=AsyncMock()
+        ) as delete:
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        delete.assert_not_awaited()
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        assert state["foreign_shared_drives"]["drives"] == {}
+
+    async def test_an_unchanged_membership_writes_nothing(self, connector) -> None:
+        self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        connector.data_entities_processor.on_new_record_groups.reset_mock()
+
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
