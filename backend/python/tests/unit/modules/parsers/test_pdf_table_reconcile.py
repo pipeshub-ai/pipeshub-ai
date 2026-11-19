@@ -517,3 +517,53 @@ def test_a_table_boxed_in_two_parts_is_one_ruled_table_and_not_cut(monkeypatch) 
         assert next(d for d in ds if d.kind != "ruled").reason == "ruled table used by another box"
     finally:
         pdf.close()
+
+
+def _shaded_by_line(c: canvas.Canvas) -> None:
+    """Two records; the key cell spans each record, the right column carries a rule under every text line."""
+    xs = [60.0, 160.0, 420.0]
+    c.setLineWidth(0.6)
+    ys = [300.0, 320.0, 380.0, 440.0]
+    for y in ys:
+        c.line(xs[0], top(y), xs[2], top(y))
+    for x in xs:
+        c.line(x, top(ys[0]), x, top(ys[-1]))
+    c.setFont("Helvetica", 8)
+    c.drawString(64, top(313), "Tasks")
+    c.drawString(164, top(313), "Outcomes")
+    for rec, (y0, key) in enumerate(((320.0, "TASK I-1"), (380.0, "TASK I-2"))):
+        c.drawString(64, top(y0 + 12), key)
+        for i in range(5):
+            y = y0 + 12 * (i + 1)
+            c.drawString(164, top(y - 2), f"Outcome line {i} of record {rec}")
+            if i < 4:
+                c.line(xs[1], top(y), xs[2], top(y))
+
+
+def test_a_table_shaded_line_by_line_is_read_with_its_real_rows(monkeypatch) -> None:
+    pdf, page = page_of(_shaded_by_line)
+    try:
+        assert len(page.find_tables()[0].rows) > 6  # the finder sees a row at every line
+        ts = tables(regions(page, [mbox((60, 300, 420, 440))], "evidence", monkeypatch))
+        assert len(ts) == 1
+        g = ts[0].table_grid
+        assert [len(r) for r in g] == [2, 2, 2]
+        assert g[1][0].startswith("TASK I-1") and "record 0" in g[1][1] and "record 1" not in g[1][1]
+        assert g[2][0].startswith("TASK I-2") and "Outcome line 4 of record 1" in g[2][1]
+    finally:
+        pdf.close()
+
+
+def test_a_table_with_one_stray_row_edge_is_not_redrawn(monkeypatch) -> None:
+    def draw(c: canvas.Canvas) -> None:
+        grid_table(c, 60, 300, XS, ROWS[:4])
+        c.line(160, top(310), 240, top(310))  # one short rule inside a cell
+
+    pdf, page = page_of(draw)
+    try:
+        t = page.find_tables()[0]
+        ws = page.extract_words()
+        h, v = tr.page_rules(page)
+        assert tr.drawn_rows_and_columns(t, ws, h, v) is None
+    finally:
+        pdf.close()

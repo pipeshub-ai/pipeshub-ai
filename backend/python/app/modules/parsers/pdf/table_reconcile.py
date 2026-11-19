@@ -52,6 +52,10 @@ SNAP = 3.0  # rules closer than this are one rule (pdfplumber's snap distance), 
 COVERAGE_MIN = 0.9  # share of the characters in a ruled table its grid must keep
 XCROSS_MAX = 0.25  # share of row/column pairs whose text may cross an undrawn cut
 RULE_MIN_LEN = 5.0  # shorter rules are not row or column rules, pt
+FULL_ROW_RULE = 0.9  # a rule that ends a record of a shaded table runs the table's width (a line-level rule in one column does not)
+FRAGMENT_MIN_ROWS = 3  # row edges that are no row rule before a table counts as shaded line by line
+FRAGMENT_SHARE = 0.4  # ... and their share of the finder's rows
+COLUMN_RULE_COVER = 0.6  # a column rule runs this share of the table's height
 ROW_RULE_COVER = 0.6  # a row rule's segments cover this share of the extent's width
 SEGMENT_GAP = 1.5  # a gap wider than this many line heights splits a line into segments
 LIST_SHARE = 0.6  # share of lines that open with a bullet or an enumerator for a list
@@ -73,6 +77,8 @@ NOTES = re.compile(r"^\s*(NOTES?\s*:?|\d+\.\s|\*|[†‡§])", re.I)
 DOTS = re.compile(r"\.{4,}|(\. ){3,}")
 PAGENO = re.compile(r"^[A-Z]{0,3}-?\d{1,4}$")
 TAG = re.compile(r"^[A-Z][A-Z0-9_]{1,11}$")
+
+Rule = tuple[float, float, float]  # a horizontal rule (y, x0, x1) or a vertical rule (x, y0, y1)
 
 _warned: set[str] = set()
 
@@ -143,7 +149,7 @@ def _merge(segs: list[list[float]]) -> list[list[float]]:
     return out
 
 
-def page_rules(page: Page) -> tuple[list[list[float]], list[list[float]]]:
+def page_rules(page: Page) -> tuple[list[Rule], list[Rule]]:
     """Horizontal rules ``[y, x0, x1]`` and vertical rules ``[x, y0, y1]`` the page draws, merged."""
     hs: list[list[float]] = []
     vs: list[list[float]] = []
@@ -153,12 +159,12 @@ def page_rules(page: Page) -> tuple[list[list[float]], list[list[float]]]:
             hs.append([(t + b) / 2, x0, x1])
         elif e.get("orientation") == "v" and b - t >= RULE_MIN_LEN:
             vs.append([(x0 + x1) / 2, t, b])
-    return _merge(hs), _merge(vs)
+    return [(p, a, b) for p, a, b in _merge(hs)], [(p, a, b) for p, a, b in _merge(vs)]
 
 
 def row_rules(
-    box: tuple[float, float, float, float], hrules: Sequence[Sequence[float]],
-    words: list[dict[str, Any]] | None = None,
+    box: tuple[float, float, float, float], hrules: Sequence[Rule],
+    words: list[dict[str, Any]] | None = None, cover: float = ROW_RULE_COVER,
 ) -> list[float]:
     """Heights of the row rules in ``box``: at one height the union of rule segments covers
     ``ROW_RULE_COVER`` of the box's width. A gap in the union is allowed only over a column
@@ -182,7 +188,7 @@ def row_rules(
                 union[-1][1] = max(union[-1][1], b)
             else:
                 union.append([a, b])
-        if sum(b - a for a, b in union) < ROW_RULE_COVER * width:
+        if sum(b - a for a, b in union) < cover * width:
             continue
         if words is not None and len(union) > 1:
             gaps = [(union[i][1], union[i + 1][0]) for i in range(len(union) - 1)]
@@ -193,7 +199,7 @@ def row_rules(
     return out
 
 
-def column_rule_at(x: float, y0: float, y1: float, vrules: Sequence[Sequence[float]]) -> bool:
+def column_rule_at(x: float, y0: float, y1: float, vrules: Sequence[Rule]) -> bool:
     """A vertical rule at ``x`` covers the height from ``y0`` to ``y1``."""
     return any(abs(p - x) <= SNAP and a <= y0 + 1 and b >= y1 - 1 for p, a, b in vrules)
 
@@ -254,7 +260,7 @@ def is_margin_prose(lines: list[dict[str, Any]]) -> bool:
 
 
 def extent_by_rules(
-    box: tuple[float, float, float, float], words: list[dict[str, Any]], hrules: Sequence[Sequence[float]],
+    box: tuple[float, float, float, float], words: list[dict[str, Any]], hrules: Sequence[Rule],
 ) -> tuple[tuple[float, float, float, float], list[float]]:
     """When ``box`` holds three or more row rules, the extent is the rule range plus the contiguous
     column-aligned lines above the first and below the last rule (prose around a ruled table is
@@ -302,7 +308,7 @@ def _row_boxes(t: Table) -> list[tuple[float, float]]:
 
 
 def undrawn_cut_crossings(
-    t: Table, words: list[dict[str, Any]], vrules: Sequence[Sequence[float]],
+    t: Table, words: list[dict[str, Any]], vrules: Sequence[Rule],
 ) -> float:
     """Share of (line, cut) pairs in the body rows where the text runs into the cut without a drawn
     rule: a word crosses it, or the gap across it is under 0.6 line heights."""
@@ -400,13 +406,55 @@ def _trailing_rows_cut(
     return [g for g, r in zip(grid, row_of) if r < keep], top_cut, notes
 
 
+def drawn_rows_and_columns(
+    t: Table, own: list[dict[str, Any]], hrules: Sequence[Rule], vrules: Sequence[Rule],
+) -> Table | None:
+    """The ruled table as its page really draws it, or None when the finder's table is already that.
+
+    A table shaded line by line (a filled box per text line in one column) gives the finder a row edge at
+    every line, so one record becomes many rows. The rows are the heights at which a rule crosses the table
+    (``row_rules`` at ``FULL_ROW_RULE``); the columns are the vertical rules that run most of its height.
+    When at least ``FRAGMENT_MIN_ROWS`` of the finder's row edges, and ``FRAGMENT_SHARE`` of them, are no
+    row rule, the table is read again with exactly those rows and columns."""
+    lb = _bbox(t)
+    ys = row_rules(lb, hrules, own, FULL_ROW_RULE)
+    tops = sorted({round(min(c[1] for c in r.cells if c is not None), 1) for r in t.rows})
+    stray = [top for top in tops if not any(abs(y - top) <= SNAP for y in ys)]
+    if len(ys) < 2 or len(stray) < FRAGMENT_MIN_ROWS or len(stray) < FRAGMENT_SHARE * len(tops):
+        return None
+    height = lb[3] - lb[1]
+    xs = sorted({round(x, 1) for x, a, b in vrules if lb[0] - SNAP <= x <= lb[2] + SNAP and min(b, lb[3]) - max(a, lb[1]) >= COLUMN_RULE_COVER * height})
+    cols = [x for i, x in enumerate(xs) if i == 0 or x - xs[i - 1] > SNAP]
+    if len(cols) < 3:
+        return None
+    rows = [y for i, y in enumerate(ys) if i == 0 or y - ys[i - 1] > SNAP]
+    if abs(rows[0] - lb[1]) > SNAP:
+        rows.insert(0, lb[1])
+    if abs(rows[-1] - lb[3]) > SNAP:
+        rows.append(lb[3])
+    settings = {
+        "vertical_strategy": "explicit", "horizontal_strategy": "explicit",
+        "explicit_vertical_lines": cols, "explicit_horizontal_lines": rows,
+    }
+    try:
+        found = t.page.find_tables(settings)
+    except Exception:
+        return None
+    return max(found, key=lambda f: ola._iou(_bbox(f), lb), default=None)
+
+
 def ruled_table(
-    t: Table, words: list[dict[str, Any]], vrules: Sequence[Sequence[float]], box: tuple[float, float, float, float],
-    others: Sequence[tuple[float, float, float, float]] = (),
+    t: Table, words: list[dict[str, Any]], vrules: Sequence[Rule], box: tuple[float, float, float, float],
+    others: Sequence[tuple[float, float, float, float]] = (), hrules: Sequence[Rule] = (),
 ) -> tuple[ola.LayoutRegion | None, list[str], str]:
     """Tier 1: the ruled table ``t`` as a region, or ``None`` and why not."""
     lb = _bbox(t)
     own = [w for w in words if _in_box(w, lb)]
+    redrawn = drawn_rows_and_columns(t, own, hrules, vrules) if hrules else None
+    if redrawn is not None:
+        region, notes, why = ruled_table(redrawn, words, vrules, box, others)
+        if region is not None:
+            return region, notes, why
     row_of: list[int] = []
     try:
         grid = ola._table_grid_by_words(t, split_rows=True, row_of=row_of)
@@ -438,14 +486,16 @@ def ruled_table(
 
 def decide_box(
     box: tuple[float, float, float, float], words: list[dict[str, Any]],
-    lattices: list[Table], hrules: Sequence[Sequence[float]], vrules: Sequence[Sequence[float]],
+    lattices: list[Table], hrules: Sequence[Rule], vrules: Sequence[Rule],
     others: Sequence[tuple[float, float, float, float]] = (), claimed: set[int] | None = None,
 ) -> Decision:
     """What the model box ``box`` holds (module docstring)."""
     claimed = claimed if claimed is not None else set()
+    # a ruled table inside another one (a shaded cell the finder boxes) is part of that table, not a second table
+    lattices = [t for t in lattices if not any(o is not t and ola._overlap_ratio(_bbox(t), _bbox(o)) >= GROUP_INSIDE and ola._overlap_ratio(_bbox(o), _bbox(t)) < GROUP_INSIDE for o in lattices)]
     inside = [t for t in lattices if ola._overlap_ratio(_bbox(t), box) >= GROUP_INSIDE]
     if len(inside) >= 2:
-        parts = [ruled_table(t, words, vrules, _bbox(t)) for t in inside]
+        parts = [ruled_table(t, words, vrules, _bbox(t), (), hrules) for t in inside]
         if all(r is not None for r, _, _ in parts):
             claimed.update(id(t) for t in inside)
             return Decision(
@@ -462,7 +512,7 @@ def decide_box(
             continue
         if is_sub_area(t, box, words):
             return Decision(box, "none", reason="partial lattice")
-        region, notes, why = ruled_table(t, words, vrules, box, others)
+        region, notes, why = ruled_table(t, words, vrules, box, others, hrules)
         if region is not None:
             claimed.add(id(t))
             return Decision(box, "ruled", [region], footnotes=notes)
