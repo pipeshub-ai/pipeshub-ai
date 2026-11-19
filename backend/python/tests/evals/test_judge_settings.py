@@ -22,7 +22,7 @@ ALL_VARS = (
     "JUDGE_FOUNDRY_RESOURCE", "JUDGE_PROVIDER", "JUDGE_MODEL", "JUDGE_API_KEY", "JUDGE_AZURE_ENDPOINT", "JUDGE_AZURE_DEPLOYMENT",
     "JUDGE_AZURE_API_VERSION", "EVAL_PROVIDER", "EVAL_MODEL", "TEST_AZURE_OPENAI_API_KEY",
     "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "TEST_AZURE_OPENAI_MODEL",
-    "TEST_OPENAI_API_KEY", "TEST_ANTHROPIC_API_KEY",
+    "TEST_OPENAI_API_KEY", "TEST_ANTHROPIC_API_KEY", "TEST_AI_MODEL_PROVIDER", "TEST_OPENAI_LLM_MODEL",
 )
 
 ANSWERING_MODEL = {
@@ -260,3 +260,28 @@ def test_a_foundry_resource_name_is_accepted_in_any_case(monkeypatch: pytest.Mon
     _set(monkeypatch, FOUNDRY_JUDGE | {"JUDGE_FOUNDRY_RESOURCE": " Claude-Res2 "})
     judge_model_from_env()
     assert built[0]["resource"] == "claude-res2"
+
+
+@pytest.mark.parametrize(("run_provider", "expected"), [("openAI", "openai"), ("azureOpenAI", "azure_openai")])
+def test_the_judge_follows_the_run_s_provider_with_both_keys_set(
+    monkeypatch: pytest.MonkeyPatch, built: list[dict], run_provider: str, expected: str
+) -> None:
+    """CI passes both providers' keys; TEST_AI_MODEL_PROVIDER alone decides."""
+    _set(monkeypatch, ANSWERING_MODEL | {"TEST_OPENAI_API_KEY": "openai-key", "TEST_AI_MODEL_PROVIDER": run_provider})
+    judge = judge_model_from_env()
+    assert not judge.dedicated and judge.provider == expected
+    assert built[0]["api_key"] == ("openai-key" if expected == "openai" else "answer-key")
+
+
+@pytest.mark.parametrize(
+    ("run_provider", "expected"),
+    [("openAI", "openai"), ("azureOpenAI", "azure_openai"), ("openai", "openai"), ("AzureOpenAI", "azure_openai")],
+)
+def test_the_eval_model_follows_the_run_s_provider(
+    monkeypatch: pytest.MonkeyPatch, built: list[dict], run_provider: str, expected: str
+) -> None:
+    """With no EVAL_PROVIDER, resolve_model uses the run's provider (case aside)."""
+    _set(monkeypatch, ANSWERING_MODEL | {"TEST_OPENAI_API_KEY": "openai-key", "TEST_AI_MODEL_PROVIDER": run_provider})
+    provider, _, key = chat_models.resolve_model()
+    assert provider == expected
+    assert key == ("openai-key" if expected == "openai" else "answer-key")

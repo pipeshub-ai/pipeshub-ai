@@ -110,6 +110,7 @@ from app.edition_config import (
     strip_redacted_fields,
     vector_store_rebuild_available,
 )
+from app.connectors.api.connector_stats_cache import connector_stats
 from app.edition_services import get_data_entities_processor_cls
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
@@ -3000,8 +3001,7 @@ async def get_connector_stats_endpoint(
             request, graph_provider, connector_registry, connector_id, org_id
         )
 
-        # Fetch stats from graph provider
-        result = await graph_provider.get_connector_stats(org_id, connector_id)
+        result = await connector_stats(graph_provider, org_id, connector_id)
         if result["success"]:
              return {"success": True, "data": result["data"]}
         else:

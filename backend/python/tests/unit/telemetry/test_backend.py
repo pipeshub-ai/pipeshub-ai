@@ -126,3 +126,33 @@ class TestRegistryIsolation:
 
     def test_module_level_singleton_is_a_metrics_backend(self):
         assert isinstance(METRICS_BACKEND, MetricsBackend)
+
+
+class TestLabelessInstruments:
+    """An instrument declared with no labels is written without any (``labels()`` of an empty tuple is refused)."""
+
+    def test_a_counter_with_no_labels_counts(self) -> None:
+        backend = PrometheusBackend()
+        counter = backend.counter("t_plain_counter", "help", [])
+
+        counter.inc()
+        counter.inc(value=2)
+
+        assert "t_plain_counter_total 3.0" in backend.serialize()
+
+    def test_a_gauge_with_no_labels_sets(self) -> None:
+        backend = PrometheusBackend()
+        gauge = backend.gauge("t_plain_gauge", "help", [])
+
+        gauge.set(value=4)
+
+        assert "t_plain_gauge 4.0" in backend.serialize()
+
+    def test_a_histogram_with_no_labels_observes(self) -> None:
+        backend = PrometheusBackend()
+        histogram = backend.histogram("t_plain_hist", "help", [], [1.0, 5.0])
+
+        histogram.observe(value=2)
+
+        text = backend.serialize()
+        assert "t_plain_hist_count 1.0" in text and 't_plain_hist_bucket{le="5.0"} 1.0' in text
