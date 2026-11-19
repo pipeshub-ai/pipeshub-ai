@@ -67,21 +67,65 @@ def test_the_postgres_statements_carry_the_shared_fragment_verbatim() -> None:
 
 @pytest.mark.asyncio
 async def test_the_postgres_broker_needs_the_operators_statement_and_no_older_claimant(monkeypatch) -> None:
+    """Each refusal says why (the counter label), so a test that only saw a refusal could not tell the operator's statement from a failed read."""
     from unittest.mock import AsyncMock, patch
 
     from app.services.messaging.config import MessageBrokerType
 
+    reasons: list[str] = []
+    monkeypatch.setattr(keep_old_copy.swap_refusals, "inc", lambda reason: reasons.append(reason))
     monkeypatch.setenv(keep_old_copy.ENV_ENABLED, "on")
     monkeypatch.setattr("app.services.messaging.config.get_message_broker_type", lambda: MessageBrokerType.POSTGRES)
+    monkeypatch.setattr("app.services.messaging.membership.groups_to_check", lambda: {"records_consumer_group": ["record-events"]})
     monkeypatch.delenv(keep_old_copy.ENV_PG_BROKER_CONFIRMED, raising=False)
-    assert not await keep_old_copy.swap_allowed(None)  # no statement: refused
+    assert not await keep_old_copy.swap_allowed(None)
+    assert reasons == ["pg_broker_unconfirmed"]  # no statement: refused, before any claim is read
     monkeypatch.setenv(keep_old_copy.ENV_PG_BROKER_CONFIRMED, "on")
-    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(return_value=["old-pod"])):
-        assert not await keep_old_copy.swap_allowed(None)  # a working older pod: refused
+    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(return_value=["old-pod"])) as claimants:
+        assert not await keep_old_copy.swap_allowed(None)
+    claimants.assert_awaited_once()
+    assert claimants.await_args.args[1] == ["records_consumer_group"]  # only the indexing groups are asked about
+    assert reasons[-1] == "older_consumer"
     with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(side_effect=RuntimeError("down"))):
-        assert not await keep_old_copy.swap_allowed(None)  # unknown: refused
+        assert not await keep_old_copy.swap_allowed(None)
+    assert reasons[-1] == "pg_broker_unreadable"
     with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(return_value=[])):
         assert await keep_old_copy.swap_allowed(None)
+    monkeypatch.setattr("app.services.messaging.membership.groups_to_check", lambda: {})
+    assert not await keep_old_copy.swap_allowed(None)
+    assert reasons[-1] == "indexing_groups_unknown"
+
+
+@pytest.mark.asyncio
+async def test_the_swap_asks_for_the_strict_verdict_that_counts_idle_consumers(monkeypatch) -> None:
+    """A lenient verdict (idle consumers not counted) must not stand in for the strict one."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.services.messaging.membership import MembershipVerdict
+
+    monkeypatch.setenv(keep_old_copy.ENV_ENABLED, "on")
+    monkeypatch.setattr("app.services.messaging.config.get_message_broker_type", lambda: __import__("app.services.messaging.config", fromlist=["x"]).MessageBrokerType.REDIS)
+    reader = MagicMock()
+    reader.verdict = AsyncMock(return_value=MembershipVerdict(True))  # what a lenient check would say
+    reader.strict_verdict = AsyncMock(return_value=MembershipVerdict(False, ("idle-old-pod",), "untagged"))
+    monkeypatch.setattr("app.services.messaging.membership.reader_for", lambda _c: reader)
+    assert not await keep_old_copy.swap_allowed(MagicMock())
+    reader.strict_verdict.assert_awaited_once()
+    reader.verdict.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_membership_publisher_measures_idle_consumers_too() -> None:
+    """The publisher of ``indexing_main`` passes a second check that counts every consumer as live, and its entry carries the result."""
+    import inspect
+
+    from app import indexing_main
+    from app.services.messaging import membership
+
+    source = inspect.getsource(indexing_main.run_membership_publisher)
+    assert "check_any=check_any" in source and "idle_live_ms=None" in source
+    sig = inspect.signature(membership.MembershipPublisher.__init__)
+    assert "check_any" in sig.parameters
 
 
 @pytest.mark.asyncio
@@ -149,3 +193,19 @@ async def test_a_record_failing_for_good_releases_its_pending_copy_through_the_h
     swap.release_failed = AsyncMock(side_effect=RuntimeError("down"))
     await handler._release_pending_copy("r1", "o1")  # logged, never raised: the orphan sweep reclaims the copy
     handler.logger.warning.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_the_publisher_writes_what_the_idle_inclusive_check_found() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.services.messaging.membership import MembershipPublisher
+
+    put = AsyncMock()
+    publisher = MembershipPublisher(
+        MagicMock(), AsyncMock(return_value=[]), put, check_any=AsyncMock(return_value=["idle-old-pod"]),
+        groups=lambda: {"g": ["t"]}, expected=lambda: {"g": ["t"]},
+    )
+    await publisher.publish_once()
+    entry = put.await_args.args[1]
+    assert entry["untagged"] == [] and entry["untaggedAny"] == ["idle-old-pod"]

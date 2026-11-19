@@ -77,10 +77,15 @@ async def _postgres_broker_allowed() -> bool:
     if os.getenv(ENV_PG_BROKER_CONFIRMED, "off").strip().lower() not in {"1", "true", "yes", "on"}:
         return _refused("pg_broker_unconfirmed", f"set {ENV_PG_BROKER_CONFIRMED} once no older pod runs")
     try:
+        from app.services.messaging.membership import groups_to_check
         from app.services.messaging.postgres.queue import PgQueue
         from app.services.messaging.storage_protocol import STORAGE_PROTOCOL_TAG
 
-        untagged = await PgQueue().untagged_claimants(STORAGE_PROTOCOL_TAG)
+        groups = sorted(groups_to_check())
+        if not groups:
+            return _refused("indexing_groups_unknown", "this process has not declared its consumer groups")
+        # only the indexing groups: a connector service's consumers never carry the tag and must not refuse the swap
+        untagged = await PgQueue().untagged_claimants(STORAGE_PROTOCOL_TAG, groups)
     except Exception as exc:
         return _refused("pg_broker_unreadable", type(exc).__name__)
     if untagged:
