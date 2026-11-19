@@ -125,7 +125,7 @@ class Report:
 
     def log_fields(self) -> dict[str, Any]:
         """Low-cardinality fields for a log line: no cell text."""
-        return {"q": None if self.q is None else round(self.q, 2), "would_route": self.would_route, "reasons": list(self.reasons)}
+        return {"q": None if self.q is None else round(self.q, 2), "would_route": self.would_route, "reasons": list(self.reasons), "hard_fail": list(self.hard_fail)}
 
 
 # --- numbers --------------------------------------------------------------------------------------------------
@@ -154,6 +154,11 @@ def parse_number(text: str) -> float | None:
     except ValueError:
         return None
     return -v if neg else v
+
+
+def _is_symbol(t: Token) -> bool:
+    """A currency sign or bracket on its own: it sits beside its number in one cell, with a gap, by design."""
+    return t.text in LEFT_SYMBOLS | RIGHT_SYMBOLS
 
 
 def _numeric_token(t: Token) -> bool:
@@ -422,7 +427,7 @@ def _unsplit_columns(topo: Topology, g: dict[tuple[int, int], list[Token]], hrow
             continue
         for ln in _lines(ts):
             for u, v in zip(ln, ln[1:]):
-                if v.x0 - u.x1 >= GAP_UNSPLIT_H * h and _numeric_token(u) and _numeric_token(v):
+                if v.x0 - u.x1 >= GAP_UNSPLIT_H * h and _numeric_token(u) and _numeric_token(v) and not _is_symbol(u) and not _is_symbol(v):
                     gaps.setdefault((r, c), []).append((u.x1, v.x0))
     n = 0
     for (r, c), gs in gaps.items():

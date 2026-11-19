@@ -309,7 +309,7 @@ def test_replacement_rules() -> None:
 def test_log_fields_have_no_cell_text() -> None:
     words, topo, *_ = build(4)
     out = H.evaluate(words, topo).log_fields()
-    assert set(out) == {"q", "would_route", "reasons"}
+    assert set(out) == {"q", "would_route", "reasons", "hard_fail"}
 
 
 # --- shadow wiring --------------------------------------------------------------------------------------------
@@ -332,7 +332,7 @@ def test_shadow_carries_report_and_emitted_tables_equal_legacy(monkeypatch) -> N
         assert key(legacy) == key(shadow)
         assert all(r.table_hybrid is None for r in legacy)
         tabs = [r for r in shadow if r.type == R.LayoutRegionType.TABLE]
-        assert tabs and all(set(r.table_hybrid) == {"q", "would_route", "reasons"} for r in tabs)
+        assert tabs and all(set(r.table_hybrid) == {"q", "would_route", "reasons", "hard_fail"} for r in tabs)
         # no cell text in what is carried or logged
         blob = repr([r.table_hybrid for r in tabs])
         assert "Meaning" not in blob and "Item" not in blob
@@ -349,7 +349,7 @@ def test_shadow_marks_a_grid_it_cannot_reread_as_q_unknown(monkeypatch) -> None:
         monkeypatch.setattr(tr, "legacy_candidate", lambda *a, **k: None)
         shadow = R.regions(page, [R.mbox(R.true_box())], "shadow", monkeypatch)
         tabs = [r for r in shadow if r.type == R.LayoutRegionType.TABLE]
-        assert tabs and all(r.table_hybrid == {"q": None, "would_route": True, "reasons": ["q_unknown"]} for r in tabs)
+        assert tabs and all(r.table_hybrid == {"q": None, "would_route": True, "reasons": ["q_unknown"], "hard_fail": []} for r in tabs)
     finally:
         pdf.close()
 
@@ -399,7 +399,7 @@ def test_parent_logs_one_low_cardinality_line_per_document(caplog) -> None:
 
     pages = [SimpleNamespace(regions=[
         region({"q": 0.4, "would_route": True, "reasons": ["low_q"]}),
-        region({"q": None, "would_route": True, "reasons": ["q_unknown"]}),
+        region({"q": None, "would_route": True, "reasons": ["q_unknown"], "hard_fail": []}),
         region({"q": 0.9, "would_route": False, "reasons": []}),
         region(None),
     ])]
@@ -443,3 +443,29 @@ def test_adapter_marks_column_spans_and_a_spanning_header_is_not_a_monotone_fail
     assert (span.c0, span.c1) == (0, 1)
     ws = [word("Group", 10, 1), word("a", 10, 11), word("b", 110, 11), word("c", 10, 21), word("d", 110, 21)]
     assert H.evaluate(ws, topo).hard_fail == []
+
+
+def _currency_table(bind: bool) -> tuple[list, H.Topology]:
+    """Every body row has a ``$`` at the cell's left edge and the number right-aligned: a wide gap, aligned down the column."""
+    ws = [word("Item", 5, 5), word("2025", 0, 5, right=190)]
+    rows = [(5 + 12 * i) for i in range(1, 6)]
+    for i, y in enumerate(rows):
+        ws += [word(f"row{i}", 5, y), word("$", 105, y), word(f"{300 + i}.5", 0, y, right=190)]
+    cells = [H.Cell(r, c, r, c, (c * 100, r * 12, c * 100 + 100, r * 12 + 12)) for r in range(7) for c in range(2)]
+    return ws, H.Topology(7, 2, cells)
+
+
+@pytest.mark.parametrize("bind", [True, False])
+def test_currency_sign_and_number_with_a_gap_in_one_cell_pass_the_gap_check(bind) -> None:
+    ws, topo = _currency_table(bind)
+    a = H.assign(H.prepare(ws, bind=bind), topo)
+    assert H.hard_checks(ws, topo, a) == []
+    assert "unsplit_columns" not in H.evaluate(ws, topo).hard_fail
+
+
+def test_two_numbers_with_an_aligned_gap_still_fail_the_gap_check() -> None:
+    ws, topo = _currency_table(True)
+    ws = [w for w in ws if w["text"] != "$"]
+    ws += [word("77", 105, 5 + 12 * i) for i in range(1, 6)]
+    a = H.assign(H.prepare(ws, bind=False), topo)
+    assert "unsplit_columns" in H.hard_checks(ws, topo, a)
