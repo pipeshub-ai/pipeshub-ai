@@ -116,7 +116,9 @@ Each difference is where legacy breaks the definition above and the split browse
 
 - **`legacy`** (the default): today's statement, byte for byte.
 - **`shadow`:** answers with legacy. For a sampled fraction of browses (`KH_BROWSE_SHADOW_SAMPLE`, default 0.1), it also runs the split browse in
-  a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids.
+  a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids. At most
+  `_KH_SHADOW_MAX_RUNNING` (2) comparisons run at once per process; a sampled browse past that is not compared, so shadow adds a bounded
+  load however busy the server is.
 - **`split`:** the split browse.
 
 Switch a deployment to `split` after shadow reports no differences over a representative period. The demo server first.

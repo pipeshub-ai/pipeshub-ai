@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Collection, Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Optional, override
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, override
 
 from fastapi import Request
 from neo4j.exceptions import ClientError, TransientError
@@ -21925,6 +21925,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return 0.1
         return min(max(value, 0.0), 1.0) if value == value else 0.1
 
+    # Shadow comparisons running at once in this process. A sampled browse past it is not compared, so shadow mode adds at
+    # most this many split browses to the database's load however busy the server is.
+    _KH_SHADOW_MAX_RUNNING = 2
+    # The loop keeps only a weak reference to a task: a comparison nothing holds can be collected before it finishes.
+    _kh_shadow_running: ClassVar[set[asyncio.Task]] = set()
+
+    def _kh_shadow_start(self, page: dict[str, Any], args: dict[str, Any]) -> asyncio.Task | None:
+        """Compare a sampled ``legacy`` page with ``split`` in a detached task: the viewer's page never waits for it."""
+        running = Neo4jProvider._kh_shadow_running
+        if random.random() >= self._kh_shadow_sample() or len(running) >= self._KH_SHADOW_MAX_RUNNING:
+            return None
+        task = spawn_in_request(self._kh_shadow_compare(copy.deepcopy(page), args), name="kh-browse-shadow")
+        running.add(task)
+
+        def finished(done: asyncio.Task) -> None:
+            running.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+        return task
+
     async def _kh_shadow_compare(self, legacy: dict[str, Any], args: dict[str, Any]) -> None:
         """The same page computed by ``split``, held to the page ``legacy`` answered with: the rows in order, their arrows and
         placeholder flags, the total and the counts. Only counts are logged (an id the split path listed could be one the viewer
@@ -23310,10 +23332,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             name_parents=name_parents,
         )
         page = self._kh_v3_with_cut(result, cut, resume, include_total=include_total)
-        if browse_mode == "shadow" and not flatten and transaction is None and random.random() < self._kh_shadow_sample():
-            # Detached: the viewer's page never waits for the comparison.
-            compare = spawn_in_request(self._kh_shadow_compare(copy.deepcopy(page), shadow_args), name="kh-browse-shadow")
-            compare.add_done_callback(lambda done: done.cancelled() or done.exception())
+        if browse_mode == "shadow" and not flatten and transaction is None:
+            self._kh_shadow_start(page, shadow_args)
         return page
 
     async def _kh_v3_name_matches(
