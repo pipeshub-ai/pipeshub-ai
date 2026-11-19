@@ -36,16 +36,28 @@ _RETRIABLE_HTTP_STATUS_CODES = frozenset({429, 502, 503, 504})
 _MAX_RETRY_DELAY_SECONDS = 30.0
 
 # What a provider says when the account has no credit left. OpenAI answers it with the same 429 as a rate limit
-# (``insufficient_quota``), Anthropic with a 400 ("credit balance is too low"). No wait fixes it, so it is never retried.
-# Deliberately narrow: Gemini words an ordinary per-minute limit as "You exceeded your current quota", which a wait
-# does fix.
-_QUOTA_EXHAUSTED_MARKERS = (
-    "insufficient_quota",
-    "credit_balance",
-    "credit balance is too low",
-    "billing_hard_limit_reached",
-    "billing_not_active",
-)
+# (code ``insufficient_quota``), Anthropic with a 400 whose message is "Your credit balance is too low ...". No wait
+# fixes it, so it is never retried. Deliberately narrow: Gemini words an ordinary per-minute limit as "You exceeded
+# your current quota", which a wait does fix.
+_QUOTA_EXHAUSTED_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached", "billing_not_active"})
+_QUOTA_EXHAUSTED_CODE_PREFIX = "credit_balance"
+_QUOTA_EXHAUSTED_MESSAGE = "credit balance is too low"
+
+
+def _says_quota_exhausted(exc: BaseException) -> bool:
+    """Whether the provider classified ``exc`` as an empty balance. Only the fields that classify an error are read (its
+    code and type, and the provider's own message for the wording Anthropic uses): an error's text and the rest of its
+    body can repeat what was submitted, and a document that mentions a credit balance is not an empty one."""
+    body = getattr(exc, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else None
+    fields = error if isinstance(error, dict) else {}
+    for value in (getattr(exc, "code", None), getattr(exc, "type", None), fields.get("code"), fields.get("type")):
+        if isinstance(value, str):
+            code = value.strip().lower()
+            if code in _QUOTA_EXHAUSTED_CODES or code.startswith(_QUOTA_EXHAUSTED_CODE_PREFIX):
+                return True
+    message = fields.get("message")
+    return isinstance(message, str) and _QUOTA_EXHAUSTED_MESSAGE in message.lower()
 
 
 def is_quota_exhausted(exc: BaseException) -> bool:
@@ -54,11 +66,7 @@ def is_quota_exhausted(exc: BaseException) -> bool:
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        # The OpenAI SDK keeps the answer's code and type on the error and its JSON on ``body``; the message alone does
-        # not always quote them.
-        parts = [getattr(current, name, None) for name in ("code", "type", "body")]
-        text = " ".join([str(current), *(str(part) for part in parts if isinstance(part, (str, dict)))]).lower()
-        if any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS):
+        if _says_quota_exhausted(current):
             return True
         current = current.__cause__
     return False

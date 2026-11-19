@@ -48,6 +48,29 @@ def test_an_empty_balance_is_not_retried_although_it_is_a_429(code: str) -> None
     assert not EmbeddingGateway(retry_budget=RetryBudget()).decide(0, exc).retry
 
 
+def test_a_failure_that_only_repeats_the_submitted_text_is_still_retried() -> None:
+    # A provider can echo the request in an error's body or message, and a document may mention a credit balance.
+    response = httpx.Response(503, request=httpx.Request("POST", "http://x/v1/embeddings"))
+    echoed = openai.InternalServerError(
+        "Error code: 503 - could not embed 'insufficient_quota and credit_balance, credit balance is too low'",
+        response=response,
+        body={"error": {"message": "upstream unavailable", "code": "server_error"}, "input": ["credit_balance"]},
+    )
+    assert EmbeddingGateway.retry_kind(echoed) is RetryKind.TRANSIENT
+
+
+def test_anthropic_wording_of_an_empty_balance_is_not_retried() -> None:
+    response = httpx.Response(400, request=httpx.Request("POST", "http://x/v1/messages"))
+    exc = openai.BadRequestError(
+        "Error code: 400",
+        response=response,
+        body={"type": "error", "error": {
+            "type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API.",
+        }},
+    )
+    assert EmbeddingGateway.retry_kind(exc) is None
+
+
 def test_a_rate_limit_is_still_a_throttle() -> None:
     assert EmbeddingGateway.retry_kind(_status_error(429)) is RetryKind.THROTTLE
 

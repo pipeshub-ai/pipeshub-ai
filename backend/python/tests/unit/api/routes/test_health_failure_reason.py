@@ -6,7 +6,11 @@ import httpx
 import openai
 from fastapi import HTTPException
 
-from app.api.routes.health import _http_exception_response, _model_setup_failed_response
+from app.api.routes.health import (
+    _http_exception_response,
+    _is_settings_failure,
+    _model_setup_failed_response,
+)
 
 _KEY = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
 _CONFIG = {"provider": "openAI", "configuration": {"model": "gpt-6-luna", "apiKey": _KEY}}
@@ -50,6 +54,17 @@ async def test_an_empty_openai_balance_says_out_of_credit_not_wait_a_minute() ->
     assert "out of credit" in body["message"]
     assert "wait a minute" not in body["message"]
     assert "Couldn't connect" not in body["message"]
+
+
+def test_an_empty_balance_takes_the_embedding_check_to_the_out_of_credit_answer() -> None:
+    # The embedding check answers a generic "not healthy" 500 unless the failure is one the admin can fix.
+    error = openai.RateLimitError(
+        "Error code: 429",
+        response=httpx.Response(429, request=_REQUEST),
+        body={"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}},
+    )
+    assert _is_settings_failure(error)
+    assert not _is_settings_failure(_openai_error(openai.RateLimitError, 429, "Rate limit reached"))
 
 
 async def test_provider_server_error_is_a_502_with_the_provider_reason() -> None:

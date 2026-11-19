@@ -569,8 +569,9 @@ async def _model_setup_failed_response(
 
 
 def _is_settings_failure(e: BaseException) -> bool:
-    """Whether the provider refused the settings or could not be reached at all."""
-    return provider_error_code(e) in _REJECTED_SETTINGS_CODES or _looks_like_connectivity_error(e)
+    """Whether the provider refused the settings, has no credit left for them, or could not be reached at all."""
+    code = provider_error_code(e)
+    return code in _REJECTED_SETTINGS_CODES or code == "quota_exceeded" or _looks_like_connectivity_error(e)
 
 
 def _chosen_embedding_config(embedding_configs: list[dict]) -> dict:
