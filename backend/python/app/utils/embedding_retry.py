@@ -41,13 +41,16 @@ _MAX_RETRY_DELAY_SECONDS = 30.0
 # your current quota", which a wait does fix.
 _QUOTA_EXHAUSTED_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached", "billing_not_active"})
 _QUOTA_EXHAUSTED_CODE_PREFIX = "credit_balance"
-_QUOTA_EXHAUSTED_MESSAGE = "credit balance is too low"
+# Anthropic has no code for it: a 400 ``invalid_request_error`` whose message opens with this sentence.
+_QUOTA_EXHAUSTED_MESSAGE_START = "your credit balance is too low"
+_QUOTA_EXHAUSTED_MESSAGE_STATUSES = frozenset({400, 402, 403})
 
 
 def _says_quota_exhausted(exc: BaseException) -> bool:
     """Whether the provider classified ``exc`` as an empty balance. Only the fields that classify an error are read (its
-    code and type, and the provider's own message for the wording Anthropic uses): an error's text and the rest of its
-    body can repeat what was submitted, and a document that mentions a credit balance is not an empty one."""
+    code and type, and for the wording Anthropic uses the start of the provider's own message on a 4xx refusal): an
+    error's text, the rest of its body, and a message that quotes the request can repeat what was submitted, and a
+    document that mentions a credit balance is not an empty one."""
     body = getattr(exc, "body", None)
     error = body.get("error", body) if isinstance(body, dict) else None
     fields = error if isinstance(error, dict) else {}
@@ -57,7 +60,12 @@ def _says_quota_exhausted(exc: BaseException) -> bool:
             if code in _QUOTA_EXHAUSTED_CODES or code.startswith(_QUOTA_EXHAUSTED_CODE_PREFIX):
                 return True
     message = fields.get("message")
-    return isinstance(message, str) and _QUOTA_EXHAUSTED_MESSAGE in message.lower()
+    status = getattr(exc, "status_code", None)
+    return (
+        status in _QUOTA_EXHAUSTED_MESSAGE_STATUSES
+        and isinstance(message, str)
+        and message.strip().lower().startswith(_QUOTA_EXHAUSTED_MESSAGE_START)
+    )
 
 
 def is_quota_exhausted(exc: BaseException) -> bool:

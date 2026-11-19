@@ -22,6 +22,7 @@ from app.services.spend_guard.retry_policy import (
     RetryBudget,
     RetryKind,
 )
+from app.utils import embedding_retry
 
 
 def _status_error(status: int, retry_after: str | None = None) -> openai.APIStatusError:
@@ -57,6 +58,23 @@ def test_a_failure_that_only_repeats_the_submitted_text_is_still_retried() -> No
         body={"error": {"message": "upstream unavailable", "code": "server_error"}, "input": ["credit_balance"]},
     )
     assert EmbeddingGateway.retry_kind(echoed) is RetryKind.TRANSIENT
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [
+        # A 5xx is the provider's failure, whatever its message says.
+        (503, "Your credit balance is too low to access the Anthropic API."),
+        # A refusal that quotes the submitted text further in.
+        (400, "Could not process input: 'your credit balance is too low'"),
+    ],
+)
+def test_the_anthropic_sentence_counts_only_as_the_opening_of_a_4xx_refusal(status: int, message: str) -> None:
+    response = httpx.Response(status, request=httpx.Request("POST", "http://x/v1/messages"))
+    cls = openai.InternalServerError if status >= 500 else openai.BadRequestError
+    exc = cls(f"Error code: {status}", response=response, body={"error": {"type": "api_error", "message": message}})
+    assert not embedding_retry.is_quota_exhausted(exc)
+    assert EmbeddingGateway.retry_kind(exc) is (RetryKind.TRANSIENT if status >= 500 else None)
 
 
 def test_anthropic_wording_of_an_empty_balance_is_not_retried() -> None:
