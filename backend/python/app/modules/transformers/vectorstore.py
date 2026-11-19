@@ -78,7 +78,12 @@ from app.modules.indexing.embed_resume import (
     digest_of,
 )
 from app.modules.indexing.record_progress import carried_counters, current_progress
-from app.modules.indexing.stray_sweep import sweep_enabled, sweep_stray_points
+from app.modules.indexing.stray_sweep import (
+    BLOCK_ID_FIELD,
+    sweep_enabled,
+    sweep_max_points,
+    sweep_stray_points,
+)
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
@@ -105,7 +110,10 @@ from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
-from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.const.const import (
+    CONTENT_REV_FIELD,
+    VIRTUAL_RECORD_ID_FIELD,
+)
 from app.services.vector_db.errors import PartialResult, VectorsNotFetchable
 from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -188,6 +196,19 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
         kind = "chunk" if is_sub_chunk else "unit"
         name = f"{virtual_record_id}|{block_id}|{kind}|{page_content}"
     return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
+
+
+def _attempt_rev(virtual_record_id: str | None) -> str | None:
+    """The content revision this run writes the points of *virtual_record_id* for, when the run knows it (an attempt of a kind whose
+    stored blocks are the whole content); None otherwise, and the points' revision field is then left as it is."""
+    attempt = current_attempt()
+    if attempt is None or not attempt.eligible or not attempt.rev or attempt.vrid != virtual_record_id:
+        return None
+    return attempt.rev
+
+
+# A kept point's stored fields that follow its block's place in the record and the revision written.
+_KEPT_POINT_FIELDS = [BLOCK_ID_FIELD, "metadata.blockIndex", "metadata.blockGroupIndex", CONTENT_REV_FIELD]
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 # Residue units read back per scroll page when checking which records already have them.
@@ -1389,9 +1410,85 @@ class VectorStore(Transformer):
             try:
                 result = await self._apply_locked(ctx)
                 self._record_pointed_blocks(ctx)
+                rc = ctx.reconciliation_context
+                if rc is not None and rc.blocks_to_index_ids is not None:
+                    await self._refresh_kept_points(record)
                 return result
             finally:
                 _POINTED.reset(token)
+
+    async def _refresh_kept_points(self, record: "Record") -> None:
+        """Write the current position, and the revision this run wrote, into the points of the blocks a reconciled update kept.
+
+        A kept block is not embedded again, so its point still says where the block sat (``blockIndex``, or ``blockGroupIndex`` for a
+        group) and which revision wrote it, as of the run that embedded it. Blocks added or removed before it move it, and a reader that
+        trusts the stored position then cites another block. Only the points whose fields differ are rewritten: a listing of those
+        fields finds them, they are read whole (with their vectors) and written back under the same id, so nothing is embedded. The
+        caller holds the virtual record's lease. A failure is logged and leaves the points as they were; it never fails the record.
+        """
+        vrid = record.virtual_record_id
+        if not vrid or not record.org_id:
+            return
+        rev = _attempt_rev(vrid)
+        group_index = {g.id: g.index for g in record.block_containers.block_groups}
+        block_index = {b.id: b.index for b in record.block_containers.blocks}
+
+        def changes(meta: dict[str, Any]) -> dict[str, Any]:
+            block_id = meta.get("blockId")
+            wanted: dict[str, Any] = {}
+            if block_id in group_index:  # a group point carries the group's index in blockGroupIndex, never in blockIndex
+                wanted["blockGroupIndex"] = group_index[block_id]
+            elif block_id in block_index:
+                wanted["blockIndex"] = block_index[block_id]
+            else:
+                return {}  # the summary, code residue, or a point the stray sweep removes
+            if rev is not None:
+                wanted[POINT_REV] = rev
+            # Compared as text: a store that keeps payload fields as strings (Redis) answers "7" for 7.
+            return {k: v for k, v in wanted.items() if str(meta.get(k)) != str(v)}
+
+        org = org_for_filter(record.org_id, match_bound=True)
+        try:
+            collection_name = self.collection_registry.resolve_write_collection(self._record_context(record.org_id, record))
+            listing = await self.vector_db_service.filter_collection(must={"orgId": org, "virtualRecordId": vrid})
+            stale: set[str] = set()
+            scanned, limit, offset = 0, sweep_max_points(), None
+            while scanned < limit:
+                page = await self.vector_db_service.scroll(
+                    collection_name, listing, min(_REKEY_PAGE, limit - scanned), offset, with_payload=_KEPT_POINT_FIELDS,
+                )
+                for point in page.points or []:
+                    meta = (point.payload or {}).get("metadata") or {}
+                    if changes(meta):
+                        stale.add(meta["blockId"])
+                scanned += len(page.points or [])
+                if not page.next_offset or page.next_offset == offset:
+                    break
+                offset = page.next_offset
+            if not stale:
+                return
+            ordered, written = sorted(stale), 0
+            for start in range(0, len(ordered), _REKEY_BLOCKS_PER_READ):
+                writes: list[VectorPoint] = []
+                for point in await self._read_points_whole(collection_name, org, vrid, ordered[start:start + _REKEY_BLOCKS_PER_READ]):
+                    meta = dict(point.payload.get("metadata") or {})
+                    change = changes(meta)
+                    if change and point.dense_vector is not None:
+                        writes.append(VectorPoint(
+                            id=point.id, dense_vector=point.dense_vector, sparse_vector=point.sparse_vector,
+                            payload={**point.payload, "metadata": {**meta, **change}},
+                        ))
+                for i in range(0, len(writes), _REKEY_PAGE):
+                    await self.vector_db_service.upsert_points(collection_name, writes[i:i + _REKEY_PAGE])
+                written += len(writes)
+            if written:
+                # Written from payloads read moments earlier: membership is re-applied from the graph, as after any write of points.
+                await self._resync_membership_after_write(vrid, record.id)
+            self.logger.info(f"Record {record.id}: refreshed the position or revision of {written} kept point(s)")
+        except VectorsNotFetchable:
+            self.logger.info(f"Record {record.id}: the vector store cannot return stored vectors; kept points keep their stored position")
+        except Exception as e:
+            self.logger.warning(f"Record {record.id}: could not refresh the kept points' position and revision: {e}")
 
     def _record_pointed_blocks(self, ctx: TransformContext) -> None:
         """Write the ids of the blocks that have a point into the metadata saved with the record, so a later verification expects exactly
@@ -1601,6 +1698,7 @@ class VectorStore(Transformer):
             # Pass two: move, window by window.
             index_of = {b.id: b.index for b in record.block_containers.blocks}
             group_index_of = {g.id: g.index for g in record.block_containers.block_groups}
+            rev = _attempt_rev(vrid)
             for window, expected in zip(windows, counts, strict=True):
                 moving = [p for p in await self._read_points_whole(collection_name, org_id, vrid, window_ids(window)) if is_old(p)]
                 if len(moving) != expected:
@@ -1617,6 +1715,8 @@ class VectorStore(Transformer):
                         meta["blockIndex"] = index_of[new_block]
                     if meta.get("rowBlockIds"):
                         meta["rowBlockIds"] = [new_by_old[r] for r in meta["rowBlockIds"]]
+                    if rev is not None:
+                        meta[POINT_REV] = rev
                     writes.append(VectorPoint(
                         id=deterministic_point_id(meta, payload.get("page_content", "")),
                         dense_vector=point.dense_vector, sparse_vector=point.sparse_vector, payload={**payload, "metadata": meta},
@@ -3126,6 +3226,11 @@ class VectorStore(Transformer):
                 "Failed to get embedding model instance",
                 details={"error": str(e)},
             ) from e
+        attempt = current_attempt()
+        if is_reconciliation and attempt is not None and attempt.stamp is None and _attempt_rev(virtual_record_id) is not None:
+            # An update's points say which revision and setup wrote them, as a full index's do (the stamp is set there by
+            # _embed_resumably, which an update does not go through).
+            attempt.stamp = {POINT_REV: attempt.rev, POINT_KEY: self._embed_key()}
 
         # No LLM is resolved here any more: the only thing it was used for was
         # describing images, which now happens before the record is stored
