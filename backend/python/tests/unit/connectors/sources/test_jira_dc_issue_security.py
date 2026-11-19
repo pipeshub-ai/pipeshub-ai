@@ -475,6 +475,19 @@ class TestWithdrawnAccounts:
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
         assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
 
+    async def test_an_account_with_a_hidden_email_and_no_product_access_is_withdrawn_and_never_admitted(self) -> None:
+        """frank and gina both have a hidden email; only gina has product access. The empty email they share keeps
+        nobody: frank is withdrawn, so the directory never holds him and no re-read is queued for him."""
+        c = _connector()
+        frank, gina = _user("frank-key", ""), _user("gina-key", "")
+        c._stored_app_users = [frank, gina]
+        c._listed_user_keys = c._seen_user_keys = {"frank-key", "gina-key"}
+        c._licensed_keys = {"gina-key"}
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        await c._withdraw_ineligible_app_users([])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [frank], drop_grants=True)
+        assert [u.source_user_id for u in c._directory_extra()] == ["gina-key"]
+
     @pytest.mark.parametrize("flag", ["_user_bulk_incomplete", "_user_bulk_refused"])
     async def test_a_deactivated_row_from_the_search_fallback_or_a_refused_list_withdraws_nobody(self, flag: str) -> None:
         """A release without /user/list reads users through the search fallback; neither it nor a refused list is
@@ -729,8 +742,43 @@ class TestWithdrawnAccounts:
         c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
         c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
         assert await c._note_people_to_reread({"carol-key"}) == {"carol-key"}
-        assert store["people_reread"] == {"accounts": '["carol-key"]'}
+        assert store["people_reread"] == {"accounts": '["carol-key"]', "generation": 1, "base": 0}
         assert await c._note_people_to_reread(set()) == {"carol-key"}
+        assert c._people_generation == 1, "a sync that admits no one is no new work"
+
+    async def test_an_account_admitted_again_while_still_queued_is_a_new_generation(self) -> None:
+        """carol was queued, then withdrawn (her grants dropped) and listed again before the queue emptied: a project
+        that covered the earlier generation, and missed this sync, must still read its issues again for her."""
+        c = _connector()
+        store: dict = {"people_reread": {"accounts": '["carol-key"]', "generation": 4}}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        await c._note_people_to_reread({"carol-key"})
+        assert c._people_generation == 5 and store["people_reread"]["generation"] == 5
+
+    async def test_a_queue_saved_before_generations_is_owed_to_every_project(self) -> None:
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(return_value={"accounts": '["carol-key"]'})
+        await c._note_people_to_reread(set())
+        assert c._people_generation == 1  # above a project's missing people_read (0)
+
+    @pytest.mark.parametrize("shown", [True, False], ids=["listed_again", "still_missing"])
+    async def test_a_linked_account_the_list_missed_is_read_again_once_a_list_shows_it(self, shown: bool) -> None:
+        """frank was missing from the user list (the search fallback), so he resolved by key alone and a level naming
+        him by username did not reach him. A later list shows him: his username resolves, so the issues are read again."""
+        c = _connector()
+        store: dict = {"admitted_without_email": {"accounts": "[]", "key_only": '["frank-key"]'}}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        c._stored_app_users = [_user("frank-key", "frank@example.com")]
+        c._user_bulk_incomplete = not shown
+        c._listed_user_keys = c._seen_user_keys = {"alice-key"} | ({"frank-key"} if shown else set())
+        pending = await c._note_newly_listed([_user("alice-key", "alice@example.com")])
+        assert ("frank-key" in pending) is shown
+        assert json.loads(store["admitted_without_email"]["key_only"]) == ([] if shown else ["frank-key"])
 
     async def test_a_failed_read_of_the_synced_users_skips_the_stub_sweep(self) -> None:
         c = _connector()
