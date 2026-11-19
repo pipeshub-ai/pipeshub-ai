@@ -3723,6 +3723,8 @@ _CURRENCY_SIGNS = "$€£¥"
 # 1,234.56 and 1.234,56 alike; "31," (a date) is not a figure.
 _AMOUNT_RE = re.compile(r"\(?[-\u2212]?\d(?:[\d.,]*\d)?\)?%?")
 _YEAR_RE = re.compile(r"\b(?:19|20)\d\d\b")
+# A sign followed by its figure ("$ 2000"), unlike a header "2022" over a "$".
+_SIGNED_AMOUNT_RE = re.compile(r"[$€£¥]\s*\(?[-\u2212]?\d")
 
 
 def _is_amount(token: str, *, year_ok: bool = False) -> bool:
@@ -3750,16 +3752,21 @@ def _merge_currency_columns(grid: list[list[str | None]]) -> list[list[str | Non
         signs = [text(r[ci]) for r in grid]
         bare = [len(c) == 1 and c in _CURRENCY_SIGNS for c in signs]
         # Beside a bare sign, "2000" is a figure, not a year.
-        figures = any(holds_amount(r[ci + 1], year_ok=b) for r, b in zip(grid, bare))
-        blocked = any(
-            # A figure of the column's own; header cells name a period, so
-            # "52 Weeks Ended August 29, 2021" does not count.
-            (holds_amount(c.strip(_CURRENCY_SIGNS + " \n")) and not years(c))
-            # Two periods would end up over one figure.
-            or (years(c) and years(r[ci + 1]) and years(c) != years(r[ci + 1]))
-            for c, r in zip(signs, grid)
+        body = [holds_amount(r[ci + 1], year_ok=b) for r, b in zip(grid, bare)]
+        # The sign and its figure must meet in one row, not come from two columns.
+        paired = any(b and f for b, f in zip(bare, body))
+        own_figure = any(
+            _SIGNED_AMOUNT_RE.search(c)
+            # Header cells name a period: "52 Weeks Ended August 29, 2021".
+            or (holds_amount(c.strip(_CURRENCY_SIGNS + " \n")) and not years(c))
+            for c in signs
         )
-        if any(bare) and figures and not blocked:
+        # Header rows over both columns, compared together: two periods would end
+        # up over one figure.
+        sign_years = set().union(*(years(c) for c, f in zip(signs, body) if not f))
+        figure_years = set().union(*(years(r[ci + 1]) for r, f in zip(grid, body) if not f))
+        blocked = own_figure or bool(sign_years and figure_years and sign_years != figure_years)
+        if paired and not blocked:
             for r in grid:
                 parts = [text(r[ci]), text(r[ci + 1])]
                 r[ci:ci + 2] = [" ".join(p for p in parts if p) or r[ci + 1]]
@@ -5681,6 +5688,7 @@ def _inject_hyperlinks_into_region(
     if not region_words:
         return
 
+    original = region.text
     if region.text:
         region.text = _inject_hyperlinks_into_text(
             region.text, hyperlinks, region_words,
@@ -5693,6 +5701,7 @@ def _inject_hyperlinks_into_region(
         ]
 
     if region.table_grid:
+        before = _grid_to_text(region.table_grid)
         region.table_grid = [
             [
                 _inject_hyperlinks_into_text(
@@ -5702,7 +5711,13 @@ def _inject_hyperlinks_into_region(
             ]
             for row in region.table_grid
         ]
-        region.text = _grid_to_text(region.table_grid)
+        # A table merged with a neighbour keeps that neighbour's text beside its grid.
+        head, found, tail = (original or "").partition(before) if before else ("", "", "")
+        region.text = (
+            _inject_hyperlinks_into_text(head, hyperlinks, region_words)
+            + _grid_to_text(region.table_grid)
+            + _inject_hyperlinks_into_text(tail, hyperlinks, region_words)
+        ) if found else _grid_to_text(region.table_grid)
 
 
 def _inject_hyperlinks_into_regions(

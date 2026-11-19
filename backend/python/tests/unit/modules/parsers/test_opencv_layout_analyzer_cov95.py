@@ -581,6 +581,17 @@ class TestHyperlinkHelpers:
         _inject_hyperlinks_into_region(table, links, words)
         assert "https://x.com" in table.text
 
+    def test_inject_hyperlinks_keeps_a_merged_tables_extra_text(self) -> None:
+        words = [_w("link", 10, 50, 10, 20)]
+        links = [{"x0": 10, "top": 8, "x1": 50, "bottom": 22, "uri": "https://x.com"}]
+        table = _region(
+            LayoutRegionType.TABLE, (0, 0, 100, 50), "In USD millions\nlink | 4,835",
+            table_grid=[["link", "4,835"]],
+        )
+        _inject_hyperlinks_into_region(table, links, words)
+        assert table.text.startswith("In USD millions\n")
+        assert "https://x.com" in table.text
+
     def test_inject_hyperlinks_skips_image(self):
         img = _region(LayoutRegionType.IMAGE, (0, 0, 100, 100))
         _inject_hyperlinks_into_region(img, [{"uri": "x"}], [])
@@ -3316,6 +3327,18 @@ class TestCoveragePush95Phase2:
         assert _merge_currency_columns([["", "2022", ""], ["Umsatz", "\u20ac", "1.234,56"]]) == [
             ["", "2022"], ["Umsatz", "\u20ac 1.234,56"],
         ]
+
+    def test_a_sign_and_a_figure_from_different_rows_do_not_pair(self) -> None:
+        grid = [["Item", "Currency", "Units"], ["Cash", "$", ""], ["Stock", "", "50"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_a_year_like_figure_with_its_own_sign_keeps_the_columns_apart(self) -> None:
+        grid = [["", "2022", ""], ["Cash", "$ 2000", "\u2014"], ["Goodwill", "$", "289"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
+
+    def test_different_years_in_two_header_rows_are_not_joined(self) -> None:
+        grid = [["", "2022", ""], ["", "", "2021"], ["Net", "$", "500"]]
+        assert _merge_currency_columns([r[:] for r in grid]) == grid
 
     def test_a_merged_tables_extra_text_survives(self) -> None:
         grid = [["", "2015", ""], ["Net", "$", "79,268"]]
