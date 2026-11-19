@@ -1895,10 +1895,18 @@ class TestExcludePaths:
         assert "/admin/webhook" in EXCLUDE_PATHS
 
     def test_exclude_paths_length(self):
-        """EXCLUDE_PATHS has exactly 10 entries: six service paths and the four public connect-link routes."""
+        """EXCLUDE_PATHS has six service paths, the four public connect-link routes and the edition's own public paths."""
         from app.connectors_main import EXCLUDE_PATHS
+        from app.edition_services import public_paths
 
-        assert len(EXCLUDE_PATHS) == 10
+        assert len(EXCLUDE_PATHS) == 10 + len(public_paths())
+
+    def test_edition_public_paths_are_excluded_from_user_auth(self) -> None:
+        """Each path the edition names as public skips the user-token check."""
+        from app.connectors_main import EXCLUDE_PATHS
+        from app.edition_services import public_paths
+
+        assert all(path.startswith("/") and path in EXCLUDE_PATHS for path in public_paths())
 
 
 # ---------------------------------------------------------------------------

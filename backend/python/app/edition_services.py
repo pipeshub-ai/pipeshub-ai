@@ -92,6 +92,12 @@ def get_startup_extra_kwargs(app_container) -> dict:
     return {}
 
 
+def public_paths() -> list[str]:
+    """Paths of this edition's routes that the connectors service answers without a user token
+    because the route checks its caller itself. OSS: none."""
+    return []
+
+
 async def pre_sync_hook(app_container, logger) -> None:
     """Run before resume_sync_services in post-startup. OSS: no-op."""
     pass
