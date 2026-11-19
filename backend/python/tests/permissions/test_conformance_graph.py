@@ -98,3 +98,17 @@ async def test_a_linked_user_account_still_gives_its_organisation_role(graph_lay
         got = await snapshot(layer._provider, world, "u", ns, ns.org)
         assert got[("context", "f")]["role"] == "OWNER", (layer.name, got)
         assert await layer.admitted(world, "u", [n.id for n in world.nodes]) >= {"f"}
+
+
+async def test_a_linked_accounts_grant_gives_a_role_only_inside_the_links_connector(graph_layers, account_layers) -> None:
+    """REGR-12: f (in A) inherits from SB (in B), where acct, linked for A, holds OWNER itself, through a group and through a team. u reads f
+    as READER, its own grant, in every reader; acct's WRITER on SA2 (in A) still gives u WRITER on h, which inherits from it."""
+    world = next(s for s in load_all() if s.id == "REGR-12").final_world()
+    for layer in [*graph_layers, *account_layers]:
+        await layer.preload([world])
+        ns = await layer._ns(world)
+        got = await snapshot(layer._provider, world, "u", ns, ns.org)
+        assert got[("context", "f")]["role"] == "READER", (layer.name, got)
+        assert set(got[("details", "f")]) == {"READER"}, (layer.name, got)
+        assert got[("context", "h")]["role"] == "WRITER", (layer.name, got)
+        assert await layer.admitted(world, "u", [n.id for n in world.nodes]) >= {"f", "h"}
