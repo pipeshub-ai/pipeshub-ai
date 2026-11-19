@@ -94,6 +94,23 @@ async def test_the_trash_list_reads_the_user_who_deleted_each_batch_by_its_key(w
     _assert_keyed(plans, "u")
 
 
+async def test_the_trash_list_reads_each_root_s_trashed_parent_by_its_key(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Probing the parent among every trashed record of the organisation (a CTE scan per root) took 11 s for 6,000 roots at 1M records.
+    await _bulk(pg_db, w)
+    await w.nodes("records", *({"_key": f"t{i}", "recordName": f"t{i}", "orgId": w.org, "connectorId": "c1", "isDeleted": True,
+                                "deleteBatchId": f"b{i // 2}", "deletedAtTimestamp": i} for i in range(400)))
+    for i in range(1, 400, 2):      # the second record of each batch sits under the first, so only the first is a root
+        await w.edge("nodeRelations", ("records", f"t{i - 1}"), ("records", f"t{i}"), relationshipType="PARENT_CHILD")
+    out: dict = {}
+
+    async def call() -> None:
+        out.update(await w.p.list_trashed_records("c1", w.org, limit=500))
+    plans = await _plans(pg_db, _admin_url(), monkeypatch, "pipeshub:graph.list_trashed_records", call)
+    assert out["total"] == 200 and sorted(i["record"]["id"] for i in out["items"]) == sorted(f"t{i}" for i in range(0, 400, 2))
+    assert len(plans) == 2
+    _assert_keyed(plans, "p")
+
+
 async def test_the_records_of_value_mentions_are_read_by_their_keys(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     await _bulk(pg_db, w)
     await w.nodes("valueMentions", *({"_key": f"v{i}", "orgId": w.org, "recordId": f"r{i * 7}", "kind": "money", "name": f"${i}", "amountFloat": float(i)} for i in range(1, 6)))

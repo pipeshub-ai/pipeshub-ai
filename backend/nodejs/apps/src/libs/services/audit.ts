@@ -25,6 +25,8 @@ export interface AuditFields {
   reason?: string;
   /** The sign-in method (`password`, `google`); anything that is not one is shown as `other`. */
   authMethod?: string;
+  /** The group a membership line is about (shown as `group_id`); the target is the user. */
+  group?: string;
 }
 
 const INVALID_EVENT = 'audit.invalid_event';
@@ -47,7 +49,7 @@ const shownUser = (userId: string | null | undefined): string | null =>
  * One INFO line on the `audit` logger for a security event, always with the
  * same keys (actor, target, outcome, reason; missing ones are null), so the
  * events can be filtered and counted. `event` is dotted lowercase
- * (`auth.sign_in`, `user.role_change`). Follows LOG_LEVEL like every line.
+ * (`auth.sign_in`, `user.role.change`). Follows LOG_LEVEL like every line.
  */
 export function audit(event: string, fields: AuditFields): void {
   const actorId =
@@ -56,7 +58,9 @@ export function audit(event: string, fields: AuditFields): void {
       : asId(fields.actor);
   const targetId = asId(fields.target);
   const org = asId(fields.org);
-  const invalidId = actorId === null || targetId === null || org === null;
+  const groupId = asId(fields.group);
+  const invalidId =
+    actorId === null || targetId === null || org === null || groupId === null;
   const reason = invalidId
     ? 'invalid_id'
     : fields.reason === undefined
@@ -70,6 +74,7 @@ export function audit(event: string, fields: AuditFields): void {
     ...(typeof org === 'string' && { org_id: org }),
     actor: shownUser(actorId),
     target: fields.targetIsUser ? shownUser(targetId) : (targetId ?? null),
+    ...(typeof groupId === 'string' && { group_id: groupId }),
     outcome: fields.outcome,
     reason,
     // The request body names the method, so only a known one is ever printed.
@@ -111,7 +116,10 @@ export function refusalReason(error: unknown): string | undefined {
 export function auditRefusal(
   event: string,
   error: unknown,
-  who: Pick<AuditFields, 'actor' | 'org' | 'authMethod'>,
+  who: Pick<
+    AuditFields,
+    'actor' | 'org' | 'authMethod' | 'target' | 'targetIsUser'
+  >,
   allowed: readonly string[],
 ): void {
   const reason = refusalReason(error);
