@@ -682,15 +682,40 @@ class TestReindexAppliesTheLevel:
     MEMBERS = {"isLast": True, "values": [
         {"issueSecurityLevelId": "10102", "holder": {"type": "group", "value": "group-1"}}]}
 
-    @pytest.mark.asyncio
-    async def test_the_reporter_in_the_level_through_a_group_reads_it_after_a_reindex(self) -> None:
-        """Browse names the reporter on the issue and the level holds them through a group: Jira shows it to them."""
+    def _reporter_reindex(self, members: tuple[list[str], bool]) -> tuple[JiraConnector, dict]:
+        """The reporter acc-1, whom Browse names on the issue; its level holds group-1. The last sync saw the reporter in
+        group-1; the reindex reads the group again and gets ``members``."""
         c = _reindex_connector(self.LEVELED, [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
         c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
         c._group_members = {"group-1": [_users()[0]]}  # as the last sync saved them
+        c._fetch_group_members = AsyncMock(return_value=members)
+        return c, TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_jira_took_out_of_the_group_gets_no_grant_from_a_reindex(self) -> None:
+        """No sync since Jira removed the reporter from group-1: the reindex reads the group again and does not open the
+        issue to them through the members the last sync saw."""
+        c, point = self._reporter_reindex((["acc-2"], True))
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0], "acc-2": _users()[1]})
+        assert (record.access_rule, perms) == (AccessRule.STRICT, [])
+        assert c._fetch_group_members.await_args.kwargs == {"note": False}  # outside a sync: no bookkeeping of its own
+        assert [u.source_user_id for u in c._group_members["group-1"]] == ["acc-1"]  # the sync's map is left as it was
+
+    @pytest.mark.asyncio
+    async def test_the_reporter_in_the_level_through_a_group_reads_it_after_a_reindex(self) -> None:
+        """Browse names the reporter on the issue and the group read now holds them: Jira shows it to them."""
+        c, point = self._reporter_reindex((["acc-1"], True))
         record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
         assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
         assert record.source_updated_at == c._parse_jira_timestamp("2025-01-01T00:00:00.000+0000")
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == []
+
+    @pytest.mark.asyncio
+    async def test_a_group_read_that_fails_in_a_reindex_grants_nobody_and_queues_the_issue(self) -> None:
+        c, point = self._reporter_reindex(([], False))
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert (record.access_rule, perms, record.source_updated_at) == (AccessRule.STRICT, [], 1)
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
 
     @pytest.mark.asyncio
     async def test_a_reindex_before_any_sync_grants_nobody_through_the_group_and_leaves_the_issue_to_the_sync(self) -> None:

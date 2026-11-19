@@ -294,6 +294,8 @@ INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 # so they move.
 # Changed when restricted comments became records of their own, so those stored before are written.
 ISSUE_PLACEMENT: str = "issues-under-readable-parent+restricted-comment-records"
+# Groups a reindex reads again per project to apply its issues' levels (``_reindex_level_readers``).
+REINDEX_GROUP_READS: int = 20
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
 SUBTASK_REREAD_CHUNK: int = 50
 # Accounts per JQL when re-reading the issues that name newly listed accounts.
@@ -3971,14 +3973,15 @@ class JiraConnector(BaseConnector):
         self.logger.info(f"👥 Fetched {len(groups)} total groups")
         return groups, fetch_failed
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> tuple[list[str], bool]:
+    async def _fetch_group_members(self, group_id: str, group_name: str, *, note: bool = True) -> tuple[list[str], bool]:
         """
         Fetch all members of a Jira group.
 
         Returns ``(account_ids, ok)``. ``ok`` is False when a page couldn't be read (429 after
         retries / 5xx / transport); the caller then keeps the group's stored members. ``ok`` is
         True on a clean read even if the group genuinely has no members, and when the group no
-        longer exists (404).
+        longer exists (404). ``note`` False leaves a failure out of the sync's bookkeeping (``_note_unread``):
+        a read outside a sync keeps nothing stored.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -4010,7 +4013,8 @@ class JiraConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch members for group {group_name}: HTTP {response.status}")
-                    self._note_unread(response.status, ("user_group", group_id))
+                    if note:
+                        self._note_unread(response.status, ("user_group", group_id))
                     ok = False
                     break
 
@@ -4019,7 +4023,8 @@ class JiraConnector(BaseConnector):
                 if not isinstance(batch_members, list):
                     # Not an empty group: read as one, product access from it would withdraw every account.
                     self.logger.warning(f"Members of group {group_name} came back without a member list")
-                    self._note_unread(None)
+                    if note:
+                        self._note_unread(None)
                     ok = False
                     break
 
@@ -4040,7 +4045,8 @@ class JiraConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"❌ Error fetching members for group {group_name}: {e}")
-                self._note_unread(None)
+                if note:
+                    self._note_unread(None)
                 ok = False
                 break
 
@@ -5179,6 +5185,39 @@ class JiraConnector(BaseConnector):
             # (an unmapped application role) may hold anyone.
             out[level_id] = None if set(skipped) - {HOLDER_USER} else level_readers(
                 grants, self._group_members, self._role_members)
+        return out
+
+    async def _reindex_level_readers(
+        self, security: IssueSecurityContext, project_key: str, synced: dict[str, AppUser],
+    ) -> dict[str, frozenset[tuple[str, str]] | None]:
+        """``_level_readers`` for a reindex, from members read now: the sync's are as old as the last sync, and a person Jira
+        removed since must not read an issue alone through them. The groups the levels name are read again, at most
+        ``REINDEX_GROUP_READS`` per project, from the accounts a sync would hold (``_member_directory``). A role or a project
+        lead, one not read in full, or one past the cap is unknown: its level grants no one alone (``LEVEL_MEMBERS_UNREAD``),
+        and the issue waits for the next sync. The sync's member maps are left as they are."""
+        users = {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **synced}
+        groups: dict[str, list[AppUser]] = {}
+        tried: set[str] = set()
+        out: dict[str, frozenset[tuple[str, str]] | None] = {}
+        for level_id, holders in security.members_by_level.items():
+            grants, skipped = level_group_grants(
+                holders, project_key=project_key, user_by_id=self._grant_directory(synced), app_roles_mapping=self._level_roles)
+            if set(skipped) - {HOLDER_USER}:
+                out[level_id] = None
+                continue
+            for grant in grants:
+                group_id = str(grant.external_id)
+                if grant.entity_type != EntityType.GROUP or group_id in tried or len(tried) >= REINDEX_GROUP_READS:
+                    continue
+                tried.add(group_id)
+                try:
+                    ids, ok = await self._fetch_group_members(group_id, group_id, note=False)
+                except Exception as e:
+                    self.logger.warning(f"Could not read the members of group {group_id} for a reindex: {e}")
+                    ok = False
+                if ok:
+                    groups[group_id] = [users[i] for i in ids if i in users]
+            out[level_id] = level_readers(grants, groups, {})
         return out
 
     def _plan_level_reread(
@@ -8411,8 +8450,8 @@ class JiraConnector(BaseConnector):
                     await self._load_issue_security(project_ref, cached=False),
                     project_ref, fresh=True,
                 )
-                security.level_readers = self._level_readers(
-                    security, project.get("key") or project_ref, self._grant_directory(synced_user_by_account_id or {}))
+                security.level_readers = await self._reindex_level_readers(
+                    security, project.get("key") or project_ref, synced_user_by_account_id or {})
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
 
