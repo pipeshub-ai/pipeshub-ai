@@ -1072,41 +1072,49 @@ adds what is specific to its role after it.
 {{- end }}
 
 {{/*
-A Kubernetes memory quantity ("8Gi", "4096Mi", "8G", "8e9", "8589934592") in whole MiB.
+A Kubernetes memory quantity in whole MiB, following the apimachinery grammar:
+a number ("8", "8.5", ".5") and one suffix, binary ("Ki" to "Ei"), decimal
+("m", "k" to "E") or a signed exponent ("e9", "e+9", "E-3"). A large integer in
+a values file arrives as a float and prints as "8.589934592e+09". The sum is
+kept in bytes and divided once: sprig's mulf and divf keep 16 digits, so a
+factor like 1/1048576 would make 8589934592 bytes 8191 MiB.
 */}}
 {{- define "pipeshub-ai.memoryMiB" -}}
-{{- $q := toString . -}}
-{{- $bytesPerMiB := 1048576.0 -}}
-{{- $mib := 0.0 -}}
-{{- if regexMatch "^[0-9]+(\\.[0-9]+)?[eE][0-9]+$" $q -}}
-{{- $parts := regexSplit "[eE]" $q 2 -}}
-{{- $v := float64 (index $parts 0) -}}
-{{- range until (int (index $parts 1)) }}{{ $v = mulf $v 10 }}{{ end -}}
-{{- $mib = divf $v $bytesPerMiB -}}
+{{- $q := trimPrefix "+" (toString .) -}}
+{{- $n := regexFind "^([0-9]+(\\.[0-9]*)?|\\.[0-9]+)" $q -}}
+{{- $suffix := trimPrefix $n $q -}}
+{{- $perUnit := dict "" 1 "m" 0.001 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "P" 1000000000000000 "E" 1000000000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "Pi" 1125899906842624 "Ei" 1152921504606846976 -}}
+{{- $bytes := 0.0 -}}
+{{- if and $n (regexMatch "^[eE][+-]?[0-9]{1,2}$" $suffix) -}}
+{{- $exp := regexFind "[0-9]+$" $suffix | trimPrefix "0" | default "0" | atoi -}}
+{{- $bytes = float64 $n -}}
+{{- range until $exp -}}
+{{- if contains "-" $suffix }}{{ $bytes = divf $bytes 10 }}{{ else }}{{ $bytes = mulf $bytes 10 }}{{ end -}}
+{{- end -}}
+{{- else if and $n (hasKey $perUnit $suffix) -}}
+{{- $bytes = mulf $n (get $perUnit $suffix) -}}
 {{- else -}}
-{{- $n := regexFind "^[0-9]+(\\.[0-9]+)?" $q -}}
-{{- $unit := trimPrefix $n $q -}}
-{{- $perUnit := dict "" (divf 1 $bytesPerMiB) "k" (divf 1000 $bytesPerMiB) "K" (divf 1000 $bytesPerMiB) "Ki" (divf 1 1024) "M" (divf 1000000 $bytesPerMiB) "Mi" 1.0 "G" (divf 1000000000 $bytesPerMiB) "Gi" 1024.0 "T" (divf 1000000000000 $bytesPerMiB) "Ti" 1048576.0 -}}
-{{- if or (not $n) (not (hasKey $perUnit $unit)) -}}
-{{- fail (printf "neo4j.resources.limits.memory %q is not a memory quantity the chart can read; set the NEO4J_server_memory_* sizes in neo4j.env" $q) -}}
+{{- fail (printf "neo4j.resources.limits.memory %q is not a memory quantity the chart can read; set the NEO4J_server_memory_* sizes in neo4j.env" (toString .)) -}}
 {{- end -}}
-{{- $mib = mulf (float64 $n) (get $perUnit $unit) -}}
-{{- end -}}
-{{- $mib | floor | int64 -}}
+{{- divf $bytes 1048576 | floor | int64 -}}
 {{- end -}}
 
 {{/*
-A Neo4j byte size ("3584m", "4g", "2GiB", "512k", "1073741824") in whole MiB; Neo4j's units are binary.
+A Neo4j byte size in whole MiB, rounded up, read as Neo4j 5's ByteUnit.parse
+does: a number, optional blanks, then one of its unit names, case-sensitive
+and binary ("B", "k"/"K"/"KB"/"KiB", "m"/"MB"/"MiB", "g"/"GB"/"GiB", "TB"/"TiB",
+"PB"/"PiB", "EB"/"EiB"). A size Neo4j would refuse fails the render instead.
 */}}
 {{- define "pipeshub-ai.neo4jSizeMiB" -}}
-{{- $q := lower (toString .value) -}}
-{{- $n := regexFind "^[0-9]+(\\.[0-9]+)?" $q -}}
+{{- $q := trim (toString .value) -}}
+{{- $n := regexFind "^([0-9][0-9,]*(\\.[0-9]*)?|\\.[0-9]+)" $q -}}
 {{- $unit := trim (trimPrefix $n $q) -}}
-{{- $perUnit := dict "" (divf 1 1048576) "k" (divf 1 1024) "kb" (divf 1 1024) "kib" (divf 1 1024) "m" 1.0 "mb" 1.0 "mib" 1.0 "g" 1024.0 "gb" 1024.0 "gib" 1024.0 "t" 1048576.0 "tb" 1048576.0 "tib" 1048576.0 -}}
+{{- $k := 1024 -}}{{- $m := 1048576 -}}{{- $g := 1073741824 -}}
+{{- $perUnit := dict "" 1 "B" 1 "KiB" $k "KB" $k "K" $k "kB" $k "kb" $k "k" $k "MiB" $m "MB" $m "M" $m "mB" $m "mb" $m "m" $m "GiB" $g "GB" $g "G" $g "gB" $g "gb" $g "g" $g "TiB" 1099511627776 "TB" 1099511627776 "PiB" 1125899906842624 "PB" 1125899906842624 "EiB" 1152921504606846976 "EB" 1152921504606846976 -}}
 {{- if or (not $n) (not (hasKey $perUnit $unit)) -}}
 {{- fail (printf "neo4j.env.%s %q is not a size the chart can read; set the heap maximum in neo4j.env too" .name .value) -}}
 {{- end -}}
-{{- mulf (float64 $n) (get $perUnit $unit) | ceil | int64 -}}
+{{- divf (mulf (replace "," "" $n) (get $perUnit $unit)) 1048576 | ceil | int64 -}}
 {{- end -}}
 
 {{/*
