@@ -747,6 +747,7 @@ column platform.notifications.title type=text notnull=false identity= generated=
 column platform.notifications.type type=text notnull=true identity= generated= default=-
 column platform.notifications.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column platform.notifications.version type=integer notnull=true identity= generated= default=0
+column platform.notifications.visible_at type=timestamp with time zone notnull=false identity= generated= default=-
 column platform.outbox.attempts type=integer notnull=true identity= generated= default=0
 column platform.outbox.claimed_at type=timestamp with time zone notnull=false identity= generated= default=-
 column platform.outbox.created_at type=timestamp with time zone notnull=true identity= generated= default=-
@@ -1798,6 +1799,7 @@ index platform.mail_log_pkey on platform.mail_log unique=true exclusion=false va
 index platform.notifications_by_id on platform.notifications unique=false exclusion=false valid=true def=3d6f5d34f84fecbd5952e0f9ee5f6f5d
 index platform.notifications_inbox on platform.notifications unique=false exclusion=false valid=true def=06ac82fb8e2962cfd6c433c57c866e0d
 index platform.notifications_pkey on platform.notifications unique=true exclusion=false valid=true def=181a7fa68961a17044571da8e77cc701
+index platform.notifications_visible on platform.notifications unique=false exclusion=false valid=true def=4b6f5b4879b73d1ea21c2a35e4da2318
 index platform.outbox_by_id on platform.outbox unique=false exclusion=false valid=true def=6009e39e1c33496fef2cf0fc26be14e4
 index platform.outbox_by_ordering_key on platform.outbox unique=false exclusion=false valid=true def=cffb17cd63b7db071c14c0d4cc816be8
 index platform.outbox_due on platform.outbox unique=false exclusion=false valid=true def=d4346857da0b3225422c3080bac0f37c

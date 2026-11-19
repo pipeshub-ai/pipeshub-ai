@@ -26,6 +26,7 @@ from app.connectors.core.base.connector.connector_service import (
     action_items_json,
     connector_sync_lock,
     dispose_connector,
+    note_sync_started,
 )
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
@@ -128,6 +129,7 @@ async def write_app_status(
 async def _run_sync_alone(connector: "BaseConnector", connector_id: str) -> None:
     """run_sync, after any user-link pass on this connector has finished (see link_new_users)."""
     async with connector_sync_lock(connector_id):
+        note_sync_started(connector_id)
         await connector.run_sync()
 
 

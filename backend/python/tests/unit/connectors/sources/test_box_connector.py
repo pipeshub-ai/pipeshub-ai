@@ -1956,9 +1956,10 @@ class TestBoxTestConnection:
 
 
 class TestBoxHandleWebhook:
-    def test_triggers_incremental_sync(self, box_connector):
-        with patch("asyncio.create_task"):
-            box_connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+    def test_requests_a_sync(self, box_connector):
+        box_connector.request_sync = MagicMock()
+        box_connector.handle_webhook_notification({"trigger": "FILE.UPLOADED"})
+        box_connector.request_sync.assert_called_once_with()
 
 
 class TestBoxCleanup:

@@ -49,6 +49,9 @@ export async function inUnit<T>(
 /** The kernel's unit handle, for repositories that only need its type. */
 export type KernelTx = PgKernelTx;
 
+/** For a repository that serialises its writes on an advisory lock (see libs/db/lock-keys.ts). */
+export { registerLockKey } from '../db';
+
 /**
  * A unit that runs before any organisation is chosen (`app.org_id` is empty): for the identity functions that answer
  * sign-in questions about an address. It never joins another unit, and it fails when one is open in this context.
