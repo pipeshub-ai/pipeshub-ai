@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -55,6 +56,11 @@ def _load_model(data: bytes, seconds: float | None) -> WorkbookModel:
     )
 
 
+# The kernel ends the worker at its CPU limit only where the worker could mark itself non-dumpable (``allow_cpu_limit``).
+cpu_limit_ends_the_worker = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the worker sets no CPU limit off Linux")
+
+
+@cpu_limit_ends_the_worker
 def test_a_load_past_its_cpu_limit_is_refused_as_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
     # the worker's own CPU limit ends the load, not the pool's timeout: the worker is ended by the
     # kernel and the parser refuses the workbook as it does for the timeout
@@ -73,6 +79,7 @@ def test_a_load_past_its_cpu_limit_is_refused_as_too_large(monkeypatch: pytest.M
     assert time.monotonic() - started < 30  # the limit plus slack; unbounded this runs about 80 s
 
 
+@cpu_limit_ends_the_worker
 def test_the_cpu_limit_never_raises_into_the_worker() -> None:
     # An exception raised from a signal handler can land between a lock's acquire and its release
     # and hang the reused worker on a later job; the limit must end the worker instead.
@@ -83,6 +90,7 @@ def test_the_cpu_limit_never_raises_into_the_worker() -> None:
     assert time.monotonic() - started < 30, "the CPU limit ended it, not the pool's timeout"
 
 
+@cpu_limit_ends_the_worker
 def test_a_job_that_is_not_an_excel_load_ended_by_sigxcpu_is_the_retryable_crash() -> None:
     # Only the Excel load sets that limit: another job dying of it (an operator's `ulimit -t`) is not a refused file.
     with pytest.raises(parse_pool.ParseWorkerError) as raised:
@@ -103,6 +111,7 @@ def one_worker_pool(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
         parse_pool.set_resource_governor(None)
 
 
+@cpu_limit_ends_the_worker
 async def test_jobs_queued_behind_a_worker_ended_by_its_cpu_limit_still_run(one_worker_pool: MagicMock) -> None:
     outcomes = await asyncio.gather(
         parse_pool.submit(len, b"before"),
@@ -208,6 +217,6 @@ def test_the_cpu_limit_is_armed_only_in_a_worker_that_cannot_dump_core(monkeypat
     # A piped core_pattern ignores RLIMIT_CORE: a worker the kernel could still dump is ended only by the pool's timeout.
     from app.modules.parsers import parse_worker
 
-    monkeypatch.delenv(parse_worker._IN_WORKER_ENV, raising=False)
+    monkeypatch.setenv(parse_worker._IN_WORKER_ENV, "")  # registers the restore, so no case leaves pytest marked as a worker
     parse_worker.allow_cpu_limit(non_dumpable=non_dumpable)
     assert parse_worker.in_worker() is non_dumpable
