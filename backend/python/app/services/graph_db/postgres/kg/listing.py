@@ -128,8 +128,9 @@ def filters_sql(filters: dict[str, Any], p: Params, *, browse: bool = False) -> 
     if rt := filters.get("record_types"):
         out.append(f"(r.kind = 3 AND r.record_type = ANY({p.add(list(rt))}::text[]))")
     if st := filters.get("indexing_status"):
+        # OFFSET 0: a probe of each row's node by its key, in the window's order; as a join the plan read every node of the organisation to keep one window
         out.append("(r.kind = 3 AND EXISTS (SELECT 1 FROM graph.nodes n WHERE n.org_id = r.org_id AND n.coll = 'records' AND n.id = r.id "
-                   f"AND n.doc->>'indexingStatus' = ANY({p.add(list(st))}::text[])))")
+                   f"AND n.doc->>'indexingStatus' = ANY({p.add(list(st))}::text[]) OFFSET 0))")
     for label, col in (("created_at", "created_ms"), ("updated_at", "updated_ms")):
         w = filters.get(label) or {}
         if w.get("gte") is not None:
