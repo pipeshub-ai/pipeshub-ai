@@ -7,11 +7,11 @@ import { createApiDocsRouter } from '../../../src/modules/api-docs/docs.routes';
 // Run that script in a VM and call its helpers directly.
 describe('API docs page script', () => {
   let page: Record<string, any>;
+  let html = '';
 
   before(() => {
     const router = createApiDocsRouter({ get: () => ({}) } as any);
     const layer = (router as any).stack.find((l: any) => l.route?.path === '*');
-    let html = '';
     layer.route.stack[0].handle(
       {},
       {
@@ -122,9 +122,61 @@ describe('API docs page script', () => {
     });
   });
 
+  describe('code examples', () => {
+    it('show a placeholder host, not the host serving the docs', () => {
+      expect(page.exampleBaseUrl()).to.equal('https://your-pipeshub-host');
+    });
+
+    it('show the base URL the reader typed in Try It', () => {
+      const { getElementById } = page.document;
+      page.document.getElementById = (id: string) =>
+        id === 'baseUrlInput' ? { value: 'https://pipeshub.example.com/' } : null;
+      try {
+        expect(page.exampleBaseUrl()).to.equal('https://pipeshub.example.com');
+      } finally {
+        page.document.getElementById = getElementById;
+      }
+    });
+  });
+
+  it('does not call the service health endpoints', () => {
+    expect(html).to.not.include('/api/v1/health');
+  });
+
+  it('links the OpenAPI spec download from the header', () => {
+    expect(html).to.include('href="/api/v1/docs/openapi.yaml" download="pipeshub-openapi.yaml"');
+  });
+
   it('writes JSON as a Python literal without touching strings', () => {
     expect(page.toPython({ a: true, b: null, c: 'true or null' })).to.equal(
       '{\n  "a": True,\n  "b": None,\n  "c": "true or null"\n}',
     );
+  });
+});
+
+describe('API docs spec download', () => {
+  const download = (specYaml: string | null) => {
+    const router = createApiDocsRouter({ get: () => ({ getSpecYaml: () => specYaml }) } as any);
+    const layer = (router as any).stack.find((l: any) => l.route?.path === '/openapi.yaml');
+    const res: Record<string, any> = { headers: {} as Record<string, string> };
+    res.status = (code: number) => { res.statusCode = code; return res; };
+    res.attachment = (name: string) => { res.headers['content-disposition'] = 'attachment; filename="' + name + '"'; return res; };
+    res.type = (type: string) => { res.headers['content-type'] = type; return res; };
+    res.send = (body: string) => { res.body = body; return res; };
+    res.json = (body: unknown) => { res.body = body; return res; };
+    layer.route.stack[0].handle({}, res);
+    return res;
+  };
+
+  it('sends the spec as a YAML attachment', () => {
+    const res = download('openapi: 3.0.0\n');
+    expect(res.statusCode).to.be.undefined;
+    expect(res.headers['content-type']).to.equal('application/yaml');
+    expect(res.headers['content-disposition']).to.equal('attachment; filename="pipeshub-openapi.yaml"');
+    expect(res.body).to.equal('openapi: 3.0.0\n');
+  });
+
+  it('answers 404 when no spec is loaded', () => {
+    expect(download(null).statusCode).to.equal(404);
   });
 });

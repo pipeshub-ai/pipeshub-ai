@@ -5,7 +5,8 @@ The stream route marks the answers it builds from the source's own status
 reason and logs them without a traceback. Anything else is still an error.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import logging
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -14,6 +15,7 @@ from app.connectors.core.base.error.stream_errors import (
     SOURCE_REFUSAL_HEADER,
     map_source_status,
 )
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
@@ -112,14 +114,15 @@ class TestClassification:
 
 
 class TestHandlerLogging:
-    async def _fail_download(self, error: Exception) -> tuple[MagicMock, dict | None]:
-        logger = MagicMock()
+    async def _fail_download(self, error: Exception, *, update_node=None) -> tuple[logging.Logger, dict | None]:
+        # A real logger: lines written through log_failure/log_event never reach a mock's .error/.warning.
+        logger = logging.getLogger("test.p6.source_refusal")
         handler = _make_handler(logger=logger)
         gp = handler.event_processor.graph_provider
         record = {"_key": "r1", "virtualRecordId": "vr1", "origin": "CONNECTOR", "recordType": "FILE",
                   "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "text/html"}
         gp.get_document = AsyncMock(return_value=record)
-        gp.update_node = AsyncMock(return_value=True)
+        gp.update_node = update_node or AsyncMock(return_value=True)
         gp.write_attempt_start = attempt_start_via(gp)
         handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
         handler._trigger_next_queued_duplicate = AsyncMock()
@@ -128,25 +131,46 @@ class TestHandlerLogging:
         handler.config_service.get_config = AsyncMock(return_value={"connectors": {"endpoint": "http://c"}})
         with patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="t"), \
              patch.object(record_module, "make_api_call", new_callable=AsyncMock, side_effect=error):
-            with pytest.raises(Exception):  # noqa: B017 - the handler re-raises for the consumer
+            with pytest.raises(Exception) as raised:  # the handler re-raises (or wraps) for the consumer
                 await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        # The injected download error itself, or the cause the handler wrapped it in, reached the caller.
+        chain, link = [], raised.value
+        while link is not None:
+            chain.append(link)
+            link = link.__cause__
+        assert error in chain
         updates = gp.update_node.call_args.args[2] if gp.update_node.await_count else None
         return logger, updates
 
     @pytest.mark.asyncio
-    async def test_a_refusal_logs_one_warning_without_a_traceback(self) -> None:
-        logger, updates = await self._fail_download(_refusal())
-        logger.error.assert_not_called()
-        warnings = [c for c in logger.warning.call_args_list if "r1" in str(c.args[0])]
-        assert len(warnings) == 1
-        assert "exc_info" not in warnings[0].kwargs
+    async def test_a_refusal_is_left_to_the_consumers_end_line(self, caplog) -> None:
+        # The handler stores the reason; the consumer's index.end says it once (reason=source_refused, at WARNING).
+        with caplog.at_level(logging.DEBUG, logger="test.p6.source_refusal"):
+            _, updates = await self._fail_download(_refusal())
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO] == []
         assert updates["indexingStatus"] == ProgressStatus.FAILED.value
         assert updates["reason"] == WEB_400
 
     @pytest.mark.asyncio
-    async def test_an_unexpected_failure_still_logs_an_error_with_its_traceback(self) -> None:
+    async def test_an_unexpected_failure_reaches_the_consumer_unlogged(self, caplog) -> None:
         boom = ApiCallError("API call failed with status 422", status_code=422)
-        logger, _ = await self._fail_download(boom)
-        errors = [c for c in logger.error.call_args_list if "Final failure" in str(c.args[0])]
-        assert len(errors) == 1
-        assert errors[0].kwargs["exc_info"] is not None
+        with caplog.at_level(logging.DEBUG, logger="test.p6.source_refusal"):
+            _, updates = await self._fail_download(boom)
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_status_write_does_not_repeat_the_records_content_error(self, caplog) -> None:
+        name = "Payroll-Jane-Doe.pdf"
+
+        async def update_node(_key, _collection, updates) -> bool:
+            if updates.get("indexingStatus") == ProgressStatus.FAILED.value:
+                raise ConnectionError("graph down")  # raised while the record's error unwinds: that error is its context
+            return True
+
+        with caplog.at_level(logging.DEBUG, logger="test.p6.source_refusal"):
+            await self._fail_download(
+                DocumentProcessingError(f"Failed to process document: {name}"), update_node=AsyncMock(side_effect=update_node),
+            )
+        (failed,) = [r for r in caplog.records if r.getMessage() == "index.status_write_failed"]
+        assert (failed.levelno, failed.error_type) == (logging.WARNING, "ConnectionError")
+        assert all(name not in r.getMessage() + str(vars(r)) for r in caplog.records)

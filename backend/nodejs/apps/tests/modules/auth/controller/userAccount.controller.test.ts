@@ -3789,7 +3789,9 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
-      expect(next.firstCall.args[0].message).to.include('already in use')
+      // The reply and the error log line carry the message: never the address.
+      expect(next.firstCall.args[0].message).to.equal('Email already in use')
+      expect(next.firstCall.args[0].message).to.not.include('taken@example.com')
     })
 
     it('does not sync the graph when Mongo has no user for the token', async () => {
