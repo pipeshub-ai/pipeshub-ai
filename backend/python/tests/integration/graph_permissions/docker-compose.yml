@@ -30,14 +30,17 @@ services:
     # failures in the summary but are transport errors. The fixture is no longer
     # the "~60 nodes" these caps were sized for: it now carries a 25-deep chain,
     # an org-B subgraph and the deleted-record cases.
-    mem_limit: 2g
+    # Raised from 2g/512m/768m/128m to what CI runs (permission-conformance.yml) and the
+    # Compose default ships: a 768m heap ran out partway through the suite and the run
+    # stalled for over an hour. 2g heap is enough; the container peaked at 3.4g of 4g.
+    mem_limit: 4g
     environment:
       - NEO4J_AUTH=neo4j/khpermpass
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_server_memory_heap_initial__size=512m
-      - NEO4J_server_memory_heap_max__size=768m
-      - NEO4J_server_memory_pagecache_size=128m
+      - NEO4J_server_memory_heap_initial__size=1g
+      - NEO4J_server_memory_heap_max__size=2g
+      - NEO4J_server_memory_pagecache_size=1g
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 5s
