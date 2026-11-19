@@ -17,6 +17,7 @@ import fakeredis
 from app.services.cache import invalidation_hooks as hooks
 from app.services.messaging.kafka.handlers import entity as entity_events
 from app.services.permissions.cache import ViewerScopeCache
+from tests.support import guard_sites
 
 APP = Path(__file__).resolve().parents[4] / "app"
 BUMPS = {"notify_principals_changed", "notify_connector_permissions_changed", "notify_connector_sync_completed",
@@ -125,10 +126,34 @@ def _enclosing_functions(tree: ast.Module) -> list[ast.AsyncFunctionDef | ast.Fu
     return [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)]
 
 
+def listed_writers_without_a_bump() -> list[str]:
+    """The listed writers, and the sites an installed extension registered, that do not call a bump."""
+    sites = {*LISTED_WRITERS.items(), *guard_sites.EXTRA_PERMISSION_WRITERS}
+    missing = []
+    for rel, name in sorted(sites):
+        tree = ast.parse(guard_sites.path_of(rel).read_text())
+        if "notify_principals_changed" not in _calls(_function(tree, name)):
+            missing.append(f"{rel}::{name}")
+    return missing
+
+
 def test_listed_permission_writers_bump() -> None:
-    for rel, name in LISTED_WRITERS.items():
-        fn = _function(_tree(rel), name)
-        assert "notify_principals_changed" in _calls(fn), f"{rel}::{name} writes permission edges and must bump"
+    assert listed_writers_without_a_bump() == [], "these write permission edges and must bump"
+
+
+def test_a_registered_extra_permission_writer_is_checked_like_the_listed_ones(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "extras"
+    root.mkdir()
+    (root / "grants.py").write_text(
+        "async def bumps(): notify_principals_changed('org')\n"
+        "async def forgets(): pass\n"
+    )
+    monkeypatch.setattr(guard_sites, "EXTRA_SOURCE_ROOTS", (root,))
+    monkeypatch.setattr(guard_sites, "EXTRA_PERMISSION_WRITERS", frozenset({("extras/grants.py", "bumps")}))
+    assert listed_writers_without_a_bump() == []
+
+    monkeypatch.setattr(guard_sites, "EXTRA_PERMISSION_WRITERS", frozenset({("extras/grants.py", "bumps"), ("extras/grants.py", "forgets")}))
+    assert listed_writers_without_a_bump() == ["extras/grants.py::forgets"]
 
 
 DELETE_CALLS = {"batch_delete_edges", "delete_edge", "delete_edges_from", "delete_edges_to",

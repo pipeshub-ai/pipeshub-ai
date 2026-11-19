@@ -23,6 +23,7 @@ from app.modules.pipeline.leases import LeaseLost, RecordLeases
 from app.modules.transformers import vectorstore as vs_mod
 from app.modules.transformers.vectorstore import VectorStore, VirtualRecordBusy
 from app.services.vector_db.models import CollectionConfig
+from tests.support import guard_sites
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 from tests.support.index_world import COLL, ORG, VRID, make_store
 from tests.support.lease_fakes import FakeLeases
@@ -66,6 +67,10 @@ GRAPH_CHECKED = {   # the last record of a virtual record, or a connector, went 
     ("services/vector_db/membership.py", "_rewrite_or_delete_locked"),
 }
 ENTITY_FILES = {"modules/transformers/entity_vectorstore.py"}   # the entity index, keyed by entity: not the points of a record
+FENCED |= guard_sites.EXTRA_DELETE_FENCED
+SWEEP |= guard_sites.EXTRA_DELETE_SWEEP
+GRAPH_CHECKED |= guard_sites.EXTRA_DELETE_GRAPH_CHECKED
+ENTITY_FILES |= guard_sites.EXTRA_DELETE_ENTITY_FILES
 
 
 DELETE_NAMES = {"delete_points", "delete_collection"}
@@ -94,8 +99,7 @@ def _delete_references(tree: ast.AST) -> set[tuple[str, str]]:
 
 def _all_delete_sites(names: set[str] = DELETE_NAMES) -> set[tuple[str, str]]:
     sites: set[tuple[str, str]] = set()
-    for path in APP.rglob("*.py"):
-        relative = path.relative_to(APP).as_posix()
+    for relative, path in guard_sites.source_files():
         text = path.read_text(encoding="utf-8")
         if relative.startswith((*VECTOR_PROVIDERS, *NOT_VECTOR)) or not any(n in text for n in names):
             continue
@@ -111,7 +115,7 @@ COLLECTION_SITES = {
     ("modules/indexing/run.py", "purge_connector_by_virtual_record_ids"),
     ("modules/transformers/entity_vectorstore.py", "_drop_and_create_under_lock"),
     ("services/vector_db/collection_registry.py", "_drop"),
-}
+} | guard_sites.EXTRA_DELETE_COLLECTION_SITES
 
 
 def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writing_ones_are_fenced() -> None:
@@ -121,7 +125,7 @@ def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writ
     assert FENCED <= sites and SWEEP <= sites, "a listed fenced site no longer exists"
     fenced_calls = set(_calls_by_function("_fenced")) | set(_calls_by_function("fenced_delete"))
     for file, function in FENCED:
-        text = (APP / file).read_text(encoding="utf-8")
+        text = guard_sites.path_of(file).read_text(encoding="utf-8")
         node = next(n for n in ast.walk(ast.parse(text)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function)
         assert "_fenced(" in ast.get_source_segment(text, node) or "fenced_delete(" in ast.get_source_segment(text, node), f"{file}:{function}"
     assert fenced_calls >= {"delete_blocks_by_ids", "delete_embeddings", "_fence_and_verify"}

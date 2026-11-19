@@ -58,7 +58,6 @@ ALLOWED: list[tuple[str, str, str]] = [
     ("events/events.py", r"(record_doc|doc)\.get\(\"connectorId\"\)",
      "code-graph projection and the stored block list of a record: both are scoped by the record's own connector"),
     ("events/processor.py", r"record\.connector_id", "code-graph projection of a code file"),
-    ("indexing_main.py", r"record\.get\(\"connectorId\"\)", "the event payload rebuilt for a recovered record carries the record's own connector"),
 ]
 
 

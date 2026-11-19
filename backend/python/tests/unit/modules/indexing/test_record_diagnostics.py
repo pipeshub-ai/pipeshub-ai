@@ -569,9 +569,8 @@ class TestTheCountRuleOfEveryRevisionWriter:
         Limits: the site is found by the literal key or keyword; a key built at run time (``{name: rev}`` with ``name`` a variable), fields taken
         from another mapping (``{**other}``) or ``setattr`` are invisible; and one site added while another is removed in the same function keeps
         its count (the review sees that diff)."""
-        from pathlib import Path
+        from tests.support import guard_sites
 
-        app = Path(__file__).resolve().parents[4] / "app"
         writers = {
             ("events/events.py", "EventProcessor.update_record_fields"): 1,
             ("modules/pipeline/ingress.py", "StageIngress.on_indexed"): 1,
@@ -604,15 +603,16 @@ class TestTheCountRuleOfEveryRevisionWriter:
         }
         found: dict[tuple[str, str], int] = {}
         uses_rule: set[tuple[str, str]] = set()
-        for path in sorted(app.rglob("*.py")):
+        for relative, path in guard_sites.source_files():
             text = path.read_text(encoding="utf-8-sig")
             if "contentRev" not in text:
                 continue
-            relative = path.relative_to(app).as_posix()
             sites, rule_users = _revision_sites(text)
             for owner, count in sites.items():
                 found[(relative, owner)] = count
             uses_rule |= {(relative, owner) for owner in rule_users}
+        writers = {**writers, **guard_sites.EXTRA_REVISION_WRITERS}
+        not_writers = {**not_writers, **guard_sites.EXTRA_REVISION_NON_WRITERS}
         expected = {**writers, **{key: count for key, (count, _) in not_writers.items()}}
         changed = sorted(f"{key}: {found.get(key, 0)} sites, classified {count}" for key, count in expected.items() if found.get(key, 0) != count)
         unclassified = sorted(f"{key}: {count} sites" for key, count in found.items() if key not in expected)

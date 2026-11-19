@@ -20,6 +20,7 @@ from app.models.entities import Record
 from app.schema.arango.documents import record_schema
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 from app.services.graph_db.common.utils import INTERNAL_RECORD_FIELDS, api_record
+from tests.support import guard_sites
 from tests.unit.models.test_entities import _record_kwargs
 
 RECORDS = CollectionNames.RECORDS.value
@@ -207,9 +208,9 @@ def _writers(source: str) -> list[int]:
 
 def test_only_the_listed_files_write_the_fields() -> None:
     offenders = {
-        str(path.relative_to(_APP)): lines
-        for path in _APP.rglob("*.py")
-        if path not in _ALLOWED and (lines := _writers(path.read_text(encoding="utf-8-sig")))
+        key: lines
+        for key, path in guard_sites.source_files()
+        if path not in _ALLOWED and key not in guard_sites.EXTRA_DIAGNOSTIC_WRITER_FILES and (lines := _writers(path.read_text(encoding="utf-8-sig")))
     }
     assert offenders == {}, "these files set a record processing diagnostic: " + repr(offenders)
 

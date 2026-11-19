@@ -14,14 +14,17 @@ from pathlib import Path
 
 import pytest
 
+from tests.support import guard_sites
+from tests.unit.modules.indexing import status_writer_sites
 from tests.unit.modules.indexing.status_writer_sites import (
     CLASSES,
     DEAD,
-    HELPER_WRITERS,
     OWNERS,
-    SITES,
-    TX_OWNERS,
 )
+
+SITES = {**status_writer_sites.SITES, **guard_sites.EXTRA_STATUS_SITES}
+HELPER_WRITERS = {**status_writer_sites.HELPER_WRITERS, **guard_sites.EXTRA_HELPER_WRITERS}
+TX_OWNERS = {**status_writer_sites.TX_OWNERS, **guard_sites.EXTRA_TX_OWNERS}
 
 APP = Path(__file__).resolve().parents[4] / "app"
 
@@ -126,8 +129,8 @@ def scan(source: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]], set
 
 @lru_cache(maxsize=1)
 def _app_text() -> dict[str, str]:
-    """Every file under ``app``, read once for the whole module."""
-    return {path.relative_to(APP).as_posix(): path.read_text(encoding="utf-8-sig") for path in sorted(APP.rglob("*.py"))}
+    """Every scanned file (``app`` and any extra root), read once for the whole module."""
+    return {key: path.read_text(encoding="utf-8-sig") for key, path in guard_sites.source_files()}
 
 
 @lru_cache(maxsize=1)
@@ -209,7 +212,7 @@ def test_the_dead_writer_has_no_caller() -> None:
 def test_a_helper_that_writes_a_status_it_is_given_is_listed() -> None:
     """The listed helpers exist and still take the status as a parameter; a new such helper is a new writer."""
     for (relative, function), kind in HELPER_WRITERS.items():
-        source = (APP / relative).read_text(encoding="utf-8-sig")
+        source = guard_sites.path_of(relative).read_text(encoding="utf-8-sig")
         names = set(_all_functions(source))
         assert function in names, f"{relative}: {function} is gone"
         assert kind in CLASSES

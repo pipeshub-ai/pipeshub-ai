@@ -495,7 +495,7 @@ async def recover_in_progress_records(
                         "orgId": record.get("orgId"),
                         "version": record.get("version", 0),
                         "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
-                        "connectorId": record.get("connectorId"),
+                        "connectorId": connector_id,
                         "extension": record.get("extension"),
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),
@@ -1906,6 +1906,15 @@ async def _republish_stranded_records(
                 after_key = page[-1].get("_key") or page[-1].get("id")
                 if len(page) < page_size or not after_key:
                     break
+            # Records the connector's records give rise to, kept under another connector id, are parked and re-enabled with it.
+            async for derived in current_extension().ownership.derived_pages(
+                graph_provider,
+                connector_id,
+                org_id,
+                {"indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value, "reason": CONNECTOR_OFF},
+                page_size=page_size,
+            ):
+                yield derived
 
     for status_value, pages in (
         (ProgressStatus.QUEUED.value, _pages_in_status(ProgressStatus.QUEUED.value)),
