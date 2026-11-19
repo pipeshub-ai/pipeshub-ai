@@ -35,6 +35,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
+    _BACKPRESSURE_CLEAR_SETTLE_SECONDS,
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )
@@ -200,7 +201,11 @@ class TestApplyBackpressure:
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_action_when_no_paused_and_below_capacity(self, consumer):
         """No resume needed when nothing is paused."""
@@ -283,7 +288,11 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer._IndexingKafkaConsumer__apply_backpressure()
 
         consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_coordinator_behaves_as_before(self, consumer):
         consumer.consumer = MagicMock()
@@ -2374,7 +2383,11 @@ class TestApplyBackpressureFullCoverage:
         consumer._backpressure_logged = True
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
 
 class TestInitialize:

@@ -1912,7 +1912,6 @@
       "subtitle": "Vytvářejte a spravujte skupiny pro řízení přístupu a oprávnění",
       "enterpriseTitle": "Oprávnění skupin jsou k dispozici v edici Enterprise",
       "enterpriseMessage": "Chcete-li používat oprávnění skupin, přejděte na edici Enterprise.",
-      "enterpriseContact": "Kontaktujte nás",
       "createGroup": "Vytvořit skupinu",
       "searchPlaceholder": "Hledat...",
       "emptyTitle": "Zatím jste nevytvořili žádné skupiny",
@@ -1993,6 +1992,21 @@
         "saveError": "Oprávnění se nepodařilo uložit",
         "loadError": "Oprávnění se nepodařilo načíst",
         "empty": "Zatím nejsou definována žádná oprávnění."
+      }
+    },
+    "enterprise": {
+      "contact": "Promluvit s obchodem",
+      "scim": {
+        "heading": "Zřizování SCIM je k dispozici v edici Enterprise",
+        "message": "Nechte Okta nebo Microsoft Entra ID automaticky přidávat, aktualizovat a vypínat lidi ve vašem pracovním prostoru."
+      },
+      "auditLogs": {
+        "heading": "Protokoly auditu jsou k dispozici v edici Enterprise",
+        "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy."
+      },
+      "usage": {
+        "heading": "Využití, kredity a fakturace jsou k dispozici v edici Enterprise",
+        "message": "Zjistěte náklady na AI podle osob, agentů, konektorů a modelů, spravujte kredity, tarif a faktury a v Nastavení kreditů nastavte upozornění na útratu."
       }
     },
     "teams": {
@@ -2575,6 +2589,8 @@
       "sections": {
         "overview": "Přehled",
         "workspace": "Pracovní prostor",
+        "usageAndCredits": "Využití a kredity",
+        "security": "Zabezpečení",
         "personal": "Osobní",
         "people": "Lidé",
         "developerSettings": "Nastavení pro vývojáře"
@@ -2604,6 +2620,9 @@
         "archivedChats": "Archivované chaty",
         "users": "Uživatelé",
         "groups": "Skupiny",
+        "scim": "SCIM",
+        "auditLogs": "Protokoly auditu",
+        "usage": "Využití a kredity",
         "teams": "Týmy",
         "webSearch": "Vyhledávání na webu",
         "tenants": "Tenanti",

@@ -1578,7 +1578,7 @@ components:
             when present, are strings; other fields of the object are passed through. An
             object without the field its method needs is refused later as a failed sign-in,
             not as a validation error: `microsoft` without `idToken` answers `400`, and a Google
-            token that is not a JWT answers `500`.
+            token that is not a JWT answers `401`.
         email:
           type: string
           format: email
@@ -2653,6 +2653,32 @@ components:
           description: Null when the admin asking cannot read the container.
         restricted:
           type: boolean
+    ConnectorPermissionFilterBlocker:
+      type: string
+      description: |
+        Why this deployment cannot search any connector with its stored permissions: `serving_off`
+        (`ACL_FILTER_MODE` is `legacy`, so scope-filter serving is disabled; `ACL_SCOPE_FIELDS` may still
+        write the stored permissions ahead of it) or `store_unsupported` (the vector store cannot filter by them).
+      enum: [serving_off, store_unsupported]
+    ConnectorPermissionFilter:
+      type: object
+      required: [mode, effective, blockers]
+      properties:
+        mode:
+          type: string
+          description: The connector's own choice. A stored value that is not a mode reads as `legacy`.
+          enum: [inherit, legacy, scopes]
+        effective:
+          type: string
+          description: |
+            What the connector's next search uses: `scopes` only while its mode resolves to `scopes`, nothing
+            blocks it, its stored permissions are served now (see `serving.served`) and, when `ACL_FILTER_MODE` is
+            not `scopes`, the switch has been recorded; otherwise `legacy`.
+          enum: [legacy, scopes]
+        blockers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorPermissionFilterBlocker'
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -21033,12 +21059,11 @@ components:
         - idToken
     GoogleCredentials:
       type: object
-      additionalProperties: false
       description: |
-        Google ID token wrapped in an object, as Google's sign-in button returns it. Only the
-        first token check reads `credential`; the second one (`authenticateWithGoogle`) is
-        handed the whole object, so by code reading a sign-in sent this way ends in `500`
-        even with a valid token. Send the bare token string instead.
+        Google ID token wrapped in an object: the `credential` field of Google's sign-in button
+        response. Signs in the same as sending the bare token string. Without a non-empty
+        string `credential` the sign-in answers `400`. The response's other fields, such as
+        `select_by`, may be sent as they are; they are ignored.
       properties:
         credential:
           type: string
@@ -29051,9 +29076,8 @@ paths:
 
         - `password`: `{ "credentials": { "password": "your-password" } }`
         - `otp`: `{ "credentials": { "otp": "123456" } }` (6-digit code, valid for 10 minutes)
-        - `google`: `{ "credentials": "google-id-token-string" }`. The object form
-          `{ "credentials": { "credential": "..." } }` passes the first token check, but by code
-          reading the second check is handed the whole object, so it ends in `500`
+        - `google`: `{ "credentials": "google-id-token-string" }` or
+          `{ "credentials": { "credential": "google-id-token-string" } }`
         - `microsoft`: `{ "credentials": { "idToken": "..." } }` (only `idToken` is read)
 
         SAML (`samlSso`), generic OAuth (`oauth`) and Azure AD (`azureAd`) sign-in were removed in 1.0;
@@ -29114,6 +29138,7 @@ paths:
             - `github`, which has no sign-in flow
             - Wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
             - Microsoft: no `idToken` (an `accessToken` alone is not read), or no client ID saved for it
+            - Google: `credentials` is an object without a non-empty string `credential`
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -29126,7 +29151,7 @@ paths:
             - No `x-session-token` header, or a session that is unknown, expired or already used to finish a sign-in; start again with `/initAuth`
             - Wrong, missing, expired or already used sign-in code (the same message for an email with no account and for a locked account)
             - CAPTCHA refused
-            - The identity provider rejected the sign-in, or a Microsoft `idToken` is not a valid token for the saved client ID
+            - The identity provider rejected the sign-in (for Google: an ID token with a bad signature, for another client, expired or malformed), or a Microsoft `idToken` is not a valid token for the saved client ID
           content:
             application/json:
               schema:
@@ -29140,10 +29165,18 @@ paths:
         '500':
           description: |
             Internal server error. Also returned for a password or code sign-in when neither
-            the session nor the body carries an email (the account lookup fails), for a
-            Google token that is not a JWT (the Google library's error is not mapped).
+            the session nor the body carries an email (the account lookup fails), or when
+            Google's signing-key endpoint answers with an error or without a usable key set.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The identity provider could not be reached: the connection to Google's
+            signing-key endpoint, or to Microsoft's, was refused or dropped. Safe to retry.
           content:
             application/json:
               schema:
@@ -56108,6 +56141,10 @@ paths:
                           type: object
                           nullable: true
                           additionalProperties: true
+                  filter:
+                    description: The connector's permission filter mode and what its next search uses. Absent from servers that predate the mode.
+                    allOf:
+                      - $ref: '#/components/schemas/ConnectorPermissionFilter'
         '401':
           description: Missing or invalid credentials
           content:
@@ -56145,6 +56182,123 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: The connector service could not be reached. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/permissions/filter:
+    patch:
+      tags:
+        - Connector Instances
+      summary: Choose how search checks a connector's permissions
+      description: |
+        Sets the connector's own permission filter mode. `scopes` lets search read the
+        connector's stored permissions (faster, and it returns as many results for people
+        with narrow access as for anyone else), once they are complete and up to date; until
+        then, and whenever they are not, search uses the classic check. `legacy` always uses the
+        classic check. `inherit` (the default) follows the deployment's `ACL_FILTER_MODE`.
+        Every result is still checked against the source's permissions after it is found, in
+        every mode, so no mode shows anyone more than the classic check does.
+
+        `scopes` is refused with `409` when this deployment cannot read stored permissions at
+        all (see `blockers`). `legacy` and `inherit` are always accepted and apply to the next
+        search. When `ACL_FILTER_MODE` is `shadow`, a switch to `scopes` reaches search within
+        30 seconds.
+
+        <b>Who can call it:</b> an org admin, for a connector they may open: a personal connector
+        only by the user who created it, and a connected app only when its knowledge limit names this
+        connector whole. A session needs no scope; an OAuth client or personal access token needs
+        `connector:write` (this route does not accept `connector:read`). Anyone else, and an ID no
+        instance of the caller's organization has, gets <code>404</code>.
+      operationId: setConnectorPermissionFilter
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID (`_key` of the instance).
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [inherit, legacy, scopes]
+      responses:
+        '200':
+          description: The mode was stored; what the connector's next search uses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorPermissionFilter'
+        '400':
+          description: |
+            The connector instance ID does not match the pattern, or the body is not `{ "mode": ... }` with one of
+            the three modes (`VALIDATION_ERROR`). An ID with an encoded path separator or a dot segment is refused
+            before that, by the path guard, with `HTTP_BAD_REQUEST`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth client's token lacks the `connector:write` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            No connector instance of the caller's organization has this ID, the caller
+            is not an org admin, the connector is another user's personal connector, or
+            the caller is a connected app whose knowledge limit does not name this connector whole.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: '`scopes` cannot be used on this deployment. Nothing was stored.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, blockers]
+                properties:
+                  error:
+                    type: string
+                    enum: [not_switchable]
+                  blockers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorPermissionFilterBlocker'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The connector service could not be reached, or its answer was lost. The change may have been
+            applied. The write is not conditional: a retry sets the mode again and overwrites a change another
+            admin made in between, so read `GET /connectors/{connectorId}/permissions/status` first and retry
+            only if `filter.mode` is not already the one you want. That read needs `connector:read` for an OAuth
+            client or personal access token (`connector:write` does not grant it); a session needs no scope.
           content:
             application/json:
               schema:

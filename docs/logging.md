@@ -377,6 +377,12 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
   delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
   (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
 
+## Indexing
+
+| Event | Level | When |
+| --- | --- | --- |
+| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. A failed request (a 500, a 429 without `Retry-After`, a connection lost mid-answer) has no `reason`: `error_class` says why, and `status` adds Docling's HTTP status when it answered with one (a lost connection has none) |
+
 ## Agent loop events (Python)
 
 One chat turn is reconstructable from these lines; each carries the bound `org_id`, `user_id`, `conversation_id`,
@@ -485,6 +491,33 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
   child's call opened) (inferred). Programmatic dispatch binds its synthetic call ids (`programmatic_spawn_<step>_<hex>`) as the
   children's `tool_call_id`; they have no `tool_call.end`.
 
+## Model calls outside the agent loop (Python)
+
+A model provider puts its response body in the exception message, and the body can echo the prompt, the document or the
+account's email. So a failed model or embedding call is never logged with its text: the line that handles it calls
+`log_failure(..., include_error_text=False)` (class, type, the site's ids, a text-free stack at ERROR), and a retry or skip note
+names `error_type` instead of the error; some notes add `cause_type` (the innermost cause), so a missing `cause_type` does not
+mean the error had no cause. Lines that only relay the error (log, then raise)
+are not written: the handler above logs it once. An answer that does not fit the schema is `bad_request` (WARNING), not `internal`.
+
+| Event | Level | Fields |
+|---|---|---|
+| `structured_llm.failed` | `log_failure` policy; a reply that does not fit the schema `bad_request` | `schema`, `attempt` (0 = the first call, n = reflection n) |
+| `llm_stream.failed` | `log_failure` policy | the no-tools chat answer; the SSE error event is still sent |
+| `table_summary.failed` | `log_failure` policy | `parser` (`csv`, `excel`); a plain summary is used |
+| `document_extraction.failed` | `log_failure` policy; a failure with no cause: `bad_request` (no usable answer) or `unavailable` (open circuit) | `record_id` |
+| `extraction.fallback_failed` | `log_failure` policy | `kind` (`document`, `code`) |
+| `document_classify.failed` | as `document_extraction.failed` | the extraction service's route; `org_id` from the call scope |
+| `vlm_ocr.page_failed` | `log_failure` policy | `page`, `attempts`; the page is indexed empty, unless no page was read: then the document fails with the last error |
+| `grep_generation.failed` | `log_failure` policy | `attempt`; an answer that does not parse is an INFO note with the parser error's `error_type`, and its commands are recovered from the raw answer |
+| `record_extract.failed` | `log_failure` policy | `record_id`; the plain read is returned |
+| `image_generation.failed` | `log_failure` policy | `provider`, `model`, `mode` (`generate`, `edit`) |
+| `skill_index.embed_failed` | `log_failure` policy | `step` (`skill`, `bulk`, `query`), `count`, `total`; keyword search is used |
+| `entity_index.upsert_failed` | `log_failure` policy | `batch_start`, `count` |
+| `search.failed` | `log_failure` policy | the search's catch-all (a refused query embedding lands here) |
+| `parse.failed` | `log_failure` policy | `provider`, `parse_ms`; the parsing service's catch-all. An error VLM OCR already logged (no page read) keeps this line at its level, without a second stack |
+| `title_lookup.failed` | `log_failure` policy | the lookup of records by name beside a search (route and knowledge-graph tool); the search answers without it |
+
 ## Credential refresh
 
 The connector, toolset and MCP token refresh services log through `app/utils/credential_refresh_log.py`, so one
@@ -560,6 +593,26 @@ which every Postgres graph provider runs through) write one record per call that
   transaction the statement runs in another task, so `_Txn.run` finds the caller while its stack is live and hands it over; the
   unit's own `begin` and `prologue` there have `caller=unknown`.
 
+## Search access reads (Python)
+
+A search that cannot read what its user may access, or a graph read around it, writes one `log_failure` line where it handles the
+failure, without the error's text (`include_error_text=False`): the graph's text can carry the database host, the query and the
+record content. Like any `log_failure` line it is DEBUG when the same exception, or its cause, was already logged at its level or
+higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
+logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. Only these events leave the
+text out: when the batch access read fails, the graph provider's `check_access` first logs its own `check_access failed …` ERROR,
+which still carries the driver's text.
+
+| Event | What the search does next | Fields |
+| --- | --- | --- |
+| `search.access_unreadable`, `search.selection_unreadable`, `search.entity_filter_unavailable`, `search.hit_check_failed` | answers that access could not be checked (an entity lookup: a search error) | the `log_failure` fields |
+| `search.remembered_scope_unreadable`, `search.record_id_retry_failed` | clears the memo and retries normal scope resolution / keeps the container results | the `log_failure` fields |
+| `container_search.verification_unavailable` | marks the attempt degraded | `vrid_count` |
+| `search.notice_gate_failed`, `search.demo_setting_failed`, `demo_data.list_failed` | no access notices / excludes no demo connector | the `log_failure` fields |
+| `search.batch_fetch_failed` | fetches the records one by one | `collection` (`files`, `mails`) |
+| `search.diversity_read_failed`, `search.connector_types_unreadable` | keeps the plain result / searches every collection | the `log_failure` fields |
+| `search.location_access_failed`, `search.location_failed` | shows an App-only Location when permitted and available; otherwise omits it | the `log_failure` fields |
+
 ## Auth audit events (Node)
 
 Every security decision of sign-in, lockout, OTP, password reset and change, SSO, JIT provisioning, sign-out and the sign-in
@@ -584,6 +637,7 @@ access line has `client_ip` and the same `request_id`.
 | `auth.session.refresh` | `failure` only | `no_token`, `token_invalid`, `token_expired`, `session_ended`, `account_inactive`, `no_credentials`, `locked` | |
 | `auth.policy.update` | `success`, `failure` | `not_admin` | |
 | `auth.jit_provision` | `success` | | `google`, `microsoft` |
+| `auth.email.verify` | `failure` only | `no_token`, `token_invalid`, `token_expired` (the `org:email:verify` and `email:verified` scopes; EE mounts their routes) | |
 
 How a refusal gets its line: the code that refuses throws its error tagged with `refusal(error, reason)` (`authRefusal` in
 `modules/auth/utils/sign-in-audit.ts` checks the code). The tag is invisible to the client and to the logs. The handler, or the
@@ -592,6 +646,32 @@ scopes only), calls `auditRefusal` once in its catch; it writes a line only for 
 (`AUTH_AUDIT_REASONS`). An untagged error is a system failure: no audit line, and the error middleware logs it once.
 Not audited: body validation 400s, rate limits, regular-JWT failures on authenticated routes, and service-to-service scoped tokens.
 Each still has its `http.request.error` (or the limiter's) line.
+
+## User and group audit events (Node)
+
+Every change to a user account, a group or a group membership is one INFO line on the `audit` logger, written right after the
+store write that makes it, with the same fields as the auth events: `org_id`, `actor` (the admin or user who made the change),
+`target` (the account; the group for `group.create`, `group.update` and `group.delete`; the affected user on membership lines),
+`outcome`, `reason`, and `group_id` (the group) on membership lines. Never an email, name,
+role name, group name or field value: a role change is told by the event and its reason.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `user.create` | `success`, `failure` | success: `demo_password` (a demo account got a starting password), else none; failure: `email_taken`, `password_not_allowed` | |
+| `user.invite` | `success`, `failure` | success: `new`, `reinvite`, `resend`; failure: `not_admin`, `admin_limit` | `new` is written when the account is created, even if its mail then fails; `reinvite` and `resend` only after the mail was accepted |
+| `user.restore` | `success` | `invite` | a removed account brought back by an invite |
+| `user.role.change` | `success`, `failure` | success: `promote`, `demote`, `new_admin` (created or invited as admin); failure: `not_admin`, `last_admin`, `admin_limit` | "who made U an admin" is this one event |
+| `user.update` | `success`, `failure` | success: `profile`, `sign_in_state` (an admin set whether the user has signed in); failure: `not_admin` | a user's own first sign-in is `auth.sign_in`, not this |
+| `user.email_change.request` | `success`, `failure` | failure: `not_self`, `email_taken` | the verification link was sent; the change itself is `auth.email.change reason=link` when the link is opened |
+| `user.delete` | `success`, `failure` | failure: `not_member` (only members can be deleted) | |
+| `group.create` | `success` only | | `target` = the group; a reserved name or type is refused as a validation 400, before any audit line |
+| `group.update`, `group.delete` | `success`, `failure` | failure: `protected_group` (the everyone/admin groups) | `target` = the group |
+| `group.member.add`, `group.member.remove` | `success`, `failure` | success: `already_member` / `not_member` on every found pair when the store reports no group changed (also when other requested groups are missing); failure: `not_found` | one line per user × group; invites with groups write `group.member.add` too. On Postgres the store counts live groups, not changed ones, so a no-op is a plain success and `already_member` / `not_member` never fire |
+| `org.create` | `success` | | `actor` = the first admin, `org_id` = the new org |
+
+Refusals use the same tags as the auth events (`userRefusal` / `auditUserRefusal` in `modules/user_management/utils/user-audit.ts`,
+lists in `USER_AUDIT_REASONS`). Not audited: route-guard refusals (`userAdminCheck`, `userAdminOrSelfCheck`, …), validation 400s,
+display-picture changes, and system failures (the error middleware logs those once).
 
 ## Upstream calls (Node)
 
@@ -762,10 +842,10 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
   `mcp_server_id`, `toolset_id`, `job`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
-  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Python
-  also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also
-  has `upstream` and `network_code` (on `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on
-  `chat_stream.*`).
+  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Node
+  audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `error_message`
+  and `cause_type`; Node's `error` is an object (`error.message`). Node also has `upstream` and `network_code` (on
+  `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.

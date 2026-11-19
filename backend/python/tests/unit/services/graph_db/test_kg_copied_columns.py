@@ -504,7 +504,16 @@ def counts_statements() -> list[str]:
     return [importlib.import_module("app.services.graph_db.postgres.kg.counts").RECOUNT]
 
 
-RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements}
+TRASH = "python/app/services/graph_db/postgres/kg/trash.py"
+
+
+def trash_statements() -> list[str]:
+    """The typed graph's trash listing: composed once, at import, from the module's seek builders."""
+    t = importlib.import_module("app.services.graph_db.postgres.kg.trash")
+    return [t.PAGE, t.COUNT]
+
+
+RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements}
 
 
 def sources() -> dict[str, tuple[list[str], list[str]]]:

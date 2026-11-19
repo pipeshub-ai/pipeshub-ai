@@ -10,7 +10,7 @@
 # p_projector_epoch (kg_0013): the writers of stamps and fences and those that take work off the change log or the restamp queue take the caller's projection code
 # epoch and refuse one below 7. Code of an older release calls them without it and finds no such function: it wrote stamps without the access lists (kg.scopes)
 # and r13, and would take work off the log or the queue without writing them. Epoch 5 (kg_0014) is refused too: it wrote no PARENT_CHILD links (kind 3). Epoch 6
-# (kg_0017) is refused too: it read PARENT_AND_GRANT as an unknown rule.
+# (kg_0017) is refused too: it read PARENT_AND_GRANT as an unknown rule. Epoch 7 (kg_0019) is refused too: it wrote no trash columns.
 functions:
   - name: kg.w_nodes_upsert
     class: write
@@ -281,7 +281,7 @@ functions:
     callers: ["python/app/services/graph_db/postgres/kg"]
     pins: [{"op": "delete", "rel": "kg.graph_changes", "txn": "txid"}]
     args:
-      - {"name": "p_projector_epoch", "type": "int", "range": [7, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -301,7 +301,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.graph_changes", "key": ["id"]}]
     args:
       - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [7, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -468,7 +468,7 @@ functions:
       - {"name": "p_under_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
       - {"name": "p_legacy", "type": "smallint[]", "max_items": 5000, "item_range": [0, 8]}
       - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [7, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -497,7 +497,7 @@ functions:
       - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
       - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
       - {"name": "p_jobs", "type": "bigint[]", "max_items": 5000}
-      - {"name": "p_projector_epoch", "type": "int", "range": [7, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -550,7 +550,7 @@ functions:
       - {"name": "p_worker", "type": "text", "length": [1, 128]}
       - {"name": "p_attempts", "type": "int", "range": [0, 1000000]}
       - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [7, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
     returns: "bigint"
     no_org: "0"
     reads: ["kg.restamp_queue"]
@@ -596,7 +596,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.restamp_queue", "key": ["id"]}]
     args:
       - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [7, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
     returns: "boolean"
     no_org: "false"
     reads: ["kg.restamp_queue"]
@@ -713,6 +713,36 @@ functions:
         END IF;
         INSERT INTO kg.records (org_id, sk, coll, id, kind, folder, hide_children, alien, name_sort) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_folders, p_hide_children, p_aliens, p_name_sorts) AS k(a, b, c, d, e, f, g, h)
           ON CONFLICT (org_id, sk) DO UPDATE SET folder = excluded.folder, hide_children = excluded.hide_children, alien = excluded.alien, name_sort = excluded.name_sort;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  # kg_0019: the trash columns of the records (deletedAtTimestamp and deleteBatchId of the node), which a trash listing pages by.
+  - name: kg.w_trash_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["deleted_ms", "delete_batch"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_deleted_ms", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_batches", "type": "text[]", "max_items": 5000}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_deleted_ms) <> cardinality(p_sks) OR cardinality(p_batches) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, deleted_ms, delete_batch) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_deleted_ms, p_batches) AS k(a, b, c, d, e, f)
+          ON CONFLICT (org_id, sk) DO UPDATE SET deleted_ms = excluded.deleted_ms, delete_batch = excluded.delete_batch;
         GET DIAGNOSTICS v_n = ROW_COUNT;
         RETURN v_n;
       END;
