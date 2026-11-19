@@ -49,6 +49,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'countSince',
   'countUsersByOrg',
   'counts',
+  'exists',
   'existsLiveEmail',
   'find',
   'findActiveByEmail',

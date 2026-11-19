@@ -2080,7 +2080,7 @@ class BookStackConnector(BaseConnector):
         self.logger.info("BookStack webhook received.")
         # BookStack doesn't have native webhooks, so this is a placeholder
         # Could potentially trigger an incremental sync if webhooks are added
-        asyncio.create_task(self.run_incremental_sync())
+        self.request_sync()
 
     async def cleanup(self) -> None:
         """
