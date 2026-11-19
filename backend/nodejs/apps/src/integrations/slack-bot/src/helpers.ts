@@ -359,7 +359,8 @@ export function resolveOfficeAttachmentMimetype(file: SlackFile): string | null 
   const known = Object.values(OFFICE_ATTACHMENT_EXTENSION_MIMETYPES);
   if (!extension) return known.includes(mime) ? mime : null;
   if (!Object.prototype.hasOwnProperty.call(OFFICE_ATTACHMENT_EXTENSION_MIMETYPES, extension)) return null;
-  const mimeForExtension = OFFICE_ATTACHMENT_EXTENSION_MIMETYPES[extension]!;
+  const mimeForExtension = OFFICE_ATTACHMENT_EXTENSION_MIMETYPES[extension];
+  if (mimeForExtension === undefined) return null;
   return mime === mimeForExtension || GENERIC_MIMETYPES.has(mime) || mime === "application/zip"
     ? mimeForExtension
     : null;

@@ -32,7 +32,7 @@ export function asSlackCitations(
     if (!entry || typeof entry !== 'object') return [];
     const data =
       'citationData' in entry
-        ? (entry as { citationData: unknown }).citationData
+        ? entry.citationData
         : entry;
     const metadata = (data as { metadata?: unknown } | null)?.metadata;
     if (!metadata || typeof metadata !== 'object') return [];

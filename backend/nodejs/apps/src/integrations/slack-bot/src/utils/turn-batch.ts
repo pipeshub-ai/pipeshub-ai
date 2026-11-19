@@ -11,12 +11,16 @@ export function mergeBatchMessage(batch: SlackMessagePayload[]): SlackMessagePay
   const noId: SlackFile[] = [];
   for (const message of batch) {
     for (const file of (message.files ?? []) as SlackFile[]) {
-      if (file.id === undefined) noId.push(file);
-      else if (!byId.has(file.id)) byId.set(file.id, file);
+      // Files come from Slack's payload unchecked, so an id may be missing at run time.
+      const id: string | undefined = file.id;
+      if (id === undefined) noId.push(file);
+      else if (!byId.has(id)) byId.set(id, file);
     }
   }
+  const newest = batch[batch.length - 1];
+  if (newest === undefined) throw new Error('mergeBatchMessage needs at least one message');
   return {
-    ...batch[batch.length - 1]!,
+    ...newest,
     text: batchText(batch.map((m) => m.text ?? '')),
     files: [...byId.values(), ...noId],
   };

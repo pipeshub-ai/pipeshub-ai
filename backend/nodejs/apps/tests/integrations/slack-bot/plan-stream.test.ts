@@ -704,7 +704,7 @@ describe('slack-bot/utils/plan-stream', () => {
       c.apiCall.withArgs('chat.appendStream').onCall(calls(c, 'chat.appendStream').length).rejects(tooLong());
       // The message it rolls over to refuses the whole piece once, then takes halves.
       c.apiCall.withArgs('chat.startStream').onCall(1).rejects(tooLong());
-      const text = `${'word '.repeat(400)}`;
+      const text = 'word '.repeat(400);
 
       await s.answer(text);
 

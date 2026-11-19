@@ -1571,7 +1571,7 @@ async function prepareAndProcess(
     );
     // A file sent with the batch is attached already; don't send it twice.
     const sent = new Set(((typedMessage.files ?? []) as SlackFile[]).map((f) => f.id));
-    const notSent = (files: SlackFile[]) =>
+    const notSent = (files: SlackFile[]): SlackFile[] =>
       files.filter((f) => f.id === undefined || !sent.has(f.id));
     const threadFiles = {
       supported: notSent(collected.supported),
