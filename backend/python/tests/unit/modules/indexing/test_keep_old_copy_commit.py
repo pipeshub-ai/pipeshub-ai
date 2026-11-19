@@ -304,3 +304,18 @@ async def test_finish_drops_the_records_cache_entry_and_marks_the_old_copy() -> 
     moved.assert_awaited_once()
     assert moved.await_args.kwargs["connector_id"] == "k1" and moved.await_args.kwargs["org_id"] == "o"
     assert keep_old_copy.RETIRED_AT_FIELD in g.mapping["X"]
+
+
+@pytest.mark.asyncio
+async def test_finish_retires_the_membership_of_the_old_copy() -> None:
+    """The call that keeps retired copies out of container search (scenario 30): without it search falls back to the record-id path for most
+    queries on a connector being re-indexed."""
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    swap, _vs = committer(g)
+    swap._retire_membership = AsyncMock()  # type: ignore[method-assign]
+    with patch("app.modules.transformers.swap_commit.notify_record_vrid_moved", AsyncMock()), \
+         patch("app.modules.transformers.swap_commit.spawn_detached", lambda coro, name=None: coro.close()):
+        await swap.finish(ctx_for("A", "Y"), run())
+    swap._retire_membership.assert_awaited_once_with(run())
