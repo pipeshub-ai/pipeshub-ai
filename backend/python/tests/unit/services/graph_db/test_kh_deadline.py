@@ -11,7 +11,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -179,3 +179,78 @@ async def test_the_route_lists_under_the_knowledge_hub_deadline(monkeypatch: pyt
     # Busy, not broken: the web app is told to come back, with the reason.
     assert refused.value.status_code == 503 and refused.value.headers == {"Retry-After": "5"}
     assert "took too long" in refused.value.detail
+
+
+class PooledDriver:
+    """A driver whose sessions wait ``acquire`` seconds for a pooled connection before sending RUN, then end as scripted.
+
+    ``sent`` records the server-side limit of each RUN that reached the server: what a real pool wait or a retry after a lost
+    connection would send through ``Neo4jClient.execute_query``."""
+
+    def __init__(self, steps: list[tuple[float, Exception | None]]) -> None:
+        self.steps = steps
+        self.sent: list[float | None] = []
+
+    def session(self, **_kw: Any) -> "PooledDriver._Session":  # noqa: ANN401
+        return PooledDriver._Session(self)
+
+    async def verify_connectivity(self) -> None:
+        return None
+
+    class _Session:
+        def __init__(self, driver: "PooledDriver") -> None:
+            self.driver = driver
+
+        async def __aenter__(self) -> "PooledDriver._Session":
+            return self
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+        async def run(self, statement: Any, parameters: dict | None = None) -> Any:  # noqa: ANN401
+            acquire, outcome = self.driver.steps.pop(0)
+            await asyncio.sleep(acquire)
+            self.driver.sent.append(getattr(statement, "timeout", None))
+            if outcome is not None:
+                raise outcome
+            result = MagicMock()
+            result.keys = MagicMock(return_value=["n"])
+            result.values = AsyncMock(return_value=[[1]])
+            result.data = AsyncMock(return_value=[{"n": 1}])
+            return result
+
+
+def _pooled_client(driver: PooledDriver) -> Any:  # noqa: ANN401
+    from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
+
+    client = Neo4jClient(uri="bolt://localhost:7687", username="neo4j", password="pw", database="neo4j", logger=MagicMock())
+    client.driver = driver  # type: ignore[assignment]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_a_statement_waiting_for_a_pooled_connection_at_the_deadline_is_never_sent() -> None:
+    driver = PooledDriver([(0, None), (30, None)])
+    p = provider(_pooled_client(driver))
+    await p._kh_query(TEXT)      # planned, with no deadline
+    with deadline_after(0.05), pytest.raises(KnowledgeHubListingBusy) as busy:
+        await p._kh_query(TEXT)
+    assert busy.value.timed_out
+    await asyncio.sleep(0.1)
+    assert len(driver.sent) == 1, "a RUN was sent after the request was answered"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_lost_connection_is_not_sent_past_the_deadline() -> None:
+    from neo4j.exceptions import ServiceUnavailable
+
+    # The first attempt reaches the server and loses its connection; the client's retry waits for another one past the deadline.
+    driver = PooledDriver([(0, None), (0.05, ServiceUnavailable("connection reset")), (30, None), (30, None)])
+    p = provider(_pooled_client(driver))
+    await p._kh_query(TEXT)
+    with deadline_after(0.2), pytest.raises(KnowledgeHubListingBusy) as busy:
+        await p._kh_query(TEXT)
+    assert busy.value.timed_out
+    await asyncio.sleep(0.1)
+    assert len(driver.sent) == 2, "the retry was sent after the request was answered"
+    assert 0 < driver.sent[1] <= 0.2      # the attempt that was sent carried no more than the time left
