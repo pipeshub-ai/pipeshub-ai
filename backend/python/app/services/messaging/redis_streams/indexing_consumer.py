@@ -89,15 +89,13 @@ from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
     FairSchedulerConfig,
     IndexingFairness,
-    SlotPlan,
-    SlotPlanner,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import (
     CompositeKeyExtractor,
     TieredKeyExtractor,
 )
-from app.services.messaging.scheduling.slot_share import SlotShare
+from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
 from app.services.messaging.storage_protocol import tagged
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
@@ -536,14 +534,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
         # than its share of the slots (see scheduling.slot_share).
-        self._slot_share: SlotPlanner | None = None
+        self._slot_share: SlotShare | None = None
         if self.fair_scheduler_config.enabled:
-            room = fairness.buffer_room if fairness is not None else None
-            self._scheduler = DRRScheduler(
-                self.fair_scheduler_config, self.weight_provider,
-                room=(lambda key: room(key, self._scheduler)) if room is not None else None,
-            )
-            self._slot_share = (fairness.planner if fairness is not None and fairness.planner else SlotShare)(
+            room = (lambda key: fairness.buffer_room(key, self._scheduler)) if fairness and fairness.buffer_room else None
+            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider, room=room)
+            self._slot_share = (fairness.planner if fairness and fairness.planner else SlotShare)(  # type: ignore[assignment]
                 self.fair_scheduler_config.entity_depth, self.weight_provider
             )
 
@@ -1145,7 +1140,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     def _slot_share_plan(
         self, can_dispatch: "Callable[[Any], bool] | None" = None
-    ) -> SlotPlan | None:
+    ) -> SlotSharePlan | None:
         """Each waiting connector's cap on records in flight, for one
         dispatch decision. None when fair scheduling is off.
 
@@ -3437,8 +3432,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         per_stream = max(1, buffer_room // max(1, len(streams)))
         extra_budget = self._fairness.extra_read_budget(scheduler) if self._fairness and self._fairness.extra_read_budget else None
         if extra_budget is not None:
-            # Of the extra topics' streams, read only as many as the budget covers a batch of, from the shared
-            # cursor, which then moves to the last one read: another cursor would leave streams unread.
+            # Only as many extra streams as the budget covers a batch of, from the shared cursor, which then moves to the last read.
             extra = [t for t in streams if _LANE_SUFFIX.sub("", t) in self._fairness.extra_topics]
             topics = list(self.config.topics)
             start = self._read_offset % len(topics)

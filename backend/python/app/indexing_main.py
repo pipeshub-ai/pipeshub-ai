@@ -118,6 +118,7 @@ from app.services.llm_gateway.fleet_redis import (
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.llm_gateway.trial_lease import get_trial_renewer
 from app.services.llm_gateway.wire import hook_status as wire_hook_status
+from app.services.messaging import consumer_concurrency
 from app.services.messaging.backpressure import (
     get_default_backpressure_coordinator,
 )
@@ -127,11 +128,7 @@ from app.services.messaging.config import (
     get_message_broker_type,
     messaging_env,
 )
-from app.services.messaging.consumer_concurrency import (
-    PriorityLane,
-    StageAdmission,
-    slot_pool_limit,
-)
+from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
 from app.services.messaging.distributed_concurrency import (
     DistributedConcurrencyManager,
 )
@@ -2570,7 +2567,7 @@ async def start_kafka_consumers(
         # passing it explicitly here is what lets the consumer's read loop
         # actually see their 429 signals and pause new reads.
         record_kafka_consumer = MessagingFactory.create_consumer(
-            fairness=indexing_fairness(lambda pool: slot_pool_limit(record_kafka_consumer, pool)),
+            fairness=indexing_fairness(lambda pool: consumer_concurrency.slot_pool_limit(record_kafka_consumer, pool)),
             broker_type=broker_type,
             logger=logger,
             config=record_consumer_config,

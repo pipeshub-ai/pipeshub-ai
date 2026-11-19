@@ -37,7 +37,7 @@ from app.services.messaging.scheduling.interface import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Hashable
+    from collections.abc import Callable
 
 T = TypeVar("T")
 
@@ -269,7 +269,7 @@ class DRRScheduler(Generic[T]):
         self,
         config: FairSchedulerConfig,
         weights: WeightProvider | None = None,
-        room: Callable[[FairnessKey], tuple[Hashable, int] | None] | None = None,
+        room: Callable[[FairnessKey], tuple[object, int] | None] | None = None,
     ) -> None:
         self._config = config
         self._weights = weights

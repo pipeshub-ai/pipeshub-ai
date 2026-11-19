@@ -7,7 +7,11 @@ from typing import Any
 
 import pytest
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, RedisStreamsConfig
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    RedisStreamsConfig,
+)
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.producer import PgMessagingProducer
 from app.services.messaging.postgres.queue import PgQueue

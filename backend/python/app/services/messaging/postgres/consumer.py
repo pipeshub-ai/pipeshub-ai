@@ -63,7 +63,7 @@ from app.utils.logging_fields import log_fields
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Coroutine, Iterator
 
     from app.services.distributed.interface import IDistributedLeaseManager
     from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
@@ -286,18 +286,16 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await asyncio.sleep(0.05)
                     continue
                 self._wake.clear()
-                size = min(free, max(self.config.batch_size, 1)) if self.indexing else max(self.config.batch_size, 1)
-                if self._fairness is not None and self._fairness.claim_steps is not None:
-                    batch = await self._claim_in_steps(self._fairness.claim_steps, size)
-                else:
-                    batch = await self.queue.claim(
-                        self.config.group_id,
-                        self.config.topics,
-                        self.consumer_name,
-                        size,
-                        self._visibility_s,
-                        ordered=self._ordered,
-                    )
+                batch = await self._claim(
+                    self.config.group_id,
+                    self.config.topics,
+                    self.consumer_name,
+                    min(free, max(self.config.batch_size, 1))
+                    if self.indexing
+                    else max(self.config.batch_size, 1),
+                    self._visibility_s,
+                    ordered=self._ordered,
+                )
                 if not batch:
                     await self._idle(poll_s)
                     continue
@@ -322,21 +320,17 @@ class PgMessagingConsumer(IMessagingConsumer):
                 )
                 await asyncio.sleep(1)
 
-    async def _claim_in_steps(
-        self, steps: "Callable[[int, Mapping[str, int]], Sequence[tuple[str, int]]]", size: int
-    ) -> list[Delivery]:
-        """Claim topic by topic, in the order and amounts ``steps`` gives, one single-topic call each, until ``size`` rows."""
-        in_flight = Counter(topic for topic, _ in self._held)
+    async def _claim(self, group: str, topics: list[str], consumer: str, limit: int, visibility_s: float, *, ordered: bool) -> list[Delivery]:
+        """``queue.claim``; with claim steps, one single-topic claim per step, in the order and amounts they give, up to ``limit`` rows."""
+        steps = self._fairness.claim_steps if self._fairness else None
+        if steps is None:
+            return await self.queue.claim(group, topics, consumer, limit, visibility_s, ordered=ordered)
         out: list[Delivery] = []
-        for topic, rows in steps(size, in_flight):
-            remaining = size - len(out)
-            if remaining <= 0:
+        for topic, rows in steps(limit, Counter(t for t, _ in self._held)):
+            if len(out) >= limit:
                 break
             if rows > 0:
-                out += await self.queue.claim(
-                    self.config.group_id, [topic], self.consumer_name, min(rows, remaining), self._visibility_s,
-                    ordered=self._ordered,
-                )
+                out += await self.queue.claim(group, [topic], consumer, min(rows, limit - len(out)), visibility_s, ordered=ordered)
         return sorted(out, key=lambda d: d.message_id)
 
     async def _idle(self, poll_s: float) -> None:

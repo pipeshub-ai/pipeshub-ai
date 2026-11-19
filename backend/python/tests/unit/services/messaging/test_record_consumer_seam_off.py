@@ -172,7 +172,7 @@ async def test_m4_claim_steps_that_reorder_the_default_topics_are_noticed(monkey
     from app.services.messaging.postgres.consumer import PgMessagingConsumer
 
     apply(monkeypatch, PgMessagingConsumer, "_consume_loop", [(
-        "self.config.topics,\n                    self.consumer_name,", "self.config.topics[::-1],\n                    self.consumer_name,",
+        "self.config.topics,\n                self.consumer_name,", "self.config.topics[::-1],\n                self.consumer_name,",
     )])
     assert await detected("pg")
 
@@ -186,7 +186,7 @@ async def test_m5_a_key_depth_changed_by_one_level_is_noticed(monkeypatch: pytes
 
 async def test_m6_a_fetch_back_room_clamp_with_no_rule_is_noticed(monkeypatch: pytest.MonkeyPatch) -> None:
     apply(monkeypatch, kafka_class(), "_IndexingKafkaConsumer__fetch_back_remembered", [(
-        "if buffer_room is not None else None", "if buffer_room is not None else ('bucket', 2)",
+        "if buffer_room else None", "if buffer_room else ('bucket', 2)",
     )])
     assert await detected("kafka")
 

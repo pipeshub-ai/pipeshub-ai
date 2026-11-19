@@ -1,5 +1,4 @@
 import dataclasses
-import logging
 import os
 from logging import Logger
 from typing import TYPE_CHECKING
@@ -159,29 +158,6 @@ def lane_topics_for(
     # The base stream only holds what was written before laning; every
     # replica keeps draining it.
     return [topic] + [router.lane_name(topic, lane) for lane in sorted(only_lanes)]
-
-
-def _applicable_fairness(
-    fairness: IndexingFairness,
-    fair_config: FairSchedulerConfig,
-    consumer_type: ConsumerType,
-    key_extractor: FairnessKeyExtractor | None,
-    weight_provider: WeightProvider | None,
-    stage_admission: "StageAdmission | None",
-    priority_lane: "PriorityLane | None",
-) -> IndexingFairness | None:
-    if (
-        consumer_type != ConsumerType.INDEXING
-        or priority_lane is not None
-        or stage_admission is not None
-        or key_extractor is not None
-        or weight_provider is not None
-    ):
-        return None
-    if not fair_config.enabled or fair_config.key_fields != FairSchedulerConfig().key_fields:
-        logging.getLogger(__name__).warning("Ignoring the record consumer's extra parts: fair scheduling is off or key fields are set")
-        return None
-    return fairness
 
 
 def _reject_namespaced_redis_streams() -> None:
@@ -405,8 +381,7 @@ class MessagingFactory:
                       the priority topic: records are admitted ahead of the queued
                       backlog but under the lane's own caps and lease pools.
 
-            fairness: Optional parts for the record consumer (INDEXING, no priority lane or stage admission,
-                      no explicit extractor or weights, fair scheduling on, default key fields); else ignored.
+            fairness: Optional parts for the record consumer; ignored unless INDEXING with default key fields and no explicit extractor, weights, priority lane or stage admission.
 
         Returns:
             IMessagingConsumer instance
@@ -416,9 +391,11 @@ class MessagingFactory:
 
         effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()
         if fairness is not None:
-            fairness = _applicable_fairness(
-                fairness, effective_fair_config, consumer_type, key_extractor, weight_provider, stage_admission, priority_lane
-            )
+            if consumer_type != ConsumerType.INDEXING or any(x is not None for x in (key_extractor, weight_provider, stage_admission, priority_lane)):
+                fairness = None
+            elif not effective_fair_config.enabled or effective_fair_config.key_fields != FairSchedulerConfig().key_fields:
+                logger.warning("Ignoring the record consumer's extra parts: fair scheduling is off or key fields are set")
+                fairness = None
         if fairness is not None:
             effective_fair_config = dataclasses.replace(effective_fair_config, key_fields=fairness.key_fields)
             key_extractor, weight_provider = fairness.key_extractor, fairness.weights
