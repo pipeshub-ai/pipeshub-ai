@@ -209,3 +209,22 @@ async def test_a_linked_user_account_still_gives_its_organisation_role(layer: Pg
     with bind(OrgContext(_hex(ns.org), None, "job", "job:test", "t")):
         got = await snapshot(pg_provider, world, "u", ns, _hex(ns.org))
     assert got[("context", "f")]["role"] == "OWNER", got
+
+
+@pytest.mark.parametrize("variant", ["", "accounts"])
+async def test_a_linked_accounts_grant_gives_a_role_only_inside_the_links_connector(layer: PgLayer, pg_provider, variant: str) -> None:
+    """REGR-12: f (in A) inherits from SB (in B), where acct, linked for A, holds OWNER itself, through a group and through a team. u reads f
+    as READER, its own grant, in every reader and in the batched role of entity search; acct's WRITER on SA2 (in A) still gives u WRITER on h."""
+    layer.variant = variant
+    world = next(s for s in load_all() if s.id == "REGR-12").final_world()
+    await layer.preload([world])
+    ns = await layer._ns(world)
+    org = _hex(ns.org)
+    with bind(OrgContext(org, None, "job", "job:test", "t")):
+        got = await snapshot(pg_provider, world, "u", ns, org)
+        batch = await pg_provider._q(lambda tx: pg_provider._roles_on(tx, org, ns.id("u"), "records", [ns.id("f"), ns.id("h")]), None)
+    assert got[("context", "f")]["role"] == "READER", got
+    assert set(got[("details", "f")]) == {"READER"}, got
+    assert got[("context", "h")]["role"] == "WRITER", got
+    assert {ns.local(k): v and v[0] for k, v in batch.items()} == {"f": "READER", "h": "WRITER"}, batch
+    assert await layer.admitted(world, "u", [n.id for n in world.nodes]) >= {"f", "h"}

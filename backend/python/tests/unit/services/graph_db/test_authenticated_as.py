@@ -151,11 +151,14 @@ class TestRoleBuildersCountTheLinkedAccount:
     def test_every_arango_permission_path_checks_all_principals(self) -> None:
         for name in ("arango record", "arango recordGroup"):
             query = _role_queries()[name]
-            assert query.count("._from IN principal_ids") == 5, name
+            # a linked account counts only on a target of the link's connector: elsewhere the path reads the user alone
+            assert query.count("._from IN (target_id IN kh_in_connector ? principal_ids : [u._id])") == 5, name
+            assert "PARSE_IDENTIFIER(kh_t).key : DOCUMENT(kh_t).connectorId) == " in query, name
             # the one single-user anchor is the link lookup
             assert query.count("._from == u._id") == 1, name
             # the organisation step reads the User principals only: a SourceAccount belongs to no organisation
-            assert 'belongs_edge._from IN principal_ids AND IS_SAME_COLLECTION("users", belongs_edge._from)' in query, name
+            assert ('belongs_edge._from IN (target_id IN kh_in_connector ? principal_ids : [u._id])'
+                    ' AND IS_SAME_COLLECTION("users", belongs_edge._from)') in query, name
 
     def test_every_neo4j_permission_path_checks_all_principals(self) -> None:
         for name in ("neo4j record", "neo4j recordGroup"):
@@ -165,7 +168,9 @@ class TestRoleBuildersCountTheLinkedAccount:
             assert query.count("WITH principal, target") == 5, name
             assert query.count("MATCH (principal)-") == 3, name
             assert query.count("EXISTS { (principal)-[:PERMISSION {type: 'USER'}]->(") == 2, name
-            assert "UNWIND principals AS principal" in query, name
+            # a linked account counts only on a target of the link's connector
+            assert "UNWIND [p IN principals WHERE p = u\n" in query, name
+            assert "OR CASE WHEN target:App THEN target.id ELSE target.connectorId END = " in query, name
             assert query.count("OPTIONAL MATCH (u)-") == 1, name
             assert "[u] + collect(DISTINCT source_account) AS principals" in query
 

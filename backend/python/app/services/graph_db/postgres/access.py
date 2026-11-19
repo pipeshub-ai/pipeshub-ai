@@ -446,7 +446,8 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
         if cand:
             for r in await tx.fetch("""/* pipeshub:graph.access_orphan */ SELECT DISTINCT e.to_id FROM graph.edges e
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_coll = 'records' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[])
-                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES)):
+                  AND e.from_coll = ANY($5::text[])      -- the grantees' collections: a SourceAccount sharing a grantee's id holds nothing
+                  AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES), PRINCIPALS):
                 ok.add(r["to_id"])
     return await _shape(tx, org, targets, ok)
 

@@ -320,6 +320,17 @@ async def test_a_chat_attachment_outside_every_app_opens_only_by_a_grant_on_the_
     assert await w.allowed("u", "att", "att2", "conn") == {"att"}
 
 
+async def test_a_chat_attachment_opens_by_the_users_own_grant_and_not_by_a_source_accounts_that_shares_its_id(w: World) -> None:
+    """The attachment's grants are read from the user's own holders: a SourceAccount with the user's id is not the user, linked or not."""
+    await w.nodes("sourceAccounts", {"_key": "u", "connectorId": APP, "sourceUserId": "s1", "state": "listed",
+                                      "createdAtTimestamp": 1, "updatedAtTimestamp": 1})
+    await w.nodes("records", {"_key": "viaNamesake", "connectorId": "gone-app", "origin": "UPLOAD"},
+                  {"_key": "own", "connectorId": "gone-app", "origin": "UPLOAD"})
+    await w.edge("permission", ("sourceAccounts", "u"), ("records", "viaNamesake"), type="USER", role="OWNER")
+    await w.edge("permission", ("users", "u"), ("records", "own"), type="USER", role="OWNER")
+    assert await w.allowed("u", "viaNamesake", "own") == {"own"}
+
+
 async def test_another_org_is_nobodys_and_a_node_of_another_org_is_not_there(w: World) -> None:
     await w.nodes("records", rec("r"))
     await w.child(("apps", APP), ("records", "r"))

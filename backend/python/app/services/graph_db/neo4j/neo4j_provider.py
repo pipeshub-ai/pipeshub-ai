@@ -13429,6 +13429,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH caller, rec, source_accounts, kh_ancestors,
                  [(rec)-[:BELONGS_TO]->(kh_kb:App) WHERE kh_kb.type = "KB" AND rec.connectorName = $kb_connector_name | kh_kb] AS kh_kbs
             UNWIND [caller] + source_accounts AS u
+            // a grant held through the link counts only on a record group of the link's connector, the record's
+            WITH u, rec, kh_kbs, CASE WHEN u = caller THEN kh_ancestors
+                                      ELSE [a IN kh_ancestors WHERE a.node.connectorId = rec.connectorId] END AS kh_ancestors
 
             // Direct access
             OPTIONAL MATCH (u)-[directPerm:PERMISSION {type: "USER"}]->(rec)
@@ -13474,6 +13477,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Traverse UP from record to find RecordGroups in hierarchy, then check if user has direct permission
             OPTIONAL MATCH (rec)-[:INHERIT_PERMISSIONS*0..5]->(inheritedRg:RecordGroup)
             OPTIONAL MATCH (u)-[inheritedRgPerm:PERMISSION {type: "USER"}]->(inheritedRg)
+            WHERE inheritedRg IN [a IN kh_ancestors | a.node]      // a linked account's are kept to its connector above
             WITH u, rec, kh_ancestors, kh_kbs, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess,
                  [x IN COLLECT({type: "INHERITED_RECORD_GROUP", source: inheritedRg, role: inheritedRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS inheritedRgAccess
 
@@ -21835,7 +21839,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH t
             WHERE t:Record AND t.origin IS NOT NULL AND t.origin <> 'CONNECTOR'
               AND NOT EXISTS {{ MATCH (kh_a:App {{id: t.connectorId}}) }}
-              AND EXISTS {{ (t)<-[kh_gp:PERMISSION]-(kh_g)
+              // the grantees by their labels: a node of another label that shares an id (a SourceAccount) holds nothing
+              AND EXISTS {{ (t)<-[kh_gp:PERMISSION]-(kh_g:User|Group|Role|Teams|Organization)
                              WHERE kh_g.id IN $granteeIds AND {_cypher_grant_edge("kh_g", "kh_gp")} }}
             RETURN t AS ok
         }}
@@ -25706,7 +25711,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Step 2: Check all 10 permission paths across all targets
             // Unwind targets to check each one
             UNWIND permission_targets AS target
-            UNWIND principals AS principal
+            // a grant held through the link counts only on a target in the link's connector (an App is its own), so not on what
+            // the node inherits from another connector
+            UNWIND [p IN principals WHERE p = {user_var}
+                    OR CASE WHEN target:App THEN target.id ELSE target.connectorId END = {node_var}.connectorId] AS principal
 
             // The group, role and team paths start at the target and only probe the
             // principal's membership. The principals granted on one node are few; one
@@ -25841,7 +25849,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             // Step 2: Check all permission paths across all targets
             UNWIND permission_targets AS target
-            UNWIND principals AS principal
+            // a grant held through the link counts only on a target in the link's connector (an App is its own), so not on what
+            // the node inherits from another connector
+            UNWIND [p IN principals WHERE p = {user_var}
+                    OR CASE WHEN target:App THEN target.id ELSE target.connectorId END = {node_var}.connectorId] AS principal
 
             // The group, role and team paths start at the target and only probe the
             // principal's membership. The principals granted on one node are few; one

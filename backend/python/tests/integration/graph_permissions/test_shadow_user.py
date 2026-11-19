@@ -49,6 +49,8 @@ def _graph(*, linked: bool = True) -> tuple[list[dict], list[dict]]:
         _org(rec("shu-internal", "Internal stub", connector_id=LINKED, isInternal=True)),
         _org(rg("shu-other-proj", "Other project", **group(OTHER))),
         _org(rec("shu-other", "Other issue", connector_id=OTHER)),
+        _org(rec("shu-att-own", "Own attachment", connector_id="shu-gone", origin="UPLOAD")),
+        _org(rec("shu-att-namesake", "Namesake's attachment", connector_id="shu-gone", origin="UPLOAD")),
     ]
     edges = [
         user_app(SOURCE, LINKED), user_app(SOURCE, OTHER),
@@ -59,6 +61,7 @@ def _graph(*, linked: bool = True) -> tuple[list[dict], list[dict]]:
         nr("shu-proj", "shu-internal"), bt("shu-internal", "shu-proj"), perm(SOURCE, "shu-internal"),
         nr(OTHER, "shu-other-proj"), bt("shu-other-proj", OTHER),
         nr("shu-other-proj", "shu-other"), bt("shu-other", "shu-other-proj"), perm(SOURCE, "shu-other"),
+        perm(CREATOR, "shu-att-own", role="OWNER"),
     ]
     if linked:
         edges.append(authenticated_as(CREATOR, SOURCE, LINKED))
@@ -74,7 +77,7 @@ async def _clear_arango(provider) -> None:
               "authenticatedAs"):
         await provider.http_client.execute_aql(
             "FOR e IN @@c FILTER CONTAINS(e._from, '/shu-') OR CONTAINS(e._to, '/shu-') REMOVE e IN @@c", {"@c": c})
-    for c in ("apps", "recordGroups", "records", "users", "groups"):
+    for c in ("apps", "recordGroups", "records", "users", "groups", "sourceAccounts"):
         await provider.http_client.execute_aql(
             "FOR d IN @@c FILTER STARTS_WITH(d._key, 'shu-') REMOVE d IN @@c", {"@c": c})
 
@@ -145,3 +148,14 @@ async def test_without_the_link_the_creator_sees_nothing(unlinked) -> None:
     admitted = (await unlinked.check_access(
         CREATOR, ORG, node_ids=["shu-direct", "shu-via-group", "shu-other"])).node_ids
     assert not admitted
+
+
+async def test_a_chat_attachment_opens_by_the_users_own_grant_and_not_by_a_source_accounts_that_shares_its_id(unlinked) -> None:
+    """A record outside every App opens only by a grant of the user's own holders: a SourceAccount with the user's id is another
+    principal, and gives nothing without a link."""
+    await unlinked.batch_upsert_nodes([{"id": CREATOR, "orgId": ORG, "connectorId": LINKED, "sourceUserId": "s1", "state": "listed",
+                                        "createdAtTimestamp": 1, "updatedAtTimestamp": 1}], "sourceAccounts")
+    await unlinked.batch_create_edges([{"_from": f"sourceAccounts/{CREATOR}", "_to": "records/shu-att-namesake", "type": "USER",
+                                        "role": "OWNER", "createdAtTimestamp": 1}], "permission")
+    admitted = (await unlinked.check_access(CREATOR, ORG, node_ids=["shu-att-own", "shu-att-namesake"])).node_ids
+    assert set(admitted) == {"shu-att-own"}
