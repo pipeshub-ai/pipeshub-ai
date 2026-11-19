@@ -13,7 +13,7 @@ import pytest
 
 from app.config.constants.arangodb import AppStatus
 from app.connectors.core.sync.sync_coordinator import SyncLease
-from app.connectors.core.sync.sync_runner import run_sync_task
+from app.connectors.core.sync.sync_runner import SyncStartNotRecorded, run_sync_task
 
 
 def _graph_provider() -> AsyncMock:
@@ -75,11 +75,37 @@ class TestStartStatusWrite:
         lease = SyncLease(connector_id="c1", token="t", acquired_at_ms=0)
         coordinator = MagicMock()
         coordinator.end = AsyncMock()
-        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), pytest.raises(RuntimeError, match="could not be written"):
-            await run_sync_task(_connector(run_sync), "c1", gp, logging.getLogger("t"), lease=lease, coordinator=coordinator)
+        connector = _connector(run_sync)
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), \
+                patch("app.connectors.core.sync.sync_runner.record_service_activity") as counted, \
+                pytest.raises(SyncStartNotRecorded, match="could not be written") as raised:
+            await run_sync_task(connector, "c1", gp, logging.getLogger("t"), lease=lease, coordinator=coordinator)
         run_sync.assert_not_awaited()
         assert gp.batch_upsert_nodes.await_count == 3
         coordinator.end.assert_awaited_once_with(lease)      # the finalizer still releases the lease
+        # Visible even when the store keeps refusing the app document: the store's error, a counter, and the summary the finalizer writes.
+        assert str(raised.value.__cause__) == "rejected"
+        assert counted.call_args.args[:2] == ("connector_service", "sync_start_not_recorded")
+        assert connector.last_sync_summary == {"error": "could not record the sync start"}
+
+    @pytest.mark.asyncio
+    async def test_a_run_whose_start_is_not_recorded_does_not_reissue_a_pending_resync(self) -> None:
+        """The re-issued run would fail the same way seconds later, for as long as the store refuses the write."""
+        from app.connectors.core.sync.sync_dispatcher import SubmitResult, SyncSpec
+
+        gp = _graph_provider()
+        gp.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("rejected"))
+        gp.get_document = AsyncMock(return_value={"id": "c1", "pendingResync": True})
+        dispatcher = AsyncMock()
+        dispatcher.submit = AsyncMock(return_value=SubmitResult.ACCEPTED)
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), \
+                patch("app.connectors.core.sync.sync_dispatcher.get_dispatcher", return_value=dispatcher), \
+                pytest.raises(SyncStartNotRecorded):
+            await run_sync_task(
+                _connector(), "c1", gp, logging.getLogger("t"), lease=SyncLease("c1", "tok", 1), coordinator=AsyncMock(),
+                resync_spec=SyncSpec(connector_id="c1", connector_name="g", org_id="o"),
+            )
+        dispatcher.submit.assert_not_awaited()
 
 
 class TestReleaseOrdering:
