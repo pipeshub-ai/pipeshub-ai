@@ -3451,3 +3451,86 @@ class TestTheRetryListKeepsWhatAReindexAdds:
         async for _ in c._fetch_issues_batched("PROJ", PROJECT_ID, [], None, None, issue_ids=["1001", "1002"]):
             pass
         assert seen[0].split("ORDER BY")[0] == 'project = "PROJ" AND id in (1001, 1002) '
+
+
+class TestGroupMembersAreHeldByGroupId:
+    """Group B's name equals group A's id. A level that holds A must not count B's members."""
+
+    REP, OTHER = _users()[:2]
+
+    async def _two_groups(self) -> JiraConnector:
+        c = _connector()
+        c._fetch_groups = AsyncMock(return_value=([{"groupId": "gA", "name": "Alpha"}, {"groupId": "gB", "name": "gA"}], False))
+        members = {"gA": [self.OTHER], "gB": [self.REP]}
+        c._process_group = AsyncMock(side_effect=lambda g, _users: (g["groupId"], g["name"], MagicMock(), members[g["groupId"]]))
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        c.notify = AsyncMock()
+        await c._sync_user_groups([self.REP, self.OTHER])
+        return c
+
+    def _reporter_grants(self, c: JiraConnector, holder: dict) -> list:
+        ctx = _present({"10102": [holder]})
+        ctx.browse_holders = [{"type": "reporter"}]
+        users = {self.REP.source_user_id: self.REP, self.OTHER.source_user_id: self.OTHER}
+        ctx.level_readers = c._level_readers(ctx, "PROJ", users)
+        grants, _, _ = apply_issue_access_settled(_stored_ticket(), _issue({"id": "10102"})["fields"], is_subtask=False,
+                                                  project_key="PROJ", context=ctx, user_by_account_id=users, project_id=PROJECT_ID)
+        return [g.email for g in grants]
+
+    @pytest.mark.asyncio
+    async def test_a_member_of_the_group_named_like_the_level_s_group_id_gets_no_grant(self) -> None:
+        c = await self._two_groups()
+        assert c._group_members == {"gA": [self.OTHER], "gB": [self.REP]}
+        assert self._reporter_grants(c, {"type": "group", "value": "gA", "parameter": "Alpha"}) == []
+
+    @pytest.mark.asyncio
+    async def test_a_group_named_by_its_name_alone_resolves_to_its_id(self) -> None:
+        c = await self._two_groups()
+        assert self._reporter_grants(c, {"type": "group", "parameter": "gA"}) == ["rep@x.com"]  # B, named "gA": rep is in it
+        assert self._reporter_grants(c, {"type": "group", "parameter": "Alpha"}) == []  # A: rep is not
+        assert self._reporter_grants(c, {"type": "group", "parameter": "Nobody"}) == []  # no such group: unknown
+
+
+class TestTheRetryReplay:
+    """The issues a sync's retry pass reads first (its own list, and the reindex requests)."""
+
+    @staticmethod
+    def _connector_with(point: dict, returned: list[str], *, cut_short: bool) -> tuple[JiraConnector, list]:
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda _key: dict(point))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda _key, data: point.update(data))
+        c._load_issue_security = AsyncMock(return_value=_present())
+        c._process_new_records = AsyncMock()
+        c._settle_subtasks = AsyncMock(return_value=[])
+        asked: list = []
+
+        async def fetch(*_a: object, issue_ids: list | None = None, **_kw: object) -> AsyncIterator:
+            asked.append(issue_ids)
+            if issue_ids:
+                if cut_short:
+                    c._issue_build_failures += 1  # as a search warning or pages that did not end count it
+                yield [(_stored_ticket(external_record_id=i), [], True) for i in issue_ids if i in returned], False, None
+        c._fetch_issues_batched = fetch
+        return c, asked
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cut_short", [True, False], ids=["cut_short", "complete"])
+    async def test_an_issue_a_search_cut_short_left_out_stays_on_the_list(self, cut_short: bool) -> None:
+        point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                 "issues_to_retry": json.dumps(["1001", "1002"]), "reindex_retry": json.dumps({"1003": "r3", "1004": "r4"})}
+        c, asked = self._connector_with(point, ["1001", "1003"], cut_short=cut_short)
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert asked[0] == ["1001", "1002", "1003", "1004"]
+        kept = (json.loads(point["issues_to_retry"]), sorted(json.loads(point["reindex_retry"])))
+        # Returned ones leave either way; one not returned leaves only when the search was complete (it is gone).
+        assert kept == ((["1002"], ["1004"]) if cut_short else ([], []))
+
+    @pytest.mark.asyncio
+    async def test_a_new_project_reads_its_retry_list_too(self) -> None:
+        """Its checkpoint lost its timestamps (cleared): the first walk may save none, so the requests are read first."""
+        point = {"issue_placement": ISSUE_PLACEMENT, "issues_to_retry": json.dumps(["1001"]),
+                 "reindex_retry": json.dumps({"1002": "r2"})}
+        c, asked = self._connector_with(point, ["1001", "1002"], cut_short=False)
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert asked[0] == ["1001", "1002"] and json.loads(point["reindex_retry"]) == {}

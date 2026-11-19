@@ -262,7 +262,7 @@ class TestJiraGroupSync:
 
         result = await connector._sync_user_groups(users)
         assert "g1" in result
-        assert "jira-software-users" in result
+        assert "jira-software-users" not in result  # by id only: a name resolves through _group_ids_by_name
         assert result["g1"] == users  # membership resolved from accountId
         dep.on_new_user_groups.assert_called_once()
 

@@ -93,6 +93,7 @@ from app.connectors.sources.atlassian.core.html_utils import (
 )
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     BROWSE_ISSUE_HOLDER_TYPES,
+    HOLDER_GROUP,
     HOLDER_USER,
     HOLDER_USER_FIELD,
     LEVEL_MEMBERS_UNREAD,
@@ -294,6 +295,8 @@ INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 # so they move.
 # Changed when restricted comments became records of their own, so those stored before are written.
 ISSUE_PLACEMENT: str = "issues-under-readable-parent+restricted-comment-records"
+# Marks a group a level names by a name no read resolved to an id: it names no group read, so its members are unknown.
+_UNRESOLVED_GROUP: str = "unresolved-group-name:"
 # Groups a reindex reads again per project to apply its issues' levels (``_reindex_level_readers``).
 REINDEX_GROUP_READS: int = 20
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
@@ -3841,7 +3844,8 @@ class JiraConnector(BaseConnector):
             )
 
             user_groups_batch = []
-            # Mapping: group_id -> members, group_name -> members (for role actor lookup)
+            # Mapping: group_id -> members. By id only: a group's name may equal another group's id. A name resolves to an
+            # id through ``group_ids_by_name``.
             groups_members_map: dict[str, Optional[list[AppUser]]] = {}
             group_ids_by_name: dict[str, str] = {}
 
@@ -3851,11 +3855,8 @@ class JiraConnector(BaseConnector):
                 group_id, group_name, user_group, app_users = res
                 if group_id and group_name:
                     group_ids_by_name[group_name] = group_id
-                # Store mapping by both group_id and group_name for flexible lookup
                 if group_id:
                     groups_members_map[group_id] = app_users
-                if group_name:
-                    groups_members_map[group_name] = app_users
                 if app_users is None or user_group is None:
                     continue
                 # Add group to batch (with or without members)
@@ -4154,13 +4155,11 @@ class JiraConnector(BaseConnector):
 
                         elif actor_type == ROLE_ACTOR_TYPE_GROUP:
                             group_name = actor.get("name") or actor.get("displayName")
-                            group_id = actor.get("groupId")
+                            group_id = actor.get("groupId") or self._group_ids_by_name.get(group_name or "")
 
                             group_members: Optional[list[AppUser]] = []
                             if group_id and group_id in groups_members_map:
                                 group_members = groups_members_map[group_id]
-                            elif group_name and group_name in groups_members_map:
-                                group_members = groups_members_map[group_name]
                             else:
                                 self.logger.debug(
                                     f"  {project_key}/{role_name}: Group actor '{group_name}' "
@@ -4957,11 +4956,15 @@ class JiraConnector(BaseConnector):
         sync_retry_ids = list(retry_ids)
         requested = _retry_requests((project_sync_data or {}).get("reindex_retry"))
         retry_ids = sorted({*retry_ids, *(i for i in requested if i.isdigit())})
-        if retry_ids and not is_new_project:
+        # Read on a new project too (its checkpoint cleared): the first walk may save no timestamp, and the requests wait.
+        if retry_ids:
+            returned: set[str] = set()
+            failures_before = self._issue_build_failures
             for start in range(0, len(retry_ids), SUBTASK_REREAD_CHUNK):
                 async for retry_batch, _more, _ts in self._fetch_issues_batched(
                     project_key, project_id, jira_users, None, None, issue_ids=retry_ids[start:start + SUBTASK_REREAD_CHUNK],
                 ):
+                    returned |= {str(item[0].external_record_id) for item in retry_batch if isinstance(item[0], TicketRecord)}
                     if retry_batch:
                         # As in the walk below: a replayed issue's new level may be copied onto its sub-tasks without moving their `updated`.
                         replayed = [item[0].external_record_id for item in retry_batch
@@ -4971,6 +4974,11 @@ class JiraConnector(BaseConnector):
                         if replayed:
                             unsettled_parents = await self._settle_subtasks(
                                 project_key, project_id, jira_users, stats, replayed, unsettled_parents)
+            if self._issue_build_failures != failures_before:
+                # A search cut short (a warning, pages that did not end) does not show an issue it left out is gone: keep it.
+                unreturned = set(retry_ids) - returned
+                self._issues_to_retry |= unreturned & set(sync_retry_ids)
+                requested = {i: request for i, request in requested.items() if i not in unreturned}
             self._retry_read = requested
         saved_retry = await self._save_issues_to_retry(project_key, sync_retry_ids)
 
@@ -5180,12 +5188,30 @@ class JiraConnector(BaseConnector):
         out: dict[str, frozenset[tuple[str, str]] | None] = {}
         for level_id, holders in security.members_by_level.items():
             grants, skipped = level_group_grants(
-                holders, project_key=project_key, user_by_id=users, app_roles_mapping=self._level_roles)
+                self._by_group_id(holders), project_key=project_key, user_by_id=users, app_roles_mapping=self._level_roles_by_id())
             # A user holder outside the directory reads nothing, so it leaves the others known; any other holder skipped
             # (an unmapped application role) may hold anyone.
             out[level_id] = None if set(skipped) - {HOLDER_USER} else level_readers(
                 grants, self._group_members, self._role_members)
         return out
+
+    def _by_group_id(self, holders: list[Any]) -> list[Any]:
+        """A level's holders with each group named only by its name resolved to its id (``_group_ids_by_name``): members are
+        held by group id, and a name may equal another group's id. One that does not resolve names no group read."""
+        out = []
+        for holder in holders:
+            if isinstance(holder, dict) and holder.get("type") == HOLDER_GROUP and not holder.get("value"):
+                name = str(holder.get("parameter") or "")
+                out.append({**holder, "value": self._group_ids_by_name.get(name) or f"{_UNRESOLVED_GROUP}{name}"})
+            else:
+                out.append(holder)
+        return out
+
+    def _level_roles_by_id(self) -> dict[str, list[dict[str, Any]]]:
+        """``_level_roles`` with each group named only by its name resolved to its id, as ``_by_group_id``."""
+        return {key: [g if g.get("groupId") else {**g, "groupId": self._group_ids_by_name.get(str(g.get("name") or ""))
+                                                  or f"{_UNRESOLVED_GROUP}{g.get('name')}"} for g in groups]
+                for key, groups in self._level_roles.items()}
 
     async def _reindex_level_readers(
         self, security: IssueSecurityContext, project_key: str, synced: dict[str, AppUser],
@@ -5201,13 +5227,15 @@ class JiraConnector(BaseConnector):
         out: dict[str, frozenset[tuple[str, str]] | None] = {}
         for level_id, holders in security.members_by_level.items():
             grants, skipped = level_group_grants(
-                holders, project_key=project_key, user_by_id=self._grant_directory(synced), app_roles_mapping=self._level_roles)
+                self._by_group_id(holders), project_key=project_key, user_by_id=self._grant_directory(synced),
+                app_roles_mapping=self._level_roles_by_id())
             if set(skipped) - {HOLDER_USER}:
                 out[level_id] = None
                 continue
             for grant in grants:
                 group_id = str(grant.external_id)
-                if grant.entity_type != EntityType.GROUP or group_id in tried or len(tried) >= REINDEX_GROUP_READS:
+                if (grant.entity_type != EntityType.GROUP or group_id in tried or len(tried) >= REINDEX_GROUP_READS
+                        or group_id.startswith(_UNRESOLVED_GROUP)):
                     continue
                 tried.add(group_id)
                 try:
