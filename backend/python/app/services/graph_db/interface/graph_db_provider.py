@@ -2567,6 +2567,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """Merge ``updates`` into the node only while every field in
         ``expected`` still holds its value (``None`` means absent), in one
@@ -2575,7 +2576,10 @@ class IGraphDBProvider(ABC):
         ``clock_at_most`` (epoch seconds): also only while the store's own
         clock (`store_time`), read by the statement as it writes, is not past
         it, so a value computed from an earlier read of that clock is never
-        written later than the caller allowed.
+        written later than the caller allowed. ``unset`` names fields the same
+        write removes (the attribute is gone, never left null: an older strict
+        schema rejects a stored null it does not list) and only those: other
+        null-valued fields are not touched.
 
         Returns:
             True iff the write applied.

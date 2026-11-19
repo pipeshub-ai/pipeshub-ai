@@ -136,6 +136,7 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.membership import expect_groups
+from app.services.messaging.storage_protocol import tagged
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
@@ -254,7 +255,8 @@ async def recover_in_progress_records(
     # Track results for final summary
     results = {"requeued": 0, "skipped": 0, "exhausted": 0, "error": 0}
     total_records = 0
-    recovery_owner = f"recovery:{uuid4().hex}"
+    # Carries the storage-protocol tag, so the owner of the lease that runs the orphan sweep is visibly a pod of this protocol
+    recovery_owner = tagged(f"recovery:{uuid4().hex}")
     recovery_renewal_task: asyncio.Task[None] | None = None
     recovery_lock_held = False
     # Shared by both the single coordination lock ("recovery") and each
@@ -2182,12 +2184,28 @@ async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
             streams[group] = sorted(found)
         return await membership_module.redis_untagged(redis, streams)
 
+    async def check_any(groups: dict[str, list[str]]) -> list[str]:
+        # Idle consumers count as live: an idle older pod can hold a sweep lease. Kafka's check has no idle notion.
+        if broker_type == MessageBrokerType.KAFKA:
+            return await check(groups)
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        redis = get_redis_provider(RedisConnectionConfig.from_redis_config(redis_config)).get_client()
+        streams: dict[str, list[str]] = {}
+        for group, topics in groups.items():
+            found = set(topics)
+            for topic in topics:
+                async for key in redis.scan_iter(match=f"{topic}.*"):
+                    found.add(key.decode() if isinstance(key, bytes) else str(key))
+            streams[group] = sorted(found)
+        return await membership_module.redis_untagged(redis, streams, idle_live_ms=None)
+
     publisher = membership_module.MembershipPublisher(
         logger,
         check,
         lambda key, entry, ttl: membership_module.publish_entry(config_service, key, entry, ttl),
         holder=owner,
         is_leader=is_leader,
+        check_any=check_any,
     )
     await publisher.run()
 

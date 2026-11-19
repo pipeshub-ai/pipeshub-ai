@@ -198,6 +198,7 @@ from app.services.graph_db.common.name_match import aql_name_key, name_query_par
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
+    aql_holds_vrid,
     aql_live_record,
     aql_record_visibility,
     aql_searchable_record,
@@ -1562,6 +1563,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["virtualRecordId", "orgId"],
+        )
+        # SPARSE: the virtual record a record is indexing into. Only records mid-replace carry it; the holder lookups
+        # (record_visibility.aql_holds_vrid) match it, with a `!= null` guard so this index serves the correlated forms.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["pendingVirtualRecordId"],
+            sparse=True,
         )
 
         for fields in _STAGE_STATE_INDEXES:
@@ -6988,6 +6996,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
@@ -7004,11 +7013,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars[f"v{i}"] = value
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
         newline = "\n                "
+        if unset:
+            # Only the named attributes go (keepNull: false would also drop every other null-valued key of the document).
+            bind_vars["unset"] = ["_id", "_key", "_rev", *unset]
+            write = "REPLACE doc WITH MERGE(UNSET(doc, @unset), @updates) IN @@collection"
+        else:
+            write = "UPDATE doc WITH @updates IN @@collection"
         query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
-                UPDATE doc WITH @updates IN @@collection
+                {write}
                 RETURN 1
             """
         # Two writers racing on one document: ArangoDB fails the loser with a write-write conflict
@@ -27260,10 +27275,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not virtual_record_ids:
             return {}
         query = f"""
-        FOR r IN {CollectionNames.RECORDS.value}
-            FILTER r.virtualRecordId IN @vrids AND r.orgId == @org_id
+        FOR vid IN @vrids
+          FOR r IN {CollectionNames.RECORDS.value}
+            FILTER {aql_holds_vrid("r", "vid")} AND r.orgId == @org_id
             RETURN {{
-                vid: r.virtualRecordId, id: r._key, connectorId: r.connectorId,
+                vid: vid, id: r._key, connectorId: r.connectorId,
                 connectorName: r.connectorName, recordGroupId: r.recordGroupId,
                 recordName: r.recordName, webUrl: r.webUrl, contentRev: r.contentRev,
                 isDeleted: r.isDeleted == true
@@ -27296,7 +27312,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         FOR vrid IN @virtual_record_ids
             LET held = FIRST(
                 FOR record IN {CollectionNames.RECORDS.value}
-                    FILTER record.virtualRecordId == vrid
+                    FILTER {aql_holds_vrid("record", "vrid")}
                     AND {aql_record_visibility("record", visibility)}
                     LIMIT 1
                     RETURN 1
@@ -27371,7 +27387,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # AQL `!= true` is null-safe, so records predating the field pass.
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.virtualRecordId == @virtual_record_id
+                FILTER {aql_holds_vrid("record", "@virtual_record_id")}
                 AND {aql_record_visibility("record", visibility)}
             """
 

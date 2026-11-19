@@ -157,6 +157,7 @@ from app.services.graph_db.common.name_match import cypher_name_key, name_query_
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
+    cypher_holds_vrid,
     cypher_live_record,
     cypher_record_visibility,
     cypher_searchable_record,
@@ -1370,6 +1371,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_virtual_record_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.virtualRecordId)"
+        )
+        # The virtual record a record is indexing into: the holder lookups also match it (record_visibility.cypher_holds_vrid)
+        indexes.append(
+            "CREATE INDEX record_pending_virtual_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.pendingVirtualRecordId)"
         )
 
         # get_document_id_by_virtual_record_id falls back to this field when the
@@ -4794,13 +4800,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {}
         query = """
         UNWIND $vrids AS vid
-        MATCH (r:Record {virtualRecordId: vid})
-        WHERE r.orgId = $org_id
+        MATCH (r:Record)
+        WHERE %s AND r.orgId = $org_id
         RETURN vid, r.id AS id, r.connectorId AS connectorId,
                r.connectorName AS connectorName, r.recordGroupId AS recordGroupId,
                r.recordName AS recordName, r.webUrl AS webUrl, r.contentRev AS contentRev,
                coalesce(r.isDeleted, false) AS isDeleted
-        """
+        """ % cypher_holds_vrid("r", "vid")
         results = await self.client.execute_query(
             query,
             parameters={"vrids": list(dict.fromkeys(virtual_record_ids)), "org_id": org_id},
@@ -4847,8 +4853,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # this file: in Cypher `null <> true` is null, which WHERE treats as
             # false, so `<> true` silently drops every record predating the field.
             query = f"""
-            MATCH (r:Record {{virtualRecordId: $virtual_record_id}})
-            WHERE {cypher_record_visibility("r", visibility)}
+            MATCH (r:Record)
+            WHERE {cypher_holds_vrid("r", "$virtual_record_id")}
+            AND {cypher_record_visibility("r", visibility)}
             """
 
             # Add optional filter for record IDs
@@ -5098,6 +5105,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
@@ -5119,6 +5127,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             else:
                 parameters[f"v{i}"] = value
                 conditions.append(f"n[$f{i}] = $v{i}")
+        # The removed attributes (a dynamic property set to null is removed)
+        unset_clause = ""
+        for j, name in enumerate(unset):
+            parameters[f"u{j}"] = name
+            unset_clause += f"SET n[$u{j}] = NULL\n            "
         # The lock comes first so the check reads a write that committed while
         # this waited, instead of overwriting it (Neo4j's lost-update pattern).
         rows = await self.client.execute_query(
@@ -5129,6 +5142,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH n
             WHERE {" AND ".join(conditions)}
             SET n += $updates
+            {unset_clause}
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
             RETURN 1 AS n
             """,
@@ -5404,8 +5418,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return set()
         query = f"""
         UNWIND $virtual_record_ids AS vrid
-        MATCH (r:Record {{virtualRecordId: vrid}})
-        WHERE {cypher_record_visibility("r", visibility)}
+        MATCH (r:Record)
+        WHERE {cypher_holds_vrid("r", "vrid")} AND {cypher_record_visibility("r", visibility)}
         RETURN DISTINCT vrid
         """
         results = await self.client.execute_query(
