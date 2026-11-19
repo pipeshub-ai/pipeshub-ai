@@ -1070,3 +1070,44 @@ adds what is specific to its role after it.
             - name: ADDRESS_RATE_LIMIT_PER_MINUTE
               value: {{ .Values.addressRateLimitPerMinute | default 60 | quote }}
 {{- end }}
+
+{{/*
+A Kubernetes memory quantity ("8Gi", "4096Mi", "8G", "8589934592") in whole MiB.
+*/}}
+{{- define "pipeshub-ai.memoryMiB" -}}
+{{- $q := toString . -}}
+{{- $n := regexFind "^[0-9.]+" $q -}}
+{{- $unit := trimPrefix $n $q -}}
+{{- $perUnit := dict "" 0.00000095367431640625 "k" 0.00095367431640625 "K" 0.00095367431640625 "Ki" 0.0009765625 "M" 0.95367431640625 "Mi" 1.0 "G" 953.67431640625 "Gi" 1024.0 "T" 953674.31640625 "Ti" 1048576.0 -}}
+{{- if or (not $n) (not (hasKey $perUnit $unit)) -}}
+{{- fail (printf "neo4j.resources.limits.memory %q is not a memory quantity the chart can read" $q) -}}
+{{- end -}}
+{{- mulf (float64 $n) (get $perUnit $unit) | floor | int64 -}}
+{{- end -}}
+
+{{/*
+Neo4j does not size its heap or page cache from the container, so with only
+the defaults a smaller limit gets settings that no longer fit and the pod is
+OOM-killed. Each setting not given in neo4j.env (under its dbms_ or server_
+name) is derived from the memory limit: heap half (starting at an eighth,
+unless the user chose the maximum), page cache a quarter, leaving the rest for
+the JVM and native memory.
+*/}}
+{{- define "pipeshub-ai.neo4jMemoryEnv" -}}
+{{- $env := .Values.neo4j.env | default dict -}}
+{{- $limit := dig "limits" "memory" "" (.Values.neo4j.resources | default dict) -}}
+{{- if $limit -}}
+{{- $mib := include "pipeshub-ai.memoryMiB" $limit | int64 -}}
+{{- $sizes := list (list "heap_initial__size" (div $mib 8)) (list "heap_max__size" (div $mib 2)) (list "pagecache_size" (div $mib 4)) -}}
+{{- $userHeapMax := or (hasKey $env "NEO4J_dbms_memory_heap_max__size") (hasKey $env "NEO4J_server_memory_heap_max__size") -}}
+{{- range $sizes }}
+{{- $name := index . 0 -}}
+{{- $given := or (hasKey $env (printf "NEO4J_dbms_memory_%s" $name)) (hasKey $env (printf "NEO4J_server_memory_%s" $name)) -}}
+{{- /* A derived starting heap could exceed a smaller maximum the user chose. */ -}}
+{{- if not (or $given (and $userHeapMax (eq $name "heap_initial__size"))) }}
+- name: NEO4J_server_memory_{{ $name }}
+  value: "{{ index . 1 }}m"
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end -}}

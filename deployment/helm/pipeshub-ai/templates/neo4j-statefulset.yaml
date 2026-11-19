@@ -133,6 +133,7 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- include "pipeshub-ai.neo4jMemoryEnv" . | nindent 12 }}
           volumeMounts:
             - name: data
               mountPath: /data

@@ -124,6 +124,16 @@ kafka:
 zookeeper:
   replicaCount: 1
 
+# ----- ArangoDB (when arango.enabled): the earlier, smaller size -----
+arango:
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
 # ----- Qdrant + Neo4j: single node -----
 qdrant:
   replicaCount: 1
@@ -139,7 +149,7 @@ neo4j:
   enabled: true
   replicaCount: 1
   # auth.password MUST be supplied via --set.
-  # heap (2g) + pagecache (1g) + JVM overhead (~500m) fits within the 4Gi limit.
+  # The 4Gi limit gives a 2g heap and 1g page cache (see neo4j.env in values.yaml).
   resources:
     limits:
       cpu: 2000m
@@ -147,10 +157,6 @@ neo4j:
     requests:
       cpu: 1000m
       memory: 2Gi
-  env:
-    NEO4J_dbms_memory_heap_initial__size: 512m
-    NEO4J_dbms_memory_heap_max__size: 2g
-    NEO4J_dbms_memory_pagecache_size: 1g
 
 # ----- No ingress; use `kubectl port-forward` for local access -----
 ingress:

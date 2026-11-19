@@ -619,8 +619,9 @@ mongodb:
   architecture: replicaset
   replicaSetName: rs0
   replicaCount: 2  # 2 data nodes + 1 arbiter = quorum with less storage than 3 full copies
-  # Bitnami subchart data nodes. Left empty, the subchart's "small" preset caps
-  # mongod at 750m CPU / 768Mi. mongod sizes its WiredTiger cache from this limit.
+  # Bitnami subchart data nodes. mongod sizes its WiredTiger cache from this limit.
+  # Setting resources makes the subchart ignore mongodb.resourcesPreset; to use a
+  # preset instead, set mongodb.resources to null (an empty {} keeps these values).
   resources:
     limits:
       cpu: 2000m
@@ -1014,17 +1015,15 @@ neo4j:
       - ALL
   nodeSelector: {}
   tolerations: []
-  # apoc plugin and memory tuning for production (8Gi K8s limit).
-  # heap (4g) + pagecache (2g) + JVM overhead (~1g) fits within the 8Gi limit.
-  # Neo4j does not size these from the container, so change them with the limit.
+  # The heap (half of resources.limits.memory, starting at an eighth) and page
+  # cache (a quarter) are derived from the limit: 4g heap and 2g page cache at
+  # 8Gi. Set NEO4J_server_memory_heap_max__size, ..._heap_initial__size or
+  # ..._pagecache_size here to choose one yourself.
   env:
     NEO4J_PLUGINS: '["apoc"]'
     NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-    NEO4J_dbms_memory_heap_initial__size: 1g
-    NEO4J_dbms_memory_heap_max__size: 4g
     # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
     NEO4J_dbms_cypher_min__replan__interval: "30m"
-    NEO4J_dbms_memory_pagecache_size: 2g
 
 # Parsing in its own pods (off by default; the chart then renders exactly as
 # without this block). When enabled, a Deployment and ClusterIP Service named
