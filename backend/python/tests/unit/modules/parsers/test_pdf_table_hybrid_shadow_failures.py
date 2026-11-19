@@ -5,6 +5,7 @@ index pools. The reason is recorded for every table, and the document line carri
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Never
 from unittest.mock import patch
@@ -167,7 +168,8 @@ async def test_f5_the_deadline_marks_the_remaining_tables_and_nothing_fails(capl
     assert docs[0]["deadline_hit"] is True and docs[0]["tables_seen"] == 40
 
 
-async def test_f6_a_429_stops_the_document_with_no_loop(caplog) -> None:
+async def test_f6_a_429_stops_the_document_with_no_loop(caplog, monkeypatch) -> None:
+    monkeypatch.setattr(ts, "START_ESTIMATE_PER_STEP_S", 0.0001)  # the wait for the permit, not the deadline, is what ends it
     svc = Service()
     await svc.gate.acquire(cost=4)  # the heavy gate is full of conversions
     await run_doc(svc, 40, doc_s=0.4)
@@ -314,3 +316,85 @@ def test_the_rule_crossing_count_is_reported_and_changes_no_route() -> None:
     assert crossed["rule_crossings"] == 2 and crossed["would_route"] == clean["would_route"] == "model"  # reported only
     unknown = flow.analyse_table({**rec, "rules": None}, TableResult(id="t", status="ok", n_rows=2, n_cols=2, cells=cells), None)
     assert unknown["rule_crossings"] is None
+
+
+async def test_one_table_the_endpoint_would_refuse_fails_alone_as_invalid_input(caplog, monkeypatch) -> None:
+    """A table whose own description is over the limit is not sent; the rest of its batch goes through."""
+    monkeypatch.setattr(flow, "MAX_META_BYTES", 6000)  # the small fixture tables are far under it; one inflated table is not
+    svc = Service()
+    coord = flow.ShadowCoordinator(TableStructureClient("http://svc", svc.transport()))
+    adm = coord.admit("rec-1", "req-1")
+    spool_tables(adm.spool_dir, 4)
+    import json
+    import os
+
+    path = os.path.join(adm.spool_dir, flow.INDEX_FILE)
+    lines = [json.loads(line) for line in open(path)]
+    lines[2]["scale_factor"] = -1.0  # a description the schema refuses
+    lines[1]["words"] = [["w", 1.0 + i, 2.0, 3.0 + i, 4.0] for i in range(400)]  # a description over the limit
+    with open(path, "w") as f:
+        f.write("".join(json.dumps(x) + "\n" for x in lines))
+    p1, p2, p3 = svc.patched()
+    with p1, p2, p3:
+        await coord.start(adm, "rec-1", "req-1")
+    tables, docs = parse_logs(caplog)
+    by = {t["key"]: t["reason"] for t in tables}
+    assert by == {"p1:b0": "none", "p1:b1": "invalid_input", "p1:b2": "invalid_input", "p1:b3": "none"}
+    assert docs[0]["docs_with_load_fallback"] is False  # a bad input is not a load fallback
+
+
+async def test_a_422_from_the_service_is_invalid_input_and_not_a_load_reason(caplog) -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"success": False})
+
+    svc = Service()
+    coord = flow.ShadowCoordinator(TableStructureClient("http://svc", httpx.MockTransport(refuse)))
+    await run_doc(svc, 3, coordinator=coord)
+    tables, docs = parse_logs(caplog)
+    assert set(reasons(tables)) == {"invalid_input"} and docs[0]["docs_with_load_fallback"] is False
+    assert "invalid_input" in th.REASONS and "invalid_input" not in th.LOAD_REASONS
+
+
+async def test_a_long_word_is_cut_and_counted_and_the_table_is_still_sent(caplog) -> None:
+    import json
+    import os
+
+    svc = Service()
+    coord = flow.ShadowCoordinator(TableStructureClient("http://svc", svc.transport()))
+    adm = coord.admit("rec-1", "req-1")
+    spool_tables(adm.spool_dir, 2)
+    path = os.path.join(adm.spool_dir, flow.INDEX_FILE)
+    lines = [json.loads(line) for line in open(path)]
+    lines[0]["words"][0][0] = "." * 400
+    lines[0]["long_words"] = 1
+    with open(path, "w") as f:
+        f.write("".join(json.dumps(x) + "\n" for x in lines))
+    p1, p2, p3 = svc.patched()
+    with p1, p2, p3:
+        await coord.start(adm, "rec-1", "req-1")
+    tables, docs = parse_logs(caplog)
+    assert set(reasons(tables)) == {"none"} and docs[0]["long_words_cut"] == 1
+
+
+async def test_a_deadline_shortfall_is_reported_as_deadline_not_service_busy(caplog) -> None:
+    """An idle service, a document deadline too short for the first table: 429 with the deadline as its reason."""
+    svc = Service()
+    await run_doc(svc, 3, doc_s=0.5)
+    tables, docs = parse_logs(caplog)
+    assert set(reasons(tables)) == {"deadline"} and docs[0]["deadline_hit"] is True
+
+
+async def test_a_deadline_that_runs_out_after_the_first_table_is_deadline_too(caplog, monkeypatch) -> None:
+    svc = Service()
+    original = svc.sup.run_table
+
+    async def slow_first(spec: dict, png: bytes) -> dict:
+        await asyncio.sleep(0.4)
+        return await original(spec, png)
+
+    svc.sup.run_table = slow_first  # type: ignore[method-assign]
+    monkeypatch.setattr(ts, "START_ESTIMATE_PER_STEP_S", 0.02)  # a 56-step table needs 1.12 s: the first fits in 1.2 s, the second (0.8 s left) does not
+    await run_doc(svc, 2, doc_s=1.2)
+    tables, _ = parse_logs(caplog)
+    by = {t["key"]: t["reason"] for t in tables}
+    assert by["p1:b0"] == "none" and by["p1:b1"] == "deadline"

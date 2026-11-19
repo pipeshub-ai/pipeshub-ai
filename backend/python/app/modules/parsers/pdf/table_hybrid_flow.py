@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import json
 import logging
 import os
@@ -25,6 +24,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.core.org_context import spawn_detached
 from app.modules.parsers.pdf import table_hybrid as th
 from app.modules.parsers.pdf.table_hybrid_client import (
     DOWN_LATCH_S,
@@ -36,7 +36,11 @@ from app.services.docling.table_structure_schema import (
     MAX_SUM_CAPS,
     MAX_TABLES_PER_REQUEST,
     TableResult,
+    TableSpec,
     config_hash,
+)
+from app.services.docling.table_structure_schema import (
+    model_timeout_s as _shared_model_timeout_s,
 )
 from app.utils.env_config import env_choice, env_positive_int, env_seconds
 
@@ -53,10 +57,12 @@ ENV_TIMEOUT = "PDF_TABLE_MODEL_TIMEOUT_S"
 ENV_DOC_SECONDS = "PDF_TABLE_MODEL_DOC_SECONDS"
 ENV_SPOOL_DIR = "PIPESHUB_TABLE_SPOOL_DIR"
 DEFAULT_MAX_TABLES = 300
-DEFAULT_TIMEOUT_S = 120.0
 DEFAULT_DOC_SECONDS = 300.0
 RENDER_SCALE = 2.0
 RESIZE_HEIGHT = 1024
+MAX_REQUEST_IMAGE_BYTES = 7 * 1024 * 1024  # under the endpoint's 8 MiB
+MAX_META_BYTES = 900_000  # under the form parser's 1 MB field limit
+MAX_WORD_CHARS = 256  # a longer word (a dot leader the text layer joined into one word) is cut
 SPOOL_MAX_BYTES = 128 * 1024 * 1024  # per document; past it the boxes are ``spool_full``
 QUEUE_WAIT_CAP_S = 120.0  # the service's longest wait for a permit; the request timeout covers it
 RECORD_BUDGET_SHARE = 0.8  # the parsing client's read-timeout share of the record budget
@@ -84,8 +90,8 @@ def max_tables() -> int:
 
 
 def model_timeout_s() -> float:
-    value = env_seconds(ENV_TIMEOUT, DEFAULT_TIMEOUT_S)
-    return value if value > 0 else DEFAULT_TIMEOUT_S
+    """The client and the service read ``PDF_TABLE_MODEL_TIMEOUT_S`` through the same function."""
+    return _shared_model_timeout_s()
 
 
 def doc_seconds() -> float:
@@ -109,17 +115,25 @@ def phase2_deadline_s(doc_s: float, remaining_s: float | None = None) -> float:
 
 
 def batch_jobs(jobs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Batches in document order: one closes at 16 tables or when the next table would take the sum of caps over
-    ``MAX_SUM_CAPS`` steps, whichever comes first."""
+    """Batches in document order: one closes at 16 tables, or when the next table would take the sum of caps over
+    ``MAX_SUM_CAPS`` steps, the crops over ``MAX_REQUEST_IMAGE_BYTES`` or the description over ``MAX_META_BYTES``,
+    whichever comes first (a job that carries ``png_bytes`` and ``meta_bytes`` is counted by them)."""
     batches: list[list[dict[str, Any]]] = []
     cur: list[dict[str, Any]] = []
-    total = 0
+    total = size = meta = 0
     for j in jobs:
-        if cur and (len(cur) >= MAX_TABLES_PER_REQUEST or total + j["cap"] > MAX_SUM_CAPS):
+        if cur and (
+            len(cur) >= MAX_TABLES_PER_REQUEST
+            or total + j["cap"] > MAX_SUM_CAPS
+            or size + j.get("png_bytes", 0) > MAX_REQUEST_IMAGE_BYTES
+            or meta + j.get("meta_bytes", 0) > MAX_META_BYTES
+        ):
             batches.append(cur)
-            cur, total = [], 0
+            cur, total, size, meta = [], 0, 0, 0
         cur.append(j)
         total += j["cap"]
+        size += j.get("png_bytes", 0)
+        meta += j.get("meta_bytes", 0)
     if cur:
         batches.append(cur)
     return batches
@@ -253,19 +267,27 @@ def sweep_stale(root: str | None = None, token_of: Callable[[int], str | None] =
 # --- worker half: collect jobs, never fail the parse -------------------------------------------------------------
 
 
-def _default_renderer(pdf_path: str) -> Callable[[int], tuple[Any, float, float]]:
-    """``render(page_index) -> (RGB array at scale 2, width pt, height pt)`` from the file."""
+def _default_renderer(pdf_path: str) -> Callable[[int], tuple[Any, ...]]:
+    """``render(page_index) -> (RGB array at scale 2, width pt, height pt, dx, dy, plumber width, plumber height)``.
+    pdfium renders the crop box; the text layer's coordinates (pdfplumber) count from the media box, so a box on a page
+    whose crop box is not its media box is shifted by (dx, dy) to land on the render. A rotated page has no offset."""
     import numpy as np
     import pypdfium2 as pdfium
 
     doc = pdfium.PdfDocument(pdf_path)
 
-    def render(index: int) -> tuple[Any, float, float]:
+    def render(index: int) -> tuple[Any, ...]:
         page = doc[index]
         try:
             w, h = page.get_size()
+            dx = dy = 0.0
+            pw, ph = float(w), float(h)
+            if not page.get_rotation():
+                media, crop = page.get_mediabox(), page.get_cropbox()
+                dx, dy = crop[0] - media[0], media[3] - crop[3]
+                pw, ph = media[2] - media[0], media[3] - media[1]
             bitmap = page.render(scale=RENDER_SCALE)
-            return np.asarray(bitmap.to_pil().convert("RGB")), float(w), float(h)
+            return np.asarray(bitmap.to_pil().convert("RGB")), float(w), float(h), dx, dy, pw, ph
         finally:
             page.close()
 
@@ -345,14 +367,16 @@ class TableJobCollector:
             self._warned = True
             logger.warning("table hybrid shadow: job collection failed (%s); the parse goes on", what)
 
-    def _render(self, page_index: int) -> tuple[Any, float, float]:
+    def _render(self, page_index: int) -> tuple[Any, ...]:
         if self._page_cache is not None and self._page_cache[0] == page_index:
-            return self._page_cache[1:]  # type: ignore[return-value]
+            return self._page_cache[1:]
         if self._renderer is None:
             self._renderer = _default_renderer(self._pdf_path)
-        img, w, h = self._renderer(page_index)
-        self._page_cache = (page_index, img, w, h)
-        return img, w, h
+        out = self._renderer(page_index)
+        if len(out) == 3:  # a renderer that knows no crop offset: the page is what it renders
+            out = (*out, 0.0, 0.0, out[1], out[2])
+        self._page_cache = (page_index, *out)
+        return out
 
     def _append(self, rec: dict[str, Any]) -> None:
         with open(os.path.join(self._dir, INDEX_FILE), "a") as f:
@@ -430,10 +454,10 @@ class TableJobCollector:
         if self.bytes >= self._byte_cap:
             rec["reason"] = "spool_full"
             return
-        img, w, h = self._render(page_index)
-        if abs(w - page_w) > 1.0 or abs(h - page_h) > 1.0:
+        img, w, h, dx, dy, pw, ph = self._render(page_index)
+        if abs(pw - page_w) > 1.0 or abs(ph - page_h) > 1.0:
             raise ValueError("page size differs between renderers")
-        png, sf, tb, _size = build_request(img, box)
+        png, sf, tb, _size = build_request(img, (box[0] - dx, box[1] - dy, box[2] - dx, box[3] - dy))
         name = f"p{page_index + 1}-b{rec['bi']}.png"
         tmp = os.path.join(self._dir, name + ".part")
         with open(tmp, "wb") as f:
@@ -442,7 +466,8 @@ class TableJobCollector:
         self.bytes += len(png)
         self.sent += 1
         rec.update(
-            png=name, png_bytes=len(png), scale_factor=sf, page_w=w * RENDER_SCALE, page_h=h * RENDER_SCALE, table_bbox=tb,
+            png=name, png_bytes=len(png), scale_factor=sf, page_w=w * RENDER_SCALE, page_h=h * RENDER_SCALE, table_bbox=tb, dx=dx, dy=dy,
+            long_words=sum(1 for x in words if len(x["text"]) > MAX_WORD_CHARS),
             words=[[x["text"], x["x0"], x["top"], x["x1"], x["bottom"]] for x in words],
         )
 
@@ -472,6 +497,7 @@ class DocStats:
     request_id: str | None
     tables_seen: int = 0
     prefiltered: int = 0
+    long_words: int = 0
     sent: int = 0
     budget: int = 0
     deadline_hit: bool = False
@@ -505,8 +531,15 @@ def _read_png(spool_dir: str, name: str) -> bytes:
 
 
 def _tokens(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """The request's tokens: page-space boxes at the render scale (shifted by the page's crop offset), text cut to the
+    endpoint's limit."""
+    dx, dy = rec.get("dx") or 0.0, rec.get("dy") or 0.0
     return [
-        {"id": i, "bbox": [w[1] * RENDER_SCALE, w[2] * RENDER_SCALE, w[3] * RENDER_SCALE, w[4] * RENDER_SCALE], "text": w[0]}
+        {
+            "id": i,
+            "bbox": [(w[1] - dx) * RENDER_SCALE, (w[2] - dy) * RENDER_SCALE, (w[3] - dx) * RENDER_SCALE, (w[4] - dy) * RENDER_SCALE],
+            "text": w[0][:MAX_WORD_CHARS],
+        }
         for i, w in enumerate(rec["words"])
     ]
 
@@ -528,7 +561,9 @@ def analyse_table(rec: dict[str, Any], result: TableResult | None, failure: str 
         out["reason"] = "cap_hit"
         return out
     if result.status != "ok":
-        reason = {"timeout": "timeout", "service_busy": "service_busy", "weights": "unsupported"}.get(result.err or "", "error")
+        reason = {"timeout": "timeout", "service_busy": "service_busy", "deadline": "deadline", "weights": "unsupported"}.get(
+            result.err or "", "error"
+        )
         out["reason"] = reason
         out["would_route"], out["would_reason"] = th.would_route(reason, None, None, 0.0)
         return out
@@ -622,9 +657,7 @@ class ShadowCoordinator:
 
     def start(self, admission: Admission, record_id: str | None, request_id: str | None) -> asyncio.Task[None]:
         """Start the detached run in a fresh context that keeps only the ids it logs."""
-        task = asyncio.get_running_loop().create_task(
-            self._run(admission, record_id, request_id), name="table-hybrid-shadow", context=contextvars.Context()
-        )
+        task = spawn_detached(self._run(admission, record_id, request_id), name="table-hybrid-shadow")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
@@ -672,7 +705,31 @@ class ShadowCoordinator:
         deadline = t0 + self._doc_s()
         stop: str | None = None  # a reason that ends the document's sending
         warned_version = False
-        for batch in batch_jobs(jobs):
+        # Everything the endpoint would refuse is found here, per table, so one bad table never costs its batch.
+        valid: list[dict[str, Any]] = []
+        for rec in jobs:
+            toks = _tokens(rec)
+            if _duplicate_boxes(toks):
+                self._fail(stats, rec, "malformed")
+                continue
+            spec = {
+                "id": rec["key"], "image": "c0", "scale_factor": rec["scale_factor"], "page_w": rec["page_w"],
+                "page_h": rec["page_h"], "table_bbox": rec["table_bbox"], "cap": rec["cap"], "tokens": toks,
+            }
+            try:
+                TableSpec.model_validate(spec)
+            except ValueError:
+                self._fail(stats, rec, "invalid_input")
+                continue
+            rec["_spec"] = spec
+            rec["meta_bytes"] = len(json.dumps(spec, separators=(",", ":")))
+            if rec["meta_bytes"] > MAX_META_BYTES or rec.get("png_bytes", 0) > MAX_REQUEST_IMAGE_BYTES:
+                self._fail(stats, rec, "invalid_input")
+                continue
+            if rec.get("long_words"):
+                stats.long_words += rec["long_words"]
+            valid.append(rec)
+        for batch in batch_jobs(valid):
             if stop is None and self._clock() >= deadline:
                 stop = "deadline"
                 stats.deadline_hit = True
@@ -680,25 +737,13 @@ class ShadowCoordinator:
                 for rec in batch:
                     self._fail(stats, rec, stop)
                 continue
-            ok_batch, tokens_by_key = [], {}
-            for rec in batch:
-                toks = _tokens(rec)
-                if _duplicate_boxes(toks):
-                    self._fail(stats, rec, "malformed")
-                    continue
-                ok_batch.append(rec)
-                tokens_by_key[rec["key"]] = toks
-            if not ok_batch:
-                continue
+            ok_batch = batch
             files, specs = {}, []
             for n, rec in enumerate(ok_batch):
                 png = await asyncio.to_thread(_read_png, spool_dir, rec["png"])
                 files[f"c{n}"] = png
                 stats.bytes_sent += len(png)
-                specs.append({
-                    "id": rec["key"], "image": f"c{n}", "scale_factor": rec["scale_factor"], "page_w": rec["page_w"],
-                    "page_h": rec["page_h"], "table_bbox": rec["table_bbox"], "cap": rec["cap"], "tokens": tokens_by_key[rec["key"]],
-                })
+                specs.append({**rec["_spec"], "image": f"c{n}"})
             left = deadline - self._clock()
             timeout = min(left, sum(_table_timeout(r["cap"]) for r in ok_batch) + 10.0 + QUEUE_WAIT_CAP_S)
             stats.sent += len(ok_batch)
@@ -710,7 +755,10 @@ class ShadowCoordinator:
             if outcome.kind != "ok":
                 for rec in ok_batch:
                     self._fail(stats, rec, outcome.kind)
-                if outcome.kind in ("service_busy", "service_down", "unsupported", "mode_fast"):
+                if outcome.kind == "deadline":
+                    stop = "deadline"
+                    stats.deadline_hit = True
+                elif outcome.kind in ("service_busy", "service_down", "unsupported", "mode_fast"):
                     stop = outcome.kind
                     if outcome.kind == "service_down":
                         self.latch("service_down", DOWN_LATCH_S)
@@ -733,8 +781,9 @@ class ShadowCoordinator:
                 if fields["reason"] != "none":
                     stats.note(fields["reason"])
                 self._log_table(stats, rec, fields)
-                if res is not None and res.status == "error" and res.err == "service_busy":
-                    stop = "service_busy"
+                if res is not None and res.status == "error" and res.err in ("service_busy", "deadline"):
+                    stop = res.err
+                    stats.deadline_hit = stats.deadline_hit or res.err == "deadline"
                 if res is not None and res.status == "error" and res.err == "weights":
                     stop = "unsupported"  # the service has no model files: not asked again for a while
                     self.latch("unsupported", UNSUPPORTED_LATCH_S)
@@ -779,7 +828,7 @@ class ShadowCoordinator:
             "record_id": stats.record_id, "request_id": stats.request_id, "outcome": stats.outcome,
             "token_definition": th.TOKEN_DEFINITION,
             "tables_seen": stats.tables_seen if not stats.outcome.startswith("shadow_busy") else None,
-            "prefiltered": stats.prefiltered, "sent": stats.sent, "budget": stats.budget, "deadline_hit": stats.deadline_hit,
+            "prefiltered": stats.prefiltered, "long_words_cut": stats.long_words, "sent": stats.sent, "budget": stats.budget, "deadline_hit": stats.deadline_hit,
             "fallback_by_reason": dict(sorted(reasons.items())),
             "docs_with_load_fallback": any(r in th.LOAD_REASONS for r in reasons), "phase2_wall_s": stats.phase2_wall_s,
             "bytes_sent": stats.bytes_sent, "spool_peak_bytes": stats.spool_peak_bytes,

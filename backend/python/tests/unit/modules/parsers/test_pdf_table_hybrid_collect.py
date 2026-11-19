@@ -96,10 +96,11 @@ def test_the_request_the_worker_builds_is_a_page_resize_then_crop() -> None:
     assert np.array_equal(back, rz[round(tb[1]) : round(tb[3]), round(tb[0]) : round(tb[2])])
 
 
-def bullet(x0: float, top: float, font: str | None = "_synthetic_bullet") -> dict:
-    w = {"text": "•", "x0": x0, "x1": x0 + 1.2, "top": top, "bottom": top + 1.2}
-    if font:
-        w["fontname"] = font
+def bullet(x0: float, top: float, *, synthetic: bool = True) -> dict:
+    """A bullet word; the layout pass marks the ones it makes up from vector shapes with an explicit flag."""
+    w = {"text": "•", "x0": x0, "x1": x0 + 1.2, "top": top, "bottom": top + 1.2, "fontname": "_synthetic_bullet" if synthetic else "Arial"}
+    if synthetic:
+        w["synthetic"] = True
     return w
 
 
@@ -124,7 +125,7 @@ def test_made_up_vector_bullets_are_never_tokens_and_their_origin_is_recorded(sp
 
 def test_a_bullet_that_is_in_the_text_layer_stays_a_token(spool) -> None:
     box = BOX
-    words = [*grid_words(box), bullet(190.0, 33.0, font="Arial")]
+    words = [*grid_words(box), bullet(190.0, 33.0, synthetic=False)]
     flow.TableJobCollector(spool, "x.pdf", renderer=blank_renderer).collect_page(0, PAGE_W, PAGE_H, [FakeDecision(box)], [], None, words)
     rec = read_index(spool)[0]
     assert "•" in [x[0] for x in rec["words"]] and rec["synthetic"] == []
@@ -144,3 +145,49 @@ def test_the_strokes_of_a_ruled_page_are_spooled_for_the_crossing_count(spool) -
         col.collect_page(0, PAGE_W, PAGE_H, [FakeDecision(tuple(boxes["1"][0]))], [], None, words, page)
     rec = read_index(spool)[0]
     assert len(rec["rules"]["h"]) >= 9 and len(rec["rules"]["v"]) >= 6  # the ruled table of page 1
+
+
+def test_the_font_name_alone_does_not_make_a_word_synthetic(spool) -> None:
+    """The origin is the flag the layout pass sets, not the font: a text-layer word that happens to carry that font name stays."""
+    word = {**bullet(190.0, 33.0, synthetic=False), "fontname": "_synthetic_bullet"}
+    flow.TableJobCollector(spool, "x.pdf", renderer=blank_renderer).collect_page(0, PAGE_W, PAGE_H, [FakeDecision(BOX)], [], None, [*grid_words(BOX), word])
+    assert "•" in [x[0] for x in read_index(spool)[0]["words"]]
+
+
+def _cropbox_pdf(path: Path) -> None:
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(path), pagesize=(612, 792), invariant=1)
+    c.setCropBox((18, 1, 594, 791))  # the crop box is not the media box
+    c.setFillGray(0)
+    c.rect(100, 600, 200, 60, fill=1, stroke=0)  # a black block: page space x 100..300, top 132..192
+    c.setFillGray(1)
+    c.setFont("Helvetica", 9)
+    for r in range(4):
+        for k in range(3):
+            c.drawString(110 + 60 * k, 645 - 12 * r, f"v{r}{k}")
+    c.showPage()
+    c.save()
+
+
+def test_a_page_whose_crop_box_is_not_its_media_box_is_measured_and_the_box_lands_on_the_render(spool, tmp_path) -> None:
+    """pdfium renders the crop box, the text layer counts from the media box: the box is shifted by the crop origin."""
+    import cv2
+    import numpy as np
+    import pdfplumber
+
+    pdf = tmp_path / "cropped.pdf"
+    _cropbox_pdf(pdf)
+    box = (100.0, 132.0, 300.0, 192.0)  # the black block, in the text layer's coordinates
+    with pdfplumber.open(str(pdf)) as doc:
+        page = doc.pages[0]
+        assert (float(page.width), float(page.height)) == (612.0, 792.0)
+        words = page.extract_words()
+        col = flow.TableJobCollector(spool, str(pdf))
+        col.collect_page(0, 612.0, 792.0, [FakeDecision(box)], [], None, words, page)
+        col.close()
+    rec = read_index(spool)[0]
+    assert rec["reason"] == "none", rec
+    assert rec["dx"] == pytest.approx(18.0) and rec["dy"] == pytest.approx(0.94, abs=0.2)
+    crop = cv2.imdecode(np.frombuffer((Path(spool) / rec["png"]).read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    assert crop.mean() < 60  # the crop is the black block (the white text is a small share), not the margin beside it

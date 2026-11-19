@@ -115,6 +115,7 @@ async def test_parse_document_returns_the_same_pages_service_up_down_and_slow(tm
             flow.set_coordinator(None)
     _, docs = parse_logs(caplog)
     assert len(docs) == 3 and all(d["record_id"] == "r1" and d["tables_seen"] == 8 for d in docs)
+    assert all(d["request_id"] is None for d in docs)  # no request context: unknown is null, not a dash
 
 
 async def test_callers_that_do_not_ask_for_the_table_model_start_no_run(monkeypatch) -> None:

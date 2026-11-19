@@ -160,7 +160,8 @@ def test_glyph_candidates_count_what_the_review_counts() -> None:
 
 
 def test_a_made_up_word_is_recognised_by_its_origin() -> None:
-    assert th.is_synthetic({"text": "•", "fontname": th.SYNTHETIC_BULLET_FONT})
+    assert th.is_synthetic({"text": "•", "synthetic": True})
+    assert not th.is_synthetic({"text": "•", "fontname": "_synthetic_bullet"})  # the font name is not the test
     assert not th.is_synthetic({"text": "•", "fontname": "Arial"})
     assert not th.is_synthetic({"text": "•"})
 

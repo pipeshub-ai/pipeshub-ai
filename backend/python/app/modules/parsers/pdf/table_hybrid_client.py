@@ -25,7 +25,7 @@ CONNECT_TIMEOUT_S = 5.0
 class BatchOutcome:
     """One batch's result. ``kind`` is ``ok`` or the reason every table of the batch carries."""
 
-    kind: str  # ok | service_busy | unsupported | mode_fast | service_down | timeout | error
+    kind: str  # ok | service_busy | deadline | invalid_input | unsupported | mode_fast | service_down | timeout | error
     response: TableResponse | None = None
     status_code: int | None = None
 
@@ -60,7 +60,9 @@ class TableStructureClient:
             return BatchOutcome("error")
         code = resp.status_code
         if code == 429:
-            return BatchOutcome("service_busy", status_code=code)
+            return BatchOutcome("deadline" if _error_code(resp) == "deadline" else "service_busy", status_code=code)
+        if code == 422:
+            return BatchOutcome("invalid_input", status_code=code)
         if code in (404, 405):
             return BatchOutcome("unsupported", status_code=code)
         if code == 409:

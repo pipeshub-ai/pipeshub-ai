@@ -77,7 +77,9 @@ SERVICE_MODIFIED = {"parse_pdf_endpoint", "_parse_holding_gate"}
 # instead of on the first request): re-pinned to its hash now. It runs before the endpoint takes
 # requests, so the endpoint traces below are unaffected.
 SERVICE_INITIALIZE = ("DoclingService.initialize", "2f855ea0c01f8bba")
-SERVICE_ADDED: set[str] = set()  # only imports are added
+# Added: the table-structure endpoint (``/table-structure``) and the two helpers only it uses. They touch none of the
+# conversion routes above; the endpoint's own tests are tests/unit/services/docling/test_table_structure_endpoint.py.
+SERVICE_ADDED: set[str] = {"_table_error", "_table_permit", "table_structure_endpoint"}
 
 
 def _lazy_import_split(modified: set[str]) -> tuple[set[str], set[str]]:
@@ -98,6 +100,7 @@ def test_off_pin_covers_whole_module_except_allowlist() -> None:
         # the optional X-Parse-Class header (PIPESHUB_CAPACITY_PROFILE=auto only; absent, the route is as before)
         "import:from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile",
         "import:from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile",  # the line it replaced
+        "import:from pydantic import BaseModel",  # the line it replaced (the endpoint validates its form with ValidationError)
     }
     assert modified - imports(modified) - {SERVICE_INITIALIZE[0]} <= SERVICE_MODIFIED, sorted(modified)
     assert top_names(added) == SERVICE_ADDED

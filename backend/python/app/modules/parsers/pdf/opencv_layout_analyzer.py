@@ -1449,6 +1449,7 @@ def _find_vector_bullets(
                 "bottom": y1,
                 "size": max(8.0, h_v * 2.0),
                 "fontname": "_synthetic_bullet",
+                "synthetic": True,  # the origin: made up here, not in the text layer (the font name is not the test)
             })
     return bullets
 

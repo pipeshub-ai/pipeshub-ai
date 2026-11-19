@@ -756,7 +756,6 @@ MODEL_MODE = "accurate"
 # What a model token is: a word of the PDF text layer. Words the layout pass makes up (vector bullets) are not tokens. A change
 # of this definition changes every measured grid, so it is part of the configuration hash and of the document log line.
 TOKEN_DEFINITION = "text-layer-v2"
-SYNTHETIC_BULLET_FONT = "_synthetic_bullet"  # the font name the layout pass gives the words it makes up from vector shapes
 MODEL_REVISION = "fc0f2d45e2218ea24bce5045f58a389aed16dc23"  # the weights commit the measured grids came from
 # Hash of the weight files the measured grids came from: the sha256 of each weight file in the mode folder (sha256 2a7d6c92...74d9 for the accurate file), combined by name (see ``weights_sha256`` in the child module).
 MODEL_WEIGHTS_SHA256 = "b7682f9ea68ca3c7e1f87a8054e4d7923789cb6e37284ea44e5c985f54004dff"
@@ -765,7 +764,7 @@ WORD_LOSS_MAX = 0.01
 REASONS = (
     "none", "prefilter", "budget", "deadline", "service_busy", "shadow_busy", "service_down", "unsupported",
     "version_mismatch", "mode_fast", "timeout", "error", "malformed", "cap_hit", "small_grid", "word_loss",
-    "collect_error", "spool_full",
+    "collect_error", "spool_full", "invalid_input",
 )
 # The reasons that make the result depend on load rather than on the document.
 LOAD_REASONS = ("service_busy", "deadline", "timeout", "service_down", "error")
@@ -923,8 +922,9 @@ def glyph_candidates(token_texts: dict[int, str], cells: list[dict[str, Any]]) -
 
 
 def is_synthetic(word: Word) -> bool:
-    """A word the layout pass made up from a vector shape: not in the text layer, never a model token."""
-    return word.get("fontname") == SYNTHETIC_BULLET_FONT
+    """A word the layout pass made up from a vector shape: not in the text layer, never a model token. The layout pass
+    sets the ``synthetic`` flag on it; the font name is not the test."""
+    return word.get("synthetic") is True
 
 
 Stroke = tuple[float, float, float]  # a horizontal stroke (y, x0, x1) or a vertical one (x, y0, y1)

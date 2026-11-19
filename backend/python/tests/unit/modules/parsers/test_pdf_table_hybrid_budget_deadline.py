@@ -115,3 +115,40 @@ def test_the_composition_of_batches_changes_nothing_in_the_set_of_tables() -> No
     a = flow.batch_jobs(jobs(*([10] * 40)))
     b = flow.batch_jobs(jobs(*([10] * 40)))
     assert a == b  # a pure function of the document
+
+
+def test_batches_close_on_the_bytes_of_the_crops_and_the_size_of_the_description() -> None:
+    mib = 1024 * 1024
+    by_bytes = [{"cap": 10, "key": f"k{i}", "png_bytes": 4 * mib, "meta_bytes": 10} for i in range(3)]
+    assert [len(b) for b in flow.batch_jobs(by_bytes)] == [1, 1, 1]  # 4 + 4 MiB is over 7 MiB
+    by_meta = [{"cap": 10, "key": f"k{i}", "png_bytes": 10, "meta_bytes": 500_000} for i in range(3)]
+    assert [len(b) for b in flow.batch_jobs(by_meta)] == [1, 1, 1]
+    small = [{"cap": 10, "key": f"k{i}", "png_bytes": mib, "meta_bytes": 100_000} for i in range(6)]
+    assert [len(b) for b in flow.batch_jobs(small)] == [6]
+    assert all(sum(j["png_bytes"] for j in b) <= flow.MAX_REQUEST_IMAGE_BYTES for b in flow.batch_jobs(by_bytes + small))
+
+
+def test_a_word_over_the_endpoints_limit_is_cut_and_counted_not_sent_whole() -> None:
+    rec = {"words": [["." * 700, 10.0, 20.0, 400.0, 30.0], ["x", 1.0, 2.0, 3.0, 4.0]], "long_words": 1}
+    toks = flow._tokens(rec)
+    assert len(toks[0]["text"]) == flow.MAX_WORD_CHARS == 256 and toks[1]["text"] == "x"
+    assert toks[0]["bbox"] == [20.0, 40.0, 800.0, 60.0]  # the box is untouched, at the render scale
+
+
+def test_tokens_are_in_page_space_at_the_render_scale() -> None:
+    toks = flow._tokens({"words": [["a", 10.0, 20.0, 30.0, 40.0]]})
+    assert toks[0]["bbox"] == [20.0, 40.0, 60.0, 80.0]
+    shifted = flow._tokens({"words": [["a", 28.0, 21.0, 48.0, 41.0]], "dx": 18.0, "dy": 1.0})  # a page whose crop box is offset
+    assert shifted[0]["bbox"] == [20.0, 40.0, 60.0, 80.0]
+
+
+def test_the_render_is_resized_exactly_as_the_library_resizes_a_page() -> None:
+    """Area interpolation, the library's size rule; a different interpolation changes the pixels the model sees."""
+    import cv2
+    import numpy as np
+
+    img = np.random.default_rng(7).integers(0, 255, (1583, 1223, 3), dtype=np.uint8)
+    out, sf = flow.resize_page(img)
+    expected = cv2.resize(img, (int(1223 * (1024 / 1583.0)), 1024), interpolation=cv2.INTER_AREA)
+    assert sf == 1024 / 1583.0 and np.array_equal(out, expected)
+    assert not np.array_equal(out, cv2.resize(img, (expected.shape[1], 1024), interpolation=cv2.INTER_LINEAR))

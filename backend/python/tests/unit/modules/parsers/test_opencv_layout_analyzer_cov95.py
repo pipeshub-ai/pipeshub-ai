@@ -1381,6 +1381,7 @@ class TestVectorBulletsAndStripes:
         bullets = _find_vector_bullets(page, words)
         assert len(bullets) >= 2
         assert bullets[0]["fontname"] == "_synthetic_bullet"
+        assert all(b["synthetic"] is True for b in bullets)  # the origin flag the table shadow run reads
 
     def test_find_vector_bullets_exception(self):
         page = MagicMock()

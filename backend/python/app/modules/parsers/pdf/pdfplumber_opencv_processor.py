@@ -287,6 +287,7 @@ class PDFPlumberOpenCVProcessor:
             if not shadow_active():
                 return None, None, None
             request_id = current_display_id()
+            request_id = None if request_id in ("", "-") else request_id  # unknown is null, not a dash
             coordinator = get_coordinator()
             return coordinator, coordinator.admit(record_id, request_id), request_id
         except Exception:

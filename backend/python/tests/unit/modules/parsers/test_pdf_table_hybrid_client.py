@@ -1,6 +1,7 @@
 """The plain client of ``/table-structure``: one attempt, no loop on 429, nothing reported to the governor."""
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Never
 
 import httpx
@@ -116,3 +117,16 @@ def test_the_client_is_not_a_base_service_client() -> None:
     from app.services.base_client import BaseServiceClient
 
     assert not issubclass(TableStructureClient, BaseServiceClient)
+
+
+async def test_negative_control_a_base_service_client_on_the_same_failures_does_report(feedback) -> None:
+    """The assertion above can fail: the repo's ordinary client reports a refused connection to the governor's feedback."""
+    from app.services.base_client import BaseServiceClient
+
+    base = BaseServiceClient("http://127.0.0.1:9", service_name="docling", max_retries=0, read_timeout=0.5, connect_timeout=0.5, retry_delay=0.01)
+    with contextlib.suppress(Exception):  # whichever error the base client raises for a refused connection
+        await base._post_json("/table-structure", {"x": 1})
+    assert not get_default_downstream_feedback().drain().is_empty
+    plain = TableStructureClient("http://127.0.0.1:9")
+    await plain.post_batch({"v": 1, "tables": []}, {}, deadline_ms=1000, timeout_s=0.5)
+    assert get_default_downstream_feedback().drain().is_empty
