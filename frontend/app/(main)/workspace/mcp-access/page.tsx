@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
-import { Badge, Box, Flex, Heading, Switch, Text } from '@radix-ui/themes';
+import { Badge, Box, Code, Flex, Heading, Switch, Text } from '@radix-ui/themes';
 import { SettingsSaveBar, SettingsSection } from '../components';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -20,6 +20,7 @@ const samePolicy = (a: McpAccessPolicy, b: McpAccessPolicy): boolean =>
 function SwitchRow({
   label,
   description,
+  toolName,
   checked,
   disabled,
   onCheckedChange,
@@ -27,6 +28,7 @@ function SwitchRow({
 }: {
   label: string;
   description?: string;
+  toolName?: string;
   checked: boolean;
   disabled?: boolean;
   onCheckedChange: (value: boolean) => void;
@@ -40,6 +42,11 @@ function SwitchRow({
             {label}
           </Text>
           {badge}
+          {toolName && (
+            <Code size="1" color="gray" variant="soft" style={{ wordBreak: 'break-all' }}>
+              {toolName}
+            </Code>
+          )}
         </Flex>
         {description && (
           <Text
@@ -190,11 +197,15 @@ export default function McpAccessPage() {
                     (tool.writes && !form.allowWriteTools) ||
                     (tool.name === 'pipeshub_agents' &&
                       form.disabledTools.includes('pipeshub_chat'));
+                  // Tools come from the installed MCP package, so one newer than this build has no text yet.
+                  const descriptionKey = `workspace.mcpAccess.tools.descriptions.${tool.name}`;
+                  const description = t(descriptionKey);
                   return (
                     <SwitchRow
                       key={tool.name}
                       label={tool.title}
-                      description={tool.title === tool.name ? undefined : tool.name}
+                      description={description === descriptionKey ? undefined : description}
+                      toolName={tool.title === tool.name ? undefined : tool.name}
                       badge={
                         tool.writes ? (
                           <Badge size="1" color="amber" variant="soft">
