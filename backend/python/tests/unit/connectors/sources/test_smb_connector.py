@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
+from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
 from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
@@ -26,6 +27,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.core.registry.folder_scope import FILE_SHARE_PATHS
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
 from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
     NetworkShareAuthError,
     ShareListingError,
     ShareWalkIncompleteError,
@@ -901,6 +903,81 @@ class TestSmbConnectorStreamAndFilters:
         assert exc.value.status_code == 404
         assert "no longer exists" in exc.value.detail
         ds.read_file.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("failure", "status"),
+        [
+            # stat needs less than read, so a file the account may not read passes it.
+            (AccessDeniedError(SHARE, "no-access/secret.txt", "STATUS_ACCESS_DENIED"), 403),
+            (FileNotFoundError("no-access/secret.txt"), 404),
+            (NetworkShareAuthError("files.example refused the user name or password."), 409),
+        ],
+    )
+    async def test_a_file_that_fails_to_open_answers_with_its_own_status(
+        self, smb_connector, failure, status, caplog
+    ):
+        path = "no-access/secret.txt"
+        smb_connector.data_source = FakeNetworkShareDataSource(
+            stats={(SHARE, path): _entry("secret.txt", file_id=7)},
+            files={(SHARE, path): failure},
+        )
+        record = _file_record(ext_id=f"{SHARE}/{path}", revision="r")
+        with caplog.at_level(logging.WARNING), pytest.raises(HTTPException) as exc:
+            await smb_connector.stream_record(record)
+        assert exc.value.status_code == status
+        if status == 403:
+            # The indexer stores a refusal as the reason and does not retry it.
+            assert exc.value.headers.get(SOURCE_REFUSAL_HEADER) == "1"
+        # The server's reason is logged once, as an expected refusal: no traceback.
+        logged = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [(r.levelno, r.exc_info) for r in logged] == [(logging.WARNING, None)]
+        assert str(failure) in logged[0].getMessage()
+
+    @pytest.mark.parametrize(
+        ("ntstatus", "status"),
+        [(0xC0000022, 403), (0xC0000034, 404), (0xC000006D, 409)],
+    )
+    async def test_the_servers_status_on_open_is_answered_and_logged(
+        self, smb_connector, ntstatus, status, caplog
+    ):
+        from smbprotocol.exceptions import SMBOSError
+
+        from app.sources.external.smb.smb import SmbDataSource
+
+        fake = MagicMock()
+        fake.stat.return_value = MagicMock(
+            st_mode=stat.S_IFREG | 0o644, st_size=5, st_ctime=0.0, st_mtime=0.0, st_ino=7, st_file_attributes=0
+        )
+        fake.open_file.side_effect = SMBOSError(ntstatus, r"\\10.0.0.5\share\no-access\secret.txt")
+        client = SmbClient(server="10.0.0.5", username="u", password="p", share=SHARE)
+        smb_connector.data_source = SmbDataSource(client)
+        record = _file_record(ext_id=f"{SHARE}/no-access/secret.txt", revision="r")
+        with (
+            patch.object(client, "_smbclient", return_value=fake),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await smb_connector.stream_record(record)
+        assert exc.value.status_code == status
+        assert f"0x{ntstatus:08x}" in caplog.records[-1].getMessage()
+
+    async def test_any_other_open_failure_is_a_logged_500(self, smb_connector, caplog):
+        smb_connector.data_source = FakeNetworkShareDataSource(
+            stats={(SHARE, "locked.docx"): _entry("locked.docx", file_id=9)},
+            files={(SHARE, "locked.docx"): OSError("STATUS_SHARING_VIOLATION")},
+        )
+        with caplog.at_level(logging.ERROR), pytest.raises(HTTPException) as exc:
+            await smb_connector.stream_record(_file_record(ext_id=f"{SHARE}/locked.docx", revision="r"))
+        assert exc.value.status_code == 500
+        assert [r.exc_info[0] for r in caplog.records if r.levelno == logging.ERROR] == [OSError]
+
+    async def test_a_readable_file_streams_its_content(self, smb_connector):
+        smb_connector.data_source = FakeNetworkShareDataSource(
+            stats={(SHARE, "a.txt"): _entry("a.txt", file_id=8)},
+            files={(SHARE, "a.txt"): b"hello"},
+        )
+        response = await smb_connector.stream_record(_file_record(ext_id=f"{SHARE}/a.txt", revision="r"))
+        assert [chunk async for chunk in response.body_iterator] == [b"hello"]
 
     async def test_directory_is_not_downloadable(self, smb_connector):
         smb_connector.data_source = FakeNetworkShareDataSource()
