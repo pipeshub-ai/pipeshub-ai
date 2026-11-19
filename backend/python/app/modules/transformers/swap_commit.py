@@ -291,7 +291,13 @@ class SwapCommitter:
                          Cond(PENDING_VIRTUAL_RECORD_ID, "is_null")],
                     )
                 if moved:
-                    await sync_vector_membership(vs.vector_db_service, vs.collection_locator, graph, swap.new_vrid, self.logger)
+                    try:
+                        await sync_vector_membership(vs.vector_db_service, vs.collection_locator, graph, swap.new_vrid, self.logger)
+                    except Exception as exc:
+                        # The twin names the new copy, whose points carry only this record's membership: a container search of the twin's
+                        # own connector misses it until they are written. The repair is the per-connector backfill, asked for here.
+                        self.logger.warning("Membership of %s not applied for the twin %s: %s", swap.new_vrid, key, type(exc).__name__)
+                        await self._request_membership_repair(twin_context, twin.get("connectorId"))
                     await notify_record_vrid_moved(
                         connector_name=twin.get("connectorName"), connector_id=twin.get("connectorId"),
                         external_record_group_id=twin.get("externalGroupId"), org_id=swap.org_id,
@@ -299,6 +305,16 @@ class SwapCommitter:
                 return bool(moved)
 
         await asyncio.gather(*(one(k) for k in keys if k and k != record.id))
+
+    async def _request_membership_repair(self, twin_context: RecordContext, connector_id: str | None) -> None:
+        """Have the connector's vector membership walked again (the designed repair path: the backfill scanner picks up an app whose
+        flag is clear), and mark the points' scope stale. Best effort: the failure to ask is logged."""
+        if not connector_id:
+            return
+        try:
+            await self.o.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {"vectorMembershipBackfilled": False})
+        except Exception as exc:
+            self.logger.error("Could not ask for a membership repair of connector %s: %s", connector_id, type(exc).__name__)
 
     async def _release_after_grace(self, swap: keep_old_copy.SwapRun, record: Record) -> None:
         """Release the old copy once the accessible-records cache cannot still map a reader to it."""

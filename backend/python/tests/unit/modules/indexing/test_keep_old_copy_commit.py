@@ -230,3 +230,22 @@ async def test_a_holder_that_remains_keeps_the_membership_of_the_old_copy() -> N
         await swap._retire_membership(run())
     sync.assert_awaited_once()
     vs.vector_db_service.set_payload.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_twin_whose_membership_resync_fails_gets_a_durable_repair_and_the_other_twins_still_move() -> None:
+    """Scenario 37: a crash or an error between a twin's move and the write of its membership leaves the twin out of a container search of its
+    connector; the connector's membership is walked again (the backfill scanner), not left to the next write."""
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({
+        "A": {"orgId": "o", "virtualRecordId": "Y", "indexingStatus": "COMPLETED", "md5Checksum": "m", "connectorId": "k1"},
+        "B": rec("X", "COMPLETED", connectorId="k1"),
+        "C": rec("X", "COMPLETED", connectorId="k1"),
+    })
+    swap, _ = committer(g)
+    g.update_node = AsyncMock(return_value=True)
+    with patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock(side_effect=RuntimeError("down"))):
+        await swap._repoint_twins(ctx_for("A", "Y"), run(forced=True))
+    assert g.records["B"]["virtualRecordId"] == "Y" and g.records["C"]["virtualRecordId"] == "Y"  # both moved: one failure does not stop the rest
+    g.update_node.assert_any_await("k1", "apps", {"vectorMembershipBackfilled": False})
