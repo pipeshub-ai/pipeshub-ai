@@ -1208,7 +1208,7 @@ class TestFailedRepublishOfATransientFailureKeepsTheMessage:
         for call in consumer.consumer.commit.await_args_list:
             assert call.args[0][tp] <= 0
         messages = [r.getMessage() for r in caplog.records]
-        assert sum(m.startswith("Failed to re-queue record-events-0-0") for m in messages) == 1
+        assert messages.count("index.requeue_failed") == 1
         assert not any(m.startswith("Committed offset for record-events-0-0") for m in messages)
 
     async def test_its_backoff_is_the_one_its_copy_would_have_had(self, logger, plain_config) -> None:

@@ -68,6 +68,7 @@ from app.services.resource_governor.memory_domain import (
 )
 from app.services.resource_governor.models import ParseTier, Pool
 from app.services.resource_governor.probe import memory_domain_id
+from app.utils.error_class import log_failure
 from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import reset_admitted_in, set_admitted_in
 
@@ -631,9 +632,8 @@ async def clear_retry_tracking(host: ConcurrencyHost, message_id: str) -> None:
     try:
         await host.retry_manager.clear(message_id)
     except Exception as e:
-        host.logger.error(
-            "Failed to clear retry tracking for %s: %s", message_id, e
-        )
+        # Swallowed: what this delivery settled stands; only the count is left behind.
+        log_failure(host.logger, "index.retry_clear_failed", e, level=logging.WARNING, tracking_id=message_id)
 
 
 async def get_retry_count(host: ConcurrencyHost, message_id: str) -> int:
