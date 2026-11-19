@@ -8,6 +8,14 @@ metadata:
     app.kubernetes.io/component: arango
 spec:
   replicas: 1
+  # The data volume is ReadWriteOnce: a surged second pod either never attaches it
+  # or, on the same node, opens the same database directory. So stop the old pod
+  # first. Not Recreate: an upgrade to it fails on the live rollingUpdate field.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}

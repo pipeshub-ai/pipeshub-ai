@@ -619,6 +619,15 @@ mongodb:
   architecture: replicaset
   replicaSetName: rs0
   replicaCount: 2  # 2 data nodes + 1 arbiter = quorum with less storage than 3 full copies
+  # Bitnami subchart data nodes. Left empty, the subchart's "small" preset caps
+  # mongod at 750m CPU / 768Mi. mongod sizes its WiredTiger cache from this limit.
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 2Gi
   # Note: REPLICA_SET_AVAILABLE for the app is derived from mongodb.architecture
   # in templates/deployment.yaml. Do not add a separate flag here.
   tls:
@@ -744,11 +753,11 @@ arango:
     pullPolicy: IfNotPresent
   resources:
     limits:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 2000m
+      memory: 4Gi
     requests:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 1000m
+      memory: 2Gi
   persistence:
     enabled: true
     size: 10Gi
@@ -921,11 +930,11 @@ qdrant:
   # the app as QDRANT_MEMORY_LIMIT for the warning on the Services page.
   resources:
     limits:
+      cpu: 4000m
+      memory: 8Gi
+    requests:
       cpu: 2000m
       memory: 4Gi
-    requests:
-      cpu: 1000m
-      memory: 2Gi
   # Performance tuning — mirrors docker-compose.prod.yml settings.
   # QDRANT__SERVICE__API_KEY is injected separately from the secret; do not duplicate it here.
   env:
@@ -986,11 +995,11 @@ neo4j:
     storageClass: "" # Fill
   resources:
     limits:
+      cpu: 4000m
+      memory: 8Gi
+    requests:
       cpu: 2000m
       memory: 4Gi
-    requests:
-      cpu: 1000m
-      memory: 2Gi
   podSecurityContext:
     runAsUser: 1000
     fsGroup: 1000
@@ -1005,16 +1014,17 @@ neo4j:
       - ALL
   nodeSelector: {}
   tolerations: []
-  # apoc plugin and memory tuning for production (4Gi K8s limit).
-  # heap (2g) + pagecache (1g) + JVM overhead (~500m) fits within 4Gi limit.
+  # apoc plugin and memory tuning for production (8Gi K8s limit).
+  # heap (4g) + pagecache (2g) + JVM overhead (~1g) fits within the 8Gi limit.
+  # Neo4j does not size these from the container, so change them with the limit.
   env:
     NEO4J_PLUGINS: '["apoc"]'
     NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-    NEO4J_dbms_memory_heap_initial__size: 512m
-    NEO4J_dbms_memory_heap_max__size: 2g
+    NEO4J_dbms_memory_heap_initial__size: 1g
+    NEO4J_dbms_memory_heap_max__size: 4g
     # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
     NEO4J_dbms_cypher_min__replan__interval: "30m"
-    NEO4J_dbms_memory_pagecache_size: 1g
+    NEO4J_dbms_memory_pagecache_size: 2g
 
 # Parsing in its own pods (off by default; the chart then renders exactly as
 # without this block). When enabled, a Deployment and ClusterIP Service named
