@@ -202,6 +202,7 @@ from app.services.graph_db.conditions import (
     EQ,
     IS_NULL,
     NULL_OR_EQ,
+    ONE_OF,
     Cond,
     check_conditions,
 )
@@ -5158,6 +5159,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         updates: dict[str, Any],
         conditions: Sequence[Cond],
         transaction: str | None = None,
+        *,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if`."""
         check_conditions(conditions)
@@ -5176,8 +5179,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 clauses.append(f"n[$f{i}] = $v{i}")
             elif cond.op == NULL_OR_EQ:
                 clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] = $v{i})")
+            elif cond.op == ONE_OF:
+                clauses.append(f"n[$f{i}] IN $v{i}")
             else:
                 clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] <= $v{i})")
+        unset_clause = ""
+        for j, name in enumerate(unset):
+            parameters[f"u{j}"] = name
+            unset_clause += f"SET n[$u{j}] = NULL\n            "
         # The lock comes first so the conditions read a write that committed while this waited.
         rows = await self.client.execute_query(
             f"""
@@ -5187,6 +5196,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH n
             WHERE {" AND ".join(clauses)}
             SET n += $updates
+            {unset_clause}
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
             RETURN 1 AS n
             """,

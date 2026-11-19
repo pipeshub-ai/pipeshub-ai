@@ -245,6 +245,7 @@ from app.services.graph_db.conditions import (
     EQ,
     IS_NULL,
     NULL_OR_EQ,
+    ONE_OF,
     Cond,
     check_conditions,
 )
@@ -7084,6 +7085,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
             elif cond.op == NULL_OR_EQ:
                 filters.append(f"FILTER doc[@f{i}] == null || doc[@f{i}] == @v{i}")
+            elif cond.op == ONE_OF:
+                filters.append(f"FILTER doc[@f{i}] IN @v{i}")
             else:
                 # AQL orders a boolean below every number, so the type is checked: a non-number is never "not newer".
                 filters.append(f"FILTER doc[@f{i}] == null || (IS_NUMBER(doc[@f{i}]) && doc[@f{i}] <= @v{i})")
@@ -7098,6 +7101,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         replace_objects: bool = False,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if`.
 
@@ -7109,11 +7113,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates), **condition_vars}
         options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else ""
         newline = "\n                "
+        if unset:
+            # Only the named attributes go (see update_node_fields_if_match)
+            bind_vars["unset"] = ["_id", "_key", "_rev", *unset]
+            write = "REPLACE doc WITH MERGE(UNSET(doc, @unset), @updates) IN @@collection"
+        else:
+            write = f"UPDATE doc WITH @updates IN @@collection{options}"
         query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
-                UPDATE doc WITH @updates IN @@collection{options}
+                {write}
                 RETURN 1
             """
         rows = await self._retry_write_conflicts(

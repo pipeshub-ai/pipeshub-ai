@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import ProgressStatus
@@ -38,7 +40,10 @@ def enabled() -> bool:
 
 def grace_seconds() -> float:
     """How long a retired copy is kept: the accessible-records cache's effective TTL plus a margin (derived, not a setting)."""
-    from app.services.cache.accessible_records_cache import AccessibleRecordsCache, _ttl_from_env
+    from app.services.cache.accessible_records_cache import (
+        AccessibleRecordsCache,
+        _ttl_from_env,
+    )
     from app.services.redis.connection_provider_factory import uses_pg_state
 
     ttl = _ttl_from_env(AccessibleRecordsCache.DEFAULT_TTL_SECONDS)
@@ -81,3 +86,37 @@ def pending_of(doc: Mapping[str, Any]) -> str | None:
 RUNNING = (ProgressStatus.IN_PROGRESS.value, ProgressStatus.QUEUED.value)
 #: The statuses the commit accepts: running, or reset to NOT_STARTED by a save made mid-run (R3-1).
 COMMITTABLE = (*RUNNING, ProgressStatus.NOT_STARTED.value)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The run in flight, for the commit (set where the pending vrid is written, read where the record is committed)
+# ---------------------------------------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SwapRun:
+    """A run that writes ``new_vrid`` while its record keeps naming ``old_vrid``."""
+
+    record_id: str
+    org_id: str
+    old_vrid: str
+    new_vrid: str
+    forced: bool = False
+
+
+_swap: ContextVar[SwapRun | None] = ContextVar("keep_old_copy_swap", default=None)
+
+
+def current_swap(record_id: str | None = None, vrid: str | None = None) -> SwapRun | None:
+    """The run's swap, when it is for this record (and writes this vrid, when given)."""
+    run = _swap.get()
+    if run is None or (record_id is not None and run.record_id != record_id) or (vrid is not None and run.new_vrid != vrid):
+        return None
+    return run
+
+
+def begin_swap(run: SwapRun) -> None:
+    _swap.set(run)
+
+
+def end_swap() -> None:
+    # Set back rather than reset by token: an async generator closed from another context cannot reset.
+    _swap.set(None)

@@ -2597,10 +2597,13 @@ class IGraphDBProvider(ABC):
         updates: dict[str, Any],
         conditions: Sequence[Cond],
         transaction: str | None = None,
+        *,
+        unset: Sequence[str] = (),
     ) -> bool:
         """Merge ``updates`` into the node only while every condition holds, in
-        one statement. ``update_node_fields_if_match`` with named operators
-        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``) instead of
+        one statement; ``unset`` names fields the same write removes (never left
+        null). ``update_node_fields_if_match`` with named operators
+        (``Cond``: ``eq``, ``is_null``, ``null_or_eq``, ``null_or_le``, ``one_of``) instead of
         equality only, so "unset or not newer than" can be asked. A ``None`` in
         ``updates`` removes or nulls the field.
 

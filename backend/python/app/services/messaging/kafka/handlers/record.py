@@ -811,6 +811,20 @@ class RecordEventHandler(BaseEventService):
             return _PARSE_NOW_NO_ACCESS, False
         return None
 
+    async def _release_pending_copy(self, record_id: str, org_id: str | None) -> None:
+        """A record failed for good: the replacement copy it was writing is released (it kept serving its old one).
+
+        The FAILED write already made that copy unheld for every sweep; this removes the field and deletes the copy through the
+        holder-checked paths. A failure is logged: the orphan sweep reclaims the copy."""
+        orchestrator = getattr(getattr(self.event_processor, "processor", None), "sink_orchestrator", None)
+        swap = getattr(orchestrator, "swap", None)
+        if swap is None or not org_id:
+            return
+        try:
+            await swap.release_failed(record_id, org_id)
+        except Exception as exc:
+            self.logger.warning("Replacement copy of record %s not released: %s", record_id, type(exc).__name__)
+
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
         record_id: str,
@@ -2968,7 +2982,8 @@ class RecordEventHandler(BaseEventService):
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
-                        
+                        await self._release_pending_copy(record_id, record.get("orgId"))
+
                         # Decide duplicate handling based on error type
                         if (last_exception and 
                             MessageErrorClassifier.classify_by_exception(last_exception)

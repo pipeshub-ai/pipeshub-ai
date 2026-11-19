@@ -51,6 +51,7 @@ from app.edition_services import configure_app
 from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
@@ -136,8 +137,8 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.membership import expect_groups
-from app.services.messaging.storage_protocol import tagged
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.storage_protocol import tagged
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
 from app.services.parsing.remote_concurrency import remote_parse_concurrency
@@ -1259,6 +1260,12 @@ async def _sweep_orphaned_virtual_record_mappings(
             for mapping in page
             if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
         }
+        # A copy a record just left (its replacement committed) is kept for the grace: a reader's cached map may still name it.
+        retired_at = {
+            vrid: mapping.get(keep_old_copy.RETIRED_AT_FIELD)
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        }
         try:
             # One read per page, not one per mapping: the answer is the same,
             # and on Neo4j each read is a millisecond of the indexing loop.
@@ -1289,6 +1296,9 @@ async def _sweep_orphaned_virtual_record_mappings(
             if not org_of.get(vrid):
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
             if (org_of[vrid], vrid) in _orphan_kept_until:
+                continue
+            retired = retired_at.get(vrid)
+            if isinstance(retired, (int, float)) and time.time() * 1000 - retired < keep_old_copy.grace_seconds() * 1000:
                 continue
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
