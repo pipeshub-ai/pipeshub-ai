@@ -1245,9 +1245,10 @@ class TestStreamRecordInternalGoogleDrivePaths:
     async def test_generic_exception_raises_500(self):
         """Unexpected exception -> 500."""
         req, gp, cs, _, claims = self._setup_stream()
-        gp.get_record_by_id = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with pytest.raises(HTTPException) as exc:
+        with patch(
+            "app.connectors.api.router._get_streaming_connector", AsyncMock(side_effect=RuntimeError("boom"))
+        ), pytest.raises(HTTPException) as exc:
             await stream_record_internal(req, "rec-1", gp, cs, claims=claims)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
         # the person is told what failed and what to do, not the exception text

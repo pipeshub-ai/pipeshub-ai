@@ -1149,12 +1149,13 @@ class TestStreamRecordInternalEdgeCases:
     @pytest.mark.asyncio
     async def test_unexpected_error_raises_500(self):
         """Generic exception -> 500."""
-        graph_provider = AsyncMock()
-        graph_provider.get_record_by_id = AsyncMock(side_effect=RuntimeError("boom"))
+        req, _, config_service, graph_provider = self._setup()
 
-        with pytest.raises(HTTPException) as exc:
+        with patch(
+            "app.connectors.api.router._get_streaming_connector", AsyncMock(side_effect=RuntimeError("boom"))
+        ), pytest.raises(HTTPException) as exc:
             await stream_record_internal(
-                MagicMock(), "rec-1", graph_provider, AsyncMock(), claims=self._CLAIMS
+                req, "rec-1", graph_provider, config_service, claims=self._CLAIMS
             )
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
@@ -1554,7 +1555,7 @@ class TestStreamRecordDeepPaths:
     async def test_outer_generic_exception_raises_500(self):
         """Top-level generic exception -> 500."""
         req, record, gp, cs, conn_obj = self._setup()
-        gp.get_record_by_id = AsyncMock(side_effect=RuntimeError("db down"))
+        gp.check_record_access_with_details = AsyncMock(side_effect=RuntimeError("boom"))
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
