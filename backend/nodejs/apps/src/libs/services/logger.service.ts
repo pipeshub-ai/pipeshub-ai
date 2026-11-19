@@ -127,6 +127,11 @@ const EVENT_FIELD_KEYS = [
   'target',
   'reason',
   'auth_method',
+  'code',
+  'events',
+  'bytes',
+  'ttfb_ms',
+  'frame',
 ] as const;
 
 /** Shown in the text line as ` | k=v`, in this order (identity first, as in Python), when the record has them. */
@@ -162,6 +167,8 @@ export const SNAKE_TOKEN = /^[a-z0-9_]{1,64}$/;
 const TYPE_NAME = /^[A-Za-z0-9_]{1,64}$/;
 /** A transport error code (`ECONNREFUSED`, `UND_ERR_SOCKET`). */
 const NETWORK_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+/** An SSE frame type (`RUN_FINISHED`). */
+const FRAME_TYPE = /^[A-Z][A-Z_]{0,31}$/;
 const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 /** A dotted lowercase event name (`http.request.end`). */
 export const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
@@ -205,6 +212,12 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   target: matches(SHOWN_ID),
   reason: matches(SNAKE_TOKEN),
   auth_method: matches(TYPE_NAME),
+  // A chat stream's (`chat_stream.end`): the AI service's error code, and what it sent.
+  code: matches(SNAKE_TOKEN),
+  events: Number.isInteger,
+  bytes: Number.isInteger,
+  ttfb_ms: Number.isInteger,
+  frame: matches(FRAME_TYPE),
   // Fill the identity only when the request context has none (an audit line before sign-in).
   org_id: isPipesHubId,
   user_id: isPipesHubId,

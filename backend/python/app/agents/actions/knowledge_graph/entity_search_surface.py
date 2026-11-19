@@ -75,9 +75,9 @@ _VARIANTS: dict[str, _Variant] = {
     SEARCH_ENTITIES_TOOL_NAME: _Variant(
         description=(
             _Edit(
-                "and record titles. Only entities backed by records you can "
+                "epic, issue or ticket). Only entities backed by records you can "
                 "access are returned.",
-                "and record titles, and the organizations, products, events, places and other "
+                "epic, issue or ticket), and the organizations, products, events, places and other "
                 "named things mentioned inside documents (entityType 'named_entity'; narrow with "
                 "named_entity_kinds). People are found by name with "
                 "knowledgegraph__search_by_entities (records that mention them) or "

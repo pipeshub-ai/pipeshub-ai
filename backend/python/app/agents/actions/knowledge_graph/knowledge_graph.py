@@ -981,12 +981,17 @@ class KnowledgeGraph:
         short_description="Find departments, categories, topics, languages, record groups, people, organizations and record titles the user can access",
         description=(
             "Semantic lookup of knowledge-graph entities by name or description: departments, "
-            "categories, subcategories, topics, languages, record groups (a project, space, "
-            "folder, channel, ...), people (members of the organization named on records as "
-            "author, sender, recipient, assignee, reporter, reviewer or owner), organizations "
-            "(customer and prospect companies from CRM accounts, and companies or institutions "
-            "named in two or more documents) and record titles. Only "
+            "categories, subcategories, topics, languages, record groups (a Jira project, a "
+            "Confluence space, a folder, a channel, ...), people (members of the organization "
+            "named on records as author, sender, recipient, assignee, reporter, reviewer or "
+            "owner), organizations (customer and prospect companies from CRM accounts, and "
+            "companies or institutions named in two or more documents) and records by title "
+            "(a document, page, file, epic, issue or ticket). Only "
             "entities backed by records you can access are returned.\n\n"
+            "A name does not tell you its type: 'SAAS Launch' may be an epic (a record), a "
+            "project (a record group) or a topic. Leave entity_types out unless the user named "
+            "the kind of thing; when a type filter matches no name, matches of other types are "
+            "returned in otherTypeMatches.\n\n"
             "Call it when the question names one of these — a team, a topic, a category, a "
             "project or space, a colleague, a customer, a document title — to find the "
             "matching entity, alongside or before a content search.\n\n"
@@ -1018,7 +1023,9 @@ class KnowledgeGraph:
                 description=(
                     "Optional filter on entity type: 'department', 'category', 'subcategory', "
                     "'topic', 'language', 'record_group', 'person', 'organization', 'record'. "
-                    "Omit to search all types."
+                    "Omit it (search every type) unless the user named the kind of thing. An "
+                    "epic, issue, ticket, page or document is 'record'; a Jira project, "
+                    "Confluence space, channel or folder is 'record_group'."
                 ),
                 required=False,
                 items={"type": "string"},

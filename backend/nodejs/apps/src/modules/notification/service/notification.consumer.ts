@@ -7,6 +7,7 @@ import { injectable, inject } from 'inversify';
 import { getNotificationRepository } from '../../../libs/repositories/notification';
 import { forOrg } from '../../../libs/context/orgContext';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
+import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 import { NotificationService } from './notification.service';
 import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
 import {
@@ -91,6 +92,8 @@ export class NotificationConsumer {
               const dispatchedUserIds: string[] = [];
 
               for (const saved of savedDocs) {
+                // stored, but a scheduled one is not pushed now and not queued; it is read from the list at its time
+                if (isNotYetVisible(saved.visibleAt)) continue;
                 const userId = saved.assignedTo;
                 this.notificationService.sendToUser(
                   userId,

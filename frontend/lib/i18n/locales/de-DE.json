@@ -1767,7 +1767,6 @@
       "subtitle": "Erstellen und verwalten Sie Gruppen zur Steuerung von Zugriff und Berechtigungen",
       "enterpriseTitle": "Gruppenberechtigungen sind in der Enterprise Edition verfügbar",
       "enterpriseMessage": "Upgraden Sie auf die Enterprise Edition, um Gruppenberechtigungen zu nutzen.",
-      "enterpriseContact": "Kontaktieren Sie uns",
       "createGroup": "Gruppe erstellen",
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",
@@ -1848,6 +1847,21 @@
         "saveError": "Berechtigungen konnten nicht gespeichert werden",
         "loadError": "Berechtigungen konnten nicht geladen werden",
         "empty": "Es sind noch keine Berechtigungen definiert."
+      }
+    },
+    "enterprise": {
+      "contact": "Mit dem Vertrieb sprechen",
+      "scim": {
+        "heading": "Die SCIM-Bereitstellung ist in der Enterprise Edition verfügbar",
+        "message": "Lassen Sie Okta oder Microsoft Entra ID Personen in Ihrem Workspace automatisch hinzufügen, aktualisieren und deaktivieren."
+      },
+      "auditLogs": {
+        "heading": "Audit-Logs sind in der Enterprise Edition verfügbar",
+        "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann."
+      },
+      "usage": {
+        "heading": "Nutzung, Credits und Abrechnung sind in der Enterprise Edition verfügbar",
+        "message": "Sehen Sie die KI-Kosten nach Person, Agent, Connector und Modell, verwalten Sie Credits, Tarif und Rechnungen und legen Sie in den Verbrauchseinstellungen Ausgabenwarnungen fest."
       }
     },
     "teams": {
@@ -2353,6 +2367,8 @@
       "sections": {
         "overview": "Übersicht",
         "workspace": "Arbeitsbereich",
+        "usageAndCredits": "Nutzung & Credits",
+        "security": "Sicherheit",
         "personal": "Persönlich",
         "people": "Personen",
         "developerSettings": "Entwicklereinstellungen"
@@ -2380,6 +2396,9 @@
         "archivedChats": "Archivierte Chats",
         "users": "Benutzer",
         "groups": "Gruppen",
+        "scim": "SCIM",
+        "auditLogs": "Audit-Logs",
+        "usage": "Nutzung & Credits",
         "teams": "Teams",
         "webSearch": "Websuche",
         "tenants": "Mandanten",
@@ -3638,6 +3657,7 @@
         "disconnected": "Erfolgreich getrennt",
         "disconnectError": "Trennen fehlgeschlagen",
         "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "accessSaveError": "Der Server wurde gespeichert, aber nicht, wer ihn nutzen darf. Speichern Sie erneut, um den Zugriff anzuwenden.",
         "logoSaveError": "Server gespeichert, aber das Logo konnte nicht gespeichert werden. Sie können es unter „Verwalten“ erneut versuchen.",
         "credentialsSaved": "Anmeldedaten gespeichert",
         "credentialsReset": "MCP-Server aktualisiert. Gespeicherte Anmeldedaten wurden entfernt, da sich die Verbindung geändert hat. Verbinden Sie sich erneut, um ihn zu verwenden.",
@@ -4055,6 +4075,13 @@
       "verifyingConnection": "Verbindung wird überprüft...",
       "sendImages": "Bilder an LLM senden",
       "sendImagesDescription": "Steuern Sie, ob Bilder während der Websuche an das LLM gesendet werden",
+      "imageSettingsTitle": "Bilder",
+      "imageSettingsDescription": "Was ein Assistent von den Bildern auf gelesenen Webseiten sieht",
+      "maxImages": "Höchstzahl Bilder pro Seite",
+      "maxImagesHelp": "Eine ganze Zahl von 1 bis 50. Nur Modelle, die Bilder verarbeiten, erhalten sie.",
+      "maxImagesInvalid": "Geben Sie eine ganze Zahl von 1 bis 50 ein",
+      "imagesCostWarning": "Jedes Bild erhöht Kosten und Dauer beim Lesen einer Seite.",
+      "imageSettingsUnavailable": "Die Bildeinstellungen konnten nicht geladen werden und lassen sich daher noch nicht ändern.",
       "toasts": {
         "providerAdded": "{{label}} wurde hinzugefügt",
         "providerAddedDescription": "Websuche erfolgreich konfiguriert. Um {{label}} zu verwenden, deaktivieren Sie alle anderen Websuche-Methoden",
@@ -4064,6 +4091,7 @@
         "saveError": "Websuche-Einstellungen konnten nicht gespeichert werden",
         "imagesEnabled": "Bilder werden an das LLM gesendet",
         "imagesDisabled": "Bilder werden nicht an das LLM gesendet",
+        "maxImagesUpdated": "Bis zu {{count}} Bilder pro Seite werden gesendet",
         "updateError": "Einstellung konnte nicht aktualisiert werden",
         "saved": "Websuche-Einstellungen gespeichert",
         "savedDescription": "Ihre Änderungen wurden erfolgreich übernommen.",
@@ -4529,10 +4557,10 @@
         "errorNameRequired": "Geben Sie einen Namen für dieses Zugriffstoken ein.",
         "errorCreateTitle": "Zugriffstoken konnte nicht erstellt werden",
         "expiryHeading": "Gültigkeit",
+        "expiry7Days": "7 Tage",
         "expiry30Days": "30 Tage",
         "expiry90Days": "90 Tage",
         "expiry365Days": "365 Tage",
-        "expiryNever": "Unbegrenzt",
         "permissionsHeading": "Berechtigungsbereiche",
         "errorScopeRequired": "Wählen Sie mindestens einen Berechtigungsbereich aus.",
         "selectAllScopes": "Alle auswählen",
@@ -6046,6 +6074,55 @@
       "offDescription": "Sie sind aus den Antworten, der Suche und den Datensätzen aller verschwunden, und die Beispielkonten können sich nicht anmelden. Schalten Sie sie unter Profil → Demodaten wieder ein.",
       "onTitle": "Demodaten für alle wieder eingeschaltet",
       "errorTitle": "Die Demodaten konnten nicht für alle geändert werden"
+    },
+    "about": {
+      "open": "Was steckt in der Demo?",
+      "title": "Über die Acme-Corp-Demo",
+      "description": "Acme Corp ist ein fiktives Softwareunternehmen. Der Demo-Connector lädt seine Datensätze, damit Sie PipesHub ausprobieren können, ohne eigene Tools zu verbinden. Außerhalb von PipesHub wird nichts kontaktiert, und nichts davon sind Daten Ihres Unternehmens.",
+      "status": {
+        "shown": "Sie erscheint jetzt in Ihren Antworten, Ihrer Suche und Ihren Datensätzen. Demo-Ergebnisse tragen das Label Demo.",
+        "hiddenRealData": "Sie ist in Ihren Antworten ausgeblendet, weil Ihre Organisation jetzt eigene Daten hat. Niemand sieht sie, außer er schaltet sie für sich ein.",
+        "hiddenByChoice": "Sie ist in Ihren Antworten ausgeblendet, weil Sie sie ausgeschaltet haben.",
+        "offForEveryone": "Ein Admin hat sie für alle ausgeschaltet. Sie erscheint in keinen Antworten, und die Beispielkonten können sich nicht anmelden.",
+        "show": "In meinen Antworten anzeigen"
+      },
+      "tools": {
+        "title": "Was sie enthält",
+        "tool": "Tool",
+        "places": "Orte",
+        "records": "Datensätze",
+        "total": "Gesamt"
+      },
+      "people": {
+        "title": "Personen",
+        "description": "Beispielmitarbeitende. Ihre Namen stehen als Autoren an den Datensätzen; nur zwei von ihnen können sich anmelden.",
+        "canSignIn": "Kann sich anmelden"
+      },
+      "restricted": {
+        "title": "Wer was sieht",
+        "description": "Wer den Demo-Connector hinzugefügt hat, kann fast alles davon lesen, und Alice und Bob können lesen, was ihre Teams lesen dürfen. Sonst kann niemand in Ihrer Organisation etwas davon lesen; die Demo in Ihren Antworten anzuzeigen, gibt keinen Zugriff. Jeden Datensatz unten können nur Mitglieder seiner Gruppe lesen, daher bekommt dieselbe Frage je nach Fragendem eine andere Antwort.",
+        "readers": "Können diese öffnen: {{names}}",
+        "noReaders": "Keines der Beispielkonten kann diese öffnen."
+      },
+      "questions": {
+        "title": "Fragen Sie zum Beispiel"
+      },
+      "accounts": {
+        "title": "Beispielkonten zum Anmelden",
+        "description": "Melden Sie sich in einem anderen Browser als Alice oder Bob an, um dieselbe Frage mit anderen Berechtigungen beantwortet zu sehen.",
+        "state": {
+          "checking": "Wird geprüft…",
+          "active": "Kann sich anmelden",
+          "off": "Anmeldung ausgeschaltet",
+          "missing": "Nicht angelegt",
+          "unknown": "Konnte nicht geprüft werden"
+        },
+        "password": "Sie verwenden das Startpasswort, das bei der Installation von PipesHub gewählt wurde (PIPESHUB_DEMO_PASSWORD). PipesHub speichert es nur in verschlüsselter Form, daher kann es hier nicht angezeigt werden.",
+        "lostPassword": "Hat es niemand, hilft Passwort vergessen nicht, denn .example-Adressen können keine E-Mails empfangen. Wer den Server betreibt, kann mit diesem Befehl im PipesHub-Container einen Link zum Festlegen eines neuen Passworts ausgeben:",
+        "missing": "Beispielkonten werden nur bei der Installation angelegt, wenn PIPESHUB_DEMO_PERSONAS=1 gesetzt ist. Die Demo funktioniert auch ohne sie; Sie können sich nur nicht als Alice oder Bob anmelden.",
+        "retry": "Erneut versuchen"
+      },
+      "close": "Schließen"
     }
   },
   "graph": {

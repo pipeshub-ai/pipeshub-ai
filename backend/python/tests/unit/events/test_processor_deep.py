@@ -6,14 +6,21 @@ process_image, process_delimited_document.
 """
 
 import logging
-from collections.abc import AsyncGenerator
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError, RecordDeletedError
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    RecordDeletedError,
+)
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+)
+from tests.unit.attempt_start import attempt_start_via
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)
@@ -466,6 +473,7 @@ class TestProcessImage:
             recordName="photo.png", mimeType="image/png",
         ))
         proc.graph_provider.update_node = AsyncMock(return_value=True)
+        proc.graph_provider.write_attempt_start = attempt_start_via(proc.graph_provider)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
@@ -981,6 +989,7 @@ class TestMarkRecord:
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
         proc.graph_provider.update_node = AsyncMock(return_value=True)
+        proc.graph_provider.write_attempt_start = attempt_start_via(proc.graph_provider)
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("r1", ProgressStatus.EMPTY)
@@ -1000,6 +1009,7 @@ class TestMarkRecord:
         proc = _make_processor()
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
         proc.graph_provider.update_node = AsyncMock(return_value=True)
+        proc.graph_provider.write_attempt_start = attempt_start_via(proc.graph_provider)
 
         await proc._mark_record("r1", ProgressStatus(status))
 
@@ -1029,6 +1039,7 @@ class TestMarkRecord:
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
         proc.graph_provider.update_node = AsyncMock(return_value=False)
+        proc.graph_provider.write_attempt_start = attempt_start_via(proc.graph_provider)
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("r1", ProgressStatus.EMPTY)
@@ -1052,15 +1063,15 @@ class TestConvertRecordDictToRecordDefaults:
 
     def test_unknown_connector_defaults(self):
         """Unknown connectorName defaults to KNOWLEDGE_BASE."""
-        from app.events.processor import convert_record_dict_to_record
         from app.config.constants.arangodb import Connectors
+        from app.events.processor import convert_record_dict_to_record
         rec = convert_record_dict_to_record(_mock_record_dict(connectorName="UNKNOWN_XYZ"))
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
     def test_missing_connector_defaults(self):
         """Missing connectorName defaults to KNOWLEDGE_BASE."""
-        from app.events.processor import convert_record_dict_to_record
         from app.config.constants.arangodb import Connectors
+        from app.events.processor import convert_record_dict_to_record
         d = _mock_record_dict()
         d.pop("connectorName", None)
         rec = convert_record_dict_to_record(d)
@@ -1068,8 +1079,8 @@ class TestConvertRecordDictToRecordDefaults:
 
     def test_unknown_origin_defaults(self):
         """Unknown origin defaults to UPLOAD."""
-        from app.events.processor import convert_record_dict_to_record
         from app.config.constants.arangodb import OriginTypes
+        from app.events.processor import convert_record_dict_to_record
         rec = convert_record_dict_to_record(_mock_record_dict(origin="BOGUS"))
         assert rec.origin == OriginTypes.UPLOAD
 
@@ -1288,8 +1299,8 @@ class TestProcessPdfDocumentWithOcr:
     @pytest.mark.asyncio
     async def test_azure_ocr_failure_propagates(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://e", "apiKey": "k"}}],
@@ -1305,8 +1316,8 @@ class TestProcessPdfDocumentWithOcr:
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_with_blocks(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
@@ -1488,8 +1499,8 @@ class TestProcessImageValidation:
 class TestConvertRecordDictAdditional:
     def test_missing_origin_defaults_to_upload(self):
         """Missing origin field defaults to UPLOAD."""
-        from app.events.processor import convert_record_dict_to_record
         from app.config.constants.arangodb import OriginTypes
+        from app.events.processor import convert_record_dict_to_record
         d = _mock_record_dict()
         d.pop("origin", None)
         rec = convert_record_dict_to_record(d)
@@ -1497,8 +1508,8 @@ class TestConvertRecordDictAdditional:
 
     def test_known_connector_name(self):
         """Known connectorName is preserved."""
-        from app.events.processor import convert_record_dict_to_record
         from app.config.constants.arangodb import Connectors
+        from app.events.processor import convert_record_dict_to_record
         rec = convert_record_dict_to_record(
             _mock_record_dict(connectorName=Connectors.KNOWLEDGE_BASE.value)
         )
@@ -1506,8 +1517,8 @@ class TestConvertRecordDictAdditional:
 
     def test_none_connector_name_defaults(self):
         """None connectorName defaults to KNOWLEDGE_BASE."""
-        from app.events.processor import convert_record_dict_to_record
         from app.config.constants.arangodb import Connectors
+        from app.events.processor import convert_record_dict_to_record
         rec = convert_record_dict_to_record(
             _mock_record_dict(connectorName=None)
         )
@@ -1537,8 +1548,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_no_handler_no_multimodal_llm_raises_indexing_error(self):
         """No OCR handler and no multimodal LLM raises IndexingError with scanned PDF message."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(
@@ -1590,8 +1601,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_ocr_exception_propagates(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
@@ -1607,8 +1618,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_with_paragraph_blocks(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
@@ -1624,8 +1635,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_paragraph_with_bounding_box(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
@@ -1641,8 +1652,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_empty_paragraph_skipped(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
@@ -1658,8 +1669,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_record_not_found(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
@@ -1675,8 +1686,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_no_handler_multimodal_llm_check_exception(self):
         """Exception during multimodal LLM check causes IndexingError (no handler available)."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(
@@ -1699,8 +1710,8 @@ class TestProcessPdfDocumentWithOcrAdditional:
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_with_table_row_blocks(self):
         """AzureDI provider is not yet supported; raises IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
         from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import IndexingError
         proc = _make_processor()
         proc.config_service.get_config = AsyncMock(return_value={
             "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
@@ -1819,6 +1830,7 @@ class TestProcessImageStatusUpdateFailure:
             recordName="photo.png", mimeType="image/png",
         ))
         proc.graph_provider.update_node = AsyncMock(return_value=False)
+        proc.graph_provider.write_attempt_start = attempt_start_via(proc.graph_provider)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:

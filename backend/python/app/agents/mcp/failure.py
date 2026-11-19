@@ -61,9 +61,11 @@ def classify_mcp_failure(exc: BaseException) -> MCPFailureReason:
     # The SDK can wrap the real error in its task group's ExceptionGroup.
     leaf = first_leaf(exc)
     candidates = (exc, leaf)
-    # A refresh the provider or another process's refresh stopped says nothing about the sign-in.
+    # A refresh the provider (down, overloaded, never answering) or another process's refresh stopped says
+    # nothing about the sign-in.
     if any(
-        isinstance(e, MCPRefreshLockTimeoutError) or (isinstance(e, MCPOAuthError) and is_transient_status(e.status))
+        isinstance(e, MCPRefreshLockTimeoutError)
+        or (isinstance(e, MCPOAuthError) and (is_transient_status(e.status) or e.unanswered))
         for e in candidates
     ):
         return MCPFailureReason.UNREACHABLE

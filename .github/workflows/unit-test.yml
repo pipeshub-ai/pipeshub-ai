@@ -242,6 +242,12 @@ jobs:
       # the workers' data into COVERAGE_FILE. GitHub's 4 vCPUs are 2 cores, so
       # each of the 4 workers runs a test at about half serial speed:
       # --timeout=60 keeps pytest.ini's 30s hang guard at the same CPU budget.
+      # That guard (SIGALRM) cannot stop a test that swallows the alarm or waits in
+      # C code, and a modules run once sat silent until the job's 30-minute
+      # cancel, with no stack. faulthandler_timeout prints every thread's stack
+      # from a C watchdog, which works even then. It only prints: exiting the
+      # worker would make xdist re-queue that worker's finished files, and
+      # --dist loadfile then never completes. 300 is the longest timeout mark.
       - name: Run unit tests (${{ matrix.shard }})
         working-directory: backend/python
         env:
@@ -256,7 +262,7 @@ jobs:
         run: |
           args=$(python3 ../../scripts/unit_shards.py args "$SHARD")
           mapfile -t shard_args <<< "$args"
-          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
+          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 -o faulthandler_timeout=300 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
 
       # Every capacity knob blank, as compose and Helm deliver an unset one: each service's start-up import must
@@ -278,6 +284,18 @@ jobs:
           python3 ../../scripts/assert_no_skips.py junit-pgvector.xml --min-tests 1 \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
+
+      # The key-value access map cites the app code that reads each key. db-migrations.yml runs it only for
+      # backend/db changes, so an app change that renamed or dropped a cited read broke main unseen. Its tests that
+      # need no PostgreSQL run here; the ones marked postgres run in db-migrations.yml.
+      - name: Key-value access map citations match the app
+        if: ${{ matrix.shard == 'core' }}
+        working-directory: backend/db
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/backend/db
+        run: |
+          uv pip install --system -r requirements.txt
+          pytest -p no:cacheprovider tests/test_kv_access_map.py -m "not postgres" --timeout=300 -q
 
       # The real odt and rtf conversions run again with a report of their own, so a LibreOffice the
       # runner lost fails the build instead of skipping them.

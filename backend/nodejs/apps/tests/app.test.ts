@@ -1058,8 +1058,8 @@ describe('Application', () => {
 
       const server = (app as any).server as http.Server;
       const listenStub = sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
+        (...args: any[]) => {
+          args[args.length - 1]();
           return server;
         },
       );
@@ -1079,8 +1079,8 @@ describe('Application', () => {
 
         const server = (app as any).server as http.Server;
         const listenStub = sandbox.stub(server, 'listen').callsFake(
-          (_port: number, callback: () => void) => {
-            callback();
+          (...args: any[]) => {
+            args[args.length - 1]();
             return server;
           },
         );
@@ -1090,6 +1090,48 @@ describe('Application', () => {
       } finally {
         restoreEnv('PORT', original);
       }
+    });
+
+    it('should listen on PIPESHUB_BIND_HOST when it is set, and on every interface when it is not', async () => {
+      const original = process.env.PIPESHUB_BIND_HOST;
+      const originalPort = process.env.PORT;
+      process.env.PIPESHUB_BIND_HOST = '127.0.0.1';
+      process.env.PORT = '3000';
+      try {
+        const app = new Application();
+        (app as any).logger = mockLogger;
+
+        const server = (app as any).server as http.Server;
+        const listenStub = sandbox.stub(server, 'listen').callsFake((...args: any[]) => {
+          args[args.length - 1]();
+          return server;
+        });
+
+        await app.start();
+        expect(listenStub.firstCall.args.slice(0, 2)).to.deep.equal([3000, '127.0.0.1']);
+      } finally {
+        restoreEnv('PIPESHUB_BIND_HOST', original);
+        restoreEnv('PORT', originalPort);
+      }
+    });
+
+    it('should reject when the server cannot bind (address not available, port in use)', async () => {
+      const app = new Application();
+      (app as any).logger = mockLogger;
+
+      const server = (app as any).server as http.Server;
+      sandbox.stub(server, 'listen').callsFake(() => {
+        setImmediate(() => server.emit('error', Object.assign(new Error('listen EADDRNOTAVAIL'), { code: 'EADDRNOTAVAIL' })));
+        return server;
+      });
+
+      try {
+        await app.start();
+        expect.fail('Should have rejected');
+      } catch (err: any) {
+        expect(err.code).to.equal('EADDRNOTAVAIL');
+      }
+      expect(server.listenerCount('error')).to.equal(0);
     });
 
     it('should throw if server.listen fails', async () => {

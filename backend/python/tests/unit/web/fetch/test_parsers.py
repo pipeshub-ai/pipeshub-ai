@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app.web.errors import NoText, UnsupportedContent
-from app.web.fetch.parsers import MAX_PDF_PAGES, parse_body
+from app.web.fetch.parsers import MAX_PAGE_IMAGES, MAX_PDF_PAGES, parse_body
 
 URL = "https://example.com/doc"
 
@@ -129,3 +129,58 @@ def test_unsupported_types_name_the_type(content_type: str) -> None:  # WP-0-FET
         parse_body(content_type, b"\x00\x01", url=URL)
     assert content_type in info.value.message
     assert info.value.to_tool_payload()["error_type"] == "unsupported_content_type"
+
+
+class TestPageImages:
+    """The images a page shows are kept as addresses, for an admin who sends them to the model."""
+
+    @staticmethod
+    def _images(html: str, url: str = "https://site.test/docs/page") -> list[tuple[str, str]]:
+        document = parse_body("text/html", html.encode(), url=url)
+        return [(image.url, image.alt) for image in document.images]
+
+    def test_images_in_reading_order_resolved_against_the_page(self) -> None:
+        html = """<html><body><p>Intro text for the page.</p>
+            <img src="/img/one.png" alt="  First   chart ">
+            <p>More text.</p><img src="https://cdn.test/two.jpg"></body></html>"""
+        assert self._images(html) == [
+            ("https://site.test/img/one.png", "First chart"),
+            ("https://cdn.test/two.jpg", ""),
+        ]
+
+    def test_formats_no_model_reads_and_inline_data_are_skipped(self) -> None:
+        html = """<html><body><p>Text.</p>
+            <img src="/logo.svg"><img src="/spin.GIF?v=2"><img src="/favicon.ico#x">
+            <img src="data:image/png;base64,AAAA"><img src="/kept.webp"></body></html>"""
+        assert [url for url, _ in self._images(html)] == ["https://site.test/kept.webp"]
+
+    @pytest.mark.parametrize(
+        ("src", "kept"),
+        [
+            ("/a.png", True), ("/a.JPG", True), ("/a.jpeg?w=800", True), ("/a.webp#top", True),
+            # No extension, an unknown one, or a non-image one: the bytes decide when it is read.
+            ("/images/12345", True), ("/a.heroimg", True), ("/image.php?id=7", True),
+            # Registered image types no model reads, the old hand list's three and more.
+            ("/logo.svg", False), ("/spin.gif", False), ("/favicon.ico", False),
+            ("/scan.bmp", False), ("/photo.avif", False), ("/fax.TIFF", False),
+            # A dot in a directory name is not an extension.
+            ("/v1.2/images/chart", True),
+        ],
+    )
+    def test_only_image_types_a_model_reads_are_kept_by_the_registry(self, src: str, kept: bool) -> None:
+        html = f'<html><body><p>Text.</p><img src="{src}"></body></html>'
+        assert bool(self._images(html)) is kept
+
+    def test_an_image_shown_twice_is_kept_once(self) -> None:
+        html = '<html><body><p>Text.</p><img src="/a.png"><img src="/a.png" alt="again"></body></html>'
+        assert self._images(html) == [("https://site.test/a.png", "")]
+
+    def test_a_gallery_keeps_only_the_first_images(self) -> None:
+        html = "<html><body><p>Gallery.</p>" + "".join(
+            f'<img src="/g/{i}.png">' for i in range(MAX_PAGE_IMAGES + 20)
+        ) + "</body></html>"
+        images = self._images(html)
+        assert len(images) == MAX_PAGE_IMAGES and images[0][0] == "https://site.test/g/0.png"
+
+    def test_a_text_body_has_no_images(self) -> None:
+        assert parse_body("text/plain", b"plain words", url="https://site.test/a.txt").images == []
