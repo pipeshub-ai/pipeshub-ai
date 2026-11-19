@@ -193,3 +193,31 @@ async def test_a_forced_run_never_rebuilds_a_shared_copy_in_place_and_leaves_the
          patch.object(ep, "_resolve_write_collection", return_value="c1"):
         decision = await ep._check_duplicate_by_md5(b"hello", _doc(), force_index=True)
     assert decision.rebuild_shared_vrid is False and not decision.skip_indexing
+
+
+async def _reuse_in_other_collection(ep: EventProcessor, gp: AsyncMock, doc: dict) -> DedupDecision:
+    from app.events.dedup import DuplicateMatch
+
+    twin = {"_key": "twin", "virtualRecordId": "T", "indexingStatus": "COMPLETED", "md5Checksum": "m", "orgId": "org-1"}
+    gp.get_document.return_value = doc
+    ep._copy_twin_edges = AsyncMock()
+    ep._vrid_has_stored_content = AsyncMock(return_value=True)
+    return await ep._reuse_finished_duplicate(doc, DuplicateMatch(record=twin, same_collection=False, is_processed=True))
+
+
+@pytest.mark.asyncio
+async def test_a_twin_in_another_collection_is_not_attached_before_the_run_when_the_old_copy_is_kept(swap_on):
+    """The eager identity write is what dropped the old copy: the record would name the twin's vrid with none of its own points."""
+    ep, _processor_mock, gp = _processor()
+    decision = await _reuse_in_other_collection(ep, gp, _doc())
+    assert decision.virtual_record_id is None and not decision.skip_indexing
+    assert not any("virtualRecordId" in (c.args[2] if len(c.args) > 2 else {}) for c in gp.update_node.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_twin_in_another_collection_is_attached_as_before_when_the_old_copy_is_not_kept(monkeypatch):
+    monkeypatch.setattr(keep_old_copy, "swap_allowed", AsyncMock(return_value=False))
+    ep, _processor_mock, gp = _processor()
+    gp.update_node = AsyncMock(return_value=True)
+    decision = await _reuse_in_other_collection(ep, gp, _doc())
+    assert decision.virtual_record_id == "T"

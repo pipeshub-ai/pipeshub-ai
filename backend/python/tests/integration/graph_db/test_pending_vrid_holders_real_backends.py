@@ -145,3 +145,97 @@ async def test_the_pending_field_has_an_index_and_the_holder_lookup_does_not_sca
         plan = await resp.json()
     kinds = {n["type"] for n in plan["plan"]["nodes"]}
     assert "IndexNode" in kinds or "SubqueryStartNode" in kinds, kinds
+
+
+_SEED = 4000
+
+
+async def _seed(provider: IGraphDBProvider, run: str) -> None:
+    """Enough records that a scan would lose to an index seek."""
+    template = Record(
+        id="t", org_id=ORG, virtual_record_id="t", record_name="r", record_type=RecordType.FILE, external_record_id="t",
+        version=1, origin="UPLOAD", connector_id="conn", connector_name=Connectors.KNOWLEDGE_BASE,
+    ).to_arango_base_record()
+    for start in range(0, _SEED, 500):
+        docs = [
+            {**template, "id": f"{run}-bulk-{i}", "_key": f"{run}-bulk-{i}", "externalRecordId": f"{run}-ext-{i}",
+             "virtualRecordId": f"{run}-v{i}", "indexingStatus": "COMPLETED"}
+            for i in range(start, min(start + 500, _SEED))
+        ]
+        assert await provider.batch_upsert_nodes(docs, RECORDS)
+
+
+async def _unseed(provider: IGraphDBProvider, run: str) -> None:
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query("MATCH (n:Record) WHERE n.id STARTS WITH $p DETACH DELETE n", parameters={"p": f"{run}-bulk-"})
+    else:
+        await provider.http_client.execute_aql(f"FOR d IN {RECORDS} FILTER STARTS_WITH(d._key, @p) REMOVE d IN {RECORDS}", {"p": f"{run}-bulk-"})
+
+
+async def _plan_operators(provider: IGraphDBProvider) -> tuple[set[str], str]:
+    """The operators of the plan, and the text of the indexes it seeks (their fields), of the correlated batch lookup (the form the orphan sweep asks), as the store plans it."""
+    from app.services.graph_db.common.record_visibility import aql_holds_vrid, cypher_holds_vrid
+
+    if isinstance(provider, Neo4jProvider):
+        query = f"EXPLAIN UNWIND ['a', 'b'] AS vrid MATCH (r:Record) WHERE {cypher_holds_vrid('r', 'vrid')} RETURN DISTINCT vrid"
+        async with provider.client.driver.session(database=provider.client.database) as session:
+            summary = await (await session.run(query)).consume()
+        found: set[str] = set()
+        seeks: list[str] = []
+
+        def walk(plan: dict) -> None:
+            kind = (plan.get("operatorType") or plan["operator_type"]).split("@")[0]
+            found.add(kind)
+            if "IndexSeek" in kind:
+                seeks.append(str(plan.get("args", {}).get("Details", "")))
+            for child in plan.get("children", []):
+                walk(child)
+
+        walk(summary.plan)
+        return found, " ".join(seeks)
+    client = provider.http_client
+    session = await client._get_session()
+    query = f"FOR vrid IN ['a', 'b'] LET held = FIRST(FOR r IN records FILTER {aql_holds_vrid('r', 'vrid')} LIMIT 1 RETURN 1) FILTER held != null RETURN vrid"
+    async with session.post(f"{client.base_url}/_db/{client.database}/_api/explain", json={"query": query}) as resp:
+        plan = await resp.json()
+    nodes = plan["plan"]["nodes"]
+    return {n["type"] for n in nodes}, " ".join(str(i["fields"]) for n in nodes for i in n.get("indexes", []))
+
+
+_SCANS = {"NodeByLabelScan", "AllNodesScan", "EnumerateCollectionNode"}
+
+
+async def test_the_batch_holder_lookup_plans_to_index_seeks_and_the_plan_stops_using_the_pending_index_without_it(world) -> None:
+    """The plan of the sweep's lookup, on a store with enough records, uses no scan; with the pending index dropped it scans, so the
+    assertion would catch a missing index. The index is made again afterwards."""
+    provider, run = world
+    await _seed(provider, run)
+    try:
+        operators, seeks = await _plan_operators(provider)
+        assert not operators & _SCANS, operators
+        assert "pendingVirtualRecordId" in seeks, seeks  # the alias arm is served by its own index
+        if isinstance(provider, Neo4jProvider):
+            assert any("IndexSeek" in o for o in operators), operators
+            await provider.client.execute_query("DROP INDEX record_pending_virtual_record_id IF EXISTS")
+            try:
+                _, control = await _plan_operators(provider)
+                assert "pendingVirtualRecordId" not in control, control  # the control: without the index the plan cannot use it
+            finally:
+                await provider.client.execute_query(
+                    "CREATE INDEX record_pending_virtual_record_id IF NOT EXISTS FOR (n:Record) ON (n.pendingVirtualRecordId)"
+                )
+                await provider.client.execute_query("CALL db.awaitIndexes(60)")
+        else:
+            client = provider.http_client
+            session = await client._get_session()
+            async with session.get(f"{client.base_url}/_db/{client.database}/_api/index?collection={RECORDS}") as resp:
+                pending = next(i for i in (await resp.json())["indexes"] if i["fields"] == ["pendingVirtualRecordId"])
+            async with session.delete(f"{client.base_url}/_db/{client.database}/_api/index/{pending['id']}") as resp:
+                assert resp.status == 200
+            try:
+                _, control = await _plan_operators(provider)
+                assert "pendingVirtualRecordId" not in control, control  # the control
+            finally:
+                assert await client.ensure_persistent_index(RECORDS, ["pendingVirtualRecordId"], sparse=True)
+    finally:
+        await _unseed(provider, run)
