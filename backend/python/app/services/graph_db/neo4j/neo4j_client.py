@@ -55,8 +55,9 @@ DEFAULT_REBUILD_COOLDOWN = 30.0
 # budget on purpose: a transaction is one graph write at the end of a record,
 # not the whole record.
 DEFAULT_TRANSACTION_TIMEOUT = 120.0
-# Inside the process monitor's 120 s start limit. A database that misses it is
-# left to fail on its first query, as it did before this wait existed.
+# Inside the process monitor's 120 s start limit; covers the status queries too.
+# A database that misses it is left to fail on its first query, as it did
+# before this wait existed.
 DATABASE_ONLINE_TIMEOUT = 60.0
 DATABASE_ONLINE_POLL_INTERVAL = 0.5
 # The driver's message when connection_acquisition_timeout elapses with every
@@ -393,52 +394,60 @@ class Neo4jClient:
             with self._drivers_lock:
                 self._drivers.pop(loop, None)
 
-    async def _database_statuses(self, session: AsyncSession) -> list[str]:
-        """``currentStatus`` of the database on each server that hosts it; empty if it does not exist."""
+    async def _database_rows(self, session: AsyncSession) -> list[dict[str, Any]]:
+        """The database's row on each server that hosts it; empty if it does not exist."""
+        # Neo4j stores database names in lowercase, and this filter is case-sensitive.
         result = await session.run(
             "SHOW DATABASES WHERE name = $dbName",
-            {"dbName": self.database}
+            {"dbName": self.database.lower()}
         )
-        return [row.get("currentStatus") for row in await result.data()]
+        return await result.data()
 
     async def _ensure_database_exists(self) -> bool:
         """Create the database if it is missing, then wait until it is online.
 
-        Returns False only when it was still not online at the deadline, so the
-        next connect checks again.
+        Returns False when it was still not online at the deadline, or when the
+        check itself failed, so the next driver build checks again.
         """
+        rows: list[dict[str, Any]] = []
         try:
-            async with self.driver.session(database="system") as session:
-                statuses = await self._database_statuses(session)
-                if not statuses:
-                    self.logger.info(f"Database '{self.database}' not found. Creating it...")
-                    created = await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS")
-                    await created.consume()
+            # Covers the queries too: one that hangs must not hold startup past the deadline.
+            async with asyncio.timeout(DATABASE_ONLINE_TIMEOUT):
+                async with self.driver.session(database="system") as session:
+                    rows = await self._database_rows(session)
+                    if not rows:
+                        self.logger.info(f"Database '{self.database}' not found. Creating it...")
+                        created = await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS")
+                        await created.consume()
 
-                # A new database is listed before it is online, and a query in
-                # between fails with DatabaseNotFound. The same goes for one that
-                # another service created a moment ago, so an existing one waits
-                # too. Polled rather than CREATE ... WAIT: WAIT can't cover that
-                # case, and how it reports a timeout differs between Cypher versions.
-                deadline = time.monotonic() + DATABASE_ONLINE_TIMEOUT
-                while "online" not in statuses:
-                    if time.monotonic() >= deadline:
-                        self.logger.warning(
-                            f"Database '{self.database}' is not online after "
-                            f"{DATABASE_ONLINE_TIMEOUT:.0f}s (status: {', '.join(map(str, statuses)) or 'not listed'})"
-                        )
-                        return False
-                    await asyncio.sleep(DATABASE_ONLINE_POLL_INTERVAL)
-                    statuses = await self._database_statuses(session)
+                    # A new database is listed before it is online, and a query in
+                    # between fails with DatabaseNotFound. The same goes for one that
+                    # another service created a moment ago, so an existing one waits
+                    # too. Polled rather than CREATE ... WAIT: WAIT can't cover that
+                    # case, and how it reports a timeout differs between Cypher versions.
+                    # In a cluster a secondary can be online before a writer is elected;
+                    # servers older than 5.0 have no writer column.
+                    while not any(r.get("currentStatus") == "online" and r.get("writer", True) for r in rows):
+                        await asyncio.sleep(DATABASE_ONLINE_POLL_INTERVAL)
+                        rows = await self._database_rows(session)
 
-                self.logger.info(f"Database '{self.database}' is online")
-                return True
-
-        except ClientError as e:
-            # Expected on Community Edition (a single database, no SHOW/CREATE DATABASE)
-            error_class.log_failure(self.logger, "db.schema.failed", e, level=logging.WARNING, backend="neo4j",
-                                    op="ensure_database", reason="community_edition_possible")
+            self.logger.info(f"Database '{self.database}' is online")
             return True
+
+        except TimeoutError:
+            statuses = ", ".join(str(r.get("currentStatus")) for r in rows) or "not listed"
+            self.logger.warning(
+                f"Database '{self.database}' is not online after {DATABASE_ONLINE_TIMEOUT:.0f}s (status: {statuses})"
+            )
+            return False
+        except ClientError as e:
+            # Community Edition hosts one database and refuses CREATE DATABASE. Any
+            # other refusal (no privilege, a terminated poll) is not a verdict.
+            community = e.code == "Neo.ClientError.Statement.UnsupportedAdministrationCommand"
+            error_class.log_failure(self.logger, "db.schema.failed", e, level=logging.WARNING, backend="neo4j",
+                                    op="ensure_database",
+                                    reason="community_edition" if community else "not_checked")
+            return community
 
     async def _close_on_owning_loop(self, resource: Any, owner: Any, what: str) -> bool:
         """Close a loop-bound resource on the loop that created it.
