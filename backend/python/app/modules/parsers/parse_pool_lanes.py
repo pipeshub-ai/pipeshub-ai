@@ -570,7 +570,7 @@ class LanePool:
         if not self.admitting or budget is None:
             self._unpin(job)
             return _FREE_TICKET, 0
-        charged, window = budget.charge_for(job.kind, job.size, job.covered)
+        charged, window = budget.charge_for(job.kind, job.size, job.covered, job.charge_bytes)
         deadline = time.monotonic() + lane_wait_seconds()
         with self._lock:
             self._spawn_waiters += 1
@@ -611,7 +611,7 @@ class LanePool:
         budget = self.budget
         if not self.admitting or budget is None:
             return
-        charged, _ = budget.charge_for(job.kind, job.size, job.covered)
+        charged, _ = budget.charge_for(job.kind, job.size, job.covered, job.charge_bytes)
         if charged <= entry.charged_bytes:
             return
         deadline = time.monotonic() + lane_wait_seconds()

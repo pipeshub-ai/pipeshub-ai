@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.service import config_node_constants
+from app.connectors.record_views import views
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
     AvailableFilters,
@@ -904,7 +905,8 @@ class KnowledgeHubService:
             page_result = self._only_signed_cursors(page_result, await self._get_cursor_secret())
 
             await self._stamp_collection_roles(page_result.rows, user_key)
-            items = [self._doc_to_node_item(row) for row in page_result.rows]
+            shown_rows = await views().decorate_rows(page_result.rows, self.graph_provider, surface="knowledge_hub")
+            items = [self._doc_to_node_item(row) for row in shown_rows]
             user_email = user.get('email')
             for item in items:
                 if item.webUrl:
@@ -1279,6 +1281,7 @@ class KnowledgeHubService:
             })
         if user and user.get("_key"):
             await self._stamp_collection_roles(rows, user["_key"])
+        rows = await views().decorate_rows(rows, self.graph_provider, surface="knowledge_hub")
         items = [self._doc_to_node_item(row) for row in rows]
         for item in items:
             if item.webUrl:

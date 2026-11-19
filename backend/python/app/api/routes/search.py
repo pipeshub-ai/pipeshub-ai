@@ -41,6 +41,7 @@ from app.core.org_context import current_org_id, spawn_in_request
 from app.edition_config import resolve_llm_for_search
 from app.exceptions.fastapi_responses import Status
 from app.modules.demo_data.chat import demo_exclusions_for_run
+from app.modules.retrieval.content_locator import locator_for
 from app.modules.retrieval.entity_permissions import (
     SEARCH_DEADLINE_SECONDS as ENTITY_SEARCH_DEADLINE_SECONDS,
 )
@@ -50,6 +51,7 @@ from app.modules.retrieval.filter_schema import (
     TAXONOMY_FILTER_KEYS,
     validate_request_filters,
 )
+from app.modules.retrieval.hit_shape import public_hit, public_results
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.retrieval.selection_scope import (
     limits_rows,
@@ -83,6 +85,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import Runnable
 
     from app.containers.query import QueryAppContainer
+    from app.modules.retrieval.content_locator import ContentLocator
 
 router = APIRouter()
 
@@ -697,7 +700,7 @@ async def search(
                     "search_type": "timeline" if timeline else "search",
                 })
 
-                return JSONResponse(status_code=custom_status_code, content=results)
+                return JSONResponse(status_code=custom_status_code, content=public_results(results, locator_for(graph_provider)))
 
     except HTTPException:
         raise
@@ -731,7 +734,9 @@ _EMPTY_RETRIEVAL_STATUSES = {
 }
 
 
-def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> list[dict[str, Any]]:
+def _retrieve_chunks(
+    results: dict[str, Any], max_per_record: int | None, locator: "ContentLocator | None" = None,
+) -> list[dict[str, Any]]:
     """The search response as a flat, ranked chunk list with a citation each."""
     records = {r.get("_key"): r for r in results.get("records") or [] if isinstance(r, dict)}
     per_record: dict[str, int] = {}
@@ -743,7 +748,8 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
         results.get("searchResults") or [],
         key=lambda h: (-(h.get("score") or 0.0), h.get("distanceFromMatch") or 0),
     )
-    for hit in hits:
+    for raw_hit in hits:
+        hit = public_hit(raw_hit, locator)
         md = hit.get("metadata") or {}
         record_id = md.get("recordId")
         if not record_id or not hit.get("content"):
@@ -847,7 +853,7 @@ async def retrieve(
                     })
                 return JSONResponse(status_code=status_code, content={"message": results.get("message")})
             return JSONResponse(status_code=200, content={
-                "chunks": _retrieve_chunks(results, body.maxChunksPerRecord)[: body.limit],
+                "chunks": _retrieve_chunks(results, body.maxChunksPerRecord, locator_for(graph_provider))[: body.limit],
                 "incomplete": bool(results.get("searchIncomplete")),
             })
     except HTTPException:

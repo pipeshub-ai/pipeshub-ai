@@ -48,6 +48,17 @@ def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(assignment, "_shared", {})
 
 
+@pytest.fixture(autouse=True)
+def _default_extensions() -> Iterator[None]:
+    # Extension points are process-wide. A test that installs one must not leave it for the next, and a test that
+    # installs none must see the defaults.
+    from tests.support.extensions import reset_extensions
+
+    reset_extensions()
+    yield
+    reset_extensions()
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # The forced exit below must report the run's own outcome.
     session.config._exitcode = int(exitstatus)

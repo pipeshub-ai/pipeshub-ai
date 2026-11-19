@@ -16,7 +16,9 @@ from app.modules.retrieval.context.units import (
     takes_neighbours,
     unit_block_indices,
 )
+from app.modules.retrieval.hit_shape import carry_holder
 from app.utils.chat_helpers import get_enhanced_metadata
+from app.utils.trailing_blocks import addressable_blocks
 
 
 def expand_neighbours(
@@ -60,6 +62,7 @@ def expand_neighbours(
                 continue
             neighbour = _text_neighbour(record, vrid, index)
             if neighbour is not None:
+                carry_holder(unit, neighbour)
                 neighbour[NEIGHBOUR_OF_KEY] = [anchor]
                 added[key] = neighbour
     return [*units, *added.values()]
@@ -68,13 +71,18 @@ def expand_neighbours(
 def _text_neighbour(record: object, vrid: str, index: int) -> Unit | None:
     if not isinstance(record, dict) or index < 0:
         return None
-    blocks = (record.get("block_containers") or {}).get("blocks") or []
-    if index >= len(blocks) or not isinstance(blocks[index], dict):
+    containers = record.get("block_containers") or {}
+    # The one resolver of a local index: the blocks, then the trailing context a record stores beside them.
+    addressable = addressable_blocks(containers)
+    if index >= len(addressable):
         return None
-    block = blocks[index]
+    block = addressable[index]
+    trailing = index >= len(containers.get("blocks") or [])
+    if not isinstance(block, dict):
+        return None
     if block.get("type") != BlockType.TEXT.value:
         return None
-    return {
+    unit: Unit = {
         "content": block.get("data", ""),
         "block_type": BlockType.TEXT.value,
         "metadata": get_enhanced_metadata(record, block, {}),
@@ -82,3 +90,9 @@ def _text_neighbour(record: object, vrid: str, index: int) -> Unit | None:
         "block_index": index,
         "citationType": "vectordb|document",
     }
+    if trailing:
+        unit[TRAILING_CONTEXT_KEY] = True
+    return unit
+
+
+TRAILING_CONTEXT_KEY = "trailing_context"

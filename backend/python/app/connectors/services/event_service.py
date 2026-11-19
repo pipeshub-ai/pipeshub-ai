@@ -68,6 +68,7 @@ from app.edition_services import (
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.entities import FileRecord
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
+from app.connectors.record_views import views
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
@@ -1634,6 +1635,11 @@ class EventService:
             if fetched_count < batch_size:
                 break
 
+        if record_id is None and record_group_id is None and not stages:
+            total_processed += await views().reindex_connector_extra(
+                connector, self.graph_provider, org_id=org_id, connector_id=connector_id,
+                statuses=status_filters or [ProgressStatus.FAILED.value], user_key=user_key,
+            )
         self.logger.info(f"Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
     async def _rerun_stage_by_state(

@@ -5898,6 +5898,7 @@ class TestReindexExistingRecords:
         _topic, messages = proc.messaging_producer.send_messages.await_args.args
         payload = messages[0][1]["payload"]
         assert payload["forceReindex"] is True
+        assert isinstance(payload["forceReindexAt"], int) and payload["forceReindexAt"] > 0
         # the rest of the record payload must be untouched
         assert payload["recordName"] == record.to_kafka_record()["recordName"]
 

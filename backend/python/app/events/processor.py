@@ -4,6 +4,7 @@ import io
 import json
 import logging
 from pathlib import Path
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple, cast
 
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
@@ -48,6 +49,7 @@ from app.modules.code_graph.block_projection import (
     write_code_file_blocks_to_graph,
 )
 from app.modules.indexing.embed_resume import chain_end_fields
+from app.modules.indexing.extension import notify_terminal
 from app.modules.indexing.parse_now_marker import (
     run_settings,
     shape_status_write,
@@ -1584,8 +1586,11 @@ class Processor:
             ) from e
 
     async def _mark_record(
-        self, record_id, indexing_status: ProgressStatus, reason: str | None = None
+        self, record_id, indexing_status: ProgressStatus, reason: str | None = None,
+        extra_fields: Mapping[str, Any] | None = None,
     ) -> None:
+        """Write a terminal ``indexing_status``. ``extra_fields`` are merged into the same single write (and win over the
+        derived fields), so a caller can land further fields together with the status."""
         record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
@@ -1616,6 +1621,8 @@ class Processor:
         # reads as a crashed parse and stale recovery republishes it for ever.
         if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
             status_update["parsingStatus"] = indexing_status.value
+        if extra_fields:
+            status_update.update(extra_fields)
 
         success = await self.graph_provider.update_node(
             record_id,
@@ -1628,6 +1635,7 @@ class Processor:
                 record_id,
             )
             return
+        await notify_terminal(record, indexing_status)
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None,

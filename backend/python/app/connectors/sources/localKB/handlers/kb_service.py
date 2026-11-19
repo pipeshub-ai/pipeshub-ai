@@ -55,6 +55,7 @@ from app.models.source_dates import (
     parse_origin,
     upload_origin,
 )
+from app.connectors.record_views import views
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed, notify_principals_changed
@@ -3195,6 +3196,7 @@ class KnowledgeBaseService:
             )
 
             total_pages = (total_count + limit - 1) // limit
+            records = await views().decorate_rows(records, self.graph_provider, surface="kb_records")
 
             applied_filters = {
                 k: v for k, v in {
@@ -3289,6 +3291,9 @@ class KnowledgeBaseService:
                         "❌ Failed to get KB children: %s", result.get("reason")
                     )
                 return self._error_response(failure["code"], failure["reason"])
+
+            if result.get("records"):
+                result["records"] = await views().decorate_rows(result["records"], self.graph_provider, surface="kb_children")
 
             # Add pagination metadata
             total_items = result.get("totalCount", 0)
@@ -3407,6 +3412,9 @@ class KnowledgeBaseService:
                         "❌ Failed to get folder children: %s", result.get("reason")
                     )
                 return self._error_response(failure["code"], failure["reason"])
+
+            if result.get("records"):
+                result["records"] = await views().decorate_rows(result["records"], self.graph_provider, surface="kb_children")
 
             # Add pagination metadata
             total_items = result.get("totalCount", 0)

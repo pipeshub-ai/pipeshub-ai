@@ -824,3 +824,37 @@ async def test_the_writers_pass_schema_validation_with_what_the_resolver_writes(
     await w.p.ensure_taxonomy_hierarchy_edge(SUB1, "s1", "c")
     await w.p.add_taxonomy_aliases(SUB1, "s1", ["S one"], ["s one"], org_id=w.org)
     assert await w.hierarchy() == [(SUB1, "s1", CATS, "c")] and (await w.doc(SUB1, "s1"))["aliases"] == ["S one"]
+
+
+# ---- clearing a record's classification --------------------------------------------------------------------------------------------------
+
+
+async def test_clearing_a_classification_removes_the_records_taxonomy_and_extracted_organisation_links_and_nothing_else(w: Org) -> None:
+    """``GraphDBTransformer.clear_classification``: the taxonomy edges as a classification with no result would leave them, the EXTRACTED
+    organisation links directly (the classifier's own write skips its delete when the summary names none), another record's edges and
+    links of another origin stay, and a second run changes nothing."""
+    from app.modules.transformers.graphdb import GraphDBTransformer
+
+    for coll, key in ((TOPICS, "t1"), (CATS, "c1"), (LANGS, "l1")):
+        await w.node(coll, key)
+    await w.p.batch_upsert_nodes([{"_key": "d1", "departmentName": "Sales", "orgId": w.org}], DEPTS)
+    await w.p.batch_upsert_nodes([{"_key": "acme", "name": "Acme", "orgId": w.org}, {"_key": "globex", "name": "Globex", "orgId": w.org}], "organizations")
+    for record in ("mine", "twin"):
+        for coll, key in ((TOPICS, "t1"), (CATS, "c1"), (LANGS, "l1"), (DEPTS, "d1")):
+            await w.link(record, coll, key)
+    edge = {"createdAtTimestamp": 1}
+    await w.p.batch_create_entity_relations([
+        {"_from": "records/mine", "_to": "organizations/acme", "edgeType": "FOR_ACCOUNT", "origin": "INFERRED", **edge},
+        {"_from": "records/mine", "_to": "organizations/globex", "edgeType": "MENTIONS", "origin": "EXTRACTED", **edge},
+        {"_from": "records/twin", "_to": "organizations/globex", "edgeType": "MENTIONS", "origin": "EXTRACTED", **edge},
+    ])
+    transformer = GraphDBTransformer(graph_provider=w.p, logger=logging.getLogger("pg-clear"))
+
+    await transformer.clear_classification("mine")
+    await transformer.clear_classification("mine")
+
+    assert await w.p.get_record_taxonomy_links(["mine"], include_departments=True) == []
+    assert len(await w.p.get_record_taxonomy_links(["twin"], include_departments=True)) == 4
+    assert await w.p.delete_record_entity_relations("mine", "organizations", "EXTRACTED") == 0, "its extracted links are already gone"
+    assert await w.p.delete_record_entity_relations("mine", "organizations", "INFERRED") == 1, "its inferred link stayed"
+    assert await w.p.delete_record_entity_relations("twin", "organizations", "EXTRACTED") == 1, "the other record's link stayed"

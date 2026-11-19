@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.models.blocks import BlockType, GroupType
+from app.modules.retrieval.content_locator import locator_for
 from app.utils.chat_helpers import (
     as_blob_record,
     generate_text_fragment_url,
@@ -14,6 +15,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.logger import create_logger
 from app.utils.text_fragments import SourceFormat, split_fragment_directive
+from app.utils.trailing_blocks import addressable_blocks
 from app.web.url import display_domain
 
 # Initialize logger
@@ -639,6 +641,24 @@ def _extract_block_index_from_url(url: str) -> int | None:
         return int(m.group(1))
     return None
 
+def decode_block_ref(
+    address: int | None, record_id: str | None, *holders: Any,  # noqa: ANN401
+) -> tuple[int, int | None]:
+    """``(holder index, local block index)`` of the index a block URL carries.
+
+    The locator decides what an index means; the default reads every index as the record's own, however large.
+    ``holders`` are lists or maps of the records in hand.
+    """
+    if address is None:
+        return 0, address
+    return locator_for(None).decode_ref(address, record_id, holders)
+
+
+def _is_block_owner(rec: dict[str, Any], record_id: str, holder: int) -> bool:
+    """The stored record that holds the block a URL names: the record's own, or holder number ``holder`` of it."""
+    return rec.get("id") == record_id and int(rec.get("holder_index") or 0) == holder
+
+
 def _extract_record_id_from_url(url: str) -> str | None:
     """Extract recordId from block preview or record landing URLs."""
     m = re.search(r'/record/([^/]+)/preview', url)
@@ -1076,7 +1096,7 @@ def _normalize_markdown_link_citations(
         nonlocal new_citation_num
 
         block_container = record.get("block_containers", {}) or {}
-        blocks = block_container.get("blocks", []) or []
+        blocks = addressable_blocks(block_container)
         if not (0 <= block_index < len(blocks)):
             return False
 
@@ -1084,7 +1104,7 @@ def _normalize_markdown_link_citations(
         enhanced_metadata = get_enhanced_metadata(record, block, {})
         block_type = block.get("type")
         data = block.get("data")
-        
+
         if data is None:
             logger.warning(
                 "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
@@ -1154,7 +1174,9 @@ def _normalize_markdown_link_citations(
             # Try matching by record_id + block_index extracted from URL,
             # or record landing URL /record/{id} (record-level / header citation).
             record_id = _extract_record_id_from_url(url)
-            block_index = _extract_block_index_from_url(url)
+            holder, block_index = decode_block_ref(
+                _extract_block_index_from_url(url), record_id, records, virtual_record_id_to_result,
+            )
             if record_id is not None and block_index is None:
                 rec = _find_record_by_id(
                     record_id, records, virtual_record_id_to_result, listed=is_listing_citation_url(url),
@@ -1173,7 +1195,7 @@ def _normalize_markdown_link_citations(
             elif record_id is not None and block_index is not None:
                 _matched = False
                 for r in records:
-                    if r.get("id") == record_id:
+                    if _is_block_owner(r, record_id, holder):
                         _matched = _append_citation_from_record(
                             record=r,
                             record_id=record_id,
@@ -1185,7 +1207,7 @@ def _normalize_markdown_link_citations(
 
                 if not _matched and virtual_record_id_to_result:
                     for rec in virtual_record_id_to_result.values():
-                        if rec and rec.get("id") == record_id:
+                        if rec and _is_block_owner(rec, record_id, holder):
                             _matched = _append_citation_from_record(
                                 record=rec,
                                 record_id=record_id,
@@ -1348,7 +1370,9 @@ def _normalize_markdown_link_citations_for_agent(
             new_citation_num += 1
         else:
             record_id = _extract_record_id_from_url(url)
-            block_index = _extract_block_index_from_url(url)
+            holder, block_index = decode_block_ref(
+                _extract_block_index_from_url(url), record_id, records, virtual_record_id_to_result,
+            )
             if record_id is not None and block_index is None:
                 rec = _find_record_by_id(
                     record_id, records, virtual_record_id_to_result, listed=is_listing_citation_url(url),
@@ -1367,9 +1391,9 @@ def _normalize_markdown_link_citations_for_agent(
             elif record_id is not None and block_index is not None:
                 # Search in records from tool calls
                 for r in records:
-                    if r.get("id") == record_id:
+                    if _is_block_owner(r, record_id, holder):
                         block_container = r.get("block_containers", {}) or {}
-                        blocks = block_container.get("blocks", []) or []
+                        blocks = addressable_blocks(block_container)
                         if 0 <= block_index < len(blocks):
                             block = blocks[block_index]
                             enhanced_metadata = get_enhanced_metadata(r, block, {})
@@ -1410,9 +1434,9 @@ def _normalize_markdown_link_citations_for_agent(
                 # Also search in virtual_record_id_to_result
                 if url not in url_to_citation_num:
                     for rec in virtual_record_id_to_result.values():
-                        if rec and rec.get("id") == record_id:
+                        if rec and _is_block_owner(rec, record_id, holder):
                             block_container = rec.get("block_containers", {}) or {}
-                            blocks = block_container.get("blocks", []) or []
+                            blocks = addressable_blocks(block_container)
                             if 0 <= block_index < len(blocks):
                                 block = blocks[block_index]
                                 enhanced_metadata = get_enhanced_metadata(rec, block, {})

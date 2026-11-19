@@ -58,6 +58,7 @@ from app.modules.indexing.duplicate_reconcile import (
 )
 from app.modules.indexing.embed_resume import EMBED_DELIVERY_ID, RESUME_DELIVERY_ID_KEY
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
+from app.modules.indexing.extension import current as current_extension
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.named_entity_completion import (
     record_consumer_loop,
@@ -417,9 +418,15 @@ async def recover_in_progress_records(
                     # branches would turn it AUTO_INDEX_OFF and strand its
                     # QUEUED copies. The republished event reaches the
                     # handler, which ends the enrichment and releases them.
-                    connector_id = record.get("connectorId")
+                    ownership = current_extension().ownership
+                    await ownership.prime([record], graph_provider)
+                    connector_id = ownership.owner_connector_id(record)
                     origin = record.get("origin")
-                    if connector_id and origin == OriginTypes.CONNECTOR.value and not resume_enrichment:
+                    if (
+                        connector_id
+                        and (origin == OriginTypes.CONNECTOR.value or ownership.is_derived(record))
+                        and not resume_enrichment
+                    ):
                         # A failed read must not look like a deleted connector;
                         # raising leaves the row for the next pass.
                         connector_instance = await graph_provider.get_document(
@@ -776,6 +783,12 @@ async def recover_in_progress_records(
             read_backlog=read_backlog,
             logger=logger,
         )
+
+        # Work the installed lifecycle keeps in step with the records (nothing by default). It never stops the pass.
+        try:
+            total_records += await current_extension().lifecycle.recovery_pass()
+        except Exception as exc:
+            logger.warning("The lifecycle recovery pass failed: %s", exc)
 
         # Vectors whose last referencing record was repointed elsewhere are
         # reachable from neither the record scan above nor the membership
@@ -1471,11 +1484,12 @@ async def _sweep_queued_records_for_inactive_connectors(
                 break
 
             swept_this_page = 0
-            for record in page:
-                connector_id = record.get("connectorId")
+            ownership = current_extension().ownership
+            for record in await ownership.prime_readable(page, graph_provider, None, logger):
+                connector_id = ownership.owner_connector_id(record)
                 if (
                     not connector_id
-                    or record.get("origin") != OriginTypes.CONNECTOR.value
+                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not ownership.is_derived(record))
                 ):
                     continue
 
@@ -1713,7 +1727,7 @@ async def _republish_stranded_records(
                 if not twin or twin.get("orgId") != org_id or not is_live_record(twin):
                     continue
                 if twin.get("indexingStatus") == ProgressStatus.QUEUED.value:
-                    if not await _is_active(str(twin.get("connectorId") or "")):
+                    if not await _is_active(str(current_extension().ownership.owner_connector_id(twin) or "")):
                         return True
                 elif will_promote_queued_copies(twin, enrichment_live_after_ms):
                     return True
@@ -1899,10 +1913,11 @@ async def _republish_stranded_records(
         (ProgressStatus.AUTO_INDEX_OFF.value, _pages_parked_while_off()),
     ):
         parked_while_off = status_value == ProgressStatus.AUTO_INDEX_OFF.value
+        ownership = current_extension().ownership
         async for page in pages:
-            for record in page:
+            for record in await ownership.prime_readable(page, graph_provider, None, logger):
                 record_key = record.get("_key") or record.get("id")
-                connector_id = record.get("connectorId")
+                connector_id = ownership.owner_connector_id(record)
                 if parked_while_off and not is_live_record(record):
                     continue
                 # Uploads are otherwise left alone: a new one waits on its file

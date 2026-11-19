@@ -14,6 +14,8 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.modules.artifacts.sidecars import ENTITIES, ArtifactSidecars
+from app.modules.indexing.extension import StageInput
+from app.modules.indexing.extension import current as current_extension
 from app.modules.named_entities.domain.config import load_named_entity_config
 from app.modules.named_entities.domain.models import NamedEntityExtraction
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
@@ -74,6 +76,25 @@ class GraphEntitiesIO(RecordStageIO):
         self._sidecars = sidecars
         self._logger = logger or logging.getLogger(__name__)
         self._enabled: bool | None = None
+        self._input: StageInput | None = None
+        self._input_read = False
+
+    async def _hooked_input(self, job: StageJob) -> StageInput | None:
+        """What the installed hooks read in place of the stored blocks, once per job; None without hooks."""
+        if not self._input_read:
+            self._input_read = True
+            hooks = current_extension().stage_hooks
+            if hooks is not None:
+                self._input = await hooks.entities_input(job, self)
+        return self._input
+
+    async def input_digest(self, job: StageJob) -> str:
+        hooked = await self._hooked_input(job)
+        return hooked.digest if hooked is not None else job.text_digest
+
+    async def load_blocks(self, job: StageJob) -> BlocksContainer | None:
+        hooked = await self._hooked_input(job)
+        return hooked.blocks if hooked is not None else await super().load_blocks(job)
 
     async def _stored_run(self, job: StageJob) -> str | None:
         """The stored write holding the job's revision now: the sidecar goes into its set. None when the
@@ -107,7 +128,11 @@ class GraphEntitiesIO(RecordStageIO):
         }
 
     async def extract(self, job: StageJob, blocks: BlocksContainer) -> NamedEntityExtraction:
-        """Never raises for a model failure: that is a FAILED extraction."""
+        """Never raises for a model failure: that is a FAILED extraction. Installed stage hooks may hand over the
+        extraction themselves (``StageInput.extraction``); then the model is not run."""
+        hooked = await self._hooked_input(job)
+        if hooked is not None and hooked.extraction is not None:
+            return hooked.extraction
         ctx = await self._context(job.record_ids[0], blocks)
         if ctx is None:
             raise RevisionSuperseded(job.record_ids[0])
@@ -120,6 +145,9 @@ class GraphEntitiesIO(RecordStageIO):
         """Each record's entities in the graph and the entity points, under its lease. Returns
         the owner's persist outcome (``written``, ``kept``, ``disabled``, ...)."""
         owner = record_ids[0]
+        hooks = current_extension().stage_hooks
+        if hooks is not None and await hooks.keep_extraction(job, self, owner, extraction):
+            return "kept"
         outcomes: dict[str, str] = {}
 
         async def persist(record_id: str) -> None:

@@ -426,6 +426,74 @@ async def test_a_final_headline_runs_the_settled_hook_and_a_failing_hook_retries
     assert settled == [(("rec-1",), ProgressStatus.COMPLETED)] * 2
 
 
+def _with_stage_hook(h: _Harness, hook: object) -> None:
+    h.handler = StageJobHandler(
+        h.registry, h.states, h.headlines, h.coordinator, StubIO,
+        logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock, on_stage_settled=hook,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_stage_settled_hook_runs_once_after_a_completed_stage_is_final() -> None:
+    h, job = _Harness(), _job()
+    seen: list[tuple[StageJob, ProgressStatus]] = []
+
+    async def settled(j: StageJob) -> None:
+        seen.append((j, h.state(j).status))
+
+    _with_stage_hook(h, settled)
+    h.seed(job)
+    await h.deliver(job)
+    assert seen == [(job, ProgressStatus.COMPLETED)]
+
+
+@pytest.mark.asyncio
+async def test_the_stage_settled_hook_runs_for_a_failed_stage_too() -> None:
+    h, job = _Harness(), _job()
+    seen: list[ProgressStatus] = []
+
+    async def settled(j: StageJob) -> None:
+        seen.append(h.state(j).status)
+
+    _with_stage_hook(h, settled)
+    h.seed(job)
+    h.stage.result = StageResult(outcome=StageOutcome.FAILED, reason="document rejected")
+    with pytest.raises(StageFailed):
+        await h.deliver(job)
+    assert seen == [ProgressStatus.FAILED]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_stage_settled_hook_never_fails_the_stage() -> None:
+    h, job = _Harness(), _job()
+    calls = []
+
+    async def settled(j: StageJob) -> None:
+        calls.append(j)
+        raise RuntimeError("follow-up down")
+
+    _with_stage_hook(h, settled)
+    h.seed(job)
+    assert await h.deliver(job)
+    assert h.state(job).status is ProgressStatus.COMPLETED and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_paused_stage_is_not_settled() -> None:
+    h, job = _Harness(), _job()
+    calls = []
+
+    async def settled(j: StageJob) -> None:
+        calls.append(j)
+
+    _with_stage_hook(h, settled)
+    h.seed(job)
+    h.stage.result = StageResult(outcome=StageOutcome.PAUSED, reason="extraction breaker open")
+    with pytest.raises(StagePaused):
+        await h.deliver(job)
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_no_hook_when_no_record_is_still_on_the_revision() -> None:
     h, job = _Harness(), _job()

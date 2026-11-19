@@ -178,6 +178,8 @@ class _Job:
     # fallback charge). ``covered`` is whether a heavy parse permit of this process covers the job.
     kind: object | None = None
     covered: bool = False
+    # The caller's own charge for the job's memory, in place of the figure the kind and size give (None: that figure).
+    charge_bytes: int | None = None
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -453,7 +455,7 @@ def _pool(*, interactive: bool = False, kind: object | None = None) -> _ParsePoo
 _LANE_WAIT_S = 3600.0  # a wait for the member budget is always bounded
 
 
-def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
+def _lane_demand(kind: object | None = None, size: int = 0, charge_bytes: int | None = None) -> Demand:
     """What a lane reserves when its caller passed no permit: one CPU token, unclassified (big work), and the memory
     its worker is charged for this kind of job (an Excel load grows to ``EXCEL_LOAD_MAX_MB``; it is held nowhere else
     in the container's budget). A job of no known kind reserves no memory, as before.
@@ -463,6 +465,10 @@ def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
     from app.services.resource_governor.kinds import ParseKind, lane_charge_bytes
 
     demand = wiring.lane_demand(kind, class_pools.current_class()) if wiring.classes_enabled() else Demand(Family.PARSE, 1)
+    if charge_bytes is not None:
+        # The caller's own charge wins over everything, including a memory figure the demand already carries.
+        memory = max(0, int(charge_bytes))
+        return dataclasses.replace(demand, mem_bytes=memory) if memory else demand
     memory = lane_charge_bytes(kind, size) if isinstance(kind, ParseKind) else 0
     # A demand that already carries its own memory (an inspection's designed 0.1 GiB) keeps it: the kind's lane charge
     # is added only where nothing else holds that memory (an Excel load), never over a figure chosen for the demand.
@@ -504,6 +510,7 @@ async def submit(
     interactive: bool = False,
     kind: object | None = None,
     permit: Permit | None = None,
+    charge_bytes: int | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -519,20 +526,23 @@ async def submit(
     *interactive* (a chat attachment a person is waiting on) runs on a pool of
     its own under ``PARSE_LANES=on`` so background indexing cannot hold it up;
     it is ignored otherwise.
+
+    *charge_bytes* is the memory the job is charged to lane admission, in place of the figure *kind* and *size* give;
+    the default (None) charges that figure.
     """
     # PIPESHUB_CAPACITY_PROFILE=auto only: the lane adopts the caller's permit, or reserves one when it is given none.
     if permit is None and wiring.classes_enabled():
         permit = class_pools.lane_permit(kind)  # the admission's own permit, never reserved twice
     wait_s = timeout or _LANE_WAIT_S
     try:
-        held = await reserve_or_adopt(permit, _lane_demand(kind, size), deadline_s=wait_s)
+        held = await reserve_or_adopt(permit, _lane_demand(kind, size, charge_bytes), deadline_s=wait_s)
     except AdmissionTimeout as exc:
         raise _capacity_timeout(wait_s) from exc
     release_here = held is not None
     try:
         pool = _pool(interactive=interactive, kind=kind)
         if pool is not None:
-            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind))
+            job = _Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind), charge_bytes=charge_bytes)
             if held is not None:
                 # The lane decides when the job is over: it finishes it, kills its worker after a cancel, or drops it
                 # while still queued. The tokens go back then, not when the awaiting caller goes away.

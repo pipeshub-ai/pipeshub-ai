@@ -18,7 +18,6 @@ from app.models.record_metadata import (
     MAX_PROPERTIES,
     MAX_STRING_BYTES,
     PIPELINE_FIELD_NAMES,
-    RESERVED_PROPERTY_NAMES,
     MetadataProvenance,
     MetadataSchema,
     MetadataValidationError,
@@ -27,6 +26,7 @@ from app.models.record_metadata import (
     PropertyType,
     RecordMetadata,
     coerce_value,
+    reserved_property_names,
     searchable_lines,
     validate_values,
 )
@@ -273,7 +273,7 @@ def test_empty_values_are_kept_as_given() -> None:
     assert held["s"].value == "" and held["l"].value == []
 
 
-@pytest.mark.parametrize("name", sorted(RESERVED_PROPERTY_NAMES))
+@pytest.mark.parametrize("name", sorted(reserved_property_names()))
 def test_every_reserved_name_is_refused_even_with_a_none_value(name: str) -> None:
     assert _refused({name: None}).property == name
     with pytest.raises(ValidationError, match="reserved"):
@@ -283,9 +283,9 @@ def test_every_reserved_name_is_refused_even_with_a_none_value(name: str) -> Non
 def test_every_vector_const_field_is_reserved() -> None:
     for attr, value in vars(vector_const).items():
         if attr.endswith("_FIELD") and isinstance(value, str):
-            assert value.rsplit(".", 1)[-1] in RESERVED_PROPERTY_NAMES, attr
+            assert value.rsplit(".", 1)[-1] in reserved_property_names(), attr
     for field, _ in vector_const.PAYLOAD_KEYWORD_INDEXES:
-        assert field.rsplit(".", 1)[-1] in RESERVED_PROPERTY_NAMES, field
+        assert field.rsplit(".", 1)[-1] in reserved_property_names(), field
 
 
 def test_every_known_vector_point_metadata_field_is_reserved() -> None:
@@ -293,7 +293,7 @@ def test_every_known_vector_point_metadata_field_is_reserved() -> None:
     sits beside future properties; a property of the same name would shadow it."""
     known = set(vector_models.VectorChunkMetadata.__dataclass_fields__)
     known |= {"isRecordSummary", "blockGroupIndex"}
-    assert known - RESERVED_PROPERTY_NAMES == set()
+    assert known - reserved_property_names() == set()
 
 
 @pytest.mark.parametrize("variant", ["orgID", "orgid", "virtualRecordID", "blockid", "connectorids", "pageContent"])

@@ -386,7 +386,36 @@ def test_extra_locations_read_from_the_edition_file(tmp_path, monkeypatch):
     assert locations.version_locations()[-1] == str(mod)
 
 
-def test_shipped_edition_seam_is_empty():
+def _declared_locations():
+    import importlib.util
+    from pathlib import Path
+
+    edition = Path(locations.BACKEND_DIR / "python" / "app" / "edition.py")
+    spec = importlib.util.spec_from_file_location("_shipped_edition", edition)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return list(getattr(module, "EXTRA_MIGRATION_LOCATIONS", []))
+
+
+def test_shipped_edition_seam_lists_only_existing_module_directories(monkeypatch):
+    """Whatever the shipped edition file declares must be real migration directories under ``backend/``, each once.
+    A declared location that is missing would be dropped silently by ``extra_locations``, so a typo would hide a branch."""
+    from pathlib import Path
+
+    monkeypatch.delenv("PIPESHUB_EDITION_FILE", raising=False)
+    declared = _declared_locations()
+    found = locations.extra_locations()
+    assert len(found) == len(declared), f"declared but not found: {declared}"
+    assert len(set(found)) == len(found)
+    for path in found:
+        assert Path(path).is_dir()
+        assert Path(path).is_relative_to(locations.BACKEND_DIR)
+
+
+def test_a_declared_location_that_does_not_exist_is_dropped_so_the_check_above_can_see_it(tmp_path, monkeypatch):
+    ed = tmp_path / "edition.py"
+    ed.write_text('EXTRA_MIGRATION_LOCATIONS = ["missing/dir"]\n')
+    monkeypatch.setenv("PIPESHUB_EDITION_FILE", str(ed))
     assert locations.extra_locations() == []
 
 

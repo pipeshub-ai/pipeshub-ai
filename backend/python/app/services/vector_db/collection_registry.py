@@ -35,9 +35,10 @@ from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     CONTENT_REV_FIELD,
     EMBED_KEY_FIELD,
-    PAYLOAD_KEYWORD_INDEXES,
     SCOPE_INTEGER_INDEXES,
     SCOPE_KEYWORD_INDEXES,
+    guarded_payload_fields,
+    payload_keyword_indexes,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import CollectionConfig
@@ -277,7 +278,7 @@ class CollectionRegistry:
         name = self.resolve_write_collection(ctx)
         if self._existence.matches_dimension(name, embedding_size):
             if name in self._fence_missing:
-                await self._ensure_payload_indexes(name, only=_FENCE_FIELDS)
+                await self._ensure_payload_indexes(name, only=_FENCE_FIELDS | guarded_payload_fields())
             return name
 
         existing_dim = await self._existing_dimension(name)
@@ -387,8 +388,13 @@ class CollectionRegistry:
         """False while the fields a resumed embedding run filters on are not known to be indexed."""
         return name not in self._fence_missing
 
+    def fields_ready(self, name: str) -> bool:
+        """False while a field a resumed or scoped write filters on (the fence fields and every registered ``guarded`` one)
+        is not known to be indexed on ``name``."""
+        return self.fence_ready(name)
+
     async def _ensure_payload_indexes(self, name: str, only: frozenset[str] | None = None) -> None:
-        indexes = PAYLOAD_KEYWORD_INDEXES + ((*SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES) if scope_fields_enabled() else ())
+        indexes = payload_keyword_indexes() + ((*SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES) if scope_fields_enabled() else ())
         fence_failed = False
         for field_name, schema in indexes:
             if only is not None and field_name not in only:
@@ -401,7 +407,7 @@ class CollectionRegistry:
                 err = str(e).lower()
                 if "already exists" in err or "already exist" in err or "conflict" in err or "duplicate field" in err:
                     continue
-                fence_failed = fence_failed or field_name in _FENCE_FIELDS
+                fence_failed = fence_failed or field_name in _FENCE_FIELDS or field_name in guarded_payload_fields()
                 self._logger.warning(
                     "Failed to create payload index %s on %s: %s", field_name, name, e
                 )

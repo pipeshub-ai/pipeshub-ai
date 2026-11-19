@@ -116,6 +116,7 @@ jobs:
             tests/integration/vector_db/test_pgvector_scope_filter.py
             tests/integration/vector_db/test_pgvector_pending_corpus.py
             tests/integration/vector_db/test_pgvector_scope_rewrite.py
+            tests/integration/vector_db/test_pgvector_scoped_delete.py
             tests/integration/vector_db/test_pgvector_serving.py
             tests/integration/vector_db/test_pgvector_serving_search.py
             -m integration -p no:cacheprovider

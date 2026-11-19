@@ -34,7 +34,7 @@ from app.modules.pipeline.models import (
     Workload,
 )
 from app.modules.pipeline.policy import PipelinePolicy
-from app.modules.pipeline.stage import StageIO
+from app.modules.pipeline.stage import StageIO, input_digest_of
 from app.services.llm_gateway.gateway import current_pause_fields
 
 # Bump when the extraction prompt, its strategies or the stored section's shape change.
@@ -108,7 +108,7 @@ class EntitiesStage:
         return StageFingerprint(
             stage=self.name,
             stage_version=self.version,
-            input_digest=job.text_digest,
+            input_digest=await input_digest_of(job, io),
             config_digest=hashlib.sha256(config.encode("utf-8")).hexdigest()[:32],
         )
 

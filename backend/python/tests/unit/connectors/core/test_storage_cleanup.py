@@ -1071,6 +1071,7 @@ class TestReindexOneHolder:
         assert event["eventType"] == "newRecord"
         assert event["payload"]["recordId"] == "r-team"
         assert event["payload"]["forceReindex"] is True
+        assert isinstance(event["payload"]["forceReindexAt"], int) and event["payload"]["forceReindexAt"] > 0
 
     @pytest.mark.asyncio
     async def test_a_vrid_with_no_live_holder_publishes_nothing(self):

@@ -242,6 +242,36 @@ for _collection, _label in COLLECTION_TO_LABEL.items():
     LABEL_TO_COLLECTION.setdefault(_label, _collection)
 
 
+# Labels added at run time by ``register_collection_label``, so a test can take them out again.
+_REGISTERED_LABELS: dict[str, str] = {}
+
+
+def register_collection_label(collection: str, label: str) -> None:
+    """Map a collection that is not in ``COLLECTION_TO_LABEL`` to ``label``, in both directions.
+
+    The mapping is read by module-level calls throughout the provider, so no subclass can add to it. Registering
+    the same pair again is a no-op; a different label for a collection that already has one raises, because two labels
+    for one collection would leave its nodes under two labels.
+    """
+    known = COLLECTION_TO_LABEL.get(collection)
+    if known is not None:
+        if known != label:
+            raise ValueError(f"collection {collection!r} already maps to label {known!r}, not {label!r}")
+        return
+    COLLECTION_TO_LABEL[collection] = label
+    LABEL_TO_COLLECTION.setdefault(label, collection)
+    _REGISTERED_LABELS[collection] = label
+
+
+def _reset_registered_labels() -> None:
+    """Test only: remove every label ``register_collection_label`` added."""
+    for collection, label in _REGISTERED_LABELS.items():
+        COLLECTION_TO_LABEL.pop(collection, None)
+        if LABEL_TO_COLLECTION.get(label) == collection:
+            del LABEL_TO_COLLECTION[label]
+    _REGISTERED_LABELS.clear()
+
+
 def label_to_collection(label: str) -> str:
     """Convert a Neo4j label back to its ArangoDB collection name."""
     return LABEL_TO_COLLECTION.get(label, label.lower())

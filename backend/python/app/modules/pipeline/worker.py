@@ -62,6 +62,8 @@ from app.utils.indexing_timing import note
 # records' QUEUED md5 copies, which wait for the enrichment to end. Raising makes the
 # delivery retry; the redelivery finds the state settled and calls it again.
 HeadlineSettled = Callable[[StageJob, Sequence[str], ProgressStatus], Awaitable[None]]
+# Called once a job's stage state is terminal (completed, skipped or failed), after its successors are dispatched.
+StageSettled = Callable[[StageJob], Awaitable[None]]
 
 
 class StagePaused(RequeueWithoutAttempt):
@@ -134,6 +136,7 @@ class StageJobHandler:
         clock_ms: Callable[[], int] = _now_ms,
         on_headline_settled: HeadlineSettled | None = None,
         pause_judge: PauseJudge | None = None,
+        on_stage_settled: StageSettled | None = None,
     ) -> None:
         super().__init__()
         # The pause budget (``pause_budget``). None runs without one: a paused job then waits without bound.
@@ -148,6 +151,7 @@ class StageJobHandler:
         self._worker_id = worker_id or _default_worker_id()
         self._clock_ms = clock_ms
         self._on_headline_settled = on_headline_settled
+        self._on_stage_settled = on_stage_settled
         self._outcomes = {name: dict.fromkeys(OUTCOME_COUNTERS, 0) for name in registry.names()}
 
     async def __call__(self, message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
@@ -469,6 +473,7 @@ class StageJobHandler:
                 await self._headline_settled(job, updated, ProgressStatus.FAILED)
             except Exception:
                 self._logger.exception("Stage job %s failed and its follow-up could not run", job.job_id)
+        await self._stage_settled(job)
         raise StageFailed(reason, record_id=job.job_id)
 
     async def _reserve_sends(self, job: StageJob, stage: Stage[Any], attempt: int) -> int | None:
@@ -584,6 +589,17 @@ class StageJobHandler:
                 return
             await self._headline_settled(job, updated, status)
         _ = await self._coordinator.on_stage_done(job, result)
+        await self._stage_settled(job)
+
+    async def _stage_settled(self, job: StageJob) -> None:
+        """The stage's state is terminal and its successors are dispatched: a hook for work that waits on it.
+        Its failure never fails the stage."""
+        if self._on_stage_settled is None:
+            return
+        try:
+            await self._on_stage_settled(job)
+        except Exception:
+            self._logger.exception("Stage job %s settled and its follow-up could not run", job.job_id)
 
     async def _headline_settled(self, job: StageJob, record_ids: Sequence[str], status: ProgressStatus) -> None:
         if self._on_headline_settled is not None and record_ids:

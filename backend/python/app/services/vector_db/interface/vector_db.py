@@ -305,6 +305,13 @@ class IVectorDBService(ABC):
         (Qdrant, pgvector, Redis) has nothing to do; OpenSearch refreshes its index, which otherwise happens at the index's refresh interval
         (30 s here). The scope rewrite calls it before each read of the points it rewrites."""
 
+    async def unindexed_filter_fields(self, collection_name: str, flt: FilterExpression) -> list[str]:
+        """The fields *flt* names that the store cannot filter on because its index does not hold them, so that a filter on one
+        would be dropped or widened. Empty for a store that filters on any payload field (Qdrant, OpenSearch, pgvector); Redis
+        filters only on the fields of its index. A delete that must stay inside a scope refuses on a non-empty answer (see
+        ``membership.require_indexed_filter``)."""
+        return []
+
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         """Exact number of points the filter matches (it must pin ``metadata.orgId``); ``PartialResult`` if the store cannot answer completely.
         The scope rewrite checks its scroll against it, so a store without it cannot be rewritten."""

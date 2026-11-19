@@ -84,6 +84,9 @@ on:
       - 'backend/python/app/modules/indexing/lane_upkeep.py'
       - 'backend/python/app/modules/indexing/duplicate_reconcile.py'
       - 'backend/python/app/modules/indexing/named_entity_persist_retry.py'
+      # Un-indexing a record and the shared stage runtime: their real-graph tests run on every store.
+      - 'backend/python/app/modules/indexing/**'
+      - 'backend/python/app/modules/pipeline/**'
       - 'backend/python/tests/integration/messaging/**'
       - 'backend/python/tests/integration/paid_results/**'
       - 'backend/python/tests/integration/vector_db/**'

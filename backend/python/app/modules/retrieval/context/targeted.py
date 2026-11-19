@@ -40,6 +40,7 @@ from app.modules.retrieval.context.units import (
     neighbour_anchors,
     without_orphan_neighbours,
 )
+from app.modules.retrieval.hit_shape import identity_vrid
 from app.modules.retrieval.record_cut import (
     passages_per_record as record_cut_passages_per_record,
 )
@@ -236,20 +237,21 @@ def cap_passages_per_record(
 
     by_record: dict[Any, list[int]] = {}
     for position, unit in enumerate(hits):
-        by_record.setdefault(unit.get("virtual_record_id"), []).append(position)
+        # One record's share is one, whichever stored records hold its passages.
+        by_record.setdefault(identity_vrid(unit), []).append(position)
 
     kept: dict[int, Unit] = {}
     omitted: dict[str, int] = {}
     repeats_dropped = 0
     stale_records: set[Any] = set()
 
-    for vrid, positions in by_record.items():
-        def repeat(index: int | None, _vrid: Any = vrid) -> bool:  # noqa: ANN401
-            return index is not None and (_vrid, index) in already_shown
+    def unit_is_repeat(unit: Unit) -> bool:
+        # Blocks are shown by (stored record, index in it): local indices of different stored records collide.
+        content = unit.get("virtual_record_id")
+        indices = rendered_block_indices(unit)
+        return bool(indices) and all((content, index) in already_shown for index in indices)
 
-        def unit_is_repeat(unit: Unit, _vrid: Any = vrid) -> bool:  # noqa: ANN401
-            indices = rendered_block_indices(unit)
-            return bool(indices) and all((_vrid, index) in already_shown for index in indices)
+    for vrid, positions in by_record.items():
 
         room = per_record
         fresh_kept = False
@@ -258,6 +260,10 @@ def cap_passages_per_record(
         for position in sorted(positions, key=lambda p: (unit_is_repeat(hits[p]), p)):
             unit = hits[position]
             children = group_child_results(unit)
+
+            def repeat(index: int | None, _content: Any = unit.get("virtual_record_id")) -> bool:  # noqa: ANN401
+                return index is not None and (_content, index) in already_shown
+
             if children is None or not children:
                 # A block, a record summary, or a group with nothing to show.
                 cost = 0 if children is not None else 1
@@ -293,12 +299,13 @@ def cap_passages_per_record(
                 not repeat(_int(children[i].get("block_index"))) for i in chosen
             )
         if lost and vrid:
-            omitted[vrid] = lost
+            # Named by a stored record of the file that is in the records map (``more_passages_list`` looks it up).
+            omitted[hits[positions[0]].get("virtual_record_id")] = lost
         if not fresh_kept:
             stale_records.add(vrid)
 
-    ordered = [kept[p] for p in sorted(kept) if hits[p].get("virtual_record_id") not in stale_records]
-    ordered += [kept[p] for p in sorted(kept) if hits[p].get("virtual_record_id") in stale_records]
+    ordered = [kept[p] for p in sorted(kept) if identity_vrid(hits[p]) not in stale_records]
+    ordered += [kept[p] for p in sorted(kept) if identity_vrid(hits[p]) in stale_records]
     shown_neighbours = [
         unit for unit in neighbours
         if (unit.get("virtual_record_id"), _int(unit.get("block_index"))) not in already_shown

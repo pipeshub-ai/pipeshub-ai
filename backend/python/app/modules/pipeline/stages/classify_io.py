@@ -14,6 +14,8 @@ from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.artifacts.sidecars import ArtifactSidecars, classification_envelope
+from app.modules.indexing.extension import StageInput
+from app.modules.indexing.extension import current as current_extension
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
@@ -72,6 +74,25 @@ class GraphClassifyIO(RecordStageIO):
         self._config_service = config_service
         self._sidecars = sidecars
         self._departments: list[str] | None = None
+        self._input: StageInput | None = None
+        self._input_read = False
+
+    async def _hooked_input(self, job: StageJob) -> StageInput | None:
+        """What the installed hooks read in place of the stored blocks, once per job; None without hooks."""
+        if not self._input_read:
+            self._input_read = True
+            hooks = current_extension().stage_hooks
+            if hooks is not None:
+                self._input = await hooks.classify_input(job, self)
+        return self._input
+
+    async def input_digest(self, job: StageJob) -> str:
+        hooked = await self._hooked_input(job)
+        return hooked.digest if hooked is not None else job.text_digest
+
+    async def load_blocks(self, job: StageJob) -> BlocksContainer | None:
+        hooked = await self._hooked_input(job)
+        return hooked.blocks if hooked is not None else await super().load_blocks(job)
 
     async def departments(self, org_id: str) -> list[str]:
         if self._departments is None:
@@ -111,6 +132,9 @@ class GraphClassifyIO(RecordStageIO):
     async def restore_stored_metadata(
         self, job: StageJob, metadata: SemanticMetadata, *, still_current: Callable[[], Awaitable[bool]] | None = None
     ) -> None:
+        hooks = current_extension().stage_hooks
+        if hooks is not None and await hooks.restore_classification(job, self, metadata):
+            return
         classification = metadata.model_dump(mode="json")
         owner = job.record_ids[0]
         await self._write_section(
@@ -158,6 +182,9 @@ class GraphClassifyIO(RecordStageIO):
     async def save(self, job: StageJob, record_ids: list[str], metadata: SemanticMetadata) -> None:
         # Content-level outputs are shared by every record on the revision; edges are per record.
         owner = record_ids[0]
+        hooks = current_extension().stage_hooks
+        if hooks is not None and await hooks.save_classification(job, self, owner, metadata):
+            return
         ctx = await self._context(owner, None)
         if ctx is None:
             raise RevisionSuperseded(owner)

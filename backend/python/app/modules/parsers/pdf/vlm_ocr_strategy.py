@@ -22,6 +22,7 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers.pdf.ocr_limits import MAX_PAGES_ENV, vlm_ocr_max_pages
 from app.modules.parsers.pdf.pdf_rasterizer import (
     cancel_on,
     render_batch_from_path_sync,
@@ -36,7 +37,6 @@ from app.utils.aimodels import (
     get_generator_model,
     is_multimodal_llm,
 )
-from app.utils.env_config import env_int
 from app.utils.error_class import log_failure
 from app.utils.is_truncated import is_truncated
 from app.utils.llm import LLMUnavailableError, get_llm_for_role, load_ai_models
@@ -44,14 +44,6 @@ from app.utils.opik import get_llm_invoke_config
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
-
-# Every page is one model call, so a longer scan is refused rather than read at any cost.
-MAX_PAGES_ENV = "VLM_OCR_MAX_PAGES"
-DEFAULT_MAX_PAGES = 500
-
-
-def vlm_ocr_max_pages() -> int:
-    return max(1, env_int(MAX_PAGES_ENV, DEFAULT_MAX_PAGES))
 
 
 

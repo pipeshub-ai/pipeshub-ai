@@ -71,10 +71,10 @@ from app.agents.actions.knowledge_graph.ops.outside_dates import (
     wants_outside_dates,
 )
 from app.agents.actions.knowledge_graph.ops.results import (
-    _RECORD_NAME_RE,
     dedupe_append_final_results,
     result_text,
     search_result_summary,
+    shown_record_names,
     tool_output,
 )
 from app.agents.actions.knowledge_graph.ops.scope import search_scope
@@ -99,6 +99,7 @@ from app.modules.agents.qna.chat_state import (
     remember_shown_results,
 )
 from app.modules.retrieval.entity_permissions import EntityAccessError
+from app.modules.retrieval.hit_shape import identity_vrid
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.source_diversity import plain_ranking
 from app.services.graph_db.dated_scope import shared_dated_scope
@@ -433,7 +434,8 @@ def _add_whole_span_hits(
     placed: list[set[str]] = [set() for _ in buckets]
     for hit in whole.get("searchResults") or []:
         key = _hit_key(hit)
-        date = record_date_ms(records.get(key[0]), date_field)
+        identity = identity_vrid(hit)
+        date = record_date_ms(records.get(identity), date_field)
         index = len(hits)
         if date is not None:
             index = next(
@@ -444,9 +446,9 @@ def _add_whole_span_hits(
         if key not in seen[index]:
             seen[index].add(key)
             buckets[index].results.append(hit)
-        if key[0] in records:
-            buckets[index].records.setdefault(key[0], records[key[0]])
-        placed[index].add(key[0])
+        if identity in records:
+            buckets[index].records.setdefault(identity, records[identity])
+        placed[index].add(identity)
     for bucket, vrids in zip(buckets, placed):
         bucket.weight = len(vrids)
 
@@ -1179,7 +1181,7 @@ def timeline_result_summary(args: dict[str, Any], result: ToolResult) -> str | N
     if not match:
         return search_result_summary(args, result)
     periods = int(match.group(1))
-    names = [name.strip() for name in _RECORD_NAME_RE.findall(text) if name.strip()]
+    names = shown_record_names(text)
     header = (
         f"Searched {periods} period{'s' if periods != 1 else ''}, "
         f"found {len(names)} record{'s' if len(names) != 1 else ''}"

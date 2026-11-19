@@ -20,7 +20,9 @@ from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.indexing import extension as indexing_extension
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
+from app.modules.indexing.extension import notify_terminal
 from app.modules.indexing.parse_now_marker import (
     ParseNowStatus,
     current_run,
@@ -903,7 +905,11 @@ class SinkOrchestrator(Transformer):
         if current_attempt() is not None:
             status.update(cleared_fields())
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
-            if await is_classify_on_first_use_enabled(self.config_service):
+            extension_points = indexing_extension.current()
+            if extension_points.deferred_stages() or (
+                not extension_points.ownership.is_derived(record)
+                and await is_classify_on_first_use_enabled(self.config_service)
+            ):
                 # Decided here, once, so the status and the dispatch agree.
                 ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: False, ENRICHMENT_DEFERRED: True}
                 status["extractionStatus"] = ProgressStatus.NOT_STARTED.value
@@ -934,9 +940,10 @@ class SinkOrchestrator(Transformer):
         # The record is only searchable now, so the accessible-record map that
         # gates search is stale. Connector records arrive in bursts, so their
         # deletes are coalesced (see `on_record_indexed`).
+        await notify_terminal(record, ProgressStatus.COMPLETED)
         await notify_record_indexed(
             connector_name=record.connector_name,
-            connector_id=record.connector_id,
+            connector_id=indexing_extension.current().ownership.owner_connector_id(record),
             external_record_group_id=record.external_record_group_id,
             org_id=record.org_id,
         )

@@ -316,6 +316,7 @@ class TestReadPathIsOrgScoped:
         svc.logger = MagicMock()
         svc.collection_registry = registry
         svc.vector_db_service = vdb
+        svc.graph_provider = MagicMock()  # the constructor always sets it; the search reads content through it
         svc._capabilities = MagicMock(
             supports_sparse_vectors=False, supports_server_side_text_search=False
         )

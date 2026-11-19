@@ -27,6 +27,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RetrievedRecordPayload,
     TableTruncationPayload,
 )
+from app.modules.retrieval.content_locator import locator_for
 from app.modules.retrieval.context.units import unit_block_indices
 from app.modules.retrieval.provenance import (
     RETRIEVED_BY_KEY,
@@ -154,11 +155,14 @@ class RetrievalContextLedger:
         records_map: Mapping[str, Any],
         deltas: dict[str, _RecordDelta],
         metadata: Mapping[str, Any] | None = None,
+        content_key: str | None = None,
     ) -> _RecordDelta:
+        """The delta of the record ``virtual_record_id``; ``content_key`` is the stored record its text was
+        read from when that is not the record's own. They are one record on the wire."""
         existing = deltas.get(virtual_record_id)
         if existing is not None:
             return existing
-        record = records_map.get(virtual_record_id) or {}
+        record = records_map.get(content_key or virtual_record_id) or records_map.get(virtual_record_id) or {}
         meta = metadata or {}
         delta = _RecordDelta(
             virtual_record_id=virtual_record_id,
@@ -179,12 +183,18 @@ class RetrievalContextLedger:
         for block in blocks:
             if not isinstance(block, Mapping):
                 continue
-            virtual_record_id = _str_or_none(block.get("virtual_record_id"))
-            if virtual_record_id is None:
+            content_key = _str_or_none(block.get("virtual_record_id"))
+            if content_key is None:
                 continue
+            virtual_record_id = _str_or_none(block.get("identity_vrid")) or content_key
             # A table or group unit renders its child rows too; recording only
-            # the unit's own index hid every row after the first.
-            indices: list[int | None] = list(dict.fromkeys(unit_block_indices(block))) or [None]
+            # the unit's own index hid every row after the first. A local index is sent
+            # as the index the client sees.
+            holder = block.get("holder_index")
+            locator = locator_for(None)
+            indices: list[int | None] = list(dict.fromkeys(
+                None if i is None else locator.public_index(holder, i) for i in unit_block_indices(block)
+            )) or [None]
             keys: list[BlockKey] = [
                 (virtual_record_id, index) for index in indices
                 if (virtual_record_id, index) not in self._seen_blocks
@@ -195,7 +205,7 @@ class RetrievalContextLedger:
             metadata = block.get("metadata")
             delta = self._delta_for(
                 virtual_record_id, records_map, deltas,
-                metadata if isinstance(metadata, Mapping) else None,
+                metadata if isinstance(metadata, Mapping) else None, content_key=content_key,
             )
             for _vrid, index in keys:
                 if index is None:
@@ -280,9 +290,10 @@ class RetrievalContextLedger:
     def _collect_records(
         self, records_map: Mapping[str, Any], deltas: dict[str, _RecordDelta],
     ) -> None:
-        for virtual_record_id in list(records_map):
-            if str(virtual_record_id) not in self._seen_records:
-                self._delta_for(str(virtual_record_id), records_map, deltas)
+        for content_key, record in list(records_map.items()):
+            identity = str((record.get("identity_vrid") if isinstance(record, Mapping) else None) or content_key)
+            if identity not in self._seen_records:
+                self._delta_for(identity, records_map, deltas, content_key=str(content_key))
 
     def _collect_known(self, record_ids: Iterable[Any]) -> list[str]:
         new_ids = sorted({str(rid) for rid in record_ids} - self._seen_known)

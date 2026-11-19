@@ -3424,3 +3424,99 @@ async def test_a_refused_query_embedding_is_one_text_free_line(
     level = logging.ERROR if error_class == "misconfigured" else logging.WARNING
     failure_line(caplog.records, "search.failed", error_class, level)
     assert_text_free(caplog.records)
+
+
+# ============================================================================
+# content locator
+# ============================================================================
+
+class _Dropping:
+    """A locator that drops the hits of one record and stamps what it is given."""
+
+    def __init__(self, drop: str) -> None:
+        from app.modules.retrieval.content_locator import SingleHolderLocator
+
+        self.base = SingleHolderLocator()
+        self.drop = drop
+        self.seen: list[list] = []
+        self.internal_payload_keys = ()
+
+    def stamp_hit(self, metadata: dict) -> dict:
+        return {**metadata, "stamped": True}
+
+    async def filter_live(self, hits: list) -> list:
+        self.seen.append(hits)
+        return [h for h in hits if (h.get("metadata") or {}).get("virtualRecordId") != self.drop]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.base, name)
+
+
+class TestContentLocator:
+    @pytest.mark.asyncio
+    async def test_hits_the_locator_does_not_keep_are_dropped_before_anything_is_read(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1", "vr2": "rec2"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc", "mimeType": "text/plain"}
+        ]
+        locator = _Dropping("vr2")
+        retrieval_service.content_locator_factory = lambda: locator
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {"score": 0.9, "content": "kept", "citationType": "vectordb|document",
+             "metadata": {"virtualRecordId": "vr1", "orgId": "o1"}},
+            {"score": 0.8, "content": "dropped", "citationType": "vectordb|document",
+             "metadata": {"virtualRecordId": "vr2", "orgId": "o1"}},
+        ])
+
+        result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        assert [r["content"] for r in result["searchResults"]] == ["kept"]
+        assert len(locator.seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_when_the_locator_keeps_nothing_the_answer_is_the_empty_one(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr2": "rec2"}
+        retrieval_service.content_locator_factory = lambda: _Dropping("vr2")
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {"score": 0.8, "content": "dropped", "citationType": "vectordb|document",
+             "metadata": {"virtualRecordId": "vr2", "orgId": "o1"}},
+        ])
+
+        result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        assert result["status"] == Status.EMPTY_RESPONSE.value
+        assert result["searchResults"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_default_locator_keeps_every_hit_and_is_built_per_search(self, retrieval_service) -> None:
+        from app.modules.retrieval.content_locator import SingleHolderLocator
+
+        first, second = retrieval_service._new_content_locator(), retrieval_service._new_content_locator()
+
+        assert isinstance(first, SingleHolderLocator) and first is not second
+
+    @pytest.mark.asyncio
+    async def test_a_point_is_stamped_by_the_locator_before_it_becomes_a_hit(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        retrieval_service.content_locator_factory = lambda: _Dropping("none")
+        point = MagicMock(id="p1", score=0.9, payload={"page_content": "text", "metadata": {"virtualRecordId": "vr1"}})
+        retrieval_service._fan_out_searches = AsyncMock(return_value=[[point]])
+
+        formatted = await retrieval_service._run_searches(["q"], None, 5, "o1", "u1", [[0.1]], [None])
+
+        assert formatted[0]["metadata"]["stamped"] is True
+        assert formatted[0]["metadata"]["point_id"] == "p1"
+
+    @pytest.mark.asyncio
+    async def test_with_the_default_locator_a_point_keeps_its_metadata_exactly(self, retrieval_service) -> None:
+        point = MagicMock(id="p1", score=0.9, payload={"page_content": "text", "metadata": {"virtualRecordId": "vr1"}})
+        retrieval_service._fan_out_searches = AsyncMock(return_value=[[point]])
+
+        formatted = await retrieval_service._run_searches(["q"], None, 5, "o1", "u1", [[0.1]], [None])
+
+        assert formatted[0]["metadata"] == {"virtualRecordId": "vr1", "point_id": "p1"}

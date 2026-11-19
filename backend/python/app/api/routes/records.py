@@ -23,6 +23,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
+from app.modules.retrieval.content_locator import locator_for
 from app.modules.retrieval.selection_scope import within_connection
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
@@ -45,7 +46,10 @@ from app.utils.record_reader import (
 )
 
 if TYPE_CHECKING:
+    import logging
+
     from app.containers.query import QueryAppContainer
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 router = APIRouter()
 
@@ -89,6 +93,31 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to check record access",
         ) from exc
+
+
+async def _refuse_block_address(
+    graph_provider: IGraphDBProvider, record_id: str, start_block: int, logger: logging.Logger
+) -> None:
+    """A ``start_block`` that the content locator reads as an address, for a record whose content it holds in several
+    stored records, is not a position in the record: reading it as one would return the wrong passage. The default
+    locator reads no number as an address, so every position is read as it always was."""
+    locator = locator_for(graph_provider)
+    if not locator.is_address(start_block):
+        return
+    try:
+        doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        vrid = (doc or {}).get("virtualRecordId")
+        several = bool(vrid) and await locator.holds_several([vrid])
+    except Exception:
+        logger.error("Content layout of %s unreadable; refusing a block address", record_id, exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Could not check this record. Try again shortly.",
+        ) from None
+    if several:
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="`start_block` is a position in the record, not a block address; use a `nextStartBlock`.",
+        )
 
 
 @router.get(
@@ -151,6 +180,8 @@ async def read_record_content(
         )
 
     accessible = await _check_access(request, graph_provider, record_id)
+    if start_block is not None:
+        await _refuse_block_address(graph_provider, record_id, start_block, logger)
     blob_store = await container.blob_store()
 
     if mode == "thread":

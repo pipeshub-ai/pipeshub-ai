@@ -30,7 +30,7 @@ from app.modules.pipeline.models import (
     Workload,
 )
 from app.modules.pipeline.policy import PipelinePolicy
-from app.modules.pipeline.stage import StageIO
+from app.modules.pipeline.stage import StageIO, input_digest_of
 from app.modules.pipeline.stages.record_io import StoredRecordMissing
 from app.modules.transformers.document_extraction import ExtractionLLMError
 from app.services.base_client import (
@@ -120,7 +120,7 @@ class ClassifyStage:
         return StageFingerprint(
             stage=self.name,
             stage_version=self.version,
-            input_digest=job.text_digest,
+            input_digest=await input_digest_of(job, io),
             config_digest=hashlib.sha256(config.encode("utf-8")).hexdigest()[:32],
         )
 

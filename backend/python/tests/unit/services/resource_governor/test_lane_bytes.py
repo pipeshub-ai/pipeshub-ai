@@ -433,6 +433,23 @@ def test_charge_for_is_flat_when_the_operator_sets_one_figure(
         assert budget.charge_for(kind, 10 * MIB, True) == (900 * MIB, 900 * MIB)
 
 
+def test_a_job_that_states_its_charge_is_charged_that_figure_for_both(make_budget: Callable[..., LaneBudget]) -> None:
+    budget = make_budget(8)
+    assert budget.charge_for(ParseKind.PDF_LAYOUT, 10 * MIB, False, 123 * MIB) == (123 * MIB, 123 * MIB)
+    assert budget.charge_for(None, 0, False, 0) == (0, 0), "an explicit zero is a charge, not an absent one"
+    assert budget.charge_for(ParseKind.TEXT, 10 * MIB, False, -5) == (0, 0), "never below zero"
+
+
+def test_no_stated_charge_is_the_figure_the_kind_and_size_give(make_budget: Callable[..., LaneBudget]) -> None:
+    budget = make_budget(8)
+    assert budget.charge_for(ParseKind.PDF_LAYOUT, 10 * MIB) == budget.charge_for(ParseKind.PDF_LAYOUT, 10 * MIB, False, None)
+
+
+def test_the_operators_flat_figure_wins_over_a_stated_charge(make_budget: Callable[..., LaneBudget]) -> None:
+    budget = make_budget(8, working_set_bytes=900 * MIB)
+    assert budget.charge_for(ParseKind.PDF_LAYOUT, 10 * MIB, False, 123 * MIB) == (900 * MIB, 900 * MIB)
+
+
 def test_charge_for_uses_the_scale_the_guard_raised(make_budget: Callable[..., LaneBudget]) -> None:
     from app.services.resource_governor.kinds import SCALES
 

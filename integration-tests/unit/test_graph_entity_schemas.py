@@ -138,3 +138,19 @@ def test_the_schema_names_every_field_of_a_nested_model(entity: str) -> None:
         f"{model.__name__}: {'; '.join(gaps)}, which integration-tests/validation/schemas/ "
         "does not name under that field's properties; add each one before shipping it"
     )
+
+
+@pytest.mark.parametrize("entity", sorted(e for e, m in MODEL_FOR_ENTITY.items() if "block_containers" in m.model_fields))
+def test_a_container_without_trailing_context_validates(entity: str) -> None:
+    """`BlocksContainer.trailing_context` is stored only for a record that has context pages: absent, null and a list all validate.
+
+    A document written before the field existed has no such key, and must still pass the checks.
+    """
+    from response_validator import ResponseSchema, assert_response_matches_schema
+
+    declared = merged_graph_entity_schema(entity).fields["block_containers"]
+    assert declared.properties["trailing_context"].required is False
+    only = ResponseSchema(name="block_containers", description="", fields={"block_containers": declared})
+    base = {"blocks": [], "block_groups": []}
+    for container in (base, {**base, "trailing_context": None}, {**base, "trailing_context": [{"index": 0}]}):
+        assert_response_matches_schema({"block_containers": container}, only)

@@ -34,7 +34,7 @@ from typing import Any, get_args, get_origin
 from pydantic import BaseModel
 from typing_extensions import is_typeddict
 
-from app.models.record_metadata import RESERVED_PROPERTY_NAMES
+from app.models.record_metadata import reserved_property_names
 
 from . import contract as C
 from .contract import PushRefusal
@@ -209,7 +209,7 @@ def _refuse(reason: str, detail: str, kind: str | None = None) -> PushRefusal:
 def _unknown(kind: str, name: str, raw: bytes) -> PushRefusal:
     shown = name[:96]
     if kind == VALUES:
-        if name in RESERVED_PROPERTY_NAMES:
+        if name in reserved_property_names():
             return PushRefusal(422, "PROPERTY_RESERVED", f"property {name!r} is reserved", name[:96], extra={"code": "ENVELOPE_INVALID"})
         return PushRefusal(422, "PROPERTY_UNKNOWN", f"property {name!r} is not in the schema", name[:96], extra={"code": "ENVELOPE_INVALID"})
     detail = f"{kind}.{shown}"

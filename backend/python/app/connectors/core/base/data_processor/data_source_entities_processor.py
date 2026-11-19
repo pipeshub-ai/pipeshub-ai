@@ -5042,7 +5042,7 @@ class DataSourceEntitiesProcessor:
         stage_rev: str | None = None,
         selected: bool = False,
     ) -> dict:
-        payload = {**record.to_kafka_record(), "forceReindex": True}
+        payload = {**record.to_kafka_record(), "forceReindex": True, "forceReindexAt": get_epoch_timestamp_in_ms()}
         if user_forced_reindex():
             # A user's Force reindex: every stored paid result is bypassed and paid for again. The platform's own
             # reindexes of unchanged records (a policy change) keep reusing them.

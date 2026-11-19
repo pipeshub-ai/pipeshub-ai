@@ -57,6 +57,15 @@ async def test_classification_left_for_first_use_is_not_dispatched() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stages_named_in_defer_are_held_back_beside_the_classification_flag() -> None:
+    ingress, coordinator, _ = _ingress({"contentRev": "abc"})
+    await ingress.on_indexed(_record(), trigger="newRecord", defer=frozenset({"entities"}))
+    assert coordinator.on_external_done.await_args.kwargs["defer"] == frozenset({"entities"})
+    await ingress.on_indexed(_record(), trigger="newRecord", defer_classify=True, defer=frozenset({"entities"}))
+    assert coordinator.on_external_done.await_args.kwargs["defer"] == frozenset({"classify", "entities"})
+
+
+@pytest.mark.asyncio
 async def test_a_connector_record_is_bulk_priority() -> None:
     ingress, coordinator, _ = _ingress({"contentRev": "abc"})
     await ingress.on_indexed(_record(Connectors.GOOGLE_DRIVE), trigger="newRecord")

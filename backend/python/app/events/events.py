@@ -39,6 +39,7 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
 )
 from app.models.entities import Record
+from app.modules.indexing import extension as indexing_extension
 from app.modules.indexing import replay_set
 from app.modules.indexing.connector_off_events import (
     SAME_BYTES_SKIP_RETRY_DELAY_S,
@@ -59,6 +60,13 @@ from app.modules.indexing.embed_resume import (
     end_attempt,
     marker_of,
     may_resume,
+)
+from app.modules.indexing.extension import (
+    Admit,
+    PdfParseHints,
+    RecordOwnerUnknown,
+    Stop,
+    notify_terminal,
 )
 from app.modules.indexing.parse_now_marker import (
     current_run,
@@ -455,9 +463,12 @@ class EventProcessor:
         event_type: str | None = None,
         prev_virtual_record_id: str | None = None,
         content_rev: str | None = None,
+        hints: PdfParseHints | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
+
+        ``hints`` are what the admission asked for (``Admit.hints``): OCR forced on or off, Docling not allowed.
         """
         self.logger.debug("Checking if PDF needs OCR processing")
         inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
@@ -465,7 +476,7 @@ class EventProcessor:
         await self._write_page_count(record_id, content_rev, inspected.page_count)
         # Every parser below reads the bytes that passed inspection.
         pdf_binary = inspected.content
-        needs_ocr = inspected.needs_ocr
+        needs_ocr = inspected.needs_ocr if hints is None or hints.ocr is None else hints.ocr
         self.logger.debug("OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
 
         if needs_ocr:
@@ -493,6 +504,8 @@ class EventProcessor:
         use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
         if use_pdfplumber:
             self.logger.debug("Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
+        elif hints is not None and not hints.allow_docling:
+            self.logger.debug("Docling is not allowed for this record; using the PdfPlumber+OpenCV processor")
         elif not within_docling_size_limit(len(pdf_binary)):
             self.logger.debug("PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
         elif not docling_takes(len(pdf_binary), inspected.page_count):
@@ -731,6 +744,7 @@ class EventProcessor:
                 "Failed to persist EMPTY status for record",
                 record_doc,
             )
+            await notify_terminal(record_doc, ProgressStatus.EMPTY)
             if self.config_service is not None:
                 # The revision is complete: its paid calls (a scan's page OCR) are listed in a final manifest.
                 await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)
@@ -750,6 +764,7 @@ class EventProcessor:
         record.block_containers = block_container
         record.virtual_record_id = virtual_record_id
         record.org_id = org_id
+        await indexing_extension.current().lifecycle.after_parse(record, self.graph_provider, self.logger)
 
         ctx = TransformContext(
             record=record,
@@ -1008,6 +1023,7 @@ class EventProcessor:
         self.logger.debug(
             f"Record {record_id}: Successfully updated status to {status.value}"
         )
+        await notify_terminal(doc, status)
 
 
 
@@ -1246,6 +1262,7 @@ class EventProcessor:
             current_collection,
             self._resolve_write_collection,
             enrichment_live_after_ms=enrichment_live_after_ms,
+            current=doc,
         )
         if match is None:
             self.logger.debug(
@@ -1719,6 +1736,23 @@ class EventProcessor:
                 )
                 return
 
+            extension_points = indexing_extension.current()
+            try:
+                await extension_points.ownership.prime([record], self.graph_provider)
+            except RecordOwnerUnknown as exc:
+                # Fail closed: nothing says whose it is now, and the attempt that is creating it may still write it.
+                raise IndexingError(str(exc), details={"record_id": record_id}) from exc
+            admitted = await extension_points.lifecycle.admit(record, self.graph_provider)
+            if isinstance(admitted, Stop):
+                self.logger.info("Record %s is not indexed: %s", record_id, admitted.reason)
+                await self.update_record_fields(
+                    dict(record), {"indexingStatus": admitted.status, "reason": admitted.reason},
+                )
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+            parse_hints = admitted.hints if isinstance(admitted, Admit) else None
+
             # A retry repeats the original message, which still holds the id from
             # before its first attempt; the record holds the one that attempt saved.
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
@@ -1861,7 +1895,7 @@ class EventProcessor:
                     await self._discard_embed_marker(doc, embed_marker, org_id)
                 await notify_record_indexed(
                     connector_name=doc.get("connectorName"),
-                    connector_id=doc.get("connectorId"),
+                    connector_id=extension_points.ownership.owner_connector_id(doc),
                     external_record_group_id=doc.get("externalGroupId"),
                     org_id=doc.get("orgId"),
                 )
@@ -1871,6 +1905,11 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
             rebuild_shared_vrid = dedup_decision.rebuild_shared_vrid
+            if rebuild_shared_vrid and await extension_points.policy.holds_stand_in(
+                doc.get("virtualRecordId"), extension, mime_type
+            ):
+                # The policy keeps a stand-in under this id: rebuilding in place would rewrite what it holds.
+                rebuild_shared_vrid = False
             if dedup_decision.virtual_record_id:
                 # Different-collection duplicate: content identity was copied
                 # onto `doc` inside _check_duplicate_by_md5; pick it up here
@@ -1979,6 +2018,9 @@ class EventProcessor:
                 and not rebuild_shared_vrid
                 and not dedup_decision.virtual_record_id
             )
+            if resumable_kind and await extension_points.policy.holds_stand_in(virtual_record_id, extension, mime_type):
+                # Stored blocks of an earlier whole-file attempt are not what the policy indexes.
+                resumable_kind = False
             checkpoint = None
             if resumable_kind and may_resume(
                 embed_marker,
@@ -2412,6 +2454,7 @@ class EventProcessor:
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                     content_rev=content_rev,
+                    hints=parse_hints,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None

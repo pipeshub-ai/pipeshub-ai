@@ -31,12 +31,13 @@ from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval import degraded_notice
-from app.services.permissions import access_status
+from app.modules.retrieval.content_locator import ContentLocator, locator_for
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
     EntityFilterUnavailableError,
 )
+from app.modules.retrieval.hit_shape import content_vrid, holder_index_of
 from app.modules.retrieval.lexical_search import (
     LexicalHit,
     LexicalSearchResult,
@@ -50,10 +51,11 @@ from app.modules.retrieval.record_cut import (
     passages_per_record,
     point_record_id,
 )
-from app.modules.retrieval.source_diversity import (
-    SourceDiversity,
-    active_source_diversity,
-    record_source,
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ResultMerger,
+    merge_collection_results,
+    merger_for,
 )
 from app.modules.retrieval.selection_scope import (
     SELECTION_EMPTY_MESSAGE,
@@ -67,11 +69,10 @@ from app.modules.retrieval.selection_scope import (
     require_membership_ready,
     resolve_request_scopes,
 )
-from app.modules.retrieval.result_merging import (
-    CollectionResults,
-    ResultMerger,
-    merge_collection_results,
-    merger_for,
+from app.modules.retrieval.source_diversity import (
+    SourceDiversity,
+    active_source_diversity,
+    record_source,
 )
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import (
@@ -87,6 +88,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
+from app.services.permissions import access_status
 from app.services.permissions.metrics import SERVING_DEGRADED
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
@@ -362,6 +364,27 @@ ENTITY_FILTER_NO_MATCH_MESSAGE = "No documents match this search and its entity 
 ENTITY_FILTER_UNAVAILABLE_MESSAGE = (
     "We couldn't apply the entity filter just now. Please try again in a minute."
 )
+
+
+async def _load_content_record(
+    result: dict[str, Any], store: dict[str, Any], blob_store: BlobStorage, org_id: str,
+    virtual_to_record_map: dict[str, Any], locator: ContentLocator,
+) -> bool:
+    """Read the stored record that holds a hit's content into ``store``, once, under the key the flattening looks it up by
+    (``content_vrid``): that is the hit's own record id unless its locator keeps the content in another stored record.
+    False when there is nothing to read."""
+    identity = (result.get("metadata") or {}).get("virtualRecordId")
+    content = content_vrid(result) or identity
+    if content not in store:
+        # A hit that is its own record's content is read exactly as it always was; the extra arguments say which record
+        # the content stands for only when another stored record holds it.
+        held_elsewhere = (
+            {"identity_vrid": identity, "holder_index": holder_index_of(result), "content_locator": locator}
+            if content != identity else {}
+        )
+        with span("content"):
+            await get_record(content, store, blob_store, org_id, virtual_to_record_map, **held_elsewhere)
+    return store.get(content) is not None
 
 
 def _record_cut_for(scope_virtual_ids: list[str] | None) -> RecordCut | None:
@@ -764,6 +787,15 @@ class RetrievalService:
             return sparse
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
+    # Tests inject their own; None builds the installed locator from the graph provider.
+    content_locator_factory: Callable[[], ContentLocator] | None = None
+
+    def _new_content_locator(self) -> ContentLocator:
+        """One locator per search: its reads are cached for the request."""
+        if self.content_locator_factory is not None:
+            return self.content_locator_factory()
+        return locator_for(self.graph_provider)
+
     def _format_results(self, results: list[tuple]) -> list[dict[str, Any]]:
         """Format search results into a consistent structure with flattened metadata."""
         formatted_results = []
@@ -1128,6 +1160,11 @@ class RetrievalService:
                 for vid, record_id in candidate_map.items():
                     accessible_virtual_id_to_record_id.setdefault(vid, record_id)
 
+            locator = self._new_content_locator()
+            search_results = await locator.filter_live(search_results)
+            if not search_results:
+                return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
             self.logger.debug("Extracting virtualRecordIds from search results")
@@ -1270,10 +1307,10 @@ class RetrievalService:
                                 # Fetch the record once, but flatten every hit on it:
                                 # a later hit left raw was neither expanded nor known
                                 # as a match, and could repeat a passage already shown.
-                                if virtual_id not in virtual_record_id_to_record:
-                                    with span("content"):
-                                        await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
-                                if virtual_record_id_to_record[virtual_id] is None:
+                                if not await _load_content_record(
+                                    result, virtual_record_id_to_record, self.blob_store, org_id,
+                                    virtual_to_record_map, locator,
+                                ):
                                     continue
                                 new_type_results.append(result)
                                 continue
@@ -1463,7 +1500,7 @@ class RetrievalService:
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
                 with span("content"):
-                    flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
+                    flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True, content_locator=locator)
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     child_results = group_child_results(result)
@@ -2431,10 +2468,17 @@ class RetrievalService:
                 scope_connector_ids=requested_scope_ids(filters), scopes=scopes,
             )
 
+        live_points = {
+            id(h["point"]) for h in await self._new_content_locator().filter_live(
+                [{"metadata": p.payload.get("metadata") or {}, "point": p} for batch in batches for p in batch]
+            )
+        }
         hits: list[list[LexicalHit]] = []
         for batch in batches:
             admitted: list[LexicalHit] = []
             for point in batch:
+                if id(point) not in live_points:
+                    continue
                 vid = (point.payload.get("metadata") or {}).get("virtualRecordId")
                 if vid in accessible:
                     admitted.append(LexicalHit(
@@ -2839,12 +2883,13 @@ class RetrievalService:
             plan.max_batch = max((len(batch) for batch in search_results), default=0)
 
         seen_points: set = set()
+        locator = self._new_content_locator()
         for batch in search_results:
             for point in batch:
                 if point.id in seen_points:
                     continue
                 seen_points.add(point.id)
-                metadata = point.payload.get("metadata") or {}
+                metadata = locator.stamp_hit(point.payload.get("metadata") or {})
                 metadata["point_id"] = point.id
                 doc = Document(
                     page_content=point.payload.get("page_content", ""),

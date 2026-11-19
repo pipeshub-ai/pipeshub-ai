@@ -880,6 +880,41 @@ class TestMarkRecordOutcomes:
 
         gp.update_node.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_extra_fields_land_in_the_one_status_write_and_win_over_derived_ones(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record(
+            "rec-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason="why",
+            extra_fields={"contentRev": "x:abc", "hasIndexedCopy": False},
+        )
+
+        gp.update_node.assert_awaited_once()
+        written = self._written(gp)
+        assert written["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+        assert written["reason"] == "why"
+        assert written["contentRev"] == "x:abc" and written["hasIndexedCopy"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_extra_fields_is_the_write_without_them(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.FAILED)
+        plain = self._written(gp)
+        gp.update_node.reset_mock()
+        await proc._mark_record("rec-1", ProgressStatus.FAILED, extra_fields=None)
+
+        def stable(fields: dict) -> dict:  # the clock fields differ by a millisecond between two writes
+            return {k: v for k, v in fields.items() if "imestamp" not in k and not k.endswith("At")}
+
+        assert stable(self._written(gp)) == stable(plain)
+        assert set(self._written(gp)) == set(plain)
+        assert "contentRev" not in plain
+
 
 # ===========================================================================
 # Processor.process_excel_document

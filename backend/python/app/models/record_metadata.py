@@ -56,13 +56,15 @@ def _vector_payload_keys() -> frozenset[str]:
         value for name, value in vars(vector_payload).items()
         if name.endswith("_FIELD") and isinstance(value, str)
     }
-    keys.update(key for key, _ in vector_payload.PAYLOAD_KEYWORD_INDEXES)
+    keys.update(key for key, _ in vector_payload.payload_keyword_indexes())
     keys.update(f.name for model in (VectorChunkMetadata, VectorChunkPayload) for f in fields(model))
     # "metadata.orgId" is stored as "orgId" inside the point's metadata.
     return frozenset(key.rsplit(".", 1)[-1] for key in keys)
 
 
-RESERVED_PROPERTY_NAMES: frozenset[str] = PIPELINE_FIELD_NAMES | _vector_payload_keys()
+def reserved_property_names() -> frozenset[str]:
+    """The names a metadata property may not take. Read at call time, so a payload field registered after import counts."""
+    return PIPELINE_FIELD_NAMES | _vector_payload_keys()
 
 
 class PropertyType(str, Enum):
@@ -120,7 +122,7 @@ class PropertyDefinition(BaseModel, frozen=True):
     @field_validator("name")
     @classmethod
     def _not_reserved(cls, name: str) -> str:
-        if name in RESERVED_PROPERTY_NAMES:
+        if name in reserved_property_names():
             raise ValueError(f"property name {name!r} is reserved")
         return name
 
@@ -315,7 +317,7 @@ def validate_values(
     """
     values: dict[str, MetadataValue] = {}
     for name in sorted(raw):
-        if name in RESERVED_PROPERTY_NAMES:
+        if name in reserved_property_names():
             raise MetadataValidationError(name, "the name is reserved", "PROPERTY_RESERVED")
         prop = schema.get_property(name)
         if prop is None:

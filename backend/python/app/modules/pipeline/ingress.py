@@ -12,6 +12,7 @@ from typing import Any
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.entities import Record
+from app.modules.indexing.extension import current as current_extension
 from app.modules.indexing.record_diagnostics import write_with_revision_rule
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.fingerprint import content_facts
@@ -102,11 +103,14 @@ class StageIngress:
         return not await self._coordinator.has_seen_revision(str(vrid), str(rev))
 
     async def on_indexed(
-        self, record: Record, *, trigger: str | None, defer_classify: bool = False
+        self, record: Record, *, trigger: str | None, defer_classify: bool = False,
+        defer: frozenset[str] = frozenset(),
     ) -> list[str]:
         """Record ``embed`` for the record's revision and dispatch its successors;
         with ``defer_classify``, all but classification, which the record's first
-        use asks for (``first_use``)."""
+        use asks for (``first_use``). ``defer`` names further stages to hold back; the default holds none."""
+        ownership = current_extension().ownership
+        await ownership.prime([record], self._graph)
         container = record.block_containers
         facts = content_facts(container)
         document = await self._graph.get_document(
@@ -127,7 +131,7 @@ class StageIngress:
             virtual_record_id=record.virtual_record_id or "",
             rev=rev,
             record_ids=(record.id,),
-            connector_id=record.connector_id or "",
+            connector_id=ownership.owner_connector_id(record) or "",
             tier=classify_tier(extension if isinstance(extension, str) else None, record.mime_type),
             mime_type=record.mime_type,
             text_digest=facts.text_digest,
@@ -146,5 +150,5 @@ class StageIngress:
             force=record.id in self._forced,
             # The record is already searchable; a broker hiccup must not fail it.
             keep_claim_on_publish_failure=True,
-            defer=frozenset({CLASSIFY}) if defer_classify else frozenset(),
+            defer=(frozenset({CLASSIFY}) if defer_classify else frozenset()) | defer,
         )

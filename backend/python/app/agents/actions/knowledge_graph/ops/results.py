@@ -117,6 +117,31 @@ def result_text(content: object) -> str | None:
 
 _RESULT_HEADER_RE = re.compile(r"^Top (\d+) blocks? from (\d+) records?", re.IGNORECASE | re.MULTILINE)
 _RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
+_RECORD_LINE_RE = re.compile(r"^(?:Record ID\s*:\s*(.+?)|Name\s*:\s*(.+?))\s*$", re.MULTILINE)
+
+
+def shown_record_names(text: str) -> list[str]:
+    """The name of each distinct record a result showed, in order. A result may list one record more than once, each
+    time with its Record ID and name: it is one record, named once. A name with no Record ID before it (a legacy
+    result) is kept as it is."""
+    names: list[str] = []
+    seen: set[str] = set()
+    record_id: str | None = None
+    for match in _RECORD_LINE_RE.finditer(text):
+        if match.group(1) is not None:
+            record_id = match.group(1).strip()
+            continue
+        name = (match.group(2) or "").strip()
+        if not name:
+            continue
+        if record_id is not None:
+            if record_id in seen:
+                record_id = None
+                continue
+            seen.add(record_id)
+            record_id = None
+        names.append(name)
+    return names
 
 
 def search_result_summary(args: dict[str, Any], result: ToolResult) -> str | None:
@@ -141,5 +166,5 @@ def search_result_summary(args: dict[str, Any], result: ToolResult) -> str | Non
         f"Retrieved {blocks} block{'s' if blocks != '1' else ''} "
         f"from {records} record{'s' if records != '1' else ''}"
     )
-    names = [name.strip() for name in _RECORD_NAME_RE.findall(text) if name.strip()]
+    names = shown_record_names(text)
     return header + "\n" + bullet_list(names) if names else header

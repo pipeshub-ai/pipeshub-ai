@@ -633,6 +633,31 @@ class GraphDBTransformer(Transformer):
             record_id, metadata, None, resolution=resolution, write_status=False,
         )
 
+    async def clear_classification(self, record_id: str) -> None:
+        """Remove what a classification with no result would: the record's department, category, language and topic
+        edges (the same reconciliation the writer runs, with nothing to keep) and its EXTRACTED organisation links.
+
+        Organisation links are deleted directly: ``link_organizations`` returns before its delete when the summary names
+        none (unknown), which would leave them. INFERRED links and ones a connector wrote are untouched. Every step is
+        idempotent, so a failed run is repeated whole.
+        """
+        await self.graph_data_store.execute_idempotent_in_transaction(
+            self._clear_classification_edges, record_id,
+        )
+        await self.graph_data_store.graph_provider.delete_record_entity_relations(
+            record_id, CollectionNames.ORGS.value, EntityOrigin.EXTRACTED.value,
+        )
+
+    async def _clear_classification_edges(self, tx_store: TransactionStore, record_id: str) -> None:
+        record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
+        for collection, label in (
+            (CollectionNames.BELONGS_TO_DEPARTMENT.value, "department"),
+            (CollectionNames.BELONGS_TO_CATEGORY.value, "category"),
+            (CollectionNames.BELONGS_TO_LANGUAGE.value, "language"),
+            (CollectionNames.BELONGS_TO_TOPIC.value, "topic"),
+        ):
+            await self._reconcile_edges(tx_store, record_id, record_from, collection, {}, label)
+
     async def _write_record_metadata(
         self,
         tx_store: TransactionStore,

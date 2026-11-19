@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.modules.indexing import replay_set
+from app.modules.indexing.extension import current as current_extension
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.connector_off import ConnectorOffResult
@@ -213,8 +214,9 @@ def replayed_delivery(
 
 def gating_connector_id(record: Mapping[str, Any]) -> str | None:
     """The connector whose state decides whether this record is indexed."""
-    connector_id = record.get("connectorId")
-    if connector_id and record.get("origin") == OriginTypes.CONNECTOR.value:
+    ownership = current_extension().ownership
+    connector_id = ownership.owner_connector_id(record)
+    if connector_id and (record.get("origin") == OriginTypes.CONNECTOR.value or ownership.is_derived(record)):
         return str(connector_id)
     return None
 

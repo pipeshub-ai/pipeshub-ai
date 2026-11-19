@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org, system
+from app.modules.indexing.extension import current as current_extension
 from app.services.messaging.config import messaging_env
 from app.services.messaging.lanes.assignment_policy import is_large_class
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
@@ -208,6 +209,9 @@ async def _reconcile_with_graph(
     released = corrected = 0
     for connector_id, entry in entries.items():
         if connector_id == DEFAULT_LANE_KEY or not entry.is_live:
+            continue
+        if not current_extension().ownership.has_lane(connector_id):
+            # An owner id that is no connector never holds a lane.
             continue
         try:
             app = apps.get(connector_id)

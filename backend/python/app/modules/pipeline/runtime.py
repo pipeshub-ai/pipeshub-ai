@@ -12,6 +12,7 @@ from app.config.constants.arangodb import ProgressStatus
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.artifacts.sidecars import ArtifactSidecars
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing.extension import current as current_extension
 from app.modules.pipeline.connector_gate import ConnectorDeletingCheck
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.duplicates import QueuedCopies
@@ -170,6 +171,10 @@ def build_pipeline_runtime(
             sidecars=sidecars,
         )
 
+    async def on_stage_settled(job: StageJob) -> None:
+        # Resolved at call time: the extension is installed once at start-up, after this runtime is built.
+        await current_extension().lifecycle.on_stage_settled(job)
+
     async def on_headline_settled(job: StageJob, record_ids: Sequence[str], status: ProgressStatus) -> None:
         stage = registry.get(job.stage) if registry.has(job.stage) else None
         if stage is not None and stage.headline is HeadlineField.EXTRACTION:
@@ -183,6 +188,7 @@ def build_pipeline_runtime(
         ingress=StageIngress(coordinator, graph, logger),
         handler=StageJobHandler(
             registry, states, headlines, coordinator, io_for, logger=logger, on_headline_settled=on_headline_settled,
+            on_stage_settled=on_stage_settled,
             pause_judge=PauseJudge(pause_store, logger=logger, limits_source=spend_limits_source(config_service)),
         ),
         publisher=publisher,

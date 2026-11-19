@@ -16,6 +16,8 @@ from uuid import uuid4
 if TYPE_CHECKING:
     from jinja2 import Template
 
+    from app.modules.retrieval.content_locator import ContentLocator
+
 from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, RecordRelations
@@ -58,6 +60,8 @@ from app.modules.qna.prompt_templates import (
     table_prompt,
 )
 from app.modules.reconciliation.service import ReconciliationMetadata
+from app.modules.retrieval.content_locator import locator_for
+from app.modules.retrieval.hit_shape import content_vrid, holder_index_of
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.code_units import RESIDUE_UNIT_KIND
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -222,8 +226,14 @@ def format_code_locator(file_path: str, qualified_name: str) -> str:
         return f"{file_path}#{qualified_name}"
     return file_path or qualified_name or ""
 
-def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> str:
-    """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
+def build_block_web_url(frontend_url: str, record_id: str, block_index: int, holder_index: int | None = None) -> str:
+    """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}
+
+    ``block_index`` is the index inside the stored record that holds the block; ``holder_index`` says which holder that is
+    when a record's content is held in several, and the locator turns the pair into the one index a URL may carry.
+    """
+    if holder_index:
+        block_index = locator_for(None).public_index(holder_index, block_index)
     base = frontend_url.rstrip("/") if frontend_url else ""
     return f"{base}/record/{record_id}/preview#blockIndex={block_index}"
 
@@ -3133,12 +3143,13 @@ def _raise_group_score(unit: dict[str, Any], score: float, hit_block_index: int 
                 child["score"] = score
 
 
-async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
+async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None, content_locator: "ContentLocator | None" = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
     """Resolve search hits into renderable units: blocks, list and section groups, tables.
 
     Neighbouring context blocks are not added here: they are added after
     ranking, around the units kept (``app/modules/retrieval/context``).
     """
+    content_locator = content_locator or locator_for(graph_provider)
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -3210,8 +3221,14 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     rows_to_be_included = defaultdict[Any, list](list)
 
     records_to_fetch = set()
+    # Content is read, cached and keyed by the stored record that holds it; the graph record, access and links are
+    # the record's own. ``holder_of`` maps the one to the other, for a record whose content is held elsewhere.
+    holder_of: dict[str, tuple[str, int | None]] = {}
     for result in sorted_new_type_results:
-        virtual_record_id = result["metadata"].get("virtualRecordId")
+        virtual_record_id = content_vrid(result["metadata"])
+        identity = result["metadata"].get("virtualRecordId")
+        if virtual_record_id and identity and virtual_record_id != identity:
+            holder_of[virtual_record_id] = (identity, holder_index_of(result))
 
         if virtual_record_id and virtual_record_id not in virtual_record_id_to_result:
             records_to_fetch.add(virtual_record_id)
@@ -3251,7 +3268,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         by_record_id = {
             key: gdb
             for vrid in records_to_fetch
-            if isinstance(gdb := (virtual_to_record_map or {}).get(vrid), dict)
+            if isinstance(gdb := (virtual_to_record_map or {}).get(holder_of.get(vrid, (vrid, None))[0]), dict)
             and (key := gdb.get("id") or gdb.get("_key"))
         }
         if by_record_id:
@@ -3263,7 +3280,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         # One unreadable blob (e.g. its storage document was deleted) must not
         # fail the whole search; treat it like a record that fetched empty.
         try:
-            await get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs)
+            identity, holder = holder_of.get(virtual_record_id, (None, None))
+            await get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs,identity_vrid=identity,holder_index=holder,content_locator=content_locator)
         except Exception as e:
             logger.warning("Skipping record %s: fetch failed: %s", virtual_record_id, e)
             virtual_record_id_to_result[virtual_record_id] = None
@@ -3273,7 +3291,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     vrids_needing_recon: set = set[Any]()
 
     for result in sorted_new_type_results:
-        vrid = result["metadata"].get("virtualRecordId")
+        vrid = content_vrid(result["metadata"])
         meta = result.get("metadata")
         located = _payload_location(meta, virtual_record_id_to_result.get(vrid))
         if (
@@ -3298,9 +3316,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         await asyncio.gather(*[_prefetch_recon(vrid) for vrid in vrids_needing_recon])
 
     for result in sorted_new_type_results:
-        virtual_record_id = result["metadata"].get("virtualRecordId")
+        virtual_record_id = content_vrid(result["metadata"])
         if not virtual_record_id:
             continue
+        # ``virtual_record_id`` of a passage is the stored record it is read from (the holder's, when there are several), the key of every content map; the record's own id is ``identity_vrid`` (see ``_mark_holders``).
         result["virtual_record_id"] = virtual_record_id
 
         meta = result.get("metadata")
@@ -3901,12 +3920,39 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
 
+    _mark_holders(flattened_results, holder_of)
     return flattened_results
+
+
+def _mark_holders(flattened: list[dict[str, Any]], holder_of: Mapping[str, tuple[str, int | None]]) -> None:
+    """Name the record and the holder on each passage read from a stored record that is not the record's own, and on
+    the children of a group.
+
+    ``virtual_record_id`` of a passage stays the stored record it was read from (the key of every content map);
+    ``identity_vrid`` is the record, and ``holder_index`` with ``block_index`` becomes the index a client sees at the
+    serialisation boundary (``hit_shape.public_hit``). Passages of records held in one stored record are untouched.
+    """
+    if not holder_of:
+        return
+
+    def mark(item: dict[str, Any]) -> None:
+        holder = holder_of.get(item.get("virtual_record_id"))
+        if holder is not None:
+            item["identity_vrid"], item["holder_index"] = holder
+
+    for item in flattened:
+        mark(item)
+        content = item.get("content")
+        if isinstance(content, tuple) and len(content) == 2 and isinstance(content[1], list):
+            for child in content[1]:
+                if isinstance(child, dict):
+                    mark(child)
 
 def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:dict[str, Any]) -> dict[str, Any]:
         try:
             record = as_blob_record(record)
-            virtual_record_id = record.get("virtual_record_id", "")
+            # Content held in another stored record is read by that record's id; the hit is about the record.
+            virtual_record_id = record.get("identity_vrid") or record.get("virtual_record_id", "")
             block_type = block.get("type") if block else BlockType.RECORD_SUMMARY.value
             citation_metadata = block.get("citation_metadata") if block else None
             if citation_metadata:
@@ -3970,7 +4016,9 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                     else:
                         block_num = [0]
                 else:
-                    block_num = [block.get("index", 0) + 1] if block else None
+                    # The number the reader sees for a block: its ordinal in the record, as the locator knows it.
+                    shown = locator_for(None).display_number(record, block.get("index", 0)) if block else None
+                    block_num = [shown] if shown is not None else None
 
             preview_renderable = meta.get("previewRenderable")
             if preview_renderable is None:
@@ -4070,11 +4118,16 @@ def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:  # noqa
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None,lookup_result: dict[str, Any] | None = None,type_docs: dict[str, dict[str, Any]] | None = None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None,lookup_result: dict[str, Any] | None = None,type_docs: dict[str, dict[str, Any]] | None = None,identity_vrid: str | None = None,holder_index: int | None = None,content_locator: "ContentLocator | None" = None) -> None:
+    """Read the stored record ``virtual_record_id`` into ``virtual_record_id_to_result[virtual_record_id]``.
+
+    When the record's content is held in another stored record, ``virtual_record_id`` is that stored record,
+    ``identity_vrid`` the record (whose graph record, name and link describe it) and ``holder_index`` the holder.
+    """
     try:
         record = await record_artifact_reader(blob_store).read_record(virtual_record_id, org_id, lookup=lookup_result)
         if record:
-            graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
+            graphDb_record = (virtual_to_record_map or {}).get(identity_vrid or virtual_record_id)
             if graphDb_record:
                 record_type = graphDb_record.get("recordType")
                 record_key = graphDb_record.get("id") or graphDb_record.get("_key")
@@ -4147,6 +4200,10 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
 
             record["frontend_url"] = frontend_url or ""
             record["virtual_record_id"] = virtual_record_id
+            if identity_vrid and identity_vrid != virtual_record_id:
+                record["identity_vrid"] = identity_vrid
+                record["holder_index"] = holder_index
+                await (content_locator or locator_for(graph_provider)).describe(record, identity_vrid, holder_index)
             virtual_record_id_to_result[virtual_record_id] = record
         else:
             virtual_record_id_to_result[virtual_record_id] = None
@@ -5014,12 +5071,13 @@ def _caption_of(block_group: Mapping[str, Any]) -> str:
 
 def _mint_refs(
     entries: list[dict[str, Any]], ref_mapper: "CitationRefMapper", frontend_url: str, record_id: str,
+    holder_index: int | None = None,
 ) -> None:
     """Give rendered group entries their block URL and citation ref, and only
     those: a ref minted for a child that is not shown cites nothing."""
     for entry in entries:
         if isinstance(entry.get("block_index"), int):
-            entry["block_web_url"] = build_block_web_url(frontend_url, record_id, entry["block_index"])
+            entry["block_web_url"] = build_block_web_url(frontend_url, record_id, entry["block_index"], holder_index)
             entry["citation_ref"] = ref_mapper.get_or_create_ref(entry["block_web_url"])
 
 
@@ -5209,6 +5267,7 @@ def record_to_message_content(
         blocks_by_index = {b.get("index", 0): b for b in blocks if isinstance(b, dict)}
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
+        rec_holder = record.get("holder_index")
         record_file_path = record.get("file_path", "") or ""
 
         record_vrid = record.get("virtual_record_id")
@@ -5288,7 +5347,7 @@ def record_to_message_content(
                 content.append({"type": "text", "text": gap_markers[block_index]})
                 pending_gap = (len(content) - 1, len(gap_markers[block_index]))
 
-            block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
+            block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index, rec_holder)
             # Minted only once the block is printed: a ref for a block that is
             # not shown cites nothing.
             ref = ref_mapper.peek_ref(block_web_url)
@@ -5450,7 +5509,7 @@ def record_to_message_content(
                             row_block = blocks_by_index.get(row_index)
                             if row_block is None:
                                 continue
-                            child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
+                            child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index, rec_holder)
                             row_children = _table_row_children(
                                 row_block, row_index, child_block_web_url, fragment_map,
                                 is_multimodal_llm=is_multimodal_llm,
@@ -5652,7 +5711,7 @@ def record_to_message_content(
                     # The first unit of a read must make progress: its text is
                     # clipped like a text block's, its pixels are not sent, and
                     # reading resumes at the child after it.
-                    _mint_refs(unfit_unit, ref_mapper, rec_frontend_url, rec_record_id)
+                    _mint_refs(unfit_unit, ref_mapper, rec_frontend_url, rec_record_id, rec_holder)
                     clipped_text = _group_text(
                         template, parent_index, label, _without_pixels(unfit_unit), record_file_path, caption,
                     )
@@ -5670,7 +5729,7 @@ def record_to_message_content(
                     render_budget.stop_at(unfit_unit[0]["block_index"] + 1)
                     break
 
-                _mint_refs(kept, ref_mapper, rec_frontend_url, rec_record_id)
+                _mint_refs(kept, ref_mapper, rec_frontend_url, rec_record_id, rec_holder)
                 if has_images:
                     printed = [{"type": "text", "text": image_header}]
                     printed.extend(_render_blocks_with_images(
@@ -5978,7 +6037,7 @@ def get_message_content(
             record = virtual_record_id_to_result.get(virtual_record_id) or {}
             frontend_url = record.get("frontend_url", "")
             record_id = record.get("id", "")
-            block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
+            block_web_url = build_block_web_url(frontend_url, record_id, block_index, record.get("holder_index")) if frontend_url and record_id else ""
             citation_ref = ref_mapper.get_or_create_ref(block_web_url) if block_web_url else ""
 
             if block_type == GroupType.TABLE.value:
@@ -6042,6 +6101,7 @@ def build_message_content_array(
     current_frontend_url = ""
     current_record_id = ""
     current_file_path = ""
+    current_holder: int | None = None
     # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
     # pending when the previous record is closed, before the next record's metadata.
     pending_record_blocks_sorted_header = True
@@ -6105,6 +6165,7 @@ def build_message_content_array(
 
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")
+            current_holder = record.get("holder_index")
             current_file_path = record.get("file_path", "") or ""
 
             template = compiled_template(qna_prompt_context)
@@ -6138,7 +6199,7 @@ def build_message_content_array(
             seen_blocks.add(result_id)
             block_type = result.get("block_type")
             block_index = result.get("block_index")
-            block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
+            block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index, current_holder)
             result["block_web_url"] = block_web_url
             ref = ref_mapper.get_or_create_ref(block_web_url)
             result["citation_ref"] = ref
@@ -6222,7 +6283,7 @@ def build_message_content_array(
                     child_results = []
                 has_row_images = any(cr.get("block_type") == BlockType.IMAGE.value for cr in child_results)
                 for child in child_results:
-                    child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
+                    child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0), current_holder)
                     child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
                 current_record_has_blocks = True
                 if not has_row_images:
@@ -6280,7 +6341,7 @@ def build_message_content_array(
                     continue
                 has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
                 for gb in group_blocks:
-                    gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("block_index", 0))
+                    gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("block_index", 0), current_holder)
                     gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
 
                 if not has_images:

@@ -1034,14 +1034,21 @@ class LaneBudget:
         """Whether this budget protects the whole domain: shared slots and a healthy ledger."""
         return not self._closed and self._slots_kind == "shared" and not self._ledger.degraded
 
-    def charge_for(self, kind: ParseKind | None, size: int, permit_covered: bool = False) -> tuple[int, int]:  # noqa: FBT001, FBT002
+    def charge_for(
+        self, kind: ParseKind | None, size: int, permit_covered: bool = False,  # noqa: FBT001, FBT002
+        charge_bytes: int | None = None,
+    ) -> tuple[int, int]:
         """``(worker charge, window charge)`` in bytes for one job of *kind*.
 
         The first is what the worker keeps charged while it lives, the second what its spawn adds to
-        the domain's in-flight window. An operator's flat figure is both, for every kind.
+        the domain's in-flight window. An operator's flat figure is both, for every kind. A job that states its own
+        ``charge_bytes`` is charged that figure for both (never below zero) unless the operator's flat figure is set.
         """
         scale = SCALES.scale(kind)
         flat = self._flat_ws
+        if flat is None and charge_bytes is not None:
+            charge = max(0, int(charge_bytes))
+            return charge, charge
         return (
             lane_charge_bytes(kind, size, permit_covered, scale=scale, flat_bytes=flat),
             window_charge_bytes(kind, size, permit_covered, scale=scale, flat_bytes=flat),

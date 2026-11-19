@@ -4,6 +4,8 @@ A retried or partially applied upsert must overwrite its own points, never
 leave duplicates beside them.
 """
 
+import json
+import random
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -70,6 +72,66 @@ class TestDeterministicPointId:
         assert deterministic_point_id({}, "t") == deterministic_point_id({}, "t")
         assert deterministic_point_id({}, "a") != deterministic_point_id({}, "b")
         assert deterministic_point_id({"orgId": "a"}, "t") != deterministic_point_id({"orgId": "b"}, "t")
+
+
+def _id_before_the_salt_existed(metadata: dict[str, object], page_content: str) -> str:
+    """``deterministic_point_id`` as origin/main has it: the ids every point already stored carries are these."""
+    namespace = uuid.uuid5(uuid.NAMESPACE_URL, "pipeshub:vector-point")
+    virtual_record_id = metadata.get("virtualRecordId")
+    block_id = metadata.get("blockId")
+    if not virtual_record_id or not block_id:
+        canonical = json.dumps(metadata, sort_keys=True, default=str, separators=(",", ":"))
+        name = f"anon|{canonical}|{page_content}"
+    else:
+        is_sub_chunk = (
+            metadata.get("isBlock") is False
+            and not metadata.get("isBlockGroup")
+            and not metadata.get("isRecordSummary")
+        )
+        name = f"{virtual_record_id}|{block_id}|{'chunk' if is_sub_chunk else 'unit'}|{page_content}"
+    return str(uuid.uuid5(namespace, name))
+
+
+class TestUnsaltedPointIdsNeverChange:
+    """A write with no salt keeps the ids it was indexed under: a changed id would orphan every stored point."""
+
+    def test_golden_vector_of_an_unsalted_point(self) -> None:
+        # Computed with origin/main's function; do not regenerate it from this build.
+        assert deterministic_point_id({"virtualRecordId": "v1", "blockId": "b1"}, "hello") == "96daa659-5f0c-549e-a6ea-a2aa3a94c604"
+
+    def test_the_reference_formula_reproduces_the_golden_vector(self) -> None:
+        assert _id_before_the_salt_existed({"virtualRecordId": "v1", "blockId": "b1"}, "hello") == "96daa659-5f0c-549e-a6ea-a2aa3a94c604"
+
+    @pytest.mark.parametrize("seed", [91731, 5, 20240])
+    def test_unsalted_ids_equal_the_ones_before_the_salt_existed(self, seed: int) -> None:
+        rnd = random.Random(seed)
+        cases: list[tuple[dict[str, object], str]] = [
+            ({}, ""), ({"virtualRecordId": "v", "blockId": None}, "x"), ({"orgId": "o", "k": [1, 2]}, "z"),
+            ({"virtualRecordId": "v", "blockId": "b", "isBlock": False}, "t"),
+            ({"virtualRecordId": "v", "blockId": "b", "isBlock": False, "isRecordSummary": True}, "t"),
+        ]
+        for _ in range(200):
+            md: dict[str, object] = {"virtualRecordId": str(uuid.UUID(int=rnd.getrandbits(128))), "blockId": str(rnd.randint(0, 9999))}
+            if rnd.random() < 0.3:
+                md["isBlock"] = rnd.random() < 0.5
+            if rnd.random() < 0.2:
+                md.pop("blockId")
+            cases.append((md, "".join(chr(rnd.randint(32, 0x2FFF)) for _ in range(rnd.randint(0, 40)))))
+        for md, text in cases:
+            expected = _id_before_the_salt_existed(dict(md), text)
+            assert deterministic_point_id(dict(md), text) == expected
+            assert deterministic_point_id(dict(md), text, "") == expected
+
+    def test_a_salted_id_differs_from_the_unsalted_one_and_across_generations(self) -> None:
+        rnd = random.Random(7)
+        for _ in range(100):
+            md: dict[str, object] = {"virtualRecordId": f"v{rnd.randint(0, 99)}", "blockId": f"b{rnd.randint(0, 99)}"}
+            text = f"t{rnd.randint(0, 999)}"
+            plain = deterministic_point_id(md, text)
+            first = deterministic_point_id(md, text, "scope|g1")
+            second = deterministic_point_id(md, text, "scope|g2")
+            other_scope = deterministic_point_id(md, text, "scope2|g1")
+            assert len({plain, first, second, other_scope}) == 4
 
 
 def _make_vectorstore() -> VectorStore:

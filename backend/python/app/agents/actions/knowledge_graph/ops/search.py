@@ -174,6 +174,11 @@ _GREP_ONLY_HINT_SHARE = 4
 _MAX_FULL_GREP_ONLY_HINTS = 10
 
 
+def distinct_records(units: list[dict[str, Any]]) -> int:
+    """How many records the units come from, however many stored records hold their passages."""
+    return len({unit.get("identity_vrid") or unit.get("virtual_record_id") for unit in units})
+
+
 def _ranked_header(blocks: int, records: int, omitted: int, *, by_relevance: bool) -> str:
     order = "most relevant record first; " if by_relevance else ""
     header = (
@@ -294,7 +299,7 @@ def _result_frame(
     if selection.ranked:
         header = _ranked_header(
             len(selection.ranked),
-            len({unit.get("virtual_record_id") for unit in selection.ranked}),
+            distinct_records(selection.ranked),
             selection.omitted_records,
             by_relevance=by_relevance,
         )

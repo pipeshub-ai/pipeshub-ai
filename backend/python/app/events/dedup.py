@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config.constants.arangodb import ProgressStatus
+from app.modules.indexing.extension import current as current_extension
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,8 @@ def will_promote_queued_copies(record: Mapping[str, Any], enrichment_live_after_
     scheduled for it, or it waits on a third copy whose completion promotes
     every QUEUED copy of the content.
     """
+    if current_extension().ownership.is_derived(record):
+        return False
     return (
         record.get("indexingStatus") == ProgressStatus.QUEUED.value
         or _is_in_progress(record, enrichment_live_after_ms)
@@ -123,6 +126,7 @@ def select_duplicate(
     resolve_collection: Callable[[Mapping[str, Any]], str | None],
     *,
     enrichment_live_after_ms: int | None = None,
+    current: Mapping[str, Any] | None = None,
 ) -> DuplicateMatch | None:
     """Pick the duplicate whose state determines this record's handling.
 
@@ -153,7 +157,12 @@ def select_duplicate(
     record waits for its final ``extractionStatus``. One whose handler started
     before ``enrichment_live_after_ms`` (epoch ms), or has no start time, is ignored.
     """
-    candidates = [d for d in duplicates if d]
+    # A derived record is never a duplicate of anything, nor does it have one: its content is a part of
+    # another record's content, which several records may share.
+    ownership = current_extension().ownership
+    if current is not None and ownership.is_derived(current):
+        return None
+    candidates = [d for d in duplicates if d and not ownership.is_derived(d)]
     if not candidates:
         return None
 

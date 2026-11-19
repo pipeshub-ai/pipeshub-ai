@@ -70,6 +70,7 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
+    keyword_required_fields,
 )
 from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
@@ -255,7 +256,8 @@ class OpenSearchService(IVectorDBService):
         blocked: set[str] = self.__dict__.setdefault("scope_blocked", set())
         if collection_name in blocked:
             return False
-        if collection_name in mapped or not set(keys) & set(SCOPE_KEYS):
+        required = keyword_required_fields()
+        if collection_name in mapped or not set(keys) & (set(SCOPE_KEYS) | required):
             return True
         await self._assert_connected()
         try:
@@ -266,7 +268,7 @@ class OpenSearchService(IVectorDBService):
         for index, body in got.items():
             props = body.get("mappings", {}).get("properties", {})
             missing = {}
-            for field, _ in SCOPE_KEYWORD_INDEXES:
+            for field in (*(f for f, _ in SCOPE_KEYWORD_INDEXES), *sorted(required)):
                 kind = (props.get(field) or {}).get("type")
                 if kind is None:
                     missing[field] = {"type": "keyword"}
@@ -288,7 +290,8 @@ class OpenSearchService(IVectorDBService):
 
     @staticmethod
     def _without_scope(payload: dict) -> dict:
-        return {k: v for k, v in payload.items() if k not in SCOPE_KEYS}
+        dropped = set(SCOPE_KEYS) | keyword_required_fields()
+        return {k: v for k, v in payload.items() if k not in dropped}
 
     # ------------------------------------------------------------------
     # Factory
@@ -596,6 +599,7 @@ class OpenSearchService(IVectorDBService):
                         "rootRecordGroupIds": {"type": "keyword"},
                         # scope fields (permission model): keyword mappings up front, so a dynamic mapping never types them as text
                         **({field: {"type": "keyword"} for field, _ in SCOPE_KEYWORD_INDEXES} if scope_fields_enabled() else {}),
+                        **{field: {"type": "keyword"} for field in keyword_required_fields()},
                         # Keep explicit keyword declarations for the two most-used
                         # filter fields so the mapping is readable without introspection.
                         "metadata": {

@@ -288,3 +288,28 @@ class TestStoreSize:
         svc.collection_registry.resolve_for_query = AsyncMock(return_value=["col-1", "col-2"])
 
         assert await svc.lexical_store_chunks("o1", "u1") is None
+
+
+class TestContentLocator:
+    @pytest.mark.asyncio
+    async def test_a_point_the_locator_does_not_keep_is_never_returned(self) -> None:
+        from tests.unit.modules.retrieval.test_retrieval_service import _Dropping
+
+        graph = _graph(get_accessible_virtual_record_ids=AsyncMock(return_value={"vr-mine": "r-mine", "vr-old": "r-old"}))
+        db = _vector_db(sparse=False, text=True, batches=[[_point("vr-mine", "p99 latency"), _point("vr-old", "p99 latency")]])
+        svc = _service(db, graph, containers_on=False)
+        svc.content_locator_factory = lambda: _Dropping("vr-old")
+
+        result = await svc.search_lexical(["p99 latency"], "u1", "o1")
+
+        assert [h.virtual_record_id for h in result.hits[0]] == ["vr-mine"]
+
+    @pytest.mark.asyncio
+    async def test_with_the_default_locator_every_admitted_point_is_returned(self) -> None:
+        graph = _graph(get_accessible_virtual_record_ids=AsyncMock(return_value={"vr-mine": "r-mine", "vr-old": "r-old"}))
+        db = _vector_db(sparse=False, text=True, batches=[[_point("vr-mine", "p99 latency"), _point("vr-old", "p99 latency")]])
+        svc = _service(db, graph, containers_on=False)
+
+        result = await svc.search_lexical(["p99 latency"], "u1", "o1")
+
+        assert sorted(h.virtual_record_id for h in result.hits[0]) == ["vr-mine", "vr-old"]

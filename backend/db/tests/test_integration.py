@@ -41,7 +41,7 @@ def edition_with(tmp_path, *module_dirs):
     return {"PIPESHUB_EDITION_FILE": str(ed), "PG_MIGRATE_SURFACE_CHECK": "skip"}      # the probe module ships no surface file
 
 
-def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT kernel.register_internal('probe.t2')", third=False):
+def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT kernel.register_internal('probe.t2')", third=False, depends="kernel_0010"):
     d = tmp_path / "probe"
     d.mkdir(exist_ok=True)
     py = textwrap.dedent('''
@@ -57,7 +57,7 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
         def downgrade():
             {down_sql}
     ''')
-    spec = [(1, None, ("probe",), "kernel_0010", "", "CREATE SCHEMA probe;\nCREATE TABLE probe.t1 (id int, note text DEFAULT 'a%b:c');\nSELECT kernel.register_internal('probe.t1');"),
+    spec = [(1, None, ("probe",), depends, "", "CREATE SCHEMA probe;\nCREATE TABLE probe.t1 (id int, note text DEFAULT 'a%b:c');\nSELECT kernel.register_internal('probe.t1');"),
             (2, "probe_0001", None, None, "", second_sql)]
     if third:
         spec.append((3, "probe_0002", None, None, "min_code_epoch = 3", "ALTER TABLE probe.t1 ADD COLUMN extra int"))
@@ -215,6 +215,20 @@ def test_failed_revision_rolls_back_cleanly(db, tmp_path):
     assert epochs(cluster, name)["probe"] == (2, 0)
     with connect(cluster, name) as c:
         assert c.execute("SELECT to_regclass('probe.t2') IS NOT NULL").fetchone()[0]
+
+
+def test_a_branch_that_depends_on_a_core_revision_migrates_and_the_expected_heads_follow(db, tmp_path):
+    cluster, name = db
+    probe = write_probe(tmp_path, depends="graph_0013")
+    core = [str(p) for p in version_locations()]
+    heads, revisions = epoch_lint.expected_heads([*core, str(probe)])
+    r = run_migrate(cluster.url(name, MIGRATE), **edition_with(tmp_path, probe))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert epochs(cluster, name) == heads
+    assert heads["probe"] == (2, 0)
+    with connect(cluster, name) as c:
+        assert {v for (v,) in c.execute("SELECT version_num FROM kernel.alembic_version")} == revisions
+    assert "graph_0013" not in revisions
 
 
 def test_contract_epochs_and_dev_downgrade(db, tmp_path):

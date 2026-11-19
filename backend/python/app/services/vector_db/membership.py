@@ -1033,6 +1033,22 @@ async def rewrite_or_delete_virtual_record(
             )
 
 
+async def require_indexed_filter(vector_db, collection_name: str, flt) -> None:  # noqa: ANN001
+    """Refuse a scoped delete when the store cannot filter on every field of the filter.
+
+    A store that drops a condition it has no index for would widen the delete to the whole virtual record: that is
+    never what a scoped delete means, so it raises instead (the points stay, the caller's attempt fails and is retried)."""
+    missing = await vector_db.unindexed_filter_fields(collection_name, flt)
+    if isinstance(missing, (list, tuple)) and missing:
+        from app.exceptions.indexing_exceptions import VectorStoreError
+
+        raise VectorStoreError(
+            f"a scoped delete cannot run on '{collection_name}': the store's index does not hold "
+            f"{', '.join(missing)}, so the filter would match more than the scope",
+            details={"collection": collection_name, "unindexed_fields": list(missing)},
+        )
+
+
 # VRIDs whose mapping row was kept for another org, so the warning comes once per process, not every sweep lap.
 _shared_row_kept: set[str] = set()
 

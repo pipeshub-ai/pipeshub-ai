@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.core.org_context import spawn_in_request
+from app.modules.indexing.extension import current as current_extension
 from app.services.featureflag.platform_settings import is_classify_on_first_use_enabled
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -39,8 +40,10 @@ _tasks: set[asyncio.Task[None]] = set()
 def unclassified(records: list[Any]) -> list[dict[str, Any]]:
     """The indexed records in ``records`` whose classification waits for first use."""
     found: list[dict[str, Any]] = []
+    ownership = current_extension().ownership
     for doc in records:
-        if not isinstance(doc, dict):
+        if not isinstance(doc, dict) or ownership.is_derived(doc):
+            # A derived record is classified with the record it was derived from, never on its own.
             continue
         if (
             doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
@@ -61,7 +64,7 @@ def first_use_event(doc: dict[str, Any], org_id: str) -> dict[str, Any]:
             "recordId": doc.get("_key") or doc.get("id"),
             "orgId": org_id,
             "virtualRecordId": doc.get("virtualRecordId"),
-            "connectorId": doc.get("connectorId"),
+            "connectorId": current_extension().ownership.owner_connector_id(doc),
             "connectorName": doc.get("connectorName"),
             "mimeType": doc.get("mimeType"),
             "stages": ["classify"],

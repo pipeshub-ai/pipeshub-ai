@@ -48,6 +48,7 @@ from app.modules.code_graph.build_state import (
     claimed_build_already_ran,
     request_is_stale,
 )
+from app.modules.indexing import extension as indexing_extension
 from app.modules.indexing import replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
@@ -67,6 +68,11 @@ from app.modules.indexing.connector_off_events import (
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.modules.indexing.embed_resume import chain_end_fields, end_attempt
+from app.modules.indexing.extension import (
+    RecordOwnerUnknown,
+    ReembedPlan,
+    notify_terminal,
+)
 from app.modules.indexing.parse_now_marker import (
     PARSE_NOW_REV,
     PARSE_NOW_STATUS,
@@ -93,6 +99,7 @@ from app.modules.indexing.rate_limit_deferral import (
 )
 from app.modules.indexing.record_diagnostics import WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
+from app.modules.indexing.taxonomy_cleanup import delete_unreached_taxonomy_points
 from app.modules.pipeline.parse_now import (
     ELIGIBLE_STATUSES as PARSE_NOW_ELIGIBLE_STATUSES,
 )
@@ -173,7 +180,6 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
     from app.modules.pipeline.leases import RecordLeases
-    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
 RECONCILE_RETRY_DELAY_SECONDS = 1.0
@@ -894,28 +900,6 @@ class RecordEventHandler(BaseEventService):
             # The rebuild loop runs the intent again; cleanup is idempotent.
             self.logger.warning("Entity cleanup intent for connector %s not cleared", connector_id)
 
-    async def _delete_unreached_taxonomy_points(
-        self, store: "EntityVectorStore", org_id: str, record_id: str, refs: object,
-    ) -> None:
-        """Delete the points of the taxonomy entities a deleted record linked to
-        (its ``taxonomyRefs``) that no other live record reaches. Raises so the
-        consumer retries, then dead-letters; every step of the delete is
-        idempotent, so a retry repeats them harmlessly."""
-        if not refs or not isinstance(refs, list):
-            return
-        graph_provider = self.event_processor.graph_provider
-        try:
-            await store.delete_unreached_entities(
-                org_id,
-                refs,
-                lambda wanted: graph_provider.get_unreached_taxonomy_entities(wanted, org_id),
-            )
-        except Exception as exc:
-            raise IndexingError(
-                f"Entity cleanup for deleted record {record_id} did not complete",
-                details={"org_id": org_id, "record_id": record_id},
-            ) from exc
-
     async def _reconcile_pending_duplicates(
         self,
         record_id: str,
@@ -1202,6 +1186,12 @@ class RecordEventHandler(BaseEventService):
         if record is None:
             self.logger.warning(f"Record {record_id} not found in database")
             return
+        ownership = indexing_extension.current().ownership
+        try:
+            await ownership.prime([record], self.event_processor.graph_provider)
+        except RecordOwnerUnknown:
+            self.logger.info(f"Not releasing the queued copies of record {record_id}: its owner is not readable now")
+            return
         indexing_status = record.get("indexingStatus")
         virtual_record_id = record.get("virtualRecordId")
         if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
@@ -1227,7 +1217,7 @@ class RecordEventHandler(BaseEventService):
                 # covers — the provider returns a count, not the ids.
                 await notify_record_indexed(
                     connector_name=record.get("connectorName"),
-                    connector_id=record.get("connectorId"),
+                    connector_id=ownership.owner_connector_id(record),
                     external_record_group_id=record.get("externalGroupId"),
                     org_id=record.get("orgId"),
                 )
@@ -1826,6 +1816,7 @@ class RecordEventHandler(BaseEventService):
         # block still raises here — and a validation error classifies TERMINAL,
         # which after the delete would acknowledge a record whose vectors are
         # already gone and never revisit it.
+        plan = await indexing_extension.current().lifecycle.reembed_plan(record) or ReembedPlan.whole()
         try:
             record_obj = convert_record_dict_to_record(record)
             record_obj.virtual_record_id = virtual_record_id
@@ -1839,7 +1830,7 @@ class RecordEventHandler(BaseEventService):
                 )
             ctx = TransformContext(
                 record=record_obj,
-                settings={"skip_blob": True},
+                settings={"skip_blob": True, **plan.settings},
                 event_type=event_type,
             )
         except Exception:
@@ -1857,16 +1848,20 @@ class RecordEventHandler(BaseEventService):
         # leave the old points in place and the upsert below would duplicate them.
         # Scoped to this record's own collection — the same VRID can be indexed
         # from another connector, and re-embedding one must not wipe the other.
-        await self.event_processor.processor.indexing_pipeline.delete_points_for_virtual_record(
-            virtual_record_id,
-            RecordContext.from_record(record_obj, record_obj.org_id),
-        )
+        if plan.delete_whole:
+            await self.event_processor.processor.indexing_pipeline.delete_points_for_virtual_record(
+                virtual_record_id,
+                RecordContext.from_record(record_obj, record_obj.org_id),
+            )
 
         try:
             await sink.index(ctx)
             # The stored extraction rebuilds the record's named entities and their
             # vector points too, so a re-embed never drops them or calls a model.
-            await sink.reproject_named_entities(ctx, content_rev=record.get("contentRev"))
+            if plan.reproject_entities:
+                await sink.reproject_named_entities(ctx, content_rev=record.get("contentRev"))
+            if plan.after is not None:
+                await plan.after()
         except Exception:
             # Past the point of no return: the old points are gone, so the only
             # way back to a searchable record is a successful re-run. _fail would
@@ -1951,9 +1946,10 @@ class RecordEventHandler(BaseEventService):
                     )
                 self.logger.info(f"Deleting embeddings for connector {connector_id}")
                 indexing_pipeline = self.event_processor.processor.indexing_pipeline
+                purge_org_id = payload.get("orgId", "")
                 result = await indexing_pipeline.purge_connector(
                     DeleteContext(
-                        org_id=payload.get("orgId", ""),
+                        org_id=purge_org_id,
                         connector_id=connector_id,
                         connector_name=payload.get("connectorName"),
                     ),
@@ -1975,6 +1971,7 @@ class RecordEventHandler(BaseEventService):
                         "Connector embedding cleanup did not complete",
                         details={"result": result},
                     )
+                await indexing_extension.current().lifecycle.on_connector_purged(purge_org_id, connector_id)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="connector_purge", count=0))
                 return
@@ -2171,8 +2168,9 @@ class RecordEventHandler(BaseEventService):
                         await entity_store.delete_entity(
                             org_id, EntityType.RECORD.value, record_id
                         )
-                        await self._delete_unreached_taxonomy_points(
-                            entity_store, org_id, record_id, payload.get("taxonomyRefs"),
+                        await delete_unreached_taxonomy_points(
+                            entity_store, self.event_processor.graph_provider, org_id, record_id,
+                            payload.get("taxonomyRefs"),
                         )
                     else:
                         self.logger.warning(
@@ -2214,6 +2212,12 @@ class RecordEventHandler(BaseEventService):
                 # with nothing to retry it.
                 raise_on_error=True,
             )
+            if record is not None:
+                try:
+                    await indexing_extension.current().ownership.prime([record], self.event_processor.graph_provider)
+                except RecordOwnerUnknown:
+                    # Nothing says whose it is now: the existing not-found path drops the event.
+                    record = None
 
             if record is None:
                 # Legitimately reachable: the record can be deleted between the
@@ -2297,6 +2301,12 @@ class RecordEventHandler(BaseEventService):
             if replayed:
                 # Acknowledged as an indexing event below, which owns the record's bookkeeping.
                 stage_redrive = False
+
+            if stage_redrive and payload.get("firstUse") and await indexing_extension.current().lifecycle.skip_first_use(record):
+                self.logger.info(f"Not classifying record {record_id} on first use: the lifecycle skips it")
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
 
             if stage_redrive:
                 stage_rev = payload.get("stageRev")
@@ -3110,6 +3120,7 @@ class RecordEventHandler(BaseEventService):
             )
             return None
         self.logger.debug(f"Updated document status for record {record_id}")
+        await notify_terminal(record, indexing_status)
         return record
 
     async def _download_from_signed_url(

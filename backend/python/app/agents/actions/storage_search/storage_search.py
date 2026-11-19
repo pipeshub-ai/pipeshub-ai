@@ -45,6 +45,7 @@ from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
+from app.modules.retrieval.content_locator import locator_for
 from app.utils.bounded_cache import SizeBoundedCache
 
 logger = logging.getLogger(__name__)
@@ -1624,6 +1625,9 @@ class StoragePatternMatch:
         # (the tool instance does not outlive it), so repeated commands and the
         # output filter do not ask again.
         self._access_by_vrid: dict[str, str | None] = {}
+        # stored-record id -> the virtual record id that access and answers are about, for records whose content
+        # the installed content locator holds in several stored records. Empty for every other record.
+        self._owner_of: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1742,6 +1746,17 @@ class StoragePatternMatch:
             if (record_id := self._access_by_vrid[vrid]) is not None
         }
 
+    async def _owners_of(self, vrids: list[str], graph_provider: Any) -> dict[str, str]:  # noqa: ANN401
+        """The record each stored record among *vrids* answers for (empty with the default locator). When that cannot be
+        read no stored record is known to belong to another: each is then checked under its own id, which no user holds,
+        so only those are denied and the rest are still served."""
+        locator = self.state.get("content_locator") or locator_for(graph_provider)
+        try:
+            return await locator.owners_of(list(dict.fromkeys(vrids)))
+        except Exception:
+            logger.warning("[storage_pattern_match] content layout unreadable; derived stored records are denied", exc_info=True)
+            return {}
+
     async def _fetch_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
         user_id = self.state.get("user_id", "")
         org_id = self.state.get("org_id", "")
@@ -1760,10 +1775,13 @@ class StoragePatternMatch:
         try:
             # The same adjudicator semantic search uses, with no container trusted
             # and the agent's knowledge scope bounding which record may be cited.
-            accessible = await graph_provider.filter_accessible_virtual_record_ids(
-                list(dict.fromkeys(vrids)), user_id, org_id,
+            owners = await self._owners_of(vrids, graph_provider)
+            self._owner_of.update(owners)
+            checked = await graph_provider.filter_accessible_virtual_record_ids(
+                list(dict.fromkeys(owners.get(v, v) for v in vrids)), user_id, org_id,
                 scope_connector_ids=self._scope_connector_ids(),
             )
+            accessible = {v: checked[owners.get(v, v)] for v in vrids if checked and owners.get(v, v) in checked}
         except Exception as exc:
             logger.warning(
                 "[storage_pattern_match] permission check failed: %s", exc,
@@ -2259,11 +2277,16 @@ class StoragePatternMatch:
                 )
 
             candidates: list[tuple[str, str, int]] = []
-            seen: set[str] = set()
-            for path, vrid, match_count in line_vrids:
-                if vrid in accessible and vrid not in seen:
-                    seen.add(vrid)
-                    candidates.append((path, vrid, match_count))
+            if self._owner_of:
+                # A record's content is held in several stored records: every readable one is ranked (grep gives
+                # each the same count), and the best-ranked of them stands for its record below.
+                candidates = [(path, vrid, match_count) for path, vrid, match_count in line_vrids if vrid in accessible]
+            else:
+                seen: set[str] = set()
+                for path, vrid, match_count in line_vrids:
+                    if vrid in accessible and vrid not in seen:
+                        seen.add(vrid)
+                        candidates.append((path, vrid, match_count))
             paths_found = len(candidates)
             try:
                 ranked = await asyncio.to_thread(
@@ -2273,6 +2296,16 @@ class StoragePatternMatch:
                 # Ranking only improves order; never lose the results over it.
                 logger.warning("[find_records] ranking failed, using grep order", exc_info=True)
                 ranked = [(path, vrid, 0, count, "") for path, vrid, count in candidates]
+            if self._owner_of:
+                answered: set[str] = set()
+                best_per_record = []
+                for item in ranked:
+                    owner = self._owner_of.get(item[1], item[1])
+                    if owner not in answered:
+                        answered.add(owner)
+                        best_per_record.append(item)
+                ranked = best_per_record
+                paths_found = len(ranked)
 
             graph_provider = self.state.get("graph_provider")
             try:
@@ -2303,7 +2336,7 @@ class StoragePatternMatch:
                 meta: dict[str, str] = {
                     "record_id": record_id,
                     "record_name": graph_rec.get("recordName") or "",
-                    "virtual_record_id": vrid,
+                    "virtual_record_id": self._owner_of.get(vrid, vrid),
                 }
                 if matched_terms:
                     meta["matched_terms"] = str(matched_terms)

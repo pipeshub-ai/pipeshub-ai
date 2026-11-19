@@ -1615,6 +1615,23 @@ class RedisVectorService(IVectorDBService):
             outside[CONNECTOR_IDS_FIELD] = stale
         return scope_query(node, outside)
 
+    async def unindexed_filter_fields(self, collection_name: str, flt: FilterExpression) -> list[str]:
+        """The fields of *flt* that the index does not hold: RediSearch cannot filter on them (read from ``FT.INFO``). An index
+        that cannot be read answers that every field is missing, so a caller that needs the filter to hold refuses."""
+        self._assert_connected()
+        idx = self._index_name(collection_name)
+        wanted = {c.key for c in (*flt.must, *flt.should, *flt.must_not)}
+        try:
+            attributes = _parse_ft_info(await self.client.execute_command("FT.INFO", idx)).get("attributes") or []  # type: ignore
+        except Exception:
+            return sorted(wanted)
+        held: set[str] = set()
+        for attribute in attributes:
+            tokens = [t.decode() if isinstance(t, bytes) else str(t) for t in attribute]
+            if "identifier" in tokens:
+                held.add(tokens[tokens.index("identifier") + 1])
+        return sorted(key for key in wanted if key.replace(".", "_") not in held)
+
     async def _case_sensitive_fields(self, idx: str) -> frozenset[str]:
         """The TAG fields of the index declared ``CASESENSITIVE`` (read from ``FT.INFO``, kept for a minute; unreadable means none)."""
         cache: dict[str, tuple[float, frozenset[str]]] = self.__dict__.setdefault("_case_fields", {})

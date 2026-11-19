@@ -103,6 +103,13 @@ class StageIO(Protocol):
     def deadline(self) -> Deadline: ...
 
 
+async def input_digest_of(job: StageJob, io: object) -> str:
+    """The digest of what a stage reads. The record's own text digest, unless the stage's IO has another
+    source for it (an ``input_digest`` coroutine), so the digest can be taken when the stage runs."""
+    digest = getattr(io, "input_digest", None)
+    return await digest(job) if digest is not None else job.text_digest
+
+
 IOT_contra = TypeVar("IOT_contra", bound=StageIO, contravariant=True)
 
 

@@ -514,7 +514,7 @@ class _RecordResolver:
 
     def _from_map(self, record_id: str) -> dict[str, Any] | None:
         for vrid, record in self._map.items():
-            if record is not None and record.get("id") == record_id:
+            if record is not None and record.get("id") == record_id and not record.get("holder_index"):
                 record["virtual_record_id"] = vrid
                 return record
         return None

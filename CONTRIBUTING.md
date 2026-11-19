@@ -255,6 +255,24 @@ Three application layers, plus stores:
 
 In Docker (`./install.sh --build`), Node serves the API and the built UI together on port **3000**.
 
+## Extension points: keep the default working
+
+A few places in the indexing, retrieval and connector code can be replaced by a package that installs its own behaviour at start-up. Each has a default that is the behaviour of an install with nothing added, so the default must keep working and stay covered by tests. Nothing registers at import time; a package installs its implementation from the container that builds the service, and tests reset every point to its default (`tests/support/extensions.py`).
+
+| Point | Where | Why it exists |
+|---|---|---|
+| Indexing extension (ownership, long-document policy, lifecycle, stage hooks) | `app/modules/indexing/extension.py` | Lets a package change whose connector a record belongs to, decide what happens to a very long document before it is parsed, react to terminal statuses and stage completion, and replace what the classify and entities stages read. The default long-document policy is the PDF page limit. |
+| Content locator | `app/modules/retrieval/content_locator.py` | Lets a package map a hit to the stored content it came from, and number and describe it for display. The default maps a record to itself. |
+| Write scope and payload-index registry | `app/services/vector_db/write_scope.py`, `app/services/vector_db/const/const.py` | Lets a package scope what a vector write replaces and register the extra payload fields a store must index. The default scope is the whole virtual record. |
+| Record views | `app/connectors/record_views.py` | Lets a package decorate the rows a list, record or stats response returns. The default returns them unchanged. |
+| Extra migrations | `EXTRA_MIGRATION_LOCATIONS` in `app/edition.py` | Lets a package add its own migration branch. |
+
+Rules when you touch code near one of these:
+
+- Call the point instead of reading the underlying field directly. The contract tests (`test_record_owner_contract`, `test_terminal_hook_contract`, `test_internal_keys_never_leave`) fail when a new raw read, a terminal status write that skips `notify_terminal`, or an internal key in a response appears.
+- Add a method to a point only with a default that behaves as before, and a test of that default.
+- Never import an installed package from shared code.
+
 ## Contribution Workflow
 
 1. **Fork the repository** to your GitHub account

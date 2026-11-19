@@ -12,7 +12,6 @@ from app.models.record_metadata import (
     MAX_LIST_ITEMS,
     MAX_STRING_BYTES,
     PIPELINE_FIELD_NAMES,
-    RESERVED_PROPERTY_NAMES,
     MetadataProvenance,
     MetadataSchema,
     MetadataValidationError,
@@ -20,6 +19,7 @@ from app.models.record_metadata import (
     PropertyDefinition,
     PropertyType,
     RecordMetadata,
+    reserved_property_names,
     searchable_lines,
     validate_values,
 )
@@ -132,7 +132,7 @@ class TestReservedNames:
         fields = [v for k, v in vars(vector_payload).items() if k.endswith("_FIELD") and isinstance(v, str)]
         assert fields
         for field in fields:
-            assert field.rsplit(".", 1)[-1] in RESERVED_PROPERTY_NAMES
+            assert field.rsplit(".", 1)[-1] in reserved_property_names()
 
     def test_derived_from_the_payload_constants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(vector_payload, "NEW_FILTER_FIELD", "metadata.addedLaterKey", raising=False)
@@ -143,8 +143,8 @@ class TestReservedNames:
         class Grown(vector_models.VectorChunkMetadata):
             addedLaterFlag: bool | None = None
 
-        assert {f.name for f in dataclasses.fields(vector_models.VectorChunkMetadata)} <= RESERVED_PROPERTY_NAMES
-        assert {f.name for f in dataclasses.fields(vector_models.VectorChunkPayload)} <= RESERVED_PROPERTY_NAMES
+        assert {f.name for f in dataclasses.fields(vector_models.VectorChunkMetadata)} <= reserved_property_names()
+        assert {f.name for f in dataclasses.fields(vector_models.VectorChunkPayload)} <= reserved_property_names()
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(rm, "VectorChunkMetadata", Grown)
             assert "addedLaterFlag" in rm._vector_payload_keys()
@@ -154,11 +154,11 @@ class TestReservedNames:
             "rec-1", "vr-1", "org-1", SemanticMetadata(summary="A summary."),
         )
         assert document is not None
-        assert set(document.metadata) <= RESERVED_PROPERTY_NAMES
+        assert set(document.metadata) <= reserved_property_names()
 
     def test_pipeline_names_are_reserved(self) -> None:
         assert {"orgId", "virtualRecordId", "blockId", "rev", "connectorIds", "recordGroupIds"} <= PIPELINE_FIELD_NAMES
-        assert PIPELINE_FIELD_NAMES <= RESERVED_PROPERTY_NAMES
+        assert PIPELINE_FIELD_NAMES <= reserved_property_names()
 
 
 class TestDefinitions:

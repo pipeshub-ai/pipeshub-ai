@@ -618,6 +618,9 @@ class BlocksContainer(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
     # PARSER_VERSION of a code parse, so a stored blob says which fact schema it holds.
     code_facts_version: Optional[str] = None
+    # Blocks of context pages stored beside ``blocks``. A reader addresses them as local index len(blocks) + j;
+    # None for every record that has none (absent reads as None).
+    trailing_context: list[Block] | None = None
 
     def extend(self, other: 'BlocksContainer') -> None:
         """Append *other*'s content, rebasing its indices onto this container.

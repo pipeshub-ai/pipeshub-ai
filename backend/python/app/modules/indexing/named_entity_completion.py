@@ -35,6 +35,7 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org, system
+from app.modules.indexing.extension import current as current_extension
 from app.modules.indexing.named_entity_persist_retry import (
     _BUSY,
     StoredContentUnreadableError,
@@ -185,6 +186,10 @@ async def _complete_one(
     if extraction.status == "FAILED" or model_failed(extraction):
         return "extract_failed"
     if extraction.status == "SKIPPED":
+        return "gone"
+    lifecycle = current_extension().lifecycle
+    if await lifecycle.on_reextract_complete(record, extraction):
+        # The lifecycle took the completed extraction over (it keeps it elsewhere): the job is done.
         return "gone"
 
     async def persist_and_keep() -> str:
