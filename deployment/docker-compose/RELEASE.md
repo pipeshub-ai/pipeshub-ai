@@ -20,8 +20,9 @@ you tag (`backend/db/README.md`, Released heads):
 cd backend && python -m db.released_heads v0.7.1   # rewrites backend/db/released_heads.json
 ```
 
-A pre-release, or a hotfix without new migrations, ships the heads the file
-already records and needs no change. Then tag the commit that holds it:
+A pre-release or a hotfix needs no change only when its migration heads are the
+ones the file already records (`python -m db.released_heads --check` exits 0); one
+that adds a migration runs the writer above first. Then tag the commit that holds it:
 
 ```bash
 git tag v0.7.1
@@ -107,8 +108,9 @@ The release is not published. `:latest` still points at the previous image, and
 users are unaffected. Diagnostics — container logs and the health payload — are
 attached to the run as artifacts.
 
-Fix forward and tag again: delete the failed tag first (`git push --delete
-origin v0.7.1`), or use the next patch version. There is nothing else to clean
+Fix forward and tag again: delete the failed tag on both sides first
+(`git push --delete origin v0.7.1 && git tag -d v0.7.1`) and tag the corrected
+commit, or use the next patch version. There is nothing else to clean
 up: candidate tags are removed on success and are harmless if left behind,
 since nothing references them.
 
