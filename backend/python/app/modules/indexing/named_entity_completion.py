@@ -33,7 +33,7 @@ import os
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.core.org_context import for_org, system
 from app.modules.indexing.named_entity_persist_retry import (
     _BUSY,
@@ -169,6 +169,9 @@ async def _complete_one(
     record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
     if not record or not is_live_record(record) or not record.get("virtualRecordId"):
         return "gone"
+    if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+        # Replacing its copy (or failed doing so): its revision is the attempt's, not the served copy's. Tried again later.
+        return _BUSY
     try:
         blob = await sink.blob_storage.get_record_from_storage(record["virtualRecordId"], org_id or record.get("orgId"))
     except StorageDocumentNotFoundError:

@@ -95,7 +95,7 @@ def _sink(blob: dict[str, Any] | None, extraction: NamedEntityExtraction) -> Mag
     return sink
 
 
-_RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
+_RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a", "indexingStatus": "COMPLETED"}
 
 
 def _context(record: Any, settings: dict[str, Any]) -> SimpleNamespace:  # noqa: ANN401
