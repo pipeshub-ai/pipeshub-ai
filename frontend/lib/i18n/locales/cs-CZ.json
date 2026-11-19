@@ -3054,8 +3054,7 @@
       },
       "enterpriseSso": {
         "title": "Jednotné přihlášení SAML a OpenID Connect",
-        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect.",
-        "contactSales": "Pro nákup napište na {{email}}"
+        "description": "Přihlašujte uživatele přes Okta, OneLogin nebo jiného poskytovatele identity SAML 2.0 či OpenID Connect."
       }
     },
     "connectors": {
