@@ -77427,7 +77427,7 @@ paths:
 
         The route is a catch-all: every `GET` under `/docs` other than `/docs/health`,
         `/docs/json` and `/docs/openapi.yaml` (for example `/docs/` or `/docs/any/sub/path`) returns this same page with
-        `200`, so there is no `404` under this prefix; `GET /docs/{subPath}` documents that part.
+        `200`, so the catch-all never answers `404`; `GET /docs/{subPath}` documents that part.
         Query parameters are ignored.
 
         No authentication is required and a supplied token is not read.
@@ -77467,7 +77467,7 @@ paths:
       description: |
         The catch-all behind `GET /docs`: every `GET` under `/docs` that is not exactly
         `/docs/health`, `/docs/json` or `/docs/openapi.yaml` returns the same HTML page as `GET /docs` with `200`,
-        so no path under this prefix answers `404`.
+        so no path the catch-all serves answers `404`.
 
         The match is not limited to one segment: `/docs/a/b/c` and `/docs/health/x` are served
         the same way. An OpenAPI path parameter cannot hold a `/`, so a single segment is
