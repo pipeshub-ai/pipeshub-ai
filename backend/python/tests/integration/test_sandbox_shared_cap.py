@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.sandbox.governor import SandboxResourceGovernor
 
 LIMIT = 6
-PER_ORG = 3
+ORG_CAP = 3
 SLOT_FILES = 8
 
 
@@ -53,7 +53,7 @@ def _governor(
     from app.services.resource_governor.shared_slots import SharedSlots
 
     if org_share is None:
-        capacity = SandboxCapacity.fixed(LIMIT, PER_ORG, slot_files=SLOT_FILES)
+        capacity = SandboxCapacity.fixed(LIMIT, ORG_CAP, slot_files=SLOT_FILES)
     else:
         from app import edition
 
@@ -167,7 +167,7 @@ def test_no_org_exceeds_its_cap_across_workers(tmp_path: Path) -> None:
     intervals = [tuple(i) for r in results for i in r["intervals"]]
     assert len(intervals) == 40
     for org in ("a", "b"):
-        assert _most_at_once([i for i in intervals if i[2] == org]) <= PER_ORG
+        assert _most_at_once([i for i in intervals if i[2] == org]) <= ORG_CAP
     for r in results:
         assert len(r["outcomes"]) == r["acquires"]
 
@@ -187,7 +187,7 @@ def test_a_killed_workers_slots_free_themselves(tmp_path: Path) -> None:
 
     ctx = multiprocessing.get_context("spawn")
     ready = ctx.Queue()
-    holder = ctx.Process(target=_holder, args=(str(tmp_path / "slots"), PER_ORG, ready))
+    holder = ctx.Process(target=_holder, args=(str(tmp_path / "slots"), ORG_CAP, ready))
     holder.start()
     governor = _governor(str(tmp_path / "slots"))
     try:
@@ -196,13 +196,13 @@ def test_a_killed_workers_slots_free_themselves(tmp_path: Path) -> None:
         async def take(n: int, wait_s: float) -> list[Any]:
             return [await governor.acquire(wait_s=wait_s) for _ in range(n)]
 
-        mine = asyncio.run(take(LIMIT - PER_ORG, 0))
+        mine = asyncio.run(take(LIMIT - ORG_CAP, 0))
         with pytest.raises(SandboxLimitExceeded):
             asyncio.run(take(1, 0))
         os.kill(holder.pid, signal.SIGKILL)
         holder.join(10)
         started = time.monotonic()
-        more = asyncio.run(take(PER_ORG, 1.0))
+        more = asyncio.run(take(ORG_CAP, 1.0))
         assert time.monotonic() - started < 1.0
         assert len(mine) + len(more) == LIMIT
     finally:

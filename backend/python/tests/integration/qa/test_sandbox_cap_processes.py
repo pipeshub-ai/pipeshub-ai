@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.sandbox.governor import SandboxResourceGovernor
 
 LIMIT = 6
-PER_ORG = 4
+ORG_CAP = 4
 SLOT_FILES = 16
 _CTX = multiprocessing.get_context("spawn")
 
@@ -55,7 +55,7 @@ def _governor(directory: str, observers: tuple[Any, ...] = ()) -> SandboxResourc
     from app.agent_loop_lib.sandbox.governor import SandboxResourceGovernor
     from app.services.resource_governor.shared_slots import SharedSlots
 
-    capacity = SandboxCapacity.fixed(LIMIT, PER_ORG, slot_files=SLOT_FILES)
+    capacity = SandboxCapacity.fixed(LIMIT, ORG_CAP, slot_files=SLOT_FILES)
     return SandboxResourceGovernor(
         capacity, SharedSlots(Path(directory), SLOT_FILES),
         limit_provider=FixedLimit(capacity), observers=observers, poll_s=0.05,
@@ -197,7 +197,7 @@ def test_eight_workers_with_cancels_and_timeouts_never_exceed_or_leak(tmp_path: 
     assert intervals
     assert _most_at_once(intervals) <= LIMIT
     for org in ("a", "b", "c"):
-        assert _most_at_once([i for i in intervals if i[2] == org]) <= PER_ORG
+        assert _most_at_once([i for i in intervals if i[2] == org]) <= ORG_CAP
     for r in results:
         assert len(r["outcomes"]) == 40
         assert sum(r["ends"].values()) == 40
