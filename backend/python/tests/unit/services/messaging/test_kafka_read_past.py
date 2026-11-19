@@ -234,9 +234,9 @@ class TestTheWatermark:
         release = asyncio.Event()
         real_fetch = remembered_module.OffsetFetcher.fetch
 
-        async def held_fetch(self, wanted):  # noqa: ANN202
+        async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
             await release.wait()
-            return await real_fetch(self, wanted)
+            return await real_fetch(self, wanted, **kwargs)
 
         handler = Handler()
         with patch.object(remembered_module.OffsetFetcher, "fetch", held_fetch):
@@ -265,10 +265,10 @@ class TestRebalanceRetentionAndRestart:
         fetched: list[dict] = []
         real_fetch = remembered_module.OffsetFetcher.fetch
 
-        async def held_fetch(self, wanted):  # noqa: ANN202
+        async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
             fetched.append(wanted)
             await release.wait()
-            return await real_fetch(self, wanted)
+            return await real_fetch(self, wanted, **kwargs)
 
         handler = Handler()
         with patch.object(remembered_module.OffsetFetcher, "fetch", held_fetch):
@@ -301,9 +301,9 @@ class TestRebalanceRetentionAndRestart:
         release = asyncio.Event()
         real_fetch = remembered_module.OffsetFetcher.fetch
 
-        async def held_fetch(self, wanted):  # noqa: ANN202
+        async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
             await release.wait()
-            return await real_fetch(self, wanted)
+            return await real_fetch(self, wanted, **kwargs)
 
         handler = Handler(slow="conn-b", delay=1.0)
         with patch.object(remembered_module.OffsetFetcher, "fetch", held_fetch):
@@ -328,9 +328,9 @@ class TestRebalanceRetentionAndRestart:
         release = asyncio.Event()
         real_fetch = remembered_module.OffsetFetcher.fetch
 
-        async def held_fetch(self, wanted):  # noqa: ANN202
+        async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
             await release.wait()
-            return await real_fetch(self, wanted)
+            return await real_fetch(self, wanted, **kwargs)
 
         handler = Handler()
         with caplog.at_level(logging.WARNING), \
@@ -350,9 +350,9 @@ class TestRebalanceRetentionAndRestart:
         release = asyncio.Event()
         real_fetch = remembered_module.OffsetFetcher.fetch
 
-        async def held_fetch(self, wanted):  # noqa: ANN202
+        async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
             await release.wait()
-            return await real_fetch(self, wanted)
+            return await real_fetch(self, wanted, **kwargs)
 
         first = Handler()
         with patch.object(remembered_module.OffsetFetcher, "fetch", held_fetch):
@@ -464,9 +464,9 @@ class TestFetchBackFailures:
         release = asyncio.Event()
         real_fetch = remembered_module.OffsetFetcher.fetch
 
-        async def held_fetch(self, wanted):  # noqa: ANN202
+        async def held_fetch(self, wanted, **kwargs):  # noqa: ANN202
             await release.wait()
-            return await real_fetch(self, wanted)
+            return await real_fetch(self, wanted, **kwargs)
 
         handler = Handler()
         with patch.object(remembered_module.OffsetFetcher, "fetch", held_fetch):
