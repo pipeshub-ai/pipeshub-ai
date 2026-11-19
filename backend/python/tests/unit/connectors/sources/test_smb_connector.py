@@ -914,7 +914,7 @@ class TestSmbConnectorStreamAndFilters:
         ],
     )
     async def test_a_file_that_fails_to_open_answers_with_its_own_status(
-        self, smb_connector, failure, status
+        self, smb_connector, failure, status, caplog
     ):
         path = "no-access/secret.txt"
         smb_connector.data_source = FakeNetworkShareDataSource(
@@ -922,12 +922,16 @@ class TestSmbConnectorStreamAndFilters:
             files={(SHARE, path): failure},
         )
         record = _file_record(ext_id=f"{SHARE}/{path}", revision="r")
-        with pytest.raises(HTTPException) as exc:
+        with caplog.at_level(logging.WARNING), pytest.raises(HTTPException) as exc:
             await smb_connector.stream_record(record)
         assert exc.value.status_code == status
         if status == 403:
             # The indexer stores a refusal as the reason and does not retry it.
             assert exc.value.headers.get(SOURCE_REFUSAL_HEADER) == "1"
+        # The server's reason is logged once, as an expected refusal: no traceback.
+        logged = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [(r.levelno, r.exc_info) for r in logged] == [(logging.WARNING, None)]
+        assert str(failure) in logged[0].getMessage()
 
     async def test_any_other_open_failure_is_a_logged_500(self, smb_connector, caplog):
         smb_connector.data_source = FakeNetworkShareDataSource(

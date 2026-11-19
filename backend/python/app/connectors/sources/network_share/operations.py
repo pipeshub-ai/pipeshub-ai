@@ -389,12 +389,14 @@ async def stream_file(
         )
     except HTTPException:
         raise
-    except NetworkShareAuthError as exc:
-        # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
-        raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
-    except AccessDeniedError as exc:
-        raise map_source_status(HttpStatusCode.FORBIDDEN.value, connector=display_name) from exc
-    except FileNotFoundError as exc:
+    except (NetworkShareAuthError, AccessDeniedError, FileNotFoundError) as exc:
+        # An expected refusal: the server's own reason, without a traceback.
+        logger.warning("Streaming record %s from %s was refused: %s", record.id, display_name, exc)
+        if isinstance(exc, NetworkShareAuthError):
+            # The source's 401: a reconnect message, never a 401 of our own, which signs the user out.
+            raise map_source_status(HttpStatusCode.UNAUTHORIZED.value, connector=display_name) from exc
+        if isinstance(exc, AccessDeniedError):
+            raise map_source_status(HttpStatusCode.FORBIDDEN.value, connector=display_name) from exc
         raise not_found_at_source(display_name) from exc
     except Exception as exc:
         # The router logs only failures that reach it unmapped, and an open failure no longer does.
