@@ -72,7 +72,7 @@ export function EnterprisePlaceholderPage({ title, subtitle, heading, message, c
         )}
       </Flex>
 
-      <EnterpriseGlimpse glimpse={glimpse} height={isMobile ? 200 : 260} />
+      <EnterpriseGlimpse glimpse={glimpse} height={isMobile ? 220 : 300} />
 
       {/* Starts inside the glimpse's fade, so the page reads as running out into the message. */}
       <Flex
@@ -114,7 +114,7 @@ export function EnterprisePlaceholderPage({ title, subtitle, heading, message, c
           <a href={ENTERPRISE_CONTACT_URL} target="_blank" rel="noreferrer">
             {/* The icon is a text ligature; hide it so the link is named by its label alone. */}
             <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-              <MaterialIcon name="calendar_month" size={16} color="currentColor" />
+              <MaterialIcon name="headset_mic" size={16} color="currentColor" />
             </span>
             {contactLabel}
           </a>

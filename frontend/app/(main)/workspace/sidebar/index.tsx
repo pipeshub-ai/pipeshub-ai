@@ -25,7 +25,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-import { ENTERPRISE_FEATURES } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
+import { ENTERPRISE_FEATURES, type EnterpriseSection } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -93,8 +93,6 @@ const PERSONAL_ITEMS: NavItem[] = [
 ];
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
-
-const ENTERPRISE_SECTIONS = ['security', 'usageAndCredits'] as const;
 
 /** Marks an Enterprise Edition page. Hidden from the link's name, so it still reads "Groups". */
 const ENTERPRISE_LOCK = (
@@ -171,6 +169,22 @@ export default function WorkspaceSidebar() {
   const visiblePeopleItems = PEOPLE_SUB_ITEMS;
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
+  /** The Enterprise Edition pages listed in one part of the sidebar, each locked. */
+  const renderEnterpriseItems = (section: EnterpriseSection) =>
+    showEnterprise &&
+    Object.values(ENTERPRISE_FEATURES)
+      .filter((item) => item.section === section)
+      .map((item) => (
+        <WorkspaceSidebarItem
+          key={item.route}
+          icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+          label={t(item.labelKey)}
+          href={`${item.route}/`}
+          isActive={isActive(item.route)}
+          rightSlot={ENTERPRISE_LOCK}
+        />
+      ));
+
   return (
     <SidebarBase
       header={isMobile ? <WorkspaceSidebarMobileHeader title={t('workspace.sidebar.sections.workspace')} /> : undefined}
@@ -236,6 +250,7 @@ export default function WorkspaceSidebar() {
               rightSlot={ENTERPRISE_LOCK}
             />
           )}
+          {renderEnterpriseItems('overview')}
         </Flex>
 
         {/* ── Workspace section ── */}
@@ -254,25 +269,19 @@ export default function WorkspaceSidebar() {
           </Flex>
         )}
 
-        {/* ── Security, then Usage & credits: Enterprise Edition pages, shown locked ── */}
-        {showEnterprise &&
-          ENTERPRISE_SECTIONS.map((section) => (
-            <Flex key={section} direction="column" gap="1">
-              <SectionHeader title={t(`workspace.sidebar.sections.${section}`)} />
-              {Object.values(ENTERPRISE_FEATURES)
-                .filter((item) => item.section === section)
-                .map((item) => (
-                  <WorkspaceSidebarItem
-                    key={item.route}
-                    icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-                    label={t(item.labelKey)}
-                    href={`${item.route}/`}
-                    isActive={isActive(item.route)}
-                    rightSlot={ENTERPRISE_LOCK}
-                  />
-                ))}
-            </Flex>
-          ))}
+        {/* ── Usage & credits, then Security: Enterprise Edition pages, shown locked ── */}
+        {showEnterprise && (
+          <Flex direction="column" gap="1">
+            <SectionHeader title={t('workspace.sidebar.sections.usageAndCredits')} />
+            {renderEnterpriseItems('usageAndCredits')}
+          </Flex>
+        )}
+        {showEnterprise && (
+          <Flex direction="column" gap="1">
+            <SectionHeader title={t('workspace.sidebar.sections.security')} />
+            {renderEnterpriseItems('security')}
+          </Flex>
+        )}
 
         <Flex direction="column" gap="1">
           <SectionHeader title={t('workspace.sidebar.sections.developerSettings')} />

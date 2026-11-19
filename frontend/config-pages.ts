@@ -11,9 +11,6 @@ export {
   ScimPlaceholderPage,
   AuditLogsPlaceholderPage,
   UsagePlaceholderPage,
-  CreditsPlaceholderPage,
-  BillingPlaceholderPage,
-  CreditSettingsPlaceholderPage,
 } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
 export { default as ConnectorsTeamPage } from '@/app/(main)/workspace/connectors/team/connectorsTeamPage';
 export { default as ConnectorsPersonalPage } from '@/app/(main)/workspace/connectors/personal/connectorsPersonalPage';

@@ -5,19 +5,25 @@ import type { Glimpse } from './enterprise-glimpse';
  * the shape of the real pages (columns, states, numbers) so the glimpse is recognisable.
  */
 export const ENTERPRISE_GLIMPSES = {
+  // Shaped like the Enterprise Edition groups list: search and Create group above Name,
+  // Description, Users and Teams, with grey tags only.
   groups: {
+    toolbar: { search: 'Search groups or users', button: 'Create group', icon: 'group_add' },
     table: {
-      columns: ['Group', 'Members', 'Can create', 'Synced from'],
+      columns: ['Name', 'Description', 'Users', 'Teams'],
+      widths: ['1.2fr', '1.6fr', '1.1fr', '0.9fr'],
       rows: [
-        ['Engineering', '112', { pill: 'Agents, connectors', color: 'jade' }, 'Okta'],
-        ['Finance', '24', { pill: 'Collections', color: 'blue' }, 'Okta'],
-        ['Legal', '9', { pill: 'Collections', color: 'blue' }, 'Entra ID'],
-        ['Support', '38', { pill: 'Agents', color: 'violet' }, 'Okta'],
-        ['Everyone', '310', { pill: 'Nothing', color: 'gray' }, 'Workspace'],
+        [{ person: 'Admin' }, { muted: 'Manages settings, connectors and agents' }, { tags: ['Priya Sharma', '+4'] }, { tags: ['Platform'] }],
+        [{ person: 'Everyone' }, { muted: 'Every member of the workspace' }, { tags: ['Marco Rossi', '+309'] }, { muted: '—' }],
+        [{ person: 'Engineering' }, { muted: 'Creates agents and connectors' }, { tags: ['Aiko Tanaka', '+111'] }, { tags: ['Backend', 'Frontend', '+3'] }],
+        [{ person: 'Finance' }, { muted: 'Creates and shares collections' }, { tags: ['Daniel Okafor', '+23'] }, { tags: ['FP&A'] }],
+        [{ person: 'Support' }, { muted: 'Uses the support agents' }, { tags: ['Sofia García', '+37'] }, { tags: ['Tier 1', 'Tier 2'] }],
       ],
     },
   },
+  // One page for usage, credits, billing and credit settings; the tabs show the four.
   usage: {
+    tabs: { items: ['Usage', 'Credits', 'Billing', 'Credit settings'], buttons: ['This month', 'Export'] },
     stats: [
       { label: 'AI cost this month', value: '$1,284.20', delta: '12% less than last month' },
       { label: 'Questions answered', value: '18,402' },
@@ -33,45 +39,6 @@ export const ENTERPRISE_GLIMPSES = {
       ],
     },
   },
-  credits: {
-    stats: [
-      { label: 'Credits left', value: '42,500' },
-      { label: 'Used this month', value: '18,240' },
-      { label: 'People with credits', value: '310' },
-    ],
-    table: {
-      columns: ['Person', 'Used', 'Limit', 'Left'],
-      rows: [
-        [{ person: 'Daniel Okafor' }, '1,820', '2,000', { pill: '9%', color: 'amber' }],
-        [{ person: 'Sofia García' }, '940', '2,000', { pill: '53%', color: 'jade' }],
-        [{ person: 'Liam Chen' }, '610', '1,000', { pill: '39%', color: 'jade' }],
-        [{ person: 'Priya Sharma' }, '1,240', '2,000', { pill: '38%', color: 'jade' }],
-      ],
-    },
-  },
-  billing: {
-    stats: [
-      { label: 'Plan', value: 'Enterprise' },
-      { label: 'Seats', value: '320 of 350' },
-      { label: 'Next invoice', value: '$4,800.00' },
-    ],
-    table: {
-      columns: ['Invoice', 'Date', 'Amount', 'Status'],
-      rows: [
-        ['INV-2026-011', '2026-11-01', '$4,800.00', { pill: 'Paid', color: 'jade' }],
-        ['INV-2026-010', '2026-10-01', '$4,650.00', { pill: 'Paid', color: 'jade' }],
-        ['INV-2026-009', '2026-09-01', '$4,650.00', { pill: 'Paid', color: 'jade' }],
-      ],
-    },
-  },
-  creditSettings: {
-    settings: [
-      { label: 'Alert admins at 80% of the monthly budget', on: true },
-      { label: 'Alert a person at 90% of their credits', on: true },
-      { label: 'Pause AI answers when credits run out', on: false },
-      { label: 'Email a weekly usage summary', on: true },
-    ],
-  },
   scim: {
     field: { label: 'SCIM address', value: 'https://pipeshub.acme.io/api/v1/scim/v2' },
     table: {
@@ -82,15 +49,58 @@ export const ENTERPRISE_GLIMPSES = {
       ],
     },
   },
+  // Shaped like the Enterprise Edition audit logs screen: Events tab, filter bar, then one row
+  // per event with its action key, the actor's email and an outcome badge.
   auditLogs: {
+    tabs: { items: ['Events', 'Charts', 'Alerts', 'Settings'], buttons: ['Acme Corp', 'Saved searches', 'Export'] },
+    filters: {
+      chips: ['Last 24 hours', 'Actions', 'Actor', 'Entity type', 'Outcome'],
+      fields: ['Entity ID', 'IP address', 'Request ID'],
+    },
     table: {
-      columns: ['Who', 'Action', 'Target', 'When', 'IP address'],
+      columns: ['Time', 'Action', 'Actor', 'Entity', 'Outcome', 'IP address'],
+      widths: ['1.3fr', '1.4fr', '1.3fr', '1.1fr', '0.7fr', '0.8fr'],
       rows: [
-        [{ person: 'Priya Sharma' }, { pill: 'Connector added', color: 'jade' }, 'Google Drive', '2026-11-18 14:32', '10.4.2.17'],
-        [{ person: 'Marco Rossi' }, { pill: 'Role changed', color: 'blue' }, 'Aiko Tanaka', '2026-11-18 11:05', '10.4.2.31'],
-        [{ person: 'Aiko Tanaka' }, { pill: 'Agent shared', color: 'violet' }, 'Legal review', '2026-11-17 17:48', '10.4.3.8'],
-        [{ person: 'Daniel Okafor' }, { pill: 'Record deleted', color: 'red' }, 'Q3 forecast.xlsx', '2026-11-17 09:12', '10.4.2.17'],
-        [{ person: 'Sofia García' }, { pill: 'Signed in', color: 'gray' }, 'SAML', '2026-11-16 08:57', '10.4.5.2'],
+        [
+          'Nov 18, 2026, 02:32:07 PM',
+          { primary: 'Connector created', secondary: 'connector_created' },
+          { primary: 'Priya Sharma', secondary: 'priya@acme.io' },
+          { primary: 'Google Drive', secondary: 'connector' },
+          { pill: 'Success', color: 'jade' },
+          '10.4.2.17',
+        ],
+        [
+          'Nov 18, 2026, 11:05:44 AM',
+          { primary: 'User role changed', secondary: 'user_role_changed' },
+          { primary: 'Marco Rossi', secondary: 'marco@acme.io' },
+          { primary: 'Aiko Tanaka', secondary: 'user' },
+          { pill: 'Success', color: 'jade' },
+          '10.4.2.31',
+        ],
+        [
+          'Nov 17, 2026, 05:48:12 PM',
+          { primary: 'Permission denied', secondary: 'permission_denied' },
+          { primary: 'Liam Chen', secondary: 'liam@acme.io' },
+          { primary: 'Billing settings', secondary: 'org' },
+          { pill: 'Denied', color: 'amber' },
+          '10.4.3.8',
+        ],
+        [
+          'Nov 17, 2026, 09:12:55 AM',
+          { primary: 'Agent tool called', secondary: 'agent_tool_called' },
+          { primary: 'Daniel Okafor', secondary: 'daniel@acme.io' },
+          { primary: 'Legal review', secondary: 'agent' },
+          { pill: 'Success', color: 'jade' },
+          '10.4.2.17',
+        ],
+        [
+          'Nov 16, 2026, 08:57:30 AM',
+          { primary: 'User login failed', secondary: 'user_login_failed' },
+          { primary: 'Sofia García', secondary: 'sofia@acme.io' },
+          { primary: 'SAML', secondary: 'auth' },
+          { pill: 'Failure', color: 'red' },
+          '10.4.5.2',
+        ],
       ],
     },
   },

@@ -37,7 +37,7 @@ function renderPage(glimpse: React.ComponentProps<typeof EnterprisePlaceholderPa
         title="Usage"
         heading="AI usage and cost are available in the Enterprise Edition"
         message="See what AI costs your organization."
-        contactLabel="Contact us"
+        contactLabel="Talk to Sales"
         glimpse={glimpse}
       />
     </Theme>,
@@ -53,10 +53,11 @@ describe('EnterprisePlaceholderPage', () => {
     expect(screen.getByText('See what AI costs your organization.')).toBeTruthy();
 
     // The icon's ligature text stays out of the link's name.
-    const contact = screen.getByRole('link', { name: 'Contact us' });
+    const contact = screen.getByRole('link', { name: 'Talk to Sales' });
     expect(contact.getAttribute('href')).toBe('https://calendly.com/rishabh-pipeshub/30min');
     expect(contact.getAttribute('target')).toBe('_blank');
     expect(contact.className).toContain('rt-Button');
+    expect(contact.querySelector('[aria-hidden="true"]')?.textContent).toBe('headset_mic');
     expect(screen.getAllByRole('link')).toHaveLength(1);
     expect(replace).not.toHaveBeenCalled();
   });

@@ -17,7 +17,7 @@ export default function GroupsEnterprisePlaceholder() {
       subtitle={t('workspace.groups.subtitle')}
       heading={t('workspace.groups.enterpriseTitle', 'Group permissions are available in the Enterprise Edition')}
       message={t('workspace.groups.enterpriseMessage', 'Upgrade to the Enterprise Edition to use group permissions.')}
-      contactLabel={t('workspace.groups.enterpriseContact')}
+      contactLabel={t('workspace.enterprise.contact')}
       glimpse={ENTERPRISE_GLIMPSES.groups}
     />
   );

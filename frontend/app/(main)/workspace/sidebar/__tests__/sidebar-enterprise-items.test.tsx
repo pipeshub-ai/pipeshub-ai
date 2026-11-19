@@ -52,15 +52,18 @@ vi.mock('react-i18next', async (importOriginal) => ({
 import WorkspaceSidebar from '../index';
 
 const NAV = en.workspace.sidebar.nav;
+const SECTIONS = en.workspace.sidebar.sections;
 const LOCKED = [
   { label: NAV.groups, href: '/workspace/groups' },
   { label: NAV.scim, href: '/workspace/enterprise/scim' },
-  { label: NAV.auditLogs, href: '/workspace/enterprise/audit-logs' },
   { label: NAV.usage, href: '/workspace/enterprise/usage' },
-  { label: NAV.credits, href: '/workspace/enterprise/credits' },
-  { label: NAV.billing, href: '/workspace/enterprise/billing' },
-  { label: NAV.creditSettings, href: '/workspace/enterprise/credit-settings' },
+  { label: NAV.auditLogs, href: '/workspace/enterprise/audit-logs' },
 ];
+
+// A link's name may start with its icon's ligature text ("history Audit logs").
+const linkTo = (label: string) => screen.getByRole('link', { name: new RegExp(`^(\\S+ )?${label}$`) });
+/** True when `a` comes before `b` in the sidebar. */
+const before = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
 afterEach(() => {
   cleanup();
@@ -77,25 +80,40 @@ function renderSidebar() {
 }
 
 describe('WorkspaceSidebar — Enterprise Edition pages', () => {
-  it('shows an admin Groups, the Security pages and the Usage & credits pages, each with a lock', () => {
+  it('shows an admin each Enterprise page with a lock', () => {
     renderSidebar();
 
-    expect(screen.getByText(en.workspace.sidebar.sections.security)).toBeTruthy();
-    expect(screen.getByText(en.workspace.sidebar.sections.usageAndCredits)).toBeTruthy();
     for (const { label, href } of LOCKED) {
       // The lock is hidden from the link's name, so the link still reads as just its label.
-      const link = screen.getByRole('link', { name: new RegExp(`^(\\S+ )?${label}$`) });
+      const link = linkTo(label);
       expect(link.getAttribute('href')).toBe(href);
       expect(link.querySelector('[aria-hidden="true"]')?.textContent).toBe('lock');
     }
+  });
+
+  it('lists SCIM under Groups, then the Usage & credits section after Workspace, then Audit logs under Security', () => {
+    renderSidebar();
+
+    const workspace = screen.getByText(SECTIONS.workspace);
+    // The section and its one item share a name; the header is the one outside a link.
+    const usageSection = screen.getAllByText(SECTIONS.usageAndCredits).find((el) => !el.closest('a'));
+    const security = screen.getByText(SECTIONS.security);
+    const developer = screen.getByText(SECTIONS.developerSettings);
+    expect(usageSection).toBeTruthy();
+    expect(before(linkTo(NAV.groups), linkTo(NAV.scim)) && before(linkTo(NAV.scim), workspace)).toBe(true);
+    expect(before(linkTo(NAV.webSearch), usageSection!) && before(usageSection!, linkTo(NAV.usage))).toBe(true);
+    expect(before(linkTo(NAV.usage), security) && before(security, linkTo(NAV.auditLogs))).toBe(true);
+    expect(before(linkTo(NAV.auditLogs), developer)).toBe(true);
+    // One item for usage, credits, billing and credit settings.
+    expect(screen.queryByText('Credits')).toBeNull();
+    expect(screen.queryByText('Billing')).toBeNull();
   });
 
   it('hides them from people who are not admins', () => {
     userState = { profile: { isAdmin: false } };
     renderSidebar();
 
-    expect(screen.queryByText(en.workspace.sidebar.sections.security)).toBeNull();
-    expect(screen.queryByText(en.workspace.sidebar.sections.usageAndCredits)).toBeNull();
+    expect(screen.queryByText(SECTIONS.security)).toBeNull();
     for (const { label } of LOCKED) expect(screen.queryByText(label)).toBeNull();
   });
 
@@ -103,8 +121,6 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
     flagsState = { flags: { ENABLE_MCP: false, ENABLE_ACTIONS: false, ENABLE_SKILLS: false } };
     renderSidebar();
 
-    for (const { label } of LOCKED) {
-      expect(screen.getByRole('link', { name: new RegExp(`^(\\S+ )?${label}$`) })).toBeTruthy();
-    }
+    for (const { label } of LOCKED) expect(linkTo(label)).toBeTruthy();
   });
 });

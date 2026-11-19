@@ -6,17 +6,26 @@ import { ENTERPRISE_GLIMPSES } from '@/app/(main)/workspace/components/enterpris
 
 /**
  * Settings pages only the Enterprise Edition has. They live under /workspace/enterprise/ because
- * the Enterprise Edition owns /workspace/usage, /workspace/credits and the rest. `section` is the
- * sidebar section each one is listed in, locked.
+ * the Enterprise Edition owns /workspace/usage and the rest. `section` is where the sidebar lists
+ * each one, locked: right under Groups, or in the Usage & credits or Security section.
  */
 export const ENTERPRISE_FEATURES = {
   scim: {
-    section: 'security',
+    section: 'overview',
     icon: 'sync_alt',
     route: '/workspace/enterprise/scim',
     labelKey: 'workspace.sidebar.nav.scim',
     headingKey: 'workspace.enterprise.scim.heading',
     messageKey: 'workspace.enterprise.scim.message',
+  },
+  // One page for the Enterprise usage, credits, billing and credit settings pages.
+  usage: {
+    section: 'usageAndCredits',
+    icon: 'paid',
+    route: '/workspace/enterprise/usage',
+    labelKey: 'workspace.sidebar.nav.usage',
+    headingKey: 'workspace.enterprise.usage.heading',
+    messageKey: 'workspace.enterprise.usage.message',
   },
   auditLogs: {
     section: 'security',
@@ -26,41 +35,10 @@ export const ENTERPRISE_FEATURES = {
     headingKey: 'workspace.enterprise.auditLogs.heading',
     messageKey: 'workspace.enterprise.auditLogs.message',
   },
-  usage: {
-    section: 'usageAndCredits',
-    icon: 'paid',
-    route: '/workspace/enterprise/usage',
-    labelKey: 'workspace.sidebar.nav.usage',
-    headingKey: 'workspace.enterprise.usage.heading',
-    messageKey: 'workspace.enterprise.usage.message',
-  },
-  credits: {
-    section: 'usageAndCredits',
-    icon: 'savings',
-    route: '/workspace/enterprise/credits',
-    labelKey: 'workspace.sidebar.nav.credits',
-    headingKey: 'workspace.enterprise.credits.heading',
-    messageKey: 'workspace.enterprise.credits.message',
-  },
-  billing: {
-    section: 'usageAndCredits',
-    icon: 'credit_card',
-    route: '/workspace/enterprise/billing',
-    labelKey: 'workspace.sidebar.nav.billing',
-    headingKey: 'workspace.enterprise.billing.heading',
-    messageKey: 'workspace.enterprise.billing.message',
-  },
-  creditSettings: {
-    section: 'usageAndCredits',
-    icon: 'tune',
-    route: '/workspace/enterprise/credit-settings',
-    labelKey: 'workspace.sidebar.nav.creditSettings',
-    headingKey: 'workspace.enterprise.creditSettings.heading',
-    messageKey: 'workspace.enterprise.creditSettings.message',
-  },
 } as const;
 
 export type EnterpriseFeature = keyof typeof ENTERPRISE_FEATURES;
+export type EnterpriseSection = (typeof ENTERPRISE_FEATURES)[EnterpriseFeature]['section'];
 
 function EnterpriseFeaturePage({ feature }: { feature: EnterpriseFeature }) {
   const { t } = useTranslation();
@@ -81,22 +59,10 @@ export function ScimPlaceholderPage() {
   return <EnterpriseFeaturePage feature="scim" />;
 }
 
-export function AuditLogsPlaceholderPage() {
-  return <EnterpriseFeaturePage feature="auditLogs" />;
-}
-
 export function UsagePlaceholderPage() {
   return <EnterpriseFeaturePage feature="usage" />;
 }
 
-export function CreditsPlaceholderPage() {
-  return <EnterpriseFeaturePage feature="credits" />;
-}
-
-export function BillingPlaceholderPage() {
-  return <EnterpriseFeaturePage feature="billing" />;
-}
-
-export function CreditSettingsPlaceholderPage() {
-  return <EnterpriseFeaturePage feature="creditSettings" />;
+export function AuditLogsPlaceholderPage() {
+  return <EnterpriseFeaturePage feature="auditLogs" />;
 }
