@@ -404,8 +404,9 @@ def _parse_failure_response(error_code: str, error: str) -> JSONResponse:
 async def _table_permit(wait_s: float) -> AsyncIterator[None]:
     """One HEAVY_PARSE permit (cost 1) and, under the capacity profile, one member reservation, for one table.
 
-    Both waits are one bounded wait: *wait_s* is what is left of the caller's deadline. A table never holds the permit
-    longer than its own time bound, so a conversion that waits for admission is held up by one table at most."""
+    Taken only once the request holds the model's turn (``run_tables``), so a request queued for the model holds nothing;
+    the permit is held for the table's own run, at most its time bound, and one table at a time per process. Both waits
+    are one bounded wait: *wait_s* is what is left of the caller's deadline."""
     wait = max(0.0, min(wait_s, MAX_DEADLINE_MS / 1000))
     cost = 0
     member_permit = None
@@ -472,6 +473,6 @@ async def table_structure_endpoint(
         meta, images, table_model.get_supervisor(), _table_permit,
         deadline=arrived + wait_ms / 1000, disconnected=request.is_disconnected,
     )
-    if refused:
-        return _table_error(429, "service_busy", {"Retry-After": str(DOCLING_BACKPRESSURE_RETRY_AFTER_SECONDS)})
+    if refused is not None:
+        return _table_error(429, refused, {"Retry-After": str(DOCLING_BACKPRESSURE_RETRY_AFTER_SECONDS)})
     return TableResponse(tables=results, model=table_model.get_supervisor().model_info)

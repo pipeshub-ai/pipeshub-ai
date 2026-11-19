@@ -196,3 +196,47 @@ async def test_a_table_error_is_a_200_with_a_status(wired) -> None:
     sup.fail = {"p1:b1"}
     r = await post(3)
     assert r.status_code == 200 and [t["status"] for t in r.json()["tables"]] == ["ok", "error", "ok"]
+
+
+async def test_a_request_queued_for_the_model_holds_no_permit(tmp_path) -> None:
+    """Gate limit 2, two concurrent one-table requests, the real supervisor with a child that takes 0.8 s a table: at most
+    one permit is held at any moment, and a conversion's acquire is admitted while one table runs."""
+    gate = CountingGate(2)
+    sup = ts.TableSupervisor(memory_available=lambda: 10**12, weights_dir=lambda _m: "unused", factory="tests.unit.services.docling.fake_table_model:build")
+    peak = {"v": 0}
+    stop = asyncio.Event()
+
+    async def sample() -> None:
+        while not stop.is_set():
+            peak["v"] = max(peak["v"], gate.in_use)
+            await asyncio.sleep(0.01)
+
+    async def post_slow(tag: str) -> httpx.Response:
+        meta = {"v": 1, "tables": [{**table(0), "id": "sleep-0.8", "image": "c0"}]}
+        transport = httpx.ASGITransport(app=mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            return await c.post("/table-structure", data={"meta": json.dumps(meta)}, files={"c0": ("c0.png", PNG, "image/png")}, headers={"X-Table-Deadline-Ms": "20000"})
+
+    async def conversion() -> bool:
+        await asyncio.sleep(0.3)  # both requests are in; one runs, one waits for its turn
+        ok = await gate.acquire(1, timeout=0.3)
+        if ok:
+            gate.release(1)
+        return ok
+
+    reserve = None
+
+    async def no_reserve(permit, demand, *, deadline_s=None, cancel=None) -> None:
+        return reserve
+
+    with patch.object(mod, "_resource_governor", FakeGovernor(gate)), patch.dict(ts._holder, {"s": sup}), patch.object(mod, "reserve_or_adopt", no_reserve):
+        sampler = asyncio.create_task(sample())
+        try:
+            r1, r2, got = await asyncio.gather(post_slow("a"), post_slow("b"), conversion())
+        finally:
+            stop.set()
+            await sampler
+            await sup.shutdown()
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert peak["v"] <= 1, f"{peak['v']} permits held while one table can run"
+    assert got is True  # the conversion's acquire was admitted while a table ran

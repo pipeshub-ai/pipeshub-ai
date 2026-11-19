@@ -205,14 +205,15 @@ def main(argv: list[str] | None = None) -> int:
         if frame is None:
             return 0
         header, blob = frame
+        frame_id = header.get("id")
         if header.get("op") != "predict":
-            write_frame(out, {"status": "error", "err": "bad_op"})
+            write_frame(out, {"status": "error", "err": "bad_op", "id": frame_id})
             continue
         try:
             result = runner.run(header["spec"], _decode_png(blob))
         except Exception as exc:  # one table fails, the child lives on
             result = {"status": "error", "err": type(exc).__name__}
-        write_frame(out, result)
+        write_frame(out, {**result, "id": frame_id})
 
 
 if __name__ == "__main__":

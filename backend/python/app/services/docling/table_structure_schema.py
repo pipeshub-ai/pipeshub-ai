@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -66,7 +68,7 @@ class TableRequestMeta(BaseModel):
 
 
 class CellOut(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")  # an additive field never breaks an older reader
 
     r0: int
     r1: int
@@ -79,7 +81,7 @@ class CellOut(BaseModel):
 
 
 class TableResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: str
     status: Literal["ok", "cap_hit", "error"]
@@ -93,9 +95,10 @@ class TableResult(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    """What produced the grids. ``config_sha256`` is the hash of the other three (see ``config_hash``)."""
+    """What produced the grids. ``config_sha256`` is the hash of the library version, the mode, the weights hash, the
+    model revision and the token definition (see ``config_hash``)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     docling_ibm_models: str
     mode: str
@@ -106,7 +109,7 @@ class ModelInfo(BaseModel):
 
 
 class TableResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     v: Literal[1] = 1
     tables: list[TableResult]
@@ -120,3 +123,25 @@ def config_hash(
     with sorted keys."""
     payload = {"token_definition": token_definition, "model_revision": revision, "weights_sha256": weights_sha256, "mode": mode, "docling_ibm_models": library_version}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+ENV_MODEL_TIMEOUT = "PDF_TABLE_MODEL_TIMEOUT_S"
+DEFAULT_MODEL_TIMEOUT_S = 120.0
+
+
+def model_timeout_s() -> float:
+    """The ceiling of one table's kill timeout, in seconds: ``PDF_TABLE_MODEL_TIMEOUT_S`` when it is a finite number above
+    zero, else the default with a warning. The client and the service read it through this one function."""
+    import logging
+
+    raw = os.environ.get(ENV_MODEL_TIMEOUT, "").strip()
+    if not raw:
+        return DEFAULT_MODEL_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        logging.getLogger(__name__).warning("Ignoring %s=%r; using %s", ENV_MODEL_TIMEOUT, raw, DEFAULT_MODEL_TIMEOUT_S)
+        return DEFAULT_MODEL_TIMEOUT_S
+    return value

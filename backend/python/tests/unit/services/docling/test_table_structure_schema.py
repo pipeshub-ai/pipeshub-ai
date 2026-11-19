@@ -48,13 +48,15 @@ def test_too_many_tokens_are_refused() -> None:
         sch.TableRequestMeta.model_validate({"v": 1, "tables": big})
 
 
-def test_a_response_cannot_carry_text() -> None:
+def test_a_response_never_carries_text_and_unknown_fields_are_ignored() -> None:
     cell = {"r0": 0, "r1": 1, "c0": 0, "c1": 1, "tokens": [0]}
-    sch.TableResult.model_validate({"id": "a", "status": "ok", "cells": [cell]})
-    with pytest.raises(ValidationError):
-        sch.TableResult.model_validate({"id": "a", "status": "ok", "cells": [{**cell, "text": "hello"}]})
-    with pytest.raises(ValidationError):
-        sch.TableResult.model_validate({"id": "a", "status": "ok", "text": "hello"})
+    parsed = sch.TableResult.model_validate({"id": "a", "status": "ok", "cells": [{**cell, "text": "hello", "future": 1}], "text": "hello", "added_later": [1]})
+    dumped = parsed.model_dump()
+    assert "text" not in dumped and "text" not in dumped["cells"][0] and "future" not in dumped["cells"][0]
+    # an older reader meets a newer service's block and keeps working
+    info = sch.ModelInfo.model_validate({"docling_ibm_models": "4", "mode": "accurate", "weights_sha256": "w", "config_sha256": "c", "something_new": True})
+    assert info.mode == "accurate"
+    assert "text" not in sch.TableResponse.model_fields and "text" not in sch.CellOut.model_fields
 
 
 def test_config_hash_serialises_with_sorted_keys_and_covers_every_part() -> None:

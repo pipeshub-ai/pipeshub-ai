@@ -14,6 +14,10 @@ class FakeRunner:
     def __init__(self, weights_dir: str, mode: str, threads: int) -> None:
         self.mode = mode
         self.threads = threads
+        if os.environ.get("PIPESHUB_TABLE_FAKE_IGNORE_TERM"):
+            import signal
+
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)  # only kill() ends this process
         self.load_marker = os.environ.get("PIPESHUB_TABLE_FAKE_MARKER")
         if self.load_marker:
             with open(self.load_marker, "a") as f:

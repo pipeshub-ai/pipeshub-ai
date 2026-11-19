@@ -26,6 +26,7 @@ from app.services.docling.table_structure_schema import (
     TableRequestMeta,
     TableResult,
     config_hash,
+    model_timeout_s,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,10 @@ _ENV_PREFIXES = (
 def table_timeout_s(cap: int, ceiling: float) -> float:
     """The kill timeout of one table: ``min(ceiling, max(10, 0.06 * cap))`` seconds."""
     return min(float(ceiling), max(TABLE_TIMEOUT_FLOOR_S, TABLE_TIMEOUT_PER_STEP_S * cap))
+
+
+class _Desync(Exception):
+    """The child answered a request other than the one just sent."""
 
 
 class ChildUnavailable(Exception):
@@ -151,8 +156,9 @@ class TableSupervisor:
         self._lock = asyncio.Lock()
         self._info: ModelInfo | None = None
         self._last_done = 0.0
+        self._seq = 0
         self._ever_started = False
-        self.stats = {"starts": 0, "respawns": 0, "kills": 0, "cap_hits": 0, "timeouts": 0}
+        self.stats = {"starts": 0, "respawns": 0, "kills": 0, "cap_hits": 0, "timeouts": 0, "desyncs": 0}
 
     @property
     def model_info(self) -> ModelInfo | None:
@@ -221,44 +227,76 @@ class TableSupervisor:
         assert proc is not None and proc.stdin is not None and proc.stdout is not None
         import json
 
-        raw = json.dumps({"op": "predict", "spec": spec}, separators=(",", ":"), sort_keys=True).encode()
+        self._seq += 1
+        frame_id = self._seq
+        raw = json.dumps({"op": "predict", "id": frame_id, "spec": spec}, separators=(",", ":"), sort_keys=True).encode()
         try:
             proc.stdin.write(struct.pack(">II", len(raw), len(png)) + raw + png)
             await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
             return None
         frame = await asyncio.wait_for(_aread_frame(proc.stdout), timeout_s)
-        return None if frame is None else frame[0]
+        if frame is None:
+            return None
+        if frame[0].get("id") != frame_id:
+            raise _Desync  # an answer to some other request: never taken for this one
+        return frame[0]
+
+    @contextlib.asynccontextmanager
+    async def turn(self, wait_s: float | None = None) -> AsyncIterator[None]:
+        """The model's one place: tables run one at a time, in turn. Raises ``Busy`` when *wait_s* runs out first. A caller
+        that must hold something scarce while it runs (a gate permit) takes it inside this, never before it."""
+        try:
+            await asyncio.wait_for(self._lock.acquire(), wait_s if wait_s is None else max(0.0, wait_s))
+        except TimeoutError as exc:
+            raise Busy from exc
+        try:
+            yield
+        finally:
+            self._lock.release()
 
     async def run_table(self, spec: dict[str, Any], png: bytes) -> dict[str, Any]:
-        """The result dict of one table (``status`` ok, cap_hit or error). Never raises for a model failure."""
+        """The result dict of one table (``status`` ok, cap_hit or error), taking its turn. Never raises for a model failure."""
+        async with self.turn():
+            return await self.run_unlocked(spec, png)
+
+    async def run_unlocked(self, spec: dict[str, Any], png: bytes) -> dict[str, Any]:
+        """As ``run_table`` for a caller that already holds the turn. A cancelled table kills the child: its late answer
+        must never be read as the next table's."""
         timeout_s = table_timeout_s(int(spec["cap"]), self.model_timeout_ceiling)
-        async with self._lock:
-            for attempt in (0, 1):
-                if self._proc is not None and self._proc.returncode is not None:
-                    self._proc = None
-                if self._proc is None:
-                    try:
-                        await self._start()
-                    except ChildUnavailable as exc:
-                        return {"status": "error", "err": exc.reason}
-                idle_for = time.monotonic() - self._last_done
+        for attempt in (0, 1):
+            if self._proc is not None and self._proc.returncode is not None:
+                self._proc = None
+            if self._proc is None:
                 try:
-                    result = await self._exchange(spec, png, timeout_s)
-                except TimeoutError:
-                    self.stats["timeouts"] += 1
-                    await self._kill()
-                    return {"status": "error", "err": "timeout"}
-                if result is not None:
-                    self._last_done = time.monotonic()
-                    if result.get("status") == "cap_hit":
-                        self.stats["cap_hits"] += 1
-                    return result
-                # The child ended: it exited after its idle time (ask once more), or it died.
+                    await self._start()
+                except ChildUnavailable as exc:
+                    return {"status": "error", "err": exc.reason}
+            idle_for = time.monotonic() - self._last_done
+            try:
+                result = await self._exchange(spec, png, timeout_s)
+            except TimeoutError:
+                self.stats["timeouts"] += 1
                 await self._kill()
-                if attempt == 0 and idle_for >= 0.9 * self.idle_seconds:
-                    continue
-                return {"status": "error", "err": "child_exit"}
+                return {"status": "error", "err": "timeout"}
+            except _Desync:
+                self.stats["desyncs"] += 1
+                await self._kill()
+                return {"status": "error", "err": "child_desync"}
+            except asyncio.CancelledError:
+                await asyncio.shield(self._kill())
+                raise
+            if result is not None:
+                self._last_done = time.monotonic()
+                if result.get("status") == "cap_hit":
+                    self.stats["cap_hits"] += 1
+                result.pop("id", None)
+                return result
+            # The child ended: it exited after its idle time (ask once more), or it died.
+            await self._kill()
+            if attempt == 0 and idle_for >= 0.9 * self.idle_seconds:
+                continue
+            return {"status": "error", "err": "child_exit"}
         return {"status": "error", "err": "child_exit"}
 
     async def shutdown(self) -> None:
@@ -289,13 +327,8 @@ def get_supervisor() -> TableSupervisor:
     if _holder["s"] is None:
         from app.utils.env_config import env_choice
 
-        timeout = 120.0
-        raw = os.environ.get("PDF_TABLE_MODEL_TIMEOUT_S", "").strip()
-        if raw:
-            with contextlib.suppress(ValueError):
-                timeout = max(1.0, float(raw))
         mode = env_choice("PDF_DOCLING_TABLE_MODE", "accurate", ("accurate", "fast"))
-        _holder["s"] = TableSupervisor(mode=mode, model_timeout_ceiling=timeout)
+        _holder["s"] = TableSupervisor(mode=mode, model_timeout_ceiling=model_timeout_s())
     return _holder["s"]
 
 
@@ -321,41 +354,43 @@ async def run_tables(
     *,
     deadline: float,
     disconnected: Callable[[], Awaitable[bool]] | None = None,
-) -> tuple[list[TableResult], bool]:
-    """Run the tables in order. A permit is taken for each table and given back before the next one starts.
+) -> tuple[list[TableResult], str | None]:
+    """Run the tables in order. For each table the request takes its turn at the model first and the gate permit second,
+    so a request waiting for the model holds no permit; the permit is given back before the next table.
 
-    Returns the results and whether the first table was refused for want of a permit (the route answers 429 then).
-    After the first table, a table that cannot get a permit, or cannot finish before *deadline* (a monotonic
-    time), is answered ``error`` / ``service_busy`` and so are the rest.
+    Returns the results and, when the first table could not start, why: ``service_busy`` (no turn or no permit before the
+    caller's deadline) or ``deadline`` (the table cannot finish before it); the route answers 429 then. After the first
+    table, tables that cannot start are answered ``error`` with that reason, and so are the rest.
     """
     results: list[TableResult] = []
     stop: str | None = None
     for i, spec in enumerate(meta.tables):
         if stop is None and disconnected is not None and await disconnected():
             stop = "client_gone"
-        remaining = deadline - time.monotonic()
-        if stop is None and remaining < spec.cap * START_ESTIMATE_PER_STEP_S:
-            stop = "service_busy"
         if stop is None:
             try:
-                async with acquire(remaining):
-                    try:
-                        raw = await supervisor.run_table(spec.model_dump(exclude={"image"}), images[spec.image])
-                    except Exception as exc:  # one table fails; the request, and the other tables, go on
-                        logger.warning("table structure failed for one table: %s", type(exc).__name__)
-                        raw = {"status": "error", "err": "service_exception"}
+                async with supervisor.turn(deadline - time.monotonic()):
+                    remaining = deadline - time.monotonic()
+                    if remaining < spec.cap * START_ESTIMATE_PER_STEP_S:
+                        stop = "deadline"
+                    else:
+                        async with acquire(remaining):
+                            try:
+                                raw = await supervisor.run_unlocked(spec.model_dump(exclude={"image"}), images[spec.image])
+                            except Exception as exc:  # one table fails; the request, and the other tables, go on
+                                logger.warning("table structure failed for one table: %s", type(exc).__name__)
+                                raw = {"status": "error", "err": "service_exception"}
+                        try:
+                            results.append(TableResult(id=spec.id, **raw))
+                        except Exception:
+                            results.append(TableResult(id=spec.id, status="error", err="bad_result"))
+                        continue
             except Busy:
                 stop = "service_busy"
-            else:
-                try:
-                    results.append(TableResult(id=spec.id, **raw))
-                except Exception:
-                    results.append(TableResult(id=spec.id, status="error", err="bad_result"))
-                continue
-        if i == 0 and stop == "service_busy":
-            return [], True
+        if i == 0 and stop in ("service_busy", "deadline"):
+            return [], stop
         results.append(TableResult(id=spec.id, status="error", err=stop))
-    return results, False
+    return results, None
 
 
 @contextlib.asynccontextmanager

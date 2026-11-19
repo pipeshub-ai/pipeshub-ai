@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -13,6 +14,9 @@ from app.services.docling.table_structure_schema import ModelInfo, config_hash
 from app.services.resource_governor.gate import AdmissionGate
 from app.services.resource_governor.models import Limits, Pool
 from app.services.resource_governor.registry import LimitRegistry
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 class CountingGate(AdmissionGate):
@@ -54,9 +58,18 @@ def measured_model_info() -> ModelInfo:
 class FakeSupervisor:
     def __init__(self, delay: float = 0.0, fail: set[str] | None = None) -> None:
         self.delay = delay
+        self._turn = asyncio.Lock()
         self.fail = fail or set()
         self.calls: list[str] = []
         self.model_info = measured_model_info()
+
+    @contextlib.asynccontextmanager
+    async def turn(self, wait_s: float | None = None) -> AsyncIterator[None]:
+        async with self._turn:
+            yield
+
+    async def run_unlocked(self, spec: dict, png: bytes) -> dict:
+        return await self.run_table(spec, png)
 
     async def run_table(self, spec: dict, png: bytes) -> dict:
         self.calls.append(spec["id"])

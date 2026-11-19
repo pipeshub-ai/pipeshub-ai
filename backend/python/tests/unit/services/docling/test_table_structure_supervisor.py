@@ -8,6 +8,7 @@ import time
 
 import cv2
 import numpy as np
+import pytest
 
 from app.services.docling import table_structure as ts
 
@@ -64,23 +65,6 @@ async def test_the_timeout_kills_only_that_table_and_the_child_is_replaced() -> 
         after = await s.run_table(spec("b"), PNG)
         assert first["status"] == "ok" and after["status"] == "ok" and s.stats["respawns"] == 1
         assert after["pid"] != first["pid"]
-    finally:
-        await s.shutdown()
-
-
-async def test_a_child_that_ignores_terminate_is_killed_after_the_grace_period() -> None:
-    s = supervisor(model_timeout_ceiling=1.0, kill_grace_s=0.5)
-    try:
-        await s.run_table(spec("a"), PNG)
-        pid = s.child_pid
-        import signal
-
-        # the stand-in sleeps in time.sleep; make it ignore SIGTERM so only kill() works
-        os.kill(pid, signal.SIGSTOP)  # a stopped process cannot handle SIGTERM: terminate() leaves it, kill() ends it
-        t0 = time.monotonic()
-        r = await s.run_table(spec("b"), PNG)
-        assert r == {"status": "error", "err": "timeout"}
-        assert time.monotonic() - t0 < 10 and not alive(pid)
     finally:
         await s.shutdown()
 
@@ -215,3 +199,79 @@ def test_the_per_table_timeout_formula() -> None:
     assert ts.table_timeout_s(50, 120) == 10.0  # floor
     assert ts.table_timeout_s(1000, 120) == 60.0
     assert ts.table_timeout_s(1000, 20) == 20.0  # ceiling
+
+
+async def test_a_child_that_ignores_terminate_is_killed_after_the_grace_period(monkeypatch) -> None:
+    monkeypatch.setenv("PIPESHUB_TABLE_FAKE_IGNORE_TERM", "1")
+    s = supervisor(model_timeout_ceiling=1.0, kill_grace_s=0.5)
+    try:
+        await s.run_table(spec("a"), PNG)
+        pid = s.child_pid
+        t0 = time.monotonic()
+        assert (await s.run_table(spec("sleep-30"), PNG)) == {"status": "error", "err": "timeout"}
+        assert time.monotonic() - t0 < 8 and not alive(pid)  # SIGTERM is ignored: only the kill after the grace ends it
+    finally:
+        monkeypatch.delenv("PIPESHUB_TABLE_FAKE_IGNORE_TERM")
+        await s.shutdown()
+
+
+async def test_after_a_cancelled_table_the_next_answer_is_its_own() -> None:
+    s = supervisor()
+    try:
+        await s.run_table(spec("a"), PNG)
+        pid = s.child_pid
+        task = asyncio.create_task(s.run_table(spec("sleep-3", tokens=7), PNG))
+        await asyncio.sleep(0.4)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not alive(pid)  # the child that owes an answer is gone
+        nxt = await s.run_table(spec("b", tokens=3), PNG)
+        assert nxt["status"] == "ok" and len(nxt["cells"]) == 3  # its own answer, not the cancelled table's 7 cells
+        third = await s.run_table(spec("c", tokens=2), PNG)
+        assert len(third["cells"]) == 2
+    finally:
+        await s.shutdown()
+
+
+async def test_an_answer_for_another_request_is_discarded_and_the_child_replaced(monkeypatch) -> None:
+    s = supervisor()
+    try:
+        await s.run_table(spec("a"), PNG)
+        real = ts._aread_frame
+
+        async def wrong_id(reader) -> tuple | None:
+            frame = await real(reader)
+            return None if frame is None else ({**frame[0], "id": 999}, frame[1])
+
+        monkeypatch.setattr(ts, "_aread_frame", wrong_id)
+        assert await s.run_table(spec("b"), PNG) == {"status": "error", "err": "child_desync"}
+        assert s.stats["desyncs"] == 1 and s.stats["kills"] == 1
+        monkeypatch.undo()
+        assert (await s.run_table(spec("c"), PNG))["status"] == "ok"
+    finally:
+        await s.shutdown()
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf", "-inf", "abc"])
+def test_a_bad_model_timeout_is_ignored_with_a_warning_by_the_service_and_the_client(monkeypatch, caplog, value) -> None:
+    import logging
+
+    from app.modules.parsers.pdf import table_hybrid_flow as flow
+    from app.services.docling import table_structure_schema as sch
+
+    monkeypatch.setenv("PDF_TABLE_MODEL_TIMEOUT_S", value)
+    caplog.set_level(logging.WARNING)
+    ts.set_supervisor(None)
+    assert ts.get_supervisor().model_timeout_ceiling == 120.0 and flow.model_timeout_s() == 120.0 == sch.model_timeout_s()
+    assert "PDF_TABLE_MODEL_TIMEOUT_S" in caplog.text
+    ts.set_supervisor(None)
+
+
+def test_a_good_model_timeout_is_the_same_in_the_service_and_the_client(monkeypatch) -> None:
+    from app.modules.parsers.pdf import table_hybrid_flow as flow
+
+    monkeypatch.setenv("PDF_TABLE_MODEL_TIMEOUT_S", "45.5")
+    ts.set_supervisor(None)
+    assert ts.get_supervisor().model_timeout_ceiling == 45.5 == flow.model_timeout_s()
+    ts.set_supervisor(None)
