@@ -2,23 +2,29 @@ import type { SlackFile, SlackMessagePayload } from '../helpers';
 import type { QueuedSlackMessage } from './thread-queue';
 
 export function batchText(texts: string[]): string {
-  return texts.map((t) => t.trim()).filter((t) => t !== '').join('\n\n');
+  return texts
+    .map((t) => t.trim())
+    .filter((t) => t !== '')
+    .join('\n\n');
 }
 
 /** One message standing for the batch: the newest message's ids, everyone's text and files. */
-export function mergeBatchMessage(batch: SlackMessagePayload[]): SlackMessagePayload {
+export function mergeBatchMessage(
+  batch: SlackMessagePayload[],
+): SlackMessagePayload {
   const byId = new Map<string, SlackFile>();
   const noId: SlackFile[] = [];
   for (const message of batch) {
     for (const file of (message.files ?? []) as SlackFile[]) {
       // Files come from Slack's payload unchecked, so an id may be missing at run time.
-      const id: string | undefined = file.id;
+      const { id } = file as Partial<SlackFile>;
       if (id === undefined) noId.push(file);
       else if (!byId.has(id)) byId.set(id, file);
     }
   }
-  const newest = batch[batch.length - 1];
-  if (newest === undefined) throw new Error('mergeBatchMessage needs at least one message');
+  const newest: SlackMessagePayload | undefined = batch[batch.length - 1];
+  if (newest === undefined)
+    throw new Error('mergeBatchMessage needs at least one message');
   return {
     ...newest,
     text: batchText(batch.map((m) => m.text ?? '')),
@@ -38,8 +44,16 @@ export function withoutBatchMessages(
 function toFileMetadata(raw: unknown): SlackFile {
   const f = raw as SlackFile;
   const out: SlackFile = { id: f.id };
-  for (const key of ['name', 'mimetype', 'filetype', 'size', 'url_private_download', 'url_private'] as const) {
-    if (f[key] !== undefined) (out as unknown as Record<string, unknown>)[key] = f[key];
+  for (const key of [
+    'name',
+    'mimetype',
+    'filetype',
+    'size',
+    'url_private_download',
+    'url_private',
+  ] as const) {
+    if (f[key] !== undefined)
+      (out as unknown as Record<string, unknown>)[key] = f[key];
   }
   return out;
 }
@@ -61,7 +75,9 @@ export function toQueuedMessage(
   };
 }
 
-export function fromQueuedMessage(item: QueuedSlackMessage): SlackMessagePayload {
+export function fromQueuedMessage(
+  item: QueuedSlackMessage,
+): SlackMessagePayload {
   return {
     ts: item.ts,
     thread_ts: item.threadTs,

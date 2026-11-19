@@ -35,12 +35,19 @@ export class RunLimiter {
   }
 }
 
-const readInt = (raw: string | undefined, def: number, min: number, max: number): number => {
+const readInt = (
+  raw: string | undefined,
+  def: number,
+  min: number,
+  max: number,
+): number => {
   const n = Number.parseInt(raw ?? '', 10);
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def;
 };
 
-export function runLimiterFromEnv(env: NodeJS.ProcessEnv = process.env): RunLimiter {
+export function runLimiterFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): RunLimiter {
   return new RunLimiter(
     readInt(env.SLACK_BOT_MAX_CONCURRENT_RUNS, 50, 1, 500),
     readInt(env.SLACK_BOT_MAX_WAITING_RUNS, 500, 0, 5000),

@@ -30,10 +30,7 @@ export function asSlackCitations(
 ): SlackCitationLike[] {
   return (citations ?? []).flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
-    const data =
-      'citationData' in entry
-        ? entry.citationData
-        : entry;
+    const data = 'citationData' in entry ? entry.citationData : entry;
     const metadata = (data as { metadata?: unknown } | null)?.metadata;
     if (!metadata || typeof metadata !== 'object') return [];
     return [{ citationData: data as SlackCitationLike['citationData'] }];
@@ -538,7 +535,9 @@ const SOURCE_NUMBERS_SHOWN = 5;
 /** A document's citation numbers: the first five, then "+N more". */
 function compactNumbers(numbers: number[]): string {
   const sorted = [...new Set(numbers)].sort((a, b) => a - b);
-  const shown = sorted.slice(0, SOURCE_NUMBERS_SHOWN).map((n) => `[${String(n)}]`);
+  const shown = sorted
+    .slice(0, SOURCE_NUMBERS_SHOWN)
+    .map((n) => `[${String(n)}]`);
   const more = sorted.length - SOURCE_NUMBERS_SHOWN;
   return [...shown, ...(more > 0 ? [`+${String(more)} more`] : [])].join(' ');
 }

@@ -1455,9 +1455,13 @@ export class SlackPlanStream {
       }
       // A line (a heading, a list item, a paragraph) starts in the next message
       // when it would not get far in this one.
-      const atLineStart =
-        this.text === '' || (this.text + gap).endsWith('\n');
-      if (this.ts && atLineStart && rest.length > room && room < MIN_LINE_ROOM) {
+      const atLineStart = this.text === '' || (this.text + gap).endsWith('\n');
+      if (
+        this.ts &&
+        atLineStart &&
+        rest.length > room &&
+        room < MIN_LINE_ROOM
+      ) {
         await this.rollover();
         continue;
       }
@@ -1482,7 +1486,10 @@ export class SlackPlanStream {
           if (!(await this.openWith([chunk]))) return;
         } catch (error) {
           const code = slackErrorCode(error);
-          if ((code !== 'msg_too_long' && code !== 'msg_blocks_too_long') || piece.length <= 500) {
+          if (
+            (code !== 'msg_too_long' && code !== 'msg_blocks_too_long') ||
+            piece.length <= 500
+          ) {
             throw error;
           }
           maxPiece = Math.floor(piece.length / 2);
