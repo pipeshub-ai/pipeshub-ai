@@ -577,20 +577,23 @@ class TestClaimAndReleaseAreOneStep:
 
 def _assert_index_matches(consumer: IndexingRedisStreamsConsumer) -> None:
     """The per-record state is exactly what the waits say."""
-    expected: dict[str, tuple[set, list, set]] = {}
+    expected: dict[str, tuple[set, list, list, set]] = {}
     for key, wait in consumer._record_waits.items():
-        keys, local, active = expected.setdefault(wait.record_key, (set(), [], set()))
+        keys, local, lease, active = expected.setdefault(wait.record_key, (set(), [], [], set()))
         keys.add(key)
         if not wait.on_lease:
             local.append(key)
+        elif not wait.running:
+            lease.append(key)
         if wait.woken or wait.running:
             active.add(key)
     actual = {
-        record: (w.keys, [entry[2] for entry in w.local], w.active)
+        record: (w.keys, [entry[2] for entry in w.local], [entry[2] for entry in w.lease], w.active)
         for record, w in consumer._record_waiters.items()
     }
-    for _keys, local, _active in expected.values():
-        local.sort(key=lambda k: (tuple(int(p) for p in k[1].split("-")), k[0]))
+    for _keys, local, lease, _active in expected.values():
+        for ordered in (local, lease):
+            ordered.sort(key=lambda k: (tuple(int(p) for p in k[1].split("-")), k[0]))
     assert actual == expected
 
 
@@ -1225,3 +1228,39 @@ class TestTheGaugeAcrossRestarts:
         notices = [n for n in scheduling_metrics._record_waits_collected if n[:2] == ("restart", owner_id)]
         # One for the registration it was dropped with; none for the stopped ones.
         assert len(notices) == 1
+
+
+@pytest.mark.asyncio
+class TestReviewOfTheWaitsRoundSix:
+    async def test_a_newer_event_behind_an_older_lease_wait_stays_parked_until_it_resolves(
+        self, harness: Harness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger=LOGGER_NAME)
+        consumer = harness.consumer
+        await consumer.redis.xadd(LANE, _fields("r1"))
+        await consumer.redis.xadd(LANE, _fields("r1"))
+        older, newer = [
+            i for _s, entries in await consumer.redis.xreadgroup(
+                GROUP, consumer.consumer_name, {LANE: ">"}, count=10
+            ) for i, _f in entries
+        ]
+        # The older one lost its lease and waits out its delay.
+        consumer._wait_for_record_lease("r1", LANE, older)
+
+        await harness.passes(10)
+        _assert_index_matches(consumer)
+
+        # The newer one was offered once, found the older one waiting, and
+        # waited: not offered again every pass for the older one's delay.
+        assert harness.dispatched == [newer]
+        assert len(_recovering_lines(caplog)) == 1
+        assert consumer._is_waiting_for_record(newer, LANE)
+
+        # The older one's delay is up and its lease is free: it runs, and its
+        # release wakes the newer one.
+        consumer._record_waits[(LANE, older)].due_at = 0.0
+        await harness.passes(3)
+        assert harness.dispatched == [newer, older, newer]
+        assert harness.handler.ran == ["r1", "r1"]
+        assert consumer._record_waits == {}
+        _assert_index_matches(consumer)

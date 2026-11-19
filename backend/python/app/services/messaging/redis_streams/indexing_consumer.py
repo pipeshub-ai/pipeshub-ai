@@ -291,17 +291,20 @@ class _RecordWaiters:
     """One record's waits, kept so that whether a wait is due costs O(1).
 
     ``local`` holds the waits on this process's own run, oldest entry first
-    (only the oldest may come due on its own); ``active`` the woken or running
-    ones (while there is one, no other is due). Asked of every entry a
+    (only the oldest may come due on its own); ``lease`` the waits on a lease
+    held elsewhere and not running, oldest first (a local waiter behind one is
+    not due); ``active`` the woken or running ones (while there is one, no
+    other is due). Asked of every entry a
     recovery scan meets, a sort of the record's waits each time made a scan
     over one record's thousands of waiters quadratic.
     """
 
-    __slots__ = ("keys", "local", "active")
+    __slots__ = ("keys", "local", "lease", "active")
 
     def __init__(self) -> None:
         self.keys: set[tuple[str, str]] = set()
         self.local: list[tuple[tuple[int, ...], str, tuple[str, str]]] = []
+        self.lease: list[tuple[tuple[int, ...], str, tuple[str, str]]] = []
         self.active: set[tuple[str, str]] = set()
 
 
@@ -1348,9 +1351,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         waiters.keys.discard(key)
         waiters.active.discard(key)
         entry = self.__local_entry(key)
-        at = bisect.bisect_left(waiters.local, entry)
-        if at < len(waiters.local) and waiters.local[at] == entry:
-            del waiters.local[at]
+        for ordered in (waiters.local, waiters.lease):
+            at = bisect.bisect_left(ordered, entry)
+            if at < len(ordered) and ordered[at] == entry:
+                del ordered[at]
         if not waiters.keys:
             del self._record_waiters[wait.record_key]
 
@@ -1362,6 +1366,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         waiters.keys.add(key)
         if not wait.on_lease:
             bisect.insort(waiters.local, self.__local_entry(key))
+        elif not wait.running:
+            bisect.insort(waiters.lease, self.__local_entry(key))
         if wait.woken or wait.running:
             waiters.active.add(key)
 
@@ -1384,14 +1390,26 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     def __oldest_waiter_locked(self, record_id: str) -> tuple[str, str] | None:
         """The record's oldest waiting entry, lease waits included: a newer
         event must not run ahead of an older one only because that one waits
-        on a lease held elsewhere. Lease waits are few, so they are compared
-        directly."""
+        on a lease held elsewhere. A running lease wait is in flight and
+        holds the record, so it is not counted."""
         waiters = self._record_waiters.get(record_id)
         if waiters is None:
             return None
-        candidates = [waiters.local[0][2]] if waiters.local else []
-        candidates.extend(key for key in waiters.keys if self._record_waits[key].on_lease)
-        return min(candidates, key=lambda key: (_entry_order(key[1]), key[0]), default=None)
+        heads = [ordered[0] for ordered in (waiters.local, waiters.lease) if ordered]
+        return min(heads)[2] if heads else None
+
+    def __older_lease_wait_locked(self, record_id: str, key: tuple[str, str]) -> bool:
+        """Whether an entry of the record older than ``key`` waits on a lease
+        held elsewhere. Until it resolves (runs, or is let go), a newer local
+        waiter is neither woken nor due: offered, it would only find the older
+        one and park again, once per recovery pass for the older one's whole
+        delay."""
+        waiters = self._record_waiters.get(record_id)
+        return (
+            waiters is not None
+            and bool(waiters.lease)
+            and waiters.lease[0][:2] < self.__local_entry(key)[:2]
+        )
 
     def __has_active_waiter_locked(self, record_id: str) -> bool:
         waiters = self._record_waiters.get(record_id)
@@ -1409,7 +1427,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if record_id in self._in_flight_record_ids or self.__has_active_waiter_locked(record_id):
             return None
         key = self.__oldest_local_waiter_locked(record_id)
-        if key is None:
+        if key is None or self.__older_lease_wait_locked(record_id, key):
             return None
         wait = self._record_waits[key]
         wait.woken = True
@@ -1452,6 +1470,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return False
         if wait.on_lease:
             return wait.due_at <= now
+        if self.__older_lease_wait_locked(wait.record_key, key):
+            return False
         if wait.woken:
             return True
         if wait.due_at > now or self.__has_active_waiter_locked(wait.record_key):
