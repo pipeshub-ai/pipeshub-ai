@@ -448,3 +448,16 @@ class TestResolveCreatorIdentity:
         from app.connectors.sources.gitlab.connector import GitLabConnector
         await GitLabConnector._resolve_creator_identity(c)
         c.logger.warning.assert_called()
+
+
+class TestCreatorGrantFollowsTheAddressHolder:
+    async def test_after_a_handoff_the_creator_keeps_the_grant_made_to_the_tokens_account(self) -> None:
+        from app.connectors.sources.gitlab.connector import GitLabConnector
+        from tests.support.address_handoff import handed_over
+
+        fake_self = MagicMock(creator_email="creator@example.com", _gitlab_user_id=42)
+        accounts = await handed_over("conn-gl", "creator@example.com", "41", "42")
+
+        grant = GitLabConnector.creator_user_permission(fake_self)
+
+        assert accounts.holds(grant.email, grant.external_id)

@@ -10394,3 +10394,29 @@ class TestHasRepliesOnBurstRecords:
         assert recs[0][0].has_replies is True
         recs, _ = await c._process_single({"ts": "21.0", "user": "U1", "text": "quiet"}, self._ctx())
         assert recs[0][0].has_replies is False
+
+
+class TestChannelGrantsFollowTheAddressHolder:
+    """After an address passes to a new Slack account, that account keeps the channels it is in."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel", [
+        {"id": "D1", "is_im": True, "user": "Unew"},
+        {"id": "Gpriv", "is_private": True, "is_mpim": False, "is_im": False},
+        {"id": "Cpub", "is_private": False, "is_mpim": False, "is_im": False},      # Unew is a guest there
+    ])
+    async def test_after_a_handoff_the_new_holder_keeps_its_channels(self, channel: dict) -> None:
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.permission import EntityType
+        from tests.support.address_handoff import handed_over
+
+        c = _connector_pipeline_ready()
+        c.user_id_to_email_cache["Unew"] = "ana@example.com"
+        c._guest_user_ids = {"Unew"}
+        accounts = await handed_over(c.connector_id, "ana@example.com", "Uold", "Unew")
+
+        with patch.object(SlackConnector, "_fetch_channel_members", new_callable=AsyncMock, return_value=["Unew"]):
+            perms = await c._channel_permissions(channel)
+
+        users = [p for p in perms if p.entity_type == EntityType.USER]
+        assert [accounts.holds(p.email, p.external_id) for p in users] == [True]

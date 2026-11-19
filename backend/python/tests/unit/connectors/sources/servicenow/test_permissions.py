@@ -28,7 +28,7 @@ from servicenow_fakes import (
 from app.config.constants.arangodb import AccessRule, Connectors
 from app.connectors.sources.servicenow.servicenow.constants import ServiceNowDefaults
 from app.models.entities import AppUser, AppUserGroup, User
-from app.models.permission import EntityType
+from app.models.permission import EntityType, PermissionType
 from app.sources.external.servicenow.models import ServiceNowAccessError
 
 T0 = "2024-06-01 00:00:00"
@@ -1367,3 +1367,16 @@ async def test_hidden_group_that_is_kept_makes_the_full_sync_incomplete(servicen
 
     assert "g-other" in graph.group_nodes
     assert sc.full_sync_coverage().complete is False
+
+
+class TestGrantsFollowTheAddressHolder:
+    @pytest.mark.asyncio
+    async def test_after_a_handoff_the_new_holder_keeps_its_grants(self, servicenow_connector) -> None:
+        from tests.support.address_handoff import handed_over
+
+        servicenow_connector._email_by_source_id = {"sys-old": "ana@example.com", "sys-new": "ana@example.com"}
+        accounts = await handed_over(servicenow_connector.connector_id, "ana@example.com", "sys-old", "sys-new")
+
+        grants = await servicenow_connector._users_to_permissions({"sys-old", "sys-new"}, PermissionType.READ)
+
+        assert [accounts.holds(p.email, p.external_id) for p in grants] == [True, False]
