@@ -23645,26 +23645,50 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def kh_scope_reset_syncing(self) -> None:
         await kh_scope.reset_syncing(self.client)
 
+    # The candidates the plan keeper's sample is chosen from: Apps, and per App its users and places. Few, so asking the
+    # access check about them every keeper run costs little; enough that a place the user cannot open is passed over.
+    _KH_WARM_APPS = 5
+    _KH_WARM_USERS = 3
+    _KH_WARM_PLACES = 5
+
     async def get_knowledge_hub_warm_sample(self) -> dict[str, str] | None:
+        """See the interface. A sample browse the user may not open is refused as "Node not found" and plans nothing, so
+        the user is an active member of the org (a source's synced accounts are members marked inactive, and never sign
+        in), and the access check, which decides every browse, must admit both the group and the record."""
         rows = await self.client.execute_query(
             """
-            MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB'
-            // One place per App, found from the App: never users x groups x records.
-            CALL (a) {
-                MATCH (a)-[:NODE_RELATION]->(g:RecordGroup)-[:NODE_RELATION]->(r:Record)
-                WHERE NOT coalesce(g.isDeleted, false) AND NOT coalesce(r.isDeleted, false)
-                RETURN g, r LIMIT 1
-            }
+            MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB' AND NOT coalesce(a.isDeleted, false)
+            WITH a ORDER BY a.id LIMIT $apps
             CALL (a) {
                 MATCH (u:User)-[:USER_APP_RELATION]->(a)
-                WHERE u.userId IS NOT NULL AND u.orgId = a.orgId
-                RETURN u LIMIT 1
+                WHERE u.userId IS NOT NULL AND u.id IS NOT NULL AND u.orgId = a.orgId AND coalesce(u.isActive, true)
+                  AND EXISTS { (u)-[:BELONGS_TO]->(:Organization {id: a.orgId}) }
+                WITH u ORDER BY u.id LIMIT $users
+                RETURN collect({userId: u.userId, key: u.id}) AS users
             }
-            RETURN u.userId AS userId, u.orgId AS orgId, a.id AS appId, g.id AS groupId, r.id AS recordId
-            LIMIT 1
-            """
+            CALL (a) {
+                MATCH (a)-[e1:NODE_RELATION]->(g:RecordGroup)-[e2:NODE_RELATION]->(r:Record)
+                WHERE e1.relationshipType = 'PARENT_CHILD' AND e2.relationshipType = 'PARENT_CHILD'
+                  AND NOT coalesce(g.isDeleted, false) AND NOT coalesce(g.accessOnly, false)
+                  AND NOT coalesce(r.isDeleted, false) AND NOT coalesce(r.isPlaceholder, false)
+                WITH g, r ORDER BY g.id, r.id LIMIT $places
+                RETURN collect({groupId: g.id, recordId: r.id}) AS places
+            }
+            RETURN a.id AS appId, a.orgId AS orgId, users, places
+            """,
+            parameters={"apps": self._KH_WARM_APPS, "users": self._KH_WARM_USERS, "places": self._KH_WARM_PLACES},
         )
-        return dict(rows[0]) if rows else None
+        for row in rows or []:
+            places = row.get("places") or []
+            ids = {node for place in places for node in (place["groupId"], place["recordId"])}
+            if not ids:
+                continue
+            for user in row.get("users") or []:
+                admitted = (await self.check_access(user["key"], row["orgId"], node_ids=ids)).node_ids
+                place = next((p for p in places if p["groupId"] in admitted and p["recordId"] in admitted), None)
+                if place is not None:
+                    return {"userId": user["userId"], "orgId": row["orgId"], "appId": row["appId"], **place}
+        return None
 
     async def kh_scope_restamp_stale(self) -> list[dict[str, Any]]:
         """Stamp every connector without a fresh stamp of this version, one by one, when the listing is enabled.
