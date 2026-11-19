@@ -21,9 +21,9 @@ from .test_provider_v3_arrow_matches_expansion import (  # noqa: F401
 pytestmark = pytest.mark.integration
 
 
+# The split browse is Neo4j's, so only that store runs: a skipped case fails the conformance shard.
+@pytest.mark.parametrize("provider", ["neo4j"], indirect=True)
 async def test_a_start_wider_than_the_bound_is_listed_by_legacy(arrows_graph, provider, monkeypatch) -> None:  # noqa: F811
-    if not isinstance(provider, Neo4jProvider):
-        pytest.skip("the split browse is Neo4j's")
     monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
     legacy = await _browse(provider, "ae-open", "ae-og", "recordGroup")
     assert len(legacy) == 2      # the premise: the start has two children
