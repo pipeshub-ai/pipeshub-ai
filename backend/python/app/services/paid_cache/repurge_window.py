@@ -30,11 +30,13 @@ import logging
 import math
 import os
 import secrets
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.config.constants.arangodb import EventTypes
 from app.core.envelope import max_age_seconds
+from app.exceptions.indexing_exceptions import ProcessingError
 from app.services.paid_cache.keys import valid_record_id
 from app.services.paid_cache.locks import REPURGE_HOP_S, repurge_horizon_s
 from app.services.paid_cache.repurge import (
@@ -109,6 +111,19 @@ WINDOW_IDS = METRICS_BACKEND.histogram(
     (1, 5, 25, 100, 500, 2_000, 10_000, 50_000, 250_000),
 )
 PAGES = METRICS_BACKEND.counter("pipeshub_paid_repurge_pages_total", "Pages published by seals", ["kind"])
+
+
+#: A fallback is counted every time (``pipeshub_paid_repurge_fallback_total``); its WARNING is logged at most this often per
+#: kind, so a 100k delete during an outage is one line a minute, not 100k.
+WARN_EVERY_S = 60.0
+_last_warned: dict[str, float] = {}
+
+
+def _warn_limited(kind: str, message: str, *args: object) -> None:
+    now = time.monotonic()
+    if now - _last_warned.get(kind, float("-inf")) >= WARN_EVERY_S:
+        _last_warned[kind] = now
+        log.warning(message + " (further occurrences are counted, not logged, for %d s)", *args, int(WARN_EVERY_S))
 
 
 def coalesce_enabled() -> bool:
@@ -413,15 +428,27 @@ class PgWindowStore:
         base = self._base(org_id, window)
         ttl = float(window_s() + KEY_TTL_AFTER_S)
         async with self._state.locked(base) as tx:
-            rows = await tx.rows(f"{base}:ids:")
+            # The lock is held for these few statements only: how many ids the window holds is its append counter (the
+            # rows are not fetched here), and ``sealed`` is committed with the verdict.
+            seen = int(await tx.get(f"{base}:n") or 0)
             verdict = decide_seal(await tx.get(f"{base}:own"), epoch, now_ms)
             if verdict != SEAL_OK:
-                return SealRead(verdict, (), len(rows))
+                return SealRead(verdict, (), seen)
             if await tx.get(f"{base}:done") is not None:
-                return SealRead(SEAL_DONE, (), len(rows))
+                return SealRead(SEAL_DONE, (), seen)
             if await tx.get(f"{base}:sealed") is None:
                 await tx.set(f"{base}:sealed", "1", ttl)
-            return SealRead(SEAL_OK, tuple(v for _k, v in rows))
+        # ``sealed`` is committed: every later append meets CLOSED, so the rows are frozen and are read in pages, outside the
+        # lock, so memory stays bounded by a page (plus the ids themselves) and appends are not held behind a big read.
+        ids: list[str] = []
+        after: str | None = None
+        while True:
+            page = await self._state.read_rows(f"{base}:ids:", after, SEAL_READ_CHUNK)
+            ids.extend(v for _k, v in page)
+            if len(page) < SEAL_READ_CHUNK:
+                break
+            after = page[-1][0]
+        return SealRead(SEAL_OK, tuple(ids))
 
     async def mark_done(self, org_id: str, window: int, epoch: str) -> None:
         base = self._base(org_id, window)
@@ -501,6 +528,8 @@ async def coalesce_successor(
     if next_hop_payload(org_id, payload, now=now) is None:
         return True
     rid = payload.get("recordId")
+    if rid is None:
+        return False                    # an org hop has no record: nothing to place, nothing to count
     if not isinstance(rid, str) or not valid_record_id(rid):
         FALLBACK.inc("invalid_id")
         return False
@@ -512,7 +541,7 @@ async def coalesce_successor(
         opened = await store.open_or_append(org_id, window, token, secrets.token_hex(8), rid, now_ms)
     except Exception as exc:
         FALLBACK.inc("error")
-        log.warning("Re-purge window unavailable (%s); the record's later hops go per record", type(exc).__name__)
+        _warn_limited("unavailable", "Re-purge window unavailable (%s); the record's later hops go per record", type(exc).__name__)
         return False
     if opened.state == CLAIMED and opened.epoch:
         due = max((window + 1) * window_s() + SEAL_GRACE_S, now)
@@ -526,7 +555,7 @@ async def coalesce_successor(
             opened = await store.open_or_append(org_id, window, token, secrets.token_hex(8), rid, now_ms)
         except Exception as exc:
             FALLBACK.inc("error")
-            log.warning("Re-purge window unavailable (%s); the record's later hops go per record", type(exc).__name__)
+            _warn_limited("unavailable", "Re-purge window unavailable (%s); the record's later hops go per record", type(exc).__name__)
             return False
         await _repair(producer, org_id, store, loop, now)
     if opened.state == APPENDED:
@@ -539,7 +568,7 @@ async def _release_quietly(store: WindowStore, org_id: str, window: int, token: 
     try:
         await store.release_claim(org_id, window, token)
     except Exception as exc:
-        log.warning("Re-purge window claim not released (%s); it lapses by itself", type(exc).__name__)
+        _warn_limited("release", "Re-purge window claim not released (%s); it lapses by itself", type(exc).__name__)
 
 
 async def _repair(producer: Any, org_id: str, store: WindowStore, loop: Any, now: float) -> None:  # noqa: ANN401
@@ -552,7 +581,7 @@ async def _repair(producer: Any, org_id: str, store: WindowStore, loop: Any, now
             )
             SEAL_REPAIRED.inc("seal")
     except Exception as exc:
-        log.warning("Re-purge seal repair failed (%s); the next window's first record retries it", type(exc).__name__)
+        _warn_limited("repair", "Re-purge seal repair failed (%s); the next window's first record retries it", type(exc).__name__)
 
 
 # -- the batch event's handlers ----------------------------------------------------------------------------------
@@ -639,6 +668,8 @@ async def handle_page_hop(
     the next hop retries the failed ids; at the final hop a tail message carries just them, a few attempts, and then the
     message dead-letters with them. Every id failing, or the successor not publishing, raises (broker redelivery)."""
     ids = _ids_of(payload)
+    if not ids:
+        return                          # nothing to purge and nothing to keep a chain going for
     now = now_s() if now is None else now
     tail = payload.get("tail") is True
     attempt = payload.get("attempt")
@@ -650,7 +681,11 @@ async def handle_page_hop(
         if failed:
             if attempt >= MAX_TAIL_ATTEMPTS:
                 FAILED_IDS.inc("tail")
-                raise ConnectionError(f"{len(failed)} paid-result purges still failing after {attempt} tail attempts")
+                # Terminal, so it dead-letters at once with the failed ids in its body (replayable), not after a redelivery budget.
+                raise ProcessingError(
+                    f"{len(failed)} paid-result purges still failing after {attempt} tail attempts",
+                    details={"failed": len(failed)},
+                )
             await _publish_tail(producer, org_id, payload, failed, attempt + 1, now, loop)
         return
     following = next_hop_payload(org_id, payload, now=now)

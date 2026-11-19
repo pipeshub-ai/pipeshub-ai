@@ -113,12 +113,23 @@ async def test_a_seal_of_a_flushed_window_counts_a_loss_with_what_it_can_still_s
 
 async def test_the_seal_reads_a_large_list_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(repurge_window, "SEAL_READ_CHUNK", 7)
-    store = redis_store()
+    client = SlotCheckedRedis()
+    ranges: list[tuple[int, int]] = []
+    real = client.inner.lrange
+
+    async def spy(key: str, start: int, stop: int) -> Any:  # noqa: ANN401
+        ranges.append((start, stop))
+        return await real(key, start, stop)
+
+    client.inner.lrange = spy  # type: ignore[method-assign]
+    store = redis_store(client)
     await _open_window(store)
     for i in range(50):
         await store.open_or_append(ORG, 5, "zz", "e", f"r{i}", NOW)
     read = await store.seal_read(ORG, 5, "e1", NOW + 400_000)
     assert read.ids == tuple(f"r{i}" for i in range(50))
+    # one LRANGE of 50 ids would be [(0, -1)]: the reads are ceil(50 / 7) contiguous ranges of at most 7
+    assert ranges == [(i, i + 6) for i in range(0, 50, 7)]
 
 
 async def test_repair_lists_overdue_open_windows_of_the_org_and_prunes_what_is_older_than_the_ids_life() -> None:
@@ -128,9 +139,13 @@ async def test_repair_lists_overdue_open_windows_of_the_org_and_prunes_what_is_o
     horizon = NOW + 330_000 + 700_000
     assert await store.overdue(ORG, horizon - 700_000 + 10) == [(5, "e5")]
     assert sorted(await store.overdue(ORG, NOW + 10**7)) == [(5, "e5"), (6, "e6")]
-    assert await store.overdue(ORG, NOW + (repurge_window.KEY_TTL_AFTER_S + 10_000) * 1000) == []     # pruned: too old
+    # a done window leaves the set at once (before any prune could remove it): else every claimer republishes it
     await store.mark_done(ORG, 5, "e5")
-    assert await store.overdue(ORG, NOW + 10**7) == []
+    assert await store.overdue(ORG, NOW + 10**7) == [(6, "e6")]
+    assert await store._client.inner.zrange(store._open_key(ORG), 0, -1) == ["6:e6"]
+    # what is older than the ids' life is pruned (it could only count a loss)
+    assert await store.overdue(ORG, NOW + (repurge_window.KEY_TTL_AFTER_S + 10_000) * 1000) == []
+    assert await store._client.inner.zrange(store._open_key(ORG), 0, -1) == []
 
 
 async def test_every_script_declares_every_key_it_touches_and_stays_on_one_slot() -> None:

@@ -3003,9 +3003,9 @@ class RecordEventHandler(BaseEventService):
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
-
+                        
                         # Decide duplicate handling based on error type
-                        if (last_exception and
+                        if (last_exception and 
                             MessageErrorClassifier.classify_by_exception(last_exception)
                             == MessageErrorType.TERMINAL):
                             # Terminal error → content issue → fail ALL duplicates
@@ -3042,7 +3042,7 @@ class RecordEventHandler(BaseEventService):
                         if updates:
                             updates["reason"] = RETRY_SCHEDULED
                             updates["processingStartedAt"] = None
-                            await self.event_processor.graph_provider.update_node(
+                            updated = await self.event_processor.graph_provider.update_node(
                                 record_id, CollectionNames.RECORDS.value, shape_status_write(updates)
                             )
                             reverted = True
@@ -3242,4 +3242,3 @@ class RecordEventHandler(BaseEventService):
                         f"Error: {error_type} - {str(e)}. File id: {record_id}"
                     ) from e
                 await asyncio.sleep(delay)
-        return None

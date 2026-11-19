@@ -12,6 +12,7 @@ import pytest
 
 from app.config.constants.arangodb import EventTypes
 from app.core.org_context import OrgContext, bind
+from app.exceptions.indexing_exceptions import ProcessingError
 from app.services.messaging.config import IndexingEvent
 from app.services.paid_cache import access, repurge, repurge_window
 from app.services.paid_cache.cache import PaidResultCache
@@ -217,7 +218,7 @@ async def test_at_the_final_hop_the_failed_ids_get_a_tail_that_backs_off_and_the
         broker.sent.clear()
         try:
             await repurge_window.handle_page_hop(broker, ORG, tail, purge=_flaky({"b"}))
-        except ConnectionError:
+        except ProcessingError:                  # terminal: it dead-letters at once, not after a redelivery budget
             break
         attempts += 1
         tail = broker.sent[0].payload
@@ -434,3 +435,39 @@ async def test_a_stale_message_is_counted_by_its_event_type(monkeypatch: pytest.
     with pytest.raises(envelope.EnvelopeRejected):
         await envelope.open_envelope("record-events", wire, keys=keys, now=lambda: wire["ctx"]["issuedAt"] + 100_000)
     assert ("record-events", BATCH) in seen
+
+
+async def test_a_page_whose_ids_are_all_invalid_keeps_no_chain_going(clock: list[float]) -> None:
+    broker = Broker(clock)
+    await repurge_window.handle_page_hop(broker, ORG, _hop(clock, ["bad id!", "org"]), purge=_flaky(set()))
+    assert broker.sent == []
+
+
+async def test_an_org_hop_never_counts_as_an_invalid_id_fallback(world: Any, clock: list[float]) -> None:  # noqa: ANN401
+    seen: list[str] = []
+    real = repurge_window.FALLBACK
+    repurge_window.FALLBACK = SimpleNamespace(inc=lambda *labels, **_k: seen.append(labels[0]))  # type: ignore[assignment]
+    try:
+        org_hop = repurge.org_repurge_event_payload(ORG, now=clock[0])
+        assert await repurge_window.coalesce_successor(Broker(clock), ORG, org_hop, store=world.window, now=clock[0] + 300) is False
+    finally:
+        repurge_window.FALLBACK = real
+    assert seen == []
+
+
+async def test_a_burst_of_failing_first_hops_logs_one_warning_and_counts_every_fallback(
+    clock: list[float], caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QA-G32a-5: during a Redis outage a 100k delete would otherwise log 100k lines."""
+    counted: list[str] = []
+    monkeypatch.setattr(repurge_window, "FALLBACK", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])))
+    monkeypatch.setattr(repurge_window, "_last_warned", {})
+    store = AsyncMock()
+    store.open_or_append.side_effect = ConnectionError("redis down")
+    with caplog.at_level("WARNING", logger=repurge_window.log.name):
+        for i in range(500):
+            assert await repurge_window.coalesce_successor(
+                Broker(clock), ORG, first_hop(ORG, f"rec-{i}", clock[0] - 300), store=store, now=clock[0],
+            ) is False
+    warnings = [r for r in caplog.records if "Re-purge window unavailable" in r.getMessage()]
+    assert len(warnings) == 1 and counted == ["error"] * 500

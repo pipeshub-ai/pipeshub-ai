@@ -131,3 +131,41 @@ async def test_repair_sees_only_the_orgs_open_windows_and_a_done_window_leaves_t
     assert await pg.overdue(org, NOW) == []                                          # not due yet
     await pg.mark_done(org, 5, "e5")
     assert await pg.overdue(org, NOW + 10**7) == [(6, "e6")]
+
+
+async def test_repair_ignores_an_open_row_older_than_the_ids_life_even_while_its_row_has_not_expired(stores, uid) -> None:
+    """The prune bound of ``overdue``: such a row could only count a loss (its ids are gone), so it is not repaired."""
+    pg = stores[0]
+    org = f"org-{uid}"
+    await _publish(pg, org, window=5, epoch="fresh")
+    async with pg._state.locked(f"rpw:{{{org}}}:open:index") as tx:
+        await tx.set(f"rpw:{{{org}}}:open:4:ancient", "1000", 3600.0)           # due long before the ids' life, row still live
+    assert await pg.overdue(org, NOW + 10**7) == [(5, "fresh")]
+
+
+async def test_the_seal_reads_the_frozen_rows_in_pages_and_outside_the_lock(stores, uid, monkeypatch) -> None:
+    """QA-G32a-4: at 250k rows the seal held the window lock for 0.94 s and added 229 MiB. The lock now covers only the
+    verdict and the ``sealed`` write; the rows are read in pages after it is released."""
+    a, b = stores
+    org = f"org-{uid}"
+    monkeypatch.setattr(repurge_window, "SEAL_READ_CHUNK", 7)
+    await _publish(a, org)
+    for i in range(50):
+        assert (await a.open_or_append(org, 5, "zz", "e", f"r{i:02d}", NOW)).state == APPENDED
+    pages: list[int] = []
+    during_read: list[str] = []
+    real = a._state.read_rows
+
+    async def spy(prefix: str, after: str | None, limit: int) -> list:
+        rows = await real(prefix, after, limit)
+        pages.append(len(rows))
+        if not during_read:                      # a late append while the rows are being read: the lock must be free
+            got = await asyncio.wait_for(b.open_or_append(org, 5, "zz", "e", "late", NOW), 5)
+            during_read.append(got.state)
+        return rows
+
+    monkeypatch.setattr(a._state, "read_rows", spy)
+    read = await a.seal_read(org, 5, "e1", NOW + 400_000)
+    assert read.state == SEAL_OK and read.ids == tuple(f"r{i:02d}" for i in range(50))
+    assert pages == [7] * 7 + [1]                # ceil(50 / 7) pages, not one read of 50
+    assert during_read == [CLOSED]

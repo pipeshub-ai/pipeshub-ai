@@ -120,6 +120,8 @@ class World:
     p_fail: float = 0.0
     p_stale: float = 0.0
     p_crash: float = 0.0
+    #: A claimer that crashes never comes back (its event is lost to the world, as a dead-lettered one is).
+    die: bool = False
     flag_off_at: float | None = None
     store_factory: Any = None
     client: Any = None                      # a real Redis client; the default is fakeredis (real Lua, no server)
@@ -145,7 +147,8 @@ class World:
             counter[0] += 1
             heapq.heappush(heap, (at, 0 if kind == "seal" else 1, counter[0], kind, data))
 
-        broker = _WorldBroker(self, rnd, outages, clock, push)
+        mute = {"release": False}
+        broker = _WorldBroker(self, rnd, outages, clock, push, mute)
         t, n = 0.0, 0
         while True:
             t += rnd.expovariate(self.rate)
@@ -153,7 +156,6 @@ class World:
                 break
             n += 1
             push(t, "hop1", (f"r{n}", 1))
-        mute = {"release": False}
         real_release = store.release_claim
 
         async def release(org_id: str, window: int, token: str) -> None:
@@ -193,6 +195,9 @@ class World:
             except Crash:
                 mute["release"] = True
                 ok = False
+                if self.die:
+                    self.dead.add(rid)
+                    continue
             except Exception:
                 ok = False
             if ok:
@@ -213,8 +218,8 @@ class World:
 
 
 class _WorldBroker:
-    def __init__(self, world: World, rnd: random.Random, outages: list, clock: list[float], push: Any) -> None:  # noqa: ANN401
-        self.world, self.rnd, self.outages, self.clock, self.push = world, rnd, outages, clock, push
+    def __init__(self, world: World, rnd: random.Random, outages: list, clock: list[float], push: Any, mute: dict) -> None:  # noqa: ANN401
+        self.world, self.rnd, self.outages, self.clock, self.push, self.mute = world, rnd, outages, clock, push, mute
         self.crash_next = False
 
     async def send_event(self, topic: str, event_type: str, payload: dict, key: str | None = None) -> bool:
@@ -223,6 +228,7 @@ class _WorldBroker:
             raise ConnectionError("broker down")
         if self.crash_next and event_type == "purgePaidResultsBatch" and payload.get("phase") == "seal":
             self.crash_next = False
+            self.mute["release"] = True        # the process is dead: the handler's own cleanup never runs
             raise Crash
         if event_type == "purgePaidResults":
             if payload.get("recordId"):

@@ -13,6 +13,9 @@ from app.services.pg_runtime import RuntimeDb
 from tests.support.require_service import missing
 
 URL = os.environ.get("PG_RUNTIME_TEST_URL", "")
+#: The service the runtime connects as: it must be the role of the login in ``PG_RUNTIME_TEST_URL`` (the indexing service runs
+#: the coalesced re-purge window, so that file also runs as ``indexing``: see pg-runtime.yml).
+SERVICE = os.environ.get("PG_RUNTIME_TEST_SERVICE", "connectors")
 
 
 @pytest.fixture
@@ -21,7 +24,7 @@ async def runtime(monkeypatch) -> RuntimeDb:
         missing("PG_RUNTIME_TEST_URL is not set")
     monkeypatch.setenv("PG_CORE_URL", URL)
     monkeypatch.setenv("PG_POOLER", "none")
-    monkeypatch.setenv("PG_RUNTIME_SERVICE", "connectors")
+    monkeypatch.setenv("PG_RUNTIME_SERVICE", SERVICE)
     monkeypatch.delenv("PG_LISTEN_URL", raising=False)
     return RuntimeDb()
 

@@ -86,6 +86,11 @@ SELECT key, convert_from(value, 'UTF8') AS v FROM platform.kv_entries
 WHERE key >= $1 AND key < $2 AND (expires_at IS NULL OR expires_at > now()) ORDER BY key"""
 
 
+_ROWS_PAGE = """/* pipeshub:state.rowspage */
+SELECT key, convert_from(value, 'UTF8') AS v FROM platform.kv_entries
+WHERE key >= $1 AND key < $2 AND key > $3 AND (expires_at IS NULL OR expires_at > now()) ORDER BY key LIMIT $4"""
+
+
 class LockedTx:
     """Key-value access inside one transaction that holds an advisory lock (``PgState.locked``). Keys are the caller's,
     under ``state:``; each read and write is one statement of the lock holder's transaction."""
@@ -121,6 +126,14 @@ class PgState:
 
     async def _tx(self, *, write: bool = True):  # noqa: ANN202
         return (await self.rt.db()).runtime_uow(write=write)
+
+    async def read_rows(self, prefix: str, after: str | None, limit: int) -> list[tuple[str, str]]:
+        """At most ``limit`` live rows under ``prefix`` (ending in ``:``), in key order, after the key ``after``: a page of a
+        range that no one writes any more (a sealed window), read outside any lock. Keys come back without ``state:``."""
+        low, high = _range(WINDOW_PREFIX + prefix)
+        async with await self._tx(write=False) as tx:
+            rows = await tx.fetch(_ROWS_PAGE, low, high, (WINDOW_PREFIX + after) if after else "", limit)
+        return [(r["key"][len(WINDOW_PREFIX):], r["v"]) for r in rows]
 
     @contextlib.asynccontextmanager
     async def locked(self, lock_name: str) -> AsyncIterator[LockedTx]:
