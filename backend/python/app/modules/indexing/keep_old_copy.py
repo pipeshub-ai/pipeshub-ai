@@ -125,7 +125,7 @@ def pending_of(doc: Mapping[str, Any]) -> str | None:
 
 #: Statuses a record can have while a run of its own replaces its copy.
 RUNNING = (ProgressStatus.IN_PROGRESS.value, ProgressStatus.QUEUED.value)
-#: The statuses the commit accepts: running, or reset to NOT_STARTED by a save made mid-run (R3-1).
+#: The statuses the commit accepts: running, or reset to NOT_STARTED by a save made mid-run.
 COMMITTABLE = (*RUNNING, ProgressStatus.NOT_STARTED.value)
 
 

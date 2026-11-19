@@ -32,7 +32,7 @@ def _paged_graph(rows: list[dict]) -> AsyncMock:
 
 @pytest.mark.asyncio
 async def test_the_orphan_sweep_keeps_a_copy_a_record_has_just_left_until_the_grace_is_over() -> None:
-    """Scenarios 19 and 26: after a commit the old copy has no holder, but a reader's cached map may still name it."""
+    """after a commit the old copy has no holder, but a reader's cached map may still name it."""
     from app.indexing_main import _sweep_orphaned_virtual_record_mappings
 
     now_ms = time.time() * 1000
@@ -52,7 +52,7 @@ async def test_the_orphan_sweep_keeps_a_copy_a_record_has_just_left_until_the_gr
 
 @pytest.mark.parametrize(("ttl", "pg_state", "expected"), [("300", False, 330.0), ("100", False, 130.0), (None, True, 90.0), ("500", True, 90.0)])
 def test_the_grace_is_the_cache_ttl_plus_a_margin_in_every_mode(monkeypatch: pytest.MonkeyPatch, ttl: str | None, pg_state: bool, expected: float) -> None:
-    """Scenario 38."""
+    """."""
     if ttl is None:
         monkeypatch.delenv("PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL", raising=False)
     else:
@@ -63,7 +63,7 @@ def test_the_grace_is_the_cache_ttl_plus_a_margin_in_every_mode(monkeypatch: pyt
 
 @pytest.mark.asyncio
 async def test_a_commit_drops_the_records_cache_entry_at_once_and_not_through_the_coalesced_path() -> None:
-    """Scenario 19: the invalidation of a record that moved to another virtual record is not coalesced like the one of a new record."""
+    """the invalidation of a record that moved to another virtual record is not coalesced like the one of a new record."""
     from app.services.cache.accessible_records_cache import AccessibleRecordsInvalidator
 
     invalidator = AccessibleRecordsInvalidator.__new__(AccessibleRecordsInvalidator)
@@ -81,7 +81,7 @@ async def test_a_commit_drops_the_records_cache_entry_at_once_and_not_through_th
 
 @pytest.mark.asyncio
 async def test_with_scope_fields_on_the_commit_and_each_twin_move_run_inside_the_fence_of_the_copy_they_leave() -> None:
-    """Scenario 20: the records that keep sharing the old copy are registered before the record or a twin leaves it."""
+    """the records that keep sharing the old copy are registered before the record or a twin leaves it."""
     entered: list[tuple[str, str]] = []
 
     class Fence:
@@ -120,7 +120,7 @@ async def test_a_refused_commit_with_scope_fields_on_leaves_the_fence_and_the_re
 
 @pytest.mark.asyncio
 async def test_with_the_flag_unset_no_run_asks_the_fleet_and_the_record_never_gets_a_pending_field(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Scenario 28: the default is today's order, whatever the broker or the membership says."""
+    """the default is today's order, whatever the broker or the membership says."""
     monkeypatch.delenv(keep_old_copy.ENV_ENABLED, raising=False)
     reader = MagicMock()
     with patch("app.services.messaging.membership.reader_for", return_value=reader):
@@ -143,7 +143,7 @@ def _referenced_in(names: tuple[str, ...], roots: tuple[str, ...]) -> list[str]:
 
 
 def test_only_the_indexing_service_sweeps_virtual_records_from_their_mapping_rows_or_stage_states() -> None:
-    """Scenario 36: the connector and query services reach a virtual record only through a record's own ``virtualRecordId``, so they never
+    """the connector and query services reach a virtual record only through a record's own ``virtualRecordId``, so they never
     see a pending one and need not carry the protocol tag. A sweep of that kind added there must be added to the tag check first."""
     sweeps = ("get_virtual_record_ids_in_use", "stage_states_unheld_revisions", "stage_states_delete_unheld_revisions",
               "_sweep_orphaned_virtual_record_mappings")

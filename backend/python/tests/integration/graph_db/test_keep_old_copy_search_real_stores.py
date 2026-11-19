@@ -1,4 +1,4 @@
-"""Scenarios 1 and 2: search keeps serving the old copy until the new set commits, on a real graph store and a real Qdrant.
+"""search keeps serving the old copy until the new set commits, on a real graph store and a real Qdrant.
 
 The record's points are in Qdrant under two virtual records. A search is a vector query followed by the access check: a hit counts when a
 record names its virtual record as its own ``virtualRecordId`` (the graph-first rule search follows; the holder lookup, which also counts a

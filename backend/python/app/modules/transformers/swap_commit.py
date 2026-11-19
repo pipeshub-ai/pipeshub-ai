@@ -160,7 +160,7 @@ class SwapCommitter:
 
     @staticmethod
     def _pointed(ctx: TransformContext) -> frozenset[str]:
-        """The block ids the writers gave a point this run (D-179), recorded with the reconciliation metadata."""
+        """The block ids the writers gave a point this run, recorded with the reconciliation metadata."""
         rc = ctx.reconciliation_context
         pointed = (rc.new_metadata or {}).get("pointedBlocks") if rc is not None and isinstance(rc.new_metadata, dict) else None
         return frozenset(pointed or ())

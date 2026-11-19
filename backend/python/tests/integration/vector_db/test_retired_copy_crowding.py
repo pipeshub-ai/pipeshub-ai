@@ -1,4 +1,4 @@
-"""Scenario 30: search while a connector is re-indexed in bulk, with the old copies kept.
+"""search while a connector is re-indexed in bulk, with the old copies kept.
 
 A connector of N records, 3 chunks each, is re-indexed in bulk: R records commit per second and each retired old copy is kept for the grace
 (the cache TTL plus 30 s). The container search fetches FETCH points by the connector's membership, then keeps the points whose virtual

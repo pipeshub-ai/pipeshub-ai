@@ -203,7 +203,7 @@ async def test_an_empty_result_moves_the_record_to_the_empty_copy_and_releases_t
 
 @pytest.mark.asyncio
 async def test_the_old_copys_points_lose_their_membership_at_the_commit_not_after_the_grace() -> None:
-    """Scenario 30: retired points that still carry the connector's membership sit beside the served copy in every container search of
+    """retired points that still carry the connector's membership sit beside the served copy in every container search of
     that connector until the grace is over."""
     from unittest.mock import AsyncMock, patch
 
@@ -234,7 +234,7 @@ async def test_a_holder_that_remains_keeps_the_membership_of_the_old_copy() -> N
 
 @pytest.mark.asyncio
 async def test_a_twin_whose_membership_resync_fails_gets_a_durable_repair_and_the_other_twins_still_move() -> None:
-    """Scenario 37: a crash or an error between a twin's move and the write of its membership leaves the twin out of a container search of its
+    """a crash or an error between a twin's move and the write of its membership leaves the twin out of a container search of its
     connector; the connector's membership is walked again (the backfill scanner), not left to the next write."""
     from unittest.mock import AsyncMock, patch
 
@@ -308,7 +308,7 @@ async def test_finish_drops_the_records_cache_entry_and_marks_the_old_copy() -> 
 
 @pytest.mark.asyncio
 async def test_finish_retires_the_membership_of_the_old_copy() -> None:
-    """The call that keeps retired copies out of container search (scenario 30): without it search falls back to the record-id path for most
+    """The call that keeps retired copies out of container search: without it search falls back to the record-id path for most
     queries on a connector being re-indexed."""
     from unittest.mock import AsyncMock, patch
 

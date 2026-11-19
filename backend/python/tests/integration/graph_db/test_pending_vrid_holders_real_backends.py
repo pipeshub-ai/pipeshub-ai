@@ -246,7 +246,7 @@ async def test_the_batch_holder_lookup_plans_to_index_seeks_and_the_plan_stops_u
 
 @pytest.mark.arango_only  # the older strict schema is ArangoDB's; the Neo4j leg does not collect it (a skip would fail that leg)
 async def test_a_swapped_record_stays_writable_under_the_older_strict_schema(world) -> None:
-    """Scenario 21 (ArangoDB): the commit removes the pending attribute, so a process that re-applies the schema of the release before this one
+    """the commit removes the pending attribute, so a process that re-applies the schema of the release before this one
     can still write to every record that swapped (a stored null would be rejected by its closed rule). A record mid-swap carries the attribute
     and is the one that waits for a process of the new release."""
     provider, run = world
