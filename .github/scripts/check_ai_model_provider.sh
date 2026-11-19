@@ -19,11 +19,10 @@ case "$provider" in
       exit 1
     fi
     ;;
-  gemini | groq | ollama)
-    echo "AI model provider: $provider"
-    ;;
   *)
-    echo "::error::TEST_AI_MODEL_PROVIDER is not one of openAI, azureOpenAI, gemini, groq, ollama (check its case)."
+    # gemini, groq and ollama are helper providers too, but these workflows pass none of their
+    # settings, and a named provider gets no fallback, so model setup would fail later.
+    echo "::error::TEST_AI_MODEL_PROVIDER must be openAI or azureOpenAI (check its case); the workflows configure no other provider."
     exit 1
     ;;
 esac

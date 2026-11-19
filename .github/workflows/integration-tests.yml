@@ -357,8 +357,12 @@ jobs:
       # local .env run does today.
       TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
       TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
-      # The demo test's answer judge uses the Azure settings above. Without it,
-      # facts a question lists for the judge would go unchecked yet pass.
+      # The demo test's answer judge. With no JUDGE_PROVIDER it uses Azure OpenAI
+      # whenever TEST_AZURE_OPENAI_API_KEY is set, so name OpenAI, the provider
+      # above; it then reads TEST_OPENAI_API_KEY and TEST_OPENAI_LLM_MODEL.
+      # Required: without it, facts a question lists for the judge would go
+      # unchecked yet pass.
+      EVAL_PROVIDER: openai
       PIPESHUB_REQUIRE_JUDGE: '1'
       # Confluence and Jira sync from the confluence-sim and jira-sim services
       # (atlassian-sim profile), Notion from notion-sim (notion-sim profile); their
@@ -582,6 +586,7 @@ jobs:
 
       # Stop before the stack build when the chosen provider's key is missing.
       - name: Check the AI model provider
+        id: ai-provider
         run: .github/scripts/check_ai_model_provider.sh
 
       # The runner shares ~15.7 GB with the Docker stack. If the kernel's out-of-memory
@@ -818,8 +823,9 @@ jobs:
         run: docker compose -f docker-compose.integration.neo4j.yml build
 
       - name: Build ArangoDB stack images
-        # Run even if the Neo4j pass failed, but stop if the run was cancelled.
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        # Run even if the Neo4j pass failed, but stop if the run was cancelled or
+        # the AI model provider check failed.
+        if: ${{ !cancelled() && steps.ai-provider.outcome == 'success' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml build
 
@@ -1074,7 +1080,7 @@ jobs:
 
       - name: 'ArangoDB: Start services'
         id: arango-start
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.ai-provider.outcome == 'success' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
 
