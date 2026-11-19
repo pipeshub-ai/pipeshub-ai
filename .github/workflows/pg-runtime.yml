@@ -25,6 +25,10 @@ on:
       - 'backend/python/app/schema/**'
       - 'backend/python/app/modules/code_graph/**'
       - 'backend/python/app/modules/indexing/vector_membership_backfill.py'
+      # The page-limit un-index routine runs against the PostgreSQL graph in graph_db/postgres/test_unindex_record_pg.py.
+      - 'backend/python/app/modules/indexing/unindex.py'
+      - 'backend/python/app/modules/indexing/taxonomy_cleanup.py'
+      - 'backend/python/tests/support/unindex_world.py'
       - 'backend/python/app/models/entities.py'
       - 'backend/python/app/exceptions/graph_db_exceptions.py'
       - 'backend/python/app/utils/time_conversion.py'

@@ -474,10 +474,18 @@ _JARGON = re.compile(
 
 
 def test_no_reason_shown_to_people_uses_internal_words() -> None:
-    texts = [v for k, v in vars(ue).items() if k.isupper() and isinstance(v, str)]
+    texts = [v for k, v in vars(ue).items() if k.isupper() and isinstance(v, str) and k != "PDF_PAGE_LIMIT_NOTE"]
     texts += [*ue._ai_messages("AI model").values(), ue.unsupported_file_type("xyz")]
     for text in texts:
         assert not _JARGON.search(text), text
+
+
+def test_the_page_limit_texts_use_no_internal_words() -> None:
+    """They state the limit, a number of three digits that the status-code pattern above would flag."""
+    words = re.compile(_JARGON.pattern.replace(r"|\d{3}", ""), re.IGNORECASE)
+    assert r"\d{3}" not in words.pattern
+    for text in (ue.PDF_PAGE_LIMIT_NOTE, ue.pdf_over_page_limit(501)):
+        assert not words.search(text), text
 
 
 # Record reasons in the indexing path come from the mapper or a constant, never

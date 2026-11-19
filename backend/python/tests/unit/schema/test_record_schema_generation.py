@@ -19,7 +19,10 @@ from app.services.graph_db.arango.record_schema_guard import (
 )
 
 # Change the rule -> this hash changes -> bump RECORD_SCHEMA_GENERATION, then update the pair below.
-PINNED = {2: "53cf2c2c1dd02fc6616e59bc8d67814a25887b4debf7f26399178514fa03b829"}
+PINNED = {
+    2: "53cf2c2c1dd02fc6616e59bc8d67814a25887b4debf7f26399178514fa03b829",
+    3: "3004c2a66b4a4c0749bebf64f11fe6da94fd94edc1551baae4ad675011566b04",
+}
 
 
 def _hash(schema: dict) -> str:

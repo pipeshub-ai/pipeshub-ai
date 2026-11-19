@@ -192,6 +192,7 @@
   "app/modules/indexing/lane_upkeep.py": 1,
   "app/modules/indexing/named_entity_completion.py": 2,
   "app/modules/indexing/named_entity_persist_retry.py": 2,
+  "app/modules/indexing/pdf_page_limit_audit.py": 2,
   "app/modules/indexing/record_label_repair.py": 1,
   "app/modules/indexing/record_republish.py": 1,
   "app/modules/indexing/record_title_consumer.py": 2,

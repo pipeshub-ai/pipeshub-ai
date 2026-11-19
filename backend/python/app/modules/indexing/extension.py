@@ -61,6 +61,10 @@ class LongDocument:
     inspected: Any = None
     store_only: bool = False
     keep_eligible: bool = False
+    payload: Mapping[str, Any] | None = None
+    """The event that is being indexed, as it arrived (a forced reindex is ``forceReindex`` in it). None when a caller has no event."""
+    host: Any = None
+    """The event processor running the check: its graph provider, processor and logger, and its stored-content probe."""
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,7 @@ class Proceed:
 
     pages: int | None = None
     clear_note: bool = False
+    keep_eligible: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,10 +109,12 @@ class LongDocumentPolicy(Protocol):
 
 
 class DefaultLongDocumentPolicy:
-    """No policy of its own: every document proceeds."""
+    """The built-in policy: the PDF page limit (``app.modules.indexing.page_limit``)."""
 
     async def check(self, doc: LongDocument) -> Proceed | Keep | Refuse | Handled:
-        return Proceed()
+        from app.modules.indexing.page_limit import check_page_limit
+
+        return await check_page_limit(doc)
 
     async def holds_stand_in(self, vrid: str | None, extension: str | None, mime_type: str | None) -> bool:
         return False

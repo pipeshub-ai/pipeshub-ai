@@ -54,6 +54,8 @@ RECORD_PROPERTIES = frozenset({
     # only accepts them and writes none; the schema carries them first so a process on the older schema never
     # meets a key it rejects once a later release writes them.
     "failedAt", "firstQueuedAt", "indexingAttempts", "pageCount",
+    # The hex md5 of the bytes last fully indexed. Optional, internal, written only when an index completes.
+    "indexedMd5",
     # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message fires, so the
     # recovery scans do not republish it first. Optional, internal, and written only on that hand-back.
     "deferredUntilMs", "rateLimitedSinceMs",

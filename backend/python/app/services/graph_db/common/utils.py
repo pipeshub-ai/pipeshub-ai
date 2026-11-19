@@ -468,6 +468,7 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "failedAt",
     "indexingAttempts",
     "pageCount",
+    "indexedMd5",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
     "extractionDeferred",

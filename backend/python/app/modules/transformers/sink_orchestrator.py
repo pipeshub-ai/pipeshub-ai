@@ -21,6 +21,7 @@ from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
 from app.modules.indexing import extension as indexing_extension
+from app.modules.indexing import indexed_bytes
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.extension import notify_terminal
 from app.modules.indexing.parse_now_marker import (
@@ -904,6 +905,8 @@ class SinkOrchestrator(Transformer):
         }
         if current_attempt() is not None:
             status.update(cleared_fields())
+        if (indexed_md5 := indexed_bytes.current()) is not None:
+            status["indexedMd5"] = indexed_md5
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
             extension_points = indexing_extension.current()
             if extension_points.deferred_stages() or (

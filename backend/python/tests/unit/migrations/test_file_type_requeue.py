@@ -713,3 +713,11 @@ def test_the_page_row_carries_the_reason_the_selection_reads() -> None:
     )
 
     assert "reason" in UNSUPPORTED_PAGE_FIELDS
+
+
+def test_a_pdf_refused_for_its_page_count_is_never_selected() -> None:
+    from app.migrations.file_type_requeue.migration import is_selected
+    from app.utils.user_errors import pdf_over_page_limit
+
+    record = _file("long", "big.pdf", ext="pdf", mime="application/pdf", reason=pdf_over_page_limit(900))
+    assert is_selected(record, {"mimeType": "application/pdf", "reason": pdf_over_page_limit(900)}, frozenset()) == (False, None)

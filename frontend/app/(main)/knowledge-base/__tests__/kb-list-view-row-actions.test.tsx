@@ -160,3 +160,18 @@ describe('the status of a file with nothing to index', () => {
     expect(getKbItemStatusLabel(file, t, false)).toBe('kb.indexingStatus.empty');
   });
 });
+
+describe('the status of a PDF that is over the page limit', () => {
+  const t = ((key: string) => key) as unknown as TFunction;
+  const reason = 'This PDF has 501 pages; PDFs over 500 pages are not indexed. See the plan for where they are supported.';
+
+  it('shows the reason beside the not-supported status', () => {
+    const file = hubNode({ id: 'r1', name: 'long.pdf', indexingStatus: 'FILE_TYPE_NOT_SUPPORTED', reason });
+    expect(getKbItemStatusLabel(file, t)).toBe(`kb.indexingStatus.fileTypeNotSupported - ${reason}`);
+  });
+
+  it('keeps the short label short', () => {
+    const file = hubNode({ id: 'r1', name: 'long.pdf', indexingStatus: 'FILE_TYPE_NOT_SUPPORTED', reason });
+    expect(getKbItemStatusLabel(file, t, false)).toBe('kb.indexingStatus.fileTypeNotSupported');
+  });
+});

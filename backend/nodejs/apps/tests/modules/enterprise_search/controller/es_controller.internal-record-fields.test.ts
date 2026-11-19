@@ -30,6 +30,7 @@ const INTERNAL = {
   failedAt: 1_700_000_100_000,
   indexingAttempts: 2,
   pageCount: 12,
+  indexedMd5: '0123456789abcdef0123456789abcdef',
   republishCount: 3,
   p_color: 'red',
 }
