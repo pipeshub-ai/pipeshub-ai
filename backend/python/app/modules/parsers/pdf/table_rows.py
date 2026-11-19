@@ -27,7 +27,7 @@ EDGE_TOL = 3.0  # a segment starts at its column's left text edge, pt
 RUN_MIN = 3  # one-word code keys needed for branch (d)
 
 ANNOT = re.compile(r"^\s*(\(|See\b|Note\b|NOTE\b|—)")
-CODE = re.compile(r"^[A-Z0-9_≥≤<>+-][A-Z0-9_.:\[\]≥≤<>+-]*$")
+CODE = re.compile(r"^[A-Z0-9_≥≤<>+-][A-Z0-9_.:\[\]≥≤<>=+-]*$")
 
 
 def _cx(w: dict[str, Any]) -> float:
