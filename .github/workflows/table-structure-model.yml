@@ -90,4 +90,4 @@ jobs:
           pytest tests/table_model -p no:cacheprovider --timeout=600 -v --junitxml="$RUNNER_TEMP/table-model.xml"
 
       - name: Fail if the tests skipped
-        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/table-model.xml" --min-tests 9
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/table-model.xml" --min-tests 11

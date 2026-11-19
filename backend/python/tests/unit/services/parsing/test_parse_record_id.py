@@ -92,3 +92,14 @@ async def test_the_service_pipeline_sends_the_record_id_to_the_parsing_service()
     ep = _make_event_processor(parsing_client=parsing_client, extraction_client=MagicMock(), sink_orchestrator=sink)
     _ = [event async for event in ep.on_event(_make_event_data())]
     assert parsing_client.parse.await_args.kwargs["record_id"] == "rec-1"
+
+
+def test_the_route_cuts_a_long_record_id() -> None:
+    client, parser = _client_and_parser()
+    with patch("app.api.routes.parsing.acquire_gate_with_backpressure", AsyncMock(return_value=True)):
+        response = client.post(
+            "/api/v1/parse",
+            files={"file": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+            data={"record_name": "a.pdf", "extension": "pdf", "provider": "default", "record_id": "r" * 300},
+        )
+    assert response.status_code == 200 and parser.parse.await_args.args[2]["record_id"] == "r" * 128

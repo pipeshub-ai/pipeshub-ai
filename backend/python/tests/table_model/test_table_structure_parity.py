@@ -54,3 +54,14 @@ def test_a_crop_only_request_is_reported(harness, supervisor) -> None:
     compared, diffs = run_both(harness, supervisor, mutate="crop_only")
     print(f"crop only: {diffs} of {compared} fixture boxes differ")
     assert compared >= 8  # measured 0 of 8 here (21 of 203 on real documents); reported, not gated
+
+
+def test_resize_page_equals_the_library_function(harness) -> None:
+    import numpy as np
+
+    from app.modules.parsers.pdf.table_hybrid_flow import resize_page
+
+    img = np.random.default_rng(3).integers(0, 255, (1584, 1224, 3), dtype=np.uint8)
+    ours, sf = resize_page(img)
+    theirs, sf2 = harness.pred.resize_img(img, height=1024)
+    assert sf == sf2 and np.array_equal(ours, theirs)
