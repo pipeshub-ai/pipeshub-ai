@@ -355,6 +355,37 @@ async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_
         await con.close()
 
 
+def _joined_reads(node: dict, relation: str, probe: bool = False) -> list[str]:
+    """The reads of ``relation`` in a plan that are not inside a SubPlan (a per-row probe): part of the plan's joins."""
+    probe = probe or node.get("Parent Relationship") == "SubPlan"
+    own = [f"{node['Node Type']} on {node['Relation Name']}"] if not probe and str(node.get("Relation Name", "")).startswith(relation) else []
+    return own + [x for c in node.get("Plans", []) for x in _joined_reads(c, relation, probe)]
+
+
+@pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
+@pytest.mark.parametrize("admitted", [False, True], ids=["walked", "by_class"])
+async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_the_organisations_nodes(pg_db, analyzed, admitted) -> None:
+    """A window filtered by indexing status reads each row's node by its key, in the window's order. As a join the plan read every node of the organisation
+    (a sequential scan of its partition: 4.2 s at 1M records) to keep one window."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        if analyzed:
+            await con.execute("ANALYZE kg.records; ANALYZE graph.nodes")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        base = kgl.Params([org, app_sk, None])
+        where = kgl.filters_sql({"record_types": ["FILE"], "indexing_status": ["COMPLETED"]}, base)
+        q = kgl.Params(list(base.values))
+        q.values[2] = 204
+        admit = kgl.class_admit("w", q, {"unvouched": [], "plain": [1], "own": [], "granted": [], "walked": set()}) if admitted else None
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.page_sql("updatedAt", "DESC", "next", where, None, admit), *q.values))
+        joined = _joined_reads(plan_gate.root(plan), "nodes")
+        assert plan_gate.scans(plan, "nodes") and not joined, f"indexing status ({'after' if analyzed else 'before'} ANALYZE) joins the organisation's nodes: {joined}"
+    finally:
+        await con.close()
+
+
 @pytest.mark.parametrize(("kind", "kept"), [("KB", ["g1"]), ("DRIVE", ["g1", "g2"])])
 async def test_the_record_group_filter_narrows_a_collections_groups_only(pg_db, kind: str, kept: list[str]) -> None:
     """As the other stores do: ``record_group_ids`` keeps only the listed record groups of a collection; a connector's groups, and every record, pass."""
