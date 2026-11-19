@@ -134,9 +134,11 @@ def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(led
     waiting = threading.Event()
     result: list[BaseException | object] = []
     real_wait = threading.Event.wait
+    me = threading.get_ident()
 
     def wait_then_pass_the_deadline(self: threading.Event, timeout: float | None = None) -> bool:
-        if timeout is None or waiting.is_set():
+        # the patch is process-wide: another thread's timed wait (a controller left by an earlier test) must not move the clock before this wait starts
+        if timeout is None or waiting.is_set() or threading.get_ident() != me:
             return real_wait(self, timeout)  # thread start-up and everything else that waits on an Event
         waiting.set()  # the waiter has made its first attempt and is about to sleep
         now[0] += 10.0  # the deadline passes while it sleeps ...
@@ -144,6 +146,9 @@ def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(led
         return real_wait(self, 5)
 
     monkeypatch.setattr(threading.Event, "wait", wait_then_pass_the_deadline)
+    bystander = threading.Thread(target=lambda: threading.Event().wait(0.01))  # a timed wait in another thread, as under a loaded run
+    bystander.start()
+    bystander.join()
     try:
         b.reserve_blocking(_small(), deadline_s=5)
         result.append("took the permit")
