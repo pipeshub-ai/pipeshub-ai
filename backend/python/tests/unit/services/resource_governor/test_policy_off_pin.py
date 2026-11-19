@@ -77,6 +77,14 @@ EDITED = {
         # (so the consumers' requeue call is unchanged with the flag off); `spaced` on acquire_parsing_slot defaults to True and only
         # the class path passes False (test_policy_off_pin's recorded acquire_parsing_slot calls and test_class_admission_off cover it).
         "first_admission_kwargs",
+        # The backstop's give-up reason: `give_up_label` is None for every hand-back but a same-bytes update, and
+        # `backstop_give_up_reason` then returns the old admission wording unchanged (tests/unit/events/
+        # test_update_coalescing.py::test_the_give_up_reason_names_a_same_bytes_hand_back_and_only_that).
+        "RequeueWithoutAttempt.give_up_label", "backstop_give_up_reason",
+        # Logging only: a failed clear is one structured WARNING (index.retry_clear_failed) instead of a plain ERROR, and is
+        # still swallowed; it runs after settlement and reserves nothing (tests/unit/services/messaging/test_indexing_end.py::
+        # test_redis_retry_tracker_failure_after_the_ack_is_a_second_line).
+        "clear_retry_tracking",
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",

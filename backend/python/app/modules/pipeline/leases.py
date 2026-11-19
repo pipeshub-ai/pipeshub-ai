@@ -16,6 +16,9 @@ from app.services.messaging.config import messaging_env
 _POLL_S = 1.0
 # Shortest renewal interval for a held lease (a third of its term otherwise).
 _MIN_RENEW_S = 1.0
+# A confirm whose lease store errors is asked once more, after this pause.
+_CONFIRM_TRIES = 2
+_CONFIRM_RETRY_PAUSE_S = 0.2
 
 
 class RevisionSuperseded(Exception):
@@ -29,6 +32,28 @@ class RecordBusy(Exception):
 class LeaseLost(RecordBusy):
     """The held lease could not be renewed: a re-index may own the record now, so the holder
     stopped before its next write. A ``RecordBusy``, so the job is retried."""
+
+
+class LeaseHandle:
+    """What a ``hold`` gives its body: a way to confirm, right before a destructive write, that the lease is still this holder's."""
+
+    def __init__(self, manager: IDistributedLeaseManager | None, pool: str, holder: str, lease_s: float) -> None:
+        self._manager, self._pool, self._holder, self._lease_s = manager, pool, holder, lease_s
+
+    async def confirm(self) -> bool:
+        """Compare-and-renew on the holder's own token: True only when the manager still has this holder as the owner (and the term is
+        extended, so the write that follows is not overtaken while it takes less than a term). An answer of "not ours" is final. A
+        store that errors is asked once more after a short pause, so one blip does not hand the delivery back; a second error counts
+        as not ours."""
+        if self._manager is None:
+            return True
+        for attempt in range(_CONFIRM_TRIES):
+            try:
+                return bool(await self._manager.renew(self._pool, self._holder, self._lease_s))
+            except Exception:
+                if attempt + 1 < _CONFIRM_TRIES:
+                    await asyncio.sleep(_CONFIRM_RETRY_PAUSE_S)
+        return False
 
 
 class RecordLeases:
@@ -74,8 +99,8 @@ class RecordLeases:
         owner: str,
         wait_s: float,
         still_current: Callable[[], Awaitable[bool]],
-    ) -> AsyncIterator[None]:
-        """Hold ``record_id``'s lease, with the record still on the job's revision.
+    ) -> AsyncIterator[LeaseHandle]:
+        """Hold ``record_id``'s lease, with the record still on the job's revision. The body gets a ``LeaseHandle``.
 
         Raises ``RevisionSuperseded`` as soon as it is not (a re-index started while this waited),
         and ``RecordBusy`` when the lease stays held for ``wait_s``. When the held lease is lost
@@ -86,7 +111,7 @@ class RecordLeases:
         if manager is None:
             if not await still_current():
                 raise RevisionSuperseded(record_id)
-            yield
+            yield LeaseHandle(None, "", "", 0.0)
             return
         pool, holder = f"record:{record_id}", f"{owner}:{uuid4().hex[:8]}"
         loop = asyncio.get_running_loop()
@@ -126,7 +151,7 @@ class RecordLeases:
         try:
             if not await still_current():
                 raise RevisionSuperseded(record_id)
-            yield
+            yield LeaseHandle(manager, pool, holder, lease_s)
         except asyncio.CancelledError:
             if not absorb_own_cancel():
                 raise

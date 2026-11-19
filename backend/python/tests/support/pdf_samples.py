@@ -37,6 +37,13 @@ def blank_pdf(pages: int = 1) -> bytes:
     return buf.getvalue()
 
 
+def no_pages_pdf() -> bytes:
+    """A well-formed PDF with no pages. pdfium refuses it without setting an error code of its own."""
+    buf = io.BytesIO()
+    canvas.Canvas(buf).save()
+    return buf.getvalue()
+
+
 def password_protected_pdf() -> bytes:
     """Needs a password to open at all."""
     return _encrypted(user_password="secret")

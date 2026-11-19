@@ -384,9 +384,54 @@ async def test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_t
     assert started["firstQueuedAt"] == after["firstQueuedAt"] and started["indexingAttempts"] == 1
 
 
+class _Interleaved:
+    """The provider, with one concurrent write slipped in right after a named call returns (the interleaving a race produces)."""
+
+    def __init__(self, store: Store, after: str, then: dict[str, Any], key: str) -> None:
+        self._store, self._after, self._then, self._key, self._done = store, after, then, key, False
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        real = getattr(self._store.p, name)
+        if name != self._after:
+            return real
+
+        async def call(*args: Any, **kw: Any) -> Any:  # noqa: ANN401
+            result = await real(*args, **kw)
+            if not self._done:
+                self._done = True
+                assert await self._store.p.update_node(self._key, RECORDS, self._then)
+            return result
+
+        return call
+
+
+async def test_a_conditional_write_that_failed_while_another_writer_stored_the_revision_and_its_count_keeps_that_count(store: Store) -> None:
+    """The write of revision B finds the record on A (its conditional statement matches nothing). Another writer then stores B and its page
+    count. Dropping the count afterwards, unconditionally, would erase a valid count that nothing restores (a finished duplicate is not parsed
+    again): the decision is taken again from the revision the store holds now."""
+    from app.modules.indexing.record_diagnostics import write_with_revision_rule
+
+    flow = Flow(store)
+    await flow.run("save_new", "cas_queued", "attempt")
+    assert await store.p.update_node(flow.key, RECORDS, {"contentRev": "rev-a", "pageCount": 5})
+
+    racing = _Interleaved(store, "update_node_fields_if_match", {"contentRev": "rev-b", "pageCount": 9}, flow.key)
+    assert await write_with_revision_rule(racing, flow.key, RECORDS, {"contentRev": "rev-b", "reason": None})
+    after = await store.doc(flow.key)
+    assert after["contentRev"] == "rev-b" and after["pageCount"] == 9, after
+
+    # the other way: the record moves on to C (with its own count) after the stored revision was read; B still does not own that count
+    assert await store.p.update_node(flow.key, RECORDS, {"contentRev": "rev-a", "pageCount": 5})
+    racing = _Interleaved(store, "get_document", {"contentRev": "rev-c", "pageCount": 4}, flow.key)
+    assert await write_with_revision_rule(racing, flow.key, RECORDS, {"contentRev": "rev-b", "reason": None})
+    after = await store.doc(flow.key)
+    assert after["contentRev"] == "rev-b" and not after.get("pageCount"), after
+
+
 TEST_NAMES = ['test_random_flows_match_the_oracle', 'test_a_write_conditional_on_the_snapshot_applies_to_an_unchanged_record', 'test_flow', 'test_f18_a_failure_handed_to_a_queued_duplicate_stamps_it', 'test_f19_a_save_that_read_a_closed_record_while_the_consumer_started_it_stays_within_the_race', 'test_f20_a_store_only_parse_now_run_writes_none_of_the_run_fields', 'test_a_record_from_before_the_fields_in_the_middle_of_a_run_continues_from_its_queue_time', 'test_f22_the_residual_of_a_failure_written_by_an_older_process_is_reported', 'test_a_rule_that_always_continues_fails_the_flow', 'test_a_rule_without_the_outcome_stamps_fails_f22', 'test_a_sink_only_end_that_keeps_the_start_fails_f9', 'test_a_restore_that_continues_the_stored_run_fails_f21', 'test_attempt_increment_in_statement', 'test_a_reset_between_the_read_and_the_write_starts_a_new_run_not_old_plus_one', 'test_a_read_modify_write_loses_increments',
               'test_a_store_only_write_that_sets_a_new_revision_drops_the_page_count_of_the_old_one',
               'test_a_write_of_the_revision_the_record_holds_keeps_the_page_count_and_a_new_revision_drops_it',
+              'test_a_conditional_write_that_failed_while_another_writer_stored_the_revision_and_its_count_keeps_that_count',
               'test_a_requeue_after_a_later_outcome_starts_a_run_that_the_next_attempt_continues',
               'test_an_attempt_start_after_a_later_outcome_starts_a_run_after_it',
               'test_a_restore_stamped_at_or_after_the_statements_clock_starts_a_run_the_next_attempt_continues']

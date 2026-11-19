@@ -13,9 +13,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: pytest finds it by name)
+
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 from app.utils.process_hardening import disable_vendor_telemetry
+from tests.support.sys_modules_guard import install as install_sys_modules_guard
 
+# Before any test module is collected, so a module-level patch.dict(sys.modules) is checked too.
+install_sys_modules_guard()
 # Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
 disable_vendor_telemetry()
 # The suite exercises the real metrics backend whatever the edition default.
@@ -314,6 +319,16 @@ def _reset_narrow_access_memo() -> Iterator[None]:
     retrieval = sys.modules.get("app.modules.retrieval.retrieval_service")
     if retrieval is not None:
         retrieval.narrow_access_memo.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_log_once() -> Iterator[None]:
+    """``log_once`` remembers, per process, when each key last logged. A line throttled in one
+    test must not be silenced, or its flag left unset, in another."""
+    logging_fields = sys.modules.get("app.utils.logging_fields")
+    if logging_fields is not None:
+        logging_fields._log_once_last.clear()
+    yield
 
 
 @pytest.fixture(autouse=True)

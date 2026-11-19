@@ -17,6 +17,17 @@ import logging
 import os
 
 
+def hf_hub_offline() -> bool:
+    """True iff `huggingface_hub` would run in offline mode.
+
+    Mirrors its own parsing: `HF_HUB_OFFLINE`, falling back to
+    `TRANSFORMERS_OFFLINE` when the former is unset or empty, upper-cased and
+    compared to `1/ON/YES/TRUE` with no `strip()`.
+    """
+    value = os.environ.get("HF_HUB_OFFLINE") or os.environ.get("TRANSFORMERS_OFFLINE") or ""
+    return value.upper() in {"1", "ON", "YES", "TRUE"}
+
+
 def env_bool(name: str, default: bool) -> bool:  # noqa: FBT001
     """True iff the env var `name` is `"true"` (case-insensitive).
 
@@ -125,4 +136,20 @@ def uvicorn_worker_healthcheck_timeout() -> int:
     return env_int("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", 60, lo=5) or 60
 
 
-__all__ = ["env_bool", "env_int", "env_positive_int", "uvicorn_worker_healthcheck_timeout"]
+def bind_host() -> str:
+    """Address a service listens on: ``PIPESHUB_BIND_HOST``, else every interface (right inside a container, whose network
+    is its own). A process started outside a container sets loopback here."""
+    return (os.getenv("PIPESHUB_BIND_HOST") or "").strip() or "0.0.0.0"
+
+
+def bind_port(default: int, service_var: str | None = None) -> int:
+    """Port a service listens on: ``PIPESHUB_BIND_PORT`` (one per process, so a supervisor can pick it), else the service's own
+    port variable, else ``default``. A blank or malformed value counts as unset, so it never stops the service."""
+    for name in ("PIPESHUB_BIND_PORT", service_var):
+        port = env_int(name) if name else None
+        if port is not None and 0 < port < 65536:
+            return port
+    return default
+
+
+__all__ = ["bind_host", "bind_port", "env_bool", "env_int", "env_positive_int", "uvicorn_worker_healthcheck_timeout"]

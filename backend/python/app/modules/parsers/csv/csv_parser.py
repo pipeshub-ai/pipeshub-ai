@@ -1,5 +1,4 @@
 import asyncio
-import functools
 import io
 import json
 from collections.abc import Callable
@@ -25,11 +24,9 @@ from app.modules.parsers.csv import table_detection
 from app.modules.parsers.csv.table_detection import DelimitedReadError, read_csv_tables
 from app.modules.parsers.excel.prompt_template import (
     CSVHeaderDetection,
-    RowDescriptions,
     TableHeaders,
     csv_header_generation_prompt,
     excel_header_detection_prompt,
-    row_text_prompt_for_csv,
     table_summary_prompt,
 )
 from app.modules.parsers.text_decoding import decode_text
@@ -37,23 +34,27 @@ from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.services.paid_cache.access import cached_model_call
 from app.services.paid_cache.keys import (
     KIND_EXCEL_HEADERS,
-    KIND_TABLE_ROWS,
     KIND_TABLE_SUMMARY,
 )
 from app.services.parsing.interface import ParseResult
 from app.services.resource_governor.kinds import ParseKind
 from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
-from app.utils.concurrency import max_table_rows_for_llm
-from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.concurrency import max_table_rows_for_llm, table_row_batch_size
+from app.utils.error_class import log_failure
+from app.utils.indexing_helpers import generate_simple_row_text
+from app.utils.indexing_metrics import note_rows_over_budget
 from app.utils.is_truncated import is_truncated
 from app.utils.llm import get_llm_for_role
 from app.utils.logger import create_logger
 from app.utils.opik import get_llm_invoke_config
-from app.utils.streaming import (
-    invoke_with_row_descriptions_and_reflection,
-    invoke_with_structured_output_and_reflection,
+from app.utils.streaming import invoke_with_structured_output_and_reflection
+from app.utils.table_enrichment import (
+    MAX_KEYED_ROWS,
+    RetryBudget,
+    describe_row_dicts,
+    fallback_table_summary,
+    gather_or_cancel,
 )
-from app.utils.table_enrichment import fallback_table_summary
 
 logger = create_logger("csv_parser")
 
@@ -114,7 +115,6 @@ class CSVParser:
             quotechar: Character used for quoting fields (default: double quote)
             encoding: File encoding (default: utf-8)
         """
-        self.row_text_prompt = row_text_prompt_for_csv
         self.delimiter = delimiter
         self.quotechar = quotechar
         self.encoding = encoding
@@ -804,55 +804,43 @@ class CSVParser:
         except NonRetryableError:
             raise
         except Exception as e:
-            logger.warning("Table summary unavailable (%s); using a plain one", e)
+            log_failure(logger, "table_summary.failed", e, include_error_text=False, parser="csv")
             return fallback_table_summary(list(rows[0].keys()) if rows else [], len(rows))
 
     async def get_rows_text(
-        self, llm, rows: List[Dict[str, Any]], table_summary: str, batch_size: int = DEFAULT_BATCH_SIZE
-    ) -> List[str]:
-        """Convert multiple rows into natural language text in batches."""
-        processed_texts = []
+        self,
+        llm,
+        rows: List[Dict[str, Any]],
+        table_summary: str,
+        batch_size: Optional[int] = None,
+        *,
+        retry_budget: Optional[RetryBudget] = None,
+    ) -> list[str]:
+        """Convert rows into natural language text in batches, addressing each row by its number.
+
+        A row the model leaves out, or a batch it does not answer, gets plain ``column: value``
+        text for that row alone (a short batch is split and retried first), never another row's
+        description.
+        """
+        batch_size = min(batch_size or table_row_batch_size(), MAX_KEYED_ROWS)
+        # The table operation hands its budget in; a direct call gets one of its own. It is never
+        # parser state: the parsing service shares one CSVParser between documents in flight.
+        budget = retry_budget or RetryBudget.for_batches(-(-len(rows) // batch_size))
+        processed_texts: list[str] = []
 
         for i in range(0, len(rows), batch_size):
-            batch = rows[i : i + batch_size]
-            # Prepare rows data
             rows_data = [
                 {
                     key: (value.isoformat() if isinstance(value, datetime) else value)
                     for key, value in row.items()
                 }
-                for row in batch
+                for row in rows[i : i + batch_size]
             ]
-
-            # Get natural language text from LLM with retry
-            messages = self.row_text_prompt.format_messages(
-                table_summary=table_summary,
-                numbered_rows_data=format_rows_with_index(rows_data),
-                row_count=len(rows_data)
+            processed_texts.extend(
+                await describe_row_dicts(
+                    llm, rows_data, table_summary, logger, budget=budget, config_service=self.config_service
+                )
             )
-
-            # Default to string representations of rows
-            descriptions = [generate_simple_row_text(row) for row in batch]
-
-            # Use centralized utility with reflection and count validation
-            parsed_response = await cached_model_call(
-                KIND_TABLE_ROWS,
-                llm=llm,
-                template=self.row_text_prompt,
-                rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
-                call=functools.partial(
-                    invoke_with_row_descriptions_and_reflection, llm, messages, expected_count=len(rows_data)
-                ),
-                encode=lambda parsed: parsed.model_dump(),
-                decode=RowDescriptions.model_validate,
-                cacheable=lambda parsed, expected=len(rows_data): len(parsed.descriptions) == expected,
-                config_service=self.config_service,
-            )
-
-            if parsed_response is not None and parsed_response.descriptions:
-                descriptions = parsed_response.descriptions
-
-            processed_texts.extend(descriptions)
 
         return processed_texts
 
@@ -977,10 +965,12 @@ class CSVParser:
 
             if use_llm_for_rows:
                 # Use LLM for row descriptions
+                row_batch_size = table_row_batch_size()
                 batches = []
-                for i in range(0, len(csv_result), DEFAULT_BATCH_SIZE):
-                    batch = csv_result[i : i + DEFAULT_BATCH_SIZE]
+                for i in range(0, len(csv_result), row_batch_size):
+                    batch = csv_result[i : i + row_batch_size]
                     batches.append((i, batch))
+                table_retry_budget = RetryBudget.for_batches(len(batches))
 
                 max_concurrent_batches = min(MAX_CONCURRENT_BATCHES, len(batches))
                 batch_results = []
@@ -990,10 +980,11 @@ class CSVParser:
 
                     batch_tasks = []
                     for start_idx, batch in current_batches:
-                        task = self.get_rows_text(llm, batch, table_summary)
+                        task = self.get_rows_text(llm, batch, table_summary, retry_budget=table_retry_budget)
                         batch_tasks.append((start_idx, batch, task))
 
-                    task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                    # A stop (or any failure) in one batch cancels and awaits the others: no call completes after it.
+                    task_results = await gather_or_cancel(*[task for _, _, task in batch_tasks])
 
                     for j, (start_idx, batch, _) in enumerate(batch_tasks):
                         row_texts = task_results[j]
@@ -1019,7 +1010,8 @@ class CSVParser:
                         )
                         table_row_block_indices.append(block_index)
             else:
-                # Use simple format for rows (skip LLM)
+                # Use simple format for rows (skip LLM): configuration, counted apart from degraded rows
+                note_rows_over_budget(len(csv_result))
                 row_blocks = await _off_loop_if_many_rows(
                     len(csv_result), _simple_row_blocks,
                     csv_result, line_numbers, len(blocks), table_group_index,

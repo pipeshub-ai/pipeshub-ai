@@ -310,7 +310,7 @@ class KnowledgeHubService:
         issued_for = (cursor.mode, cursor.parent_id, _start_type(cursor.parent_type))
         if issued_for != (mode, parent_id, _start_type(parent_type)):
             raise BrowseRequestError("Invalid cursor: issued for a different location", 400)
-        return cursor
+        return cursor.with_fresh_counts()
 
     async def _walk_pages(
         self,
@@ -375,8 +375,9 @@ class KnowledgeHubService:
         direction = cursor.direction if cursor else "next"
 
         if cursor is not None and cursor.total is not None:
-            total, counts, total_capped = cursor.total, cursor.counts_by_type, cursor.total_capped
+            total, counts, total_capped, counted_at = cursor.total, cursor.counts_by_type, cursor.total_capped, cursor.counted_at_ms
         else:
+            counted_at = int(time.time() * 1000)
             total_capped = bool(part.get("totalCapped"))
             total = part["total"] if part["total"] is not None else len(rows)
             if want_counts and part.get("counts") is not None:
@@ -416,6 +417,7 @@ class KnowledgeHubService:
                     user_id=user_id,
                     org_id=org_id,
                     limit_apps=limit_apps,
+                    counted_at_ms=counted_at,
                 ),
                 secret,
             )
@@ -537,22 +539,17 @@ class KnowledgeHubService:
             order = (page_cursor.sort_order if page_cursor else None) or sort_dir
             reuse_total = page_cursor is not None and page_cursor.total is not None
 
-            common = {
-                "user_key": user_key, "org_id": org_id, "limit": limit,
-                "sort_field": field, "sort_dir": order,
-                "after": page_cursor.boundary.as_after() if page_cursor else None,
-                "direction": page_cursor.direction if page_cursor else "next",
-                "include_ids": want_counts and not reuse_total,
-            }
-            if parent_id is None:
-                envelope = await self.graph_provider.get_knowledge_hub_root_nodes_v2(
-                    user_app_ids=access["gated_app_ids"],
-                    # Apps are in no record group, and this filter only narrows
-                    # collection-origin groups.
-                    **{k: v for k, v in active.items() if k != "record_group_ids"},
-                    **common,
-                )
-            else:
+            async def ask(after: dict[str, Any] | None, going: str, rows: int, *, counting: bool) -> dict[str, Any]:
+                """The provider's answer for the rows past ``after`` (None: from the start); ``counting`` asks for the total."""
+                if parent_id is None:
+                    return await self.graph_provider.get_knowledge_hub_root_nodes_v2(
+                        user_app_ids=access["gated_app_ids"],
+                        # Apps are in no record group, and this filter only narrows
+                        # collection-origin groups.
+                        **{k: v for k, v in active.items() if k != "record_group_ids"},
+                        user_key=user_key, org_id=org_id, limit=rows, sort_field=field, sort_dir=order,
+                        after=after, direction=going, include_ids=want_counts and counting,
+                    )
                 start_type = _start_type(parent_type)
                 page = await self.graph_provider.get_knowledge_hub_connector_page_v3(
                     app_id=parent_id if start_type == "app" else "",
@@ -563,21 +560,21 @@ class KnowledgeHubService:
                     # connector's grants, not every grant the user holds.
                     granted_ids=None,
                     user_key=user_key,
-                    limit=limit,
+                    limit=rows,
                     flatten=flatten,
                     sort_field=field,
                     sort_dir=order,
-                    after=page_cursor.boundary.as_after() if page_cursor else None,
-                    direction=page_cursor.direction if page_cursor else "next",
+                    after=after,
+                    direction=going,
                     filters=active,
-                    include_total=not reuse_total,
+                    include_total=counting,
                     start_id=parent_id,
                     start_type=start_type,
                     include_scope=True,
                     via_parent_id=page_cursor.via_parent_id if page_cursor else None,
                     max_depth=max_depth,
                 )
-                envelope = {
+                return {
                     "partitions": [{
                         "rows": page["rows"],
                         "hasMore": page["hasMore"],
@@ -590,6 +587,17 @@ class KnowledgeHubService:
                     }],
                     "scope": page.get("scope"),
                 }
+
+            envelope = await ask(
+                page_cursor.boundary.as_after() if page_cursor else None,
+                page_cursor.direction if page_cursor else "next",
+                limit, counting=page_cursor is None,
+            )
+            if page_cursor is not None and not reuse_total:
+                # A carried total that aged out: the page's own query would count only the rows past its boundary, so the whole listing is
+                # counted again with the same query and no boundary.
+                whole = (await ask(None, "next", 1, counting=True))["partitions"][0]
+                envelope["partitions"][0].update({k: whole.get(k) for k in ("total", "counts", "ids", "totalCapped")})
             scope = envelope.get("scope")
             return self._page_from_partition(
                 envelope["partitions"][0], page_cursor, secret,

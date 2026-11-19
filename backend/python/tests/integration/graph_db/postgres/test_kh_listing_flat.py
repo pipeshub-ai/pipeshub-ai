@@ -131,6 +131,32 @@ async def test_a_flatten_below_a_node_and_a_depth_bound_list_what_browsing_down_
     assert await ids() == ["f1", "f2", "g1", "r1", "r3", "r5", "r9"]
 
 
+async def test_a_depth_bound_counts_a_child_met_twice_once_against_its_bound(pg_db, monkeypatch) -> None:
+    """app1 > g1 > a, b; c is a child of a and of b: the third level reads c twice. Five rows fit a bound of five (the read cut at the room left is read again whole), not of four."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, "connectorId": "app1", "orgId": org, "recordType": "FOLDER", "origin": "CONNECTOR"} for k in ("a", "b", "c")], "records")
+        await p.batch_create_edges([edge("app1", "apps", "g1", "recordGroups", relationshipType="PARENT_CHILD")]
+                                   + [edge(x, xc, y, "records", relationshipType="PARENT_CHILD") for x, xc, y in (("g1", "recordGroups", "a"), ("g1", "recordGroups", "b"),
+                                                                                                                  ("a", "records", "c"), ("b", "records", "c"))], "nodeRelations")
+        await p.batch_create_edges([edge("g1", "recordGroups", "app1", "apps")], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", k, kc, type="USER", role="READER") for k, kc in (("g1", "recordGroups"), ("a", "records"), ("b", "records"),
+                                                                                                        ("c", "records"))], "permission")
+    await flip(pg_db, org)
+    every = ["g1", "a", "b", "c"]
+    monkeypatch.setattr(kh_listing, "SCOPE_MAX", 5)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=every), limit=50, max_depth=3)
+    assert [r["id"] for r in page["rows"]] == ["a", "b", "c", "g1"]
+    monkeypatch.setattr(kh_listing, "SCOPE_MAX", 4)
+    with ctx(org), pytest.raises(KnowledgeHubListingTooLarge):
+        await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=every), limit=50, max_depth=3)
+
+
 async def test_another_organisations_connector_is_never_read(pg_db) -> None:
     p, mine, theirs = prov(pg_db), new_org(), new_org()
     await seed(p, pg_db, mine, 5)
@@ -289,6 +315,9 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
         adm = kgl.Params([org, app_sk, 201])
         cond = f"w.r13 IS FALSE AND w.class_id = ANY({adm.add([1])}::bigint[]) AND w.id = ANY({adm.add(['x'])}::text[])"
         statements += [(f"admitted {s} {d}", kgl.page_sql("name", s, d, "", None, cond), adm.values) for s in ("ASC", "DESC") for d in ("next", "prev")]
+        sc = kgl.Params([org, app_sk, 51])      # a scoped page (a depth bound, a start below the connector): the classes admit in the read
+        inside = f" AND r.sk = ANY({sc.add([app_sk + 1, app_sk + 2])}::bigint[]) AND " + kgl.class_admit("r", sc, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()}, raw=True)
+        statements += [(f"scoped admitted {s} {d}", kgl.page_sql("name", s, d, inside, None, "true"), sc.values) for s in ("ASC", "DESC") for d in ("next", "prev")]
         arrows = kgl.Params([org, [app_sk], []])
         statements += [("arrows", kgl.arrows_sql(kgl.class_admit("c", arrows, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})), arrows.values)]
         statements += [("scan", kgl.scan_sql("", "$4"), [org, app_sk, 501, 0]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]),
@@ -299,6 +328,29 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
             plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))
             seq = [n for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
             assert not seq, f"{name} ({'after' if analyzed else 'before'} ANALYZE): sequential scan of {[n['Relation Name'] for n in seq]}"
+            if name.startswith("scoped"):      # a class test inside the read must not turn it into a read of the class across the organisation
+                loose = plan_gate.unkeyed(plan, "records", r"org_id = .*\bsk = |org_id = .*app_sk = ")
+                assert not loose, f"{name} ({'after' if analyzed else 'before'} ANALYZE): {loose}"
+    finally:
+        await con.close()
+
+
+@pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
+async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, unvouched) -> None:
+    """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none.
+    Judged with statistics, as kg's tables are once copied (kg_0016): with statistics older than an organisation's rows the planner may take any index of the org."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 400, promote=True)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE kg.records")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        await con.execute("SET enable_seqscan = off")      # the planner's guess at a table this small is a scan; the gate is about which index bounds the read
+        plan = json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + kgl.undecided_sql("", "$4"), org, app_sk, 201, unvouched))
+        used = {name for s in plan_gate.scans(plan, "records") for name, _ in plan_gate.bounds(s)}
+        # the classes' read may take any range of the connector when a class holds most of it (as in this world); never the organisation
+        loose = plan_gate.unkeyed(plan, "records", r"app_sk")
+        assert "records_undecided" in used and not loose, f"undecided rows read by {used}: {loose}"
     finally:
         await con.close()
 

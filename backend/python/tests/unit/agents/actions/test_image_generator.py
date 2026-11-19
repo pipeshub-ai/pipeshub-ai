@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.provider_errors import assert_text_free, failure_line, openai_error
+
 
 def _make_state(**overrides):
     """Return a minimal ChatState-like dict for toolset tests."""
@@ -1374,3 +1376,31 @@ class TestGenerateImageInputSchema:
         assert "mona_lisa" in desc
 
 
+
+
+class TestProviderFailure:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("record_id", [None, "rec-src"])
+    async def test_a_refused_image_call_is_one_text_free_line(self, caplog, record_id) -> None:
+        """The provider's refusal can quote the user's prompt; the line keeps the provider, model and mode."""
+        from app.agents.actions.image_generator import image_generator as mod
+
+        caplog.set_level(logging.DEBUG)
+        tool = mod.ImageGenerator(_make_state())
+        error = openai_error(400)
+        adapter = SimpleNamespace(provider="openAI", model="gpt-image-1",
+                                  generate=AsyncMock(side_effect=error), edit=AsyncMock(side_effect=error))
+        source = AsyncMock(return_value=(b"\x89PNG", "src.png", None))  # (bytes, name, error)
+        with patch.object(mod, "get_image_generation_config", AsyncMock(return_value={
+            "provider": "openAI", "configuration": {"apiKey": "sk", "model": "gpt-image-1"}, "isDefault": True,
+        })), patch("app.utils.aimodels.get_image_generation_model", return_value=adapter), patch.object(
+            mod.ImageGenerator, "_fetch_edit_source_image", source,
+        ):
+            ok, _ = await tool.generate_image(prompt="a fox", record_id=record_id)
+
+        assert ok is False
+        fields = failure_line(caplog.records, "image_generation.failed", "bad_request", logging.WARNING)
+        assert (fields["provider"], fields["model"], fields["mode"]) == (
+            "openAI", "gpt-image-1", "edit" if record_id else "generate",
+        )
+        assert_text_free(caplog.records)

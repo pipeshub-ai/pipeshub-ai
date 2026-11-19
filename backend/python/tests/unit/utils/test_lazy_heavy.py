@@ -77,19 +77,37 @@ async def test_later_calls_return_without_importing_again(fake_heavy: tuple[str,
     assert len(lazy_heavy._attempts) == 1  # type: ignore[attr-defined]
 
 
-async def test_the_loop_keeps_running_while_the_import_runs(fake_heavy: tuple[str, list[int]]) -> None:
-    ticks = []
+async def test_the_loop_keeps_running_while_the_import_runs(
+    fake_heavy: tuple[str, list[int]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counted, not timed: the import does not finish until the loop has run ten turns after it started, which the
+    loop can do only while the import runs elsewhere. On the loop, the import never sees the release (the longest-gap
+    bound this replaced also measured how busy the runner was)."""
+    import types
+
+    name, imported_on = fake_heavy
+    gate = types.ModuleType("_lazy_heavy_test_gate")
+    gate.started, gate.release = threading.Event(), threading.Event()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, gate.__name__, gate)
+    (tmp_path / f"{name}.py").write_text(
+        "import _lazy_heavy_test_gate as gate\ngate.started.set()\n"
+        "assert gate.release.wait(10), 'the loop never ran during the import'\nVALUE = 1\n"
+    )
+    importlib.invalidate_caches()
+    turns = 0
 
     async def probe() -> None:
-        while True:
-            ticks.append(time.perf_counter())
-            await asyncio.sleep(0.01)
+        nonlocal turns
+        assert await asyncio.to_thread(gate.started.wait, 30)
+        while turns < 10:
+            await asyncio.sleep(0.001)
+            turns += 1
+        gate.release.set()
 
     task = asyncio.create_task(probe())
     await lazy_heavy.ensure_docling()
-    task.cancel()
-    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
-    assert len(ticks) > 5 and max(gaps) < 0.1
+    await task
+    assert turns == 10 and name in sys.modules
 
 
 async def test_a_failed_import_raises_and_is_retried_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,6 +193,27 @@ async def test_detector_counterexample_an_inline_import_is_caught(fake_heavy: tu
     await inline_ensure()
     with pytest.raises(AssertionError, match="event loop thread"):
         _assert_no_import_on(loop_thread, imported_on)
+
+
+async def test_an_import_thread_that_cannot_start_does_not_leave_later_callers_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A process out of threads (or address space) refuses one start; the next caller must try again, not join an
+    import that never began. Before, it waited forever: the unit shard hung on the docling parser test after this."""
+    monkeypatch.setattr(lazy_heavy, "_import_docling", lambda: None)
+    real_start = threading.Thread.start
+    refusals = [RuntimeError("can't start new thread")]
+
+    def start(self: threading.Thread) -> None:
+        if self.name == "docling-import" and refusals:
+            raise refusals.pop()
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        await lazy_heavy.ensure_docling()
+    await asyncio.wait_for(lazy_heavy.ensure_docling(), 5)
+    assert lazy_heavy._state.done
 
 
 def test_the_guard_is_usable_from_two_event_loops_in_turn(monkeypatch: pytest.MonkeyPatch) -> None:

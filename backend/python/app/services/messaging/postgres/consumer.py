@@ -39,7 +39,11 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
     messaging_env,
 )
-from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt, work_key
+from app.services.messaging.consumer_concurrency import (
+    RequeueWithoutAttempt,
+    backstop_give_up_reason,
+    work_key,
+)
 from app.services.messaging.disposition import describe_message, notify_abandoned
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
@@ -48,14 +52,17 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.membership import register_group
+from app.services.messaging.message_log import bound_message
 from app.services.messaging.postgres.queue import Delivery, PgQueue
 from app.services.messaging.storage_protocol import tagged
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
 from app.utils import error_class
+from app.utils import indexing_timing as timing
+from app.utils.logging_fields import log_fields
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Iterator
 
     from app.services.distributed.interface import IDistributedLeaseManager
     from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
@@ -87,6 +94,17 @@ def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
 
 
+@contextlib.contextmanager
+def _queue_write(reason: str) -> "Iterator[None]":
+    """A nack or dead update that raised settled nothing: index.end says so, and the error propagates (the claim expires and
+    the row is handed out again)."""
+    try:
+        yield
+    except Exception:
+        timing.note(disposition="retry", reason=reason)
+        raise
+
+
 class _ExpectedOutcome(str):
     """The error text of an outcome nobody acts on (deleted while indexed, refused by
     the source), so settling it does not log a second, warning-level line."""
@@ -110,6 +128,10 @@ class PgMessagingConsumer(IMessagingConsumer):
         self.priority_lane = priority_lane  # the consumer of the priority topic: its own handler cap and lease pool
         self.concurrency_manager = concurrency_manager  # cluster-wide cap on records indexing at once, across worker processes
         self._leases: set[tuple[str, str]] = set()
+        # A delivery's record lease -> the task driving it, and the record leases the manager reported lost: the driver is cancelled
+        # when its lease is not renewed, so a delivery whose lease lapsed stops writing (as on the other indexing consumers).
+        self._lease_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._lost_leases: set[tuple[str, str]] = set()
         self.logger = logger
         self.config = config
         self.indexing = indexing
@@ -338,10 +360,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await self.queue.extend(
                         self.config.group_id, held, self._visibility_s
                     )
-                if self._leases and self.concurrency_manager is not None:
-                    await self.concurrency_manager.renew_many(
-                        list(self._leases), self._visibility_s
-                    )
+                await self._renew_leases()
                 if self.config.ephemeral_group:
                     await self.queue.touch(self.config.group_id, self.config.topics)
                 if time.monotonic() - self._last_sweep > _SWEEP_EVERY_S:
@@ -379,16 +398,42 @@ class PgMessagingConsumer(IMessagingConsumer):
                 self._wake.set()
 
     async def _settle(self, d: Delivery) -> None:
+        if not self.indexing:
+            await self._decide(d)
+            return
+        # One record delivery, one index.end (as the Redis and Kafka indexing consumers): the decision below notes on it,
+        # and the line is written in the message's root, org and ids, as P8's bound_message gives the other two.
+        seen: dict[str, Any] = {}
+        timeline, token = timing.begin_record(None)  # ADMITTED is marked once the indexing slot is taken
+        timing.note(attempt=d.attempts)
+        outcome = "failed"
+        try:
+            outcome = await self._decide(d, seen)
+        except asyncio.CancelledError:
+            timing.note(reason="cancelled")  # shutdown: left claimed and handed out again, as Redis and Kafka say it
+            raise
+        finally:
+            timeline.mark(timing.RELEASED)
+            # The row's topic and id even when the body could not be parsed, so an operator can find it.
+            with log_fields(topic=d.topic, message_id=str(d.message_id)), bound_message(seen.get("parsed"), seen.get("root")):
+                timing.end_record(timeline, token, outcome=outcome, logger=self.logger)
+
+    async def _decide(self, d: Delivery, seen: "dict[str, Any] | None" = None) -> str:
+        """Process ``d`` and ack, nack or dead-letter it; returns the indexing timeline's outcome."""
         group, max_attempts = self.config.group_id, messaging_env.max_delivery_attempts
         if (
             d.attempts > max_attempts
         ):  # handed out past the limit (a consumer that keeps dying mid-handler)
             # The sink needs the message to find its record: without it the record stays IN_PROGRESS and recovery hands it back for ever.
-            await self._abandon(d, await self._parse_for_sink(d), "delivery attempts exhausted")
-            return
+            timing.note(reason="unfinished_attempts")
+            parsed = await self._parse_for_sink(d)
+            if parsed is not None:
+                self._remember(parsed, seen)
+            await self._abandon(d, parsed, "delivery attempts exhausted")
+            return "failed"
         final = d.attempts >= max_attempts
         try:
-            success, terminal, parsed, err = await self._process(d, final=final)
+            success, terminal, parsed, err = await self._process(d, final=final, seen=seen)
         except RequeueWithoutAttempt as e:
             # Queue time, not a failure (a stage whose dependency is paused, a record whose lease stayed held): visible again after the
             # delay with the attempt this claim counted given back, so waiting never dead-letters it.
@@ -401,22 +446,55 @@ class PgMessagingConsumer(IMessagingConsumer):
                 min(_handback_base_s() * 2 ** min(n - 1, 10), _HANDBACK_CAP_S),     # grows with every hand-back of this message
             )
             reason = type(e).__name__
+            timing.note(code=reason, pool=getattr(e, "pool", None), end_level=e.log_level)
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
             if self.stage_admission is not None and e.pauses_consumer:
                 self._paused_until = max(self._paused_until, time.monotonic() + delay)     # stop claiming until the stage can run
             if e.counts_toward_backstop and n > _handback_limit():
+                if e.give_up_label:
+                    # A hand-back that names itself (a same-bytes update whose skip cannot finish) is given up on here,
+                    # with the reason the other brokers use, so what handles an abandoned message can tell it apart.
+                    self._handbacks.pop(key, None)
+                    timing.note(reason="backstop")
+                    await self._abandon(d, await self._parse_for_sink(d), backstop_give_up_reason(e, n, _handback_limit()))
+                    return "failed"
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
-                await self.queue.nack(group, d, delay, f"handed back {n} times: {e}"[:500])
-                return
-            await self.queue.nack(group, d, delay, str(e), refund=True)
-            return
+                with _queue_write("nack_failed"):
+                    nacked = await self.queue.nack(group, d, delay, f"handed back {n} times: {e}"[:500])
+                if nacked:
+                    timing.note(disposition="retry", reason="backstop")
+                else:
+                    timing.note(disposition="retry", reason="claim_lost")
+                return "failed"
+            with _queue_write("nack_failed"):
+                nacked = await self.queue.nack(group, d, delay, str(e), refund=True)
+            if nacked:
+                timing.note(disposition="retry")
+            else:
+                timing.note(disposition="retry", reason="claim_lost")
+            return "requeued"
         self._handbacks.pop((d.topic, d.message_id), None)
         if success:
-            await self.queue.ack(group, d)
-        elif terminal:
+            try:
+                acked = await self.queue.ack(group, d)
+            except Exception as e:
+                # Indexed: the expired claim redelivers it and the redelivery is deduped. In a record's run its index.end says it.
+                if not timing.note(disposition="retry", reason="ack_failed", exc=e):
+                    raise
+                return "ok"
+            # A newer claim of the row (this one expired) is not this delivery's to settle.
+            if acked:
+                timing.note(disposition="ack")
+            else:
+                timing.note(disposition="retry", reason="claim_lost")
+            return "ok"
+        if terminal:
+            if parsed is not None:  # otherwise _process noted the specific reason (envelope_rejected, unparseable, …)
+                timing.note(reason="terminal")
             await self._abandon(d, parsed, err or "terminal error")
         elif final:
+            timing.note(reason="attempts_exhausted")
             await self._abandon(d, parsed, err or f"failed {d.attempts} times")
         else:
             delay = (
@@ -424,14 +502,25 @@ class PgMessagingConsumer(IMessagingConsumer):
                 if self.indexing
                 else min(_retry_base_s() * d.attempts, 30.0)
             )
-            await self.queue.nack(group, d, delay, err)
-            self.logger.warning(
-                "Transient failure on %s (%d/%d), retrying in %.0fs",
-                d.message_id,
-                d.attempts,
-                max_attempts,
-                delay,
-            )
+            with _queue_write("nack_failed"):
+                nacked = await self.queue.nack(group, d, delay, err)
+            in_run = timing.note(disposition="retry", reason=None if nacked else "claim_lost")
+            if not in_run:  # in a record's run, its index.end says it
+                self.logger.warning(
+                    "Transient failure on %s (%d/%d), retrying in %.0fs",
+                    d.message_id,
+                    d.attempts,
+                    max_attempts,
+                    delay,
+                )
+        return "failed"
+
+    @staticmethod
+    def _remember(parsed: StreamMessage, seen: "dict[str, Any] | None") -> None:
+        """The record's end line is written in this message's context and names its record."""
+        if seen is not None:
+            seen["parsed"] = parsed
+        timing.note(record_id=parsed.payload.get("recordId"), event_type=parsed.eventType)
 
     async def _parse_for_sink(self, d: Delivery) -> StreamMessage | None:
         """The message of a delivery that will not be processed, for the disposition sink; None when it cannot be read."""
@@ -454,35 +543,48 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason=reason,
             attempts=d.attempts,
         )
-        # An expected outcome was logged once at INFO when the handler raised it.
-        log = self.logger.info if isinstance(reason, _ExpectedOutcome) else self.logger.warning
-        log("Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason)
-        await self.queue.dead(self.config.group_id, d, reason)
+        with _queue_write("dead_letter_failed"):
+            dead = await self.queue.dead(self.config.group_id, d, reason)
+        # A newer claim of the row (this one expired) is not this delivery's to settle; in a record's run its index.end says it.
+        if not timing.note(**({"disposition": "dead_letter"} if dead else {"disposition": "retry", "reason": "claim_lost"})):
+            # An expected outcome was logged once at INFO when the handler raised it.
+            log = self.logger.info if isinstance(reason, _ExpectedOutcome) else self.logger.warning
+            log("Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason)
 
     async def _process(
-        self, d: Delivery, *, final: bool
+        self, d: Delivery, *, final: bool, seen: "dict[str, Any] | None" = None
     ) -> tuple[bool, bool, StreamMessage | None, str]:
         """(success, terminal, parsed message, error text)."""
         if self.message_handler is None:
+            timing.note(reason="no_handler")
             return False, True, None, "no message handler"
         try:
             raw = decode_message(d.value)
         except json.JSONDecodeError as e:
+            timing.note(reason="unparseable")
             return False, True, None, f"JSON parsing failed: {e}"
         if not isinstance(raw, dict):
+            timing.note(reason="unparseable")
             return False, True, None, "message is not an object"
         parsed: StreamMessage | None = None
-        token = bind_context(context_from_envelope(raw))
+        root = context_from_envelope(raw)
+        token = bind_context(root)
+        if seen is not None:
+            seen["root"] = root  # the record's end line is written in the root its lines ran in
         try:
             if self.indexing:
                 try:
                     parsed = await open_stream_message(d.topic, raw, StreamMessage)
                 except DuplicateEnvelope:
+                    timing.note(outcome="skipped", reason="duplicate_envelope")
                     return True, False, None, ""
                 except EnvelopeRejected as e:
+                    timing.note(reason="envelope_rejected", code=e.reason)
                     return False, True, None, f"envelope rejected: {e.reason}"
                 if parsed is None:
+                    timing.note(reason="unparseable")
                     return False, True, None, "unparseable message"
+                self._remember(parsed, seen)
                 parsed.is_final_failure = final
                 # A hand-back is a nack of the same row, so the row names the event across its retries.
                 stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}", parsed.org_ctx)
@@ -503,17 +605,19 @@ class PgMessagingConsumer(IMessagingConsumer):
             raise
         except Exception as e:
             expected = is_expected_outcome(e)
-            if expected:
-                # Expected (deleted while indexed, refused by the source): the handler
-                # already logged it once, so no traceback at error level here.
-                self.logger.info(
-                    "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
-                )
-            else:
-                # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
-                error_class.log_failure(
-                    self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
-                )
+            # In a record's run (the indexing consumer) its index.end writes the failure once.
+            if not timing.note(exc=e):
+                if expected:
+                    # Expected (deleted while indexed, refused by the source): the handler
+                    # already logged it once, so no traceback at error level here.
+                    self.logger.info(
+                        "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
+                    )
+                else:
+                    # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                    error_class.log_failure(
+                        self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
+                    )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
                 == MessageErrorType.TERMINAL
@@ -524,6 +628,17 @@ class PgMessagingConsumer(IMessagingConsumer):
             return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
         finally:
             reset_context(token)
+
+    async def _renew_leases(self) -> None:
+        """Renew every held lease; a record lease the manager says is no longer ours cancels the delivery that holds it."""
+        if not self._leases or self.concurrency_manager is None:
+            return
+        renewed = await self.concurrency_manager.renew_many(list(self._leases), self._visibility_s)
+        for lease, ok in (renewed or {}).items():
+            task = self._lease_tasks.get(lease)
+            if not ok and task is not None:
+                self._lost_leases.add(lease)
+                task.cancel()
 
     async def _on_worker[T](self, make: "Callable[[], Coroutine[Any, Any, T]]") -> T:
         """Run a handler on the shared worker loop, as the other indexing consumers do: parsing that blocks that loop cannot then stall
@@ -543,6 +658,8 @@ class PgMessagingConsumer(IMessagingConsumer):
         try:
             record_slot = await self._take_record_lease(parsed, fallback_key)
             slot = await self._take_slot(parsed)
+            if (timeline := timing.current_timeline()) is not None:
+                timeline.mark(timing.ADMITTED)  # the wait for the slot is wait_slot_ms, not held_ms
             async def drain() -> bool:
                 gen = self.message_handler(parsed)  # type: ignore[misc]
                 complete = False
@@ -554,8 +671,18 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await gen.aclose()
                 return complete
 
-            async with asyncio.timeout(timeout):
-                complete = await self._on_worker(drain)
+            try:
+                async with asyncio.timeout(timeout):
+                    complete = await self._on_worker(drain)
+            except asyncio.CancelledError:
+                if record_slot is not None and record_slot in self._lost_leases:
+                    # Our own cancel, sent because the record lease was not renewed: another delivery may own the record now.
+                    self._lost_leases.discard(record_slot)
+                    task = asyncio.current_task()
+                    if task is not None:
+                        _ = task.uncancel()
+                    raise RecordHeld(f"{record_slot[0]} was lost while the delivery ran; it is redone") from None
+                raise
             if not complete:
                 raise RuntimeError("handler ended without INDEXING_COMPLETE")
         finally:
@@ -563,8 +690,11 @@ class PgMessagingConsumer(IMessagingConsumer):
             for held in (record_slot, slot):
                 if held is not None:
                     self._leases.discard(held)
+                    self._lease_tasks.pop(held, None)
                     with contextlib.suppress(Exception):
                         await self.concurrency_manager.release(*held)  # type: ignore[union-attr]
+            if (timeline := timing.current_timeline()) is not None:
+                timeline.mark(timing.RELEASED)  # held_ms ends with the leases, not after the queue write that settles the row
 
     async def _take_slot(self, parsed: StreamMessage) -> tuple[str, str] | None:
         """Wait for one of the ``MAX_CONCURRENT_INDEXING`` cluster-wide indexing slots (a lease row in PostgreSQL). The slot is renewed
@@ -595,5 +725,8 @@ class PgMessagingConsumer(IMessagingConsumer):
         holder = f"{self.config.client_id}:{uuid.uuid4().hex}"
         if await self.concurrency_manager.try_acquire(pool, holder, 1, messaging_env.concurrency_lease_seconds):
             self._leases.add((pool, holder))
+            task = asyncio.current_task()
+            if task is not None:
+                self._lease_tasks[(pool, holder)] = task
             return pool, holder
         raise RecordHeld(f"{pool} is held by another delivery")

@@ -361,7 +361,7 @@ class TestPageCountWrites:
     @pytest.mark.parametrize("attempt_start", [True, False])
     async def test_a_store_only_write_that_sets_the_revision_drops_the_count_it_may_hold(self, attempt_start: bool) -> None:
         """A store-only run drops the status fields, so its attempt start is a plain write: it still must not leave the old revision's count."""
-        processor = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
+        processor = _processor(update_node_fields_if_match=AsyncMock(side_effect=[False, True]), get_document=AsyncMock(return_value={"contentRev": "rev-a"}))
         begin_run(ParseNowRun(store_only=True))
         try:
             await processor.update_record_fields({"_key": "r1"}, {"indexingStatus": IP, "contentRev": "rev-b"}, attempt_start=attempt_start)
@@ -369,7 +369,7 @@ class TestPageCountWrites:
             end_run()
 
         processor.graph_provider.write_attempt_start.assert_not_awaited()
-        written = processor.graph_provider.update_node.await_args.args[2]
+        written = processor.graph_provider.update_node_fields_if_match.await_args.args[2]
         assert written["contentRev"] == "rev-b" and written["pageCount"] is None and "indexingStatus" not in written
 
     async def test_an_attempt_start_leaves_the_count_to_its_own_statement(self) -> None:
@@ -390,11 +390,11 @@ class TestPageCountWrites:
         processor.graph_provider.update_node.assert_not_awaited()
 
     async def test_a_record_that_moved_to_another_revision_since_it_was_read_is_written_with_the_count_dropped(self) -> None:
-        processor = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
+        processor = _processor(update_node_fields_if_match=AsyncMock(side_effect=[False, True]), get_document=AsyncMock(return_value={"contentRev": "rev-z"}))
 
         await processor.update_record_fields({"_key": "r1", "contentRev": "rev-a"}, {"contentRev": "rev-a", "reason": None})
 
-        assert processor.graph_provider.update_node.await_args.args[2]["pageCount"] is None
+        assert processor.graph_provider.update_node_fields_if_match.await_args.args[2]["pageCount"] is None
 
     async def test_the_decision_is_the_stores_not_the_snapshots(self) -> None:
         """The snapshot holds revision A, a concurrent writer set B and its count, and this write is of B: the store matches B and keeps the
@@ -404,16 +404,16 @@ class TestPageCountWrites:
         assert kept.graph_provider.update_node_fields_if_match.await_args.args[3] == {"contentRev": "rev-b"}
         kept.graph_provider.update_node.assert_not_awaited()
 
-        dropped = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
+        dropped = _processor(update_node_fields_if_match=AsyncMock(side_effect=[False, True]), get_document=AsyncMock(return_value={"contentRev": "rev-a"}))
         await dropped.update_record_fields({"_key": "r1", "contentRev": "rev-b"}, {"contentRev": "rev-b"})
-        assert dropped.graph_provider.update_node.await_args.args[2] == {"contentRev": "rev-b", "pageCount": None}
+        assert dropped.graph_provider.update_node_fields_if_match.await_args.args[2] == {"contentRev": "rev-b", "pageCount": None}
 
     async def test_a_new_revision_drops_the_count_after_the_store_found_a_different_one(self) -> None:
-        processor = _processor(update_node_fields_if_match=AsyncMock(return_value=False))
+        processor = _processor(update_node_fields_if_match=AsyncMock(side_effect=[False, True]), get_document=AsyncMock(return_value={"contentRev": "rev-a"}))
 
         await processor.update_record_fields({"_key": "r1", "contentRev": "rev-a"}, {"contentRev": "rev-b"})
 
-        assert processor.graph_provider.update_node.await_args.args[2] == {"contentRev": "rev-b", "pageCount": None}
+        assert processor.graph_provider.update_node_fields_if_match.await_args.args[2] == {"contentRev": "rev-b", "pageCount": None}
 
     async def test_a_write_that_does_not_set_the_revision_leaves_the_count_alone(self) -> None:
         processor = _processor()
@@ -519,9 +519,35 @@ class TestTheCountRuleOfEveryRevisionWriter:
         graph.update_node.assert_not_awaited()
         assert graph.update_node_fields_if_match.await_args.args[3] == {"contentRev": "a"}
 
-        graph.update_node_fields_if_match = AsyncMock(return_value=False)
+        # the revision differs: the clearing write is conditional on the revision that was read, never plain
+        graph.update_node_fields_if_match = AsyncMock(side_effect=[False, True])
+        graph.get_document = AsyncMock(return_value={"contentRev": "z"})
         assert await write_with_revision_rule(graph, "r1", "records", {"contentRev": "a"})
-        assert graph.update_node.await_args.args[2] == {"contentRev": "a", "pageCount": None}
+        graph.update_node.assert_not_awaited()
+        assert graph.update_node_fields_if_match.await_args.args[2] == {"contentRev": "a", "pageCount": None}
+        assert graph.update_node_fields_if_match.await_args.args[3] == {"contentRev": "z"}
+
+    async def test_a_record_that_took_the_written_revision_in_between_keeps_its_count(self) -> None:
+        from app.modules.indexing.record_diagnostics import write_with_revision_rule
+
+        graph = MagicMock()
+        graph.update_node = AsyncMock()
+        graph.update_node_fields_if_match = AsyncMock(side_effect=[False, True])
+        graph.get_document = AsyncMock(return_value={"contentRev": "a", "pageCount": 9})
+        assert await write_with_revision_rule(graph, "r1", "records", {"contentRev": "a"})
+        assert [c.args[2] for c in graph.update_node_fields_if_match.await_args_list] == [{"contentRev": "a"}, {"contentRev": "a"}]
+
+    async def test_a_record_that_keeps_moving_or_is_gone_is_reported_not_written(self) -> None:
+        from app.modules.indexing.record_diagnostics import write_with_revision_rule
+
+        graph = MagicMock()
+        graph.update_node = AsyncMock()
+        graph.update_node_fields_if_match = AsyncMock(return_value=False)
+        graph.get_document = AsyncMock(return_value=None)
+        assert not await write_with_revision_rule(graph, "r1", "records", {"contentRev": "a"})
+        graph.get_document = AsyncMock(side_effect=lambda *a: {"contentRev": object()})
+        assert not await write_with_revision_rule(graph, "r1", "records", {"contentRev": "a"})
+        graph.update_node.assert_not_awaited()
 
     async def test_fields_without_a_revision_are_one_plain_write(self) -> None:
         from app.modules.indexing.record_diagnostics import write_with_revision_rule
@@ -533,68 +559,131 @@ class TestTheCountRuleOfEveryRevisionWriter:
         graph.update_node_fields_if_match.assert_not_awaited()
         assert graph.update_node.await_args.args[2] == {"reason": "x"}
 
-    def test_every_place_in_app_that_names_the_revision_is_classified_and_the_writers_use_the_rule(self) -> None:
-        """Structural: an AST walk finds every function (or module) in ``app`` that uses the key ``contentRev`` as a dict key, an item
-        assignment, a keyword, a constant or a match condition, whether the fields reach a write directly or through a variable. Each is either a
-        known writer, which must call ``write_with_revision_rule``, or classified as not writing the record's revision. A new one fails here."""
-        import ast
+    def test_every_write_site_of_the_revision_in_app_is_classified_and_the_writers_use_the_rule(self) -> None:
+        """Structural, per write site. An AST walk finds every site in ``app`` that names the key ``contentRev``: a dict literal with it as a
+        key (a ``**{...}`` spread of one included), a call that passes it as a keyword (``dict(contentRev=rev)``, a constructor, ``update``), an
+        item assignment, or the bare constant (a match condition, a field list). Reads (``.get("contentRev")``) are skipped. Each function (or
+        module) is classified with the NUMBER of sites it holds, so a new write added to an already classified function changes the count and
+        fails here, as does a new function. A known writer must also call ``write_with_revision_rule``.
+
+        Limits: the site is found by the literal key or keyword; a key built at run time (``{name: rev}`` with ``name`` a variable), fields taken
+        from another mapping (``{**other}``) or ``setattr`` are invisible; and one site added while another is removed in the same function keeps
+        its count (the review sees that diff)."""
         from pathlib import Path
 
         app = Path(__file__).resolve().parents[4] / "app"
         writers = {
-            ("events/events.py", "EventProcessor.update_record_fields"),
-            ("modules/pipeline/ingress.py", "StageIngress.on_indexed"),
+            ("events/events.py", "EventProcessor.update_record_fields"): 1,
+            ("modules/pipeline/ingress.py", "StageIngress.on_indexed"): 1,
         }
         not_writers = {
-            ("connectors/sources/localKB/push/service.py", "PushResult.to_json"): "the push response",
-            ("connectors/sources/localKB/push/service.py", "KbPushService._store"): "storage tags",
-            ("events/events.py", "EventProcessor._write_page_count"): "a match condition",
-            ("events/events.py", "EventProcessor._persist_parsing_completed"): "a match condition",
-            ("events/events.py", "EventProcessor.mark_record_status"): "builds fields that update_record_fields writes",
-            ("events/events.py", "EventProcessor._dispatch_event"): "the attempt start fields (write_attempt_start decides the count)",
-            ("events/events.py", "EventProcessor._attach_to_finished_twin"): "a match condition",
-            ("models/record_metadata.py", "<module>"): "a field list",
-            ("modules/artifacts/retention.py", "_held_revs"): "a read",
-            ("modules/indexing/duplicate_reconcile.py", "DuplicateReconciler.reconcile"): "a match condition",
-            ("modules/indexing/embed_resume.py", "<module>"): "a point field name",
-            ("modules/indexing/parse_now_marker.py", "shape_status_write"): "derives the marker from the fields",
-            ("modules/indexing/record_diagnostics.py", "<module>"): "a field list",
-            ("modules/indexing/record_diagnostics.py", "write_with_revision_rule"): "the rule itself",
-            ("modules/pipeline/parse_now.py", "parse_now_event"): "an event payload",
-            ("modules/record_metadata/projection.py", "project_properties"): "a read",
-            ("schema/arango/documents.py", "<module>"): "the schema",
+            ("connectors/sources/localKB/push/service.py", "PushResult.to_json"): (1, "the push response"),
+            ("connectors/sources/localKB/push/service.py", "KbPushService._store"): (1, "storage tags"),
+            ("events/events.py", "EventProcessor._write_page_count"): (1, "a match condition"),
+            ("events/events.py", "EventProcessor._persist_parsing_completed"): (1, "a match condition"),
+            ("events/events.py", "EventProcessor.mark_record_status"): (1, "builds fields that update_record_fields writes"),
+            ("events/events.py", "EventProcessor._dispatch_event"): (1, "the attempt start fields (write_attempt_start decides the count)"),
+            ("events/events.py", "EventProcessor._attach_to_finished_twin"): (1, "a match condition"),
+            ("events/events.py", "EventProcessor._skip_same_bytes"): (1, "the revision the skip is for, passed to the redrive; no record write"),
+            ("services/messaging/kafka/handlers/record.py", "RecordEventHandler._clear_membership_pending"): (2, "match conditions of a reason-only write"),
+            ("services/messaging/kafka/handlers/record.py", "RecordEventHandler._repair_membership_after_give_up"): (1, "a match condition of a reason-only write"),
+            ("services/messaging/kafka/handlers/record.py", "RecordEventHandler._undo_pending_reason"): (1, "a match condition of a reason-only write"),
+            ("models/record_metadata.py", "<module>"): (1, "a field list"),
+            ("modules/artifacts/retention.py", "_held_revs"): (1, "a read"),
+            ("modules/indexing/duplicate_reconcile.py", "DuplicateReconciler.reconcile"): (1, "a match condition"),
+            ("modules/indexing/embed_resume.py", "<module>"): (1, "a point field name"),
+            ("modules/indexing/parse_now_marker.py", "shape_status_write"): (1, "derives the marker from the fields"),
+            ("modules/indexing/record_diagnostics.py", "<module>"): (1, "a field list"),
+            ("modules/indexing/record_diagnostics.py", "write_with_revision_rule"): (2, "the rule itself"),
+            ("modules/pipeline/parse_now.py", "parse_now_event"): (1, "an event payload"),
+            ("modules/record_metadata/projection.py", "project_properties"): (1, "a read"),
+            ("schema/arango/documents.py", "<module>"): (1, "the schema"),
         }
-        found: set[tuple[str, str]] = set()
+        found: dict[tuple[str, str], int] = {}
         uses_rule: set[tuple[str, str]] = set()
         for path in sorted(app.rglob("*.py")):
             text = path.read_text(encoding="utf-8-sig")
             if "contentRev" not in text:
                 continue
-            tree = ast.parse(text)
-            parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
-
-            def owner(node: ast.AST, parents: dict = parents) -> str:
-                names = []
-                while node in parents:
-                    node = parents[node]
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                        names.append(node.name)
-                return ".".join(reversed(names)) or "<module>"
-
             relative = path.relative_to(app).as_posix()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Constant) and node.value == "contentRev":
-                    parent = parents.get(node)
-                    if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Attribute) and parent.func.attr == "get":
-                        continue  # a read
-                    found.add((relative, owner(node)))
-                if isinstance(node, ast.Name) and node.id == "write_with_revision_rule" or (
-                    isinstance(node, ast.Attribute) and node.attr == "write_with_revision_rule"
-                ):
-                    uses_rule.add((relative, owner(node)))
-        assert writers <= found, f"a known writer no longer names contentRev: {writers - found}"
-        unclassified = sorted(found - writers - set(not_writers))
+            sites, rule_users = _revision_sites(text)
+            for owner, count in sites.items():
+                found[(relative, owner)] = count
+            uses_rule |= {(relative, owner) for owner in rule_users}
+        expected = {**writers, **{key: count for key, (count, _) in not_writers.items()}}
+        changed = sorted(f"{key}: {found.get(key, 0)} sites, classified {count}" for key, count in expected.items() if found.get(key, 0) != count)
+        unclassified = sorted(f"{key}: {count} sites" for key, count in found.items() if key not in expected)
+        assert changed == [], f"the number of sites that name contentRev changed (a new write, or a classification gone stale): {changed}"
         assert unclassified == [], f"these name contentRev and are neither a writer using the rule nor classified as non-writers: {unclassified}"
-        assert writers <= uses_rule, f"these write contentRev without write_with_revision_rule: {sorted(writers - uses_rule)}"
-        gone = sorted(set(not_writers) - found)
-        assert gone == [], f"classified non-writers that no longer name contentRev: {gone}"
+        assert set(writers) <= uses_rule, f"these write contentRev without write_with_revision_rule: {sorted(set(writers) - uses_rule)}"
+
+    def test_the_site_scan_sees_keyword_spread_and_assignment_forms(self) -> None:
+        """Mutants of the scan itself: each form of a write of the revision is one site, and a write added to a function is one more."""
+        base = "def f(rev):\n    return {'contentRev': rev}\n"
+        assert _revision_sites(base)[0] == {"f": 1}
+        for mutant in (
+            "def f(rev):\n    return dict(contentRev=rev)\n",
+            "def f(rev):\n    return dict(**{'contentRev': rev})\n",
+            "def f(rev, doc):\n    doc['contentRev'] = rev\n",
+            "def f(rev, g):\n    g(contentRev=rev)\n",
+            "class C:\n    def f(self, rev):\n        return {**{'contentRev': rev}}\n",
+        ):
+            sites = _revision_sites(mutant)[0]
+            assert sum(sites.values()) == 1, mutant
+        assert _revision_sites(base + "    # reads\n    x = {}.get('contentRev')\n")[0] == {"f": 1}
+        twice = "def f(rev):\n    a = {'contentRev': rev}\n    b = dict(contentRev=rev)\n    return a, b\n"
+        assert _revision_sites(twice)[0] == {"f": 2}
+
+    def test_a_write_added_to_a_classified_function_changes_its_count(self) -> None:
+        """Mutant on the real file: a second write in ``update_record_fields`` (a keyword form) raises the count the classification holds."""
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parents[4] / "app" / "events" / "events.py").read_text(encoding="utf-8-sig")
+        before = _revision_sites(source)[0]["EventProcessor.update_record_fields"]
+        marker = "    async def update_record_fields("
+        head, _, rest = source.partition(marker)
+        signature_end = rest.index(":\n", rest.index(")"))  # the end of the signature
+        body_start = rest.index("\n", signature_end + 1) + 1
+        mutated = head + marker + rest[:body_start] + "        _extra = dict(contentRev=None)\n" + rest[body_start:]
+        assert _revision_sites(mutated)[0]["EventProcessor.update_record_fields"] == before + 1
+
+
+def _revision_sites(source: str) -> tuple[dict[str, int], set[str]]:
+    """``({owner: number of write sites naming contentRev}, owners that use write_with_revision_rule)`` for one module's source."""
+    import ast
+
+    tree = ast.parse(source)
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+    def owner(node: ast.AST) -> str:
+        names = []
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.append(node.name)
+        return ".".join(reversed(names)) or "<module>"
+
+    sites: dict[str, set[ast.AST]] = {}
+    rule_users: set[str] = set()
+
+    def add(node: ast.AST, site: ast.AST) -> None:
+        sites.setdefault(owner(node), set()).add(site)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "contentRev":
+            add(node, node)
+        elif isinstance(node, ast.Constant) and node.value == "contentRev":
+            parent = parents.get(node)
+            if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Attribute) and parent.func.attr == "get":
+                continue  # a read
+            if isinstance(parent, ast.Dict):
+                add(node, parent)  # one site per dict literal, however it reaches a call (``**{...}`` too)
+            elif isinstance(parent, ast.Subscript):
+                add(node, parent)
+            else:
+                add(node, node)
+        if isinstance(node, ast.Name) and node.id == "write_with_revision_rule" or (
+            isinstance(node, ast.Attribute) and node.attr == "write_with_revision_rule"
+        ):
+            rule_users.add(owner(node))
+    return {name: len(found) for name, found in sites.items()}, rule_users

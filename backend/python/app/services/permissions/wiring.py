@@ -114,9 +114,11 @@ def build_shadow_comparator(graph_provider: IGraphDBProvider) -> ShadowComparato
 
 
 def build_serving_planner(graph_provider: IGraphDBProvider) -> ServingPlanner | None:
-    """The planner that reads a search with the scope filter, when ``ACL_FILTER_MODE=scopes``; None in every other mode (no object, no read). It
-    reads viewer scopes through the cache registered at the time of each search, as the shadow comparator does."""
-    if AclFilterMode.from_env() is not AclFilterMode.SCOPES:
+    """The planner that reads a search with the scope filter for the connectors whose mode resolves to `scopes` (``ACL_FILTER_MODE=scopes``, or a
+    connector an admin switched to `scopes` under ``shadow``); None in `legacy` mode (no object, no read): the writers are off there, so no stamp
+    could be current. It reads viewer scopes through the cache registered at the time of each search, as the shadow comparator does."""
+    mode = AclFilterMode.from_env()
+    if mode is AclFilterMode.LEGACY:
         return None
     from .adapters import GraphPrincipalView
     from .currency import StampCurrency
@@ -124,4 +126,4 @@ def build_serving_planner(graph_provider: IGraphDBProvider) -> ServingPlanner | 
     from .viewer import ViewerScopeResolver
 
     resolver = ViewerScopeResolver(graph_provider.permission_hierarchy_view(), GraphPrincipalView(graph_provider))
-    return ServingPlanner(_ScopesAtUse(resolver), StampCurrency(graph_provider))  # type: ignore[arg-type]
+    return ServingPlanner(_ScopesAtUse(resolver), StampCurrency(graph_provider), default=mode)  # type: ignore[arg-type]

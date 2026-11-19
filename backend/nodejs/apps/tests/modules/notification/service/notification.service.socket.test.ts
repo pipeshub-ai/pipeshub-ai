@@ -242,6 +242,35 @@ describe('NotificationService over a real socket', () => {
       expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 2 }]);
     });
 
+    describe('a scheduled notification (visibleAt ahead)', () => {
+      const future = () => new Date(Date.now() + 3600_000).toISOString();
+
+      it('is not emitted to a connected user, and the next notification is the next thing they receive', async () => {
+        const aliceSocket = await connectAs(alice);
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'scheduled', visibleAt: future() })).to.be.false;
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'plain' })).to.be.true;
+        expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['newNotification', { id: 'plain' }]);
+      });
+
+      it('is not put in the queue of an offline user, and is not delivered when they connect', async () => {
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'scheduled', visibleAt: future() })).to.be.false;
+        expect(internals().notificationQueue.has(alice.userId)).to.equal(false);
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'plain' })).to.be.false;
+        expect(internals().notificationQueue.get(alice.userId)).to.have.length(1);
+        const aliceSocket = await connectAs(alice);
+        expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['newNotification', { id: 'plain' }]);
+      });
+
+      it('is pushed like any other once its visibleAt has passed or when it has none', async () => {
+        const aliceSocket = await connectAs(alice);
+        const past = new Date(Date.now() - 1000).toISOString();
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'due', visibleAt: past })).to.be.true;
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'none' })).to.be.true;
+        expect(await aliceSocket.nextEvent()).to.deep.equal(['newNotification', { id: 'due', visibleAt: past }]);
+        expect(await aliceSocket.nextEvent()).to.deep.equal(['newNotification', { id: 'none' }]);
+      });
+    });
+
     it('goes back to holding notifications once the user disconnects', async () => {
       const aliceSocket = await connectAs(alice);
       await aliceSocket.close();

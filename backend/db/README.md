@@ -64,8 +64,8 @@ Nothing here runs unless it is invoked, and these jobs only matter where the pgv
 
 | Command | What it does | Credential |
 | --- | --- | --- |
-| `fold [--watch [SECONDS]]` | folds the point-count deltas of every org into `retrieval.collection_stats` | jobs |
-| `recount [<org>]` | recomputes the point counts from the live points; exit 6 if an org was busy | jobs |
+| `fold [--watch [SECONDS]]` | folds the point-count deltas of every org into `retrieval.collection_stats`, and the term-frequency deltas that triggers on `retrieval.postings` write into `retrieval.lexical_df` | jobs |
+| `recount [<org>]` | recomputes the point counts from the live points and the term frequencies from the postings; exit 6 if an org was busy. Run it once after upgrading to `retrieval_0005`: until then the lexical search of a collection written before it counts the postings of each query term (`retrieval.lexical_df_pending`) | jobs |
 | `group-gc` | deletes the membership of groups that have no point and are older than one hour | jobs |
 | `build-indexes` | the vector indexes of every points leaf for every embedding space that lacks them, built concurrently and sized to the leaf, one leaf at a time under the migrate lock | migrate |
 | `nightly [--all]` | pgvector before 0.8.4 only (HNSW safe mode, where deletes are tombstoned): deletes the points of tombstoned rows, rebuilds the vector indexes of the leaves that had tombstones (`--all`: every leaf), vacuums them and drops the tombstones; gives a leaf without a `vacuum_index_cleanup` setting `off` (an existing setting is never changed: after upgrading pgvector, remove it with `ALTER TABLE ... RESET (vacuum_index_cleanup)`), and runs `build-indexes`; only one nightly runs at a time, a second exits 6 (busy) | jobs and migrate |
@@ -85,6 +85,8 @@ through `lib/ddl.py` (`ensure_index`, `ensure_partitioned_index`), partitions th
 - `DROP CONSTRAINT` (a dropped unique or primary key breaks `ON CONFLICT`), `ALTER TABLE ... DETACH PARTITION`, `CREATE RULE`;
 - a `DO` block with `EXECUTE` (dynamic SQL cannot be parsed).
 Review item for every revision: run the previous release's code against the new schema in your head (inserts, updates, reads, function calls) and write the answer into the waiver. A development downgrade (`PG_MIGRATE_ALLOW_DOWNGRADE`) keeps the contract: below the contract revision the branch row reads, for example, epoch 1 with `min_code_epoch` 11, and every build refuses that database until it is upgraded again. Not parsed: function names passed to `run_vetted` through a variable, SQL that reaches a database through an object other than those above, and the waiver's truth.
+
+**Released heads.** `released_heads.json` holds each branch's head epoch in the last release, and `tests/test_unit.py::test_no_released_head_is_gone` fails when a branch's head is below it (a shipped revision deleted or renumbered). Only the release process edits the file: when a release is tagged, set `release` to the tag and `epochs` to that tag's heads, `python -c "from db import epoch_lint, locations; print({b: e for b, (e, _) in epoch_lint.expected_heads(locations.version_locations())[0].items()})"` from `backend/` on the tagged tree, in the same pull request as the release notes.
 
 CI: `python -m db.epoch_lint`, `python -m db.lint`; `python -m db.schema_requirements kernel,platform > schema_requirements.json`
 writes a build artifact's requirements, checked at boot by `boot_assert.py` (Python) and `nodejs/apps/src/libs/db/schema-assert.ts` (Node).

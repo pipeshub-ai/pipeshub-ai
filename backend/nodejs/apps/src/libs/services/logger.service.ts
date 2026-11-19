@@ -106,9 +106,9 @@ export interface LoggerConfig {
 
 const DEFAULT_SERVICE = 'default-service';
 
-/** audit() and the auth refusal wrapper log on behalf of their caller, so their frames are skipped like the logger's. */
+/** audit() and the auth / user audit wrappers log on behalf of their caller, so their frames are skipped like the logger's. */
 const AUDIT_FRAME =
-  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit)\.[jt]s:/;
+  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit|modules[\\/]user_management[\\/]utils[\\/]user-audit)\.[jt]s:/;
 
 /** Event fields a call site may pass in `meta`; they render like the context ids. */
 const EVENT_FIELD_KEYS = [
@@ -125,8 +125,14 @@ const EVENT_FIELD_KEYS = [
   'outcome',
   'actor',
   'target',
+  'group_id',
   'reason',
   'auth_method',
+  'code',
+  'events',
+  'bytes',
+  'ttfb_ms',
+  'frame',
 ] as const;
 
 /** Shown in the text line as ` | k=v`, in this order (identity first, as in Python), when the record has them. */
@@ -162,6 +168,8 @@ export const SNAKE_TOKEN = /^[a-z0-9_]{1,64}$/;
 const TYPE_NAME = /^[A-Za-z0-9_]{1,64}$/;
 /** A transport error code (`ECONNREFUSED`, `UND_ERR_SOCKET`). */
 const NETWORK_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+/** An SSE frame type (`RUN_FINISHED`). */
+const FRAME_TYPE = /^[A-Z][A-Z_]{0,31}$/;
 const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 /** A dotted lowercase event name (`http.request.end`). */
 export const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
@@ -203,8 +211,15 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   // An id as shown (raw, or a provider's hash); never an email or a name.
   actor: matches(SHOWN_ID),
   target: matches(SHOWN_ID),
+  group_id: isPipesHubId,
   reason: matches(SNAKE_TOKEN),
   auth_method: matches(TYPE_NAME),
+  // A chat stream's (`chat_stream.end`): the AI service's error code, and what it sent.
+  code: matches(SNAKE_TOKEN),
+  events: Number.isInteger,
+  bytes: Number.isInteger,
+  ttfb_ms: Number.isInteger,
+  frame: matches(FRAME_TYPE),
   // Fill the identity only when the request context has none (an audit line before sign-in).
   org_id: isPipesHubId,
   user_id: isPipesHubId,

@@ -10,8 +10,8 @@ class DirectoryListingError(Exception):
 
 
 class AccessDeniedError(DirectoryListingError):
-    """The account may not list this folder. It stays that way until someone changes its
-    permissions, unlike a dropped connection or a busy server."""
+    """The account may not list this folder or read this file. It stays that way until someone
+    changes its permissions, unlike a dropped connection or a busy server."""
 
 
 class ShareListingError(Exception):

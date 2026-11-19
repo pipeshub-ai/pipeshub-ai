@@ -6,16 +6,20 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from neo4j.exceptions import ServiceUnavailable
 
 from app.agents.actions.artifacts.artifacts import ArtifactManager
 from app.config.constants.arangodb import OriginTypes
 from app.models.entities import ArtifactType, LifecycleStatus
 from app.services.artifact_registry import ArtifactMetadata, ArtifactVersion, VersionConflictError
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
+from app.services.graph_db.neo4j.neo4j_client import describe_neo4j_error
+from app.utils.error_class import mark_error
 from app.web.own_files import ISSUED_DOWNLOAD_LINKS_KEY, IssuedFile, issued_file
 
 
@@ -778,3 +782,50 @@ class TestRecordDownloadUrlChecksAccess:
         ok, payload = await manager.get_record_download_url("rec-1")
         assert ok and json.loads(payload)["download_url"] == "https://signed/url"
         blob.get_download_url.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_graph_outage_is_not_reported_as_a_missing_record(self, caplog: pytest.LogCaptureFixture) -> None:
+        """F58: the provider answered None for a failed read, so an outage read as "No record found"."""
+        manager, graph, blob = self._manager(allowed={"record": {}})
+        down = ServiceUnavailable("Couldn't connect to 10.0.0.7:7687")  # a driver error: the db layer hides its text
+        _, cls, _, hide = describe_neo4j_error(down)
+        mark_error(down, cls, hide_text=hide)
+        graph.get_record_by_id = AsyncMock(side_effect=down)
+        with caplog.at_level(logging.DEBUG, logger="app.agents.actions.artifacts.artifacts"):
+            ok, payload = await manager.get_record_download_url("rec-1")
+
+        assert not ok
+        assert json.loads(payload)["error"] == "Failed to look up record"
+        graph.get_record_by_id.assert_awaited_once_with("rec-1", raise_on_error=True)
+        blob.get_download_url.assert_not_called()
+        [line] = [r for r in caplog.records if r.name == "app.agents.actions.artifacts.artifacts"]
+        assert line.getMessage() == "artifact.download_url.failed"
+        assert line.levelno == logging.WARNING
+        assert line.error_class == "unavailable"
+        assert line.record_id == "rec-1"
+        assert getattr(line, "error_message", None) is None
+        assert line.exc_info is None
+        assert "10.0.0.7" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_reconnect_failure_logs_no_driver_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The client's own reconnect error is not hidden (its text is ours), but its driver cause names the server."""
+        manager, graph, _ = self._manager(allowed={"record": {}})
+        try:
+            try:
+                raise ServiceUnavailable("Couldn't connect to 10.0.0.7:7687")
+            except ServiceUnavailable as cause:
+                raise RuntimeError("Neo4j reconnection failed") from cause
+        except RuntimeError as err:
+            down = err
+        _, cls, _, hide = describe_neo4j_error(down)  # the stamp the db layer gives it: unavailable, text not hidden
+        mark_error(down, cls, hide_text=hide)
+        graph.get_record_by_id = AsyncMock(side_effect=down)
+        with caplog.at_level(logging.DEBUG, logger="app.agents.actions.artifacts.artifacts"):
+            ok, payload = await manager.get_record_download_url("rec-1")
+
+        assert not ok and json.loads(payload)["error"] == "Failed to look up record"
+        [line] = [r for r in caplog.records if r.name == "app.agents.actions.artifacts.artifacts"]
+        assert (line.getMessage(), line.levelno, line.error_class) == ("artifact.download_url.failed", logging.WARNING, "unavailable")
+        assert getattr(line, "error_message", None) is None
+        assert "10.0.0.7" not in caplog.text

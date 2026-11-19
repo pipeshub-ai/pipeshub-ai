@@ -862,6 +862,29 @@ grants: [[u, r1], [u, r2], [u, r3], [u, open]]
 gates: [[u, A]]
 """))
 
+# a Jira project with a security level: the level's group L carries access only (``accessOnly``). It is never a row, and each issue under it is
+# listed once, where it is filed: t1, t2 and the epic E2 under the project, s1 under the epic E, s2 under E2, the sub-task st under t1. t2's
+# reporter w reads it through the project alone; x holds the level and cannot browse the project. o, open and granted to y alone, hangs under L and
+# under E4, which y cannot open: it is a chain-top listed under its own group P, as if L were not there.
+LEVELS = world_from_data(yaml.safe_load("""
+principals: [{id: u}, {id: v}, {id: w}, {id: x}, {id: y}]
+nodes:
+  - {id: J, kind: app, app_type: JIRA}
+  - {id: P, kind: group, connector: J, rule: OPEN, parents: [J], belongs: [J]}
+  - {id: L, kind: group, connector: J, rule: RESTRICTED, access_only: true, parents: [P], inherits: [P], belongs: [P]}
+  - {id: E, kind: record, connector: J, rule: STRICT, parents: [P], inherits: [P], belongs: [P]}
+  - {id: s1, kind: record, connector: J, rule: STRICT, parents: [E, L], inherits: [L], belongs: [P]}
+  - {id: t1, kind: record, connector: J, rule: STRICT, parents: [P, L], inherits: [L], belongs: [P]}
+  - {id: t2, kind: record, connector: J, rule: STRICT, parents: [P, L], inherits: [L], belongs: [P]}
+  - {id: st, kind: record, connector: J, rule: RESTRICTED, parents: [t1], inherits: [t1], belongs: [P]}
+  - {id: E2, kind: record, connector: J, rule: STRICT, parents: [P, L], inherits: [L], belongs: [P]}
+  - {id: s2, kind: record, connector: J, rule: STRICT, parents: [E2, L], inherits: [L], belongs: [P]}
+  - {id: E4, kind: record, connector: J, rule: RESTRICTED, parents: [P], inherits: [P], belongs: [P]}
+  - {id: o, kind: record, connector: J, rule: OPEN, parents: [E4, L], belongs: [P]}
+grants: [[u, P], [v, P], [w, P], [y, P], [u, L], [x, L], [y, L], [w, t2], [u, st], [y, o]]
+gates: [[u, J], [v, J], [w, J], [x, J], [y, J]]
+"""))
+
 # PAGSEED: regression REGR-09 before its change. dave reads the issue i1 only by his own grant (a seed); the PARENT_AND_GRANT comment c1 holds a grant
 # for his group, so he reads it, the OPEN file f1 in it and the PARENT_AND_GRANT reply c5 granted to him. c2 (not his grant), c3 (under carol's i2),
 # c4 (does not inherit) and the STRICT s1 stay closed to him.
@@ -899,7 +922,7 @@ grants: [[u, d], [u, S], [u, C]]
 gates: [[u, A]]
 """))
 
-KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
+KH_WORLDS = [LEVELS, CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
              SECOND, APPMEMBER, XGRANT, OPENGROUP, DECLDEEP, CROSSREACH, XSTUB, SIDEKID, APPSIDE, STUBQ, OPENGRANT, OPENGRANTTEAM, SIDESEED,
              STUBSEED, NESTSTUB, CAPSTUB, WIDE, HIDESEED, FLATSIDE, REACHSTUB,

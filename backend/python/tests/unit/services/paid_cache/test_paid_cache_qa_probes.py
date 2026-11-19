@@ -14,7 +14,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.modules.parsers.excel.prompt_template import (
+    KeyedRowDescription,
+    KeyedRowDescriptions,
+)
 from app.modules.parsers.pdf import vlm_ocr_strategy
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 from app.services.paid_cache import access
@@ -26,6 +29,7 @@ from app.services.paid_cache.retention import sweep_record
 from app.services.paid_cache.run import begin_run, clear_run
 from app.utils import table_enrichment
 from tests.support.paid_cache import CountingModel, MemoryResultStore, record_in_flight
+from tests.support.table_model import keyed_rows
 
 SEED = int(os.environ.get("QA_SEED") or 1698002757)
 print(f"QA_SEED={SEED}")
@@ -192,9 +196,11 @@ async def test_q5b_a_corrupt_object_is_replaced_so_only_one_run_pays(store: Memo
 async def test_q6_undecodable_value_is_a_miss(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
-    async def rows(llm: object, messages: list, model: type) -> RowDescriptions:
+    async def rows(llm: object, messages: list, model: type, *_a: object, **_k: object) -> KeyedRowDescriptions:
         calls["n"] += 1
-        return RowDescriptions(descriptions=["row one", "row two"])
+        return KeyedRowDescriptions(descriptions=[
+            KeyedRowDescription(key=key, description=f"row {n}") for n, (key, _row) in enumerate(keyed_rows(messages), 1)
+        ])
 
     monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", rows)
     llm = CountingModel("indexing")

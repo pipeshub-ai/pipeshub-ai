@@ -28,9 +28,11 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
+    _BACKPRESSURE_CLEAR_SETTLE_SECONDS,
     IndexingKafkaConsumer,
 )
 from app.services.resource_governor.models import ParseTier
+from tests.support.eventually import until
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,7 +181,11 @@ class TestApplyBackpressure:
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_action_when_no_paused_and_below_capacity(self, consumer):
         """No resume needed when nothing is paused."""
@@ -361,15 +367,8 @@ class TestStartProcessingTaskCallback:
             msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
-            # Wait for task completion
-            import time
-            time.sleep(1)
-
-            # Future should be cleaned up via callback
-            with consumer._futures_lock:
-                # All futures should have been cleaned up
-                remaining = len(consumer._active_futures)
-            assert remaining == 0
+            # The done callback runs on the worker thread, so wait for it without blocking this loop.
+            assert await until(lambda: consumer._get_active_task_count() == 0)
         finally:
             consumer.running = False
             consumer._IndexingKafkaConsumer__stop_worker_thread()

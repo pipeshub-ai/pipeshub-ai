@@ -1239,6 +1239,44 @@ class TestOnEventEdgeCases:
         processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_duplicate_skip_names_its_twin_on_the_end_line(self, caplog) -> None:
+        import logging
+
+        from app.utils import indexing_timing as timing
+
+        ep, _, _, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        timeline, token = timing.begin_record("rec-1")
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                          return_value=DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)), \
+             patch("app.events.events.notify_record_indexed", AsyncMock()), \
+             caplog.at_level(logging.INFO, logger="test.p6.dup"):
+            await _drain(ep.on_event(_make_event_payload()))
+            timing.end_record(timeline, token, outcome="ok", logger=logging.getLogger("test.p6.dup"))
+
+        (end,) = [r for r in caplog.records if r.getMessage() == "index.end"]
+        assert (end.outcome, end.reason, end.duplicate_of) == ("skipped", "duplicate", "vr-twin")
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_whose_follow_up_fails_is_not_noted_as_skipped(self) -> None:
+        from app.utils import indexing_timing as timing
+
+        ep, _, _, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        timeline, token = timing.begin_record("rec-1")
+        injected = RuntimeError("cache down")
+        notify = AsyncMock(side_effect=injected)
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                          return_value=DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)), \
+             patch("app.events.events.notify_record_indexed", notify), \
+             pytest.raises(RuntimeError) as raised:
+            await _drain(ep.on_event(_make_event_payload()))
+        assert raised.value is injected
+        notify.assert_awaited_once()
+        assert not {"outcome", "reason", "duplicate_of"} & timeline.facts.keys()
+        timing.end_record(timeline, token, outcome="failed")
+
+    @pytest.mark.asyncio
     async def test_docling_lost_after_it_began_indexing_is_not_parsed_twice(self) -> None:
         """Once Docling's parse completed, the record is retried rather than parsed again."""
         from app.services.docling.client import DoclingUnavailableError
@@ -2269,6 +2307,50 @@ class TestOnEventDuplicate:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_a_users_force_reindex_never_takes_a_twins_identity_before_it_indexes(self) -> None:
+        """A forced refresh asks dedup not to attach: the twin's relationships, VRID and status are not copied onto it."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+        seen: list[bool] = []
+
+        async def decide(*_args: object, force_index: bool = False, **_kwargs: object) -> DedupDecision:
+            seen.append(force_index)
+            return DedupDecision() if force_index else DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=decide):
+            plain = await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+            forced_event = _make_event_payload(extension=ExtensionTypes.DOCX.value)
+            forced_event["payload"].update({"forceReindex": True, "refreshPaidOutputs": True})
+            forced = await _drain(ep.on_event(forced_event))
+
+        assert seen == [False, True]
+        assert any(e.event == "indexing_complete" for e in plain)
+        assert processor.process_docx_document.called          # the forced event ran the parse
+        assert any(e.event == "indexing_complete" for e in forced)
+
+    @pytest.mark.asyncio
+    async def test_dedup_for_a_forced_event_copies_nothing_from_a_finished_twin(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        processor.sink_orchestrator.blob_storage.get_actual_content_path.return_value = "some/path"
+        gp.find_duplicate_records.return_value = [{
+            "_key": "twin", "virtualRecordId": "vr-shared", "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value, "summaryDocumentId": "sum-1",
+        }]
+        ep._attach_to_finished_twin = AsyncMock()
+        doc = {"_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        plain = await ep._check_duplicate_by_md5(b"x", dict(doc))
+        ep._attach_to_finished_twin.assert_awaited_once()      # a plain event attaches, as before
+        ep._attach_to_finished_twin.reset_mock()
+        forced = await ep._check_duplicate_by_md5(b"x", dict(doc), force_index=True)
+
+        ep._attach_to_finished_twin.assert_not_awaited()       # nothing of the twin's identity was copied
+        assert plain.skip_indexing is True
+        assert forced.skip_indexing is False
+        assert forced.rebuild_shared_vrid is True               # the shared VRID it holds is rebuilt, repairing the twin too
 
     @pytest.mark.asyncio
     async def test_duplicate_skip_invalidates_accessible_records_cache(self):
@@ -3671,3 +3753,74 @@ class TestAbandonedVridCleanupRunsInBackground:
             await task
         assert task.exception() is None
         assert processor.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid.await_count == 3
+
+
+class TestMetadataFileSkipNote:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("write_fails", [False, True])
+    async def test_the_skip_is_noted_only_once_its_status_is_written(self, write_fails) -> None:
+        from app.utils import indexing_timing as timing
+
+        ep, _, _processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        injected = RuntimeError("graph down")
+        mark = AsyncMock(side_effect=injected if write_fails else None)
+        timeline, token = timing.begin_record("rec-1")
+        try:
+            with patch.object(ep, "mark_record_status", mark), \
+                 patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+                if write_fails:
+                    with pytest.raises(RuntimeError) as raised:
+                        await _drain(ep.on_event(_make_event_payload(buffer=b"bplist00 not a document")))
+                    assert raised.value is injected
+                else:
+                    await _drain(ep.on_event(_make_event_payload(buffer=b"bplist00 not a document")))
+            noted = dict(timeline.facts)
+        finally:
+            timing.end_record(timeline, token, outcome="ok")
+        mark.assert_awaited_once()
+        assert mark.await_args.args[1] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED
+        if write_fails:
+            assert noted.get("reason") != "metadata_file"
+        else:
+            assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "metadata_file")
+
+
+class TestDedupNormalizeFailure:
+    def test_a_decode_failure_logs_no_document_bytes(self, caplog) -> None:
+        import logging
+
+        ep, _, _processor, _gp = _make_event_processor()
+        ep.logger = logging.getLogger("test.p6.events")
+        content = b"<p>Quarterly-Secret-Plan \xff\xfe</p>"
+        with caplog.at_level(logging.DEBUG, logger="test.p6.events"), \
+             patch("app.events.events.BeautifulSoup", side_effect=UnicodeDecodeError(
+                 "utf-8", content, 25, 26, "invalid start byte")):
+            assert ep._normalize_content_for_dedup(content, mime_type="text/html") == content
+        (line,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert (line.getMessage(), line.error_type) == ("index.dedup_normalize_failed", "UnicodeDecodeError")
+        assert all("Quarterly-Secret-Plan" not in r.getMessage() + str(vars(r)) for r in caplog.records)
+
+
+class TestDoclingSentinelFallback:
+    @pytest.mark.asyncio
+    async def test_docling_returning_nothing_warns_once_in_the_processor_not_again_here(self, caplog) -> None:
+        import logging
+
+        ep, _, processor, gp = _make_event_processor()
+        ep.logger = logging.getLogger("test.p6.events")
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def docling_failed(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=docling_failed)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False), caplog.at_level(logging.DEBUG, logger="test.p6.events"):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []

@@ -39,6 +39,7 @@ from app.services.artifact_registry import (
 )
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
+from app.utils.error_class import log_failure
 from app.web.own_files import remember_download_link
 
 logger = logging.getLogger(__name__)
@@ -540,9 +541,10 @@ class ArtifactManager:
         if graph_provider is None or blob_store is None:
             return _result(False, {"success": False, "error": "Storage is unavailable in this context"})
         try:
-            record = await graph_provider.get_record_by_id(record_id)
-        except Exception:
-            logger.exception("[get_record_download_url] lookup failed for %s", record_id)
+            record = await graph_provider.get_record_by_id(record_id, raise_on_error=True)
+        except Exception as exc:
+            # No text: a client's own error (reconnect failed) is not hidden, but its driver cause names the server.
+            log_failure(logger, "artifact.download_url.failed", exc, record_id=record_id, include_error_text=False)
             return _result(False, {"success": False, "error": "Failed to look up record"})
         # Missing, another org's and denied read the same: the id comes from the
         # model, and the answer must not say which ids exist.

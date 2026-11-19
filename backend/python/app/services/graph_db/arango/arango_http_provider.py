@@ -530,8 +530,9 @@ def _aql_open_hop(c: str, p: str, tag: str) -> str:
 def _aql_read_by_app(v: str) -> str:
     """Whether ``v`` is read by this App's rules (``@app_id``). A record or group of another connector that a
     group edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's
-    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once."""
-    return f"({v}.connectorId == @app_id)"
+    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once. A group that carries
+    access only (``accessOnly``) is never a row: what hangs under it is listed under its other parents."""
+    return f"({v}.connectorId == @app_id AND {v}.accessOnly != true)"
 
 
 def _aql_in_scope(c: str, p: str) -> str:
@@ -669,7 +670,7 @@ def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -
         FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
             FILTER kh_ue.relationshipType IN {_HIERARCHY_AQL}
             FILTER IS_SAME_COLLECTION("{records}", kh_uc) OR IS_SAME_COLLECTION("{groups}", kh_uc)
-            FILTER kh_uc.orgId == @org_id AND kh_uc.connectorId == @app_id AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
+            FILTER kh_uc.orgId == @org_id AND {_aql_read_by_app("kh_uc")} AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
             {f"FILTER kh_uc._id NOT IN {decided}" if decided else ""}
             FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}
             // a child a browse of it would refuse takes no place under the cap
@@ -1300,8 +1301,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         client = self.http_client
         if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
             guard = client.record_guard
-            # The guard's locked recheck decides, so a start that read a lower generation and paused cannot write after a newer
-            # image installed its own; an unreadable live schema is not written over (this attempt of the start fails).
+            # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
+            # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
+            # later checks and writes repair it. An unreadable live schema is not written over (this attempt of the start fails).
             try:
                 await guard.ensure_wide("startup")
             except Exception as error:
@@ -2089,6 +2091,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Record | None:
         """
         Get record by internal ID (_key) with associated type document (file/mail/etc.).
@@ -2096,6 +2100,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             record_id: Internal record ID (_key)
             transaction: Optional transaction ID
+            raise_on_error: Propagate a failed read instead of answering None. A record
+                that will not build is still None.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
@@ -2121,15 +2127,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={"id": record_id},
                 transaction=transaction,
             )
-            if not results:
-                return None
-            result = results[0]
+        except Exception as e:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
+                raise
+            self.logger.error("Failed to get record by id %s: %s", record_id, type(e).__name__)
+            return None
+        if not results:
+            return None
+        result = results[0]
+        try:
             return self._create_typed_record_from_arango(
                 result["record"],
                 result.get("typeDoc"),
             )
         except Exception as e:
-            self.logger.error("❌ Failed to get record by id %s: %s", record_id, str(e))
+            # The builder's error quotes the whole type document.
+            self.logger.error("Failed to build record %s of type %s: %s",
+                              record_id, result["record"].get("recordType"), type(e).__name__)
             return None
 
     async def page_record_ids_by_type(
@@ -8770,6 +8784,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch all active users from the database who belong to the organization.
@@ -8777,6 +8792,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             org_id (str): Organization ID
             active (bool): Filter for active users only if True
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of user documents with their details
@@ -8788,6 +8804,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR edge IN {CollectionNames.BELONGS_TO.value}
                     FILTER edge._to == CONCAT('organizations/', @org_id)
                     AND edge.entityType == 'ORGANIZATION'
+                    AND IS_SAME_COLLECTION('{CollectionNames.USERS.value}', edge._from)
                     LET user = DOCUMENT(edge._from)
                     FILTER @active == false OR user.isActive == true
                     RETURN user
@@ -8804,6 +8821,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch users: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(
@@ -12097,6 +12116,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         result = await self.http_client.execute_aql(
             query=query,
             bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
+                                   CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
+            txn_id=transaction,
+        )
+        return len(result or [])
+
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when the user has no USER_APP_RELATION edge to the connector, checked in the same query."""
+        query = """
+        FOR perm IN permission
+            FILTER IS_SAME_COLLECTION(@users, perm._from)
+            FILTER PARSE_IDENTIFIER(perm._to).collection IN @targets
+            LET target = DOCUMENT(perm._to)
+            FILTER target != null AND target.connectorId == @connector_id
+            FILTER LENGTH(FOR rel IN @@relation FILTER rel._from == perm._from AND rel._to == @app LIMIT 1 RETURN 1) == 0
+            REMOVE perm IN permission
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"users": CollectionNames.USERS.value, "connector_id": connector_id,
+                       "app": f"{CollectionNames.APPS.value}/{connector_id}",
+                       "@relation": CollectionNames.USER_APP_RELATION.value,
                        "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
                                    CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
             txn_id=transaction,
@@ -21687,6 +21734,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER kh_pe.relationshipType IN {hierarchy}
                             FILTER IS_SAME_COLLECTION("{apps}", kh_p) OR IS_SAME_COLLECTION("{groups}", kh_p)
                                 OR IS_SAME_COLLECTION("{records}", kh_p)
+                            FILTER kh_p.accessOnly != true
                             RETURN kh_p._key
                     ),
                     ownGroups: (FOR kh_g IN {owns("kh_c")} RETURN {{id: kh_g._key, deleted: kh_g.isDeleted == true}})

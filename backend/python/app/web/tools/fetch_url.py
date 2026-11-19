@@ -156,6 +156,8 @@ def create_fetch_url_tool(
             "title": page.title,
             "fetched_by": outcome.served_by,
             "blocks": [dataclasses.asdict(b) for b in page.blocks],
+            # Addresses only: the bytes are read later, and only when an admin sends images.
+            "images": [dataclasses.asdict(image) for image in page.images],
         })
 
     return fetch_url_tool

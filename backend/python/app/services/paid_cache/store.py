@@ -87,6 +87,7 @@ class NodePaidResultStore:
     def __init__(self, blob_storage: "BlobStorage", logger: logging.Logger | None = None) -> None:
         self._blob_storage = blob_storage
         self.logger = logger or logging.getLogger(__name__)
+        self._cutoff_route_warned = False
         # Reuses the artifact client's reply handling and its URL transfer helpers.
         self._artifacts = NodeArtifactStore(blob_storage, self.logger)
 
@@ -94,7 +95,7 @@ class NodePaidResultStore:
 
     async def _call(
         self, org_id: str, method: str, route: str, *, body: dict[str, Any] | None = None,
-        params: dict[str, str] | None = None, idempotent: bool = True,
+        params: dict[str, str] | None = None, idempotent: bool = True, latch: bool = True,
     ) -> dict[str, Any]:
         headers, endpoint, _ = await self._blob_storage._get_auth_and_config(org_id)
 
@@ -109,7 +110,8 @@ class NodePaidResultStore:
                 f"paid-result request {method} {route}", attempt, idempotent=idempotent,
             )
         except ArtifactRoutesUnavailable as exc:
-            if PAID_RESULT_ROUTES.mark_unavailable():
+            # ``latch`` False: a route that is newer than the others says nothing about whether the cache exists.
+            if latch and PAID_RESULT_ROUTES.mark_unavailable():
                 self.logger.warning(
                     "Storage has no paid-result routes (HTTP %d); the paid-result cache is off for %d s",
                     exc.status, int(OFF_SECONDS),
@@ -175,17 +177,40 @@ class NodePaidResultStore:
                 org_id, "POST", route, body={"paths": list(paths[start:start + MAX_FILES_PER_CALL])},
             )
 
-    async def purge_record(self, org_id: str, record_id: str) -> None:
+    async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         """Removes the record's folder. Nothing stored is a success (the route answers 200).
 
-        A storage service without the routes never held a result, so it is a success too.
+        ``before_ms``: only objects last written before that instant go, so a DELETE that lands late (its caller lost
+        its lease) leaves what a newer purge's run stored since. A storage service without the routes never held a
+        result, so it is a success too.
         """
         try:
             await self._call(
                 org_id, "DELETE", Routes.STORAGE_PAID_RESULTS_RECORD.value.format(recordId=record_id),
+                params={"before": str(int(before_ms))} if before_ms is not None else None,
             )
         except ArtifactRoutesUnavailable:
             return
+
+    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+        """The object store's own current time (ms), as the cutoff of a purge: no caller's clock decides what goes.
+
+        ``None`` when the storage service has no such route (one of an earlier release): that says nothing about the
+        cache, so the routes are not switched off, and the caller purges without a cutoff.
+        """
+        try:
+            body = await self._call(
+                org_id, "POST", Routes.STORAGE_PAID_RESULTS_PURGE_CUTOFF.value.format(recordId=record_id), latch=False,
+            )
+        except ArtifactRoutesUnavailable as exc:
+            if not self._cutoff_route_warned:
+                self._cutoff_route_warned = True
+                self.logger.warning(
+                    "Storage has no purge-cutoff route (HTTP %d): a refresh purge goes without a cutoff there, or is "
+                    "handed back while paid-result writes are on; update the storage service", exc.status,
+                )
+            return None
+        return int(body["cutoff"])
 
     async def purge_org(self, org_id: str) -> None:
         try:

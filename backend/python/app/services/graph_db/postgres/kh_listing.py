@@ -245,8 +245,12 @@ class KhListingMixin(PgBase):
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
         viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
-        admit_sql, pbase = None, kgl.Params(list(base.values))
-        if viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
+        admit_sql, pbase, page_where = None, kgl.Params(list(base.values)), where
+        if viewer is not None and scope is not None:
+            # The rows of a scope are read by their keys whatever the window, so each window read them all again: the classes admit inside the read, and one window is the page.
+            page_where += f" AND {kgl.class_admit('r', pbase, viewer, raw=True)}"
+            admit_sql = "true"
+        elif viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
             admit_sql = kgl.class_admit("w", pbase, viewer)
         need, kept, boundary, scanned, resume = limit + 1, [], after, 0, None
         window, t0 = min(WINDOW_MAX, max(need * 4, 100)), time.monotonic()
@@ -254,7 +258,7 @@ class KhListingMixin(PgBase):
             p = kgl.Params(list(pbase.values))
             p.values[2] = window
             branches = kgl.after(sort_field, order, direction, boundary, p) if boundary is not None else None
-            sql = kgl.page_sql(sort_field, order, direction, where, branches, admit_sql)
+            sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql)
             got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
             allowed = None if viewer is not None else await admit([r["id"] for r in got]) if got else set()
             kept += [r for r in got if (r["ok"] if allowed is None else r["id"] in allowed)][:need - len(kept)]
@@ -301,7 +305,7 @@ class KhListingMixin(PgBase):
         """What a flatten below a start lists before its filters: the rows of the connector that browsing down from the start reaches in ``depth`` hops, each one a hierarchy child
         the viewer may open (the walk of Neo4j's and ArangoDB's flatten from a start, by the browse's rule: ``_kh_browse``). Not hidden by a group that hides its children."""
         seen, frontier, out = {start_sk}, [start_sk], []
-        for _ in range(depth):
+        for level in range(depth):
             if not frontier:
                 break
             rows = await self._kq(lambda tx, f=frontier: tx.fetch(kgl.children_of_sql("", total=True), org, f, SCOPE_MAX + 1, hidden, SCOPE_MAX + 1), transaction)      # at most SCOPE_MAX + 1 rows in all, whatever the frontier
@@ -309,6 +313,9 @@ class KhListingMixin(PgBase):
             seen |= set(fresh)
             if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
                 raise KnowledgeHubListingTooLarge
+            if level == depth - 1:      # the last level leads nowhere further, and the page and its count admit each row they keep
+                out += list(fresh)
+                break
             opened = await admit(list(fresh.values())) if fresh else set()
             frontier = [sk for sk, i in fresh.items() if i in opened]      # whether the viewer may open a row does not depend on the way to it: a row it may not is passed once
             out += frontier
@@ -322,7 +329,13 @@ class KhListingMixin(PgBase):
         seen = {app_sk}
         groups: list[int] = []
         for k in range(depth):
-            rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.HIER_CHILDREN, org, f, SCOPE_MAX + 1), transaction)
+            # Read only as many rows as could still fit: a level that fills them is too wide already, unless rows met before took some (then it is read again whole).
+            room = SCOPE_MAX + 1 - len(seen)
+            rows = await self._kq(lambda tx, f=levels[-1], n=room: tx.fetch(kgl.HIER_CHILDREN, org, f, n), transaction)
+            if len(rows) == room:
+                if len(seen | {r["sk"] for r in rows}) > SCOPE_MAX:
+                    raise KnowledgeHubListingTooLarge
+                rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.HIER_CHILDREN, org, f, SCOPE_MAX + 1), transaction)
             fresh = [r for r in rows if r["sk"] not in seen]
             seen |= {r["sk"] for r in fresh}
             if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
@@ -332,7 +345,10 @@ class KhListingMixin(PgBase):
             levels.append(list(dict.fromkeys(r["sk"] for r in fresh)))
             if not levels[-1]:
                 break
-        unplaced = await self._kq(lambda tx: tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1), transaction)
+        async def read_unplaced(tx: Tx) -> list[Any]:
+            await tx.fetchval(kgl.NO_JIT)
+            return await tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1)
+        unplaced = await self._kq(lambda tx: kg_read.in_savepoint(tx, read_unplaced), transaction)
         if len(seen) + len(unplaced) > SCOPE_MAX:
             raise KnowledgeHubListingTooLarge
         return sorted((seen - {app_sk}) | {r["sk"] for r in unplaced})

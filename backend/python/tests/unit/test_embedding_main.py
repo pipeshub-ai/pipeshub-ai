@@ -1276,10 +1276,8 @@ class TestQueriesDuringIndexing:
             assert before["in_use"] == 1 and before["waiting"] == 2
             assert before["oldest_in_use_age_s"]["bulk"] > 0
 
-            started = time.monotonic()
-            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=2)
-            assert time.monotonic() - started < 1
-            # The query took the reserved slot without queueing.
+            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=10)
+            # The query took the reserved slot without queueing (read on the gate's own clock, not timed).
             assert manager.encode_gate_stats()["wait_p95_ms"]["query"] == 0.0
 
             release_bulk.set()
@@ -2073,9 +2071,12 @@ class TestTokenizerRace:
 
     @pytest.mark.asyncio
     async def test_copying_a_tokenizer_does_not_block_the_event_loop(self) -> None:
+        # The thread the copy ran on, not the loop's longest gap during it (which a busy runner stretches).
+        copied_on: list[int] = []
+
         class SlowCopy:
             def __deepcopy__(self, memo: dict) -> "SlowCopy":
-                time.sleep(0.4)
+                copied_on.append(threading.get_ident())
                 return SlowCopy()
 
             def __call__(self, texts: list[str], **_: object) -> dict:
@@ -2086,20 +2087,8 @@ class TestTokenizerRace:
         model.default_prompt_name = None
         manager = ModelManager()
         manager._models = {"m": model}
-        gaps: list[float] = []
-
-        async def ticker() -> None:
-            last = time.perf_counter()
-            while True:
-                await asyncio.sleep(0.01)
-                now = time.perf_counter()
-                gaps.append(now - last)
-                last = now
-
-        task = asyncio.create_task(ticker())
         assert await manager.count_tokens("m", ["a"]) == [1]
-        task.cancel()
-        assert max(gaps) < 0.2
+        assert copied_on and threading.get_ident() not in copied_on, "the tokenizer was copied on the event loop"
 
     @pytest.mark.asyncio
     async def test_without_any_private_tokenizer_counting_degrades_to_the_shared_one(self) -> None:

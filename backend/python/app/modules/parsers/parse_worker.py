@@ -27,8 +27,27 @@ from typing import BinaryIO
 from app.utils.memory_release import release_freed_memory
 from app.utils.process_hardening import mark_process_non_dumpable
 
+try:
+    import resource
+except ImportError:  # not POSIX
+    resource = None
+
 _LENGTH = struct.Struct("!Q")
 _PARENT_POLL_SECONDS = 2.0
+_IN_WORKER_ENV = "PIPESHUB_PARSE_WORKER"
+
+
+def allow_cpu_limit(*, non_dumpable: bool) -> None:
+    """Let the Excel load's CPU limit end this worker, only when it is non-dumpable: SIGXCPU's default action dumps core,
+    and RLIMIT_CORE does not stop a ``core_pattern`` that pipes dumps to a collector, which would receive the worker's memory
+    (the environment's secrets, the file). Otherwise only the pool's wall-clock timeout (SIGKILL, no dump) ends a load."""
+    if non_dumpable:
+        os.environ[_IN_WORKER_ENV] = str(os.getpid())
+
+
+def in_worker() -> bool:
+    """True in a parse worker the Excel CPU limit may end (``allow_cpu_limit``): the one process a job may end without harm."""
+    return os.environ.get(_IN_WORKER_ENV) == str(os.getpid())  # not its children, which inherit it
 
 
 def write_frame(stream: BinaryIO, obj: object) -> None:
@@ -100,10 +119,14 @@ def main(request_fd: int, reply_fd: int) -> None:
     # This process was handed the service's environment, secrets included, and
     # exec reset the non-dumpable mark the service set on itself. Without it a
     # same-uid process (a tool the service runs) can read /proc/<pid>/environ.
-    mark_process_non_dumpable()
+    non_dumpable = mark_process_non_dumpable()
+    if resource is not None:
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     # Ctrl-C in a terminal reaches the whole process group; the parent decides
     # when a worker stops.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    allow_cpu_limit(non_dumpable=non_dumpable)
     threading.Thread(
         target=_exit_with_parent, args=(os.getppid(),), name="exit-with-parent", daemon=True
     ).start()

@@ -6,23 +6,15 @@ import { AuthService } from '../../../../src/modules/user_management/services/au
 
 describe('AuthService', () => {
   let authService: AuthService;
-  let mockLogger: any;
   let mockConfig: any;
   let axiosStub: sinon.SinonStub;
 
   beforeEach(() => {
-    mockLogger = {
-      debug: sinon.stub(),
-      info: sinon.stub(),
-      error: sinon.stub(),
-      warn: sinon.stub(),
-    };
-
     mockConfig = {
       authBackend: 'http://localhost:3003',
     };
 
-    authService = new AuthService(mockConfig, mockLogger);
+    authService = new AuthService(mockConfig);
   });
 
   afterEach(() => {
@@ -63,7 +55,6 @@ describe('AuthService', () => {
       // Test with a forced failure via invalid host
       const service = new AuthService(
         { authBackend: 'http://invalid-host-that-does-not-exist:99999' } as any,
-        mockLogger,
       );
 
       try {
@@ -97,7 +88,6 @@ describe('AuthService', () => {
       // in newer versions, but actually calls it as a function, test with invalid backend
       const service = new AuthService(
         { authBackend: 'http://invalid-host-that-does-not-exist:99999' } as any,
-        mockLogger,
       );
 
       try {
@@ -108,7 +98,7 @@ describe('AuthService', () => {
       }
     });
 
-    it('should log error details when axios error occurs', async () => {
+    it('rethrows an upstream failure with its status, for the error middleware to log once', async () => {
       const origAdapter = axios.defaults.adapter;
       const axiosErr = new AxiosError(
         'Connection refused',
@@ -127,24 +117,25 @@ describe('AuthService', () => {
 
       const service = new AuthService(
         { authBackend: 'http://localhost:39003' } as any,
-        mockLogger,
       );
 
+      let thrown: any;
       try {
         await service.passwordMethodEnabled('test-token');
       } catch (error) {
-        // Error is expected
+        thrown = error;
       } finally {
         axios.defaults.adapter = origAdapter;
       }
 
-      // Logger should have been called with error info
-      expect(mockLogger.error.called).to.be.true;
+      expect(axios.isAxiosError(thrown)).to.be.true;
+      expect(thrown.response.status).to.equal(500);
+      expect(thrown.message).to.equal('Server error');
     });
 
     it('should use the correct URL from config', () => {
       const config = { authBackend: 'http://my-auth:5000' };
-      const service = new AuthService(config as any, mockLogger);
+      const service = new AuthService(config as any);
 
       // Service is constructed without error
       expect(service).to.be.instanceOf(AuthService);
@@ -154,7 +145,6 @@ describe('AuthService', () => {
       // Create service that will generate a non-axios error
       const service = new AuthService(
         { authBackend: null } as any,
-        mockLogger,
       );
 
       try {

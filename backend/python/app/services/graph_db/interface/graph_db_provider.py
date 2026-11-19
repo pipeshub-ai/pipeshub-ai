@@ -867,6 +867,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional["Record"]:
         """
         Get record by internal ID (_key) with associated type document (file/mail/etc.).
@@ -874,6 +876,9 @@ class IGraphDBProvider(ABC):
         Args:
             record_id: Internal record ID (_key)
             transaction: Optional transaction ID
+            raise_on_error: Propagate a failed read instead of answering None, so a graph that
+                cannot be reached does not read as a missing record. A record that is there but
+                will not build into a typed Record is still None: that is not a failed read.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
@@ -3759,6 +3764,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users in an organization.
@@ -3766,6 +3772,7 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             active (bool): Filter by active status
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of users
@@ -5986,6 +5993,18 @@ class IGraphDBProvider(ABC):
         teams or the organization are left alone. Returns how many edges were deleted."""
         raise NotImplementedError
 
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when that user has no USER_APP_RELATION edge to the connector, the link checked in the same statement (a user
+        linked meanwhile, say by a verified email taking over a stub, keeps them). Before the org's All team passes
+        the connector gate, no grant may wait there for a person the connector does not link. Returns how many
+        edges were deleted."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_uploaded_document_ids(
         self,
@@ -7832,9 +7851,9 @@ class IGraphDBProvider(ABC):
         except Exception as exc:
             self.logger.error(
                 "check_access failed for %d nodes and %d vrids: %s",
-                len(asked_nodes), len(asked_vrids), exc,
+                len(asked_nodes), len(asked_vrids), type(exc).__name__,
             )
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         records_by_vrid: dict[str, str] = {}
         for row in rows:
             vrid, record_id = row.get("vrid"), row.get("id")
@@ -7897,7 +7916,7 @@ class IGraphDBProvider(ABC):
         except NotImplementedError:
             raise
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         linked = {r["docId"] for r in rows if r.get("docId")}
         by_doc: dict[str, list[dict[str, Any]]] = {}
         for r in sorted(rows, key=lambda r: str(r.get("recordId"))):
@@ -7914,7 +7933,7 @@ class IGraphDBProvider(ABC):
         try:
             access = await self._ref_access_hint(user_key, org_id, connectors) if len(connectors) == 1 else None
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         check = await self.check_access(user_key, org_id, node_ids=[r["recordId"] for r in chosen], access=access)
         allowed = check.node_ids - check.placeholder_ids
         return RefAccess(frozenset(linked), frozenset(r["docId"] for r in chosen if r["recordId"] in allowed))
@@ -8657,7 +8676,7 @@ class IGraphDBProvider(ABC):
         try:
             user = await self.get_user_by_user_id(user_id, raise_on_error=True)
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         user_key = (user or {}).get("id") or (user or {}).get("_key")
         if not user_key:
             return set()
@@ -8668,7 +8687,7 @@ class IGraphDBProvider(ABC):
         except NotImplementedError:
             raise
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         return {
             r["id"] for r in rows
             if r.get("id") in asked and not r.get("isInternal") and not r.get("isPlaceholder")
@@ -8713,7 +8732,7 @@ class IGraphDBProvider(ABC):
         try:
             user = await self.get_user_by_user_id(user_id, raise_on_error=True)
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         user_key = (user or {}).get("id") or (user or {}).get("_key")
         if not user_key:
             return {}
