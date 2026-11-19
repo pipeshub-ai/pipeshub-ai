@@ -86,8 +86,8 @@ class TestRetrievalCountsTheLinkedAccount:
         # own grants, group membership, group grants and the organisation's grants: each walks every principal
         assert query.count("FOR principal_id IN principal_ids") == 4
         assert " ANY userDoc._id " not in query
-        # a User principal's organisation counts (the viewer's, a linked user's); a SourceAccount belongs to none
-        assert 'FILTER IS_SAME_COLLECTION("users", principal_id)\n                FOR org IN 1..1 ANY principal_id' in query
+        # the caller's organisation only: a linked account's, User or SourceAccount, counts for nothing
+        assert 'FILTER principal_id == userDoc._id\n                FOR org IN 1..1 ANY principal_id' in query
         # the only userId lookup is the caller's own
         assert query.count("user.userId == @userId") == 1
         assert provider.execute_query.await_args.kwargs["bind_vars"]["userId"] == CREATOR_ID
@@ -151,14 +151,13 @@ class TestRoleBuildersCountTheLinkedAccount:
     def test_every_arango_permission_path_checks_all_principals(self) -> None:
         for name in ("arango record", "arango recordGroup"):
             query = _role_queries()[name]
-            # a linked account counts only on a target of the link's connector: elsewhere the path reads the user alone
-            assert query.count("._from IN (target_id IN kh_in_connector ? principal_ids : [u._id])") == 5, name
+            # a linked account counts only on a target of the link's connector (elsewhere the path reads the user alone), in the four
+            # paths of its own and its groups', roles' and teams' grants
+            assert query.count("._from IN (target_id IN kh_in_connector ? principal_ids : [u._id])") == 4, name
             assert "PARSE_IDENTIFIER(kh_t).key : DOCUMENT(kh_t).connectorId) == " in query, name
-            # the one single-user anchor is the link lookup
-            assert query.count("._from == u._id") == 1, name
-            # the organisation step reads the User principals only: a SourceAccount belongs to no organisation
-            assert ('belongs_edge._from IN (target_id IN kh_in_connector ? principal_ids : [u._id])'
-                    ' AND IS_SAME_COLLECTION("users", belongs_edge._from)') in query, name
+            # the single-user anchors: the link lookup, and the organisation step, which reads the viewer's organisation only
+            assert query.count("._from == u._id") == 2, name
+            assert "FILTER belongs_edge._from == u._id" in query, name
 
     def test_every_neo4j_permission_path_checks_all_principals(self) -> None:
         for name in ("neo4j record", "neo4j recordGroup"):
@@ -172,6 +171,8 @@ class TestRoleBuildersCountTheLinkedAccount:
             assert "UNWIND [p IN principals WHERE p = u\n" in query, name
             assert "OR CASE WHEN target:App THEN target.id ELSE target.connectorId END = " in query, name
             assert query.count("OPTIONAL MATCH (u)-") == 1, name
+            # the organisation path reads the viewer's organisation only, never a linked account's
+            assert query.count("WHERE principal = u AND p9.role IS NOT NULL") == 1, name
             assert "[u] + collect(DISTINCT source_account) AS principals" in query
 
     def test_a_linked_connector_counts_as_the_users_own_app(self) -> None:
