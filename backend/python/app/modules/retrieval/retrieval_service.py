@@ -2571,7 +2571,7 @@ class RetrievalService:
         except PermissionVerificationUnavailableError:
             raise
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
 
     async def _notice_app_ids(
         self, containers: "AccessibleContainers | None", user: dict[str, Any] | None, org_id: str, filters: dict[str, Any] | None,
@@ -2640,7 +2640,7 @@ class RetrievalService:
         try:
             user_data = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         if user_data is None:
             # Not cached: a user created a moment later must be found.
             return None

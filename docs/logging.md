@@ -599,9 +599,10 @@ A search that cannot read what its user may access, or a graph read around it, w
 failure, without the error's text (`include_error_text=False`): the graph's text can carry the database host, the query and the
 record content. Like any `log_failure` line it is DEBUG when the same exception, or its cause, was already logged at its level or
 higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
-logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. Only these events leave the
-text out: when the batch access read fails, the graph provider's `check_access` first logs its own `check_access failed …` ERROR,
-which still carries the driver's text.
+logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. When the batch access read
+fails, `check_access` first logs a `check_access failed …` ERROR with only the counts and the error's class. The
+`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause, which a
+traceback (`exc_info=True`, `logger.exception`) still prints.
 
 | Event | What the search does next | Fields |
 | --- | --- | --- |
