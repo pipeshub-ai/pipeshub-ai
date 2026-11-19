@@ -7034,7 +7034,7 @@ class SalesforceConnector(BaseConnector):
             notification: The webhook notification payload
         """
         self.logger.info("Salesforce webhook received.")
-        asyncio.create_task(self.run_incremental_sync())
+        self.request_sync()
 
     async def cleanup(self) -> None:
         """
