@@ -8,6 +8,14 @@ set -eu
 APP_UID=1000
 APP_GID=1000
 
+# PIPESHUB_OFFLINE=1: set the no-network switches once, before either path below
+# starts the app (a start as uid 1000 skips the root-only work but not this).
+# Optional: a copy of this script run on its own (a test, an older image layout) still starts.
+# shellcheck source=deployment/offline-env.sh
+if [ -f "$(dirname "$0")/offline-env.sh" ]; then
+    . "$(dirname "$0")/offline-env.sh"
+fi
+
 if [ "$(id -u)" != "0" ]; then
     exec "$@"
 fi

@@ -1,5 +1,12 @@
 @import '@radix-ui/themes/styles.css';
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');
+/* Fonts ship in the build (npm packages), so the dashboard loads no font from the internet. */
+@import '@fontsource/manrope/400.css';
+@import '@fontsource/manrope/500.css';
+@import '@fontsource/manrope/600.css';
+@import '@fontsource/manrope/700.css';
+@import 'material-icons/iconfont/filled.css';
+/* Outlined icons use Material Symbols (see .material-icons-outlined below). */
+@import 'material-symbols/outlined.css';
 
 @font-face {
   font-family: 'ClashGrotesk';

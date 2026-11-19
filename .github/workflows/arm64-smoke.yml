@@ -19,6 +19,10 @@ on:
     paths:
       - 'Dockerfile'
       - 'deployment/sandbox/**'
+      - 'deployment/docker-entrypoint.sh'
+      - 'deployment/offline-env.sh'
+      - 'deployment/bake-*.py'
+      - 'deployment/docker-compose/tests/offline_image_smoke.*'
       - 'backend/python/pyproject.toml'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
@@ -87,6 +91,11 @@ jobs:
 
       - name: Build the sandbox image
         run: docker build -t "pipeshubai/pipeshub-sandbox:${CI_TAG}" deployment/sandbox
+
+      # PIPESHUB_OFFLINE=1 with no network at all: the baked models, tokenizer and
+      # fonts are all the image may use. Same image the first-run smoke starts.
+      - name: Offline smoke (no network)
+        run: bash deployment/docker-compose/tests/offline_image_smoke.sh "pipeshubai/pipeshub-ai:${CI_TAG}" slim
 
       - name: First-run smoke against the arm64 build
         env:

@@ -1,5 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
+import fs from 'fs';
+import path from 'path';
 import vm from 'vm';
 import { createApiDocsRouter } from '../../../src/modules/api-docs/docs.routes';
 
@@ -37,6 +39,34 @@ describe('API docs page script', () => {
     };
     vm.createContext(page);
     vm.runInContext(script, page);
+  });
+
+  describe('fonts', () => {
+    // An install with no route to the internet cannot reach fonts.googleapis.com.
+    it('loads no font or stylesheet from another origin', () => {
+      expect(html).to.not.match(/googleapis\.com|gstatic\.com/);
+      expect(html).to.not.match(/<link[^>]+rel="stylesheet"/);
+    });
+
+    it('serves every font file it names from an installed package', () => {
+      const names = [...html.matchAll(/\/api\/v1\/docs\/fonts\/(manrope|material-icons)\/([\w.-]+\.woff2)/g)];
+      expect(names.length).to.be.greaterThan(0);
+      for (const [, pkg, file] of names) {
+        const dir =
+          pkg === 'manrope'
+            ? path.join(path.dirname(require.resolve('@fontsource/manrope/package.json')), 'files')
+            : path.join(path.dirname(require.resolve('material-icons/package.json')), 'iconfont');
+        expect(fs.existsSync(path.join(dir, file)), `${pkg}/${file}`).to.equal(true);
+      }
+    });
+
+    it('mounts a static route for each font package', () => {
+      const router = createApiDocsRouter({ get: () => ({}) } as any);
+      const mounted = (router as any).stack
+        .filter((l: any) => l.name === 'serveStatic')
+        .map((l: any) => String(l.regexp ?? l.matchers?.[0]?.toString?.()));
+      expect(mounted.length).to.equal(2);
+    });
   });
 
   describe('renderMarkdown', () => {

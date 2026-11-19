@@ -98,6 +98,10 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "deployment/bake-docling-models.py",
         f"{COMPOSE}/**",
         "deployment/helm/pipeshub-ai/**",
+        "deployment/offline-env.sh",
+        "deployment/docker-entrypoint.sh",
+        "deployment/bake-tiktoken.py",
+        "deployment/docker-compose/hot-reload/Dockerfile.dev",
         ".github/workflows/unit-test.yml",
     ),
     # main.yml

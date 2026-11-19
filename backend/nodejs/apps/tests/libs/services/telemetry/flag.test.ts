@@ -61,6 +61,37 @@ describe('telemetry flag', () => {
     }
   });
 
+  describe('offline mode', () => {
+    let previousOffline: string | undefined;
+    beforeEach(() => {
+      previousOffline = process.env.PIPESHUB_OFFLINE;
+    });
+    afterEach(() => {
+      if (previousOffline == null) delete process.env.PIPESHUB_OFFLINE;
+      else process.env.PIPESHUB_OFFLINE = previousOffline;
+    });
+
+    it('turns telemetry off when the flag is unset', () => {
+      delete process.env[TELEMETRY_COLLECTION_FLAG];
+      process.env.PIPESHUB_OFFLINE = '1';
+      expect(isTelemetryEnabled()).to.be.false;
+    });
+
+    it('keeps an explicit operator value', () => {
+      process.env[TELEMETRY_COLLECTION_FLAG] = 'true';
+      process.env.PIPESHUB_OFFLINE = '1';
+      expect(isTelemetryEnabled()).to.be.true;
+    });
+
+    it('leaves the online default alone when the switch is empty or 0', () => {
+      delete process.env[TELEMETRY_COLLECTION_FLAG];
+      for (const value of ['', '0', 'false']) {
+        process.env.PIPESHUB_OFFLINE = value;
+        expect(isTelemetryEnabled()).to.equal(TELEMETRY_DEFAULT_ENABLED);
+      }
+    });
+  });
+
   describe('metrics backend selection', () => {
     it('uses the real backend when the suite bootstrap turned telemetry on', () => {
       expect(metricsBackend).to.be.instanceOf(PrometheusBackend);

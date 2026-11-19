@@ -155,6 +155,13 @@ RUN python /tmp/bake/bake-docling-models.py "${PIPESHUB_DOCLING_MODELS_DIR}" \
     chmod -R a+rX "${PIPESHUB_DOCLING_MODELS_DIR}" && \
     rm -rf /tmp/bake /root/.cache/huggingface/xet /root/.cache/huggingface/.agent_harnesses.json
 
+# The cl100k_base token table tiktoken would otherwise fetch on first use; same as the
+# production Dockerfile, so an isolated network can count tokens.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+COPY deployment/bake-tiktoken.py /tmp/bake-tiktoken.py
+RUN python /tmp/bake-tiktoken.py "${TIKTOKEN_CACHE_DIR}" && \
+    chmod -R a+rX "${TIKTOKEN_CACHE_DIR}" && rm /tmp/bake-tiktoken.py
+
 # Copy Node.js backend (WITH devDependencies: nodemon, ts-node, typescript)
 COPY --from=nodejs-backend /app/backend/ ./backend/
 

@@ -159,6 +159,13 @@ RUN python /tmp/bake/bake-docling-models.py "${PIPESHUB_DOCLING_MODELS_DIR}" \
     chmod -R a+rX "${PIPESHUB_DOCLING_MODELS_DIR}" && \
     rm -rf /tmp/bake /root/.cache/huggingface/xet /root/.cache/huggingface/.agent_harnesses.json
 
+# The cl100k_base token table tiktoken would otherwise fetch on first use (an isolated
+# network cannot). Read-only, outside every volume, found through TIKTOKEN_CACHE_DIR.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+COPY deployment/bake-tiktoken.py /tmp/bake-tiktoken.py
+RUN python /tmp/bake-tiktoken.py "${TIKTOKEN_CACHE_DIR}" && \
+    chmod -R a+rX "${TIKTOKEN_CACHE_DIR}" && rm /tmp/bake-tiktoken.py
+
 # Copy Playwright browser binaries
 COPY --chown=1000:1000 --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
 
@@ -185,7 +192,7 @@ RUN chmod +x /app/process_monitor.sh && \
 # services create log and state files in, belong to the runtime user. The image
 # starts as root so the entrypoint can take over data from earlier root-running
 # releases; it drops to uid 1000 with no capabilities before any service starts.
-COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chmod=755 deployment/docker-entrypoint.sh deployment/offline-env.sh /usr/local/bin/
 
 # Which build this image is; each service returns it from /health. Declared
 # last so a new commit rebuilds only these layers. With no build args the

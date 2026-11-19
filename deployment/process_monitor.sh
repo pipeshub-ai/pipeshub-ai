@@ -11,6 +11,10 @@ if [ "$(id -u)" = "0" ]; then
         /root/.cache/huggingface/.pipeshub-ownership-v1 || true
 fi
 
+# Normally applied already by docker-entrypoint.sh; this covers a start that bypassed it.
+# shellcheck source=deployment/offline-env.sh
+[ -f /usr/local/bin/offline-env.sh ] && . /usr/local/bin/offline-env.sh
+
 LOG_FILE="/app/process_monitor.log"
 CHECK_INTERVAL=${CHECK_INTERVAL:-20}
 NODEJS_PORT=${NODEJS_PORT:-3000}
