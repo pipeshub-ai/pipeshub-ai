@@ -233,7 +233,7 @@ async def test_an_unrecognised_direct_role_opens_no_collection_or_record(store, 
         return
     provider = store.provider
 
-    accessible = await provider._get_accessible_kb_ids("kbr-m")
+    accessible = await provider._get_accessible_kb_ids("kbr-m", ORG)
     assert "kbr-ok" in accessible and "kbr-odd" not in accessible
     mapped = await provider._get_kb_virtual_ids("kbr-m", ORG, raise_on_error=True)
     assert "kbr-ok-v" in mapped and "kbr-odd-v" not in mapped

@@ -19,6 +19,7 @@ import ast
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,6 +28,9 @@ from app.core.org_context import for_org
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.graph_db.postgres.identity import IdentityMixin
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 USER_ID = "ext-user-1"
 ORG_A = "org-a"
@@ -275,7 +279,7 @@ _SCOPED_LOOKUP_CALLERS = frozenset({
     ('services/graph_db/neo4j/neo4j_provider.py', 'apply_verified_user_email'),
     ('services/graph_db/neo4j/neo4j_provider.py', 'delete_record'),
     ('services/graph_db/neo4j/neo4j_provider.py', 'get_accessible_connector_types'),
-    ('services/graph_db/neo4j/neo4j_provider.py', 'get_accessible_containers'),
+    ('services/graph_db/neo4j/neo4j_provider.py', '_get_accessible_containers'),
     ('services/graph_db/neo4j/neo4j_provider.py', 'get_accessible_virtual_record_ids'),
     ('services/graph_db/neo4j/neo4j_provider.py', 'reindex_record_group_records'),
     ('services/graph_db/neo4j/neo4j_provider.py', 'reindex_single_record'),
@@ -338,11 +342,18 @@ def _scopes_the_lookup(fn: ast.AST, call: ast.Call) -> bool:
     return False
 
 
+def _lookup_files() -> Iterator[tuple[str, ast.Module]]:
+    """Every app file that names a lookup, parsed. A file that never names one cannot call it, so it is not parsed."""
+    for path in sorted(_APP.rglob("*.py")):
+        text = path.read_text(encoding="utf-8-sig")
+        if any(name in text for name in _LOOKUPS):
+            yield path.relative_to(_APP).as_posix(), ast.parse(text)
+
+
 def _scoped_lookup_callers() -> set[tuple[str, str]]:
     found = set()
-    for path in sorted(_APP.rglob("*.py")):
-        rel = path.relative_to(_APP).as_posix()
-        for fn in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+    for rel, tree in _lookup_files():
+        for fn in ast.walk(tree):
             if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             for call in ast.walk(fn):
@@ -357,9 +368,7 @@ def _scoped_lookup_callers() -> set[tuple[str, str]]:
 
 def _unscoped_lookups_with_the_org_in_scope() -> list[str]:
     found = []
-    for path in sorted(_APP.rglob("*.py")):
-        rel = path.relative_to(_APP).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    for rel, tree in _lookup_files():
         for fn in ast.walk(tree):
             if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
