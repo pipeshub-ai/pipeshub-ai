@@ -336,25 +336,26 @@ jobs:
       GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+      # The AI model provider is the repository variable TEST_AI_MODEL_PROVIDER
+      # (openAI or azureOpenAI; openAI when unset). Both providers' settings are
+      # always passed, so switching provider is that one variable. The model setup,
+      # the live provider specs, the demo judge and the Playwright tests all use
+      # only the named provider; the other's key may belong to an unfunded account.
+      TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
       TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
-      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
-      # OpenAI since the Azure OpenAI account behind TEST_AZURE_OPENAI_* went away
-      # (Nov 2026). TEST_AI_MODEL_PROVIDER names it outright: the helper falls back
-      # to the next provider on a health check failure, so without this a problem
-      # with one provider retries against another and reports that instead. Kept
-      # here, not in a secret, so the provider a run uses is visible in review.
-      TEST_AI_MODEL_PROVIDER: openAI
-      # TEST_AZURE_OPENAI_* are not passed: that Azure account is gone, and while
-      # its key was set the live Azure specs and the Playwright helper (which
-      # tries Azure first) kept using it. The secrets stay, so switching back is
-      # these variables plus the provider above.
-      # The demo test's answer judge. With no JUDGE_PROVIDER it uses Azure OpenAI
-      # whenever TEST_AZURE_OPENAI_API_KEY is set, so name OpenAI, the provider
-      # above, outright; it reads TEST_OPENAI_API_KEY and TEST_OPENAI_LLM_MODEL.
-      # Required: without it, facts a question lists for the judge would go
-      # unchecked yet pass.
-      EVAL_PROVIDER: openai
+      # secrets || vars so the non-secret names work from either store.
+      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+      # Optional. Unset falls back to the LLM deployment above, which is what a
+      # local .env run does today.
+      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # The demo test's answer judge follows TEST_AI_MODEL_PROVIDER too. Required:
+      # without it, facts a question lists for the judge would go unchecked yet pass.
       PIPESHUB_REQUIRE_JUDGE: '1'
       # Confluence and Jira sync from the confluence-sim and jira-sim services
       # (atlassian-sim profile), Notion from notion-sim (notion-sim profile); their
