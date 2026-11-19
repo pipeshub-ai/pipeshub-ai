@@ -991,8 +991,12 @@ def test_in_enforce_connectors_writes_the_epoch_keys_of_a_cleanup_and_no_pin_or_
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(UPSERT, (key,))
             c.rollback()
-    with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM platform.kv_entries WHERE starts_with(key, %s)", (base + "/",)).fetchone()[0] == 4
+    refused = ("/services/vectordb/embedding_pin/records", "/services/vectordb/embedding_pin/records/o1",
+               "/services/vectordb/collection_manifest", "/services/vectordb/embedding_epochs/records")
+    wrote = (f"{base}/current", f"{base}/tokens/r2/issuing", f"{base}/tokens/r2/live")
+    with connect(cluster, name) as c:   # the exact keys, not a count: the role matrix above writes under the same prefix
+        present = {k for (k,) in c.execute("SELECT key FROM platform.kv_entries WHERE key = ANY(%s)", (list(wrote + refused),))}
+        assert present == set(wrote)
 
 
 def test_platform_0010_downgrades_to_the_matrix_of_platform_0008_and_upgrades_again(kv_db):
