@@ -331,3 +331,66 @@ def split_header(lines: list[Line], cuts: Sequence[float], bounds: Sequence[tupl
         else:
             rows[-1].append(ln)
     return rows
+
+
+# --- do no harm -------------------------------------------------------------------------------
+
+DNH_MARGIN = 0.15  # the new grid must beat a defective legacy grid by this much Q
+DEFECT_WORD_SPLITS = 2  # lines whose words a legacy cut runs through
+DEFECT_XCROSS = 0.25
+DEFECT_FRAGMENT_ROWS = 0.25  # share of body rows whose key cell is empty beside filled cells
+DEFECT_UNDER_SPLIT = 2  # body cells holding a gap that lines up with a header channel the grid does not cut
+UNDER_SPLIT_GAP = 1.5  # line heights
+WIDE_HEADER_CHANNEL = 2.0  # line heights: one stray under-split row counts when the header channel is this wide
+
+
+def defects(c: Cand, words: list[Word], hrules: Sequence[Rule], vrules: Sequence[Rule], box: tuple[float, float, float, float]) -> dict[str, Any]:
+    """Strong defect signals of a grid: words split across cells, sentences crossing cells, fragment rows (continuation
+    lines as rows) and a column the header shows but the grid does not cut."""
+    f = c.f or features(c, words, hrules, vrules, box)
+    lines = band_lines(words)
+    split = 0
+    for (top, bot), row in zip(c.rows, c.cells):
+        cuts = [x1 for (_, x1, _) in row[:-1]]
+        for ln in lines:
+            if top - 1 <= ln["cy"] <= bot + 1 and any(float(w["x0"]) < x - 0.5 and float(w["x1"]) > x + 0.5 for w in ln["w"] for x in cuts):
+                split += 1
+    frag = sum(1 for row in c.cells[1:] if row and not row[0][2].strip() and any(t.strip() for _, _, t in row[1:]))
+    under = 0
+    hch: list[tuple[float, float]] = []
+    hl = 8.0
+    if len(c.rows) >= 2:
+        htop, hbot = c.rows[0]
+        for ln in lines:
+            if htop - 1 <= ln["cy"] <= hbot + 1:
+                sg = segments(ln)
+                hch += [(sg[i][1], sg[i + 1][0]) for i in range(len(sg) - 1)]
+        allcuts = sorted({x1 for row in c.cells for (_, x1, _) in row[:-1]})
+        hch = [(a, b) for a, b in hch if not any(a - 1 <= x <= b + 1 for x in allcuts)]
+        hl = statistics.median([ln["h"] for ln in lines]) if lines else 8.0
+        for (top, bot), row in list(zip(c.rows, c.cells))[1:]:
+            hit = False
+            for (x0, x1, _) in row:
+                for ln in lines:
+                    if not top - 1 <= ln["cy"] <= bot + 1:
+                        continue
+                    ws = [w for w in ln["w"] if x0 - 0.5 <= cx(w) <= x1 + 0.5]
+                    for a_, b_ in zip(ws, ws[1:]):
+                        ga, gb = float(a_["x1"]), float(b_["x0"])
+                        if gb - ga >= UNDER_SPLIT_GAP * ln["h"] and any(min(gb, hb) > max(ga, ha) for ha, hb in hch):
+                            hit = True
+            under += hit
+    wide = under >= 1 and len(c.rows) >= 2 and any(b_ - a_ >= WIDE_HEADER_CHANNEL * hl for a_, b_ in hch)
+    d: dict[str, Any] = {
+        "word_split": split, "xcross": f["xcross"], "fragment_rows": frag / max(1, len(c.cells) - 1), "under_split": under,
+    }
+    d["strong"] = (
+        split >= DEFECT_WORD_SPLITS or f["xcross"] >= DEFECT_XCROSS or d["fragment_rows"] >= DEFECT_FRAGMENT_ROWS
+        or under >= DEFECT_UNDER_SPLIT or wide
+    )
+    return d
+
+
+def replaces_legacy(kept_q: float, new_q: float, *, strong_defect: bool) -> bool:
+    """The legacy grid stays unless it shows a strong defect and the new grid beats it by ``DNH_MARGIN``."""
+    return strong_defect and new_q >= kept_q + DNH_MARGIN

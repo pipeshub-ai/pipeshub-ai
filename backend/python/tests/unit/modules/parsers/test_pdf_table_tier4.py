@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from io import BytesIO
+from unittest.mock import patch
 
 import pdfplumber
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 import app.modules.parsers.pdf.opencv_layout_analyzer as ola
+from app.modules.parsers.pdf import table_quality as tq
 from app.modules.parsers.pdf import table_reconcile as tr
 from app.modules.parsers.pdf import table_tiers as tt
 from app.modules.parsers.pdf.table_rows import band_lines
@@ -35,12 +37,64 @@ def legacy_region() -> ola.LayoutRegion:
     return ola.LayoutRegion(type=ola.LayoutRegionType.TABLE, bbox=BOX, table_grid=[["junk"]])
 
 
-def test_text_alignment_replaces_a_legacy_table_with_the_aligned_grid() -> None:
+def broken_legacy(page: pdfplumber.page.Page) -> tq.Cand:
+    """A legacy grid whose cuts run through the words of the first column."""
+    words = [w for w in page.extract_words() if tr._in_box(w, BOX)]
+    cand = tq.candidate_from_cuts("legacy", 0, [[ln] for ln in band_lines(words)], [XS[0] + 6.0, XS[1] + 6.0], BOX)
+    return cand
+
+
+def test_text_alignment_replaces_a_defective_legacy_table_with_the_aligned_grid() -> None:
+    pdf, page = borderless()
+    try:
+        with patch.object(tr, "legacy_candidate", return_value=broken_legacy(page)):
+            d = tr.reconcile(page, page.extract_words(), [BOX], [legacy_region()])[0]
+        assert d.kind == "text_tier"
+        assert d.tables[0].table_grid == ROWS
+    finally:
+        pdf.close()
+
+
+def test_a_legacy_table_without_strong_defects_is_kept_however_good_the_new_grid() -> None:
+    pdf, page = borderless()
+    try:
+        good = tq.candidate_from_cuts("legacy", 0, [[ln] for ln in band_lines([w for w in page.extract_words() if tr._in_box(w, BOX)])], [150.0, 240.0], BOX)
+        with patch.object(tr, "legacy_candidate", return_value=good):
+            d = tr.reconcile(page, page.extract_words(), [BOX], [legacy_region()])[0]
+        assert d.kind == "none" and d.reason.startswith("legacy kept")
+    finally:
+        pdf.close()
+
+
+def test_a_legacy_grid_that_cannot_be_re_read_is_kept() -> None:
     pdf, page = borderless()
     try:
         d = tr.reconcile(page, page.extract_words(), [BOX], [legacy_region()])[0]
-        assert d.kind == "text_tier"
-        assert d.tables[0].table_grid == ROWS
+        assert d.kind == "none" and "cannot be re-read" in d.reason
+    finally:
+        pdf.close()
+
+
+def test_replacement_needs_a_strong_defect_and_the_margin() -> None:
+    assert tq.replaces_legacy(0.4, 0.9, strong_defect=True)
+    assert not tq.replaces_legacy(0.4, 0.9, strong_defect=False)
+    assert not tq.replaces_legacy(0.4, 0.4 + tq.DNH_MARGIN - 0.01, strong_defect=True)
+    assert tq.replaces_legacy(0.4, 0.4 + tq.DNH_MARGIN, strong_defect=True)
+
+
+def test_defects_see_words_split_by_a_cut_and_fragment_rows() -> None:
+    pdf, page = borderless()
+    try:
+        words = [w for w in page.extract_words() if tr._in_box(w, BOX)]
+        bad = broken_legacy(page)
+        assert tq.defects(bad, words, [], [], BOX)["strong"]
+        ok = tq.candidate_from_cuts("ok", 0, [[ln] for ln in band_lines(words)], [150.0, 240.0], BOX)
+        d = tq.defects(ok, words, [], [], BOX)
+        assert not d["strong"] and d["word_split"] == 0
+        frag = tq.candidate_from_cuts("frag", 0, [[ln] for ln in band_lines(words)], [150.0, 240.0], BOX)
+        for row in frag.cells[1:]:
+            row[0] = (row[0][0], row[0][1], "")
+        assert tq.defects(frag, words, [], [], BOX)["fragment_rows"] == 1.0
     finally:
         pdf.close()
 

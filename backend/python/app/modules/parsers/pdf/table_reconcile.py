@@ -566,9 +566,50 @@ def decide_box(
             abs((c.q or 0.0) - (best.q or 0.0)) <= 1e-9 and (len(c.rows), c.ncols) > (len(best.rows), best.ncols)
         ):
             best = c
-    if best is not None and (best.q or 0.0) >= table_quality.Q_MIN:
-        return region_of(best, "text_tier")
-    return Decision(box, "none", reason=why)
+    if best is None or (best.q or 0.0) < table_quality.Q_MIN:
+        return Decision(box, "none", reason=why)
+    old = max((r for r in legacy if ola._boxes_overlap(r.bbox, box)), key=lambda r: ola._iou(r.bbox, box))
+    kept = legacy_candidate(page, old, page_w, page_h)
+    if kept is None:
+        return Decision(box, "none", reason="legacy grid cannot be re-read: kept")
+    legacy_words = [w for w in words if _in_box(w, kept.bbox)] or text_words
+    kept.f = table_quality.features(kept, legacy_words, hrules, vrules, kept.bbox)
+    kept.q = table_quality.quality(kept.f)
+    harm = table_quality.defects(kept, text_words, hrules, vrules, extent)
+    if not table_quality.replaces_legacy(kept.q or 0.0, best.q or 0.0, strong_defect=bool(harm["strong"])):
+        return Decision(box, "none", reason=f"legacy kept: q={kept.q:.2f} new {best.q:.2f} defects {harm['strong']}")
+    return region_of(best, "text_tier")
+
+
+_LEGACY_STRATEGIES: tuple[dict[str, Any] | None, ...] = (
+    None,
+    {"vertical_strategy": "text", "horizontal_strategy": "lines", "intersection_tolerance": 5},
+    {"vertical_strategy": "text", "horizontal_strategy": "text", "intersection_tolerance": 5},
+)
+
+
+def legacy_candidate(page: Page, region: ola.LayoutRegion, page_w: float, page_h: float) -> Any:
+    """The candidate behind a legacy table region: the pdfplumber table, by the strategies the legacy path tries, whose
+    grid is the region's. None when none reproduces it (the legacy grid came from somewhere else): the caller keeps it."""
+    from app.modules.parsers.pdf import table_quality
+
+    def norm(g: list[list[Any]] | None) -> list[list[str]]:
+        return [[" ".join(str(c or "").split()) for c in row] for row in (g or [])]
+
+    target = norm(region.table_grid)
+    sub = page.within_bbox(ola._clamp_bbox(region.bbox, page_w, page_h))
+    for settings in _LEGACY_STRATEGIES:
+        try:
+            found = sub.find_tables(settings) if settings else sub.find_tables()
+        except Exception:
+            continue
+        for t in found:
+            try:
+                if norm(ola._trim_empty_rows_cols(ola._table_grid_by_words(t))) == target:
+                    return table_quality.candidate_from_table("legacy", 0, t)
+            except Exception:
+                continue
+    return None
 
 
 def reconcile(
