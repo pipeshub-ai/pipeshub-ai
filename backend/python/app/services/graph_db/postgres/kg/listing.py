@@ -185,10 +185,12 @@ def count_sql(where: str, plain: str, own: str, granted: str, unvouched: str) ->
             f"AND NOT r.class_id = ANY({unvouched}::bigint[]) AND (r.class_id = ANY({plain}::bigint[]) OR (r.class_id = ANY({own}::bigint[]) AND r.id = ANY({granted}::text[]))) LIMIT $3) t GROUP BY t.kind, t.folder")
 
 
-def class_admit(alias: str, p: Params, viewer: dict[str, Any]) -> str:
-    """What the viewer's classes open, as a condition on rows ``alias`` (the stamped, undelayed rows by class, and the few rows no class decides that the access check admitted)."""
+def class_admit(alias: str, p: Params, viewer: dict[str, Any], *, raw: bool = False) -> str:
+    """What the viewer's classes open, as a condition on rows ``alias`` (the stamped, undelayed rows by class, and the few rows no class decides that the access check admitted).
+    ``alias`` has the columns of the listing's window, or (``raw``) is a row of kg.records itself."""
     a = alias
-    return (f"(({a}.r13 IS FALSE AND {a}.has_path AND {a}.class_id IS NOT NULL AND NOT {a}.fenced AND NOT {a}.class_id = ANY({p.add(viewer['unvouched'])}::bigint[]) "
+    has_path, unfenced = (f"{a}.path IS NOT NULL", f"{a}.fence_job IS NULL") if raw else (f"{a}.has_path", f"NOT {a}.fenced")
+    return (f"(({a}.r13 IS FALSE AND {has_path} AND {a}.class_id IS NOT NULL AND {unfenced} AND NOT {a}.class_id = ANY({p.add(viewer['unvouched'])}::bigint[]) "
             f"AND ({a}.class_id = ANY({p.add(viewer['plain'])}::bigint[]) OR ({a}.class_id = ANY({p.add(viewer['own'])}::bigint[]) AND {a}.id = ANY({p.add(viewer['granted'])}::text[])))) "
             f"OR {a}.id = ANY({p.add(sorted(viewer['walked']))}::text[]))")
 
@@ -335,6 +337,9 @@ UNPLACED = """/* pipeshub:kg.listing_unplaced */ SELECT r.sk FROM (
       WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id = $3 AND e.to_coll = 'apps' AND e.from_coll = 'records') c
   JOIN kg.records r ON r.org_id = $1 AND r.sk = c.sk
   WHERE r.kind = 3 AND r.parent_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 1) LIMIT $4"""
+# UNPLACED is planned at the members of every group it is given (hundreds of thousands of rows) and reads a few: that estimate starts the JIT compiler, which costs more than the read
+# (170 ms for 166 groups at 1M records). Set in a savepoint, so the setting ends with the read.
+NO_JIT = "/* pipeshub:kg.listing_no_jit */ SELECT set_config('jit', 'off', true)"
 # The hierarchy children of each of the sks $2 (by the primary parent and by a hierarchy link): groups and records whatever their state (deleted, another organisation's, a
 # placeholder), as the structure is walked when a flatten's depth is bounded; $3 rows at most.
 HIER_CHILDREN = """/* pipeshub:kg.listing_hier_children */ SELECT c.sk, c.kind FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL (
