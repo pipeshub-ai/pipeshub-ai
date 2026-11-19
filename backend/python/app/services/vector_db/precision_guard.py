@@ -86,6 +86,10 @@ DELETE_TIMEOUT_SECONDS = 10.0
 CANCELLED_NOTE_TIMEOUT_SECONDS = 2.0
 DEBT_IDS_PER_ENTRY = 200
 DRAIN_INTERVAL_SECONDS = 60.0
+# One drain pass settles at most this many entries, for at most this long (the rest wait for the next pass): the drain runs on the end of a
+# record, which must not wait on a backlog of debt or on a store that hangs. One removal of an entry is bounded by DELETE_TIMEOUT_SECONDS.
+DRAIN_MAX_ENTRIES = 50
+DRAIN_PASS_SECONDS = 20.0
 
 
 async def run_despite_cancellation(awaitable, timeout: float = CANCELLED_NOTE_TIMEOUT_SECONDS) -> None:  # noqa: ANN001
@@ -121,6 +125,7 @@ class PrecisionGuard:
         self._logger = logger
         self._swept_at: dict[tuple[str, str | None], float] = {}
         self._drained_at: dict[tuple[str, str | None], float] = {}
+        self._drain_cursor: dict[tuple[str, str | None], int] = {}
 
     # -- facts about the points ------------------------------------------------------------------------------
 
@@ -547,7 +552,11 @@ class PrecisionGuard:
         """Settle the debt of this organisation's unconfirmed batches: remove the points only on a definite verdict.
 
         A collection that is gone, an entry past its age, or points the pin and epoch say are right, end an entry; a verdict that
-        cannot be read, a pin that is missing, or a removal that fails, keep it. Entries of another organisation are skipped. Never raises.
+        cannot be read, a pin that is missing, or a removal that fails, keep it, and the pass goes on with the next entry. A pass
+        looks at no more than ``DRAIN_MAX_ENTRIES`` entries (a different window each time, so one that cannot be settled does not
+        starve the others), reads the pin and epoch once for the entries of one precision and epoch, bounds every removal by
+        ``DELETE_TIMEOUT_SECONDS`` and the whole pass by ``DRAIN_PASS_SECONDS``. Entries of another organisation are skipped.
+        Never raises.
         """
         try:
             scope = self.scope(org)
@@ -560,32 +569,51 @@ class PrecisionGuard:
                 if last is not None and now - last < DRAIN_INTERVAL_SECONDS:
                     return
                 self._drained_at[(collection, scope)] = now
-            entries = await self._pins.epochs.debts(collection, scope)
-            if not entries:
-                return
-            info = await self._db.get_collection_info(collection)
-            for path, entry in entries:
-                if not isinstance(entry, dict) or not isinstance(entry.get("extra"), dict):
-                    await self._pins.epochs.drop_debt(path)
-                    continue
-                if entry.get("org") != bound:
-                    continue
-                if not info.exists:
-                    await self._pins.epochs.drop_debt(path)
-                    continue
-                if self._pins.epochs.now() - float(entry.get("at", 0)) / 1000.0 > DEBT_MAX_AGE_SECONDS:
-                    self._logger.warning("Dropping an old record of unconfirmed points in '%s'", collection)
-                    await self._pins.epochs.drop_debt(path)
-                    continue
-                precision, fence = str(entry.get("precision")), Fence(collection, str(entry.get("epoch")))
-                verdict = await self.verdict(collection, org, precision, fence)
-                if verdict == UNKNOWN:
-                    continue
-                if verdict == DEFINITE:
-                    await self.delete_written(collection, org, precision, fence, entry["extra"])
-                await self._pins.epochs.drop_debt(path)
+            await asyncio.wait_for(self._drain(collection, org, scope, bound), DRAIN_PASS_SECONDS)
+        except TimeoutError:
+            self._logger.warning("the settling of the debt of unconfirmed batches of '%s' took too long; it goes on at the next pass", collection)
         except Exception:
             self._logger.warning("could not settle the debt of unconfirmed batches of '%s'", collection, exc_info=True)
+
+    async def _drain(self, collection: str, org: str | None, scope: str | None, bound: str) -> None:
+        window = self._drain_cursor.get((collection, scope), 0)
+        entries = await self._pins.epochs.debts(collection, scope, limit=DRAIN_MAX_ENTRIES, start=window)
+        self._drain_cursor[(collection, scope)] = window + DRAIN_MAX_ENTRIES
+        if not entries:
+            return
+        info = await self._db.get_collection_info(collection)
+        verdicts: dict[tuple[str, str], str] = {}
+        for path, entry in entries:
+            try:
+                await self._settle_entry(collection, org, bound, info, verdicts, path, entry)
+            except Exception:
+                self._logger.warning("could not settle one record of unconfirmed points in '%s'; it is kept", collection, exc_info=True)
+
+    async def _settle_entry(
+        self, collection: str, org: str | None, bound: str, info, verdicts: dict, path: str, entry,  # noqa: ANN001
+    ) -> None:
+        if not isinstance(entry, dict) or not isinstance(entry.get("extra"), dict):
+            await self._pins.epochs.drop_debt(path)
+            return
+        if entry.get("org") != bound:
+            return
+        if not info.exists:
+            await self._pins.epochs.drop_debt(path)
+            return
+        if self._pins.epochs.now() - float(entry.get("at", 0)) / 1000.0 > DEBT_MAX_AGE_SECONDS:
+            self._logger.warning("Dropping an old record of unconfirmed points in '%s'", collection)
+            await self._pins.epochs.drop_debt(path)
+            return
+        precision, fence = str(entry.get("precision")), Fence(collection, str(entry.get("epoch")))
+        key = (precision, fence.token)
+        if key not in verdicts:
+            verdicts[key] = await self.verdict(collection, org, precision, fence)
+        verdict = verdicts[key]
+        if verdict == UNKNOWN:
+            return
+        if verdict == DEFINITE:
+            await asyncio.wait_for(self.delete_written(collection, org, precision, fence, entry["extra"]), DELETE_TIMEOUT_SECONDS)
+        await self._pins.epochs.drop_debt(path)
 
     async def count_of(self, collection: str, org: str | None, precision: str) -> int:
         """How many points carry this precision's tag in the index."""

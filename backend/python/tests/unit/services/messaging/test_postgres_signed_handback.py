@@ -650,3 +650,45 @@ async def test_a_claim_lost_while_reading_a_message_for_the_sink_is_not_swallowe
     with pytest.raises(Exception) as caught:
         await consumer._parse_for_sink(delivery, record=True)
     assert type(caught.value).__name__ == "ClaimLost"
+
+
+def _with_real_disposition(consumer, *, dead: bool):  # noqa: ANN202
+    sink = SimpleNamespace(on_message_abandoned=AsyncMock())
+    consumer.disposition_sink = sink
+    consumer._abandon = PgMessagingConsumer._abandon.__get__(consumer)
+    consumer.queue.dead = AsyncMock(return_value=dead)
+    return sink
+
+
+async def test_a_consumer_that_lost_the_claim_does_not_tell_the_sink_about_a_stale_message(clock) -> None:
+    queue = _Queue(_signed(clock[0]))
+    loser = _consumer(queue)
+    sink = _with_real_disposition(loser, dead=False)  # the dead-letter write is conditional on the claim: False, it is another's
+    delivery = _claim(queue)
+    queue.claimed_attempts = 2
+    clock[0] += LIFETIME + 60
+    await loser._settle(delivery)
+    sink.on_message_abandoned.assert_not_awaited()
+    loser._drive_indexing.assert_not_awaited()
+    assert loser._handback_log == {"claim_lost": 1}
+
+
+async def test_the_holder_of_the_claim_tells_the_sink_about_a_stale_message_after_the_dead_letter(clock) -> None:
+    queue = _Queue(_signed(clock[0], record="rec-7"))
+    holder = _consumer(queue)
+    sink = _with_real_disposition(holder, dead=True)
+    delivery = _claim(queue)
+    clock[0] += LIFETIME + 60
+    await holder._settle(delivery)
+    queue.dead.assert_awaited_once()
+    sink.on_message_abandoned.assert_awaited_once()
+    assert sink.on_message_abandoned.await_args.args[0].payload["recordId"] == "rec-7"
+
+
+async def test_a_claim_lost_after_the_message_was_opened_is_not_noticed_before_the_handler(clock) -> None:
+    """The scope of the claim check, pinned: it is made when the message is first opened (here by the precision check); a claim lost
+    after that and before the handler starts is not seen, so the handler runs (at-least-once from there)."""
+    queue = _Queue(_signed(clock[0]))
+    consumer = _consumer(queue, hand_backs=0, on_check=lambda: setattr(queue, "claimed_attempts", 2))
+    await consumer._settle(_claim(queue))
+    consumer._drive_indexing.assert_awaited_once()

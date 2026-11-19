@@ -6,6 +6,7 @@ batch was confirmed drops those points, so such a record is handed back instead 
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -130,3 +131,60 @@ async def test_the_record_summary_is_checked_against_the_epoch_it_was_written_un
     with pytest.raises(FenceMoved):
         await store.index_record_summary(RID, VRID, ORG, MagicMock(), None)
     store._check_for_leaks.assert_not_awaited()
+
+
+# -- every write path notes the epoch it accepts a batch under: removing any one of the three calls fails one of these --------------
+
+def _collector():  # noqa: ANN202
+    log_ = vs._PointLog()
+    return log_, vs._POINTED.set(log_)
+
+
+async def test_the_batch_writer_notes_the_epoch_it_captures(store) -> None:
+    from langchain_core.documents import Document
+
+    log_, handle = _collector()
+    try:
+        doc = Document(page_content="alpha", metadata={"orgId": ORG, "virtualRecordId": VRID, "blockId": "b1"})
+        await store._embed_and_upsert_documents([doc], RID, COLL)  # no fence passed: it captures its own
+    finally:
+        vs._POINTED.reset(handle)
+    assert log_.tokens == {COLL: {await store._guard._pins.epochs.current(COLL)}}
+
+
+async def test_the_chunk_writer_notes_the_epoch_it_captures_and_the_one_it_is_given(store) -> None:
+    store._embed_and_upsert_documents = AsyncMock()  # isolate the chunk writer's own note
+    log_, handle = _collector()
+    try:
+        await store._process_document_chunks([], RID, COLL)
+    finally:
+        vs._POINTED.reset(handle)
+    current = await store._guard._pins.epochs.current(COLL)
+    assert log_.tokens == {COLL: {current}}
+    other = vs.Fence(COLL, "t-given")
+    log_, handle = _collector()
+    try:
+        await store._process_document_chunks([], RID, COLL, other)
+    finally:
+        vs._POINTED.reset(handle)
+    assert log_.tokens == {COLL: {"t-given"}}
+
+
+async def test_the_resumable_writer_notes_the_epoch_it_captures(store) -> None:
+    from types import SimpleNamespace as NS
+
+    from langchain_core.documents import Document
+
+    store.require_matching_precision_before_delete = AsyncMock()
+    store._write_embed_marker = AsyncMock()
+    store._process_document_chunks = AsyncMock()
+    store.delete_blocks_by_ids = AsyncMock()
+    attempt = NS(resume=False, prior={}, stamp={}, rev="r", delivery_id="d")
+    doc = Document(page_content="alpha", metadata={"orgId": ORG, "virtualRecordId": VRID, "blockId": "b1"})
+    log_, handle = _collector()
+    try:
+        with contextlib.suppress(Exception):  # whatever follows the capture is not what is pinned here
+            await store._embed_resumably(attempt, [doc], RID, VRID, COLL, ORG)
+    finally:
+        vs._POINTED.reset(handle)
+    assert log_.tokens == {COLL: {await store._guard._pins.epochs.current(COLL)}}

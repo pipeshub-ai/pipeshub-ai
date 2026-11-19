@@ -234,13 +234,19 @@ class CollectionEpochs:
         """Record it (create-if-absent: the same batch noted twice is one entry). Raises when the store cannot say."""
         await self._create(f"{self._debt_prefix(collection, scope)}{key}", {**value, "at": int(self._clock() * 1000)})
 
-    async def debts(self, collection: str, scope: str | None) -> list[tuple[str, dict | None]]:
+    async def debts(
+        self, collection: str, scope: str | None, *, limit: int | None = None, start: int = 0,
+    ) -> list[tuple[str, dict | None]]:
+        """The entries of this scope, read only for the window asked for: *limit* of them from position *start* (wrapping round)."""
         prefix = self._debt_prefix(collection, scope)
+        paths = sorted(p for p in await self._config.list_keys_in_directory(prefix) or [] if p.startswith(prefix) and "/" not in p[len(prefix):])
+        if limit is not None and len(paths) > limit:
+            first = start % len(paths)
+            paths = (paths[first:] + paths[:first])[:limit]
         out: list[tuple[str, dict | None]] = []
-        for path in sorted(await self._config.list_keys_in_directory(prefix) or []):
-            if path.startswith(prefix) and "/" not in path[len(prefix):]:
-                raw = await self._read(path)
-                out.append((path, raw if isinstance(raw, dict) else None))
+        for path in paths:
+            raw = await self._read(path)
+            out.append((path, raw if isinstance(raw, dict) else None))
         return out
 
     async def drop_debt(self, path: str) -> None:

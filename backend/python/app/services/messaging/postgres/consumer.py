@@ -464,7 +464,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         if success:
             await self.queue.ack(group, d)
         elif terminal:
-            await self._abandon(d, parsed, err or "terminal error")
+            # A stale rejection is judged before the claim is written, so the claim is checked by the dead-letter write itself, first:
+            # a consumer that no longer holds the row does not tell the sink about a message the new claimant is about to run.
+            await self._abandon(d, parsed, err or "terminal error", claim_first=str(err).startswith("envelope rejected: stale"))
         elif final:
             await self._abandon(d, parsed, err or f"failed {d.attempts} times")
         else:
@@ -552,7 +554,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         A delivery this process already opened is admitted for every later open (the precision check, then the handler). Otherwise
         a stored admission (a MAC made with the envelope key over this message, group and row) admits it. The admission is written
         at once, so a handler that dies, a lapsed lease or a failed nack redelivers a message already known to have verified.
-        A write that fails raises ``AdmissionWriteError``: the handler must not run without it.
+        A write that fails raises ``AdmissionWriteError``: the handler must not run without it. A claim is checked when a message is first
+        opened (the precision check, or the handler if there is none); a claim lost after that open, before the handler starts or while it
+        runs, is not noticed (a second check would cost a write on every delivery), so the delivery stays at-least-once from there.
         """
         key = (d.topic, d.message_id, d.attempts)
         mode = self._opened.get(key)
@@ -607,8 +611,16 @@ class PgMessagingConsumer(IMessagingConsumer):
             return None
 
     async def _abandon(
-        self, d: Delivery, parsed: StreamMessage | None, reason: str
+        self, d: Delivery, parsed: StreamMessage | None, reason: str, *, claim_first: bool = False
     ) -> None:
+        if claim_first:
+            if not await self.queue.dead(self.config.group_id, d, reason):
+                self._handback_log["claim_lost"] = self._handback_log.get("claim_lost", 0) + 1
+                self.logger.info("Claim on %s was lost before it was dead-lettered; it belongs to another consumer", d.message_id)
+                return
+            await notify_abandoned(self.disposition_sink, self.logger, parsed, reason=reason, attempts=d.attempts)
+            self.logger.warning("Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason)
+            return
         await notify_abandoned(
             self.disposition_sink,
             self.logger,

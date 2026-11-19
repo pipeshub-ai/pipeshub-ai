@@ -689,3 +689,106 @@ async def test_an_entity_rollback_that_names_no_entity_logs_an_error(world) -> N
     world.store.logger = MagicMock()
     assert world.store._written_extras(ORG, INT8, {}, []) == []
     world.store.logger.error.assert_called()
+
+
+# -- the age cap and the bounds of the drain ---------------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_an_entry_the_pin_cannot_judge_is_dropped_by_its_age_alone_and_a_young_one_is_kept() -> None:
+    """The verdict is unknown (no pin), so only the seven-day cap can end the entry: pinned apart from the "points are right" drop."""
+    db, guard, pins, fence = await _guard_world()
+    scope = SimpleNamespace(_pins=pins, scope=guard.scope)
+    _written(db, fence)
+    await pins.release(RECORDS)
+    await guard.note_debt(RECORDS, ORG, INT8, fence, {"virtualRecordId": [VRID]})
+    await guard.drain_debt(RECORDS, ORG)
+    assert len(await _debts(scope)) == 1  # young: kept
+    real = pins.epochs._clock
+    pins.epochs._clock = lambda: real() + 7 * 86400.0 + 10
+    await guard.drain_debt(RECORDS, ORG)
+    assert await _debts(scope) == [] and len(db.points) == 1  # old: forgotten, the points are not touched
+
+
+async def _many_entries(guard, fence, n: int) -> None:
+    for i in range(n):
+        await guard.note_debt(RECORDS, ORG, INT8, fence, {"virtualRecordId": [f"v{i}"]})
+
+
+@pytest.mark.asyncio
+async def test_a_drain_pass_settles_a_bounded_window_and_the_next_pass_takes_the_rest() -> None:
+    db, guard, pins, fence = await _guard_world()
+    scope = SimpleNamespace(_pins=pins, scope=guard.scope)
+    await _many_entries(guard, fence, 120)  # the pin is the batch's: each is dropped as right
+    await guard.drain_debt(RECORDS, ORG)
+    assert len(await _debts(scope)) == 120 - pg.DRAIN_MAX_ENTRIES
+    await guard.drain_debt(RECORDS, ORG)
+    await guard.drain_debt(RECORDS, ORG)
+    assert await _debts(scope) == []
+
+
+@pytest.mark.asyncio
+async def test_a_drain_reads_the_pin_once_for_the_entries_of_one_precision_and_epoch() -> None:
+    db, guard, pins, fence = await _guard_world()
+    await _many_entries(guard, fence, 30)
+    real, reads = pins.get, {"n": 0}
+
+    async def counting(*a, **k):  # noqa: ANN202
+        reads["n"] += 1
+        return await real(*a, **k)
+
+    pins.get = counting
+    await guard.drain_debt(RECORDS, ORG)
+    assert reads["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_one_entry_that_cannot_be_settled_does_not_stop_the_others(monkeypatch) -> None:
+    db, guard, pins, fence = await _guard_world()
+    scope = SimpleNamespace(_pins=pins, scope=guard.scope)
+    await pins.release(RECORDS)
+    await pins._claim_unfenced(RECORDS, FP32)  # the int8 points are wrong: definite
+    for i in range(3):
+        db.points.append({"id": f"p{i}", "orgId": ORG, "virtualRecordId": f"v{i}", "embedPrecision": INT8, "embedEpoch": fence.token})
+        await guard.note_debt(RECORDS, ORG, INT8, fence, {"virtualRecordId": [f"v{i}"]})
+    real = db.delete_points
+
+    async def poisoned(collection, expression):  # noqa: ANN202
+        if "v0" in expression.get("virtualRecordId", []):
+            raise ConnectionError("store refuses this one")
+        return await real(collection, expression)
+
+    db.delete_points = poisoned
+    await guard.drain_debt(RECORDS, ORG)
+    assert sorted(p["virtualRecordId"] for p in db.points) == ["v0"]
+    assert [e["extra"]["virtualRecordId"] for _, e in await _debts(scope)] == [["v0"]]  # kept for the next pass
+
+
+@pytest.mark.asyncio
+async def test_a_removal_that_hangs_in_a_drain_is_cut_off_and_the_entry_is_kept(monkeypatch) -> None:
+    db, guard, pins, fence = await _guard_world()
+    scope = SimpleNamespace(_pins=pins, scope=guard.scope)
+    await pins.release(RECORDS)
+    await pins._claim_unfenced(RECORDS, FP32)
+    _written(db, fence)
+    await guard.note_debt(RECORDS, ORG, INT8, fence, {"virtualRecordId": [VRID]})
+    monkeypatch.setattr(pg, "DELETE_TIMEOUT_SECONDS", 0.05)
+
+    async def hangs(*a, **k):  # noqa: ANN202
+        await asyncio.sleep(30)
+
+    db.delete_points = hangs
+    await asyncio.wait_for(guard.drain_debt(RECORDS, ORG), 5)
+    assert len(await _debts(scope)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_drain_pass_is_bounded_as_a_whole(monkeypatch) -> None:
+    db, guard, pins, fence = await _guard_world()
+    monkeypatch.setattr(pg, "DRAIN_PASS_SECONDS", 0.05)
+
+    async def hangs(*a, **k):  # noqa: ANN202
+        await asyncio.sleep(30)
+        return []
+
+    pins.epochs.debts = hangs
+    await asyncio.wait_for(guard.drain_debt(RECORDS, ORG), 5)  # the end of a record does not wait on it
