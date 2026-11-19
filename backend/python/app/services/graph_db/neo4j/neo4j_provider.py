@@ -8911,14 +8911,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         // unlabelled with its filters after the WITH, or the planner seeks
         // child record groups by index and checks paths back to the seed
         // (VarLengthExpand(Into)), three times the cost. The whole-path
-        // predicate still requires child to be a RecordGroup.
+        // predicate still requires child to be a RecordGroup, and keeps the
+        // walk inside the seed's connector (a null connectorId matches none).
         CALL {
             WITH seed_rgs, record_level_app_ids
             UNWIND seed_rgs AS seed
             WITH seed, record_level_app_ids
             WHERE coalesce(seed.hideChildren, false) = false
             MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]-(child)
-            WHERE all(n IN nodes(p) WHERE n:RecordGroup)
+            WHERE all(n IN nodes(p) WHERE n:RecordGroup AND n.connectorId = seed.connectorId)
             WITH child, record_level_app_ids
             WHERE child.orgId = $org_id
               AND coalesce(child.isDeleted, false) = false

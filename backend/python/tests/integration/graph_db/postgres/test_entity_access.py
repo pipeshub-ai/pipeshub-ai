@@ -454,6 +454,20 @@ async def test_the_record_groups_a_user_reaches_by_each_grant_and_what_inherits_
     assert (await w.p.get_entity_access_context("uid-other", w.org)) is None
 
 
+async def test_the_inheritance_walk_stays_inside_the_seeds_connector(w: World) -> None:
+    """No writer records a group inheriting across connectors; the walk still does not follow one, nor go past it."""
+    await context_world(w)
+    await w.nodes("apps", {"_key": "conn2", "type": "CONFLUENCE", "name": "Confluence", "permissionModel": "RECORD_LEVEL"})
+    await w.edge("userAppRelation", ("users", "c1"), ("apps", "conn2"))
+    await w.nodes("recordGroups", {"_key": "seed", "connectorId": "conn"}, {"_key": "same", "connectorId": "conn"}, {"_key": "other", "connectorId": "conn2"},
+                  {"_key": "beyond", "connectorId": "conn"})
+    await w.edge("permission", ("users", "c1"), ("recordGroups", "seed"), type="USER", role="READER")
+    for parent, child_ in (("seed", "same"), ("seed", "other"), ("other", "beyond")):
+        await w.edge("inheritPermissions", ("recordGroups", child_), ("recordGroups", parent))
+    got = await w.p.get_entity_access_context("uid-c1", w.org)
+    assert "conn2" in {a["id"] for a in got["apps"]} and got["record_group_ids"] == ["same", "seed"]
+
+
 @pytest.mark.parametrize(("seed", "hard"), [(77, False), (78, True)])
 async def test_the_reachable_record_groups_are_exactly_the_granted_ones_and_what_inherits_and_the_access_check_opens_them(w: World, seed: int, hard: bool) -> None:
     """Over seeded random worlds: the record groups reached are those a user holds a grant on (their own, a group's, their team's, the organization's) and the

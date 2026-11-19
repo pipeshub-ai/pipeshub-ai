@@ -272,7 +272,7 @@ class TestNeo4jRecordGroupInheritance:
         # predicate, which expands through every record and attachment.
         original = query.replace(
             "MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..20]-(child)\n"
-            "            WHERE all(n IN nodes(p) WHERE n:RecordGroup)\n"
+            "            WHERE all(n IN nodes(p) WHERE n:RecordGroup AND n.connectorId = seed.connectorId)\n"
             "            WITH child, record_level_app_ids\n"
             "            WHERE child.orgId",
             "MATCH (seed)<-[:INHERIT_PERMISSIONS*1..20]-(child:RecordGroup)\n"
