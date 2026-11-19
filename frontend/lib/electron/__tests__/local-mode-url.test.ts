@@ -11,7 +11,11 @@ installMemoryStorage('sessionStorage');
 
 vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: () => auth.useAuthStore.getState().logout() };
+  return {
+    useAuthStore: auth.useAuthStore,
+    readStoredRefreshToken: auth.readStoredRefreshToken,
+    logoutAndRedirect: () => auth.useAuthStore.getState().logout(),
+  };
 });
 
 const storage = await import('../api-base-url-storage');
