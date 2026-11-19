@@ -192,7 +192,9 @@ describe('unit-of-work source lints', () => {
     })
   })
 
-  describe('the source tree', () => {
+  describe('the source tree', function () {
+    // Each lint walks every source file; on a loaded runner one takes most of mocha's 10 s default.
+    this.timeout(60_000)
     const files = sourceFiles(SRC).map((f) => [relative(SRC, f), readFileSync(f, 'utf8')] as const)
     it('sees the units of work in the tree (the lints are not vacuous)', () => {
       expect(files.reduce((n, [, t]) => n + callbacks(parse(t)).length, 0)).to.be.greaterThan(5)

@@ -5,7 +5,7 @@ import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 import { buildCatalogMcpGroups } from '@/chat/tool-groups';
 
-const catalog = vi.hoisted(() => ({ fetchToolCatalog: vi.fn() }));
+const catalog = vi.hoisted(() => ({ useToolCatalog: vi.fn() }));
 vi.mock('@/chat/hooks/use-project-scope-hydration', () => catalog);
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
@@ -38,6 +38,10 @@ const mcpGroups = buildCatalogMcpGroups([
   },
 ]);
 
+function loaded(data: { toolGroups: typeof mcpGroups; mcpGroups: typeof mcpGroups }) {
+  catalog.useToolCatalog.mockReturnValue({ data, error: undefined, isLoading: false });
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -52,7 +56,7 @@ describe('toolLabel', () => {
 
 describe('ToolsMcpCard', () => {
   it('selects a single tool of an MCP server', async () => {
-    catalog.fetchToolCatalog.mockResolvedValue({ toolGroups: [], mcpGroups });
+    loaded({ toolGroups: [], mcpGroups });
     const onChange = vi.fn();
     render(
       <Theme>
@@ -70,7 +74,7 @@ describe('ToolsMcpCard', () => {
   });
 
   it('groups tools by what they do, shows descriptions, and marks destructive ones as needing approval', async () => {
-    catalog.fetchToolCatalog.mockResolvedValue({ toolGroups: [], mcpGroups });
+    loaded({ toolGroups: [], mcpGroups });
     render(
       <Theme>
         <ToolsMcpCard selectedTools={[]} canEdit onChange={vi.fn()} />
@@ -85,7 +89,7 @@ describe('ToolsMcpCard', () => {
   });
 
   it('keeps every click when tools are toggled faster than the server answers', async () => {
-    catalog.fetchToolCatalog.mockResolvedValue({ toolGroups: [], mcpGroups });
+    loaded({ toolGroups: [], mcpGroups });
     const pending: Array<{ tools: string[]; resolve: () => void }> = [];
     const save = vi.fn(
       (tools: string[]) =>
@@ -139,7 +143,7 @@ describe('ToolsMcpCard', () => {
   });
 
   it("shows an MCP server's own logo", async () => {
-    catalog.fetchToolCatalog.mockResolvedValue({ toolGroups: [], mcpGroups });
+    loaded({ toolGroups: [], mcpGroups });
     render(
       <Theme>
         <ToolsMcpCard selectedTools={[]} canEdit onChange={vi.fn()} />
@@ -147,5 +151,36 @@ describe('ToolsMcpCard', () => {
     );
 
     expect(await screen.findByRole('img', { name: 'github icon' })).toBeTruthy();
+  });
+
+  it('shows the loading state until the catalog arrives', () => {
+    catalog.useToolCatalog.mockReturnValue({ data: undefined, error: undefined, isLoading: true });
+    render(
+      <Theme>
+        <ToolsMcpCard selectedTools={[]} canEdit onChange={vi.fn()} />
+      </Theme>,
+    );
+    expect(screen.getByText(/Loading/)).toBeTruthy();
+  });
+
+  it('shows the error only when there is no catalog to show', () => {
+    catalog.useToolCatalog.mockReturnValue({ data: undefined, error: new Error('down'), isLoading: false });
+    const { unmount } = render(
+      <Theme>
+        <ToolsMcpCard selectedTools={[]} canEdit onChange={vi.fn()} />
+      </Theme>,
+    );
+    expect(screen.queryByRole('button', { name: 'Expand' })).toBeNull();
+    expect(screen.queryByText(/Loading/)).toBeNull();
+    unmount();
+
+    // A failed background refresh keeps the catalog on screen.
+    catalog.useToolCatalog.mockReturnValue({ data: { toolGroups: [], mcpGroups }, error: new Error('down'), isLoading: false });
+    render(
+      <Theme>
+        <ToolsMcpCard selectedTools={[]} canEdit onChange={vi.fn()} />
+      </Theme>,
+    );
+    expect(screen.getByRole('button', { name: 'Expand' })).toBeTruthy();
   });
 });

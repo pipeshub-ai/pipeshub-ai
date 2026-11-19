@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { clearDraft, loadDraft, saveDraft } from '../utils/composer-draft';
+import { clearDraft, loadDraftFields, saveDraft } from '../utils/composer-draft';
 
 /** How long typing must pause before the draft is written to storage. */
 export const DRAFT_SAVE_DEBOUNCE_MS = 400;
@@ -14,6 +14,10 @@ interface UseComposerDraftOptions {
   slotId: string | null;
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
+  quotedExcerpt?: string | null;
+  setQuotedExcerpt?: Dispatch<SetStateAction<string | null>>;
+  quotedExcerptTruncated?: boolean;
+  setQuotedExcerptTruncated?: Dispatch<SetStateAction<boolean>>;
   /** Text is not the reader's own (edit or regenerate mode), so it is never saved. */
   paused?: boolean;
 }
@@ -35,15 +39,26 @@ export function useComposerDraft({
   slotId,
   message,
   setMessage,
+  quotedExcerpt = null,
+  setQuotedExcerpt,
+  quotedExcerptTruncated = false,
+  setQuotedExcerptTruncated,
   paused = false,
 }: UseComposerDraftOptions): ComposerDraftControls {
   const messageRef = useRef(message);
+  const quoteRef = useRef(quotedExcerpt);
+  const quoteTruncRef = useRef(quotedExcerptTruncated);
   const pausedRef = useRef(paused);
   // Declared first so every effect below sees this commit's values.
   useEffect(() => {
     messageRef.current = message;
+    quoteRef.current = quotedExcerpt;
+    quoteTruncRef.current = quotedExcerptTruncated;
     pausedRef.current = paused;
   });
+  const persist = useCallback((key: string, text: string) => {
+    saveDraft(key, text, { excerpt: quoteRef.current, truncated: quoteTruncRef.current });
+  }, []);
   // The key the text currently in the box belongs to. It only moves in the
   // effect below, so a text change that lands in the same commit as a thread
   // switch can never be filed under the wrong conversation.
@@ -73,52 +88,56 @@ export function useComposerDraft({
       // A new chat just got its real id: the text in the box moves with it.
       clearDraft(leavingKey);
       ownerKeyRef.current = draftKey;
-      if (canSave()) saveDraft(draftKey, messageRef.current);
+      if (canSave()) persist(draftKey, messageRef.current);
       return;
     }
 
-    if (leavingKey && canSave()) saveDraft(leavingKey, messageRef.current);
+    if (leavingKey && canSave()) persist(leavingKey, messageRef.current);
     ownerKeyRef.current = draftKey;
     if (!draftKey) return;
 
     // Read now, not inside the state updater: a strict-mode remount flushes the
     // still-empty box in between, which would otherwise erase the draft first.
-    const stored = loadDraft(draftKey);
+    const stored = loadDraftFields(draftKey);
     if (leavingKey || userChanged) {
       // Another conversation, or another person: show that draft, or nothing.
-      setMessage(stored);
+      setMessage(stored.text);
+      setQuotedExcerpt?.(stored.quotedExcerpt);
+      setQuotedExcerptTruncated?.(stored.quotedExcerptTruncated);
     } else {
       // First load, or the account became known: never overwrite text already there.
-      setMessage((current) => (current === '' ? stored : current));
+      setMessage((current) => (current === '' ? stored.text : current));
+      setQuotedExcerpt?.((current) => current ?? stored.quotedExcerpt);
+      setQuotedExcerptTruncated?.((current) => current || stored.quotedExcerptTruncated);
     }
-  }, [draftKey, userId, slotId, setMessage, canSave]);
+  }, [draftKey, userId, slotId, setMessage, setQuotedExcerpt, setQuotedExcerptTruncated, canSave, persist]);
 
   useEffect(() => {
-    if (message !== '') sentRef.current = false;
-  }, [message]);
+    if (message !== '' || quotedExcerpt) sentRef.current = false;
+  }, [message, quotedExcerpt]);
 
   useEffect(() => {
     const key = ownerKeyRef.current;
     if (!key || paused) return;
     const timer = setTimeout(() => {
-      if (!sentRef.current) saveDraft(key, message);
+      if (!sentRef.current) persist(key, message);
     }, DRAFT_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
     // `draftKey` re-arms the timer when the owner changes, so a save queued
     // before a chat got its id cannot land under the new key.
-  }, [message, paused, draftKey]);
+  }, [message, quotedExcerpt, quotedExcerptTruncated, paused, draftKey, persist]);
 
   useEffect(() => {
     const flush = () => {
       const key = ownerKeyRef.current;
-      if (key && canSave()) saveDraft(key, messageRef.current);
+      if (key && canSave()) persist(key, messageRef.current);
     };
     window.addEventListener('pagehide', flush);
     return () => {
       window.removeEventListener('pagehide', flush);
       flush();
     };
-  }, [canSave]);
+  }, [canSave, persist]);
 
   const markSent = useCallback(() => {
     sentRef.current = true;
@@ -129,8 +148,8 @@ export function useComposerDraft({
   const unmarkSent = useCallback((text: string) => {
     sentRef.current = false;
     const key = ownerKeyRef.current;
-    if (key && !pausedRef.current) saveDraft(key, text);
-  }, []);
+    if (key && !pausedRef.current) persist(key, text);
+  }, [persist]);
 
   return { markSent, unmarkSent };
 }

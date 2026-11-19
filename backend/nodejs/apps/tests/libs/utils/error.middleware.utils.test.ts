@@ -1,127 +1,16 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { jsonResponse, logLevelFor } from '../../../src/libs/utils/error.middleware.utils'
 import {
-  extractErrorData,
-  jsonResponse,
-  logError,
-} from '../../../src/libs/utils/error.middleware.utils'
-import { Logger } from '../../../src/libs/services/logger.service'
-import { AxiosError } from 'axios'
+  BadRequestError,
+  InternalServerError,
+  ServiceUnavailableError,
+} from '../../../src/libs/errors/http.errors'
 
 describe('error.middleware.utils', () => {
   afterEach(() => {
     sinon.restore()
-  })
-
-  describe('extractErrorData', () => {
-    it('should return null for null error', () => {
-      expect(extractErrorData(null)).to.be.null
-    })
-
-    it('should return null for undefined error', () => {
-      expect(extractErrorData(undefined)).to.be.null
-    })
-
-    it('should return null for empty string (falsy)', () => {
-      expect(extractErrorData('')).to.be.null
-    })
-
-    it('should use toJSON method when available', () => {
-      const error = {
-        toJSON: (includeStack: boolean) => ({
-          name: 'CustomError',
-          message: 'Something went wrong',
-          stack: includeStack ? 'stack-trace' : undefined,
-        }),
-      }
-      const result = extractErrorData(error)
-      expect(result.name).to.equal('CustomError')
-      expect(result.message).to.equal('Something went wrong')
-      expect(result.stack).to.equal('stack-trace')
-    })
-
-    it('should handle axios-like error with response.data.detail', () => {
-      const error = {
-        response: {
-          data: { detail: 'Detailed error message' },
-          status: 400,
-          statusText: 'Bad Request',
-        },
-        stack: 'at line 1',
-      }
-      const result = extractErrorData(error)
-      expect(result.detail).to.equal('Detailed error message')
-      expect(result.status).to.equal(400)
-      expect(result.statusText).to.equal('Bad Request')
-      expect(result.stack).to.equal('at line 1')
-    })
-
-    it('should handle axios-like error with response.data.reason', () => {
-      const error = {
-        response: {
-          data: { reason: 'Some reason' },
-          status: 422,
-          statusText: 'Unprocessable Entity',
-        },
-        stack: 'stack',
-      }
-      const result = extractErrorData(error)
-      expect(result.detail).to.equal('Some reason')
-    })
-
-    it('should handle axios-like error with response.data.message', () => {
-      const error = {
-        response: {
-          data: { message: 'Error message from server' },
-          status: 500,
-          statusText: 'Internal Server Error',
-        },
-        stack: 'stack',
-      }
-      const result = extractErrorData(error)
-      expect(result.detail).to.equal('Error message from server')
-    })
-
-    it('should use Unknown error when response.data has no detail/reason/message', () => {
-      const error = {
-        response: {
-          data: {},
-          status: 500,
-          statusText: 'Server Error',
-        },
-        stack: 'stack',
-      }
-      const result = extractErrorData(error)
-      expect(result.detail).to.equal('Unknown error')
-    })
-
-    it('should extract standard Error properties', () => {
-      const error = new Error('Standard error')
-      ;(error as any).code = 'ERR_CODE'
-      const result = extractErrorData(error)
-      expect(result.message).to.equal('Standard error')
-      expect(result.code).to.equal('ERR_CODE')
-      expect(result.name).to.equal('Error')
-      expect(result.stack).to.be.a('string')
-    })
-
-    it('should handle extraction failures gracefully', () => {
-      const error = {
-        get toJSON() {
-          throw new Error('toJSON throws')
-        },
-        get response() {
-          throw new Error('response throws')
-        },
-        get message() {
-          throw new Error('message throws')
-        },
-      }
-      const result = extractErrorData(error)
-      expect(result.message).to.equal('Error processing error data')
-      expect(result.originalError).to.be.a('string')
-    })
   })
 
   describe('jsonResponse', () => {
@@ -168,68 +57,13 @@ describe('error.middleware.utils', () => {
     })
   })
 
-  describe('logError', () => {
-    it('should call logger.error with extracted error data', () => {
-      const logger = {
-        error: sinon.stub(),
-      } as unknown as Logger
-
-      const error = new Error('test error')
-      logError(logger, 'Something failed', error, { extra: 'context' })
-
-      expect((logger.error as sinon.SinonStub).calledOnce).to.be.true
-      const call = (logger.error as sinon.SinonStub).firstCall
-      expect(call.args[0]).to.equal('Something failed')
-      expect(call.args[1].error).to.have.property('message', 'test error')
-      expect(call.args[1].context).to.deep.equal({ extra: 'context' })
-    })
-
-    // A warning is an answer that went as intended: no stack, whatever shape
-    // the error has.
-    for (const [name, make] of [
-      ['a generic Error', () => new Error('plain')],
-      ['an axios-style error', () => Object.assign(new Error('Request failed'), {
-        response: { status: 404, statusText: 'Not Found', data: { detail: 'gone' } },
-      })],
-      // A real one has its own toJSON, which ignores the argument and adds the stack.
-      ['a real AxiosError', () => new AxiosError(
-        'Request failed with status code 404', 'ERR_BAD_REQUEST', undefined, undefined,
-        { status: 404, statusText: 'Not Found', data: { detail: 'gone' }, headers: {}, config: {} } as never,
-      )],
-    ] as const) {
-      it(`logs ${name} at warn without its stack, and at error with it`, () => {
-        const logger = { warn: sinon.stub(), error: sinon.stub() } as unknown as Logger
-
-        logError(logger, 'Answered', make(), undefined, 'warn')
-        logError(logger, 'Failed', make())
-
-        expect((logger.warn as sinon.SinonStub).firstCall.args[1].error).to.not.have.property('stack')
-        expect((logger.error as sinon.SinonStub).firstCall.args[1].error).to.have.property('stack')
-      })
-    }
-
-    it('should fall back to console.error when logger.error throws', () => {
-      const consoleStub = sinon.stub(console, 'error')
-      const logger = {
-        error: sinon.stub().throws(new Error('logger broken')),
-      } as unknown as Logger
-
-      logError(logger, 'Log fail test', new Error('original error'))
-
-      expect(consoleStub.called).to.be.true
-      // First console.error call: 'Error logging failed:'
-      expect(consoleStub.firstCall.args[0]).to.equal('Error logging failed:')
-    })
-
-    it('should handle context being undefined', () => {
-      const logger = {
-        error: sinon.stub(),
-      } as unknown as Logger
-
-      logError(logger, 'No context', new Error('err'))
-      expect((logger.error as sinon.SinonStub).calledOnce).to.be.true
-      const call = (logger.error as sinon.SinonStub).firstCall
-      expect(call.args[1].context).to.be.undefined
+  describe('logLevelFor', () => {
+    it('logs a caught error at the level the shared policy gives its class', () => {
+      expect(logLevelFor(new BadRequestError('x'))).to.equal('warn')
+      expect(logLevelFor(new InternalServerError('x'))).to.equal('error')
+      expect(logLevelFor(new ServiceUnavailableError('x'))).to.equal('warn')
+      expect(logLevelFor(new Error('boom'))).to.equal('error')
+      expect(logLevelFor(new DOMException('aborted', 'AbortError'))).to.equal('info')
     })
   })
 })

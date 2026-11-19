@@ -452,6 +452,14 @@ describe('artifact set validators', () => {
     }
   })
 
+  it('accepts no writeId, or one of 32 lowercase hex characters only', () => {
+    expect(presign({}).success).to.be.true
+    expect(presign({ writeId: '0123456789abcdef'.repeat(2) }).success).to.be.true
+    for (const writeId of ['', 'a'.repeat(31), 'a'.repeat(33), 'A'.repeat(32), `../${'a'.repeat(29)}`, 'g'.repeat(32)]) {
+      expect(presign({ writeId }).success, writeId).to.be.false
+    }
+  })
+
   it('accepts only a virtual record id shape', () => {
     for (const virtualRecordId of ['../x', 'a/b', '', 'a'.repeat(129)]) {
       expect(presign({ virtualRecordId }).success, virtualRecordId).to.be.false

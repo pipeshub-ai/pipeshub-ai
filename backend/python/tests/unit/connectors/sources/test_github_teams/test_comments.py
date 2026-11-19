@@ -21,6 +21,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.pr_links import Linked
 from app.connectors.core.base.error.stream_errors import to_stream_error
 from app.connectors.sources.github_teams.comments import (
     CommentsHelper,
@@ -452,6 +453,76 @@ class TestReviewCommentThreading:
         comments = file_change_groups[0].comments
         assert len(comments) == 1  # one thread...
         assert len(comments[0]) == 2  # ...containing the root and its reply.
+
+    async def test_each_file_group_says_what_changed_as_data_beside_its_markdown(self) -> None:
+        """`data` stays the markdown string; the change itself is a typed slot readers need not parse."""
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="src/main.py", status="modified", patch="@@ -1 +1 @@\n-a\n+b",
+                                additions=1, deletions=1),
+                SimpleNamespace(filename="src/new.py", status="renamed", previous_filename="src/old.py",
+                                patch="@@", additions=0, deletions=0),
+                SimpleNamespace(filename="img.png", status="added", patch=None),  # binary: no counts given
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        meta = {bg.file_change_metadata.path: bg.file_change_metadata for bg in block_groups
+                if bg.file_change_metadata}
+        assert (meta["src/main.py"].status, meta["src/main.py"].additions, meta["src/main.py"].deletions) == (
+            "modified", 1, 1)
+        assert (meta["src/new.py"].previous_path, meta["src/new.py"].additions) == ("src/old.py", 0)
+        assert (meta["img.png"].additions, meta["img.png"].deletions) == (None, None)
+        assert all(isinstance(bg.data, str) for bg in block_groups if bg.file_change_metadata)
+
+    async def test_the_pr_is_linked_to_the_code_files_it_changed(self) -> None:
+        """MODIFIES is written here, where the file list is read; code files are named by repo id and path."""
+        c = make_mock_connector()
+        c.data_entities_processor.on_pr_file_changes = AsyncMock(return_value=Linked(1, 0))
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="src/main.py", status="modified", patch="@@", additions=1, deletions=0),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        record.external_record_group_id = "1001-pull-requests"
+
+        await helper.build_pr_comment_and_diff_blocks("acme", "widgets", 1, pull_request, parent_index=0,
+                                                      record=record)
+
+        pr, changes, external_id = c.data_entities_processor.on_pr_file_changes.await_args.args
+        assert pr is record and [ch.path for ch in changes] == ["src/main.py"]
+        assert external_id("src/main.py") == "/1001/blob/src/main.py"
+
+    async def test_a_failed_link_write_does_not_fail_the_pr(self) -> None:
+        c = make_mock_connector()
+        c.data_entities_processor.on_pr_file_changes = AsyncMock(side_effect=RuntimeError("graph down"))
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([SimpleNamespace(filename="a.py", status="added", patch="@@")]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        record.external_record_group_id = "1001-pull-requests"
+
+        groups, _ = await helper.build_pr_comment_and_diff_blocks("acme", "widgets", 1, pull_request,
+                                                                  parent_index=0, record=record)
+        assert any(g.file_change_metadata for g in groups)
 
     async def test_independent_comments_on_same_path_are_separate_threads(self) -> None:
         """Two unrelated comments on one file are two conversations, not one."""

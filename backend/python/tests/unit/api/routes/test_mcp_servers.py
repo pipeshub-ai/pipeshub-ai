@@ -151,7 +151,7 @@ class TestTheRedirectUriComesFromServerConfig:
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, helpers._oauth_instance(), "inst-1", "user-1", "org-1", browser_base_url,
-                initiated_by="user-1", owner_type="user",
+                request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
 
         state_record = next(
@@ -256,6 +256,76 @@ class TestBuildInstanceRecord:
         assert record["args"] == ["-y", "server"]
         assert record["requiredEnv"] == ["API_KEY"]
         assert record["isCustom"] is False
+
+    def test_okta_catalog_stores_the_url_the_admin_typed(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="Okta",
+            type_id="okta",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://acme.okta.com/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-okta", "org-1", "user-1", registry)
+        assert record["url"] == "https://acme.okta.com/mcp"
+        assert record["scopes"] == ["okta.users.read", "okta.groups.read"]
+        assert record["isCustom"] is False
+        assert record["transport"] == "streamable_http"
+        from app.agents.mcp.service import instance_config_from_dict
+
+        assert instance_config_from_dict(record).url == "https://acme.okta.com/mcp"
+
+    def test_okta_catalog_requires_a_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="Okta",
+            type_id="okta",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+        )
+        with pytest.raises(HTTPException) as exc:
+            _validate_instance_config(payload, registry)
+        assert exc.value.status_code == 400
+
+    def test_github_catalog_keeps_its_own_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="GitHub",
+            type_id="github",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://evil.example/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-gh", "org-1", "user-1", registry)
+        assert record["url"] == "https://api.githubcopilot.com/mcp/"
+
+    def test_docusign_catalog_keeps_its_production_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="DocuSign",
+            type_id="docusign",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://mcp-d.docusign.com/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-ds", "org-1", "user-1", registry)
+        assert record["url"] == "https://mcp.docusign.com/mcp"
+        assert "signature" in record["scopes"]
 
     def test_update_preserves_created_by_and_created_at(self) -> None:
         registry = MagicMock()
@@ -707,7 +777,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, self._oauth_instance(), "inst-1", "user-1", "org-1", None,
-                initiated_by="user-1", owner_type="user", desktop=True,
+                request=MagicMock(), initiated_by="user-1", owner_type="user", desktop=True,
             )
 
         assert "state=phd.state-1" in result["authorizationUrl"]
@@ -732,7 +802,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
         with patches[0], patches[1] as discover, patches[2] as register, patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, self._oauth_instance(), "inst-1", "user-1", "org-1", "https://app.example.com",
-                initiated_by="user-1", owner_type="user",
+                request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
 
         (url,), kwargs = discover.await_args
@@ -761,7 +831,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
         with patches[0], patches[1], patches[2] as register, patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, self._oauth_instance(), "inst-1", "user-1", "org-1", "https://app.example.com",
-                initiated_by="user-1", owner_type="user",
+                request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
 
         register.assert_not_awaited()
@@ -787,7 +857,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
         with patches[0], patches[1] as discover, patches[2] as register, patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, self._oauth_instance(), "inst-1", "user-1", "org-1", "https://app.example.com",
-                initiated_by="user-1", owner_type="user",
+                request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
 
         discover.assert_awaited_once()
@@ -810,7 +880,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             await _build_oauth_authorization_url(
                 config_service, self._oauth_instance(), "inst-1", "agent-owner", "org-1", "https://app.example.com",
-                initiated_by="real-user-1", owner_type="agent",
+                request=MagicMock(), initiated_by="real-user-1", owner_type="agent",
             )
 
         state_call = next(c for c in config_service.create_config_if_absent.await_args_list if "oauth-states" in c.args[0])
@@ -839,7 +909,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, instance, "inst-1", "user-1", "org-1", "https://app.example.com",
-                initiated_by="user-1", owner_type="user",
+                request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
 
         assert result["authorizationUrl"].startswith("https://real.example.com/authorize?")
@@ -859,7 +929,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
             with pytest.raises(HTTPException) as exc:
                 await _build_oauth_authorization_url(
                     config_service, self._oauth_instance(), "inst-1", "user-1", "org-1", "https://app.example.com",
-                    initiated_by="user-1", owner_type="user",
+                    request=MagicMock(), initiated_by="user-1", owner_type="user",
                 )
 
         assert exc.value.status_code == 502
@@ -880,7 +950,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
             with pytest.raises(HTTPException) as exc:
                 await _build_oauth_authorization_url(
                     config_service, instance, "inst-1", "user-1", "org-1", "https://app.example.com",
-                    initiated_by="user-1", owner_type="user",
+                    request=MagicMock(), initiated_by="user-1", owner_type="user",
                 )
 
         assert exc.value.status_code == 502
@@ -899,7 +969,7 @@ class TestBuildOauthAuthorizationUrlDcrReuse:
             with pytest.raises(HTTPException) as exc:
                 await _build_oauth_authorization_url(
                     config_service, self._oauth_instance(), "inst-1", "user-1", "org-1", "https://app.example.com",
-                    initiated_by="user-1", owner_type="user",
+                    request=MagicMock(), initiated_by="user-1", owner_type="user",
                 )
 
         assert exc.value.status_code == 409
@@ -932,7 +1002,7 @@ class TestWhichClientASignInUses:
         with patches[0], patches[1], patches[2] as register, patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, self._helpers._oauth_instance(), "inst-1", "user-1", "org-1", None,
-                initiated_by="user-1", owner_type="user",
+                request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
         return result, register
 
@@ -1000,7 +1070,7 @@ class TestWhichClientASignInUses:
             with pytest.raises(HTTPException) as caught:
                 await _build_oauth_authorization_url(
                     config_service, self._helpers._oauth_instance(), "inst-1", "user-1", "org-1", None,
-                    initiated_by="user-1", owner_type="user",
+                    request=MagicMock(), initiated_by="user-1", owner_type="user",
                 )
 
         assert caught.value.status_code == 502
@@ -1030,7 +1100,7 @@ class TestWhichClientASignInUses:
         patches = self._helpers._patched(discovered=plain_only, registered=self.NEW_CLIENT)
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
-                config_service, instance, "inst-1", "user-1", "org-1", None, initiated_by="user-1", owner_type="user",
+                config_service, instance, "inst-1", "user-1", "org-1", None, request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
 
         assert result["authorizationUrl"].startswith("https://own.example.com/authorize?")
@@ -1071,7 +1141,7 @@ class TestWhichClientASignInUses:
         patches = self._helpers._patched(discovered=self.DISCOVERED, registered=self.NEW_CLIENT)
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
-                config_service, instance, "inst-1", "user-1", "org-1", None, initiated_by="user-1", owner_type="user",
+                config_service, instance, "inst-1", "user-1", "org-1", None, request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
 
         assert parse_qs(urlparse(result["authorizationUrl"]).query)["scope"] == ["profile files.write read"]
@@ -1132,7 +1202,7 @@ class TestWhichClientASignInUses:
             with patches[1], patches[2] as register, patches[3], patches[4], patches[5], patches[6]:
                 result = await _build_oauth_authorization_url(
                     config_service, self._helpers._oauth_instance(), "inst-1", "user-1", "org-1", None,
-                    initiated_by="user-1", owner_type="user",
+                    request=MagicMock(), initiated_by="user-1", owner_type="user",
                 )
 
         register.assert_awaited_once()
@@ -1236,7 +1306,7 @@ class TestWhichClientASignInUses:
             with pytest.raises(HTTPException) as exc:
                 await _build_oauth_authorization_url(
                     config_service, self._helpers._oauth_instance(), "inst-1", "user-1", "org-1", None,
-                    initiated_by="user-1", owner_type="user",
+                    request=MagicMock(), initiated_by="user-1", owner_type="user",
                 )
 
         assert exc.value.status_code == 503
@@ -1769,7 +1839,7 @@ class TestSignInAsksForTheServersScopesAndNamesIt:
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             result = await _build_oauth_authorization_url(
                 config_service, instance, "inst-1", "user-1", "org-1", "https://app.example.com",
-                initiated_by="user-1", owner_type="user",
+                request=MagicMock(), initiated_by="user-1", owner_type="user",
             )
         state_record = config_service.create_config_if_absent.await_args.args[1]
         return parse_qs(urlparse(result["authorizationUrl"]).query), state_record

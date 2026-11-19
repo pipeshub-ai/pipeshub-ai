@@ -62,11 +62,14 @@ def make_with_limits(env) -> Callable[..., Awaitable[KernelDB]]:
 async def test_start_probes_capabilities_and_reads_the_epoch(env, make) -> None:
     db = await make()
     assert db.capabilities.pg_major == env.cluster.major
-    assert db.capabilities.extensions["pg_trgm"] == "installed" and db.capabilities.flags["fused_vector"] is False     # the kernel does not install pgvector
+    assert db.capabilities.extensions["pg_trgm"] == "installed" and db.capabilities.flags["fused_vector"] is True      # pgvector is part of the baseline
     assert db.profile_epoch == 1
 
 
-async def test_strict_start_refuses_a_missing_required_extension_and_non_strict_downgrades(make) -> None:
+async def test_strict_start_refuses_a_missing_required_extension_and_non_strict_downgrades(env, make) -> None:
+    admin = await env.admin()
+    await admin.execute("DROP EXTENSION vector CASCADE")          # the template has pgvector (the retrieval module); this database does not
+    await admin.close()
     with pytest.raises(CapabilityError, match="required extension vector is"):
         await make(want_extensions=("vector",))
     db = await make(want_extensions=("vector",), strict=False)

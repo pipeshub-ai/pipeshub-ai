@@ -93,3 +93,29 @@ describe('useInitializeUserProfile isAdmin', () => {
     expect(await resolvedIsAdmin()).toBe(false);
   });
 });
+
+describe('useInitializeUserProfile designation', () => {
+  it('stores the designation from the user record, and null when none is set', async () => {
+    answer({ fullName: 'A', designation: 'Engineer' }, []);
+    await resolvedIsAdmin();
+    expect(useUserStore.getState().profile?.designation).toBe('Engineer');
+
+    answer({ fullName: 'A' }, []);
+    await resolvedIsAdmin();
+    expect(useUserStore.getState().profile?.designation).toBeNull();
+  });
+
+  it('leaves the designation unknown when the user record fails', async () => {
+    answer(new Error('500'), []);
+    await resolvedIsAdmin();
+    expect(useUserStore.getState().profile).not.toBeNull();
+    expect(useUserStore.getState().profile?.designation).toBeUndefined();
+  });
+
+  it('keeps a known designation across a reload', async () => {
+    answer({ fullName: 'A', designation: 'Engineer' }, []);
+    await resolvedIsAdmin();
+    const saved = JSON.parse(localStorage.getItem('user-profile-storage') ?? '{}');
+    expect(saved.state?.profile?.designation).toBe('Engineer');
+  });
+});

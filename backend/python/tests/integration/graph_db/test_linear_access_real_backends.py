@@ -138,6 +138,10 @@ class _Env:
         return [{**d, "id": d.get("id") or d.get("_key")} for d in docs
                 if not d.get("isPlaceholder") and not d.get("isDeleted")]
 
+    async def gate(self) -> set[str]:
+        """Emails of the users the connector is attached to (the app-user relation)."""
+        return {u.email for u in await self.processor.get_all_app_users(self.connector_id, raise_on_error=True)}
+
     async def ticket_names(self) -> set[str]:
         return {d["recordName"] for d in await self.records() if d["recordType"] == "TICKET"}
 
@@ -210,16 +214,15 @@ class _Env:
 
     def readers(self, item: Issue | Project) -> set[str]:
         """Emails of the users PipesHub shows an issue or project to. Linear shows a project
-        in several teams to the readers of any of them; PipesHub, by choice, only to those of
-        its home team: the lead team, else the first synced team by id."""
+        in several teams to the readers of any of them; PipesHub does so for the teams it
+        syncs, as a team outside the sync adds no readers."""
         if not isinstance(item, Project):
             return self.ws.readers(item)
         synced = self.synced_team_ids()
         teams = [t for t in item.teams if t.id in synced]
-        home = item.lead if item.lead in teams else min(teams, key=lambda t: t.id, default=None)
-        if item.trashed or home is None:
+        if item.trashed:
             return set()
-        return {u.email for u in self.ws.users if self.ws.can_see_team(u, home)}
+        return {u.email for u in self.ws.users if any(self.ws.can_see_team(u, t) for t in teams)}
 
     def owners(self, doc: dict[str, Any]) -> list[Issue | Project]:
         """The Linear issues or projects a record's content comes from."""
@@ -348,16 +351,17 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
                   "filters": {"sync": {"values": {}}, "indexing": {"values": {}}}}
         environment = _Env(graph, ws, org_id, connector_id, processor, config, {})
 
-        async def add_user(email: str) -> None:
+        async def add_user(email: str, *, in_org: bool = True) -> None:
             key, user_id = f"{run}-{uuid.uuid4().hex[:8]}", f"user-{uuid.uuid4().hex[:10]}"
             user_keys.append(key)
             assert await graph.batch_upsert_nodes(
                 [{"id": key, "userId": user_id, "orgId": org_id, "email": email, "fullName": email, "isActive": True,
                   "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.USERS.value)
-            assert await graph.batch_create_edges(
-                [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
-                  "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
-                  "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
+            if in_org:
+                assert await graph.batch_create_edges(
+                    [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
+                      "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
+                      "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
             environment.user_ids[email] = user_id
 
         environment.add_user = add_user  # type: ignore[attr-defined]
@@ -596,17 +600,83 @@ async def test_membership_and_visibility_changes_reach_access(env: _Env) -> None
     await env.assert_matches_linear()
 
 
+async def test_a_deactivated_person_loses_the_connector_and_gets_it_back(env: _Env) -> None:
+    """A suspended Linear account is gone from Linear's user list. Its connector access goes
+    with it on the next sync; reactivating the account brings the access back."""
+    p = await _people(env, "alice", "bob")
+    ws = env.ws
+    eng = ws.team("ENG", members=[p["sync"], p["alice"], p["bob"]])
+    ws.issue(eng, "Roadmap")
+    await env.sync()
+    assert {p["alice"].email, p["bob"].email} <= await env.gate()
+    await env.assert_matches_linear()
+
+    p["alice"].active = False
+    await env.sync()
+    assert p["alice"].email not in await env.gate()
+    assert p["bob"].email in await env.gate()
+    assert not await env.readable(p["alice"].email)
+    await env.assert_matches_linear()
+
+    p["alice"].active = True
+    await env.sync()
+    assert p["alice"].email in await env.gate()
+    await env.assert_matches_linear()
+
+
+async def test_a_changed_email_moves_the_connector_to_the_new_account(env: _Env) -> None:
+    """Linear keeps the account (same id) when its email changes; PipesHub finds users by email."""
+    p = await _people(env, "alice")
+    ws = env.ws
+    ws.issue(ws.team("ENG", members=[p["sync"], p["alice"]]), "Roadmap")
+    await env.sync()
+    old = p["alice"].email
+    assert old in await env.gate()
+
+    new = f"alice.new@{ws.url_key}.example"
+    await env.add_user(new)  # type: ignore[attr-defined]
+    p["alice"].email = new
+    await env.sync()
+
+    gate = await env.gate()
+    assert old not in gate
+    assert new in gate
+    assert not await env.readable(old)
+    await env.assert_matches_linear()
+
+
+async def test_a_deactivated_person_outside_the_organization_reads_nothing(env: _Env) -> None:
+    """A user node with no organization edge (kept so grants to it resolve) is not listed as an
+    app user, so it is never withdrawn; its access still ends with its group memberships."""
+    p = await _people(env, "alice")
+    ws = env.ws
+    ws.issue(ws.team("ENG", members=[p["sync"], p["alice"]]), "Roadmap")
+    dora = ws.user("Dora")
+    ws.teams[0].members.append(dora)
+    await env.add_user(dora.email, in_org=False)  # type: ignore[attr-defined]
+    await env.sync()
+    assert await env.readable(dora.email), "an active member reads the team"
+
+    dora.active = False
+    await env.sync()
+
+    assert not await env.readable(dora.email)
+    await env.assert_matches_linear()
+
+
 # ---------------------------------------------------------------------- projects in several teams
 
-async def test_a_project_is_readable_through_its_home_team_only(env: _Env) -> None:
-    """A project in several teams, with its documents, links and files, is filed under its
-    lead team, else its first team by id, whatever order the teams are listed in."""
+async def test_a_project_is_readable_through_every_team_it_belongs_to(env: _Env) -> None:
+    """A project in several teams, with its documents, links and files, is readable by the
+    readers of each of them, whatever order the teams are listed in and whichever leads."""
     p = await _people(env, "alice", "bob", "carol", "gail", guests=("gail",))
     ws = env.ws
     eng = ws.team("ENG", members=[p["sync"], p["carol"], p["gail"]])
     sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
     legal = ws.team("LEGAL", visibility="private", members=[p["sync"], p["bob"]])
     plan = ws.upload("plan.pdf", b"%PDF plan")
+    # Audit and Review are in two private teams, which Linear's docs do not spell out: the
+    # union of both teams' readers is expected, by our reading of linear.app/docs/private-teams.
     for name, teams, lead in (("Launch", [sec, eng], None), ("Launch again", [eng, sec], None),
                               ("Audit", [legal, sec], None), ("Review", [sec, legal], legal)):
         ws.project(name, teams, lead=lead, content=f"[plan.pdf]({plan})",
@@ -634,6 +704,78 @@ async def test_a_project_that_leaves_a_team_is_withdrawn_from_it(env: _Env) -> N
 
     audit.teams, audit.updated_at = [legal], ws.tick()
     await env.sync()
+    await env.assert_matches_linear()
+
+
+async def test_a_team_taken_off_a_project_loses_it_even_when_the_project_is_not_marked_updated(env: _Env) -> None:
+    """A team change need not move the project's updatedAt; the next sync still withdraws it."""
+    p = await _people(env, "alice", "bob")
+    ws = env.ws
+    sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
+    legal = ws.team("LEGAL", visibility="private", members=[p["sync"], p["bob"]])
+    audit = ws.project("Audit", [sec, legal], lead=sec, documents=[Document("Audit doc", "text")],
+                       links=[Link("Audit deck", "https://deck.example/a")])
+    await env.sync()
+    await env.assert_matches_linear()
+
+    audit.teams = [sec]
+    await env.sync()
+    await env.assert_matches_linear()
+
+
+
+async def test_a_project_follows_what_its_other_team_grants_without_being_edited(env: _Env) -> None:
+    """The other team made private, then taken out of the sync: neither touches the project,
+    and the next incremental sync still withdraws what that team gave."""
+    p = await _people(env, "alice", "bob", "carol")
+    ws = env.ws
+    sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
+    eng = ws.team("ENG", members=[p["sync"], p["bob"]])
+    ws.project("Audit", [sec, eng], lead=sec, documents=[Document("Audit doc", "text")],
+               links=[Link("Audit deck", "https://deck.example/a")])
+    await env.sync()
+    await env.assert_matches_linear()
+
+    eng.visibility = "private"
+    await env.sync()
+    await env.assert_matches_linear()
+
+    env.select_teams(sec)
+    await env.sync()
+    await env.assert_matches_linear()
+
+
+async def test_an_archived_project_keeps_its_readers_until_it_is_trashed(env: _Env) -> None:
+    """Archive, unarchive, trash, each synced incrementally. An archived project is still shown
+    to every team it belongs to (linear.app/docs/delete-archive-issues); a trashed one is not."""
+    p = await _people(env, "alice", "bob", "carol")
+    ws = env.ws
+    sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"]])
+    eng = ws.team("ENG", members=[p["sync"], p["bob"]])
+    launch = ws.project("Launch", [sec, eng], lead=sec, documents=[Document("Launch doc", "text")],
+                        links=[Link("Launch deck", "https://deck.example/l")])
+    # Archived before the first sync: only a listing with includeArchived finds it.
+    old = ws.project("Old", [sec, eng], lead=sec, documents=[Document("Old doc", "text")],
+                     links=[Link("Old deck", "https://deck.example/o")])
+    old.archived_at = old.updated_at = ws.tick()
+    await env.sync()
+    assert await env.record(old.id) is not None, "a project archived before the first sync is missing"
+    await env.assert_matches_linear()
+
+    launch.archived_at = launch.updated_at = ws.tick()
+    await env.sync()
+    assert await env.record(launch.id) is not None, "archiving removed the project"
+    await env.assert_matches_linear()
+
+    launch.archived_at, launch.updated_at = None, ws.tick()
+    await env.sync()
+    await env.assert_matches_linear()
+
+    launch.trashed = True
+    launch.archived_at = launch.updated_at = ws.tick()
+    await env.sync()
+    assert await env.record(launch.id) is None, "the trashed project is still stored"
+    assert await env.record(launch.documents[0].id) is None, "the trashed project's document is still stored"
     await env.assert_matches_linear()
 
 

@@ -69,16 +69,20 @@ class TestDoclingServiceParser:
         assert result.metadata["record_name"] == "document"
 
     @pytest.mark.asyncio
-    async def test_parse_fails_when_process_returns_none(self):
+    async def test_parse_fails_when_docling_could_not_parse(self):
+        from app.services.docling.client import DoclingParseError
+
+        cause = DoclingParseError("Docling could not parse the document (PARSE_FAILED, status 422)", status_code=422)
         mock_client = MagicMock()
-        mock_client.parse_pdf_batched = AsyncMock(return_value=None)
+        mock_client.parse_pdf_batched = AsyncMock(side_effect=cause)
 
         parser = DoclingServiceParser(mock_client)
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"content", "test.pdf")
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
-        assert "failed to parse" in exc_info.value.message.lower()
+        assert exc_info.value.__cause__ is cause
+        assert "PARSE_FAILED" in exc_info.value.message
 
     def test_supported_formats(self):
         mock_client = MagicMock()

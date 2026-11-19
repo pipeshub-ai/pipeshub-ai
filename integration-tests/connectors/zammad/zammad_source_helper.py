@@ -147,9 +147,16 @@ class ZammadSourceHelper:
             roles=["Agent"], group_ids={}, active=True,
         )["id"]
 
-    def set_user_groups(self, user_id: int, group_ids: list[int]) -> None:
-        """Replace the groups ``user_id`` may work in; Zammad's groups are its ticket permissions."""
-        self._api("PUT", f"users/{user_id}", group_ids={str(g): ["full"] for g in group_ids})
+    def set_user_groups(
+        self, user_id: int, group_ids: list[int], access: tuple[str, ...] = ("full",)
+    ) -> None:
+        """Replace the groups ``user_id`` may work in, each with the ``access`` levels given.
+
+        Zammad's groups are its ticket permissions, but only ``read`` or ``full``
+        lets an agent read a group's tickets: ``change``, ``create`` and
+        ``overview`` alone do not.
+        """
+        self._api("PUT", f"users/{user_id}", group_ids={str(g): list(access) for g in group_ids})
 
     def delete_user(self, user_id: int) -> None:
         self._api("DELETE", f"users/{user_id}")
@@ -180,11 +187,13 @@ class ZammadSourceHelper:
             )
 
     def _search_finds(self, title: str) -> bool:
-        found = self._api("GET", f"search?objects=Ticket&query={requests.utils.quote(title)}&limit=50")
-        return any(
-            ticket.get("title") == title
-            for ticket in (found.get("assets", {}).get("Ticket", {}) or {}).values()
-        )
+        # A phrase on the title field, through the ticket search the connector itself reads. The free-text
+        # global search misses some titles: on real 6.4.1 "it-<run> Laptop will not boot" finds nothing (the
+        # hyphenated tag with "not"), while the same text without "not", or as a title phrase, is found.
+        phrase = title.replace("\\", "\\\\").replace('"', '\\"')
+        found = self._api("GET", f"tickets/search?expand=true&per_page=50&query={requests.utils.quote(f'title:"{phrase}"')}")
+        tickets = found if isinstance(found, list) else []
+        return any(ticket.get("title") == title for ticket in tickets if isinstance(ticket, dict))
 
     def tickets_in_group(self, group_id: int) -> list[dict]:
         found = self._api("GET", f"search?objects=Ticket&query=group_id:{group_id}&limit=100")

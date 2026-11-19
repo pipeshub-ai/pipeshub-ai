@@ -5,9 +5,6 @@ import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
-import morgan from 'morgan';
-import { IncomingMessage } from 'http';
-import { redactSensitiveQueryParams } from './libs/utils/log-redaction.utils';
 import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
@@ -15,10 +12,13 @@ import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
+import { createLocalReposRouter } from './modules/local_repos/routes/local_repos.routes';
+import { createGraphViewRouter } from './modules/enterprise_search/routes/graph-view.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import { accessLog } from './libs/middlewares/access-log.middleware';
 import {
   runWithRequestContext,
   newSystemRoot,
@@ -32,7 +32,6 @@ import { docStore } from './libs/repositories/store-select';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
-import { accessLogLevel } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -76,6 +75,7 @@ import {
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
+  dynamicClientOrg,
 } from './config';
 import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -99,6 +99,10 @@ import {
   createSlackEventsRateLimiter,
   slackEventsRateLimitPerMinute,
 } from './libs/middlewares/rate-limit.middleware';
+import {
+  noFraming,
+  UNFRAMEABLE_PAGE_PATHS,
+} from './libs/middlewares/no-framing.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
@@ -109,13 +113,17 @@ import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createAgentRegistrationRouter } from './modules/oauth_provider/routes/agent-registration.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
 import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
 import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
-import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
+import {
+  createAuthMdRouter,
+  createOIDCDiscoveryRouter,
+} from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
   ensureMessageTopicsExist,
@@ -382,6 +390,8 @@ export class Application {
       this.bootstrapMailBrokerConsumer();
       editionBoot.startWorkers(this.logger);
 
+      this.app.use(UNFRAMEABLE_PAGE_PATHS, noFraming);
+
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
       const staticAssetPrefix = `${path.sep}_next${path.sep}static${path.sep}`;
@@ -546,11 +556,31 @@ export class Application {
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
-        exposedHeaders: ['x-session-token', 'content-disposition'],
+        exposedHeaders: [
+          'x-session-token',
+          'content-disposition',
+          'etag',
+          'accept-ranges',
+          'content-range',
+          'content-length',
+        ],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
+        allowedHeaders: [
+          'Content-Type',
+          'Authorization',
+          'x-session-token',
+          'x-request-id',
+          'client-name',
+          'x-record-content-open',
+          'if-none-match',
+          'range',
+          'if-range',
+        ]
       }),
     );
+
+    // One access line per request; before the body parsers so their 400/413 are logged too.
+    this.app.use(accessLog());
 
     // Body parsing. /mcp has its own, smaller limit, and it must come first:
     // a JSON parser skips a body an earlier one has read, and one that came
@@ -559,53 +589,6 @@ export class Application {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
-
-    // Logging — only log API requests, skip static assets.
-    // 'combined' logs the full request URL, and OAuth callbacks arrive as
-    // ?code=<authorization code> — a credential exchangeable for tokens by
-    // whoever reads the log. Same format, with those values redacted.
-    morgan.token('url-redacted', (req: IncomingMessage) =>
-      redactSensitiveQueryParams((req as { originalUrl?: string; url?: string }).originalUrl ?? req.url ?? ''),
-    );
-    // The Referer is client-supplied and can itself be an OAuth callback or a
-    // presigned URL, so it carries the same credentials the request line does.
-    morgan.token('referrer-redacted', (req: IncomingMessage) => {
-      const referrer = req.headers.referer ?? req.headers.referrer;
-      return typeof referrer === 'string'
-        ? redactSensitiveQueryParams(referrer)
-        : '-';
-    });
-    const combinedRedacted =
-      ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
-      'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
-      '":user-agent"';
-    // Evaluated after the response: a mounted router has rewritten req.path
-    // to its own mount-relative path by then, originalUrl keeps the full one.
-    const levelOf = (
-      req: { originalUrl: string },
-      res: { statusCode: number },
-    ): ReturnType<typeof accessLogLevel> =>
-      accessLogLevel(req.originalUrl.split('?')[0] ?? '', res.statusCode);
-    this.app.use(
-      morgan(combinedRedacted, {
-        stream: {
-          write: (message: string) => {
-            this.logger.info(message.trim());
-          },
-        },
-        skip: (req, res) => levelOf(req, res) !== 'info',
-      }),
-    );
-    this.app.use(
-      morgan(combinedRedacted, {
-        stream: {
-          write: (message: string) => {
-            this.logger.debug(message.trim());
-          },
-        },
-        skip: (req, res) => levelOf(req, res) !== 'debug',
-      }),
-    );
 
     // Global rate limiter - applies to all routes
     this.app.use(
@@ -725,6 +708,15 @@ export class Application {
       createCodeGraphRouter(this.esAgentContainer),
     );
 
+    // push a local repository to be indexed into the code graph (proxy to the connectors service)
+    this.app.use(
+      '/api/v1/local-repos',
+      createLocalReposRouter(this.tokenManagerContainer),
+    );
+
+    // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
+    this.app.use('/api/v1/graph', createGraphViewRouter(this.esAgentContainer));
+
     // enterprise search connectors routes — pass the crawling container
     // whole so the route factory can resolve any crawling-side service it
     // needs (currently the scheduler).
@@ -838,6 +830,12 @@ export class Application {
       createOAuthProviderRouter(this.oauthProviderContainer),
     );
 
+    // auth.md agent registration (service_auth)
+    this.app.use(
+      '/api/v1/agent',
+      createAgentRegistrationRouter(this.oauthProviderContainer),
+    );
+
     // OAuth Clients routes (OAuth app management)
     this.app.use(
       '/api/v1/oauth-clients',
@@ -895,6 +893,11 @@ export class Application {
     //          GET /.well-known/oauth-authorization-server
     //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
+    // How an agent gets a credential, for agents that look for /auth.md.
+    const authMd = createAuthMdRouter(this.oauthProviderContainer, (origin) =>
+      editionBoot.authMdSections(origin),
+    );
+    this.app.use(['/auth.md', '/.well-known/auth.md'], authMd);
     this.app.use(
       '/.well-known',
       createOIDCDiscoveryRouter(this.oauthProviderContainer),
@@ -948,11 +951,22 @@ export class Application {
 
   async start(): Promise<void> {
     try {
-      await new Promise<void>((resolve) => {
-        this.server.listen(this.port, () => {
+      await new Promise<void>((resolve, reject) => {
+        // listen reports a bind failure (port in use, address not available) as an 'error' event, not a throw.
+        const onError = (error: Error): void => {
+          this.server.off('error', onError);
+          reject(error);
+        };
+        const onListening = (): void => {
+          this.server.off('error', onError);
           this.logger.info(`Server started on port ${this.port}`);
           resolve();
-        });
+        };
+        this.server.once('error', onError);
+        // Every interface unless told otherwise (right inside a container); a process outside one sets loopback.
+        const host = process.env.PIPESHUB_BIND_HOST?.trim();
+        if (host) this.server.listen(this.port, host, onListening);
+        else this.server.listen(this.port, onListening);
       });
       await editionBoot.afterListen(this.logger, this.editionContainers());
     } catch (error) {
@@ -1150,7 +1164,11 @@ export class Application {
             });
           }, SCHEDULE_REPAIR_INTERVAL_MS);
           this.scheduleRepairTimer.unref();
-          await migrations.runMigration({ scheduler, appConfig });
+          await migrations.runMigration({
+            scheduler,
+            appConfig,
+            dynamicClientOrg: () => dynamicClientOrg(),
+          });
           this.logger.info('Migration completed successfully');
         } catch (error) {
           this.logger.error('Failed to run migration', {
@@ -1232,6 +1250,13 @@ export class Application {
         slackEventsRateLimitPerMinute(),
       ),
       (req, res) => {
+        // A reset errors both proxyReq and proxyRes: log and close once.
+        const fail = (err: Error): void => {
+          if (res.destroyed) return;
+          this.logger.error('Slack events proxy error', { error: err.message });
+          if (res.headersSent) res.destroy();
+          else res.status(502).json({ error: 'Slack bot service unavailable' });
+        };
         const proxyReq = http.request(
           {
             hostname: 'localhost',
@@ -1242,18 +1267,12 @@ export class Application {
           },
           (proxyRes) => {
             res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            // pipe() leaves `res` open when the bot's answer is cut midway.
+            proxyRes.on('error', fail);
             proxyRes.pipe(res);
           },
         );
-
-        proxyReq.on('error', (err) => {
-          this.logger.error('Slack events proxy error', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          if (!res.headersSent) {
-            res.status(502).json({ error: 'Slack bot service unavailable' });
-          }
-        });
+        proxyReq.on('error', fail);
 
         req.pipe(proxyReq);
       },

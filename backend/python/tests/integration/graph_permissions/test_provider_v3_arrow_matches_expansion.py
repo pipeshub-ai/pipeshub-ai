@@ -287,11 +287,13 @@ async def test_linked_records_look_past_hidden_children(arrows_graph, provider) 
     assert {i["id"]: i["hasChildren"] for i in linked} == {"ae-t-late": True, "ae-t-none": False}
 
 
-async def test_a_container_does_not_say_what_it_holds(arrows_graph, provider) -> None:
+async def test_a_container_arrow_is_on_only_when_it_lists_something(arrows_graph, provider) -> None:
     rows = {r["id"]: r for r in await _browse(provider, "ae-big", "ae-bg", "recordGroup")}
 
     # One folder holds only hidden children, one holds nothing, one a readable child.
-    assert {rows[f]["hasChildren"] for f in ("ae-fo-hidden", "ae-fo-empty", "ae-fo-open")} == {True}
+    assert {f: rows[f]["hasChildren"] for f in ("ae-fo-hidden", "ae-fo-empty", "ae-fo-open")} == {
+        "ae-fo-hidden": False, "ae-fo-empty": False, "ae-fo-open": True,
+    }
 
 
 async def test_a_child_granted_without_inheritance_gives_its_parent_an_arrow(arrows_graph, provider) -> None:

@@ -174,11 +174,20 @@ const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   maxImages: 3,
 });
 
-const DUCKDUCKGO_WEB_SEARCH_PROVIDER = Object.freeze({
-  provider: 'duckduckgo',
-  providerKey: 'duckduckgo',
-  configuration: {},
-});
+// The id the settings UI sends to choose DuckDuckGo: it needs no configuration, but it is stored
+// like any provider, so an org that never chose it has no search provider at all.
+const DUCKDUCKGO_PROVIDER = 'duckduckgo';
+
+// Health-check refusals that do not stop an admin choosing DuckDuckGo (`errorType` from the AI service).
+const WEB_SEARCH_PASSING_REFUSALS: ReadonlySet<unknown> = new Set([
+  'blocked',
+  'rate_limited',
+]);
+
+// Whether web search is set up: a provider that can search is marked default.
+const isWebSearchConfigured = (
+  providers: WebSearchProviderConfiguration[],
+): boolean => providers.some((p) => p.isDefault && canSearch(p.provider));
 
 const normalizeWebSearchSettings = (
   settings?: Partial<{ includeImages: unknown; maxImages: unknown }>,
@@ -2819,6 +2828,9 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
+        if (isEmbeddingInUseRefusal(aiResponseData)) {
+          throw new BadRequestError(embeddingRefusalMessage(aiResponseData));
+        }
         throwUnlessHealthy(
           aiResponseData,
           'Failed to do health check of embedding configuration, check credentials again',
@@ -3314,22 +3326,63 @@ const isEmbeddingInUseRefusal = (
 ): boolean =>
   response?.statusCode === 400 && response.data?.status === 'not healthy';
 
+// A vector store that cannot change model in place (pgvector) says so with its
+// own text; delete-and-re-embed would not help there, so that text is shown.
+export const embeddingRefusalMessage = (
+  response: AIServiceResponse | undefined,
+): string => {
+  const data = response?.data as { code?: string; error?: unknown } | undefined;
+  return data?.code === 'embedding_change_unsupported' &&
+    typeof data.error === 'string'
+    ? data.error
+    : EMBEDDING_MODEL_IN_USE_MESSAGE;
+};
+
+// Deleting the only embedding model hands embedding to the built-in model, a
+// different model. Adding the same model from another provider first keeps the
+// stored vectors, so that comes first; only a different model needs Labs cleared,
+// because the takeover check refuses it while its vectors are stored.
+const LAST_EMBEDDING_MODEL_MESSAGE =
+  'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. To keep your embeddings, first add the same model from another provider, at the same size, then delete this one. To use a different model, delete the embeddings in Labs first, then change or delete this model and re-embed.';
+
+const lastEmbeddingModelRefusalMessage = (
+  response: AIServiceResponse | undefined,
+): string => {
+  const message = embeddingRefusalMessage(response);
+  return message === EMBEDDING_MODEL_IN_USE_MESSAGE
+    ? LAST_EMBEDDING_MODEL_MESSAGE
+    : message;
+};
+
 const takeoverRefusalMessage = (
   takeover: AIServiceResponse,
   fallback: string,
 ): string =>
   isEmbeddingInUseRefusal(takeover)
-    ? EMBEDDING_MODEL_IN_USE_MESSAGE
+    ? embeddingRefusalMessage(takeover)
     : healthCheckFailureMessage(takeover.data, fallback);
 
+// The AI service answers a failed check as `{ message }`, `{ error: text | { message } }`, or
+// FastAPI's `{ detail: text | { message } }`, and a body of plain text in places. Each of them
+// carries the reason the admin needs; a shape not read here showed only the fallback.
 const healthCheckFailureMessage = (data: unknown, fallback: string): string => {
-  const body = (data ?? {}) as {
-    message?: string;
-    error?: string | { message?: string };
+  const textOf = (value: unknown): string | undefined => {
+    const text =
+      value !== null && typeof value === 'object'
+        ? (value as { message?: unknown }).message
+        : value;
+    return typeof text === 'string' && text.trim() !== ''
+      ? text.trim()
+      : undefined;
   };
+  if (data === null || typeof data !== 'object') {
+    return textOf(data) ?? fallback;
+  }
+  const body = data as { message?: unknown; error?: unknown; detail?: unknown };
   return (
-    body.message ??
-    (typeof body.error === 'string' ? body.error : body.error?.message) ??
+    textOf(body.message) ??
+    textOf(body.error) ??
+    textOf(body.detail) ??
     fallback
   );
 };
@@ -3406,9 +3459,11 @@ export const addAIModelProvider =
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
-            ? EMBEDDING_MODEL_IN_USE_MESSAGE
-            : ((errData && (errData.message ?? errData.error?.message)) ??
-              `Failed to do health check of ${modelType} configuration, check credentials again`);
+            ? embeddingRefusalMessage(aiResponseData)
+            : healthCheckFailureMessage(
+                errData,
+                `Failed to do health check of ${modelType} configuration, check credentials again`,
+              );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3649,9 +3704,11 @@ export const updateAIModelProvider =
         const errData: any = aiResponseData?.data ?? {};
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
-            ? EMBEDDING_MODEL_IN_USE_MESSAGE
-            : ((errData && (errData.message ?? errData.error?.message)) ??
-              `Failed to do health check of ${modelType} configuration, check credentials again`);
+            ? embeddingRefusalMessage(aiResponseData)
+            : healthCheckFailureMessage(
+                errData,
+                `Failed to do health check of ${modelType} configuration, check credentials again`,
+              );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3893,17 +3950,22 @@ export const deleteAIModelProvider =
         targetModelType === 'embedding' &&
         activeEmbeddingModel(aiModels.embedding)?.modelKey === modelKey
       ) {
-        const takeover = await checkEmbeddingModelTakeover(
-          activeEmbeddingModel(
-            (aiModels.embedding as AIModelConfiguration[]).filter(
-              (config) => config.modelKey !== modelKey,
-            ),
+        const nextActive = activeEmbeddingModel(
+          (aiModels.embedding as AIModelConfiguration[]).filter(
+            (config) => config.modelKey !== modelKey,
           ),
+        );
+        const takeover = await checkEmbeddingModelTakeover(
+          nextActive,
           req,
           appConfig,
         );
         if (isEmbeddingInUseRefusal(takeover)) {
-          throw new BadRequestError(EMBEDDING_MODEL_IN_USE_MESSAGE);
+          throw new BadRequestError(
+            nextActive
+              ? embeddingRefusalMessage(takeover)
+              : lastEmbeddingModelRefusalMessage(takeover),
+          );
         }
         if (!takeover.data || takeover.statusCode !== 200) {
           res.status(takeover.statusCode).json({
@@ -4449,7 +4511,8 @@ export const getWebSearchProviders =
       if (!encryptedWebSearchConfig) {
         res.status(200).json({
           status: 'success',
-          providers: [{ ...DUCKDUCKGO_WEB_SEARCH_PROVIDER, isDefault: true }],
+          providers: [],
+          configured: false,
           settings: DEFAULT_WEB_SEARCH_SETTINGS,
           message: 'No web search providers found',
         });
@@ -4474,22 +4537,17 @@ export const getWebSearchProviders =
       const mask = isAdmin
         ? maskWebSearchProvider
         : maskWebSearchProviderForMember;
-      const providers = [
-        {
-          ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,
-          isDefault: !storedProviders.some((p) => p.isDefault),
-        },
-        ...storedProviders.map((p) =>
-          hideSecrets && p.configuration
-            ? { ...p, configuration: mask(p.configuration) }
-            : p,
-        ),
-      ];
+      const providers = storedProviders.map((p) =>
+        hideSecrets && p.configuration
+          ? { ...p, configuration: mask(p.configuration) }
+          : p,
+      );
       const settings = normalizeWebSearchSettings(webSearchConfig.settings);
 
       res.status(200).json({
         status: 'success',
         providers,
+        configured: isWebSearchConfigured(storedProviders),
         settings,
         message: 'Web search providers retrieved successfully',
       });
@@ -4898,7 +4956,7 @@ export const deleteWebSearchProvider =
       webSearchConfig.providers.splice(providerIndex, 1);
 
       // If the deleted provider was default, the first remaining one that can search takes over;
-      // with none, DuckDuckGo is the default again.
+      // with none, web search is not set up until an admin chooses a provider again.
       if (wasDefault) {
         const next = (webSearchConfig as WebSearchConfig).providers.find((p) =>
           canSearch(p.provider),
@@ -4945,38 +5003,104 @@ export const updateDefaultWebSearchProvider =
         configPaths.webSearch,
       );
 
-      // DuckDuckGo is a built-in provider that requires no stored configuration.
-      // Setting it as default means clearing the default flag from all stored providers.
-      if (providerKey === 'duckduckgo') {
-        if (encryptedWebSearchConfig) {
-          const webSearchConfigForDDG = JSON.parse(
-            EncryptionService.getInstance(
-              configManagerConfig.algorithm,
-              configManagerConfig.secretKey,
-            ).decrypt(encryptedWebSearchConfig),
-          );
-
-          for (const config of webSearchConfigForDDG.providers || []) {
-            config.isDefault = false;
-          }
-
-          const encryptedUpdatedConfig = EncryptionService.getInstance(
+      // DuckDuckGo needs no settings, so choosing it is the one case where the key names a provider
+      // that may not be stored yet: store it, then make it the default. Once stored it has a
+      // generated key like any provider, and choosing it by that key follows the same rule.
+      let storedDuckDuckGo = false;
+      if (encryptedWebSearchConfig !== null) {
+        const current = JSON.parse(
+          EncryptionService.getInstance(
             configManagerConfig.algorithm,
             configManagerConfig.secretKey,
-          ).encrypt(JSON.stringify(webSearchConfigForDDG));
-
-          await keyValueStoreService.set<string>(
-            configPaths.webSearch,
-            encryptedUpdatedConfig,
+          ).decrypt(encryptedWebSearchConfig),
+        ) as WebSearchConfig;
+        storedDuckDuckGo =
+          Array.isArray(current.providers) &&
+          current.providers.some(
+            (p) =>
+              p.providerKey === providerKey &&
+              p.provider === DUCKDUCKGO_PROVIDER,
           );
+      }
+      if (providerKey === DUCKDUCKGO_PROVIDER || storedDuckDuckGo) {
+        const duckduckgoCheckOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: { provider: DUCKDUCKGO_PROVIDER, configuration: {} },
+        };
+        const duckduckgoHealth = (await new AIServiceCommand(
+          duckduckgoCheckOptions,
+        ).execute()) as AIServiceResponse;
+        // Choosing DuckDuckGo stays possible while it refuses the test search (blocked, rate limited):
+        // that is how a shared server looks, not a broken setup, and it often passes later. The admin
+        // is told. Any other failure still refuses, as it does for every other provider.
+        let warning: string | undefined;
+        if (duckduckgoHealth.statusCode !== 200) {
+          const errData = (duckduckgoHealth.data ?? {}) as {
+            error?: string;
+            errorType?: string;
+          };
+          if (!WEB_SEARCH_PASSING_REFUSALS.has(errData.errorType)) {
+            res.status(duckduckgoHealth.statusCode).json({
+              status: 'error',
+              message:
+                errData.error ??
+                'Failed to validate web search provider configuration',
+              details: errData,
+            });
+            return;
+          }
+          warning = `${errData.error ?? 'DuckDuckGo refused the test search.'} DuckDuckGo was saved anyway; if search keeps failing, add a provider that uses an API key.`;
+        }
+
+        const encryption = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        );
+        const stored: WebSearchConfig = encryptedWebSearchConfig
+          ? JSON.parse(encryption.decrypt(encryptedWebSearchConfig))
+          : { providers: [] };
+        if (!Array.isArray(stored.providers)) {
+          stored.providers = [];
+        }
+        for (const config of stored.providers) {
+          config.isDefault = false;
+        }
+        let duckduckgo = stored.providers.find(
+          (p) => p.provider === DUCKDUCKGO_PROVIDER,
+        );
+        if (!duckduckgo) {
+          duckduckgo = {
+            provider: DUCKDUCKGO_PROVIDER,
+            configuration: {},
+            providerKey: randomUUID(),
+            isDefault: true,
+          };
+          stored.providers.push(duckduckgo);
+        }
+        duckduckgo.isDefault = true;
+
+        const saved = await keyValueStoreService.compareAndSet<string>(
+          configPaths.webSearch,
+          encryptedWebSearchConfig ?? null,
+          encryption.encrypt(JSON.stringify(stored)),
+        );
+        if (!saved) {
+          res.status(409).json({
+            status: 'error',
+            message: 'Unable to save changes. Please retry.',
+          });
+          return;
         }
 
         res.status(200).json({
           status: 'success',
           message: 'Default web search provider updated successfully',
+          ...(warning !== undefined ? { warning } : {}),
           details: {
-            providerKey,
-            provider: 'duckduckgo',
+            providerKey: duckduckgo.providerKey,
+            provider: DUCKDUCKGO_PROVIDER,
           },
         });
         return;
@@ -5058,10 +5182,18 @@ export const updateDefaultWebSearchProvider =
         configManagerConfig.secretKey,
       ).encrypt(JSON.stringify(webSearchConfig));
 
-      await keyValueStoreService.set<string>(
+      const savedDefault = await keyValueStoreService.compareAndSet<string>(
         configPaths.webSearch,
+        encryptedWebSearchConfig,
         encryptedUpdatedConfig,
       );
+      if (!savedDefault) {
+        res.status(409).json({
+          status: 'error',
+          message: 'Unable to save changes. Please retry.',
+        });
+        return;
+      }
 
       res.status(200).json({
         status: 'success',

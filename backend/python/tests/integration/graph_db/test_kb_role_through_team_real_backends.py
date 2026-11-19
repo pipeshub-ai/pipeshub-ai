@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -71,7 +72,7 @@ class _Org:
     legacy_group: str  # a record group a role-less team edge points at
     odd_member: _Member  # holds a team role the product never writes
     odd_folder: str  # in shared_kb; a team edge with a role the product never writes points at it
-    odd_roles_stored: bool  # ArangoDB's permissions schema refuses them; Neo4j edges have no schema
+    odd_roles_stored: bool  # ArangoDB's permissions schema refuses them; the other backends are given them unvalidated
 
 
 async def _remove(graph: IGraphDBProvider, ids: dict[str, list[str]]) -> None:
@@ -187,15 +188,20 @@ async def org(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
              _edge(team_key, teams, folders["granted"], CollectionNames.RECORDS.value, now, type="TEAM")],
             CollectionNames.PERMISSION.value,
         )
-        try:
-            odd_roles_stored = bool(await graph.batch_create_edges(
-                [_edge(odd_member.key, users, team_key, teams, now, type="USER", role=UNKNOWN_ROLE),
-                 _edge(team_key, teams, odd_folder["id"], CollectionNames.RECORDS.value, now, type="TEAM",
-                       role=UNKNOWN_ROLE)],
-                CollectionNames.PERMISSION.value,
-            ))
-        except Exception:
-            odd_roles_stored = False
+        with contextlib.ExitStack() as unvalidated:
+            if not isinstance(graph, ArangoHTTPProvider):
+                # Data written before the graph schemas were enforced can hold a role the product never writes,
+                # and this test is about how reads treat it, so it is stored here without validation.
+                unvalidated.enter_context(patch.dict(os.environ, {"GRAPH_SCHEMA_ENFORCEMENT": "off"}))
+            try:
+                odd_roles_stored = bool(await graph.batch_create_edges(
+                    [_edge(odd_member.key, users, team_key, teams, now, type="USER", role=UNKNOWN_ROLE),
+                     _edge(team_key, teams, odd_folder["id"], CollectionNames.RECORDS.value, now, type="TEAM",
+                           role=UNKNOWN_ROLE)],
+                    CollectionNames.PERMISSION.value,
+                ))
+            except Exception:
+                odd_roles_stored = False
 
         yield _Org(graph, service, org_id, owner, members, kbs["shared"], kbs["granted"],
                    folders["shared"], folders["granted"], group_key, odd_member, odd_folder["id"],

@@ -1,0 +1,80 @@
+name: postgres-image
+
+# The opt-in PostgreSQL + PgBouncer image of the Compose `postgres` profile, built for 17 and 18 and exercised through docker-compose.yml:
+# the entrypoint's volume-layout guard, the data volume across down/up, the role layout with PgBouncer authentication, and the
+# repository's own migration and security-surface check (backend/db) against a fresh database made by the image.
+# Everything runs in containers (the bases are Debian bookworm images pinned by digest), so the runner needs only Docker and Compose:
+# ubuntu-latest (26.04) is enough. Unlike docstore-migrate.yml this job installs no MongoDB or PGDG packages from the host.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'deployment/docker-compose/postgres/**'
+      - 'deployment/docker-compose/docker-compose.yml'
+      - 'deployment/docker-compose/docker-compose.postgres-docstore.yml'
+      - 'backend/db/**'
+      - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
+      - 'deployment/docker-compose/tests/postgres_*_test.sh'
+      - 'deployment/docker-compose/tests/pg_roles_script_test.sh'
+      - '.github/workflows/postgres-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postgres-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Role script refuses an empty or failed verifier
+        run: bash deployment/docker-compose/tests/pg_roles_script_test.sh
+
+      - name: Entrypoint volume-layout guard
+        run: bash deployment/docker-compose/tests/pg_entrypoint_layout_test.sh
+
+      - name: Default stack is unchanged without the profile
+        working-directory: deployment/docker-compose
+        run: |
+          # No service of the profile may appear unless it is asked for.
+          cp env.template "$RUNNER_TEMP/env"
+          sed -i -E 's/^(NEO4J_PASSWORD|MONGO_PASSWORD|REDIS_PASSWORD|SECRET_KEY)=.*/\1=ci/' "$RUNNER_TEMP/env"
+          services="$(docker compose --env-file "$RUNNER_TEMP/env" -f docker-compose.yml config --services)"
+          if echo "$services" | grep -Eq '^(postgres|pgbouncer)$'; then echo "::error::postgres services are active without the profile"; exit 1; fi
+
+      - name: Build the image for PostgreSQL 17 and 18
+        run: |
+          for m in 17 18; do
+            docker build --build-arg PG_MAJOR=$m -t "pmcompose/postgres:$m-pmc" deployment/docker-compose/postgres
+          done
+
+      - name: Data volume persists across down and up
+        run: bash deployment/docker-compose/tests/postgres_persistence_test.sh
+
+      - name: Roles, privileges and PgBouncer authentication
+        run: bash deployment/docker-compose/tests/postgres_roles_test.sh
+
+      - name: The repository's migration and security-surface check on a fresh database
+        run: bash deployment/docker-compose/tests/postgres_migration_check_test.sh
+
+      - name: Migration job and the document-store override
+        run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
+
+      - name: Server and pooler under the Helm chart's pod restrictions
+        run: bash deployment/docker-compose/tests/postgres_nonroot_test.sh
+
+      - name: A failed role setup leaves the server and pooler unhealthy
+        run: bash deployment/docker-compose/tests/postgres_role_failure_test.sh
+
+      - name: A failed role setup is retried and recovers once the cause clears
+        run: bash deployment/docker-compose/tests/postgres_role_recovery_test.sh

@@ -1,0 +1,389 @@
+- id: RULE-P01
+  title: Direct user grant on a non-inheriting OPEN file (Drive My Drive)
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: mydrive, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [mydrive]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, drive]
+- id: RULE-P02
+  title: Grant to a group the user is a direct member of
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+      - {id: g, kind: group, org_member: false, deleted: true}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [g, f]
+    memberships:
+      - [u, g]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, drive]
+- id: RULE-P03
+  title: 'Nested group: U in G1, G1 in G2, grant to G2'
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+      - {id: g1, kind: group, org_member: false}
+      - {id: g2, kind: group, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [g2, f]
+    memberships:
+      - [u, g1]
+      - [g1, g2]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, drive]
+  comment: Group nesting is not followed (one level). Connectors flatten nesting themselves, unevenly.
+- id: RULE-P04
+  title: Grant to a role the user holds (Jira project role, Slack workspace_member)
+  source: rule cases R1-R13 (spec)
+  rule: jira
+  world:
+    principals:
+      - {id: u}
+      - {id: r, kind: role, org_member: false}
+    nodes:
+      - {id: A, kind: app, app_type: JIRA}
+      - {id: proj, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: issue, kind: record, connector: A, rule: STRICT, parents: [proj], inherits: [proj]}
+    grants:
+      - [r, proj]
+    memberships:
+      - [u, r]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {issue: admit}
+  tags: [rules, jira]
+- id: RULE-P05
+  title: Grant to a team (Teams) the user is in
+  source: rule cases R1-R13 (spec)
+  rule: kb/team
+  world:
+    principals:
+      - {id: u}
+      - {id: t, kind: team, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [t, f]
+    memberships:
+      - [u, t]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, kb/team]
+- id: RULE-P06
+  title: Membership edge typed GROUP instead of USER does not make U a member
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+      - {id: g, kind: group, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [g, f]
+    memberships:
+      - [u, g, GROUP]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+  comment: Only PERMISSION{type:'USER'} user->group counts; the processor writes USER (data_source_entities_processor.py:2279-2285).
+- id: RULE-P07
+  title: BELONGS_TO user->group (legacy membership shape) is not membership for the verifier
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+      - {id: g, kind: group, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [g, f]
+    memberships:
+      - [u, g, USER, BELONGS_TO]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+  comment: The legacy enumeration reads BELONGS_TO->Group; the verifier does not. Prefilter superset, no leak.
+- id: RULE-P08
+  title: Org-wide grant typed ORG (SharePoint 'Everyone', Jira 'anyone', GitHub public)
+  source: rule cases R1-R13 (spec)
+  rule: sharepoint
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: SHAREPOINT}
+      - {id: site, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [site]}
+    grants:
+      - [org, f, ORG]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, sharepoint]
+- id: RULE-P09
+  title: Org edge typed ORGANIZATION (service-account chat upload type) grants too
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [org, f, ORGANIZATION]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, any]
+- id: RULE-P10
+  title: Org edge typed DOMAIN grants nothing
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [org, f, DOMAIN]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, drive]
+  comment: The processor drops DOMAIN/ANYONE/LINK before writing (data_source_entities_processor.py:2313-2331); an edge that slipped through still grants nothing.
+- id: RULE-P11
+  title: User who is not BELONGS_TO the org does not get the org grant
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [org, f, ORG]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+- id: RULE-P12
+  title: 'Grant to another user V does not admit U (anyone-with-link: Drive grants the syncing user only)'
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [v, f]
+    gates:
+      - [u, A]
+      - [v, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, drive]
+  comment: ANYONE/ANYONE_WITH_LINK write no edge; Drive gives the listing user a USER grant (google/drive/team/connector.py:1336-1360).
+- id: RULE-P13
+  title: Linked source account (AUTHENTICATED_AS for A) holds the grant
+  source: rule cases R1-R13 (spec)
+  rule: linked
+  world:
+    principals:
+      - {id: u}
+      - {id: src, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [src, f]
+    gates:
+      - [u, A]
+    links:
+      - [u, src, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, linked]
+- id: RULE-P14
+  title: Linked account for A; its grant on a node of connector B does not count
+  source: rule cases R1-R13 (spec)
+  rule: linked
+  world:
+    principals:
+      - {id: u}
+      - {id: src, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: B, kind: app}
+      - {id: d, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B]}
+      - {id: f, kind: record, connector: B, rule: OPEN, parents: [d]}
+    grants:
+      - [src, f]
+    gates:
+      - [u, A]
+      - [u, B]
+    links:
+      - [u, src, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, linked]
+- id: RULE-P15
+  title: Linked account's group grant inside the linked connector
+  source: rule cases R1-R13 (spec)
+  rule: linked
+  world:
+    principals:
+      - {id: u}
+      - {id: src, org_member: false}
+      - {id: g, kind: group, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [g, f]
+    memberships:
+      - [src, g]
+    gates:
+      - [u, A]
+    links:
+      - [u, src, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, linked]
+- id: RULE-P16
+  title: AUTHENTICATED_AS alone gates the app (no USER_APP_RELATION)
+  source: rule cases R1-R13 (spec)
+  rule: linked
+  world:
+    principals:
+      - {id: u}
+      - {id: src, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [src, f]
+    links:
+      - [u, src, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, linked]
+- id: RULE-P17
+  title: Grant held by a deleted-flagged group still counts (principal liveness not checked)
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+      - {id: g, kind: group, org_member: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [g, f]
+    memberships:
+      - [u, g]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, any]
+  comment: Neither Group.isDeleted nor User.isActive is read by the gate or v3 access.
+- id: RULE-P18
+  title: Inactive user (isActive=false) is still admitted by check_access
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u, active: false}
+    nodes:
+      - {id: A, kind: app}
+      - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, any]
+  comment: Deactivation is enforced at auth (Node), not in the graph check.

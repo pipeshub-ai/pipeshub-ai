@@ -24,6 +24,8 @@ import { test, expect } from '../fixtures/base.fixture';
 import { buildAguiSseBody } from './agui-sse-builder';
 
 const PROJECT_ID = 'proj-e2e-001';
+// The project's owner; ObjectId shaped like every user id the share drawer looks up.
+const OWNER_USER_ID = '0000000000000000000e2e01';
 const PROJECT_NAME = 'Q3 Launch Plan';
 const CONV_ID = 'conv-e2e-project-001';
 const MSG_USER_ID = 'msg-user-e2e-001';
@@ -63,7 +65,7 @@ function makeProjectSummary() {
   return {
     _id: PROJECT_ID,
     orgId: 'org-e2e',
-    userId: 'user-e2e',
+    userId: OWNER_USER_ID,
     name: PROJECT_NAME,
     description: 'Coordinate the Q3 product launch',
     visibility: 'private',
@@ -163,10 +165,11 @@ async function sendMessage(page: import('@playwright/test').Page, message: strin
   await textarea.press('Enter');
 }
 
-const SUGGESTED_USER_ID = 'user-e2e-suggested-1';
+// Mongo ObjectId shaped: the client sends only such ids to POST /api/v1/users/by-ids
+// (lib/utils/user-ids.ts), so any other id never resolves to a name.
+const SUGGESTED_USER_ID = '0000000000000000000e2e02';
 const SUGGESTED_USER_NAME = 'Jane Suggested';
 const SUGGESTED_USER_EMAIL = 'jane.suggested@example.com';
-const OWNER_USER_ID = 'user-e2e';
 
 /**
  * Mocks the org-user lookups the generic `ShareSidebar` needs

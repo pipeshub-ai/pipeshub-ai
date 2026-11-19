@@ -28,7 +28,10 @@ import {
   makeInstance,
   toasts,
   clearToasts,
+  signInAs,
+  signOut,
 } from '../../../__tests__/fixtures';
+
 
 function stats(indexingStatus: Record<string, number>, total?: number): ConnectorStatsResponse['data'] {
   return {
@@ -179,7 +182,8 @@ describe('OverviewTab: actions', () => {
 
   it('hides the entity extraction retry when no record failed it', () => {
     const noFailedEntities = stats({ COMPLETED: 5 });
-    noFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    noFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     noFailedEntities.stats.entitiesStatus = { COMPLETED: 5, FAILED: 0 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={noFailedEntities} />);
@@ -196,7 +200,8 @@ describe('OverviewTab: actions', () => {
 
   it('retries failed entity extraction and refreshes the numbers', async () => {
     const withFailedEntities = stats({ COMPLETED: 5 });
-    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     withFailedEntities.stats.entitiesStatus = { COMPLETED: 1, FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
@@ -212,7 +217,8 @@ describe('OverviewTab: actions', () => {
   it('does not call a queued entity extraction retry failed when only the stats refresh fails', async () => {
     fetchInstanceStats.mockRejectedValue(new Error('stats down'));
     const withFailedEntities = stats({ COMPLETED: 5 });
-    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
@@ -248,7 +254,8 @@ describe('OverviewTab: actions', () => {
   it('reports a failed entity extraction retry', async () => {
     reindexConnector.mockRejectedValue(new Error('nope'));
     const withFailedEntities = stats({ COMPLETED: 5 });
-    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
 
     withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
@@ -336,5 +343,17 @@ describe('OverviewTab: actions', () => {
     expect(s.isPanelOpen).toBe(true);
     expect(s.panelConnectorId).toBe(instance._key);
     expect(s.panelActiveTab).toBe('authenticate');
+  });
+
+  it('offers the access check to an admin only', () => {
+    signInAs('member');
+    const { unmount } = renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={stats({ COMPLETED: 1 })} />);
+    expect(screen.queryByRole('button', { name: "Check someone's access" })).toBeNull();
+    unmount();
+
+    signInAs('admin');
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={stats({ COMPLETED: 1 })} />);
+    expect(screen.getByRole('button', { name: "Check someone's access" })).toBeTruthy();
+    signOut();
   });
 });

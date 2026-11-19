@@ -17,6 +17,7 @@ from app.agent_loop_lib.core.messages import (
     UserMessage,
 )
 from app.agent_loop_lib.core.types import Goal
+from app.utils.logging_fields import log_event
 
 """Deterministic parent -> child data handoff.
 
@@ -377,11 +378,9 @@ def parent_results_as_json(
     payload["results"] = truncated_entries
     result_bytes = json.dumps(payload, default=str, indent=2).encode("utf-8")
 
-    logger.warning(
-        "parent_results_as_json: payload %d bytes exceeds %d cap, truncated "
-        "(%d full, %d truncated, %d skipped of %d total results)",
-        len(encoded), max_bytes, included_full, included_truncated,
-        skipped, len(results),
+    log_event(
+        logger, "parent_results.truncated", level=logging.WARNING, bytes=len(encoded), cap=max_bytes,
+        full=included_full, truncated=included_truncated, skipped=skipped, total=len(results),
     )
 
     return result_bytes

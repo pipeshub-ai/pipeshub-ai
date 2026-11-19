@@ -43,6 +43,7 @@ from app.agents.actions.storage_search.storage_search import (
 from app.services.graph_db.interface.graph_db_provider import (
     AccessibleContainers,
 )
+from tests.support.recording_pattern import RecordingPattern
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1789,38 +1790,42 @@ class TestRankingIsBounded:
 
     @pytest.mark.timeout(5)
     def test_catastrophic_pattern_finishes_and_keeps_the_file(self, tmp_path):
-        import time
-
         from app.agents.actions.storage_search.storage_search import (
+            _RANK_MATCH_TIMEOUT_SECS,
             _grep_search_regexes,
             _rank_candidates,
         )
 
         vrid = "cccccccc-0000-0000-0000-000000000000"
         (tmp_path / f"record_{vrid}.json").write_text("a" * 200_000)
-        regexes = _grep_search_regexes('grep -rci "a*a*a*a*a*b" .')
+        regexes = [RecordingPattern(rx) for rx in _grep_search_regexes('grep -rci "a*a*a*a*a*b" .')]
 
-        started = time.monotonic()
         ranked = _rank_candidates([(f"./record_{vrid}.json", vrid, 1)], str(tmp_path), regexes)
 
-        assert time.monotonic() - started < 1.0
+        # The budget each match was given, not the wall time (which a busy runner stretches): every one bounded by the
+        # per-match ranking timeout.
+        given = [t for rx in regexes for t in rx.timeouts]
+        assert given and all(t is not None and t <= _RANK_MATCH_TIMEOUT_SECS for t in given), given
         assert [r[1] for r in ranked] == [vrid]
 
     @pytest.mark.timeout(5)
     def test_timed_out_match_scores_zero_but_reports_bytes_read(self, tmp_path):
-        import time
-
-        import regex
-
         from app.agents.actions.storage_search.storage_search import _score_record_file
 
         path = tmp_path / "record_x.json"
         path.write_text("y" + "x" * 5000)
-        rx = regex.compile(r"(x+x+)+y", regex.IGNORECASE)
 
-        started = time.monotonic()
+        class TimesOut:
+            """A pattern whose match runs out of time, every time. The file is not JSON, so the real pattern would
+            only see empty text and never reach the timeout path."""
+
+            def finditer(self, text: str, **kwargs: object) -> object:
+                raise TimeoutError("regex match timed out")
+
+        rx = RecordingPattern(TimesOut())
+
         assert _score_record_file(str(path), [rx], timeout=0.2) == (0, 0, "", 5001)
-        assert time.monotonic() - started < 1.0
+        assert rx.timeouts == [0.2]  # the match ran with the caller's timeout, and its timeout scored zero
 
     def test_alternatives_and_pattern_length_are_capped(self):
         from app.agents.actions.storage_search.storage_search import _grep_search_regexes
@@ -1983,6 +1988,24 @@ class TestFindRecordsSaysWhenOutputWasCut:
         body = _json.loads(out)
         assert [r["virtual_record_id"] for r in body["records"]] == [_VRID_ACCESSIBLE]
         assert body["output_truncated"] is False  # the cap of 2 lines is not reached by the one readable file
+
+    @pytest.mark.asyncio
+    async def test_readable_view_limited_to_allowed_records_holds_only_those(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)  # both match; only one is readable
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
+
+        _, both = await tool.find_records("c", 'grep -rl "secretword" .', readable_only=True)
+        _, one = await tool.find_records(
+            "c", 'grep -rl "secretword" .', readable_only=True, allowed_vrids=frozenset({_VRID_FORBIDDEN}),
+        )
+        _, none = await tool.find_records(
+            "c", 'grep -rl "secretword" .', readable_only=True, allowed_vrids=frozenset(),
+        )
+
+        assert len(_json.loads(both)["records"]) == 2
+        assert [r["virtual_record_id"] for r in _json.loads(one)["records"]] == [_VRID_FORBIDDEN]
+        assert not _json.loads(none).get("records")
 
     @pytest.mark.asyncio
     async def test_readable_only_search_that_cannot_make_a_view_always_reports_a_cut(self, tmp_path) -> None:

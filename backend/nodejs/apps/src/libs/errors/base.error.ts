@@ -43,3 +43,21 @@ export abstract class BaseError extends Error {
     return json;
   }
 }
+
+/**
+ * Attach the error that caused `error`, the way a native `{ cause }` does
+ * (not enumerable, so a response body or a spread never carries it). The log
+ * line then says why without the catcher logging it itself. An existing cause
+ * is kept. Returns `error`.
+ */
+export function withCause<E extends Error>(error: E, cause: unknown): E {
+  if ((error as { cause?: unknown }).cause === undefined) {
+    Object.defineProperty(error, 'cause', {
+      value: cause,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+  }
+  return error;
+}

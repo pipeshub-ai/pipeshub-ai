@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     PushClaimRefused,
     PushOutcome,
@@ -40,6 +41,7 @@ async def run_update(action: str, md5: str | None) -> FileRecord:
     graph = MagicMock()
     graph.get_file_record_by_id = AsyncMock(return_value=stored_file_record(md5))
     storage = MagicMock()
+    storage.upload_limit = AsyncMock(return_value=30 << 20)
     storage._storage_url = AsyncMock(return_value="http://storage.test")
     svc = KbPushService(
         graph_provider=graph, kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),
@@ -61,13 +63,15 @@ async def test_a_content_change_hands_over_a_record_without_the_checksum() -> No
     assert record.indexing_status == "NOT_STARTED" and record.external_record_id == "doc-new"
 
 
-async def test_a_metadata_only_change_keeps_the_stored_document_and_revision() -> None:
+async def test_a_metadata_only_change_keeps_the_stored_document_and_contentrev_and_writes_the_new_digest() -> None:
+    """D3b: the digest in the revision is this request's, so the next identical push is ``unchanged``."""
     record = await run_update("metadata", md5="abc123")
-    assert record.external_record_id == "doc-old" and record.external_revision_id.startswith("pb1:" + "c")
+    assert record.external_record_id == "doc-old" and record.external_revision_id == C.revision_id("a" * 64, "d" * 16)
 
 
 async def run_create() -> FileRecord:
     storage = MagicMock()
+    storage.upload_limit = AsyncMock(return_value=30 << 20)
     storage._storage_url = AsyncMock(return_value="http://storage.test")
     svc = KbPushService(
         graph_provider=MagicMock(), kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),
@@ -95,7 +99,7 @@ async def test_an_updated_record_is_marked_as_pushed(action: str) -> None:
 def _service(graph: MagicMock) -> KbPushService:
     return KbPushService(
         graph_provider=graph, kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),
-        storage=MagicMock(), worker=MagicMock(), spool=MagicMock(), publish_event=AsyncMock(), sleep=AsyncMock(),
+        storage=MagicMock(upload_limit=AsyncMock(return_value=30 << 20)), worker=MagicMock(), spool=MagicMock(), publish_event=AsyncMock(), sleep=AsyncMock(),
     )
 
 
@@ -163,3 +167,23 @@ async def test_a_schema_version_with_non_ascii_digits_is_a_schema_mismatch(versi
 
     assert (raised.value.status, raised.value.reason) == (422, "SCHEMA_MISMATCH")
     svc.schemas.get.assert_not_called()
+
+
+async def test_a_kb_whose_connector_fails_to_initialise_is_not_reported_as_missing() -> None:
+    """A failed lazy init raises out of processor_for_kb (F27); only a missing or foreign KB is KB_NOT_FOUND.
+    The route answers the init failure as 500 INTERNAL_ERROR and logs it once."""
+    service = _service(MagicMock())
+    error = ConnectorInitError("token revoked")
+    service.processor_for_kb = AsyncMock(side_effect=error)
+    with pytest.raises(ConnectorInitError) as caught:
+        await service._processor("kb-1")
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("refusal", [PermissionError("other org"), LookupError("no instance")])
+async def test_a_missing_or_foreign_kb_is_still_kb_not_found(refusal: Exception) -> None:
+    service = _service(MagicMock())
+    service.processor_for_kb = AsyncMock(side_effect=refusal)
+    with pytest.raises(PushRefusal) as caught:
+        await service._processor("kb-1")
+    assert (caught.value.status, caught.value.reason) == (404, "KB_NOT_FOUND")

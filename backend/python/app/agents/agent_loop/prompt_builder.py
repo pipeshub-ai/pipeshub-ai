@@ -591,6 +591,14 @@ def _join_with_and(items: list[str]) -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
+# The route passes only the relative path, so the link is the same on every deployment.
+_WEB_SEARCH_UNSET = (
+    "\n\n**Web search is not set up for this organization.** When the user needs live or "
+    "current information from the internet, do not look for a web tool: say so in a sentence or two, "
+    "tell them an admin can set it up under [Workspace → Web search](/workspace/web-search) "
+    "(anyone else should ask their admin), and offer to summarize links or text they share."
+)
+
 _DEEP_RESEARCH = """## Deep Research
 
 The person asked for deep research: research this thoroughly on the web before answering.
@@ -715,9 +723,9 @@ def _build_code_navigation_section() -> str:
         "Code questions are answered by walking the graph first. Use "
         "`knowledgegraph__search` for the `Connector ID`, and afterwards to confirm what "
         "the graph cannot show: a walk returns only edges the parser could prove, so a "
-        "missing caller is not proof of none. When a result carries `coverage`, that "
-        "file's language has no cross-file edges at all — answer from search and "
-        "`codegraph__read_code` there, and say the graph could not confirm it. Search with "
+        "missing caller is not proof of none. When a result carries `coverage`, its note "
+        "names the edges that file's language lacks — answer what they would show from "
+        "search and `codegraph__read_code`, and say the graph could not confirm it. Search with "
         "the exact identifier; rewording a query that already missed returns another "
         "sample of the same thing.\n\n"
         "**1. A set (what / which / all X) walks a factory, registry, or base type — "
@@ -940,8 +948,11 @@ class PipesHubPromptBuilder:
                 tpl.set("turn_citation_rules", citation_rules)
 
         # ── Finding information: the one source-precedence section ──────────
-        tpl.set("finding_information", _build_finding_information(
-            surfaces, catalog, read_in_full=bool(state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
+        tpl.set("finding_information", (
+            _build_finding_information(
+                surfaces, catalog, read_in_full=bool(state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
+            )
+            + (_WEB_SEARCH_UNSET if self._context.web_search_unset and not surfaces.has_web_search else "")
         ) or None)
         tpl.set("deep_research", _DEEP_RESEARCH if self._context.deep_research and surfaces.has_web_search else None)
         tpl.set("exact_numbers", _build_exact_numbers(

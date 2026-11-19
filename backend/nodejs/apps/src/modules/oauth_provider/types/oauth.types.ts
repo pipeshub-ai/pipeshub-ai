@@ -35,6 +35,12 @@ export interface OAuthTokenPayload {
   act?: { sub: string };
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
+  /** Access tokens: the resource (RFC 8707) the token is for, when its client named one. */
+  aud?: string;
+  /** Refresh tokens: the resource the access tokens it mints are for. */
+  resource?: string;
+  /** The agent registration this token was issued under; revoking the token revokes the registration. */
+  agent_registration_id?: string;
 }
 
 // Generated Tokens Response
@@ -61,6 +67,8 @@ export interface GenerateTokensOptions {
   // User grants only: PAT and service pseudo-apps store allowedScopes once
   // and validate against MCP_SCOPES instead.
   recheckAppScopes?: boolean;
+  /** Stamps the token with the agent registration (`reg_…`) it was issued under. */
+  agentRegistrationId?: string;
   /**
    * Mint this as a delegated token: `userId` keeps speaking as the person,
    * while this names the service account acting as them. See the `act` claim
@@ -75,6 +83,8 @@ export interface GenerateTokensOptions {
    * the app's current limit.
    */
   grantedKnowledgeLimit?: KnowledgeLimit | null;
+  /** The resource (RFC 8707) the tokens are for; see `OAuthTokenService.audienceFor`. */
+  audience?: string;
 }
 
 // Token Response (RFC 6749 compliant)
@@ -99,6 +109,8 @@ export interface AuthorizeRequest {
   code_challenge?: string;
   code_challenge_method?: 'S256';
   nonce?: string;
+  /** RFC 8707: checked here so the client hears of an unknown resource before consent. */
+  resource?: string | string[];
 }
 
 // Token Request Parameters
@@ -108,7 +120,9 @@ export interface TokenRequest {
     | 'client_credentials'
     | 'refresh_token'
     | 'urn:ietf:params:oauth:grant-type:device_code'
-    | 'urn:ietf:params:oauth:grant-type:token-exchange';
+    | 'urn:ietf:params:oauth:grant-type:token-exchange'
+    | 'urn:workos:agent-auth:grant-type:claim'
+    | 'urn:ietf:params:oauth:grant-type:jwt-bearer';
   code?: string;
   redirect_uri?: string;
   client_id: string;
@@ -117,11 +131,17 @@ export interface TokenRequest {
   scope?: string;
   code_verifier?: string;
   device_code?: string;
+  /** auth.md claim grant: the agent's claim_token. */
+  claim_token?: string;
+  /** RFC 7523: the identity assertion a claim grant returned. */
+  assertion?: string;
   /** RFC 8693: the credential being exchanged — here, a service token. */
   subject_token?: string;
   subject_token_type?: string;
   /** The person the caller wants to act as, by user id or email address. */
   requested_subject?: string;
+  /** RFC 8707: the resource the token is for (repeatable in a form body). */
+  resource?: string | string[];
 }
 
 // Revoke Request
@@ -235,6 +255,11 @@ export interface OAuthAppResponse {
    * administrator still has to move.
    */
   tokenIdentityUserId?: string;
+  /** The person who registered the app and manages it. */
+  createdBy: string;
+  /** Name and address of `createdBy`, on an administrator's list of every app in the org. */
+  createdByName?: string;
+  createdByEmail?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -253,6 +278,10 @@ export interface ConsentData {
     homepageUrl?: string;
     privacyPolicyUrl?: string;
     isDynamic?: boolean;
+    /** Host of a client metadata document client id: the only part of the app's identity it cannot choose. */
+    clientIdHost?: string;
+    /** Who registered an app that was not dynamically registered: a member can name an app anything. */
+    registeredBy?: string;
     /** What the app's creator let it see; absent for everything the user can. */
     knowledgeLimit?: KnowledgeLimit;
   };
@@ -315,9 +344,18 @@ export interface OpenIDConfiguration {
   introspection_endpoint: string;
   jwks_uri: string;
   registration_endpoint?: string;
+  /** draft-ietf-oauth-client-id-metadata-document: an https URL may be used as client_id. */
+  client_id_metadata_document_supported?: boolean;
   device_authorization_endpoint?: string;
   /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
   pipeshub_device_client_id?: string;
+  /** auth.md agent registration. Present only where it is enabled. */
+  agent_auth?: {
+    skill: string;
+    identity_endpoint: string;
+    claim_endpoint: string;
+    identity_types_supported: string[];
+  };
   scopes_supported: string[];
   response_types_supported: string[];
   grant_types_supported: string[];
@@ -334,6 +372,8 @@ export interface ListAppsQuery {
   limit?: number;
   status?: string;
   search?: string;
+  /** Only the apps this person created. */
+  createdBy?: string;
 }
 
 // Paginated Response
@@ -366,9 +406,8 @@ export interface TokenListItem {
 export interface CreatePatRequest {
   name: string;
   scopes?: string[];
-  /** Days until expiry, or 'never' for a non-expiring token (stored as a
-   * far-future expiresAt — the schema's expiresAt is required). */
-  expiryDays?: 30 | 90 | 365 | 'never';
+  /** Days until expiry; defaults to 30. */
+  expiryDays?: 7 | 30 | 90 | 365;
   /** What the token may see; omit for everything the user can. */
   knowledgeLimit?: KnowledgeLimit;
 }

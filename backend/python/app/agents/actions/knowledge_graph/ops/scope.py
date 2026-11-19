@@ -376,8 +376,9 @@ async def ids_outside_scope(
     )
     if not scoped:
         return []
-    user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    user_key = (user or {}).get("_key") or (user or {}).get("id")
+    from app.modules.retrieval.selection_scope import resolve_user_key
+
+    user_key = await resolve_user_key(graph_provider, user_id)
     if not user_key:
         return list(record_ids)
     inside = await ids_within_scope(state, graph_provider, user_key, org_id, record_ids)
@@ -535,13 +536,13 @@ async def list_selected_nodes(
     from app.modules.retrieval.selection_scope import (
         readable_named_nodes,
         resolve_request_scopes,
+        resolve_user_key,
     )
 
     filters: dict = state.get("filters") or {}
     if not _has_selection(filters):
         return None
-    user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    user_key = ((user.get("_key") or user.get("id")) if user else None) or ""
+    user_key = await resolve_user_key(graph_provider, user_id) or ""
     selected = {
         key: [i for i in filters.get(key) or [] if isinstance(i, str) and i and i != _NO_KB_SENTINEL]
         for key in ("apps", "kb", *SELECTION_FILTER_KEYS)

@@ -549,6 +549,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -560,7 +562,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "def handle(self, payload: dict) -> dict:\n    if not isinstance(payload, dict):\n        raise TypeError(\"payload must be a dict\")\n    return {\"ok\": True, \"echo\": payload, \"env\": self.settings.env}",
@@ -638,6 +641,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -649,7 +654,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": " def handle(self, payload: dict) -> dict:",

@@ -29,6 +29,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.sources.client.resilience import ResiliencePolicy
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 
 # What Slack answers when an access token has expired or was replaced.
 RENEWABLE_ERRORS = frozenset({"token_expired", "invalid_auth"})
@@ -287,7 +288,7 @@ class SlackTokenRenewal:
             self._logger.error(RECONNECT_MESSAGE)
             return None
         except Exception as exc:
-            self._logger.warning("Could not renew the Slack token (%s); the next call will try again", exc)
+            log_refresh_failure(self._logger, EVENT_CHECK_FAILED, exc)
             return None
         self._last_renewed_at = time.monotonic()
         self._logger.info("Renewed the Slack token for connector %s (%s)", self._connector_id, reason)

@@ -341,6 +341,42 @@ class TestQualifiedBase:
         assert ("method:Child.run", "method:Parent.run") in _pairs(graph, OVERRIDES)
 
 
+class TestOverrideIsTheNearestDeclaration:
+    """A call runs a body, but an override overrides the nearest declaration, interface or not."""
+
+    @pytest.mark.asyncio
+    async def test_an_interface_s_declaration_before_a_body_further_up(self, graph, index_file) -> None:
+        # guava's ForwardingMultiset shape: `Mid extends Top implements I`, the body on Top's base.
+        for i, (path, src) in enumerate({
+            "p/I.java": b"package p;\npublic interface I { String m(); }\n",
+            "p/Root.java": b"package p;\npublic class Root { public String m() { return \"\"; } }\n",
+            "p/Top.java": b"package p;\npublic class Top extends Root {}\n",
+            "p/Mid.java": b"package p;\npublic abstract class Mid extends Top implements I {}\n",
+            "p/Leaf.java": b"package p;\npublic class Leaf extends Mid { public String m() { return \"x\"; } }\n",
+            "p/Use.java": b"package p;\nclass Use { void go(Mid x) { x.m(); } }\n",
+        }.items()):
+            await index_file(f"r{i}", path, src, "java")
+        await _build(graph)
+        assert ("method:Leaf.m", "method:I.m") in _pairs(graph, OVERRIDES)
+        assert ("method:Use.go", "method:Root.m") in _pairs(graph, RecordRelations.CALLS.value)
+
+    @pytest.mark.asyncio
+    async def test_an_abstract_method_two_levels_up_beats_a_bodied_overload_further_up(self, graph, index_file) -> None:
+        # guava's TreeMultimap.createCollection(): the abstract AbstractSortedSetMultimap.createCollection(), not
+        # AbstractMapBasedMultimap.createCollection(K) beside its own abstract createCollection().
+        for i, (path, src) in enumerate({
+            "p/Root.java": b"package p;\npublic abstract class Root {\n  abstract Object create();\n"
+                           b"  Object create(Object k) { return create(); }\n}\n",
+            "p/Mid.java": b"package p;\npublic abstract class Mid extends Root { abstract String create(); }\n",
+            "p/Mid2.java": b"package p;\npublic abstract class Mid2 extends Mid {}\n",
+            "p/Leaf.java": b"package p;\npublic class Leaf extends Mid2 { String create() { return \"\"; } }\n",
+        }.items()):
+            await index_file(f"r{i}", path, src, "java")
+        await _build(graph)
+        assert [pair for pair in _pairs(graph, OVERRIDES) if pair[0] == "method:Leaf.create"] == [
+            ("method:Leaf.create", "method:Mid.create")]
+
+
 class TestNestedBase:
     @pytest.mark.asyncio
     async def test_outer_inner_beats_another_class_named_inner(self, graph, index_file) -> None:

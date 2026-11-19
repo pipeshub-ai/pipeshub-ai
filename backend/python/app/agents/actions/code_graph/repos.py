@@ -23,6 +23,7 @@ from app.modules.code_graph.connectors import (
     NORMALIZED_CODE_TYPES,
     normalize_connector_type,
 )
+from app.modules.code_graph.synced_commit import LAST_SYNCED_COMMIT
 
 from .ops import RecordAccess, _unwrap, repo_names
 
@@ -60,6 +61,8 @@ class CodeRepo:
     connector_id: str
     connector_name: str
     group_id: str
+    # The commit its connector last synced it to; None before the first sync that writes it.
+    synced_commit: str | None = None
 
     @property
     def qualified(self) -> str:
@@ -121,7 +124,7 @@ async def _candidates(
             _unwrap(row) for row in await graph_provider.get_nodes_by_field_in(
                 collection=CollectionNames.RECORD_GROUPS.value, field_name="connectorId",
                 field_values=sorted(connectors),
-                return_fields=["_key", "orgId", "connectorId", "externalGroupId"],
+                return_fields=["_key", "orgId", "connectorId", "externalGroupId", LAST_SYNCED_COMMIT],
                 raise_on_error=True,
             ) or []
         )
@@ -135,6 +138,7 @@ async def _candidates(
             connector_id=g["connectorId"],
             connector_name=connectors[g["connectorId"]],
             group_id=g["_key"],
+            synced_commit=g.get(LAST_SYNCED_COMMIT) or None,
         )
         for g in groups
     ]

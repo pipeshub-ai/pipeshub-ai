@@ -43,3 +43,25 @@ export function postConnectorOAuthErrorToOpener(error: string): void {
     }
   }
 }
+
+// Kept on window, not in module state: a hot reload re-runs the module and must replace the listener, not add one.
+const SUCCESS_LISTENER_KEY = '__connectorOAuthSuccessListener';
+type WindowWithListener = Window & { [SUCCESS_LISTENER_KEY]?: (event: MessageEvent) => void };
+
+/**
+ * Calls `onSuccess` whenever a connector OAuth popup reports success to this
+ * window, whether or not the panel that opened it is still mounted. One
+ * listener per window; registering again replaces it.
+ */
+export function listenForConnectorOAuthSuccess(onSuccess: () => void): void {
+  if (typeof window === 'undefined') return;
+  const target = window as WindowWithListener;
+  const previous = target[SUCCESS_LISTENER_KEY];
+  if (previous) window.removeEventListener('message', previous);
+  const listener = (event: MessageEvent) => {
+    if (event.origin !== window.location.origin) return;
+    if ((event.data as { type?: string } | null)?.type === CONNECTOR_OAUTH_POST_MESSAGE.SUCCESS) onSuccess();
+  };
+  target[SUCCESS_LISTENER_KEY] = listener;
+  window.addEventListener('message', listener);
+}

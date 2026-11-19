@@ -274,6 +274,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     category: 'Code',
     requiresUserConsent: true,
   },
+  'code:write': {
+    name: 'code:write',
+    description: 'Push local repositories to be indexed into the code graph',
+    category: 'Code',
+    requiresUserConsent: true,
+  },
 
   // Configuration (Admin only)
   'config:read': {
@@ -370,6 +376,8 @@ export const DefaultMcpScopes = [
   'agent:read',
   'agent:execute',
   'connector:read',
+  'connector:write',
+  'connector:sync',
   'code:read',
   'project:read',
   'project:write',
@@ -397,7 +405,13 @@ export const AgentMcpScopes = [
   'kb:upload',
   'user:read',
   'connector:read',
+  // Lets an agent add a web source (pipeshub_add_web_source): create the
+  // connector, save its start URL and start the crawl.
+  'connector:write',
+  'connector:sync',
   'code:read',
+  // Lets the CLI push a local repository to be indexed (pipeshub index).
+  'code:write',
 ] as const;
 
 /**
@@ -419,6 +433,8 @@ export const McpToolScopes = [
   'kb:write',
   'kb:upload',
   'connector:read',
+  'connector:write',
+  'connector:sync',
   'config:read',
   'user:read',
   'team:read',

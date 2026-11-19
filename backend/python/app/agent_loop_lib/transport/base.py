@@ -6,10 +6,20 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import Message
 from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
 from app.agent_loop_lib.core.streaming import StreamEvent
 from app.agent_loop_lib.core.tool_schema import ToolChoice, ToolSchema
+from app.utils.error_class import classify_error
+
+
+def llm_error_class(exc: BaseException) -> str:
+    """`classify_error` for a failed model call. A provider 401/403 refused the key
+    this deployment configured, so it is `misconfigured`, not a user's `auth_expired`."""
+    if isinstance(exc, TransportError) and exc.status_code in (401, 403):
+        return "misconfigured"
+    return classify_error(exc)
 
 
 class RetryConfig(BaseModel):

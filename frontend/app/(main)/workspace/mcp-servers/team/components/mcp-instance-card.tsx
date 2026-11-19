@@ -8,7 +8,8 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
-import { isMcpInstanceDisabled, McpDisabledBadge } from '../../components';
+import { isMcpInstanceDisabled, McpDisabledBadge, McpLogoImage } from '../../components';
+import { useMcpServerLogo } from '../../logo-store';
 import { McpStatusBadge, mcpConnectionState } from '../../connection-state';
 
 interface McpInstanceCardProps {
@@ -20,6 +21,7 @@ interface McpInstanceCardProps {
 export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardProps) {
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
+  const logo = useMcpServerLogo(instance._id);
 
   return (
     <Flex
@@ -51,7 +53,11 @@ export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardP
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name={instance.isCustom ? 'dns' : 'hub'} size={16} color="var(--gray-10)" />
+          {logo ? (
+            <McpLogoImage src={logo} size={16} />
+          ) : (
+            <MaterialIcon name={instance.isCustom ? 'dns' : 'hub'} size={16} color="var(--gray-10)" />
+          )}
         </Flex>
         <Flex gap="1">
           {instance.isCustom && (

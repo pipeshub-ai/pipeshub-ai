@@ -457,6 +457,30 @@ class TestRunProjects:
         }]
 
     @pytest.mark.asyncio
+    async def test_a_long_team_link_or_milestone_list_is_read_to_its_end(self) -> None:
+        """The stamp must cover every team, link and milestone of a project, so it changes only
+        when they do and a long list is not refreshed on every sync."""
+        more = {"teams": "projectTeams", "externalLinks": "projectExternalLinks", "projectMilestones": "projectMilestones"}
+
+        def respond(operation, variables) -> GraphQLResponse:
+            if operation == "projectIds":
+                return _page("projects", [{"id": "proj-1", "trashed": False, **{
+                    field: {"nodes": [{"id": f"{field}-1"}], "pageInfo": {"hasNextPage": True, "endCursor": "c1"}}
+                    for field in more}}])
+            field = next(f for f, op in more.items() if op == operation)
+            assert variables["id"] == "proj-1" and variables["after"] == "c1"
+            return _ok({"project": {field: {"nodes": [{"id": f"{field}-2"}],
+                                            "pageInfo": {"hasNextPage": False, "endCursor": None}}}})
+
+        env = _make(respond, stored={RecordType.PROJECT: [_record("node-1", "proj-1", RecordType.PROJECT)]})
+
+        _, listed, _ = await env.reconciler.run_projects({"team-1"})
+
+        for field in more:
+            assert [n["id"] for n in listed["proj-1"][field]["nodes"]] == [f"{field}-1", f"{field}-2"]
+            assert listed["proj-1"][field]["pageInfo"]["hasNextPage"] is False
+
+    @pytest.mark.asyncio
     async def test_failed_listing_removes_nothing(self) -> None:
         env = _make(lambda operation, variables: _failed(),
                     stored={RecordType.PROJECT: [_record("node-1", "proj-1", RecordType.PROJECT)]})

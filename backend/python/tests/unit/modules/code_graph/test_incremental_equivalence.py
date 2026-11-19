@@ -434,3 +434,137 @@ async def test_a_class_keeps_its_overrides_when_its_base_file_cannot_be_read() -
         "pkg/c.py": "from pkg.b import B\n\n\nclass C(B):\n    def run(self):\n        pass\n",
     }, unreadable="pkg/b.py", touched="pkg/c.py",
         marker="pkg/c.py::method:C.run -OVERRIDES-> pkg/a.py::method:A.run")
+
+
+# C/C++: path -> source before, and the files an edit rewrites. A file sees what its includes include, through
+# headers the incremental build does not re-resolve.
+# A wrapper macro's callers are re-resolved when its body, its existence or the function it reaches changes.
+MACROS_H = "#define W(n) deep(n)\n#define W2(n) W(n)\n#define LATE(n) late(n)\n"
+C_BASE = {
+    "src/b.h": "int deep(int x);\n",
+    "src/m.h": MACROS_H,
+    "src/a.h": '#include "b.h"\n#include "m.h"\nint mid(int x);\n',
+    "src/b.c": '#include "b.h"\nint deep(int x) { return x; }\n',
+    "src/c.c": "int other(int x) { return x; }\n",
+    "src/main.c": '#include "a.h"\nint run(void) { return deep(1); }\n',
+    "src/wrap.c": '#include "a.h"\nint w1(void) { return W(2); }\nint w2(void) { return W2(3); }\n'
+                  "int w3(void) { return W3(4); }\nint w4(void) { return LATE(5); }\n",
+}
+# The callers whose call through a macro is a wrapper edge after each edit.
+C_WRAPPED = {
+    "base": ["function:w1 -CALLS-> src/b.c", "function:w2 -CALLS-> src/b.c"],
+    "macro-body-edited": ["function:w1 -CALLS-> src/c.c", "function:w2 -CALLS-> src/c.c"],
+    "macro-added": ["function:w1 -CALLS-> src/b.c", "function:w2 -CALLS-> src/b.c", "function:w3 -CALLS-> src/b.c"],
+    "macro-removed": [],
+    "header-defining-it-deleted": [],
+    "function-a-wrapper-reaches-added": ["function:w1 -CALLS-> src/b.c", "function:w2 -CALLS-> src/b.c",
+                                         "function:w4 -CALLS-> src/c.c"],
+}
+C_EDITS: dict[str, dict[str, str | None]] = {   # None: the file is deleted
+    "caller-through-transitive-include": {"src/main.c": C_BASE["src/main.c"] + "int more(void) { return deep(2); }\n"},
+    "macro-body-edited": {"src/m.h": MACROS_H.replace("deep(n)", "other(n)")},
+    "macro-added": {"src/m.h": MACROS_H + "#define W3(n) deep(n)\n"},
+    "macro-removed": {"src/m.h": MACROS_H.replace("#define W(n) deep(n)\n", "")},
+    "header-defining-it-edited": {"src/m.h": "int unrelated(void);\n" + MACROS_H},
+    "function-a-wrapper-reaches-added": {"src/c.c": C_BASE["src/c.c"] + "int late(int x) { return x; }\n"},
+    "header-defining-it-deleted": {"src/m.h": None},
+}
+
+
+def c_rid(path: str) -> str:
+    return "rec-" + path.replace("/", "_")
+
+
+async def project_c(graph: Graph, parser: CodeFileParser, path: str, text: str) -> None:
+    container = parser.parse_to_blocks(text.encode(), path.rsplit("/", 1)[1], path, "c")
+    graph.code_files[c_rid(path)] = path
+    graph.blobs[c_rid(path)] = {"block_containers": container.model_dump(mode="json", exclude_none=True)}
+    await write_code_file_blocks_to_graph(
+        graph_provider=graph,
+        context=BlockProjectionContext(org_id=ORG_ID, record_id=c_rid(path), record_group_id=GROUP_ID,
+                                       connector_id="conn1", language="c", file_path=path),
+        block_containers=container,
+    )
+
+
+async def full_c_graph(parser: CodeFileParser, files: dict[str, str]) -> Graph:
+    graph = Graph()
+    for path, text in files.items():
+        await project_c(graph, parser, path, text)
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 facts_source=graph)
+    return graph
+
+
+@pytest.mark.parametrize("case", sorted(C_EDITS))
+async def test_c_incremental_build_matches_full_build(case: str) -> None:
+    parser = CodeFileParser()
+    graph = await full_c_graph(parser, C_BASE)
+    edited = {path: text for path, text in C_EDITS[case].items() if text is not None}
+    deleted_names: set[str] = set()
+    for path in C_EDITS[case].keys() - edited.keys():   # deleted, as the sync does it
+        deleted_names |= await defined_names(graph, ORG_ID, c_rid(path))
+        await graph.delete_blocks_for_records([c_rid(path)])
+        graph.code_files.pop(c_rid(path))
+        graph.blobs.pop(c_rid(path))
+    for path, text in edited.items():
+        await project_c(graph, parser, path, text)
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={c_rid(p) for p in edited}, deleted_names=deleted_names,
+                                 facts_source=graph)
+
+    after = {path: text for path, text in {**C_BASE, **C_EDITS[case]}.items() if text is not None}
+    expected = await full_c_graph(parser, after)
+    got, want = code_edges(graph), code_edges(expected)
+    assert got == want, ("missing: " + "; ".join(describe(expected, want - got))
+                         + "\nextra: " + "; ".join(describe(graph, got - want)))
+    calls = {(describe(graph, {edge})[0], edge[3]) for edge in got if edge[2] == "CALLS"}
+    assert {res for row, res in calls if row.startswith("src/main.c")} == {"module-import"}
+    wrapped = sorted(row.split("::")[1] for row, res in calls if res == "wrapper")
+    assert wrapped == C_WRAPPED.get(case, C_WRAPPED["base"]), case
+
+
+# A header's own include list changing: main.c sees d.h only through outer.h -> inner.h, so it is re-resolved
+# though neither file it includes directly was touched.
+DEEP_H = '#include "d.h"\nint pad(void);\n'
+TRANSITIVE_BASE = {
+    "src/d.h": "int deep(int x);\n",
+    "src/d.c": '#include "d.h"\nint deep(int x) { return x; }\n',
+    "lib/e.c": "int deep(int x) { return -x; }\n",   # a second `deep`, so only the include scope places the call
+    "src/inner.h": "int pad(void);\n",
+    "src/outer.h": '#include "inner.h"\n',
+    "src/main.c": '#include "outer.h"\nint run(void) { return deep(1); }\n',
+}
+TRANSITIVE_EDITS: dict[str, tuple[dict[str, str], dict[str, str | None]]] = {   # case -> (base changes, edit)
+    "include-added": ({}, {"src/inner.h": DEEP_H}),
+    "include-removed": ({"src/inner.h": DEEP_H}, {"src/inner.h": "int pad(void);\n"}),
+    "header-deleted": ({"src/inner.h": DEEP_H}, {"src/inner.h": None}),
+}
+
+
+@pytest.mark.parametrize("case", sorted(TRANSITIVE_EDITS))
+async def test_a_header_include_change_re_resolves_its_transitive_includers(case: str) -> None:
+    parser = CodeFileParser()
+    base_changes, edit = TRANSITIVE_EDITS[case]
+    base = {**TRANSITIVE_BASE, **base_changes}
+    graph = await full_c_graph(parser, base)
+    edited = {path: text for path, text in edit.items() if text is not None}
+    deleted_names: set[str] = set()
+    for path in edit.keys() - edited.keys():
+        deleted_names |= await defined_names(graph, ORG_ID, c_rid(path))
+        await graph.delete_blocks_for_records([c_rid(path)])
+        graph.code_files.pop(c_rid(path))
+        graph.blobs.pop(c_rid(path))
+    for path, text in edited.items():
+        await project_c(graph, parser, path, text)
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={c_rid(p) for p in edited}, deleted_names=deleted_names,
+                                 facts_source=graph)
+
+    expected = await full_c_graph(parser, {p: t for p, t in {**base, **edit}.items() if t is not None})
+    got, want = code_edges(graph), code_edges(expected)
+    assert got == want, ("missing: " + "; ".join(describe(expected, want - got))
+                         + "\nextra: " + "; ".join(describe(graph, got - want)))
+    main = {(describe(graph, {edge})[0], edge[3]) for edge in got if edge[2] == "CALLS"}
+    sees = DEEP_H in {**base, **edit}.values()
+    assert any(row.startswith("src/main.c") and res == "module-import" for row, res in main) == sees, main

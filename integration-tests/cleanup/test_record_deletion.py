@@ -172,10 +172,20 @@ async def two_copies(
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
-async def one_copy_deleted(two_copies, kb_client, graph_provider) -> dict[str, Any]:
+async def one_copy_deleted(
+    two_copies, kb_client, graph_provider, blob_store, mongo_store, test_org_id
+) -> dict[str, Any]:
     kb_client.delete_record(two_copies["first"].record_id)
     await fp.settle(fp.assert_graph_gone(graph_provider, two_copies["copies"].graph), "the first copy")
-    return two_copies
+    # Content filed under the deleted copy is handed to the other one; where it ends up.
+    vrid = two_copies["second"].virtual_record_id
+    old = two_copies["copies"].envelope_paths[vrid]
+    envelope_now = await fp.settled_envelope_path(
+        blob_store, mongo_store, org_id=test_org_id, virtual_record_id=vrid,
+        within=records_folder(test_org_id, two_copies["kb_id"]), vendor=two_copies["vendor"],
+        leaving=old if fp.filed_under(old, two_copies["first"]) else None,
+    )
+    return {**two_copies, "envelope_now": envelope_now}
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
@@ -201,18 +211,17 @@ class TestDeletingOneOfTwoIdenticalRecords:
     async def test_the_shared_embeddings_envelope_and_documents_stay(
         self, one_copy_deleted, graph_provider, vector_store, blob_store, mongo_store
     ) -> None:
-        """Checked store by store against the counts from before; only the deleted copy's upload may go."""
+        """Checked store by store against the counts from before; only the deleted copy's upload may go.
+
+        Content filed under the deleted copy is moved under the surviving one, so
+        it is counted where it is filed now, and must have left its old folder.
+        """
         copies = one_copy_deleted["copies"]
-        vrid = one_copy_deleted["second"].virtual_record_id
-        path = copies.envelope_paths[vrid]
-        assert await vector_store.count_for_virtual_record(vrid) == copies.points[vrid], (
-            "Deleting one copy changed the embeddings the other copy still uses."
-        )
-        assert await blob_store.count_under(path, one_copy_deleted["vendor"]) == copies.blobs[path], (
-            "Deleting one copy changed the shared envelope in blob storage."
-        )
-        assert await mongo_store.count_documents_under_path(path) == copies.documents[f"prefix:{path}"], (
-            "Deleting one copy changed the shared envelope's storage documents."
+        await fp.assert_content_whole_at(
+            copies, vector_store, blob_store, mongo_store,
+            virtual_record_id=one_copy_deleted["second"].virtual_record_id,
+            new=one_copy_deleted["envelope_now"], vendor=one_copy_deleted["vendor"],
+            what="The shared content the other copy still uses",
         )
         second_upload = one_copy_deleted["second"].upload_document_id
         assert await mongo_store.find_document(second_upload) is not None, (
@@ -256,6 +265,14 @@ class TestDeletingOneOfTwoIdenticalRecords:
         await fp.assert_documents_gone(mongo_store, copies, [f"id:{document_id}"])
 
 
+def _filed_now(deleted: dict[str, Any]) -> fp.StoresFootprint:
+    """The counts from before, keyed by where the shared content is filed after the first delete:
+    looking only where it was would pass with it still stored under the surviving copy."""
+    copies = deleted["copies"]
+    old = copies.envelope_paths[deleted["second"].virtual_record_id]
+    return fp.relocated(copies, {old: deleted["envelope_now"]})
+
+
 class TestDeletingTheLastCopy:
     """Second half: once no record uses the content, every store lets go of it."""
 
@@ -274,7 +291,7 @@ class TestDeletingTheLastCopy:
     async def test_the_envelope_and_uploads_are_removed_from_blob_storage(
         self, last_copy_deleted, blob_store
     ) -> None:
-        copies = last_copy_deleted["copies"]
+        copies = _filed_now(last_copy_deleted)
         records = [last_copy_deleted["first"], last_copy_deleted["second"]]
         await fp.assert_blobs_gone(
             blob_store, copies, fp.blob_keys_for(copies, records), vendor=last_copy_deleted["vendor"]
@@ -284,10 +301,9 @@ class TestDeletingTheLastCopy:
     async def test_the_storage_documents_are_removed_from_mongodb(
         self, last_copy_deleted, mongo_store
     ) -> None:
+        copies = _filed_now(last_copy_deleted)
         records = [last_copy_deleted["first"], last_copy_deleted["second"]]
-        await fp.assert_documents_gone(
-            mongo_store, last_copy_deleted["copies"], fp.document_keys_for(last_copy_deleted["copies"], records)
-        )
+        await fp.assert_documents_gone(mongo_store, copies, fp.document_keys_for(copies, records))
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_an_unrelated_record_in_the_same_collection_is_untouched(
@@ -561,8 +577,11 @@ class TestAddingACopyWhileTheOriginalIsDeleted:
         race = raced[timing]
         vrid = race.copy.virtual_record_id if race.copy else None
         assert vrid, "The copy has no virtual record id, so no stored content can be its."
-        path = await mongo_store.envelope_path(
-            test_org_id, vrid, within=records_folder(test_org_id, race.kb_id), timeout=30
+        old = race.before.envelope_paths.get(vrid) if race.shares_content else None
+        path = await fp.settled_envelope_path(
+            blob_store, mongo_store, org_id=test_org_id, virtual_record_id=vrid,
+            within=records_folder(test_org_id, race.kb_id), vendor=race.vendor,
+            leaving=old if old and fp.filed_under(old, race.original) else None,
         )
         envelopes = [
             d for d in await mongo_store.stored_record_documents(test_org_id, virtual_record_id=vrid)
@@ -575,18 +594,12 @@ class TestAddingACopyWhileTheOriginalIsDeleted:
             f"The copy's content under {path!r} has {blobs} blob file(s) and {documents} storage document(s)."
         )
         if race.shares_content:
-            # Shared, so the original's cleanup must have left every piece of it,
-            # where it was: a record delete does not move stored content.
-            was = race.before
-            assert path == was.envelope_paths[vrid], (
-                f"The shared content {vrid} moved from {was.envelope_paths[vrid]!r} to {path!r}."
-            )
-            now = {"embeddings": await vector_store.count_for_virtual_record(vrid), "blob files": blobs,
-                   "storage documents": documents}
-            then = {"embeddings": was.points[vrid], "blob files": was.blobs[path],
-                    "storage documents": was.documents[f"prefix:{path}"]}
-            assert now == then, (
-                f"Deleting the original took part of the content the copy shares ({vrid}): before {then}, now {now}."
+            # Shared, so the original's cleanup must leave every piece of it. Filed
+            # under the original, it is moved under the copy, not copied there.
+            await fp.assert_content_whole_at(
+                race.before, vector_store, blob_store, mongo_store,
+                virtual_record_id=vrid, new=path, vendor=race.vendor,
+                what=f"The content the copy shares with the deleted original ({vrid})",
             )
 
     @pytest.mark.asyncio(loop_scope="session")

@@ -37,20 +37,27 @@ ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 
 STAGES = CollectionNames.STAGE_STATES.value
 RECORDS = CollectionNames.RECORDS.value
+MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 ORG = "stage-it"
+OTHER_ORG = "stage-it-other"
 CONCURRENT = 30
 _logger = logging.getLogger("stage-states-it")
 
 
-def _document(vrid: str, *, status: ProgressStatus = ProgressStatus.QUEUED, updated_at_ms: int = 1) -> dict[str, object]:
+def _document(vrid: str, *, status: ProgressStatus = ProgressStatus.QUEUED, updated_at_ms: int = 1, org: str = ORG) -> dict[str, object]:
     job = StageJob(
-        stage="classify", stage_version=1, org_id=ORG, virtual_record_id=vrid, rev="rev-a",
+        stage="classify", stage_version=1, org_id=org, virtual_record_id=vrid, rev="rev-a",
         record_ids=("rec-1",), connector_id="conn-1", tier=ParseTier.LIGHT, priority=Priority.BULK, trigger="embed",
         text_digest="t", blocks_digest="b", text_chars=10, has_tables=False, has_images=False,
     )
     document = StageState.from_job(job, status, updated_at_ms).model_dump(mode="json", by_alias=True)
     document["id"] = document.pop("key")
     return document
+
+
+def _org_of(provider: IGraphDBProvider) -> str:
+    """The org a store reports for a state written here: the document's on Neo4j and ArangoDB (the PostgreSQL module overrides it)."""
+    return ORG
 
 
 @pytest.fixture
@@ -70,8 +77,8 @@ async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Neo4jProvider]
     yield provider
     await provider.client.execute_query(
         f"MATCH (n) WHERE (n:{collection_to_label(STAGES)} OR n:{collection_to_label(RECORDS)}) "
-        "AND n.orgId = $org DETACH DELETE n",
-        parameters={"org": ORG},
+        "AND n.orgId IN $orgs DETACH DELETE n",
+        parameters={"orgs": [ORG, OTHER_ORG]},
     )
     await provider.disconnect()
 
@@ -91,12 +98,13 @@ async def arango() -> AsyncIterator[ArangoHTTPProvider]:
         await client.update_collection_schema(STAGES, stage_state_schema)
     else:
         await client.create_collection(STAGES, edge=False, schema=stage_state_schema)
-    if not await client.has_collection(RECORDS):
-        await client.create_collection(RECORDS, edge=False, schema=None)
+    for collection in (RECORDS, MAPPING):
+        if not await client.has_collection(collection):
+            await client.create_collection(collection, edge=False, schema=None)
     yield provider
     for collection in (STAGES, RECORDS):
         await client.execute_aql(
-            "FOR d IN @@c FILTER d.orgId == @org REMOVE d IN @@c", {"@c": collection, "org": ORG}
+            "FOR d IN @@c FILTER d.orgId IN @orgs REMOVE d IN @@c", {"@c": collection, "orgs": [ORG, OTHER_ORG]}
         )
     await provider.disconnect()
 
@@ -149,6 +157,26 @@ async def test_concurrent_compare_and_sets_succeed_exactly_once(provider: IGraph
 
 
 @pytest.mark.asyncio
+async def test_a_stale_scan_returns_each_state_with_the_org_it_was_written_under(provider: IGraphDBProvider) -> None:
+    """Two orgs' states in one scan: each carries its own org, so the sweep binds each follow-up to the right one."""
+    other = OTHER_ORG
+    mine, theirs = str(uuid.uuid4()), str(uuid.uuid4())
+    assert await provider.stage_state_create(_document(mine, updated_at_ms=5))
+    assert await provider.stage_state_create(_document(theirs, updated_at_ms=5, org=other))
+    stale = await provider.stage_states_stale(["QUEUED"], 6, 1000)
+    got = {s["virtualRecordId"]: s.get("orgId") for s in stale if s["virtualRecordId"] in (mine, theirs)}
+    assert got == {mine: ORG, theirs: other}
+
+
+@pytest.mark.asyncio
+async def test_the_org_of_a_virtual_record_is_read_from_its_stage_states(provider: IGraphDBProvider) -> None:
+    vrid = str(uuid.uuid4())
+    assert await provider.stage_state_org_for_virtual_record(vrid) is None
+    assert await provider.stage_state_create(_document(vrid))
+    assert await provider.stage_state_org_for_virtual_record(vrid) == ORG
+
+
+@pytest.mark.asyncio
 async def test_a_stored_state_round_trips_through_the_model(provider: IGraphDBProvider) -> None:
     document = _document(str(uuid.uuid4()))
     assert await provider.stage_state_create(document)
@@ -170,9 +198,27 @@ async def test_stale_scan_returns_the_oldest_first(provider: IGraphDBProvider) -
     stale = await provider.stage_states_stale(["QUEUED"], 25, 10)
     mine = [s["stage"] for s in stale if s["virtualRecordId"] == vrid]
     assert mine == ["entities", "summary-embed"]
+    # The sweep binds each state's follow-up to the org the state was written under.
+    assert {s.get("orgId") for s in stale if s["virtualRecordId"] == vrid} == {_org_of(provider)}
     assert {s["stage"] for s in await provider.stage_states_for_revision(vrid, "rev-a")} == {
         "classify", "entities", "summary-embed",
     }
+
+
+@pytest.mark.asyncio
+async def test_the_pointer_reads_carry_the_mappings_org(provider: IGraphDBProvider) -> None:
+    mapping = MAPPING
+    key = f"zz-{uuid.uuid4()}"
+    assert await provider.batch_upsert_nodes(
+        [{"_key": key, "orgId": ORG, "documentId": "d", "switchSeq": 1, "currentRev": "r2"}], mapping
+    )
+    try:
+        switch = await provider.get_switch_pointers(key[:-1], 5)
+        revision = await provider.get_revision_pointers(key[:-1], 5)
+        assert [p["orgId"] for p in switch if p["virtualRecordId"] == key] == [ORG]
+        assert [p["orgId"] for p in revision if p["virtualRecordId"] == key] == [ORG]
+    finally:
+        await provider.delete_nodes([key], mapping)
 
 
 @pytest.mark.asyncio

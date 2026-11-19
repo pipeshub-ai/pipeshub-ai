@@ -8,7 +8,13 @@ import {
 } from './sidebar-child-pagination-meta';
 import { restoreOpenFoldersInSidebar } from './root-app-list';
 import { kbSessionToken } from './kb-session';
-import type { KnowledgeHubNode, NodeType } from '../types';
+import { asArray } from '@/lib/utils/safe';
+import type {
+  KnowledgeHubApiResponse,
+  KnowledgeHubNode,
+  KnowledgeHubQueryParams,
+  NodeType,
+} from '../types';
 
 /**
  * The one way the sidebar tree lists a folder's (or collection's) children:
@@ -82,6 +88,8 @@ async function loadFirstPage(id: string, nodeType: NodeType): Promise<void> {
   if (!stillSignedIn()) return;
   // A reload or another loader may have filled it while this was in flight.
   if (useKnowledgeBaseStore.getState().nodeChildrenCache.has(id)) return;
+  // A source still being prepared lists no children yet, not none: cache nothing, so the next open asks again.
+  if (response.preparing) return;
   storeChildrenList(
     id,
     response.items,
@@ -111,6 +119,8 @@ async function readNextPage(parentId: string): Promise<boolean> {
   const response = await fetchChildrenPage(parentId, cursor.nodeType, cursor.nextCursor);
   const latest = useKnowledgeBaseStore.getState();
   if (!stillSignedIn() || latest.nodeChildrenPagination.get(parentId) !== cursor) return false;
+  // A source still being prepared answers an empty page with no cursor: the rows and the cursor read before stay, so a later page can still be asked for.
+  if (response.preparing) return false;
   // Purging a deleted child can drop the list while leaving its cursor; this
   // page alone would then pass for the whole list.
   const shown = latest.nodeChildrenCache.get(parentId);
@@ -149,8 +159,10 @@ export async function openFolderChildren(
   for (let step = 0; options.until && step < MAX_PAGES_PER_WALK; step += 1) {
     const state = useKnowledgeBaseStore.getState();
     if (options.until(state.nodeChildrenCache.get(id) ?? [])) break;
-    if (!state.nodeChildrenPagination.get(id)?.hasNext) break;
-    await loadNextChildrenPage(id);
+    const cursor = state.nodeChildrenPagination.get(id);
+    if (!cursor?.hasNext) break;
+    // A page that added nothing while the cursor stayed (the source is still being prepared) would only be asked again: the walk stops and the cursor waits for a later open.
+    if (!(await loadNextChildrenPage(id)) && useKnowledgeBaseStore.getState().nodeChildrenPagination.get(id) === cursor) break;
   }
   showFolderChildren(id);
 }
@@ -172,6 +184,8 @@ async function reloadChildren(id: string, fallbackNodeType: NodeType, keepVisibl
   let pageCursor: string | null = null;
   for (let page = 1; page <= pagesLoaded + (mustShow ? MAX_PAGES_PER_WALK : 0); page += 1) {
     const response = await fetchChildrenPage(id, nodeType, pageCursor);
+    // A source still being prepared lists nothing yet: the list read before stays.
+    if (response.preparing) return;
     for (const item of response.items) byId.set(item.id, item);
     next = sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType, page);
     if (!next.hasNext) break;
@@ -209,6 +223,59 @@ export async function reloadOpenFoldersUnder(rootIds: string[], keepVisibleId?: 
     await reloadChildren(id, nodeTypeOf(id, 'folder'), keepVisibleId);
   }
   restoreOpenFoldersInSidebar();
+}
+
+// The server's `onlyContainers` rule (arango_http_provider.py `_kh_v2_filters_aql`).
+const TREE_CONTAINER_TYPES = new Set<string>(['app', 'recordGroup', 'folder']);
+// A listing with any other parameter (search, filters, a cursor) may leave children out.
+const PARAMS_THAT_KEEP_EVERY_CHILD = new Set(['limit', 'include', 'sortBy', 'sortOrder']);
+
+function isTreeContainer(node: KnowledgeHubNode): boolean {
+  return node.hasChildren === true || TREE_CONTAINER_TYPES.has(node.nodeType);
+}
+
+// The server's name order: lower-cased, by code unit, nameless last, then id.
+function byServerNameOrder(a: KnowledgeHubNode, b: KnowledgeHubNode): number {
+  const nameA = a.name == null ? null : a.name.toLowerCase();
+  const nameB = b.name == null ? null : b.name.toLowerCase();
+  if (nameA !== nameB) {
+    if (nameA === null) return 1;
+    if (nameB === null) return -1;
+    return nameA < nameB ? -1 : 1;
+  }
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
+}
+
+/**
+ * Fills a node's tree children from a table listing that already holds every
+ * child, so the sidebar does not list the same node again. Never touches a list
+ * that still has pages to load.
+ */
+export function seedChildrenFromListing(
+  parentId: string,
+  nodeType: NodeType,
+  params: KnowledgeHubQueryParams,
+  response: KnowledgeHubApiResponse,
+): void {
+  // A source still being prepared answers an empty page with no cursor: its children are not listed yet, not none.
+  if (response.preparing) return;
+  // No pagination means nothing says the listing is complete.
+  if (response.pagination?.hasNext !== false) return;
+  if (Object.keys(params).some((key) => !PARAMS_THAT_KEEP_EVERY_CHILD.has(key))) return;
+  const state = useKnowledgeBaseStore.getState();
+  if (state.nodeChildrenPagination.get(parentId)?.hasNext) return;
+
+  const containers = asArray(response.items).filter(isTreeContainer).sort(byServerNameOrder);
+  storeChildrenList(parentId, containers, {
+    hasNext: false,
+    nextCursor: null,
+    nodeType: nodeTypeOf(parentId, nodeType),
+    // In tree pages, so a later reload reads back every row.
+    pagesLoaded: Math.max(1, Math.ceil(containers.length / SIDEBAR_PAGINATION_PAGE_SIZE)),
+  });
+  if (containers.length > 0) state.addNodes(containers);
+  if (state.expandedFolders[parentId]) showFolderChildren(parentId);
 }
 
 /** Forgets in-flight loads so a new session never waits on the previous one's. */

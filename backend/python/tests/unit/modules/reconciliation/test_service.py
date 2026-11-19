@@ -140,6 +140,47 @@ def test_compute_diff_when_no_hash_overlap_indexes_all_new_and_deletes_all_old()
 	assert unchanged_map == {}
 
 
+def test_build_metadata_records_which_ids_are_groups_and_it_round_trips() -> None:
+    container = BlocksContainer(block_groups=[_block_group("g1", {"text": "x"})], blocks=[_block("b1", {"text": "x"})])
+    metadata = ReconciliationService().build_metadata(container)
+    assert metadata.block_group_ids == {"g1"}
+    assert ReconciliationMetadata.from_dict(metadata.to_dict()).block_group_ids == {"g1"}
+    # metadata stored before groups were recorded reads as "kinds unknown", not "no groups"
+    assert ReconciliationMetadata.from_dict({"hash_to_block_ids": {}, "block_id_to_index": {}}).block_group_ids is None
+
+
+def test_a_block_is_never_paired_with_a_group_id_when_both_record_their_groups() -> None:
+    service = ReconciliationService()
+    # A group and a block share a hash on both sides, listed in the opposite order
+    old = ReconciliationMetadata(hash_to_block_ids={"h": ["ob", "og"]}, block_group_ids={"og"})
+    new = ReconciliationMetadata(hash_to_block_ids={"h": ["ng", "nb"]}, block_group_ids={"ng"})
+    to_index, to_delete, unchanged = service.compute_diff(old, new)
+    assert unchanged == {"ng": "og", "nb": "ob"}
+    assert (to_index, to_delete) == (set(), set())
+
+
+def test_metadata_without_recorded_groups_pairs_new_blocks_with_its_tail() -> None:
+    """Metadata from before groups were recorded lists each hash as [groups..., blocks...]. After the
+    class-units hash bump a class equal to its only block keeps the block's hash and loses the group's:
+    the block must keep its own id (and vector), and the old group id is the one dropped."""
+    service = ReconciliationService()
+    old = ReconciliationMetadata(hash_to_block_ids={"h": ["og", "ob"], "class": ["og2"]})
+    new = ReconciliationMetadata(hash_to_block_ids={"h": ["nb"], "class-v2": ["ng"]}, block_group_ids={"ng"})
+    to_index, to_delete, unchanged = service.compute_diff(old, new)
+    assert unchanged == {"nb": "ob"}
+    assert to_index == {"ng"}
+    assert to_delete == {"og", "og2"}
+
+
+def test_metadata_without_recorded_groups_still_pairs_groups_with_its_head() -> None:
+    service = ReconciliationService()
+    old = ReconciliationMetadata(hash_to_block_ids={"h": ["og", "ob1", "ob2"]})
+    new = ReconciliationMetadata(hash_to_block_ids={"h": ["ng", "nb1", "nb2"]}, block_group_ids={"ng"})
+    _, to_delete, unchanged = service.compute_diff(old, new)
+    assert unchanged == {"ng": "og", "nb1": "ob1", "nb2": "ob2"}
+    assert to_delete == set()
+
+
 def test_apply_preserved_ids_updates_blocks_and_block_groups():
 	service = ReconciliationService()
 

@@ -79,6 +79,10 @@ export function documentRow(d: NeutralDoc): Row | null {
     artifact_set: d.artifactSet ?? null,
     retired_at:
       typeof d.retiredAt === 'number' ? String(Math.trunc(d.retiredAt)) : null,
+    // hidden write state; a document that never had any keeps the column defaults
+    write_seq:
+      typeof d.writeSeq === 'number' ? String(Math.trunc(d.writeSeq)) : '0',
+    writers: arr(d.writers),
     version: typeof d.__v === 'number' ? d.__v : 0,
     created_at: created,
     updated_at: msToIso(d.updatedAt) ?? created,

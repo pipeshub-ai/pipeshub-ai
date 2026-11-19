@@ -147,6 +147,7 @@ class _Entities:
         self.fail_set_payload = False
         self.before_read: list = []
         self.by_id_writes: list[tuple[list[str], dict]] = []
+        self.by_id_orgs: list[str] = []
         # When set, scroll answers from this stale copy (OpenSearch search
         # lags by-id writes until the index refreshes).
         self.search_view: dict | None = None
@@ -193,8 +194,9 @@ class _Entities:
             if self._matches(point.payload, filter):
                 point.payload.update(copy.deepcopy(payload))
 
-    async def update_payload_by_ids(self, collection_name, ids, payload):
+    async def update_payload_by_ids(self, collection_name, ids, payload, *, org_id):
         self.by_id_writes.append((sorted(ids), copy.deepcopy(payload)))
+        self.by_id_orgs.append(org_id)
         if self.fail_set_payload:
             raise RuntimeError("vector db down")
         for point_id in ids:
@@ -248,6 +250,7 @@ class TestConnectorDeletion:
         (ids, payload), = entities.by_id_writes
         assert ids == ["topic:t1"]
         assert payload == {"connectorIds": ["conn-b"], "recordGroupIds": ["gb"]}
+        assert entities.by_id_orgs == ["org-1"]
 
     @pytest.mark.asyncio
     async def test_exclusive_taxonomy_entity_is_deleted(self) -> None:
@@ -429,6 +432,7 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
         )
 
         assert _membership(entities, "topic:t1") == (["conn-b"], ["gb"])
+        assert entities.by_id_orgs == ["org-1"]
 
     @pytest.mark.asyncio
     async def test_a_point_nothing_reaches_any_more_is_deleted(self) -> None:
@@ -484,7 +488,7 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
         )
         writes = {"n": 0}
 
-        async def _no_effect(collection_name, ids, payload):
+        async def _no_effect(collection_name, ids, payload, *, org_id):
             writes["n"] += 1
 
         entities.update_payload_by_ids = _no_effect
@@ -507,10 +511,10 @@ class TestExclusiveLookingPointsAreCheckedAgainstTheGraph:
         real_update = entities.update_payload_by_ids
         writes = {"n": 0}
 
-        async def _first_skipped(collection_name, ids, payload) -> None:
+        async def _first_skipped(collection_name, ids, payload, *, org_id) -> None:
             writes["n"] += 1
             if writes["n"] > 1:
-                await real_update(collection_name, ids, payload)
+                await real_update(collection_name, ids, payload, org_id=org_id)
 
         entities.update_payload_by_ids = _first_skipped
 
@@ -727,7 +731,7 @@ class TestNoProgressBehindAStalePage:
         entities.search_view = {"topic:t0": stale, "topic:t1": entities.points["topic:t1"]}
         writes: list[list[str]] = []
 
-        async def _no_effect(collection_name, ids, payload) -> None:
+        async def _no_effect(collection_name, ids, payload, *, org_id) -> None:
             writes.append(sorted(ids))
 
         entities.update_payload_by_ids = _no_effect

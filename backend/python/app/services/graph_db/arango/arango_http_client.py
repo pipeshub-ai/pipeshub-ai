@@ -14,6 +14,7 @@ import json
 import random
 import re
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from logging import Logger
 from typing import Any, Dict, List, Optional, TypeVar, Union, cast
@@ -21,7 +22,14 @@ from typing import Any, Dict, List, Optional, TypeVar, Union, cast
 import aiohttp
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.exceptions.graph_db_exceptions import GraphQueryError
+from app.core.org_context import spawn_detached
+from app.exceptions.graph_db_exceptions import GraphQueryError, RecordSchemaNarrowError
+from app.services.graph_db.arango.record_schema_guard import (
+    RecordSchemaGuard,
+    is_record_schema_error,
+)
+from app.utils import error_class
+from app.utils.db_query_log import query_ended, query_logged
 
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
@@ -69,6 +77,132 @@ def is_write_conflict(error: BaseException | str) -> bool:
     if isinstance(error, ArangoQueryError) and error.error_num is not None:
         return error.error_num == ARANGO_CONFLICT
     return bool(_CONFLICT_RE.search(str(error)))
+
+
+# The code of a failed call, for its log record only (retry decisions read _CONFLICT_RE): the body's errorNum, else the
+# bracketed forms this client writes itself, anchored so that a "[0]" inside an errorMessage is not taken for one.
+_ERROR_NUM_FIELD = re.compile(r'"errorNum"\s*:\s*(\d+)')
+_OWN_ERROR_NUM = re.compile(r"(?:Item \d+|Document \S+|failed): \[(\d+)\]")
+_STATUS_FORMS = (re.compile(r'"code"\s*:\s*(\d+)'), re.compile(r"\(status=(\d+)\)"), re.compile(r"HTTP (\d+)"))
+_CLASS_BY_ERROR_NUM = {
+    1200: "conflict", 1210: "conflict", 29: "conflict", 1654: "conflict", 1655: "conflict",  # lost to another writer, or the transaction was
+    18: "timeout", 1500: "timeout",  # a lock wait or max_runtime ran out
+    1202: "not_found",
+}
+_SKIP = (__name__,)
+
+
+def _error_nums(error: Exception) -> list[int]:
+    if isinstance(error, ArangoQueryError) and error.error_num is not None:
+        return [error.error_num]
+    text = str(error)
+    if found := _ERROR_NUM_FIELD.search(text):
+        return [int(found.group(1))]
+    return [int(n) for n in _OWN_ERROR_NUM.findall(text)]
+
+
+def _status(error: Exception) -> int | None:
+    if isinstance(error, ArangoQueryError):
+        return error.status
+    text = str(error)
+    for form in _STATUS_FORMS:
+        if found := form.search(text):
+            return int(found.group(1))
+    return None
+
+
+def _class_by_status(status: int) -> str:
+    if status in (401, 403):
+        return "misconfigured"  # our database credentials
+    if status in (408, 504):
+        return "timeout"
+    if status == 503:
+        return "unavailable"
+    return "upstream_5xx" if status >= 500 else "internal"  # a 4xx (or an item error in a 202) is our AQL or our document
+
+
+def describe_arango_error(error: Exception) -> tuple[int | None, str, dict[str, object], bool]:
+    """(errorNum, error_class, {status}, hide_text) of a failed call. The first item's number is the code; the class is the first
+    one the table knows, so a batch where one item lost a conflict reads as a conflict."""
+    nums, status = _error_nums(error), _status(error)
+    known = [_CLASS_BY_ERROR_NUM[n] for n in nums if n in _CLASS_BY_ERROR_NUM]
+    if known:
+        cls = known[0]
+    elif status is None:
+        cls = error_class.classify_error(error)
+    else:
+        cls = _class_by_status(status)
+    return (nums[0] if nums else None), cls, ({"status": status} if status is not None else {}), True
+
+
+def _logged(op: str):  # noqa: ANN202
+    return query_logged("arango", op, describe=describe_arango_error, skip=_SKIP)
+
+
+
+def _sends_per_item(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
+    """Marks a batch write whose items land one by one: the guard never sends such a batch again whole (the items that landed would be
+    written twice, and a newer write by someone else undone). The write itself sends again only the items the records schema refused."""
+    write.sends_per_item = True  # type: ignore[attr-defined]
+    return write
+
+
+def _record_schema_guarded(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
+    """A write that may touch ``records``: a refusal by the records schema (errorNum 1620) is handled here.
+
+    Inside a stream transaction the transaction is aborted before any caller code runs (a 1620 does not abort it
+    on the server, and a handler that logs and goes on would commit the statements around it), and
+    ``RecordSchemaNarrowError`` is raised for the owner of the transaction to run it again. Outside one the
+    statement wrote nothing, so the schema is widened and the statement is sent once more.
+    """
+    signature = inspect.signature(write)
+    per_item = bool(getattr(write, "sends_per_item", False))
+
+    @functools.wraps(write)
+    async def run(self: "ArangoHTTPClient", *args: object, **kwargs: object) -> _W:
+        guard = self.record_guard
+        if guard is None:
+            return await write(self, *args, **kwargs)
+        txn = signature.bind(self, *args, **kwargs).arguments.get("txn_id")
+        guard.check_usable(txn)
+        try:
+            return await write(self, *args, **kwargs)
+        except Exception as error:
+            if not is_record_schema_error(error):
+                raise
+            if txn:
+                # Aborted first, whatever the schema says now: the server leaves the transaction open on a 1620, and a
+                # schema change does not wait for a transaction whose first records write was the refused one, so another
+                # process may have widened it between the refusal and the check below.
+                await self._abort_record_schema_refused_transaction(txn)
+                # Always the rerun error: a wide schema now cannot tell a bad value from a narrow schema widened since.
+                # A bad value is refused again on the rerun, whose attempts are bounded, and stays the cause of this error.
+                if not await guard.is_wide():
+                    guard.note_narrow()
+                    self._widen_records_schema_in_background()
+                raise RecordSchemaNarrowError(f"the records schema refused a write in transaction {txn}; it was aborted") from error
+            # Outside a transaction the statement wrote nothing. Whatever the schema says now (another process may have widened
+            # it between the refusal and this check), it is sent once more; a data error fails again and is raised.
+            guard.note_narrow()
+            mode = signature.bind(self, *args, **kwargs).arguments.get("overwrite_mode", "update")
+            await guard.ensure_wide("1620")
+            if per_item:
+                # The write already sent the refused items again after the widening; a refusal that is left is the data's, or the schema is still narrow.
+                if await guard.is_wide():
+                    raise
+                raise RecordSchemaNarrowError("the records schema still refuses items of a batch after it was widened") from error
+            if mode not in ("update", "replace"):
+                if await guard.is_wide():
+                    raise
+                raise RecordSchemaNarrowError("the records schema refused a write that cannot be sent again") from error
+        try:
+            return await write(self, *args, **kwargs)
+        except Exception as error:
+            if is_record_schema_error(error) and not await guard.is_wide():
+                raise RecordSchemaNarrowError("the records schema still refuses the write after it was widened") from error
+            raise
+
+    return run
 
 
 def _retries_write_conflicts(write: Callable[..., Awaitable[_W]]) -> Callable[..., Awaitable[_W]]:
@@ -167,6 +301,8 @@ class ArangoHTTPClient:
         self._sessions_lock = threading.Lock()
         self.pool_limit = pool_limit
         self.logger = logger
+        # Set by the provider that knows the records schema; None leaves every write as it was.
+        self.record_guard: RecordSchemaGuard | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """
@@ -193,7 +329,7 @@ class ArangoHTTPClient:
                     connector=aiohttp.TCPConnector(limit=self.pool_limit),
                 )
                 self._sessions[current_loop] = session
-                self.logger.debug("🔄 Created new HTTP session for current event loop")
+                self.logger.debug("Created new HTTP session for current event loop")
 
         return session
 
@@ -211,14 +347,14 @@ class ArangoHTTPClient:
             async with session.get(f"{self.base_url}/_api/version") as resp:
                 if resp.status == HttpStatusCode.OK.value:
                     version_info = await resp.json()
-                    self.logger.info(f"✅ Connected to ArangoDB {version_info.get('version')}")
+                    self.logger.info(f"Connected to ArangoDB {version_info.get('version')}")
                     return True
                 else:
-                    self.logger.error(f"❌ Connection test failed: {resp.status}")
+                    self.logger.error(f"Connection test failed: {resp.status}")
                     return False
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to connect to ArangoDB: {str(e)}")
+            error_class.log_failure(self.logger, "db.connect.failed", e, backend="arango")
             return False
 
     async def disconnect(self) -> None:
@@ -237,7 +373,7 @@ class ArangoHTTPClient:
                         await asyncio.wait_for(asyncio.wrap_future(future), timeout=5)
                 except Exception as error:
                     self.logger.warning("Error closing an ArangoDB HTTP session: %s", error)
-            self.logger.info("✅ Disconnected from ArangoDB")
+            self.logger.info("Disconnected from ArangoDB")
 
     # ==================== Error Checking Helpers ====================
 
@@ -266,14 +402,12 @@ class ArangoHTTPClient:
 
             if errors:
                 error_details = "; ".join(errors)
-                self.logger.error(f"❌ {operation} had {len(errors)} error(s): {error_details}")
                 raise Exception(f"{operation} failed with {len(errors)} error(s): {error_details}")
 
         # Check if result is a dict with error flag
         elif isinstance(result, dict) and result.get('error') is True:
             error_msg = result.get('errorMessage', 'Unknown error')
             error_num = result.get('errorNum', 'Unknown')
-            self.logger.error(f"❌ {operation} failed: [{error_num}] {error_msg}")
             raise Exception(f"{operation} failed: [{error_num}] {error_msg}")
 
     # ==================== Database Management ====================
@@ -307,18 +441,19 @@ class ArangoHTTPClient:
         session = await self._get_session()
         async with session.post(url, json=payload) as resp:
             if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
-                self.logger.info(f"✅ Database '{db_name}' created")
+                self.logger.info(f"Database '{db_name}' created")
                 return True
             elif resp.status == HttpStatusCode.CONFLICT.value:
                 self.logger.info(f"Database '{db_name}' already exists")
                 return True
             else:
                 error = await resp.text()
-                self.logger.error(f"❌ Failed to create database: {error}")
+                self.logger.error(f"Failed to create database: {error}")
                 return False
 
     # ==================== Transaction Management ====================
 
+    @_logged("begin_transaction")
     async def begin_transaction(
         self,
         read: List[str],
@@ -338,6 +473,10 @@ class ArangoHTTPClient:
         Returns:
             str: Transaction ID
         """
+        guard = self.record_guard
+        if guard is not None and guard.narrowed:
+            # a run of a transaction that was aborted by a schema refusal: give the widening up to 5 s to land
+            await guard.wait_wide()
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/begin"
 
         payload = {
@@ -350,22 +489,19 @@ class ArangoHTTPClient:
         if lock_timeout_seconds is not None:
             payload["lockTimeout"] = lock_timeout_seconds
 
-        try:
-            session = await self._get_session()
-            async with session.post(url, json=payload) as resp:
-                if resp.status != HttpStatusCode.CREATED.value:
-                    error = await resp.text()
-                    raise Exception(f"Failed to begin transaction: {error}")
+        session = await self._get_session()
+        async with session.post(url, json=payload) as resp:
+            if resp.status != HttpStatusCode.CREATED.value:
+                error = await resp.text()
+                raise Exception(f"Failed to begin transaction: {error}")
 
-                result = await resp.json()
-                txn_id = result["result"]["id"]
-                self.logger.debug(f"🔄 Transaction started: {txn_id}")
-                return txn_id
+            result = await resp.json()
+            txn_id = result["result"]["id"]
+            self.logger.debug(f"Transaction started: {txn_id}")
+            return txn_id
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to begin transaction: {str(e)}")
-            raise
 
+    @_logged("commit_transaction")
     async def commit_transaction(self, txn_id: str) -> None:
         """
         Commit a transaction.
@@ -373,21 +509,20 @@ class ArangoHTTPClient:
         Args:
             txn_id: Transaction ID returned by begin_transaction
         """
+        if self.record_guard is not None:
+            self.record_guard.check_usable(txn_id)
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
 
-        try:
-            session = await self._get_session()
-            async with session.put(url) as resp:
-                if resp.status not in [200, 204]:
-                    error = await resp.text()
-                    raise Exception(f"Failed to commit transaction: {error}")
+        session = await self._get_session()
+        async with session.put(url) as resp:
+            if resp.status not in [200, 204]:
+                error = await resp.text()
+                raise Exception(f"Failed to commit transaction: {error}")
 
-                self.logger.debug(f"✅ Transaction committed: {txn_id}")
+            self.logger.debug(f"Transaction committed: {txn_id}")
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to commit transaction: {str(e)}")
-            raise
 
+    @_logged("abort_transaction")
     async def abort_transaction(self, txn_id: str) -> None:
         """
         Abort a transaction.
@@ -395,20 +530,53 @@ class ArangoHTTPClient:
         Args:
             txn_id: Transaction ID returned by begin_transaction
         """
+        if self.record_guard is not None and self.record_guard.is_abort_confirmed(txn_id):
+            return  # the server confirmed the abort a schema refusal made; one that did not is sent again here
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
 
+        session = await self._get_session()
+        async with session.delete(url) as resp:
+            if resp.status not in [200, 204, HttpStatusCode.NOT_FOUND.value]:  # 404: already gone
+                error = await resp.text()
+                raise Exception(f"Failed to abort transaction: {error}")
+
+            if self.record_guard is not None:
+                self.record_guard.mark_abort_confirmed(txn_id)
+            self.logger.debug(f"Transaction aborted: {txn_id}")
+
+
+    async def _abort_record_schema_refused_transaction(self, txn_id: str) -> None:
+        """Abort ``txn_id`` and remember it, so a caller that catches the error and goes on can neither write nor commit."""
+        guard = self.record_guard
+        assert guard is not None
+        guard.mark_aborted(txn_id)  # first: whatever the server answers, nothing more is written or committed in it
         try:
+            url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
             session = await self._get_session()
             async with session.delete(url) as resp:
-                if resp.status not in [200, 204]:
-                    error = await resp.text()
-                    raise Exception(f"Failed to abort transaction: {error}")
+                if resp.status in [200, 204, HttpStatusCode.NOT_FOUND.value]:
+                    guard.mark_abort_confirmed(txn_id)
+                else:
+                    self.logger.warning("could not abort transaction %s: %s", txn_id, await resp.text())
+        except Exception as exc:  # the caller gets RecordSchemaNarrowError; its owner's clean-up sends the abort again
+            self.logger.warning("could not abort transaction %s: %s", txn_id, exc)
 
-                self.logger.debug(f"🔄 Transaction aborted: {txn_id}")
+    def _widen_records_schema_in_background(self) -> None:
+        """Widen the schema in a task of its own, never inside the transaction that was refused."""
+        guard = self.record_guard
+        assert guard is not None
+        task = spawn_detached(guard.ensure_wide("1620"), name="record-schema-widen")
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to abort transaction: {str(e)}")
-            raise
+    async def list_running_transactions(self) -> list[dict[str, Any]]:
+        """The stream transactions running now (``GET /_api/transaction``; per database)."""
+        url = f"{self.base_url}/_db/{self.database}/_api/transaction"
+        session = await self._get_session()
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status != HttpStatusCode.OK.value:
+                raise RuntimeError(f"could not list transactions (HTTP {resp.status})")
+            return list((await resp.json()).get("transactions") or [])
+
 
     # ==================== Document Operations ====================
 
@@ -439,21 +607,32 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
+        started = time.perf_counter()
         try:
             session = await self._get_session()
             async with session.get(url, headers=headers) as resp:
                 if resp.status == HttpStatusCode.NOT_FOUND.value:
+                    absent = ArangoQueryError("Get document", resp.status, await resp.text())
+                    if absent.error_num not in (None, ARANGO_ERROR_DOCUMENT_NOT_FOUND):  # 1203: the collection is missing, not the document
+                        query_ended(self.logger, "arango", "get_document", started, absent, describe=describe_arango_error, skip=_SKIP)
+                    else:  # an absent document is an answer: only a slow lookup writes a record
+                        query_ended(self.logger, "arango", "get_document", started, describe=describe_arango_error, skip=_SKIP)
                     return None
                 elif resp.status == HttpStatusCode.OK.value:
-                    return await resp.json()
+                    document = await resp.json()
+                    query_ended(self.logger, "arango", "get_document", started, describe=describe_arango_error, skip=_SKIP)  # slow only
+                    return document
                 else:
-                    error = await resp.text()
-                    self.logger.error(f"❌ Failed to get document: {error}")
+                    failed = ArangoQueryError("Get document", resp.status, await resp.text())
+                    query_ended(self.logger, "arango", "get_document", started, failed, describe=describe_arango_error, skip=_SKIP)
                     if raise_on_error:
-                        raise GraphQueryError(
+                        unreadable = GraphQueryError(
                             f"Could not read {collection}/{key}: "
                             f"ArangoDB answered {resp.status}"
                         )
+                        # Not chained (a 410 cause would count as a lost attempt in the KB push retry): the class only.
+                        error_class.mark_error(unreadable, error_class.classify_error(failed))
+                        raise unreadable
                     return None
 
         except GraphQueryError:
@@ -461,11 +640,12 @@ class ArangoHTTPClient:
             # and, without the flag, swallow the very failure we chose to report.
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error getting document: {str(e)}")
+            query_ended(self.logger, "arango", "get_document", started, e, describe=describe_arango_error, skip=_SKIP)
             if raise_on_error:
                 raise
             return None
 
+    @_logged("create_document")
     @_retries_write_conflicts
     async def create_document(
         self,
@@ -491,29 +671,26 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-        try:
-            session = await self._get_session()
-            async with session.post(url, json=document, headers=headers) as resp:
-                if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
-                    result = await resp.json()
-                    self._check_response_for_errors(result, "Create document")
-                    return result
-                elif resp.status == HttpStatusCode.CONFLICT.value:
-                    error = await resp.text()
-                    # 409 is also a write conflict: the document was not written.
-                    if is_write_conflict(error):
-                        raise Exception(f"Failed to create document (status={resp.status}): {error}")
-                    # Document already exists, treat as success
-                    return {"_key": document.get("_key")}
-                else:
-                    error = await resp.text()
-                    self.logger.error(f"❌ Failed to create document: {error}")
+        session = await self._get_session()
+        async with session.post(url, json=document, headers=headers) as resp:
+            if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
+                result = await resp.json()
+                self._check_response_for_errors(result, "Create document")
+                return result
+            elif resp.status == HttpStatusCode.CONFLICT.value:
+                error = await resp.text()
+                # 409 is also a write conflict: the document was not written.
+                if is_write_conflict(error):
                     raise Exception(f"Failed to create document (status={resp.status}): {error}")
+                # Document already exists, treat as success
+                return {"_key": document.get("_key")}
+            else:
+                error = await resp.text()
+                raise Exception(f"Failed to create document (status={resp.status}): {error}")
 
-        except Exception as e:
-            self.logger.error(f"❌ Error creating document: {str(e)}")
-            raise
 
+    @_record_schema_guarded
+    @_logged("update_document")
     @_retries_write_conflicts
     async def update_document(
         self,
@@ -541,22 +718,44 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-        try:
-            session = await self._get_session()
-            async with session.patch(url, json=updates, headers=headers) as resp:
-                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
-                    result = await resp.json()
-                    self._check_response_for_errors(result, "Update document")
-                    return result
-                else:
-                    error = await resp.text()
-                    self.logger.error(f"❌ Failed to update document: {error}")
-                    raise Exception(f"Failed to update document (status={resp.status}): {error}")
+        session = await self._get_session()
+        async with session.patch(url, json=updates, headers=headers) as resp:
+            if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
+                result = await resp.json()
+                self._check_response_for_errors(result, "Update document")
+                return result
+            else:
+                error = await resp.text()
+                raise Exception(f"Failed to update document (status={resp.status}): {error}")
 
-        except Exception as e:
-            self.logger.error(f"❌ Error updating document: {str(e)}")
-            raise
 
+    @_record_schema_guarded
+    async def patch_document_if_match(
+        self,
+        collection: str,
+        key: str,
+        updates: dict[str, Any],
+        revision: str,
+        txn_id: Optional[str] = None,
+    ) -> bool:
+        """Update a document with a plain ``PATCH`` that the server applies only while the document is still at ``revision``
+        (``If-Match``). False when it has changed since (412); no AQL, so no query to plan. A write conflict is not
+        retried here: the caller decides what a changed document means."""
+        url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}/{key}"
+        headers = {"If-Match": revision}
+        if txn_id:
+            headers["x-arango-trx-id"] = txn_id
+        session = await self._get_session()
+        async with session.patch(url, json=updates, headers=headers) as resp:
+            if resp.status in (HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value):
+                self._check_response_for_errors(await resp.json(), "Conditional update document")
+                return True
+            error = await resp.text()
+            if resp.status == 412 or is_write_conflict(error):
+                return False
+            raise Exception(f"Failed to update document (status={resp.status}): {error}")
+
+    @_logged("delete_document")
     @_retries_write_conflicts
     async def delete_document(
         self,
@@ -582,29 +781,26 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-        try:
-            session = await self._get_session()
-            async with session.delete(url, headers=headers) as resp:
-                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value, HttpStatusCode.NO_CONTENT.value]:
-                    # Try to parse response for error checking
-                    try:
-                        result = await resp.json()
-                        self._check_response_for_errors(result, "Delete document")
-                    except (ValueError, TypeError, aiohttp.ContentTypeError):
-                        # Response might be empty for successful deletes
-                        pass
-                    return True
-                else:
-                    error = await resp.text()
-                    self.logger.error(f"❌ Failed to delete document: {error}")
-                    raise Exception(f"Failed to delete document (status={resp.status}): {error}")
+        session = await self._get_session()
+        async with session.delete(url, headers=headers) as resp:
+            if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value, HttpStatusCode.NO_CONTENT.value]:
+                # Try to parse response for error checking
+                try:
+                    result = await resp.json()
+                    self._check_response_for_errors(result, "Delete document")
+                except (ValueError, TypeError, aiohttp.ContentTypeError):
+                    # Response might be empty for successful deletes
+                    pass
+                return True
+            else:
+                error = await resp.text()
+                raise Exception(f"Failed to delete document (status={resp.status}): {error}")
 
-        except Exception as e:
-            self.logger.error(f"❌ Error deleting document: {str(e)}")
-            raise
 
     # ==================== Query Operations ====================
 
+    @_record_schema_guarded
+    @_logged("execute_aql")
     @_retries_write_conflicts
     async def execute_aql(
         self,
@@ -651,39 +847,38 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-        try:
-            session = await self._get_session()
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status not in [200, 201]:
-                    error = await resp.text()
-                    raise ArangoQueryError("Query failed", resp.status, error)
+        session = await self._get_session()
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status not in [200, 201]:
+                error = await resp.text()
+                raise ArangoQueryError("Query failed", resp.status, error)
 
-                result = await resp.json()
-                self._check_response_for_errors(result, "Query execution")
-                results = result.get("result", [])
+            result = await resp.json()
+            self._check_response_for_errors(result, "Query execution")
+            results = result.get("result", [])
 
-                # Handle cursor for large result sets
-                while result.get("hasMore"):
-                    cursor_id = result.get("id")
-                    cursor_url = f"{self.base_url}/_db/{self.database}/_api/cursor/{cursor_id}"
+            # Handle cursor for large result sets
+            while result.get("hasMore"):
+                cursor_id = result.get("id")
+                cursor_url = f"{self.base_url}/_db/{self.database}/_api/cursor/{cursor_id}"
 
-                    async with session.put(cursor_url, headers=headers) as cursor_resp:
-                        if cursor_resp.status not in [200, 201]:
-                            error = await cursor_resp.text()
-                            raise ArangoQueryError("Cursor fetch failed", cursor_resp.status, error)
+                async with session.put(cursor_url, headers=headers) as cursor_resp:
+                    if cursor_resp.status not in [200, 201]:
+                        error = await cursor_resp.text()
+                        raise ArangoQueryError("Cursor fetch failed", cursor_resp.status, error)
 
-                        result = await cursor_resp.json()
-                        self._check_response_for_errors(result, "Cursor fetch")
-                        results.extend(result.get("result", []))
+                    result = await cursor_resp.json()
+                    self._check_response_for_errors(result, "Cursor fetch")
+                    results.extend(result.get("result", []))
 
-                return results
+            return results
 
-        except Exception as e:
-            self.logger.error(f"❌ Query execution failed: {str(e)}")
-            raise
 
     # ==================== Batch Operations ====================
 
+    @_record_schema_guarded
+    @_sends_per_item
+    @_logged("batch_insert_documents")
     async def batch_insert_documents(
     self,
     collection: str,
@@ -735,50 +930,55 @@ class ArangoHTTPClient:
                 headers=headers
             ) as resp:
                 if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
-                    result = await resp.json()
-                    self.logger.debug(f"✅ Batch insert response: status={resp.status}, result={result}")
-                    return result
+                    return await resp.json()
                 error = await resp.text()
-                self.logger.error(f"❌ Batch insert failed (status={resp.status}): {error}")
                 raise Exception(f"Batch insert failed (status={resp.status}): {error}")
 
-        try:
-            result = await _send_until_landed(documents, txn_id, send)
+        result = await _send_until_landed(documents, txn_id, send)
+        guard = self.record_guard
+        if guard is not None and not txn_id and isinstance(result, list):
+            # Items land one by one: the ones the records schema refused did not, the others did. Widen, then send only the refused ones.
+            refused = [i for i, answer in enumerate(result) if is_record_schema_error(str(answer)) and isinstance(answer, dict) and answer.get("error")]
+            if refused:
+                guard.note_narrow()
+                await guard.ensure_wide("1620")
+                again = await _send_until_landed([documents[i] for i in refused], txn_id, send)
+                if isinstance(again, list) and len(again) == len(refused):
+                    for i, answer in zip(refused, again):
+                        result[i] = answer
 
-            # Check for errors in response
-            self._check_response_for_errors(result, "Batch insert")
+        # Check for errors in response
+        self._check_response_for_errors(result, "Batch insert")
 
-            # Count created vs updated based on response
-            created_count = 0
-            updated_count = 0
-            error_count = 0
+        # Count created vs updated based on response
+        created_count = 0
+        updated_count = 0
+        error_count = 0
 
-            if isinstance(result, list):
-                for item in result:
-                    if isinstance(item, dict):
-                        if item.get("error"):
-                            error_count += 1
-                        elif item.get("_oldRev"):
-                            # Document had a previous revision = updated
-                            updated_count += 1
-                        else:
-                            # New document = created
-                            created_count += 1
-            else:
-                # Single document response
-                created_count = 1
+        if isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict):
+                    if item.get("error"):
+                        error_count += 1
+                    elif item.get("_oldRev"):
+                        # Document had a previous revision = updated
+                        updated_count += 1
+                    else:
+                        # New document = created
+                        created_count += 1
+        else:
+            # Single document response
+            created_count = 1
 
-            return {
-                "created": created_count,
-                "updated": updated_count,
-                "errors": error_count,
-                "result": result
-            }
+        return {
+            "created": created_count,
+            "updated": updated_count,
+            "errors": error_count,
+            "result": result
+        }
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch insert error: {str(e)}")
-            raise
 
+    @_logged("batch_delete_documents")
     async def batch_delete_documents(
         self,
         collection: str,
@@ -820,45 +1020,40 @@ class ArangoHTTPClient:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value]:
                     return await resp.json()
                 error_text = await resp.text()
-                self.logger.error(f"❌ Batch delete failed with status {resp.status}: {error_text}")
                 raise Exception(f"Batch delete failed: HTTP {resp.status} - {error_text}")
 
-        try:
-            # A delete of an array always answers with one result per document.
-            results = cast(list[dict[str, Any]], await _send_until_landed(document_ids, txn_id, send))
+        # A delete of an array always answers with one result per document.
+        results = cast(list[dict[str, Any]], await _send_until_landed(document_ids, txn_id, send))
 
-            # Results is an array of deletion results
-            deleted_count = 0
-            errors = []
+        # Results is an array of deletion results
+        deleted_count = 0
+        errors = []
 
-            for idx, result in enumerate(results):
-                # Check if this deletion was successful
-                if result.get("error"):
-                    # Handle 404 as success (document already deleted)
-                    error_num = result.get("errorNum")
-                    if error_num == ARANGO_ERROR_DOCUMENT_NOT_FOUND:  # Document not found
-                        deleted_count += 1
-                        self.logger.debug(f"Document {document_ids[idx]} already deleted (404)")
-                    else:
-                        error_msg = result.get("errorMessage", "Unknown error")
-                        errors.append(f"Document {document_ids[idx]}: [{error_num}] {error_msg}")
-                else:
+        for idx, result in enumerate(results):
+            # Check if this deletion was successful
+            if result.get("error"):
+                # Handle 404 as success (document already deleted)
+                error_num = result.get("errorNum")
+                if error_num == ARANGO_ERROR_DOCUMENT_NOT_FOUND:  # Document not found
                     deleted_count += 1
+                    self.logger.debug(f"Document {document_ids[idx]} already deleted (404)")
+                else:
+                    error_msg = result.get("errorMessage", "Unknown error")
+                    errors.append(f"Document {document_ids[idx]}: [{error_num}] {error_msg}")
+            else:
+                deleted_count += 1
 
-            if errors:
-                error_details = "; ".join(errors)
-                self.logger.error(f"❌ Batch delete had {len(errors)} error(s): {error_details}")
-                raise Exception(f"Batch delete failed with {len(errors)} error(s): {error_details}")
+        if errors:
+            error_details = "; ".join(errors)
+            raise Exception(f"Batch delete failed with {len(errors)} error(s): {error_details}")
 
-            self.logger.info(f"✅ Batch deleted {deleted_count} documents from {collection}")
-            return deleted_count
+        self.logger.debug(f"Batch deleted {deleted_count} documents from {collection}")
+        return deleted_count
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch delete failed: {str(e)}")
-            raise
 
     # ==================== Edge Operations ====================
 
+    @_logged("create_edge")
     @_retries_write_conflicts
     async def create_edge(
         self,
@@ -892,28 +1087,23 @@ class ArangoHTTPClient:
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-        try:
-            session = await self._get_session()
-            async with session.post(url, json=edge_doc, headers=headers) as resp:
-                if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
-                    result = await resp.json()
-                    self._check_response_for_errors(result, "Create edge")
-                    return result
-                elif resp.status == HttpStatusCode.CONFLICT.value:
-                    error = await resp.text()
-                    # 409 is also a write conflict: the edge was not written.
-                    if is_write_conflict(error):
-                        raise Exception(f"Failed to create edge (status={resp.status}): {error}")
-                    # Edge already exists
-                    return {"_key": edge_doc.get("_key")}
-                else:
-                    error = await resp.text()
-                    self.logger.error(f"❌ Failed to create edge: {error}")
+        session = await self._get_session()
+        async with session.post(url, json=edge_doc, headers=headers) as resp:
+            if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
+                result = await resp.json()
+                self._check_response_for_errors(result, "Create edge")
+                return result
+            elif resp.status == HttpStatusCode.CONFLICT.value:
+                error = await resp.text()
+                # 409 is also a write conflict: the edge was not written.
+                if is_write_conflict(error):
                     raise Exception(f"Failed to create edge (status={resp.status}): {error}")
+                # Edge already exists
+                return {"_key": edge_doc.get("_key")}
+            else:
+                error = await resp.text()
+                raise Exception(f"Failed to create edge (status={resp.status}): {error}")
 
-        except Exception as e:
-            self.logger.error(f"❌ Error creating edge: {str(e)}")
-            raise
 
     async def delete_edge(
         self,
@@ -955,7 +1145,7 @@ class ArangoHTTPClient:
             return False
 
         except Exception as e:
-            self.logger.error(f"❌ Error deleting edge: {str(e)}")
+            error_class.log_failure(self.logger, "db.edge.failed", e, backend="arango", op="delete_edge")
             return False
 
     # ==================== Collection Operations ====================
@@ -1004,18 +1194,18 @@ class ArangoHTTPClient:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
-                    self.logger.info(f"✅ Collection '{name}' created")
+                    self.logger.info(f"Collection '{name}' created")
                     return True
                 elif resp.status == HttpStatusCode.CONFLICT.value:
                     self.logger.debug(f"Collection '{name}' already exists")
                     return True
                 else:
                     error = await resp.text()
-                    self.logger.error(f"❌ Failed to create collection: {error}")
+                    self.logger.error(f"Failed to create collection: {error}")
                     return False
 
         except Exception as e:
-            self.logger.error(f"❌ Error creating collection: {str(e)}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="create_collection")
             return False
 
     async def get_indexes(self, collection_name: str) -> list[dict]:
@@ -1027,6 +1217,14 @@ class ArangoHTTPClient:
                 raise Exception(f"Could not list the indexes of {collection_name}: {await resp.text()}")
             body = await resp.json()
         return list(body.get("indexes", []))
+
+    async def drop_index(self, index_id: str) -> None:
+        """Drop the index ``index_id`` ("<collection>/<id>"). Raises when it cannot."""
+        url = f"{self.base_url}/_db/{self.database}/_api/index/{index_id}"
+        session = await self._get_session()
+        async with session.delete(url) as resp:
+            if resp.status not in (HttpStatusCode.OK.value, HttpStatusCode.NOT_FOUND.value):
+                raise Exception(f"Could not drop index {index_id}: {await resp.text()}")
 
     async def ensure_persistent_index(
         self,
@@ -1068,24 +1266,26 @@ class ArangoHTTPClient:
             async with session.post(url, json=payload) as resp:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
                     self.logger.info(
-                        f"✅ Persistent index on {fields} in '{collection_name}' ensured"
+                        f"Persistent index on {fields} in '{collection_name}' ensured"
                     )
                     return True
                 else:
                     error = await resp.text()
-                    self.logger.error(f"❌ Failed to create index: {error}")
+                    self.logger.error(f"Failed to create index: {error}")
                     return False
         except Exception as e:
-            self.logger.error(f"❌ Error creating index: {str(e)}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="ensure_persistent_index")
             return False
 
     async def update_collection_schema(
         self,
         name: str,
-        schema: Optional[Dict[str, Any]] = None
+        schema: Optional[Dict[str, Any]] = None,
+        timeout: float | None = None,
     ) -> bool:
         """
-        Update the schema validation for an existing collection.
+        Update the schema validation for an existing collection. ``timeout`` (seconds) bounds the client's wait; the
+        server may still apply the change later.
 
         Args:
             name: Collection name
@@ -1105,9 +1305,10 @@ class ArangoHTTPClient:
 
         try:
             session = await self._get_session()
-            async with session.put(url, json=payload) as resp:
+            request_timeout = aiohttp.ClientTimeout(total=timeout) if timeout is not None else aiohttp.helpers.sentinel
+            async with session.put(url, json=payload, timeout=request_timeout) as resp:
                 if resp.status == HttpStatusCode.OK.value:
-                    self.logger.info(f"✅ Schema updated for collection '{name}'")
+                    self.logger.info(f"Schema updated for collection '{name}'")
                     return True
                 else:
                     error_data = await resp.json()
@@ -1116,7 +1317,7 @@ class ArangoHTTPClient:
                     # Check if schema is already configured (error code ARANGO_ERROR_SCHEMA_DUPLICATE or duplicate message)
                     error_num = error_data.get("errorNum", 0)
                     if error_num == ARANGO_ERROR_SCHEMA_DUPLICATE or "duplicate" in error_msg.lower():
-                        self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
+                        self.logger.info(f"Schema for '{name}' already configured, skipping")
                         return True
 
                     self.logger.warning(f"Failed to update schema for '{name}': {error_msg}")
@@ -1125,9 +1326,9 @@ class ArangoHTTPClient:
         except Exception as e:
             error_msg = str(e)
             if str(ARANGO_ERROR_SCHEMA_DUPLICATE) in error_msg or "duplicate" in error_msg.lower():
-                self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
+                self.logger.info(f"Schema for '{name}' already configured, skipping")
                 return True
-            self.logger.error(f"❌ Error updating collection schema: {error_msg}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="update_collection_schema")
             return False
 
     async def rename_collection(self, name: str, new_name: str) -> bool:
@@ -1143,7 +1344,7 @@ class ArangoHTTPClient:
             session = await self._get_session()
             async with session.put(url, json={"name": new_name}) as resp:
                 if resp.status == HttpStatusCode.OK.value:
-                    self.logger.info(f"✅ Renamed collection '{name}' -> '{new_name}'")
+                    self.logger.info(f"Renamed collection '{name}' -> '{new_name}'")
                     return True
 
                 self.logger.warning(
@@ -1153,7 +1354,7 @@ class ArangoHTTPClient:
                 return False
 
         except Exception as e:
-            self.logger.error(f"❌ Error renaming collection '{name}': {e}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="rename_collection")
             return False
 
     async def delete_collection(self, name: str) -> bool:
@@ -1164,7 +1365,7 @@ class ArangoHTTPClient:
             session = await self._get_session()
             async with session.delete(url) as resp:
                 if resp.status == HttpStatusCode.OK.value:
-                    self.logger.info(f"✅ Dropped collection '{name}'")
+                    self.logger.info(f"Dropped collection '{name}'")
                     return True
 
                 self.logger.warning(
@@ -1174,7 +1375,7 @@ class ArangoHTTPClient:
                 return False
 
         except Exception as e:
-            self.logger.error(f"❌ Error dropping collection '{name}': {e}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="delete_collection")
             return False
 
     async def remove_edge_definition(self, graph_name: str, edge_collection: str) -> bool:
@@ -1198,7 +1399,7 @@ class ArangoHTTPClient:
                 return False
 
         except Exception as e:
-            self.logger.error(f"❌ Error removing edge definition '{edge_collection}': {e}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="remove_edge_definition")
             return False
 
     # ==================== Graph Operations ====================
@@ -1275,17 +1476,17 @@ class ArangoHTTPClient:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
-                    self.logger.info(f"✅ Graph '{graph_name}' created")
+                    self.logger.info(f"Graph '{graph_name}' created")
                     return True
                 elif resp.status == HttpStatusCode.CONFLICT.value:
                     self.logger.debug(f"Graph '{graph_name}' already exists")
                     return True
                 else:
                     error = await resp.text()
-                    self.logger.error(f"❌ Failed to create graph: {error}")
+                    self.logger.error(f"Failed to create graph: {error}")
                     return False
         except Exception as e:
-            self.logger.error(f"❌ Error creating graph: {str(e)}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="create_graph")
             return False
 
     async def get_graph(self, graph_name: str) -> Optional[Dict]:
@@ -1306,14 +1507,14 @@ class ArangoHTTPClient:
                 if resp.status == HttpStatusCode.OK.value:
                     return await resp.json()
                 elif resp.status == HttpStatusCode.NOT_FOUND.value:
-                    self.logger.warning(f"Graph '{graph_name}' not found")
+                    self.logger.debug(f"Graph '{graph_name}' not found")
                     return None
                 else:
                     error = await resp.text()
-                    self.logger.error(f"❌ Failed to get graph: {error}")
+                    self.logger.error(f"Failed to get graph: {error}")
                     return None
         except Exception as e:
-            self.logger.error(f"❌ Error getting graph: {str(e)}")
+            error_class.log_failure(self.logger, "db.schema.failed", e, backend="arango", op="get_graph")
             return None
 
     # ==================== Helper Methods ====================
@@ -1326,6 +1527,6 @@ class ArangoHTTPClient:
             return None
         else:
             error = await resp.text()
-            self.logger.error(f"❌ {operation} failed ({resp.status}): {error}")
+            self.logger.error(f"{operation} failed ({resp.status}): {error}")
             return None
 

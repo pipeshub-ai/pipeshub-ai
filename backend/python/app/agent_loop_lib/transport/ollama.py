@@ -16,6 +16,7 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
+    StopReason,
     StructuredResponse,
     TokenUsage,
 )
@@ -157,6 +158,16 @@ class OllamaTransport(LLMTransport):
         self.total_llm_calls += 1
         return TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
 
+    @staticmethod
+    def _stop_reason_from(body: dict[str, Any], message: AssistantMessage) -> StopReason:
+        # done_reason == "length" means generation hit num_predict (or the context
+        # window): the text is cut off and a trailing tool call may be partial. Flag it
+        # so the turn loop can recover, as the Anthropic and Gemini transports do.
+        if body.get("done_reason") == "length":
+            message.truncated = True
+            return StopReason.MAX_TOKENS
+        return StopReason.END_TURN
+
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code: int | None = None
         retryable = isinstance(exc, (httpx.ConnectError, httpx.TimeoutException))
@@ -209,7 +220,8 @@ class OllamaTransport(LLMTransport):
         body = response.json()
         usage = self._usage_from(body)
         message = self._parse_message(body.get("message", {}))
-        return ModelResponse(message=message, usage=usage, model=resolved_model)
+        stop_reason = self._stop_reason_from(body, message)
+        return ModelResponse(message=message, usage=usage, stop_reason=stop_reason, model=resolved_model)
 
     async def complete_structured(
         self,
@@ -269,7 +281,9 @@ class OllamaTransport(LLMTransport):
 
         text_parts: list[str] = []
         final_raw_message: dict[str, Any] = {}
+        stream_tool_calls: list[dict[str, Any]] = []
         usage = TokenUsage()
+        done_body: dict[str, Any] = {}
         try:
             async with self._client.stream("POST", "/api/chat", json=payload) as response:
                 response.raise_for_status()
@@ -283,14 +297,24 @@ class OllamaTransport(LLMTransport):
                         text_parts.append(delta)
                         yield TextDeltaEvent(delta=delta)
                     if msg.get("tool_calls"):
+                        # Ollama can spread several tool calls over multiple chunks;
+                        # accumulate them instead of keeping only the last chunk's.
+                        stream_tool_calls.extend(msg["tool_calls"])
                         final_raw_message = msg
                     if chunk.get("done"):
                         usage = self._usage_from(chunk)
+                        done_body = chunk
                         if not final_raw_message:
                             final_raw_message = msg
         except Exception as exc:
             raise self._wrap_error(exc, "stream") from exc
 
         final_text = "".join(text_parts) or final_raw_message.get("content") or None
-        message = self._parse_message({**final_raw_message, "content": final_text})
-        yield StreamCompleteEvent(response=ModelResponse(message=message, usage=usage, model=resolved_model))
+        final_raw_message = {**final_raw_message, "content": final_text}
+        if stream_tool_calls:
+            final_raw_message["tool_calls"] = stream_tool_calls
+        message = self._parse_message(final_raw_message)
+        stop_reason = self._stop_reason_from(done_body, message)
+        yield StreamCompleteEvent(
+            response=ModelResponse(message=message, usage=usage, stop_reason=stop_reason, model=resolved_model)
+        )

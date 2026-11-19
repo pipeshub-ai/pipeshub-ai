@@ -8,8 +8,9 @@ import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-b
 import { toast } from '@/lib/store/toast-store';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { apiClient, isProcessedError } from '@/lib/api';
-import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
+import { isProcessedError } from '@/lib/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { isMcpInstanceReadOnly, McpInheritedCallout, McpManageAccess } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
 import { McpServersApi } from '../../api';
@@ -19,6 +20,8 @@ import { mcpConnectionState, usesSharedCredential, type McpConnectionState } fro
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { McpPanelTitle, McpServerActionsMenu, type McpMenuEntry } from './mcp-panel-header';
 import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
+import { McpLogoField } from './mcp-logo-field';
+import { setMcpServerLogo, useMcpServerLogo } from '../../logo-store';
 import { McpToolsApprovalsTab, type McpToolsLoad } from './mcp-tools-approvals-tab';
 import {
   isOauthClientMissing,
@@ -127,7 +130,6 @@ export function McpInstanceConfigPanel({
   const [toolsLoad, setToolsLoad] = useState<McpToolsLoad>({ status: 'idle' });
   const [disconnectTarget, setDisconnectTarget] = useState<McpMyServerEntry | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [creatorName, setCreatorName] = useState<string | null>(null);
   const { copy } = useCopyText();
 
   const liveInstance = useMemo(
@@ -143,6 +145,12 @@ export function McpInstanceConfigPanel({
 
   const isTemplateBased = Boolean(resolvedTemplate);
   const isReadOnly = isMcpInstanceReadOnly(editingInstance);
+  // Set by a Manage Access section that saves who may use an organization server.
+  const manageAccessSave = useRef<((serverId: string) => Promise<void>) | null>(null);
+  // The server a save in this panel created: a retry after a later step failed updates it instead of creating another.
+  const createdInstanceId = useRef<string | null>(null);
+  // Bumped whenever the panel opens on a server: a save started before that touches nothing after it.
+  const saveSession = useRef(0);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -159,6 +167,10 @@ export function McpInstanceConfigPanel({
   const [scopeTags, setScopeTags] = useState<TagItem[]>([]);
   const [connectTimeout, setConnectTimeout] = useState('');
   const [callTimeout, setCallTimeout] = useState('');
+  const savedLogo = useMcpServerLogo(mode === 'edit' ? editingInstance?._id : null);
+  /** undefined: unchanged; null: remove it; a data URL: the new logo. */
+  const [logoDraft, setLogoDraft] = useState<string | null | undefined>(undefined);
+  const [isReadingLogo, setIsReadingLogo] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [pendingImpact, setPendingImpact] = useState<McpEditCredentialImpact>('none');
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(open);
@@ -182,11 +194,16 @@ export function McpInstanceConfigPanel({
 
   useEffect(() => {
     if (!open) return;
+    createdInstanceId.current = null;
+    saveSession.current += 1;
+    setIsSaving(false);
     setActiveTab('configuration');
     toolsRequest.current += 1;
     setToolsLoad({ status: 'idle' });
     setConfirmDiscard(false);
     setPendingImpact('none');
+    setLogoDraft(undefined);
+    setIsReadingLogo(false);
     if (editingInstance) {
       setName(editingInstance.name);
       setDescription(editingInstance.description ?? '');
@@ -266,7 +283,10 @@ export function McpInstanceConfigPanel({
 
   // The URL to probe for live OAuth metadata — for catalog servers this is fixed (their
   // defaultUrl/stored url); for custom servers it's whatever the admin is currently typing.
-  const oauthProbeUrl = isTemplateBased ? (resolvedTemplate?.defaultUrl ?? editingInstance?.url ?? '') : url.trim();
+  const urlEditable = Boolean(resolvedTemplate?.urlEditable);
+  const oauthProbeUrl = urlEditable || !isTemplateBased
+    ? url.trim()
+    : (resolvedTemplate?.defaultUrl ?? editingInstance?.url ?? '');
 
   const [dcrProbe, setDcrProbe] = useState<DcrProbeState>({ status: 'idle' });
 
@@ -287,13 +307,13 @@ export function McpInstanceConfigPanel({
             if (!cancelled) setDcrProbe({ status: 'error' });
           });
       },
-      isTemplateBased ? 0 : DCR_PROBE_DEBOUNCE_MS
+      isTemplateBased && !urlEditable ? 0 : DCR_PROBE_DEBOUNCE_MS
     );
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [open, authMode, isTemplateBased, oauthProbeUrl]);
+  }, [open, authMode, isTemplateBased, urlEditable, oauthProbeUrl]);
 
   const dcrSupported = resolveDcrSupport(dcrProbe, resolvedTemplate?.supportsDcr);
 
@@ -356,7 +376,8 @@ export function McpInstanceConfigPanel({
       setRevealingOAuthClient(false);
     }
   };
-  const oauthClientRequired = isOauthClientRequired(authMode, dcrSupported);
+  const oauthClientRequired =
+    isOauthClientRequired(authMode, dcrSupported) || Boolean(resolvedTemplate?.requireOauthClient);
   const oauthClientMissing = isOauthClientMissing(
     oauthClientRequired,
     hasExistingOAuthClient,
@@ -376,8 +397,11 @@ export function McpInstanceConfigPanel({
     connectTimeoutInput.valid &&
     callTimeoutInput.valid &&
     name.trim().length > 0 &&
-    (isTemplateBased ||
-      (transport === 'stdio' ? command.trim().length > 0 : url.trim().length > 0)) &&
+    (isTemplateBased
+      ? !urlEditable || url.trim().length > 0
+      : transport === 'stdio'
+        ? command.trim().length > 0
+        : url.trim().length > 0) &&
     !oauthPairError &&
     !oauthClientMissing &&
     !customStdioBlocked;
@@ -429,6 +453,22 @@ export function McpInstanceConfigPanel({
     }
   };
 
+  const saveLogoIfChanged = async (instanceId: string) => {
+    if (isTemplateBased || logoDraft === undefined || logoDraft === savedLogo) return;
+    try {
+      if (logoDraft) {
+        const { logo } = await McpServersApi.setLogo(instanceId, logoDraft);
+        setMcpServerLogo(instanceId, logo);
+      } else {
+        await McpServersApi.removeLogo(instanceId);
+        setMcpServerLogo(instanceId, null);
+      }
+    } catch (error) {
+      const detail = isProcessedError(error) ? error.message : undefined;
+      toast.error(t('workspace.mcpServers.toasts.logoSaveError'), detail ? { description: detail } : undefined);
+    }
+  };
+
   const buildPayload = (): McpServerInstancePayload => ({
     name: name.trim(),
     typeId: resolvedTemplate?.typeId ?? null,
@@ -438,7 +478,9 @@ export function McpInstanceConfigPanel({
     useAdminAuth: canUseAdminAuth ? useAdminAuth : false,
     description: description.trim() || null,
     ...(isTemplateBased
-      ? {}
+      ? urlEditable
+        ? { url: url.trim() }
+        : {}
       : transport === 'stdio'
         ? {
             command: command.trim(),
@@ -459,7 +501,7 @@ export function McpInstanceConfigPanel({
   });
 
   const handleSave = () => {
-    if (!isValid) return;
+    if (!isValid || isReadingLogo) return;
     if (mode === 'edit' && editingInstance) {
       const impact = mcpEditCredentialImpact(editingInstance, buildPayload());
       if (impact !== 'none') {
@@ -471,33 +513,55 @@ export function McpInstanceConfigPanel({
   };
 
   const save = async () => {
+    const session = saveSession.current;
+    // Every later step reads this session's form, so a save whose session ended stops here.
+    const ended = () => session !== saveSession.current;
     setIsSaving(true);
     try {
       const payload = buildPayload();
       let instanceId: string;
+      let reportSaved: () => void;
       if (mode === 'edit' && editingInstance) {
         const updated = await McpServersApi.updateInstance(editingInstance._id, payload);
+        if (ended()) return;
         instanceId = updated._id;
-        if (updated.credentialsReset) {
-          toast.warning(t('workspace.mcpServers.toasts.credentialsReset'));
-        } else {
-          toast.success(t('workspace.mcpServers.toasts.updated'));
-        }
+        reportSaved = updated.credentialsReset
+          ? () => toast.warning(t('workspace.mcpServers.toasts.credentialsReset'))
+          : () => toast.success(t('workspace.mcpServers.toasts.updated'));
       } else {
-        const created = await McpServersApi.createInstance(payload);
-        instanceId = created._id;
-        toast.success(t('workspace.mcpServers.toasts.created'));
+        instanceId = createdInstanceId.current
+          ? (await McpServersApi.updateInstance(createdInstanceId.current, payload))._id
+          : (await McpServersApi.createInstance(payload))._id;
+        if (ended()) return;
+        createdInstanceId.current = instanceId;
+        reportSaved = () => toast.success(t('workspace.mcpServers.toasts.created'));
       }
 
       await saveCredentialsIfProvided(instanceId);
+      if (ended()) return;
+      if (!isPersonal && manageAccessSave.current) {
+        try {
+          await manageAccessSave.current(instanceId);
+        } catch (error) {
+          if (ended()) return;
+          // The server is saved but the access chosen here is not; stay open so a retry can apply it.
+          const detail = isProcessedError(error) ? error.message : undefined;
+          toast.error(t('workspace.mcpServers.toasts.accessSaveError'), detail ? { description: detail } : undefined);
+          return;
+        }
+      }
+      await saveLogoIfChanged(instanceId);
+      if (ended()) return;
 
+      reportSaved();
       onSaved();
       requestOpenChange(false);
     } catch (error) {
+      if (ended()) return;
       const detail = isProcessedError(error) ? error.message : undefined;
       toast.error(t('workspace.mcpServers.toasts.saveError'), detail ? { description: detail } : undefined);
     } finally {
-      setIsSaving(false);
+      if (!ended()) setIsSaving(false);
     }
   };
 
@@ -569,28 +633,8 @@ export function McpInstanceConfigPanel({
 
   const createdBy = liveInstance?.createdBy;
   const creatorHidden = isMcpInstanceReadOnly(liveInstance);
-  useEffect(() => {
-    if (!open || !createdBy || creatorHidden) {
-      setCreatorName(null);
-      return;
-    }
-    let cancelled = false;
-    apiClient
-      .post('/api/v1/users/by-ids', { userIds: [createdBy] })
-      .then(({ data }) => {
-        if (cancelled) return;
-        const users = Array.isArray(data) ? data : data?.users ?? [];
-        const user = (users[0] ?? {}) as Record<string, unknown>;
-        const fullName = String(user.name ?? user.fullName ?? '').trim();
-        setCreatorName(fullName || createdBy);
-      })
-      .catch(() => {
-        if (!cancelled) setCreatorName(createdBy);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, createdBy, creatorHidden]);
+  const creator = useUserDirectoryEntry(open && !creatorHidden ? createdBy : null);
+  const creatorName = creator ? creator.name?.trim() || createdBy : null;
 
   const menuEntries: McpMenuEntry[] = [];
   if (mode === 'edit' && liveInstance) {
@@ -681,6 +725,15 @@ export function McpInstanceConfigPanel({
         <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
       </FormField>
 
+      {!isTemplateBased && !isReadOnly && (
+        <McpLogoField
+          key={editingInstance?._id ?? 'new'}
+          logo={logoDraft === undefined ? savedLogo : logoDraft}
+          onChange={setLogoDraft}
+          onReadingChange={setIsReadingLogo}
+        />
+      )}
+
       {!isTemplateBased && (
         <FormField label={t('workspace.mcpServers.form.transport')} required>
           <SelectDropdown
@@ -733,14 +786,19 @@ export function McpInstanceConfigPanel({
         </>
       )}
 
-      {!isTemplateBased && transport !== 'stdio' && (
+      {(urlEditable || (!isTemplateBased && transport !== 'stdio')) && (
         <FormField label={t('workspace.mcpServers.form.url')} required>
           <TextField.Root
             size="2"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://example.com/mcp"
+            placeholder={urlEditable ? 'https://your-company.okta.com/mcp' : 'https://example.com/mcp'}
           />
+          {urlEditable && resolvedTemplate?.authHint?.helpText && (
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              {resolvedTemplate.authHint.helpText}
+            </Text>
+          )}
         </FormField>
       )}
 
@@ -971,6 +1029,10 @@ export function McpInstanceConfigPanel({
         </Grid>
       </Flex>
 
+      {!isPersonal && (
+        <McpManageAccess serverId={editingInstance?._id ?? null} disabled={isReadOnly} saveRef={manageAccessSave} />
+      )}
+
       {mode === 'create' && authMode !== 'none' && !useAdminAuth && (
         <Text size="1" style={{ color: 'var(--gray-10)' }}>
           {t('workspace.mcpServers.form.connectAfterCreateHint')}
@@ -990,17 +1052,24 @@ export function McpInstanceConfigPanel({
     <>
       <WorkspaceRightPanel
         open={open}
-        onOpenChange={requestOpenChange}
+        onOpenChange={(next) => {
+          // Closing mid-save would leave the server half set up (credentials, access, logo).
+          if (next || !isSaving) requestOpenChange(next);
+        }}
         title={mode === 'edit' && liveInstance ? liveInstance.name : panelTitle}
         icon={mode === 'edit' && liveInstance ? undefined : 'hub'}
         titleNode={
           mode === 'edit' && liveInstance ? (
-            <McpPanelTitle instance={liveInstance} state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState} />
+            <McpPanelTitle
+              instance={liveInstance}
+              state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState}
+              logo={savedLogo}
+            />
           ) : undefined
         }
         primaryLabel={mode === 'edit' ? t('common.save') : t('common.create')}
         secondaryLabel={t('common.cancel')}
-        primaryDisabled={!isValid}
+        primaryDisabled={!isValid || isReadingLogo}
         primaryLoading={isSaving}
         onPrimaryClick={handleSave}
         hideFooter={!showFooter}

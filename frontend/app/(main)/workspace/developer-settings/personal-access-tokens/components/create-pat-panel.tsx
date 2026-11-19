@@ -18,20 +18,21 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { PatApi } from '../api';
 import type { PatExpiryOption, PatScopeItem } from '../types';
+import { defaultPatScopes } from '../default-scopes';
 
 // ========================================
 // Constants
 // ========================================
 
 const EXPIRY_OPTIONS: { value: PatExpiryOption; labelKey: string }[] = [
+  { value: 7, labelKey: 'workspace.personalAccessTokens.create.expiry7Days' },
   { value: 30, labelKey: 'workspace.personalAccessTokens.create.expiry30Days' },
   { value: 90, labelKey: 'workspace.personalAccessTokens.create.expiry90Days' },
   { value: 365, labelKey: 'workspace.personalAccessTokens.create.expiry365Days' },
-  { value: 'never', labelKey: 'workspace.personalAccessTokens.create.expiryNever' },
 ];
 
-// Shortest option, not the longest — a token minted without a second
-// thought shouldn't default to the widest blast radius.
+// Not the longest — a token minted without a second thought shouldn't
+// default to the widest blast radius.
 const DEFAULT_EXPIRY_DAYS: PatExpiryOption = 30;
 
 const CARD_STYLE: React.CSSProperties = {
@@ -113,9 +114,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
     try {
       const data = await PatApi.getScopes();
       setScopes(data.scopes ?? []);
-      // Default to the full MCP scope set, matching the backend default
-      // when no scopes are supplied.
-      setSelectedScopes(new Set((data.scopes ?? []).map((s) => s.name)));
+      setSelectedScopes(defaultPatScopes((data.scopes ?? []).map((s) => s.name)));
     } catch {
       setScopesErrorKey('workspace.personalAccessTokens.create.scopesLoadError');
     } finally {

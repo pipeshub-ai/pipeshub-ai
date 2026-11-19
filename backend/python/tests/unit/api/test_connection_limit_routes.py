@@ -84,6 +84,7 @@ def _request(limit: dict | None = LIMIT, graph: AsyncMock | None = None) -> Magi
     request = MagicMock()
     request.state.user = user
     request.app.state.graph_provider = graph
+    request.app.container.redis_provider = AsyncMock(return_value=None)
     return request
 
 
@@ -275,7 +276,7 @@ class TestBrowsing:
             return await knowledge_graph_navigate(
                 request=request, graph_provider=graph, node_id=node_id, page=1, limit=50, depth=1,
                 node_types=None, created_after=None, created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
 
     @pytest.mark.asyncio
@@ -319,7 +320,7 @@ class TestBrowsing:
             result = await knowledge_graph_navigate(
                 request=_request(), graph_provider=graph, node_id=None, page=1, limit=50, depth=1,
                 node_types=None, created_after=None, created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
         assert navigator.return_value.navigate.call_args.kwargs["connector_ids"] == ["app-in"]
         assert [row["id"] for row in result["rows"]] == ["rec-in"]
@@ -1105,6 +1106,7 @@ class TestReviewFindingsOnTheRelatedStack:
         assert response["kb"] == {} and record["recordName"] == "budget.xlsx"
         for field in ("parentNodeId", "externalParentId", "recordGroupId", "externalGroupId"):
             assert record[field] is None, field
+        assert response["userPermission"] is None   # unknown, not "NONE": that reads as a revoked permission
 
     @pytest.mark.asyncio
     async def test_an_unlimited_update_whose_enrichment_fails_is_unchanged(self) -> None:

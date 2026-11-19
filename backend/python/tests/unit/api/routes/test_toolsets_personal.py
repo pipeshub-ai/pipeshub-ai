@@ -105,6 +105,31 @@ def _as(store: FakeConfigService, user_id: str, body: dict[str, Any] | None = No
     return request
 
 
+class _RecordDeleteAnswersFalse(FakeConfigService):
+    """Deleting alice-jira's record answers False: ``removed`` says whether it really went (etcd: a delete
+    retried after its answer was lost); ``unreadable`` fails the read-back that checks."""
+
+    RECORD = USER_PATH.format("u-alice", "alice-jira")
+
+    def __init__(self, store: FakeConfigService, *, removed: bool, unreadable: bool = False) -> None:
+        super().__init__(store.data)
+        self.removed, self.unreadable = removed, unreadable
+
+    async def delete_config(self, key: str) -> bool:
+        if key != self.RECORD:
+            return await super().delete_config(key)
+        self.deletes.append(key)
+        if self.removed:
+            self.data.pop(key, None)
+        return False
+
+    async def get_config(self, key: str, default: Any = None, use_cache: bool = False, *,  # noqa: ANN401
+                         raise_on_error: bool = False, keep_in_cache: bool = True) -> Any:  # noqa: ANN401
+        if key == self.RECORD and raise_on_error and self.unreadable:
+            raise ConnectionError("store down")
+        return await super().get_config(key, default, use_cache, raise_on_error=raise_on_error, keep_in_cache=keep_in_cache)
+
+
 async def _status(coro: Any) -> int:  # noqa: ANN401
     with pytest.raises(HTTPException) as exc:
         await coro
@@ -334,6 +359,29 @@ class TestTheOwnerManagesIt:
             RULES_PATH.format("alice-jira"), OWNER_PATH.format("alice-jira"),
         ):
             assert key not in store.data
+
+    async def test_deleting_it_when_the_store_answers_false_but_it_is_gone_succeeds_and_takes_its_rules(self) -> None:
+        store = _RecordDeleteAnswersFalse(_store(**{RULES_PATH.format("alice-jira"): {"tools": {}}}), removed=True)
+
+        result = await toolsets.delete_toolset_instance("alice-jira", _as(store, "u-alice"), config_service=store)
+
+        assert result["status"] == "success"
+        assert RULES_PATH.format("alice-jira") not in store.data
+
+    async def test_deleting_it_when_it_is_still_there_is_500_and_keeps_its_rules(self) -> None:
+        store = _RecordDeleteAnswersFalse(_store(**{RULES_PATH.format("alice-jira"): {"tools": {}}}), removed=False)
+
+        assert await _status(toolsets.delete_toolset_instance("alice-jira", _as(store, "u-alice"), config_service=store)) == 500
+        assert RULES_PATH.format("alice-jira") in store.data
+
+    async def test_deleting_it_when_the_check_cannot_read_raises_and_keeps_its_rules(self) -> None:
+        store = _RecordDeleteAnswersFalse(
+            _store(**{RULES_PATH.format("alice-jira"): {"tools": {}}}), removed=False, unreadable=True,
+        )
+
+        with pytest.raises(ConnectionError):
+            await toolsets.delete_toolset_instance("alice-jira", _as(store, "u-alice"), config_service=store)
+        assert RULES_PATH.format("alice-jira") in store.data
 
     async def test_a_new_one_is_found_by_its_id_without_listing_anyones(self) -> None:
         # Tool clients and token refresh have only the id; listing keys is a full scan on Redis.

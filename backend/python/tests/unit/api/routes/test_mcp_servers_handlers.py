@@ -580,6 +580,50 @@ class TestInstanceCrud:
         assert "/services/mcp/oauth-states/state-a" in deleted
         assert "/services/mcp/oauth-states/state-b" not in deleted
 
+    @staticmethod
+    async def _delete_answered_false(read_back: AsyncMock) -> tuple[dict | None, AsyncMock, Exception | None]:
+        """DELETE an instance whose record delete answered False; the record is then read back with ``read_back``."""
+        config_service = MagicMock()
+        config_service.delete_config = AsyncMock(return_value=False)
+        config_service.get_config = read_back
+        request = _admin_request(config_service=config_service)
+        request.app.state.graph_provider.check_mcp_instance_in_use = AsyncMock(return_value=[])
+        cleanup = AsyncMock()
+        result, error = None, None
+        with (
+            patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)),
+            patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value=_api_token_instance())),
+            patch("app.api.routes.mcp_servers.mcp_lifecycle.delete_instance_data", new=cleanup),
+        ):
+            try:
+                result = await delete_instance(request, "inst-1")
+            except Exception as e:  # the tests assert on it
+                error = e
+        return result, cleanup, error
+
+    @pytest.mark.asyncio
+    async def test_delete_instance_whose_record_is_gone_after_a_false_answer_succeeds_and_cleans_up(self) -> None:
+        """etcd: a delete retried after its answer was lost answers False although the record is gone."""
+        result, cleanup, error = await self._delete_answered_false(AsyncMock(return_value=None))
+
+        assert error is None
+        assert result == {"success": True, "_id": "inst-1"}
+        cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_instance_whose_record_is_still_there_is_500_and_cleans_nothing(self) -> None:
+        _, cleanup, error = await self._delete_answered_false(AsyncMock(return_value=_api_token_instance()))
+
+        assert isinstance(error, HTTPException) and error.status_code == 500
+        cleanup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_instance_whose_record_cannot_be_read_back_raises_and_cleans_nothing(self) -> None:
+        _, cleanup, error = await self._delete_answered_false(AsyncMock(side_effect=ConnectionError("store down")))
+
+        assert isinstance(error, ConnectionError)
+        cleanup.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Auth handlers
@@ -910,17 +954,14 @@ class TestDiscoveryHandlers:
                 new=AsyncMock(return_value={"isAuthenticated": True, "credentials": {"apiToken": "t"}}),
             ),
             patch("app.agents.mcp.discovery.discover_tool_listing", new=AsyncMock(side_effect=error)),
-            patch("app.api.routes.mcp_servers.logger") as mock_logger,
         ):
             with pytest.raises(HTTPException) as exc:
                 await get_instance_tools(request, "inst-1")
         assert exc.value.status_code == 502
         assert exc.value.detail == action_failed("load this MCP server's tools")
         assert "SENTINEL" not in exc.value.detail
+        # The cause stays on the chain: http.request.end logs it, without its text (test_mcp_route_logging.py).
         assert exc.value.__cause__ is error
-        log_call = mock_logger.warning.call_args
-        assert log_call.kwargs["exc_info"] is True
-        assert error in log_call.args
 
 
 # ---------------------------------------------------------------------------

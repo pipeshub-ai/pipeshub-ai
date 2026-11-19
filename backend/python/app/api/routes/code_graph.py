@@ -11,7 +11,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -32,7 +32,9 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     repo_not_found_message,
 )
-from app.api.middlewares.auth import require_scopes
+from app.agents.actions.code_graph.results import with_repo_commit
+from app.api.connection_limit import groups_outside_limit
+from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.service import OAuthScopes
 from app.modules.code_graph.build_state import BuildStateStore, graph_status
 from app.modules.transformers.blob_storage import BlobStorage
@@ -51,6 +53,7 @@ router = APIRouter(
 # Claude Code warns on a tool result past 10k tokens and cuts it at 25k; at
 # ~4 characters a token this keeps a result near 8k.
 MAX_RESULT_CHARS = 32_000
+MAX_PATCH_CHARS = 2_000_000
 
 
 class RepoRef(BaseModel):
@@ -95,9 +98,11 @@ class PathBody(RepoRef):
 
 class SearchBody(RepoRef):
     pattern: str = Field(min_length=1, max_length=200)
-    mode: Literal["identifier", "text", "regex"] = "identifier"
+    mode: Literal["identifier", "text", "regex", "external"] = "identifier"
     path: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
+    # mode "external": one name of the library module `pattern` names.
+    name: str | None = Field(default=None, max_length=200)
 
 
 class SemanticSearchBody(RepoRef):
@@ -115,6 +120,20 @@ class ImpactBody(RepoRef):
     record_id: str | None = None
     qualified_name: str | None = None
     depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
+    edge_types: list[str] | None = None
+
+
+class ImpactOfDiffBody(RepoRef):
+    # A large PR's diff is a few hundred KB; past this a client is sending something else.
+    patch: str = Field(min_length=1, max_length=MAX_PATCH_CHARS)
+    depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
+
+
+class HistoryBody(RepoRef):
+    file_path: str | None = None
+    record_id: str | None = None
+    qualified_name: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class EntryPointsBody(RepoRef):
@@ -169,19 +188,39 @@ async def _deps(request: Request) -> tuple["QueryAppContainer", "IGraphDBProvide
     return container, graph_provider, org_id, user_id
 
 
+async def _inside_limit(
+    request: Request, graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repos: list[CodeRepo],
+) -> list[CodeRepo]:
+    """Of ``repos``, those a connected app's knowledge limit reaches; all of them without a limit."""
+    # A repo is readable through its files; the user need not hold a grant on the group itself.
+    outside = await groups_outside_limit(
+        request, graph_provider, org_id, user_id, {r.group_id: r.connector_id for r in repos},
+    )
+    return [r for r in repos if r.group_id not in outside]
+
+
 async def _target(
-    graph_provider: "IGraphDBProvider", org_id: str, user_id: str, repo: str | None, record_id: str | None = None,
+    request: Request, graph_provider: "IGraphDBProvider", org_id: str, user_id: str,
+    repo: str | None, record_id: str | None = None,
 ) -> CodeRepo | JSONResponse:
     """The repo a request names, or the 404/409 that says why there is none.
 
-    The messages are built from the request, not from an exception.
+    The messages are built from the request, not from an exception. A repo
+    outside the caller's knowledge limit reads as absent, like one it cannot read.
     """
-    if not repo and record_id:
+    # A tool reads a record_id's own repo even when ``repo`` names another, so
+    # under a limit the record's repo is checked too.
+    if record_id and (not repo or connection_limit(request.state.user) is not None):
         try:
-            return await repo_for_record(graph_provider, org_id, user_id, record_id)
+            found = await repo_for_record(graph_provider, org_id, user_id, record_id)
         except RepoNotFoundError:
-            return _response({"error": repo_not_found_message(repo, record_id)}, 404)
+            found = None
+        if not found or not await _inside_limit(request, graph_provider, org_id, user_id, [found]):
+            return _response({"error": repo_not_found_message(None, record_id)}, 404)
+        if not repo:
+            return found
     matches = await matching_code_repos(graph_provider, org_id, user_id, repo or "")
+    matches = await _inside_limit(request, graph_provider, org_id, user_id, matches)
     if not matches:
         return _response({"error": repo_not_found_message(repo, record_id)}, 404)
     if len(matches) > 1:
@@ -212,14 +251,17 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
                *, semantic: bool = False) -> JSONResponse:
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
-        repo = await _target(graph_provider, org_id, user_id, body.repo, record_id)
+        repo = await _target(request, graph_provider, org_id, user_id, body.repo, record_id)
+    except HTTPException:
+        raise
     except Exception:
         container.logger().exception("code-graph repo lookup failed")
         return _response({"error": "graph unavailable"}, 503)
     if isinstance(repo, JSONResponse):
         return repo
     try:
-        # Only the semantic search needs it, and building it costs an embedding-model lookup.
+        # Only searches through the vector store need it (semantic, text without a path): building it costs
+        # an embedding-model lookup.
         retrieval_service = await container.retrieval_service() if semantic else None
         toolset = _toolset(container, graph_provider, org_id, user_id, repo, retrieval_service)
         _ok, raw = await call(toolset, repo)
@@ -229,6 +271,7 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
         return _response({"error": "graph unavailable"}, 503)
     if isinstance(result, dict) and "error" not in result:
         result.setdefault("repo", repo.name)
+        with_repo_commit(result, repo.synced_commit)
     return _response(result if isinstance(result, dict) else {"result": result})
 
 
@@ -237,6 +280,9 @@ async def code_repos(request: Request) -> JSONResponse:
     container, graph_provider, org_id, user_id = await _deps(request)
     try:
         repos = await list_code_repos(graph_provider, org_id, user_id)
+        repos = await _inside_limit(request, graph_provider, org_id, user_id, repos)
+    except HTTPException:
+        raise
     except Exception:
         container.logger().exception("code-graph repo listing failed")
         return _response({"error": "graph unavailable"}, 503)
@@ -249,6 +295,7 @@ async def code_repos(request: Request) -> JSONResponse:
             "source": r.connector_name,
             # Lets a connector's page show only its own repos.
             "connector_id": r.connector_id,
+            **({"indexed_commit": r.synced_commit} if r.synced_commit else {}),
         }
         try:
             state = await store.read(org_id, r.group_id)
@@ -308,8 +355,8 @@ async def code_path(request: Request, body: PathBody) -> JSONResponse:
 async def code_search(request: Request, body: SearchBody) -> JSONResponse:
     return await _run(request, body, None, lambda t, repo: t.search_code(
         connector_id=repo.connector_id, pattern=body.pattern, mode=body.mode, path=body.path,
-        limit=body.limit, include_tests=body.include_tests, repo=repo.group_id,
-    ))
+        limit=body.limit, include_tests=body.include_tests, repo=repo.group_id, name=body.name,
+    ), semantic=body.mode in ("text", "regex") and not body.path)  # path-free text search uses the keyword index
 
 
 @router.post("/semantic-search")
@@ -333,7 +380,23 @@ async def code_impact(request: Request, body: ImpactBody) -> JSONResponse:
     return await _run(request, body, body.record_id, lambda t, repo: t.impact(
         connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
         qualified_name=body.qualified_name, depth=body.depth,
+        include_tests=body.include_tests, repo=repo.group_id, edge_types=body.edge_types,
+    ))
+
+
+@router.post("/impact-of-diff")
+async def code_impact_of_diff(request: Request, body: ImpactOfDiffBody) -> JSONResponse:
+    return await _run(request, body, None, lambda t, repo: t.impact_of_diff(
+        connector_id=repo.connector_id, patch=body.patch, depth=body.depth,
         include_tests=body.include_tests, repo=repo.group_id,
+    ))
+
+
+@router.post("/history")
+async def code_history(request: Request, body: HistoryBody) -> JSONResponse:
+    return await _run(request, body, body.record_id, lambda t, repo: t.history(
+        connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
+        qualified_name=body.qualified_name, limit=body.limit, repo=repo.group_id,
     ))
 
 

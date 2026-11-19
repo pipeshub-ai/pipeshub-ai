@@ -14,6 +14,7 @@ from app.agents.constants.mcp_server_constants import (
     MCP_ROOT,
     get_mcp_instance_credentials_prefix,
     get_mcp_instance_path,
+    get_mcp_logo_path,
     get_mcp_oauth_client_config_path,
     get_mcp_oauth_states_prefix,
     get_mcp_org_user_instances_prefix,
@@ -96,6 +97,7 @@ async def delete_instance_data(config_service: ConfigurationService, instance: d
     await _delete(config_service, mcp_service.instance_record_path(instance), removed)
     removed += await purge_instance_credentials(config_service, instance["_id"])
     await _delete(config_service, get_mcp_oauth_client_config_path(instance["_id"]), removed)
+    await _delete(config_service, get_mcp_logo_path(instance["_id"]), removed)
     return removed
 
 

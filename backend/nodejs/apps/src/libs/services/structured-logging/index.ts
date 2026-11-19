@@ -2,8 +2,8 @@
  * Logging provider port.
  *
  * The logger asks a provider for three things: the console format, whether to
- * keep the local log files, and how to show the request's org on a record. The
- * default provider keeps the platform's text logging exactly as it is. A build
+ * keep the local log files, and how to show the request's org and user on a
+ * record. The default provider keeps the text logging and shows both ids. A build
  * can supply its own provider through `structuredLoggingProvider` in
  * `src/edition.ts` without touching the logger. Mirrors
  * `backend/python/app/utils/structured_logging`.
@@ -23,14 +23,28 @@ export interface StructuredLoggingProvider {
   fileLoggingEnabled(): boolean;
 
   /**
-   * Non-reversible stand-in for `orgId`, set on the record as
-   * `organization_id_hash`; `null` leaves the org off the record. Never
-   * return `orgId` itself.
+   * How the request's org and user appear on a record: return them as they
+   * are, replace a value (a hash), or leave a key out to hide it. Takes
+   * precedence over `hashOrgId`.
    */
-  hashOrgId(orgId: string): string | null;
+  logIdentity?(ids: LogIdentity): LogIdentity;
+
+  /**
+   * Legacy hook, used only when `logIdentity` is absent: a non-reversible
+   * stand-in for `orgId`, set on the record as `organization_id_hash`; `null`
+   * leaves the org off the record. Never return `orgId` itself. With this hook
+   * neither raw id is shown.
+   */
+  hashOrgId?(orgId: string): string | null;
 }
 
-/** Text to the console plus the local files; the org stays off the record. */
+/** The request identity as it is put on a record (snake_case, as in Python). */
+export interface LogIdentity {
+  org_id?: string;
+  user_id?: string;
+}
+
+/** Text to the console plus the local files; the org and user ids shown as they are. */
 export class DefaultLoggingProvider implements StructuredLoggingProvider {
   consoleFormat(defaultFormat: Logform.Format): Logform.Format {
     return defaultFormat;
@@ -40,8 +54,8 @@ export class DefaultLoggingProvider implements StructuredLoggingProvider {
     return true;
   }
 
-  hashOrgId(_orgId: string): string | null {
-    return null;
+  logIdentity(ids: LogIdentity): LogIdentity {
+    return ids;
   }
 }
 
@@ -51,7 +65,7 @@ function isProvider(value: unknown): value is StructuredLoggingProvider {
     !!v &&
     typeof v.consoleFormat === 'function' &&
     typeof v.fileLoggingEnabled === 'function' &&
-    typeof v.hashOrgId === 'function'
+    (typeof v.logIdentity === 'function' || typeof v.hashOrgId === 'function')
   );
 }
 

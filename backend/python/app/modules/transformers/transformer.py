@@ -8,6 +8,12 @@ class ReconciliationContext(BaseModel):
     new_metadata: Dict[str, Any] = {}
     blocks_to_index_ids: Optional[Set[str]] = None  # None means index all
     block_ids_to_delete: Optional[Set[str]] = None  # None means delete none
+    # old block id -> new block id, for blocks whose content is unchanged but whose stored points carry ids of another
+    # scheme: their points are moved to the new id with the stored vectors, not embedded again
+    rekey_ids: dict[str, str] | None = None
+    # The ids (as the stored metadata names them, so the old ids of a record being re-keyed) of the blocks that had a point when the
+    # record was last indexed; None for a record indexed before that was recorded.
+    recorded_points: set[str] | None = None
 
 #: ``TransformContext.settings`` key: the record is handed to the pipeline
 #: stages once indexed, so the indexed write also marks extraction QUEUED (the
@@ -28,6 +34,14 @@ EXTRACTION_DEFERRED_FIELD = "extractionDeferred"
 #: take before the remaining images are stored undescribed. Unset means no limit.
 IMAGE_DESCRIPTION_BUDGET_S = "image_description_budget_s"
 
+#: ``TransformContext.settings`` key: the run is a parse-now run, so once the content is stored the record is marked
+#: ``parseNowStatus=STORED`` (see ``app.modules.indexing.parse_now_marker``).
+PARSE_NOW = "parse_now"
+
+#: ``TransformContext.settings`` key: store the content and mark it, nothing else. No vectors, no entity points, no
+#: reconciliation metadata, no status on the record, no hand-off to the pipeline stages.
+STORE_ONLY = "store_only"
+
 
 class TransformContext(BaseModel):
     record: Record
@@ -40,6 +54,8 @@ class TransformContext(BaseModel):
     entity_resolution: Optional[Any] = None
     # Set when extraction was skipped by configuration (not failed), e.g. no LLM configured.
     extraction_skip_reason: str | None = None
+    # The lastIndexTimestamp the record's COMPLETED write stored; None until that write succeeds.
+    indexed_at_ms: int | None = None
 
 class Transformer(ABC):
     @abstractmethod

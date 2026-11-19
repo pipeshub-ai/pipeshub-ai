@@ -20,7 +20,8 @@ combination, instead of one hook object bundling all four."""
 
 def audit_log_pre_tool():
     async def _middleware(ctx: ToolCallContext, next_fn) -> None:
-        logger.debug("pre_tool_use: path=%s input=%s", ctx.tool_path, ctx.tool_input)
+        # Never the input: it is the call's arguments.
+        logger.debug("pre_tool_use: path=%s", ctx.tool_path)
         await next_fn()
 
     return _middleware
@@ -28,12 +29,7 @@ def audit_log_pre_tool():
 
 def audit_log_post_tool():
     async def _middleware(ctx: ToolResultContext, next_fn) -> None:
-        result = ctx.tool_response
-        content_summary = str(result.data if result.success else result.error)[:200]
-        logger.debug(
-            "post_tool_use: path=%s success=%s content=%s",
-            ctx.tool_path, result.success, content_summary,
-        )
+        logger.debug("post_tool_use: path=%s success=%s", ctx.tool_path, ctx.tool_response.success)
         await next_fn()
 
     return _middleware
@@ -57,11 +53,8 @@ def audit_log_post_agent(level: int = logging.INFO):
     async def _middleware(ctx: AgentLifecycleContext, next_fn) -> None:
         result = ctx.result
         if result is not None:
-            output_summary = str(result.output)[:200]
-            logger.log(
-                level, "post_agent: success=%s error=%s output=%s",
-                result.success, result.error, output_summary,
-            )
+            # Neither the answer nor the error text: both can quote the request and its documents.
+            logger.log(level, "post_agent: success=%s end_event=%s", result.success, result.end_event or None)
         await next_fn()
 
     return _middleware

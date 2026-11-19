@@ -111,7 +111,7 @@ Install Python 3.12, or use WSL2 and follow the Linux steps.
 ### Application tools
 
 1. **Docker** — Redis, Qdrant, Neo4j, and MongoDB (the default stores below)
-2. **Node.js 22** — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
+2. **Node.js 24 LTS** (22 minimum, 22.13 for the frontend) — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
 3. **Python 3.12** — FastAPI services in `backend/python`
 
 ### Environment files
@@ -193,6 +193,26 @@ python -m app.indexing_main
 python -m app.query_main
 python -m app.docling_main
 ```
+
+`pyproject.toml` tells uv to skip `unclecode-litellm`, a fork that crawl4ai pins and that writes into the same `litellm/` directory as the real `litellm`. Run the install with `uv` from `backend/python`; plain `pip install -e .` ignores that setting. If you used plain pip, or installed with uv before this exclusion and the fork is still there (`uv pip install` does not remove packages it no longer needs), remove the fork and reinstall the litellm version the resolver already chose. Removing the fork deletes files litellm owns too, so read the version first:
+
+```bash
+v=$(python -c "import importlib.metadata as m; print(m.version('litellm'))") && [ -n "$v" ] \
+  && pip uninstall -y unclecode-litellm \
+  && pip install --force-reinstall --no-deps "litellm==$v"
+```
+
+On Windows PowerShell:
+
+```powershell
+$v = python -c "import importlib.metadata as m; print(m.version('litellm'))"
+if ($LASTEXITCODE -eq 0 -and $v) {
+    pip uninstall -y unclecode-litellm
+    if ($LASTEXITCODE -eq 0) { pip install --force-reinstall --no-deps "litellm==$v" }
+}
+```
+
+`tests/unit/test_single_litellm_owner.py` fails while two packages own `litellm/`.
 
 Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`. That variable is not in `backend/env.template`; set it in `backend/python/.env`.
 

@@ -3,7 +3,7 @@
  * were added; a name is unique among an organisation's live groups (a partial unique index), so a duplicate arrives as a
  * unique-key error naming `name`.
  */
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   Params,
   assertOrg,
@@ -396,7 +396,7 @@ export class PgGroupRepository implements GroupRepository, Importable {
       }>(
         `/* pipeshub:identity.group_stats */ SELECT s.name, count(*) AS count, sum(s.n) AS total, avg(s.n)::float8 AS avg
            FROM (SELECT g.name, (SELECT count(*) FROM identity.user_group_members m WHERE m.org_id = g.org_id AND m.group_id = g.id) AS n
-                   FROM identity.user_groups g WHERE g.org_id = $1 AND NOT g.is_deleted) s GROUP BY s.name ORDER BY s.name`,
+                   FROM identity.user_groups g WHERE g.org_id = $1 AND NOT g.is_deleted) s GROUP BY s.name ORDER BY s.name COLLATE "C"`,
         [k.orgId],
       );
       return rows.map((r) => ({

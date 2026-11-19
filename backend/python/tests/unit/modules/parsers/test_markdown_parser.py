@@ -6,11 +6,18 @@ Covers:
 - ``markdown_parser`` shim:  MarkdownParser defaults to MarkdownItParser
 """
 
+import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.models.blocks import BlocksContainer
+from app.modules.parsers.markdown import markdown_parser
+from app.modules.parsers.markdown.docling_markdown_parser import (
+    DoclingMarkdownParser,
+)
+from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 
 _DOCLING_MOCKS = {
     "docling": MagicMock(),
@@ -18,13 +25,6 @@ _DOCLING_MOCKS = {
     "docling.datamodel.document": MagicMock(),
     "docling.document_converter": MagicMock(),
 }
-
-with patch.dict("sys.modules", _DOCLING_MOCKS):
-    from app.models.blocks import BlocksContainer
-    from app.modules.parsers.markdown.docling_markdown_parser import (
-        DoclingMarkdownParser,
-    )
-    from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 
 # Grab the real markdown module that DoclingMarkdownParser.parse_string uses so
 # tests can patch it precisely.
@@ -37,11 +37,9 @@ _MD_MODULE = DoclingMarkdownParser.parse_string.__globals__["markdown_lib"]
 
 @pytest.fixture
 def docling_parser():
-    with patch.dict("sys.modules", _DOCLING_MOCKS):
-        with patch(
-            "app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"
-        ):
-            return DoclingMarkdownParser()
+    parser = DoclingMarkdownParser()
+    parser.converter = MagicMock()
+    return parser
 
 
 @pytest.fixture
@@ -349,12 +347,8 @@ class TestMarkdownParserShim:
     def test_markdown_parser_can_select_docling_backend(self):
         with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch.dict("sys.modules", _DOCLING_MOCKS):
-                import importlib
-
-                import app.modules.parsers.markdown.markdown_parser as markdown_parser_module
-
-                importlib.reload(markdown_parser_module)
-                MarkdownParser = markdown_parser_module.MarkdownParser
+                importlib.reload(markdown_parser)
+                MarkdownParser = markdown_parser.MarkdownParser
 
         assert MarkdownParser.__name__ == "DoclingMarkdownParser"
         assert MarkdownParser.__module__ == (

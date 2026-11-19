@@ -13,12 +13,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.core.org_context import for_org, system
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
+from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -138,7 +140,9 @@ class DuplicateReconciler:
                     )
                     complete = False
 
-            await self.sync_vector_membership(virtual_record_id)
+            # The retry sweep runs with no org bound: the points are written for the record's own org.
+            with for_org(org_id, job="duplicate-reconcile"):
+                await self.sync_vector_membership(virtual_record_id)
             return complete
         except Exception as e:
             self.logger.warning(
@@ -159,10 +163,10 @@ async def retry_pending_duplicate_reconciles(
     """Reconcile primaries whose pending flag is due: their handler did not
     clear it within ``DUPLICATE_RECONCILE_GRACE_MS`` of the promotion.
 
-    Holds no ``record:<id>`` lease. The consumer drops an event whose record
-    lease it cannot take within seconds, so holding it through a reconcile
-    would lose a real update or delete; recovery's own lock already keeps
-    sweeps apart, and a reconcile is idempotent. What must not race is the
+    Holds no ``record:<id>`` lease. The consumer hands back an event whose
+    record lease it cannot take within seconds, so holding it through a
+    reconcile would hold up a real update or delete; recovery's own lock already
+    keeps sweeps apart, and a reconcile is idempotent. What must not race is the
     flag: it is cleared only while its due time is still the one this sweep
     read, so a promotion made meanwhile keeps its flag.
 
@@ -170,29 +174,48 @@ async def retry_pending_duplicate_reconciles(
     ``MAX_RECONCILE_ATTEMPTS`` the flag is cleared and the count kept, so an
     operator can find the record. Returns how many records were reconciled.
     """
-    rows = await graph_provider.get_records_pending_duplicate_reconcile(
-        due_before_ms=now_ms(), limit=page_size,
-    )
+    # The read spans every organisation; each row's follow-up is bound to the organisation the row carries.
+    with system("duplicate_reconcile"):
+        rows = await graph_provider.get_records_pending_duplicate_reconcile(
+            due_before_ms=now_ms(), limit=page_size,
+        )
     reconciled = 0
     for row in rows:
         record_id = row.get("_key")
         if not record_id:
             continue
+        org_id = row.get("orgId")
         due = row.get(DUPLICATE_RECONCILE_DUE_AT_FIELD)
-        try:
-            if await _retry_one(graph_provider, reconciler, logger, record_id, now_ms):
-                reconciled += 1
-        except Exception:
-            logger.warning(
-                "duplicate_reconcile: retry failed for record %s", record_id, exc_info=True,
-            )
+        if not org_id:
+            # Nothing can run for it, and left pending it would take a place in every page: clear the flag; it is counted once that applied.
+            with system("duplicate_reconcile"):
+                try:
+                    cleared = await graph_provider.update_node_fields_if_match(
+                        record_id, _RECORDS, _cleared(0),
+                        {DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_DUE_AT_FIELD: due},
+                    )
+                except Exception:
+                    cleared = False
+                    logger.warning("duplicate_reconcile: could not drop the pending reconcile of %s", record_id, exc_info=True)
+            if cleared:
+                logger.warning("duplicate_reconcile: record %s has no organisation; its pending reconcile was dropped", record_id)
+                record_recovery_org_pass("duplicate_reconcile", "no_org_row")
+            continue
+        with for_org(str(org_id), job="duplicate_reconcile"):
             try:
-                await _record_failure(
-                    graph_provider, logger, record_id,
-                    _int(row.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)), due, now_ms,
-                )
+                if await _retry_one(graph_provider, reconciler, logger, record_id, now_ms):
+                    reconciled += 1
             except Exception:
-                logger.warning("duplicate_reconcile: could not count the failure on %s", record_id)
+                logger.warning(
+                    "duplicate_reconcile: retry failed for record %s", record_id, exc_info=True,
+                )
+                try:
+                    await _record_failure(
+                        graph_provider, logger, record_id,
+                        _int(row.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)), due, now_ms,
+                    )
+                except Exception:
+                    logger.warning("duplicate_reconcile: could not count the failure on %s", record_id)
     if rows:
         logger.info(
             "duplicate_reconcile: retried %d pending record(s), reconciled %d", len(rows), reconciled,

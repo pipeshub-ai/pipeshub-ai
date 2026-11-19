@@ -8,8 +8,10 @@ stamped fresh on every call (it must never be cached alongside the token).
 import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
 
+from app.config.constants.service import TokenScopes
 from app.modules.transformers import blob_storage as bs_mod
 from app.modules.transformers.blob_storage import (
     DOWNLOAD_CONNECTION_LIMIT_DEFAULT,
@@ -184,6 +186,12 @@ class TestSharedSession:
         assert bs_mod._shared_sessions, "session should stay pooled for the next record"
 
 
+def _grant(headers: dict) -> dict:
+    """The bearer token's claims without its issue and expiry times."""
+    claims = jwt.decode(headers["Authorization"].removeprefix("Bearer "), options={"verify_signature": False})
+    return {k: v for k, v in claims.items() if k not in ("iat", "exp")}
+
+
 class TestAuthAndConfigCaching:
     @pytest.mark.asyncio
     async def test_config_reads_use_the_invalidated_cache(self) -> None:
@@ -223,8 +231,9 @@ class TestAuthAndConfigCaching:
 
         assert headers_a[HEADER_REQUEST_ID] == "request-aaa"
         assert headers_b[HEADER_REQUEST_ID] == "request-bbb"
-        # Same org ⇒ same scoped token, but distinct header dicts.
-        assert headers_a["Authorization"] == headers_b["Authorization"]
+        # Same org ⇒ same scoped grant, but distinct header dicts. Compared without iat/exp: each call mints with
+        # whole-second timestamps, so two calls either side of a second boundary give different token strings.
+        assert _grant(headers_a) == _grant(headers_b) == {"orgId": "org-1", "scopes": [TokenScopes.STORAGE_TOKEN.value]}
         assert headers_a is not headers_b
 
 

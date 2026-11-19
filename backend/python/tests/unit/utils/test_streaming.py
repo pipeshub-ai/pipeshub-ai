@@ -2,6 +2,9 @@
 
 import json
 import logging
+import random
+import re
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel
 
 from app.utils.streaming import (
+    INCOMPLETE_CITE_RE,
     AnswerParserState,
     _append_task_markers,
     _apply_structured_output,
@@ -23,7 +27,6 @@ from app.utils.streaming import (
     escape_ctl,
     extract_json_from_string,
     find_unescaped_quote,
-    invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
     stream_content,
     strip_llm_authored_markers_in_parts,
@@ -1407,127 +1410,6 @@ class TestInvokeWithStructuredOutputAndReflection:
 
 
 # ---------------------------------------------------------------------------
-# invoke_with_row_descriptions_and_reflection
-# ---------------------------------------------------------------------------
-class TestInvokeWithRowDescriptionsAndReflection:
-    """Tests for invoke_with_row_descriptions_and_reflection."""
-
-    async def test_success_correct_count(self):
-        """Successful invocation returning correct number of descriptions."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        expected = RowDescriptions(descriptions=["desc1", "desc2", "desc3"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is not None
-        assert len(result.descriptions) == 3
-
-    async def test_initial_parse_failure_returns_none(self):
-        """If initial parse fails, return None."""
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_success(self):
-        """Count mismatch triggers reflection that succeeds."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong_count = RowDescriptions(descriptions=["d1", "d2"])
-        correct_count = RowDescriptions(descriptions=["d1", "d2", "d3"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong_count, correct_count],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is not None
-        assert len(result.descriptions) == 3
-
-    async def test_count_mismatch_reflection_still_wrong(self):
-        """Count mismatch, reflection also returns wrong count -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong1 = RowDescriptions(descriptions=["d1", "d2"])
-        wrong2 = RowDescriptions(descriptions=["d1", "d2", "d3", "d4"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong1, wrong2],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_parse_failure(self):
-        """Count mismatch, reflection itself fails to parse -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong = RowDescriptions(descriptions=["d1"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong, None],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_exception(self):
-        """Count mismatch, reflection raises an exception -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong = RowDescriptions(descriptions=["d1"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong, RuntimeError("reflection exploded")],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_exact_match_no_reflection(self):
-        """When count matches, no reflection should be attempted."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        exact = RowDescriptions(descriptions=["a", "b"])
-
-        mock_invoke = AsyncMock(return_value=exact)
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new=mock_invoke,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=2
-            )
-        assert result is not None
-        # Should only be called once (no reflection)
-        assert mock_invoke.call_count == 1
-
-
-# ---------------------------------------------------------------------------
 # call_aiter_llm_stream (via streaming helpers)
 # ---------------------------------------------------------------------------
 class TestHandleSimpleMode:
@@ -2535,3 +2417,23 @@ class TestStreamContentUrlParseException:
                 pass
 
 
+class TestIncompleteCitationScanIsBounded:
+    """The check runs on the whole answer for every chunk, so it must stay linear."""
+
+    @pytest.mark.parametrize("text", [
+        pytest.param("[" * 50_000 + "]x", id="open-brackets-closed-once"),
+        pytest.param("[a](" * 12_500 + ")x]", id="unclosed-targets"),
+    ])
+    def test_stays_fast(self, text: str) -> None:
+        started = time.perf_counter()
+        INCOMPLETE_CITE_RE.search(text)
+        assert time.perf_counter() - started < 1.0
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_finds_what_it_always_did(self, seed: int) -> None:
+        legacy = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+        tokens = ["[", "[", "]", "](", ")", "(", " ", "\n", "source", "ref1", "https://a.io/b", "x"]
+        rng = random.Random(seed)
+        for _ in range(30_000):
+            text = "".join(rng.choice(tokens) for _ in range(rng.randint(0, 9)))
+            assert bool(INCOMPLETE_CITE_RE.search(text)) == bool(legacy.search(text)), repr(text)

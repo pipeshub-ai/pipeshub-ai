@@ -33,8 +33,18 @@ import {
   projectCallerFromRequest,
   resolveProjectLink,
 } from '../utils/project-context';
-import { buildUserQueryMessage, extractModelInfo } from '../utils/utils';
+import {
+  buildUserQueryMessage,
+  conversationTitleFromQuery,
+  extractModelInfo,
+  searchDegradedMeta,
+} from '../utils/utils';
 import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
+import {
+  redactConversationFor,
+  viewerOf,
+  type Readable,
+} from '../utils/viewer-redaction';
 
 const logger = Logger.getInstance({ service: 'Non-streaming chat' });
 
@@ -60,7 +70,7 @@ const sessionFields = (
   orgId,
   userId,
   initiator: userId,
-  title: String(body.query).slice(0, 100),
+  title: conversationTitleFromQuery(String(body.query)),
   lastActivityAt: Date.now(),
   status: CONVERSATION_STATUS.INPROGRESS,
   modelInfo: extractModelInfo(body),
@@ -116,6 +126,7 @@ const nonStreamingTurn =
 
       let conversation: ChatSessionDto;
       let previousConversations: unknown[];
+      let access: Readable | undefined;
       let project: ProjectDto | undefined;
       if (mode === 'create') {
         const link = await resolveProjectLink(
@@ -151,9 +162,11 @@ const nonStreamingTurn =
           req.params.conversationId as string,
           userMessage,
           { userId, orgId },
+          appConfig,
         );
         conversation = continued.conversation;
         previousConversations = continued.previousConversations;
+        access = continued.access;
         project = await loadProjectForSession(
           conversation.orgId,
           conversation.userId,
@@ -190,14 +203,28 @@ const nonStreamingTurn =
         requestId,
         timestamp: new Date().toISOString(),
         duration: Date.now() - startTime,
+        ...searchDegradedMeta(turn),
       };
       if (mode === 'create') {
         res
           .status(HTTP_STATUS.CREATED)
           .json({ conversation: turn.conversation, meta });
       } else {
+        // The response carries the whole stored history: answers the reader lost access to go out hidden.
+        const stored = turn.conversation as {
+          messages?: Array<{ _id?: unknown; messageType?: string }>;
+        };
+        const freshId = [...(stored.messages ?? [])]
+          .reverse()
+          .find((m) => m.messageType === 'bot_response')?._id;
+        const conversation = await redactConversationFor(
+          appConfig,
+          viewerOf(userId, orgId),
+          turn.conversation as Record<string, unknown> & { messages?: unknown },
+          { known: access, freshIds: [freshId] },
+        );
         res.status(HTTP_STATUS.OK).json({
-          conversation: turn.conversation,
+          conversation,
           recordsUsed: turn.recordsUsed,
           meta: { ...meta, recordsUsed: turn.recordsUsed },
         });

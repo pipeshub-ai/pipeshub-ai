@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { enableMapSet } from 'immer';
@@ -301,3 +302,5 @@ export const useUsersStore = create<UsersStore>()(
     { name: 'UsersStore' }
   )
 );
+
+resetStoreOnSessionEnd(useUsersStore);

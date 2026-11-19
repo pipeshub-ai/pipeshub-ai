@@ -6,7 +6,11 @@ from __future__ import annotations
 import asyncio
 import bisect
 import logging
+import math
+import re
+import time
 from dataclasses import replace
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
@@ -30,6 +34,7 @@ from app.agents.actions.knowledge_graph.ops.entity_search import (
     build_linker,
     unlinked_line,
 )
+from app.agents.actions.knowledge_graph.ops.time_range import parse_iso_to_epoch_ms
 from app.agents.actions.knowledge_graph.views import _read_hint
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
@@ -46,6 +51,7 @@ from app.modules.retrieval.entity_filters import (
     entity_query_from,
 )
 from app.modules.retrieval.entity_permissions import (
+    LISTING_DEADLINE_SECONDS,
     EntityAccessContext,
     EntityAccessError,
     admitted_node_ids,
@@ -57,12 +63,15 @@ from app.utils.chat_helpers import (
     get_record_id_shortener_if_enabled,
     resolve_frontend_url,
 )
+from app.utils.error_class import innermost_type
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
+
+UNCONVERTED_NOTE = "Amounts in every currency, not converted; pass currency to compare like with like."
 
 _MAX_LIMIT = 50
 _DAY_MS = 86_400_000
@@ -72,7 +81,9 @@ _MAX_READ_HINT_IDS = 8
 _VALUES_PER_RECORD = 10
 # Hits checked per permission query; a page stops at the first readable hit past it.
 _CHECK_BATCH = 1000
-# Hits one page may check before it hands back a cursor to continue from.
+# Hits one page may check past its first readable one before it hands back a
+# cursor to continue from. Before that the walk goes on to the deadline: a cursor
+# handed back over unreadable hits alone would say the value is mentioned.
 _MAX_SCAN = 5 * _CHECK_BATCH
 # Matches listed to check for permission when the first lookup is too broad.
 # Only a filter matching more falls back to counting within everything the user
@@ -109,8 +120,8 @@ async def execute_find_records_by_value(
     kinds: list[str] | None = None,
     name: str | None = None,
     entity_ids: list[str] | None = None,
-    date_from: int | None = None,
-    date_to: int | None = None,
+    date_from: str | int | None = None,
+    date_to: str | int | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
     currency: str | None = None,
@@ -128,6 +139,11 @@ async def execute_find_records_by_value(
         return False, "Knowledge graph tool state not initialized."
     if not await _named_entities_enabled(state):
         return False, NAMED_ENTITIES_DISABLED_MSG
+    # A blank currency is none: the filter strips it, so the note must too.
+    currency, dimension = (currency or "").strip(), (dimension or "").strip()
+    amount_min, amount_max = _range(amount_min, amount_max)
+    quantity_min, quantity_max = _range(quantity_min, quantity_max)
+    percent_min, percent_max = _range(percent_min, percent_max)
     raw: dict[str, Any] = {}
     # The filter as the model gave it, repeated in the header and the continue call.
     given: dict[str, Any] = {}
@@ -142,20 +158,29 @@ async def execute_find_records_by_value(
         given["entity_ids"] = asked_ids
     name = (name or "").strip()
     if _given(date_from, date_to):
-        start, end = date_from or None, date_to or None
-        if isinstance(start, int) and isinstance(end, int) and end <= start:
-            # One day asked as a point (date_to = date_from): the 24 hours from it. As a zero-width
-            # window it matched only the ranges around the day, never the day itself.
-            end = start + _DAY_MS
+        start, start_error = _date_bound(date_from, upper=False)
+        end, end_error = _date_bound(date_to, upper=True)
+        if start_error or end_error:
+            return False, start_error or end_error
+        if isinstance(date_from, int) and isinstance(date_to, int) and start is not None and end is not None and end <= start:
+            # One day asked as a point in epoch ms (date_to = date_from): the 24 hours from it.
+            # As a zero-width window it matched only the ranges around the day, never the day itself.
+            # Stated as applied, so the header shows the day the window covers.
+            date_to = end = start + _DAY_MS
+        if start is not None and end is not None and start > end:
+            return False, "date_from must be on or before date_to."
         raw["mentionedDate"] = {"from": start, "to": end}
-        given.update(_pair("date_from", start, "date_to", end))
-    if _given(amount_min, amount_max) or currency:
+        # An unset end the schema sent as 0 or blank is not repeated.
+        given.update(_pair(
+            "date_from", date_from if start is not None else None, "date_to", date_to if end is not None else None,
+        ))
+    if amount_min is not None or amount_max is not None or currency:
         raw["amount"] = {"min": amount_min, "max": amount_max, "currency": currency or ""}
         given.update(_pair("amount_min", amount_min, "amount_max", amount_max, currency=currency))
-    if _given(quantity_min, quantity_max) or dimension:
+    if quantity_min is not None or quantity_max is not None or dimension:
         raw["quantity"] = {"min": quantity_min, "max": quantity_max, "dimension": dimension or ""}
         given.update(_pair("quantity_min", quantity_min, "quantity_max", quantity_max, dimension=dimension))
-    if _given(percent_min, percent_max):
+    if percent_min is not None or percent_max is not None:
         raw["percent"] = {"min": percent_min, "max": percent_max}
         given.update(_pair("percent_min", percent_min, "percent_max", percent_max))
     if not raw and not asked_ids and not name:
@@ -203,11 +228,13 @@ async def execute_find_records_by_value(
         match = await resolver.match(org_id, raw)
         if not match.error and not match.constrained:
             return False, NOTHING_TO_MATCH_MSG
+        sources = context.app_ids & set(wanted_sources) if wanted_sources else context.app_ids
         if match.error == TOO_BROAD_MESSAGE:
             # Too broad across the org says nothing yet about what this user may
             # read. List more matches; each page checks only its own window.
-            if not context.app_ids:
-                return True, NO_MATCH_MSG
+            if not sources:
+                # As a value nobody mentions answers below.
+                return True, NO_SOURCE_MSG if wanted_sources else NO_MATCH_MSG
             match = await resolver.match(org_id, raw, limit=_SCAN_LIMIT)
             if match.error == TOO_BROAD_MESSAGE:
                 # Too many matches to list: count within the user's readable records,
@@ -228,7 +255,6 @@ async def execute_find_records_by_value(
             return False, match.error + hint
         # Every page matches the filter again: the cursor is a place in the
         # ordering, not a stored result set, so nothing is held between calls.
-        sources = context.app_ids & set(wanted_sources) if wanted_sources else context.app_ids
         if not sources:
             return True, NO_SOURCE_MSG if wanted_sources else NO_MATCH_MSG
         hits = _ordered(match.hits, sources, wanted_types)
@@ -240,21 +266,24 @@ async def execute_find_records_by_value(
             graph, context, hits, user_id, org_id, start, bounded_limit,
         )
         records = await _details(graph, org_id, page)
-    except (EntityAccessError, EntityFilterUnavailableError, PermissionVerificationUnavailableError):
-        logger.warning("find_records_by_value failed", exc_info=True)
+    except (EntityAccessError, EntityFilterUnavailableError, PermissionVerificationUnavailableError) as exc:
+        logger.warning(
+            "find_records_by_value failed",
+            extra={"error_type": type(exc).__name__, "cause_type": innermost_type(exc)},
+        )
         return False, LOOKUP_FAILED_MSG
     values = await _matched_values(graph, org_id, raw, records)
+    # Unconverted amounts both over- and under-match ("EUR 48,000" is not over 50,000),
+    # so the note goes with an empty answer too.
+    unconverted = UNCONVERTED_NOTE if "amount" in raw and not currency else ""
 
     if not records:
-        if next_cursor is not None:
-            return True, (
-                "No readable records in this part of the matches yet; more remain unchecked. "
-                f"Continue with {_continue_call(given, bounded_limit, next_cursor)}"
-            )
+        # One reply whatever stopped the walk: any other would say the value is
+        # mentioned in records this user cannot read.
         if cursor:
-            return True, NO_FURTHER_RECORDS_MSG
+            return True, " ".join(filter(None, (NO_FURTHER_RECORDS_MSG, unconverted)))
         return True, " ".join(filter(None, (
-            NO_MATCH_MSG, _percent_hint(percent_min, percent_max), limited_scope_note(context),
+            NO_MATCH_MSG, unconverted, _percent_hint(percent_min, percent_max), limited_scope_note(context),
         )))
 
     record_ids = [r["_key"] for r in records]
@@ -279,6 +308,8 @@ async def execute_find_records_by_value(
     lines = [f"Records {about}matching {_args(given)}, {order} ({len(records)} shown):"]
     if caveats:
         lines.append(f"Note on name: {caveats.strip()}")
+    if unconverted:
+        lines.append(unconverted)
     lines.extend(cite_note(records, cite_refs))
     for record in records:
         line = record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
@@ -325,14 +356,11 @@ async def _link_name(
         logger.warning("find_records_by_value: name lookup failed", exc_info=True)
         return [], LOOKUP_FAILED_MSG, ""
     result = linking.results[0]
+    # A cut-short access check is never mentioned, beside an accepted name or not: only
+    # candidates not yet found readable keep a check running, so saying so would hint
+    # that unreadable ones exist.
     if result.accepted:
-        caveats = accepted_caveats(result, linking.names)
-        if linking.timed_out:
-            caveats += " Access checks were cut short, so other entities by this name may be missing; retry."
-        return [candidate.entity_id for candidate in result.accepted], None, caveats
-    if linking.timed_out:
-        # Access checks were cut short, so "no such entity" is not known.
-        return [], NAME_TOO_SLOW_MSG, ""
+        return [candidate.entity_id for candidate in result.accepted], None, accepted_caveats(result, linking.names)
     # The ones it may be, with the ids to pass; each passed the permission check to be offered.
     options = [*result.namesakes, *result.unchecked]
     ids = "; ".join(f'{linking.names.get(c.entity_id, c.name)}: "{c.entity_id}"' for c in options)
@@ -359,6 +387,20 @@ async def _spelled(graph: "IGraphDBProvider", org_id: str, entity_ids: list[str]
     return f"mentioning {names[0]} and " if len(names) == 1 else f"mentioning one of {', '.join(names)} and "
 
 
+def _range(low: float | None, high: float | None) -> tuple[float | None, float | None]:
+    """A range's ends with an unused 0 left out. A strict schema sends an unused end
+    as 0, so "above 0.2" arrives as 0.2 to 0: a 0 end is dropped where it would leave
+    the range empty or backwards, and kept where it bounds one ("0 to 100" leaves out
+    refunds, "-500 to 0" is losses)."""
+    if low == 0 and high == 0:
+        return None, None
+    if low == 0 and high is not None and high < 0:
+        low = None
+    if high == 0 and low is not None and low > 0:
+        high = None
+    return low, high
+
+
 def _given(low: float | None, high: float | None) -> bool:
     """Whether a range was asked for. A strict tool schema makes the model send
     every parameter, so an unused range arrives as 0 to 0, not as absent."""
@@ -369,6 +411,47 @@ def _pair(low_name: str, low: object, high_name: str, high: object, **extra: obj
     """A range's ends, and its unit, as given (an unused end left out)."""
     ends = {low_name: low, high_name: high, **extra}
     return {key: value for key, value in ends.items() if value is not None and value != ""}
+
+
+_EXTENDED_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:$|[T ])")
+
+
+def _date_bound(value: str | float | None, *, upper: bool) -> tuple[int | None, str | None]:
+    """Epoch ms for a bound the model wrote as an ISO date or date-time; a date-only
+    end takes in its whole day. A number (a Python caller, or a call replayed from
+    before dates were ISO) is epoch ms. A strict schema sends an unused end as 0 or ""."""
+    label = "date_to" if upper else "date_from"
+    if not isinstance(value, str):
+        if not value:
+            return None, None
+        if not math.isfinite(value) or _written_as_digits(value):
+            return None, f"{label}: {value!r} is not a date. Use 'YYYY-MM-DD' or a full datetime with a timezone."
+        return int(value), None
+    text = value.strip()
+    if not text:
+        return None, None
+    if not _EXTENDED_DATE.match(text):
+        # "20260301" would otherwise read as a date-time with no timezone.
+        return None, f"{label}: {text!r} is not a date. Use 'YYYY-MM-DD' or a full datetime with a timezone."
+    return parse_iso_to_epoch_ms(text, is_upper_bound=upper, field_label=label)
+
+
+def _written_as_digits(value: float) -> bool:
+    """A year (2026) or a compact date (20260301) sent as a number: as epoch ms either
+    is a moment on 1 January 1970, never what was meant. Any other number is epoch ms,
+    including a date before 1970."""
+    if value != int(value):
+        return False
+    digits = str(int(value))
+    if len(digits) == 4:
+        return True
+    if len(digits) != 8:
+        return False
+    try:
+        date(int(digits[:4]), int(digits[4:6]), int(digits[6:]))
+    except ValueError:
+        return False
+    return True
 
 
 def _ordered(
@@ -451,23 +534,38 @@ async def _readable_page(
     stopped at ``_MAX_SCAN`` checked hits rather than at a readable one. Only the
     window walked is checked, so a later page never re-checks earlier ones.
     ``filter_accessible_record_ids`` also drops placeholders and internal records,
-    which the entity gate alone would not."""
+    which the entity gate alone would not.
+
+    Until a readable hit is found the walk is bounded by the deadline, not by
+    ``_MAX_SCAN``, and stopping there returns an empty page with no cursor, as
+    a value with no readable hit gets."""
     page: list[EntityFilterHit] = []
+    deadline = time.monotonic() + LISTING_DEADLINE_SECONDS
+    counted_from = start
     for offset in range(start, len(hits), _CHECK_BATCH):
+        if not page and offset > start and time.monotonic() >= deadline:
+            logger.info(
+                "find_records_by_value: walk stopped at its deadline with no readable hit org=%s checked=%d",
+                org_id, offset - start,
+            )
+            return [], None, False
         batch = hits[offset:offset + _CHECK_BATCH]
         readable = set(await graph.filter_accessible_record_ids(
             [hit.record_id for hit in batch], user_id, org_id,
         ))
         if context.row_scopes:
             readable &= await admitted_node_ids(graph, context, readable)
-        for hit in batch:
+        for index, hit in enumerate(batch):
             if hit.record_id not in readable:
                 continue
             if len(page) == limit:
                 return page, _cursor_of(page[-1]), False
+            if not page:
+                # The budget counts from the first readable hit, not from the start of its batch.
+                counted_from = offset + index
             page.append(hit)
-        checked = offset + len(batch) - start
-        if checked >= _MAX_SCAN and offset + len(batch) < len(hits):
+        checked = offset + len(batch) - counted_from
+        if page and checked >= _MAX_SCAN and offset + len(batch) < len(hits):
             return page, _cursor_of(batch[-1]), True
     return page, None, False
 

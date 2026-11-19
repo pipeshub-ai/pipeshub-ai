@@ -23,6 +23,10 @@ from app.agents.agent_loop.cancellation_transport import (
     CancellationAwareTransport,
     with_cancellation,
 )
+from tests.unit.agents.adapter.support.provider_stall import (
+    ProviderStall,
+    pending_since,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -50,6 +54,7 @@ class _FakeTransport:
     ) -> None:
         self._events = events or []
         self._stall = stall
+        self.stall = ProviderStall()
         self.aclose_called = False
         self.complete_called_with: tuple[Any, ...] | None = None
         self.complete_structured_called_with: tuple[Any, ...] | None = None
@@ -99,7 +104,7 @@ class _FakeTransport:
             for event in self._events:
                 yield event
             if self._stall:
-                await asyncio.Event().wait()  # never set -- indefinite stall
+                await self.stall.read()
         finally:
             # A real provider stream's teardown runs here on GeneratorExit
             # (delivered by our `.aclose()`) -- this is how we assert that
@@ -148,6 +153,31 @@ class TestStreamCancellationDuringProviderStall:
             pass
 
         assert inner.aclose_called is True
+
+    @pytest.mark.parametrize("cancels", [1, 3])
+    async def test_cancelling_the_consumer_closes_the_provider_read(self, cancels: int) -> None:
+        """A client disconnect cancels the task iterating the stream, with no token fired, once
+        per layer of the turn: the task reading the provider gets exactly one cancel, so its
+        close completes."""
+        inner = _FakeTransport([TextDeltaEvent(delta="partial")], stall=True)
+        transport = CancellationAwareTransport(inner, CancellationToken())
+        before = asyncio.all_tasks()
+
+        async def consume() -> None:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        consumer = asyncio.create_task(consume())
+        await inner.stall.started.wait()
+        for _ in range(cancels):
+            consumer.cancel()
+            await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        await inner.stall.settle()
+
+        assert (inner.stall.cancels, inner.stall.closed, inner.aclose_called) == (1, True, True)
+        assert await pending_since(before) == []
 
 
 class TestStreamWithoutCancellation:

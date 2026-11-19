@@ -65,3 +65,27 @@ export async function deleteConversationArtifacts(
     throw handleBackendError(error, operation);
   }
 }
+
+/** Deletes one artifact the caller owns, through the connectors service. */
+export async function deleteArtifactById(
+  appConfig: AppConfig,
+  artifactId: string,
+  req: AuthenticatedUserRequest,
+): Promise<void> {
+  const operation = 'delete artifact';
+  try {
+    const authorization = req.headers.authorization;
+    const response = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/artifacts/${encodeURIComponent(artifactId)}`,
+      HttpMethod.DELETE,
+      { authorization: typeof authorization === 'string' ? authorization : '' },
+      undefined,
+      { timeoutMs: CLEANUP_TIMEOUT_MS },
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw handleBackendError(response, operation);
+    }
+  } catch (error: unknown) {
+    throw handleBackendError(error, operation);
+  }
+}

@@ -579,6 +579,52 @@ class TestSyncContent:
         await connector._sync_content("DEV", RecordType.CONFLUENCE_PAGE)
         connector.data_entities_processor.on_new_records.assert_awaited()
 
+    @pytest.mark.asyncio
+    async def test_a_changed_page_publishes_a_content_update(self) -> None:
+        connector = _make_connector()
+        from app.connectors.core.registry.filters import FilterCollection
+        connector.sync_filters = FilterCollection()
+        connector.indexing_filters = FilterCollection()
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        existing = MagicMock()
+        existing.is_placeholder = False
+        existing.external_revision_id = "1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.on_record_content_update = AsyncMock()
+
+        page = MagicMock()
+        page.id = "rec-1"
+        page.version = 2
+        page.external_revision_id = "2"
+        page.rewrite_permissions = True
+        page.inherit_permissions = True
+        page.indexing_status = None
+        update = MagicMock()
+        update.record = page
+        connector._process_webpage_with_update = AsyncMock(return_value=update)
+
+        ds = MagicMock()
+        ds.get_pages_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [{
+                "id": "pg1",
+                "title": "TestPage",
+                "space": {"id": 123},
+                "children": {"attachment": {"results": []}},
+            }],
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        grants = [MagicMock()]
+        connector._fetch_page_permissions = AsyncMock(return_value=grants)
+
+        await connector._sync_content("DEV", RecordType.CONFLUENCE_PAGE)
+
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once_with(page, grants)
+
 
 # ===========================================================================
 # _sync_permission_changes_from_audit_log

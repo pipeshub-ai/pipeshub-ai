@@ -1,7 +1,13 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import http from 'node:http'
+import jwt from 'jsonwebtoken'
+import { Server } from 'socket.io'
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { withCause } from '../../../../src/libs/errors/base.error'
+import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 
 describe('NotificationService', () => {
   let service: NotificationService
@@ -21,6 +27,26 @@ describe('NotificationService', () => {
       }
     } catch (_e) { /* ignore shutdown errors in tests */ }
     sinon.restore()
+  })
+
+  describe('handshake authentication', () => {
+    it('logs a refused token once, with why, and refuses the socket with the same error', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      const use = sinon.spy(Server.prototype, 'use')
+      const expired = withCause(new UnauthorizedError('Invalid token'), new jwt.TokenExpiredError('jwt expired', new Date(0)))
+      mockAuthTokenService.verifyToken = sinon.stub().rejects(expired)
+      service.initialize(http.createServer())
+      const authenticate = use.firstCall.args[0] as (socket: unknown, next: (err?: Error) => void) => Promise<void>
+
+      const refused = await new Promise<Error | undefined>((resolve) => {
+        void authenticate({ handshake: { auth: { token: 'Bearer t' } }, data: {} }, resolve)
+      })
+
+      expect(refused).to.equal(expired)
+      const lines = warn.getCalls().filter((call) => call.args[0] === 'socket.auth.rejected')
+      expect(lines).to.have.length(1)
+      expect(lines[0]!.args[1]).to.include({ error_class: 'auth_expired', error: expired })
+    })
   })
 
   describe('constructor', () => {

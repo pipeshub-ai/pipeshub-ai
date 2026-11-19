@@ -5,9 +5,11 @@ import {
   KB_BEING_DELETED_MESSAGE,
   SERVICE_UNAVAILABLE_MESSAGE,
   unansweredCallError,
+  unansweredKind,
 } from '../../../src/libs/errors/backend-error'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../src/libs/utils/error.middleware.utils'
+import { classifyRequestError } from '../../../src/libs/utils/error-class'
 import {
   BadRequestError,
   ConflictError,
@@ -52,7 +54,7 @@ describe('handleBackendError', () => {
       expect(result.message).to.equal(message)
     })
 
-    it('logs a 402 as a warning, and the error middleware does too', () => {
+    it('maps a 402 to a warning for the error middleware, and logs nothing itself', () => {
       const warn = sinon.stub(Logger.prototype, 'warn')
       const error = sinon.stub(Logger.prototype, 'error')
       try {
@@ -66,7 +68,7 @@ describe('handleBackendError', () => {
           'Chat Stream',
         )
         expect(logLevelFor(result)).to.equal('warn')
-        expect(warn.calledWith('Backend error during Chat Stream')).to.equal(true)
+        expect(warn.called).to.equal(false)
         expect(error.called).to.equal(false)
       } finally {
         sinon.restore()
@@ -82,7 +84,7 @@ describe('handleBackendError', () => {
       expect(result.message).to.equal('Payment check: fetch failed')
     })
 
-    it('logs any other 4xx it passes on as a warning too', () => {
+    it('maps any other 4xx it passes on to a warning too', () => {
       const warn = sinon.stub(Logger.prototype, 'warn')
       const error = sinon.stub(Logger.prototype, 'error')
       try {
@@ -91,7 +93,7 @@ describe('handleBackendError', () => {
           'create connector',
         )
         expect(logLevelFor(result)).to.equal('warn')
-        expect(warn.calledWith('Backend error during create connector')).to.equal(true)
+        expect(warn.called).to.equal(false)
         expect(error.called).to.equal(false)
       } finally {
         sinon.restore()
@@ -306,56 +308,58 @@ describe('handleBackendError', () => {
     expect(result.message).to.equal('Name is required')
   })
 
-  // A service refusing the request is answered to the caller as the same 4xx;
-  // logging each at error buried the real failures in the error log.
-  describe('log level', () => {
-    let warn: sinon.SinonStub
-    let error: sinon.SinonStub
-
-    // On the prototype: backend-error keeps the instance it got at load, which
-    // another test may since have replaced as the singleton.
-    beforeEach(() => {
-      warn = sinon.stub(Logger.prototype, 'warn')
-      error = sinon.stub(Logger.prototype, 'error')
-    })
-
+  // The call's own upstream.call.end line and the error middleware's line report it; this layer only maps.
+  describe('logs nothing; the cause tells the middleware why', () => {
     afterEach(() => sinon.restore())
 
-    for (const statusCode of [400, 401, 403, 404, 409, 422]) {
-      it(`logs a ${String(statusCode)} from the service at warn`, () => {
-        handleBackendError({ statusCode, data: { detail: 'refused' } }, 'create connector')
+    it('writes no record for any input', () => {
+      const levels = (['error', 'warn', 'info', 'debug'] as const).map((level) => sinon.stub(Logger.prototype, level))
+      const inputs: unknown[] = [
+        { statusCode: 400, data: { detail: 'refused' } },
+        { statusCode: 404, data: { detail: 'gone' } },
+        { statusCode: 405, data: { detail: 'Method Not Allowed' } },
+        { statusCode: 429, data: { detail: 'slow down' } },
+        { statusCode: 500, data: { detail: 'broke for alice@example.com' } },
+        { statusCode: 502, data: { detail: 'broke' } },
+        { statusCode: 500, data: { detail: 'ECONNREFUSED' } },
+        new Error('no status'),
+        Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('x'), { code: 'ECONNREFUSED' }) }),
+        'not an object',
+      ]
+      for (const input of inputs) handleBackendError(input, 'create connector')
+      expect(levels.map((stub) => stub.callCount)).to.deep.equal([0, 0, 0, 0])
+    })
 
-        expect(warn.calledOnce).to.be.true
-        expect(warn.firstCall.args[0]).to.equal('Backend error during create connector')
-        expect(error.called).to.be.false
+    for (const [status, errorClass] of [
+      [500, 'upstream_5xx'],
+      [502, 'upstream_5xx'],
+      [501, 'upstream_5xx'],
+      [408, 'timeout'],
+      [405, 'internal'],
+      [410, 'internal'],
+    ] as const) {
+      it(`a ${String(status)} from the service is our 500 classed ${errorClass}`, () => {
+        const result = handleBackendError({ statusCode: status, data: { detail: 'broke' } }, 'create connector')
+        expect(result).to.be.instanceOf(InternalServerError)
+        expect(classifyRequestError(result, 500)).to.equal(errorClass)
+        expect((result as Error & { cause?: unknown }).cause).to.deep.equal({ status })
       })
     }
 
-    // Answered to the caller as a 500, so it is ours to look into.
-    it('logs a 4xx it does not pass on (405) at error, with the service detail', () => {
-      const result = handleBackendError({ statusCode: 405, data: { detail: 'Method Not Allowed' } }, 'create connector')
+    it('a failure with no status keeps an Error as the cause, never a JSON parse message that quotes the body', () => {
+      const parse = new SyntaxError('Unexpected token < in JSON at position 0: "<html>alice@example.com"')
+      const parsed = handleBackendError(parse, 'Search') as Error & { cause?: Error }
+      expect(parsed).to.be.instanceOf(InternalServerError)
+      expect(parsed.cause).to.be.instanceOf(SyntaxError)
+      expect(parsed.cause!.message).to.not.include('alice@example.com')
+      expect(classifyRequestError(parsed, 500)).to.equal('internal')
 
-      expect(result).to.be.instanceOf(InternalServerError)
-      expect(error.calledOnce).to.be.true
-      expect(error.firstCall.args[1]).to.include({ statusCode: 405, errorDetail: 'Method Not Allowed' })
-      expect(warn.called).to.be.false
+      const bug = new TypeError("Cannot read properties of undefined (reading 'data')")
+      expect((handleBackendError(bug, 'Search') as Error & { cause?: unknown }).cause).to.equal(bug)
+
+      const plain = handleBackendError({ message: 'odd', data: { secret: 'x' } }, 'Search') as Error & { cause?: unknown }
+      expect(plain.cause).to.equal(undefined)
     })
-
-    it('logs a 429 it passes on as a 429 at warn', () => {
-      handleBackendError({ statusCode: 429, data: { detail: 'slow down' } }, 'create connector')
-
-      expect(warn.calledOnce).to.be.true
-      expect(error.called).to.be.false
-    })
-
-    for (const statusCode of [500, 502]) {
-      it(`logs a ${String(statusCode)} from the service at error`, () => {
-        handleBackendError({ statusCode, data: { detail: 'broke' } }, 'create connector')
-
-        expect(error.calledOnce).to.be.true
-        expect(warn.called).to.be.false
-      })
-    }
   })
 })
 
@@ -373,72 +377,83 @@ describe('unansweredCallError', () => {
 
   for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'EPIPE']) {
     it(`is a 503 with the shared message when fetch failed with ${code}`, () => {
-      const result = unansweredCallError(withCode(code), 'Search')
+      const result = unansweredCallError(withCode(code))
       expect(result).to.be.instanceOf(ServiceUnavailableError)
       expect(result!.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
     })
   }
 
   it("is a 503 for axios's request that got no response", () => {
-    const result = unansweredCallError({ code: 'ECONNREFUSED', request: {} }, 'Get user')
+    const result = unansweredCallError({ code: 'ECONNREFUSED', request: {} })
     expect(result).to.be.instanceOf(ServiceUnavailableError)
   })
 
   it("is a 503 for axios's network failure and a broken pipe", () => {
-    expect(unansweredCallError({ code: 'ERR_NETWORK', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
-    expect(unansweredCallError({ code: 'EPIPE', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+    expect(unansweredCallError({ code: 'ERR_NETWORK', request: {} })).to.be.instanceOf(ServiceUnavailableError)
+    expect(unansweredCallError({ code: 'EPIPE', request: {} })).to.be.instanceOf(ServiceUnavailableError)
   })
 
   for (const code of ['ECONNABORTED', 'ETIMEDOUT']) {
     it(`is a 504 for axios's own timeout (${code})`, () => {
-      expect(unansweredCallError({ code, request: {} }, 'Get user')).to.be.instanceOf(GatewayTimeoutError)
+      expect(unansweredCallError({ code, request: {} })).to.be.instanceOf(GatewayTimeoutError)
     })
   }
 
   it('is null for an axios timeout code on a call the service answered', () => {
-    expect(unansweredCallError({ code: 'ECONNABORTED', request: {}, response: { status: 502 } }, 'Get user')).to.equal(null)
+    expect(unansweredCallError({ code: 'ECONNABORTED', request: {}, response: { status: 502 } })).to.equal(null)
   })
 
   it('stays a 503 when fetch timed out connecting (ETIMEDOUT as the cause)', () => {
-    expect(unansweredCallError(withCode('ETIMEDOUT'), 'Search')).to.be.instanceOf(ServiceUnavailableError)
+    expect(unansweredCallError(withCode('ETIMEDOUT'))).to.be.instanceOf(ServiceUnavailableError)
   })
 
   it('is null for an axios request that failed on a certificate', () => {
-    expect(unansweredCallError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID', request: {} }, 'Get user')).to.equal(null)
-    expect(unansweredCallError({ code: 'CERT_HAS_EXPIRED', request: {} }, 'Get user')).to.equal(null)
+    expect(unansweredCallError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID', request: {} })).to.equal(null)
+    expect(unansweredCallError({ code: 'CERT_HAS_EXPIRED', request: {} })).to.equal(null)
   })
 
   it('is a 504 for a timed-out call', () => {
-    const result = unansweredCallError(new DOMException('timed out', 'TimeoutError'), 'Search')
+    const result = unansweredCallError(new DOMException('timed out', 'TimeoutError'))
     expect(result).to.be.instanceOf(GatewayTimeoutError)
   })
 
   it('is null for a call the service answered, whatever its words', () => {
-    expect(unansweredCallError({ statusCode: 502, message: 'fetch failed' }, 'Search')).to.equal(null)
-    expect(unansweredCallError({ response: { status: 500 }, request: {} }, 'Search')).to.equal(null)
+    expect(unansweredCallError({ statusCode: 502, message: 'fetch failed' })).to.equal(null)
+    expect(unansweredCallError({ response: { status: 500 }, request: {} })).to.equal(null)
   })
 
   it('is null for a request without response that carries a validation detail', () => {
-    expect(unansweredCallError({ request: {}, detail: 'name is required' }, 'Create')).to.equal(null)
+    expect(unansweredCallError({ request: {}, detail: 'name is required' })).to.equal(null)
   })
 
   it('is null for a fetch that failed for a reason retrying will not fix', () => {
-    expect(unansweredCallError(withCode('ERR_TLS_CERT_ALTNAME_INVALID'), 'Search')).to.equal(null)
-    expect(unansweredCallError(withCode('UND_ERR_REQ_CONTENT_LENGTH_MISMATCH'), 'Search')).to.equal(null)
+    expect(unansweredCallError(withCode('ERR_TLS_CERT_ALTNAME_INVALID'))).to.equal(null)
+    expect(unansweredCallError(withCode('UND_ERR_REQ_CONTENT_LENGTH_MISMATCH'))).to.equal(null)
   })
 
   it('is null for anything that is not a failed call', () => {
-    expect(unansweredCallError(new Error('boom'), 'Search')).to.equal(null)
-    expect(unansweredCallError(new DOMException('aborted', 'AbortError'), 'Search')).to.equal(null)
-    expect(unansweredCallError(null, 'Search')).to.equal(null)
-    expect(unansweredCallError('fetch failed', 'Search')).to.equal(null)
+    expect(unansweredCallError(new Error('boom'))).to.equal(null)
+    expect(unansweredCallError(new DOMException('aborted', 'AbortError'))).to.equal(null)
+    expect(unansweredCallError(null)).to.equal(null)
+    expect(unansweredCallError('fetch failed')).to.equal(null)
   })
 
-  it('logs the cause code', () => {
-    unansweredCallError(withCode('ECONNREFUSED'), 'Get user teams')
-    const logged = (Logger.prototype.error as sinon.SinonStub).firstCall
-    expect(logged.args[0]).to.equal('Could not reach the service during Get user teams')
-    expect(logged.args[1]).to.deep.equal({ cause: 'ECONNREFUSED' })
+  it('does not log, and keeps the unanswered call as the cause', () => {
+    const original = withCode('ECONNREFUSED')
+    const result = unansweredCallError(original)
+    expect((Logger.prototype.error as sinon.SinonStub).called).to.be.false
+    expect((result as Error & { cause?: unknown }).cause).to.equal(original)
+    expect(Object.keys(result!)).to.not.include('cause')
+    const timeout = new DOMException('timed out', 'TimeoutError')
+    expect((unansweredCallError(timeout) as Error & { cause?: unknown }).cause).to.equal(timeout)
+  })
+
+  it('names the kind of failure without mapping it', () => {
+    expect(unansweredKind(withCode('ECONNREFUSED'))).to.equal('unavailable')
+    expect(unansweredKind({ code: 'ETIMEDOUT', request: {} })).to.equal('timeout')
+    expect(unansweredKind(new DOMException('timed out', 'TimeoutError'))).to.equal('timeout')
+    expect(unansweredKind({ response: { status: 502 }, request: {} })).to.equal(null)
+    expect(unansweredKind(new TypeError('x is not a function'))).to.equal(null)
   })
 
   it('gives handleBackendError the same answer', () => {

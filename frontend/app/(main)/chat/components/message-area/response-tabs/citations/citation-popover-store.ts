@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import type { CitationData, CitationCallbacks } from './types';
 
 /**
@@ -69,3 +70,5 @@ export const useInlineCitationPopoverStore = create<InlineCitationPopoverState>(
     }
   },
 }));
+
+resetStoreOnSessionEnd(useInlineCitationPopoverStore);

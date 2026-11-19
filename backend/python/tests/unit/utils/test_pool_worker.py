@@ -65,7 +65,10 @@ def test_docling_pool_workers_exit_when_their_parent_is_killed() -> None:
     try:
         ready, _, _ = select.select([parent.stdout], [], [], 25)
         assert ready, "the pool never reported a worker pid"
-        worker_pid = int(parent.stdout.readline())
+        line = parent.stdout.readline()
+        while line and not line.strip().isdigit():  # the service's log lines share stdout
+            line = parent.stdout.readline()
+        worker_pid = int(line)
         assert _alive(worker_pid)
     finally:
         parent.kill()

@@ -23,11 +23,19 @@ from app.config.constants.arangodb import (
 from app.events.events import DedupDecision, EventProcessor
 from app.exceptions.indexing_exceptions import ProcessingError
 from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf, UnreadablePdfError
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
+from app.services.parsing.interface import ParseErrorCode, UnsupportedFormatError
+from app.utils.user_errors import to_user_reason, unsupported_file_type
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,6 +54,7 @@ def _make_event_processor():
     processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     config_service = MagicMock()
 
     ep = EventProcessor(logger, processor, graph_provider, config_service)
@@ -97,6 +106,34 @@ async def _drain(async_gen):
     async for item in async_gen:
         items.append(item)
     return items
+
+
+async def _unroutable_error(extension: str | None, mime_type: str) -> UnsupportedFormatError:
+    """The error the real legacy dispatch raises for a type none of its branches routes."""
+    ep, _, _, gp = _make_event_processor()
+    gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+    with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                      return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+        with pytest.raises(UnsupportedFormatError) as exc:
+            await _drain(ep.on_event(_make_event_payload(extension=extension, mime_type=mime_type)))
+    return exc.value
+
+
+def _rewrapped(error: Exception) -> Exception:
+    """As the record handler re-raises an unknown error on the connector-stream path."""
+    try:
+        raise Exception(str(error)) from error
+    except Exception as wrapped:
+        return wrapped
+
+
+# Types no dispatch branch routes. The repros of the gate passing what the dispatch refused (image/pjpeg, application/x-pdf, htm) route
+# now that every spelling of an indexable type does; HEIC has a parser but no branch.
+_GATE_ACCEPTS_DISPATCH_REFUSES = [
+    (None, "image/heic"),
+    ("heic", "application/octet-stream"),
+    ("heif", "image/heif"),
+]
 
 
 async def _mock_processor_gen(*args, **kwargs):
@@ -265,6 +302,7 @@ class TestMarkRecordStatusEdgeCases:
 
         ep, _, _, gp = _make_event_processor()
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
         doc = {"_key": "k8"}
 
         with pytest.raises(IndexingError):
@@ -509,6 +547,7 @@ def _make_multi_collection_event_processor():
     processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     config_service = MagicMock()
 
     ep = EventProcessor(
@@ -819,6 +858,7 @@ class TestOnEventEdgeCases:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
         processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
@@ -1594,15 +1634,29 @@ class TestOnEventExtensionDispatch:
         processor.process_image.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_unsupported_extension_raises(self):
-        ep, _, processor, gp = _make_event_processor()
-        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+    async def test_unsupported_extension_raises(self) -> None:
+        error = await _unroutable_error("xyz", "unknown")
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
-            event_data = _make_event_payload(extension="xyz")
-            with pytest.raises(Exception, match="Unsupported file extension"):
-                await _drain(ep.on_event(event_data))
+        assert str(error) == "Unsupported file extension: xyz (mime type unknown)"
+        assert error.code is ParseErrorCode.UNSUPPORTED_FORMAT
+        assert error.details == {"extension": "xyz"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("extension", "mime_type"), _GATE_ACCEPTS_DISPATCH_REFUSES)
+    async def test_a_type_no_branch_routes_is_terminal(self, extension, mime_type) -> None:
+        """A retry reads the same extension and mime, so it can only fail the same way."""
+        error = await _unroutable_error(extension, mime_type)
+
+        assert mime_type in str(error)
+        assert MessageErrorClassifier.classify_by_exception(error) == MessageErrorType.TERMINAL
+        assert MessageErrorClassifier.classify_by_exception(_rewrapped(error)) == MessageErrorType.TERMINAL
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("extension", "mime_type"), [("heic", "application/octet-stream"), (None, "image/heic")])
+    async def test_the_unsupported_reason_names_the_extension(self, extension, mime_type) -> None:
+        error = await _unroutable_error(extension, mime_type)
+
+        assert to_user_reason(_rewrapped(error)) == unsupported_file_type(extension)
 
     @pytest.mark.asyncio
     async def test_html_extension_routes_to_html_processor(self):
@@ -1804,6 +1858,83 @@ class TestOnEventUpdateEvent:
         assert call_kwargs["prev_virtual_record_id"] == "existing-vrid"
 
     @pytest.mark.asyncio
+    async def test_a_retry_stays_on_the_vrid_it_saved_instead_of_taking_the_twins(self) -> None:
+        """The retried message still names the VRID shared with the twin. Only
+        the twin holds it by then, so it reads as 1:1 and would be rewritten."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "saved-by-attempt-1",
+        }
+
+        async def holders(vrid: str, **_kwargs: object) -> list[str]:
+            return ["rec-twin"] if vrid == "shared-vrid" else ["rec-1"]
+
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=holders)
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] == "saved-by-attempt-1"
+        assert call_kwargs["prev_virtual_record_id"] == "saved-by-attempt-1"
+        cleanup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_retry_of_an_unreconciled_type_cleans_up_what_its_first_attempt_left(self) -> None:
+        """The new VRID abandons the one the record is on, not the one in the
+        message, which the first attempt already left."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "FILE",
+            "virtualRecordId": "saved-by-attempt-1",
+        }
+        processor.process_excel_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock), \
+             patch.object(ep, "_spawn_abandoned_vrid_cleanup") as cleanup:
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.XLSX.value,
+                extension=ExtensionTypes.XLSX.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="vrid-in-the-message",
+            )))
+
+        cleanup.assert_called_once_with("org-1", "saved-by-attempt-1")
+        minted = processor.process_excel_document.call_args[1]["virtual_record_id"]
+        assert minted not in ("saved-by-attempt-1", "vrid-in-the-message")
+
+    @pytest.mark.asyncio
+    async def test_the_message_vrid_is_used_when_the_record_has_none(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "SQL_TABLE"}
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="vrid-in-the-message",
+            )))
+
+        assert processor.process_sql_structured_data.call_args[1]["virtual_record_id"] == "vrid-in-the-message"
+
+    @pytest.mark.asyncio
     async def test_update_reconciliation_type_nto1_isolates_vrid(self):
         """Reconciliation type with N:1 mapping generates new vrid."""
         ep, _, processor, gp = _make_event_processor()
@@ -1830,6 +1961,67 @@ class TestOnEventUpdateEvent:
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["virtual_record_id"] != "shared-vrid"
         assert len(call_kwargs["virtual_record_id"]) == 36
+
+    @pytest.mark.asyncio
+    async def test_a_twin_in_the_trash_isolates_the_update_rather_than_rewriting_its_content(self) -> None:
+        """A restore reads the VRID's stored content, so rewriting it in place
+        would bring the twin back holding this record's new content."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+
+        async def holders(_vrid, *, visibility=RecordVisibility.LIVE, **_kwargs) -> list[str]:
+            return ["rec-1", "rec-trashed"] if visibility == RecordVisibility.ALL else ["rec-1"]
+
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=holders)
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_cleanup_abandoned_vrid_storage", new_callable=AsyncMock), \
+             patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock):
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )))
+
+        assert processor.process_sql_structured_data.call_args[1]["virtual_record_id"] != "shared-vrid"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_who_shares_the_vrid_fails_the_update_and_writes_nothing(self) -> None:
+        """Answered as [] it reads as "only this record", and the update would
+        rewrite content another record is serving."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+
+        async def unreadable(_vrid, *, raise_on_error=False, **_kwargs) -> list[str]:
+            if raise_on_error:
+                raise ConnectionError("graph unavailable")
+            return []
+
+        gp.get_records_by_virtual_record_id = AsyncMock(side_effect=unreadable)
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(ConnectionError):
+            await _drain(ep.on_event(_make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )))
+
+        processor.process_sql_structured_data.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_shared_vrid_with_missing_content_is_rebuilt_not_isolated(self):
@@ -2077,6 +2269,50 @@ class TestOnEventDuplicate:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
+
+    @pytest.mark.asyncio
+    async def test_a_users_force_reindex_never_takes_a_twins_identity_before_it_indexes(self) -> None:
+        """A forced refresh asks dedup not to attach: the twin's relationships, VRID and status are not copied onto it."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+        seen: list[bool] = []
+
+        async def decide(*_args: object, force_index: bool = False, **_kwargs: object) -> DedupDecision:
+            seen.append(force_index)
+            return DedupDecision() if force_index else DedupDecision(virtual_record_id="vr-twin", skip_indexing=True)
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=decide):
+            plain = await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+            forced_event = _make_event_payload(extension=ExtensionTypes.DOCX.value)
+            forced_event["payload"].update({"forceReindex": True, "refreshPaidOutputs": True})
+            forced = await _drain(ep.on_event(forced_event))
+
+        assert seen == [False, True]
+        assert any(e.event == "indexing_complete" for e in plain)
+        assert processor.process_docx_document.called          # the forced event ran the parse
+        assert any(e.event == "indexing_complete" for e in forced)
+
+    @pytest.mark.asyncio
+    async def test_dedup_for_a_forced_event_copies_nothing_from_a_finished_twin(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        processor.sink_orchestrator.blob_storage.get_actual_content_path.return_value = "some/path"
+        gp.find_duplicate_records.return_value = [{
+            "_key": "twin", "virtualRecordId": "vr-shared", "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value, "summaryDocumentId": "sum-1",
+        }]
+        ep._attach_to_finished_twin = AsyncMock()
+        doc = {"_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+        plain = await ep._check_duplicate_by_md5(b"x", dict(doc))
+        ep._attach_to_finished_twin.assert_awaited_once()      # a plain event attaches, as before
+        ep._attach_to_finished_twin.reset_mock()
+        forced = await ep._check_duplicate_by_md5(b"x", dict(doc), force_index=True)
+
+        ep._attach_to_finished_twin.assert_not_awaited()       # nothing of the twin's identity was copied
+        assert plain.skip_indexing is True
+        assert forced.skip_indexing is False
+        assert forced.rebuild_shared_vrid is True               # the shared VRID it holds is rebuilt, repairing the twin too
 
     @pytest.mark.asyncio
     async def test_duplicate_skip_invalidates_accessible_records_cache(self):
@@ -2668,6 +2904,7 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
     async def test_failed_md5_write_raises(self):
         ep, _, _, gp = _make_event_processor()
         gp.update_node = AsyncMock(return_value=False)
+        gp.write_attempt_start = attempt_start_via(gp)
         doc = {"_key": "r1", "recordType": "FILE", "sizeInBytes": 10}
 
         with pytest.raises(IndexingError, match="md5Checksum"):
@@ -2690,6 +2927,8 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
             return "virtualRecordId" not in fields
 
         gp.update_node = AsyncMock(side_effect=_fail_the_identity_write)
+
+        gp.write_attempt_start = attempt_start_via(gp)
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
@@ -2886,6 +3125,7 @@ def _record_attach(ep, gp, finds):
     gp.find_duplicate_records = AsyncMock(side_effect=_find)
     gp.copy_document_relationships = AsyncMock(side_effect=_edges)
     gp.update_node = AsyncMock(side_effect=_update)
+    gp.write_attempt_start = attempt_start_via(gp)
     gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
     return steps, fields_of, patch.object(ep, "sync_vector_membership", side_effect=_sync)
 
@@ -2968,6 +3208,8 @@ class TestProcessedTwinAttachOrdering:
 
         gp.update_node = AsyncMock(side_effect=_update)
 
+        gp.write_attempt_start = attempt_start_via(gp)
+
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
             with pytest.raises(RuntimeError, match="connection reset"):
                 await ep._check_duplicate_by_md5(b"x", _copy(virtualRecordId="vr-own"))
@@ -3006,6 +3248,8 @@ class TestProcessedTwinAttachOrdering:
 
         gp.update_node = AsyncMock(side_effect=_update)
 
+        gp.write_attempt_start = attempt_start_via(gp)
+
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
             with pytest.raises(IndexingError, match="duplicate record fields"):
                 await ep._check_duplicate_by_md5(b"x", _copy())
@@ -3027,6 +3271,8 @@ class TestProcessedTwinAttachOrdering:
             return True
 
         gp.update_node = AsyncMock(side_effect=_update)
+
+        gp.write_attempt_start = attempt_start_via(gp)
 
         with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
             with pytest.raises(RuntimeError, match="connection reset"):
@@ -3322,10 +3568,10 @@ class TestDedupHookBeforeReusedStatus:
         calls: list[str] = []
         real_update = ep.update_record_fields
 
-        async def _update(doc: dict, fields: dict) -> bool:
+        async def _update(doc: dict, fields: dict, **kw: object) -> bool:
             if "indexingStatus" in fields:
                 calls.append("status")
-            return await real_update(doc, fields)
+            return await real_update(doc, fields, **kw)
 
         async def _hook() -> None:
             calls.append("hook")

@@ -22,18 +22,22 @@ import multiprocessing
 import re
 import signal
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .contract import PushRefusal
+from . import cpu
+from .contract import DISK_FULL, PushRefusal, spool_full
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from multiprocessing.connection import Connection
 
 TASK_BUDGET_S = 45.0
 KILL_AFTER_S = 50.0
 LEASE_WAIT_S = 10.0
 MAX_TASKS_PER_WORKER = 32
+#: A death this soon after the start of a task on a reused worker may be the worker's state, not the body.
+REPLAY_ONLY_BELOW_S = 5.0
 ADDRESS_SPACE_HEADROOM = 1 << 30
 
 _SCHEMA_ID_HINT = re.compile(rb'"schemaId"\s*:\s*"([^"\\]{1,300})"')
@@ -63,11 +67,20 @@ class Validated:
     blocks_sha: str
     digest: str
     stored_path: str
-    size: int
-    content_rev: str
+    size: int | None
+    content_rev: str | None
     warnings: int
     block_count: int
     group_count: int
+    #: ``storage://`` images: distinct ids in first-occurrence order and how often each occurs.
+    refs: list[tuple[str, int]] = field(default_factory=list)
+    #: With refs, ``stored_path`` holds sentinels and ``size``/``content_rev`` stay None until materialised;
+    #: ``digest`` is then the digest without the images' fingerprint (the parent adds it).
+    image_nonce: str | None = None
+
+    @property
+    def needs_materialising(self) -> bool:
+        return bool(self.refs)
 
 
 def _refusal_dict(r: PushRefusal) -> dict[str, Any]:
@@ -93,7 +106,13 @@ def validate_body(body: bytes, *, schema_id: str | None, schema: dict[str, Any] 
     )
 
     from . import contract as C
-    from .images import check_blocks_images
+    from .images import (
+        PLACEHOLDER_PNG,
+        check_blocks_images,
+        new_nonce,
+        sentinel,
+        swap_uris,
+    )
     from .structure import structure_pass
 
     schema_obj = MetadataSchema.model_validate(schema) if schema is not None else None
@@ -114,15 +133,21 @@ def validate_body(body: bytes, *, schema_id: str | None, schema: dict[str, Any] 
             raise PushRefusal(422, e.code, str(e), e.property, extra={"code": "ENVELOPE_INVALID", "property": e.property}) from None
         properties = C.canonical_properties(used_schema, {k: v.value for k, v in checked.values.items()})
 
-    check_blocks_images(env.blocks)
+    refs = check_blocks_images(env.blocks)
+    # The digest and the dedup key see the references as sent; the validator sees a valid image in their place.
+    blocks_sha = C.blocks_digest(C.canonical_blocks(env.blocks))
+    if refs.order:
+        swap_uris(refs, dict.fromkeys(refs.order, PLACEHOLDER_PNG))
     try:
         warnings = BlockContainerValidator().validate(env.blocks)
     except BlockContainerValidationError as e:
         issues = [{"location": i.location, "type": i.code, "message": i.message} for i in e.errors[:C.MAX_ISSUES]]
         raise PushRefusal(422, "BLOCKS_INVALID", "The blocks are invalid.", issues[0]["location"], issues, {"code": "BLOCKS_INVALID"}) from None
 
-    canon = C.canonical_blocks(env.blocks)
-    blocks_sha = C.blocks_digest(canon)
+    nonce = None
+    if refs.order:
+        nonce = new_nonce()  # drawn after the parse, so no body text can contain it
+        swap_uris(refs, {ref: sentinel(nonce, i) for i, ref in enumerate(refs.order)})
     stored = C.stored_bytes(env.blocks, properties)
     with open(out_path, "wb") as f:
         f.write(stored)
@@ -136,11 +161,13 @@ def validate_body(body: bytes, *, schema_id: str | None, schema: dict[str, Any] 
         blocks_sha=blocks_sha,
         digest=C.request_digest(blocks_sha, properties),
         stored_path=out_path,
-        size=len(stored),
-        content_rev=C.content_rev(stored),
+        size=None if refs.order else len(stored),
+        content_rev=None if refs.order else C.content_rev(stored),
         warnings=len([w for w in warnings if w.severity == Severity.WARNING]),
         block_count=len(env.blocks.blocks or []),
         group_count=len(env.blocks.block_groups or []),
+        refs=[(r, refs.counts[r]) for r in refs.order],
+        image_nonce=nonce,
     )
 
 
@@ -187,6 +214,11 @@ def _worker_main(conn: Connection) -> None:
             conn.send(("refused", _refusal_dict(r)))
         except MemoryError:
             conn.send(("refused", _refusal_dict(PushRefusal(413, "PAYLOAD_TOO_LARGE", "The body is too complex to parse.", extra={"limit": "complexity"}))))
+        except OSError as e:
+            if e.errno in DISK_FULL:
+                conn.send(("refused", _refusal_dict(spool_full())))
+            else:
+                conn.send(("error", f"{type(e).__name__}: {e}"[:300]))
         except Exception as e:  # a bug must not kill the leased worker silently
             conn.send(("error", f"{type(e).__name__}: {e}"[:300]))
         finally:
@@ -241,40 +273,70 @@ class PushWorker:
 
         await asyncio.to_thread(stop)
 
-    async def validate(self, in_path: str, out_path: str, *, schema_id: str | None, schema: dict[str, Any] | None) -> Validated:
+    async def validate(
+        self, in_path: str, out_path: str, *, schema_id: str | None, schema: dict[str, Any] | None,
+        account: Callable[[str, float], None] | None = None,
+    ) -> Validated:
+        """Run task 1. ``account(event, value)`` hears ``strike``, ``suspect``, ``overrun`` and ``lease`` (seconds held)."""
         try:
             await asyncio.wait_for(self._lease.acquire(), self.lease_wait_s)
         except TimeoutError:
             raise PushRefusal(503, "PUSH_BUSY", "The server is busy with other pushes.", extra={"retryAfter": 2}) from None
+        held_from = time.monotonic()
+        startup_s = 0.0  # spawning a worker is not the caller's time on the shared worker
+        report = account or (lambda event, value=0.0: None)
         sent = received = False
         try:
-            await self._ensure()
-            self._tasks += 1
-            conn, proc = self._conn, self._proc
-            sent = True
-            await asyncio.to_thread(conn.send, (in_path, out_path, schema_id, schema))
-            started = time.monotonic()
-            ready = await asyncio.to_thread(conn.poll, self.kill_after_s)
-            if not ready:
-                await self._stop()
-                raise PushRefusal(503, "PUSH_TIMEOUT", "The push took too long to validate.", extra={"retryAfter": 5})
-            try:
-                kind, payload = await asyncio.to_thread(conn.recv)
-            except (EOFError, OSError):
-                await asyncio.to_thread(proc.join, 5)
-                code = proc.exitcode
-                await self._stop()
-                self.deaths += 1
-                if code is not None and code < 0 and -code in _DEATH_SIGNALS:
+            deadline: float | None = None  # starts with the first send: a worker spawned for this push is not charged for its start
+            replaying = False
+            while True:
+                spawning = time.monotonic()
+                await self._ensure()
+                startup_s += time.monotonic() - spawning
+                self._tasks += 1
+                reused = self._tasks > 1
+                conn, proc = self._conn, self._proc
+                sent, received = True, False
+                await asyncio.to_thread(conn.send, (in_path, out_path, schema_id, schema))
+                baseline = cpu.read(proc.pid)
+                started = time.monotonic()
+                if deadline is None:
+                    deadline = started + self.kill_after_s
+                ready = await asyncio.to_thread(conn.poll, max(0.0, deadline - started))
+                if not ready:
+                    # Read before the kill: a reaped pid can be reused. A wall overrun is a strike only when the
+                    # process was busy for most of the time it held; a loaded host looks like a slow one.
+                    used = cpu.seconds_between(baseline, cpu.read(proc.pid))
+                    await self._stop()
+                    sent = False
+                    report("strike" if cpu.cpu_bound(used, time.monotonic() - started) else "overrun", 0.0)
+                    raise PushRefusal(503, "PUSH_TIMEOUT", "The push took too long to validate.", extra={"retryAfter": 5})
+                try:
+                    kind, payload = await asyncio.to_thread(conn.recv)
+                except (EOFError, OSError):
+                    await asyncio.to_thread(proc.join, 5)
+                    code = proc.exitcode
+                    await self._stop()
+                    sent = False
+                    self.deaths += 1
+                    if not (code is not None and code < 0 and -code in _DEATH_SIGNALS):
+                        raise PushRefusal(503, "PUSH_TIMEOUT", "The validation worker stopped.", extra={"retryAfter": 5}) from None
+                    # An earlier push may have left this shared process in a state that kills the next small one:
+                    # try the same body once on a fresh process and charge the caller only if it dies there too.
+                    if reused and not replaying and time.monotonic() - started < REPLAY_ONLY_BELOW_S:
+                        replaying = True
+                        continue
+                    report("strike", 0.0)
                     raise PushRefusal(413, "PAYLOAD_TOO_LARGE", "The body is too complex to parse.", extra={"limit": "complexity"}) from None
-                raise PushRefusal(503, "PUSH_TIMEOUT", "The validation worker stopped.", extra={"retryAfter": 5}) from None
-            received = True
-            logger.debug("push validated in %.2fs", time.monotonic() - started)
-            if kind == "ok":
-                return payload
-            if kind == "refused":
-                raise refusal_from_dict(payload)
-            raise RuntimeError(f"push worker failed: {payload}")
+                received = True
+                if replaying:
+                    report("suspect", 0.0)
+                logger.debug("push validated in %.2fs", time.monotonic() - started)
+                if kind == "ok":
+                    return payload
+                if kind == "refused":
+                    raise refusal_from_dict(payload)
+                raise RuntimeError(f"push worker failed: {payload}")
         finally:
             try:
                 if sent and not received:
@@ -282,6 +344,7 @@ class PushWorker:
                     # the next lease holder's answer. Shielded so a second cancel cannot skip the release.
                     await asyncio.shield(self._stop())
             finally:
+                report("lease", max(0.0, time.monotonic() - held_from - startup_s))
                 self._lease.release()
 
     async def close(self) -> None:

@@ -11,6 +11,7 @@ import {
 import { redisConnectionConfigFromHostPort } from './redis/connectionConfig';
 import { IRedisConnectionProvider } from './redis/connectionProvider.interface';
 import { ICacheService } from './cache/cacheService.interface';
+import { PostgresCacheService } from './cache/postgresCache.service';
 
 @injectable()
 export class RedisService implements ICacheService {
@@ -185,10 +186,9 @@ export class RedisService implements ICacheService {
 const cacheServices = new Map<string, RedisService>();
 
 /**
- * A cache in this process's memory, for a deployment with no Redis server (`REDIS_MODE=inprocess`, or the key-value
- * store and the broker both PostgreSQL). Holds sessions, the SAML desktop hand-off and the e-mail rate-limit counters:
- * all short-lived and rebuilt by signing in again, so losing them on a restart is acceptable on one node. Not shared
- * between processes: do not run two API replicas on it.
+ * A cache in this process's memory, for `REDIS_MODE=inprocess` (one process, no database either: tests, a local run).
+ * Holds sessions, the SAML desktop hand-off and the e-mail rate-limit counters, all lost on a restart. Not shared
+ * between processes: do not run two API replicas on it. `REDIS_MODE=postgres` uses PostgresCacheService instead.
  */
 export class InProcessCacheService implements ICacheService {
   private readonly entries = new Map<
@@ -275,6 +275,7 @@ export class InProcessCacheService implements ICacheService {
 }
 
 let inProcessCache: InProcessCacheService | undefined;
+let postgresCache: PostgresCacheService | undefined;
 
 /** True when no Redis server is configured: `REDIS_MODE` is `postgres` or `inprocess`, or both the key-value store and the broker are PostgreSQL. */
 export function usesInProcessCache(): boolean {
@@ -301,10 +302,21 @@ function endpointKey(config: RedisConfig): string {
   ]);
 }
 
+/** True when the cache is in PostgreSQL: `REDIS_MODE=postgres`, or the key-value store and the broker both PostgreSQL. */
+export function usesPostgresCache(): boolean {
+  return defaultRedisMode().toLowerCase() === 'postgres';
+}
+
 export function getSharedRedisService(
   config: RedisConfig,
   logger: Logger,
 ): ICacheService {
+  if (usesPostgresCache()) {
+    // shared by every API process and kept across a restart, as Redis is: a restart does not sign everyone out
+    if (!postgresCache?.isConnected())
+      postgresCache = new PostgresCacheService(config.keyPrefix ?? 'app:');
+    return postgresCache;
+  }
   if (usesInProcessCache()) {
     if (!inProcessCache?.isConnected())
       inProcessCache = new InProcessCacheService();

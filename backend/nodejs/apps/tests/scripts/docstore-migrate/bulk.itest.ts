@@ -17,7 +17,6 @@ const log = (): void => undefined;
 
 for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
   suite(`docstore-migrate: bulk copy (${bin})`, function () {
-    this.timeout(600_000);
     let stack: PgStack;
     let mongo: TestMongo;
     let rt: MigrationRuntime;

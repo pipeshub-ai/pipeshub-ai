@@ -10,6 +10,7 @@ from app.services.vector_db.collection_manifest import (
     ManagedCollection,
 )
 from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.const.const import CONTENT_REV_FIELD, EMBED_KEY_FIELD
 from app.services.vector_db.models import CollectionConfig, VectorCollectionInfo
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -754,3 +755,50 @@ class TestARejectedManifestWriteIsRetried:
         await registry.ensure_collection(ctx, embedding_size=1024)
 
         assert "records" in (stored.get(key) or {}), "the retry did not record the collection"
+
+
+# ---------------------------------------------------------------------------
+# fence_ready
+# ---------------------------------------------------------------------------
+
+
+class TestFenceReady:
+    @staticmethod
+    def _vdb(fail_fence: list[bool]) -> AsyncMock:
+        vdb = _make_vdb(exists=True, dimension=8)
+
+        async def create_index(collection_name, field_name, field_schema) -> None:
+            if field_name in (CONTENT_REV_FIELD, EMBED_KEY_FIELD) and fail_fence[0]:
+                raise RuntimeError("Unknown field")
+
+        vdb.create_index = AsyncMock(side_effect=create_index)
+        return vdb
+
+    @pytest.mark.asyncio
+    async def test_not_ready_when_a_fence_index_failed_and_ready_after_a_later_success(self) -> None:
+        fail = [True]
+        vdb = self._vdb(fail)
+        registry = _make_registry(vector_db_service=vdb)
+        ctx = RecordContext(org_id="org-1")
+
+        await registry.ensure_collection(ctx, embedding_size=8)
+        assert registry.fence_ready("records") is False
+
+        fail[0] = False
+        vdb.create_index.reset_mock()
+        await registry.ensure_collection(ctx, embedding_size=8)  # the collection is cached; only the fence is retried
+        assert registry.fence_ready("records") is True
+        assert {c.kwargs["field_name"] for c in vdb.create_index.await_args_list} == {
+            "metadata.contentRev", "metadata.embedKey",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_field_counts_as_indexed(self) -> None:
+        vdb = _make_vdb(exists=True, dimension=8)
+        vdb.create_index = AsyncMock(side_effect=RuntimeError("Index already exists"))
+        registry = _make_registry(vector_db_service=vdb)
+        await registry.ensure_collection(RecordContext(org_id="org-1"), embedding_size=8)
+        assert registry.fence_ready("records") is True
+
+    def test_a_collection_never_seen_is_ready(self) -> None:
+        assert _make_registry().fence_ready("records") is True

@@ -39,7 +39,7 @@ class NameRecords:
     record_ids: list[str]
     """Readable records mentioning any accepted entity of the name, newest first."""
     complete: bool
-    """False when an entity had more readable records than were listed."""
+    """False when an entity had a full page of readable records listed and more may follow."""
 
     @property
     def count_label(self) -> str:
@@ -88,7 +88,10 @@ async def readable_records(
             page = await list_accessible_entity_records(
                 graph, context, entity_id=entity_id, entity_type=NAMED_ENTITY, limit=RECORDS_PER_ENTITY,
             )
-        return page.records, page.next_cursor is None and not page.capped
+        # Partial only when a full page of readable records was listed: a listing that
+        # stops short of one ran out of scan on records the user cannot read, and
+        # saying "more" then would count those.
+        return page.records, len(page.records) < RECORDS_PER_ENTITY or (page.next_cursor is None and not page.capped)
 
     linked = [link for link in links if link.accepted]
     listings = await asyncio.gather(*(

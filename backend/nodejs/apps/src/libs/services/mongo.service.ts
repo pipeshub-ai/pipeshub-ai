@@ -1,6 +1,10 @@
 import { injectable } from 'inversify';
 import mongoose, { Connection, ConnectOptions } from 'mongoose';
-import { fenceClientOptions, installMongoFence } from '../repositories/fence';
+import {
+  APP_MONGO_DEFAULT_OPTIONS,
+  fenceClientOptions,
+  installMongoFence,
+} from '../repositories/fence';
 import { ConnectionError } from '../errors/database.errors';
 import { BadRequestError, InternalServerError } from '../errors/http.errors';
 import { Logger } from './logger.service';
@@ -66,12 +70,7 @@ export class MongoService {
 
     try {
       const { uri, db, options } = this.config;
-      const defaultOptions = {
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-        family: 4,
-        maxPoolSize: 10,
-      };
+      const defaultOptions = APP_MONGO_DEFAULT_OPTIONS;
       // Configure connection options
       const connectOptions: ConnectOptions = {
         dbName: db,
@@ -128,7 +127,9 @@ export class MongoService {
    */
   private async ensureCollections(): Promise<void> {
     if (!this.connection?.db) {
-      logger.warn('Cannot ensure collections: database connection not available');
+      logger.warn(
+        'Cannot ensure collections: database connection not available',
+      );
       return;
     }
 

@@ -130,7 +130,7 @@ class TestUpdateFieldsIfMatch:
 
     async def test_neo4j_no_match(self) -> None:
         p = _neo4j([])
-        assert await p.update_node_fields_if_match("r1", "records", {"a": 1}, {"c": True}) is False
+        assert await p.update_node_fields_if_match("r1", "records", {"recordName": "a"}, {"c": True}) is False
 
     async def test_arango(self) -> None:
         p = _arango([1])

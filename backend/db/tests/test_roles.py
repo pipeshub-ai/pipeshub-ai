@@ -1,6 +1,9 @@
 """Role bootstrap, the migration's behaviour without CREATEROLE, and the grant snapshot."""
+import hashlib
 import os
 from pathlib import Path
+
+import pytest
 
 from db import bootstrap_roles, surface
 
@@ -22,6 +25,24 @@ def test_bootstrap_is_idempotent_and_creates_no_privileged_role(bare_db):
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
 
 
+def test_bootstrap_refuses_a_login_without_password_unless_waived(bare_db):
+    cluster, name = bare_db
+    with cluster.admin(name) as c:
+        with pytest.raises(bootstrap_roles.MissingPassword, match="PG_NODE_PASSWORD.*PG_BOOTSTRAP_ALLOW_NO_PASSWORD"):
+            bootstrap_roles.bootstrap(c, [], {"pipeshub_jobs": "pw"}, allow_no_password=False)
+        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname = 'pipeshub_jobs'").fetchone()[0] == 0   # nothing was created
+        all_pw = dict.fromkeys(bootstrap_roles.PASSWORD_VARS, "pw")
+        assert "pipeshub_node_login" in bootstrap_roles.bootstrap(c, [], all_pw, allow_no_password=False)         # passwords: as before
+        assert bootstrap_roles.bootstrap(c, [], allow_no_password=False) == []                                    # existing roles are not asked again
+
+
+def test_bootstrap_waiver_creates_a_login_without_password(bare_db):
+    cluster, name = bare_db
+    with cluster.admin(name) as c:
+        bootstrap_roles.bootstrap(c, [], allow_no_password=True)
+        assert c.execute("SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = 'pipeshub_node_login'").fetchone()[0]
+
+
 def test_migrate_without_createrole_names_the_bootstrap_when_roles_are_missing(db):
     cluster, name = db
     with cluster.admin() as c:
@@ -38,10 +59,10 @@ def test_surface_matches_the_committed_text(db):
     with cluster.admin(name) as c:
         live = surface.live_lines(c)
         version = surface.major(c)
-    if update:        # lines of the other PostgreSQL majors are kept
-        keep = [x for x in BASE.read_text(encoding="utf-8").splitlines() if x not in surface.for_major([x], version)]
-        BASE.write_text("\n".join(sorted([*keep, *live])) + "\n", encoding="utf-8")
-    assert live == sorted(surface.for_major(surface.expected_lines([BASE]), version)), "the security surface changed: review the diff, then rerun with UPDATE_SURFACE=1"
+    if update:        # lines of the other PostgreSQL majors are kept, and the reviewed sysfuncs lines of other minor releases
+        keep = [x for x in BASE.read_text(encoding="utf-8").splitlines() if x not in surface.for_major([x], version) or x.startswith("sysfuncs@")]
+        BASE.write_text("\n".join(sorted({*keep, *live})) + "\n", encoding="utf-8")
+    assert surface.diff(live, surface.for_major(surface.expected_lines([BASE]), version)) == [], "the security surface changed: review the diff, then rerun with UPDATE_SURFACE=1"
 
 
 def test_surface_diff_reports_extra_and_missing_lines(db):
@@ -68,3 +89,13 @@ def test_sysfuncs_hash_ignores_function_bodies_and_library_paths(db):
         c.execute("UPDATE pg_proc SET provolatile = 'v' WHERE proname = 'lower' AND provolatile <> 'v'")
         assert c.execute(query).fetchone()[0] != before
         c.rollback()
+
+
+def test_sysfuncs_rows_are_what_the_hash_is_taken_over(db):
+    cluster, name = db
+    with cluster.admin(name) as c:
+        rows = surface.sysfunc_rows(c)
+        c.execute("SET search_path = pg_catalog")     # as live_lines does
+        line = c.execute(next(t for k, t in surface.QUERIES if k == "sysfuncs")).fetchone()[0]
+    digest = hashlib.md5("\n".join(rows).encode()).hexdigest()
+    assert line == f"count={len(rows)} md5={digest}", line

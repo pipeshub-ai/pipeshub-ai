@@ -17,6 +17,8 @@ from .fixture_graph import ORG, USER_U
 from .loaders import arango_shape, load_into_arango, load_into_neo4j
 from .test_provider_v3_scope_arms import APP, EXPECTED_VISIBLE, KB_APP, _graph
 
+pytestmark = pytest.mark.integration
+
 # A node with two hierarchy parents names one of them; which one is the
 # backend's choice (Neo4j keeps the first it collects), so parent fields are
 # compared only for nodes with one parent.

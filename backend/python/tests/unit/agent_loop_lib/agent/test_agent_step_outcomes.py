@@ -12,12 +12,16 @@ production turn guards; only the LLM is scripted.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
+
+import pytest
 
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, UserMessage
 from app.agent_loop_lib.core.responses import ModelResponse, StopReason, TokenUsage
 from app.agent_loop_lib.core.types import Goal
@@ -28,10 +32,18 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.utils.logger import log_record_fields
+from tests.unit.agents.adapter.support.provider_stall import (
+    ProviderStall,
+    pending_since,
+)
 from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedStep,
     ScriptedTransport,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 _GOAL = Goal(description="What changed this week?")
 
@@ -213,6 +225,26 @@ class TestStopGeneration:
         assert first_turn.tool_results[0].is_error is True
         assert result.cancelled is True
 
+    async def test_a_call_skipped_by_stop_still_has_its_end_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        token = CancellationToken()
+        transport = ScriptedTransport().add_tool_call(ToolCall(id="n1", name="note", arguments={"text": "a"}))
+        agent, _ = _build(transport, tool=_NoteTool(), cancellation_token=token)
+
+        async def _cancel_after_model(ctx, next_fn) -> None:
+            token.cancel()
+            await next_fn()
+
+        _use(agent, HookEvent.POST_MODEL, _cancel_after_model)
+        with caplog.at_level(logging.DEBUG):
+            await agent.run(_GOAL)
+
+        (end,) = [r for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert end.levelno == logging.INFO
+        assert log_record_fields(end) == {
+            "outcome": "skipped", "reason": "cancelled_before_execution", "error_class": "cancelled",
+            "tool": "note", "tool_call_id": "n1",
+        }
+
 
 class TestGuardrails:
     async def test_input_guardrail_block_wins_over_a_slow_model_call(self) -> None:
@@ -261,6 +293,67 @@ class TestGuardrails:
         assert result.success is False
         assert result.output is None
         assert result.error == "Output guardrail blocked: answer leaks a secret"
+
+
+class _StallingTransport(ScriptedTransport):
+    """A model call that never answers: its stream reads a provider that stalls until cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stall = ProviderStall()
+
+    async def stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:  # noqa: ANN401
+        await self.stall.read()
+        yield  # pragma: no cover - marks this as an async generator
+
+
+async def _cancel_streaming_run_once_started(agent: Agent, *started: asyncio.Event) -> None:
+    """Drive `agent.stream()` as the agent route does, and cancel it once every `started` event
+    is set (a client disconnect)."""
+    async def consume() -> None:
+        async for _ in agent.stream(_GOAL):
+            pass
+
+    consumer = asyncio.create_task(consume())
+    for event in started:
+        await event.wait()
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+
+class TestCancelledTurn:
+    """Cancelling the task that runs a turn (a client disconnect) stops its model call: no task
+    of the run keeps reading the provider after the turn is gone."""
+
+    async def test_the_model_call_is_cancelled_with_the_turn(self) -> None:
+        transport = _StallingTransport()
+        agent, _ = _build(transport)
+        before = asyncio.all_tasks()
+
+        await _cancel_streaming_run_once_started(agent, transport.stall.started)
+        await transport.stall.settle()
+
+        assert (transport.stall.cancels, transport.stall.closed) == (1, True)
+        assert await pending_since(before) == []
+
+    async def test_a_running_input_guardrail_is_cancelled_too(self) -> None:
+        transport = _StallingTransport()
+        agent, _ = _build(transport)
+        guard = ProviderStall()
+
+        async def _slow_guard(ctx, next_fn) -> None:
+            await guard.read()
+
+        _use(agent, HookEvent.GUARDRAIL_INPUT, _slow_guard)
+        before = asyncio.all_tasks()
+
+        await _cancel_streaming_run_once_started(agent, transport.stall.started, guard.started)
+        await guard.settle()
+        await transport.stall.settle()
+
+        assert guard.cancels == 1 and transport.stall.cancels == 1
+        assert await pending_since(before) == []
 
 
 class TestModelFailures:
@@ -423,3 +516,128 @@ class TestToolResultFooter:
 
         footers = [m.step_footer for m in await agent.context.messages() if getattr(m, "step_footer", None)]
         assert footers == ["\n\n[loop: step 1/3, stale_rounds=0]"]
+
+
+_NARRATION = "I'll look this up in the weekly notes and then write the summary for you."
+_LIB_LOGGER = "app.agent_loop_lib.agent"
+
+
+def _failed_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == "llm_call.failed"]
+
+
+async def _deny_async(ctx, next_fn) -> None:
+    ctx.deny("refused")
+
+
+async def _block_async(ctx, next_fn) -> None:
+    ctx.block("blocked")
+
+
+def _tool_turn(narration: str) -> ScriptedTransport:
+    return ScriptedTransport().add_text_and_tool_call(
+        narration, ToolCall(id="n1", name="note", arguments={"text": "a"}),
+    )
+
+
+class TestEveryExitNamesItsEndEvent:
+    """`AgentResult.end_event` is the lib's own name for the exit taken: the turn's log line maps it to a stop reason."""
+
+    async def test_a_plain_answer(self) -> None:
+        agent, _ = _build(ScriptedTransport().add_text("Nothing changed."))
+        result = await agent.run(_GOAL)
+        assert (result.success, result.end_event, result.error_class) == (True, "agent_complete", None)
+
+    async def test_the_wrap_up_answer_after_max_turns(self) -> None:
+        agent, _ = _build(_tool_turn(_NARRATION).add_text("Three notes changed."), max_turns=1)
+        result = await agent.run(_GOAL)
+        assert (result.success, result.end_event) == (True, "agent_complete_after_max_turns")
+
+    async def test_the_partial_answer_after_max_turns(self) -> None:
+        transport = _tool_turn(_NARRATION).add_error(TransportError("busy", status_code=503, retryable=True))
+        agent, _ = _build(transport, max_turns=1)
+        result = await agent.run(_GOAL)
+        assert (result.success, result.end_event) == (True, "agent_complete_partial")
+
+    async def test_max_turns_with_nothing_to_return(self) -> None:
+        transport = _tool_turn("Checking.").add_error(TransportError("busy", status_code=503, retryable=True))
+        agent, _ = _build(transport, max_turns=1)
+        result = await agent.run(_GOAL)
+        assert (result.success, result.end_event) == (False, "agent_failed")
+
+    async def test_a_model_failure(self) -> None:
+        agent, _ = _build(ScriptedTransport().add_error(RuntimeError("transport bug")))
+        result = await agent.run(_GOAL)
+        assert (result.end_event, result.error_class) == ("llm_call_failed", "internal")
+        assert result.error == "LLM call failed: transport bug"
+
+    @pytest.mark.parametrize(("event", "middleware", "end_event"), [
+        (HookEvent.PRE_AGENT, _deny_async, "agent_blocked"),
+        (HookEvent.PRE_TURN, _deny_async, "turn_blocked"),
+        (HookEvent.GUARDRAIL_INPUT, _block_async, "guardrail_blocked"),
+        (HookEvent.GUARDRAIL_OUTPUT, _block_async, "guardrail_blocked"),
+    ])
+    async def test_a_hook_refusal(self, event: HookEvent, middleware: Any, end_event: str) -> None:  # noqa: ANN401
+        agent, _ = _build(ScriptedTransport().add_text("answer"))
+        _use(agent, event, middleware)
+        result = await agent.run(_GOAL)
+        assert (result.success, result.end_event) == (False, end_event)
+
+    async def test_stop_pressed(self) -> None:
+        token = CancellationToken()
+        token.cancel()
+        agent, _ = _build(ScriptedTransport(), cancellation_token=token)
+        result = await agent.run(_GOAL)
+        assert (result.cancelled, result.end_event) == (True, "agent_cancelled")
+
+
+class TestModelFailureIsLoggedOnce:
+    async def test_our_bug_is_one_error_with_its_stack(self, caplog: pytest.LogCaptureFixture) -> None:
+        agent, _ = _build(ScriptedTransport().add_error(RuntimeError("transport bug")))
+        with caplog.at_level(logging.DEBUG, logger=_LIB_LOGGER):
+            await agent.run(_GOAL)
+
+        [record] = _failed_lines(caplog)
+        assert record.levelno == logging.ERROR
+        assert isinstance(record.exc_info[1], RuntimeError)
+        fields = log_record_fields(record)
+        assert (fields["error_class"], fields["error_type"], fields["turn"]) == ("internal", "RuntimeError", 0)
+
+    async def test_a_rate_limit_is_a_warning_without_a_stack(self, caplog: pytest.LogCaptureFixture) -> None:
+        agent, _ = _build(ScriptedTransport().add_error(TransportError("slow down", status_code=429, retryable=True)))
+        with caplog.at_level(logging.DEBUG, logger=_LIB_LOGGER):
+            result = await agent.run(_GOAL)
+
+        [record] = _failed_lines(caplog)
+        assert (record.levelno, record.exc_info) == (logging.WARNING, None)
+        assert log_record_fields(record)["error_class"] == "rate_limited" == result.error_class
+
+    async def test_a_refused_provider_key_is_misconfigured(self, caplog: pytest.LogCaptureFixture) -> None:
+        agent, _ = _build(ScriptedTransport().add_error(TransportError("invalid api key", status_code=401)))
+        with caplog.at_level(logging.DEBUG, logger=_LIB_LOGGER):
+            result = await agent.run(_GOAL)
+
+        [record] = _failed_lines(caplog)
+        assert record.levelno == logging.ERROR
+        assert log_record_fields(record)["error_class"] == "misconfigured" == result.error_class
+
+    async def test_a_failed_wrap_up_turn_is_logged_and_the_partial_answer_kept(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        transport = _tool_turn(_NARRATION).add_error(TransportError("busy", status_code=503, retryable=True))
+        agent, _ = _build(transport, max_turns=1)
+        with caplog.at_level(logging.DEBUG, logger=_LIB_LOGGER):
+            result = await agent.run(_GOAL)
+
+        [record] = _failed_lines(caplog)
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["turn"] == 1
+        assert result.success is True and result.output == _NARRATION
+
+    async def test_a_guardrail_block_is_not_a_model_failure(self, caplog: pytest.LogCaptureFixture) -> None:
+        agent, _ = _build(ScriptedTransport().add_text("answer"))
+        _use(agent, HookEvent.GUARDRAIL_INPUT, _block_async)
+        with caplog.at_level(logging.DEBUG, logger=_LIB_LOGGER):
+            await agent.run(_GOAL)
+
+        assert _failed_lines(caplog) == []

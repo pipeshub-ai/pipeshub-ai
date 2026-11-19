@@ -446,3 +446,34 @@ class TestHasPositiveMatch:
             ]
         )
         assert expr.has_positive_match() is True
+
+    def test_org_with_a_bound_is_not(self) -> None:
+        """Org scoping selects nothing: this would delete most of the org."""
+        for key in ("orgId", "metadata.orgId"):
+            expr = FilterExpression(
+                must=[
+                    FieldCondition(key=key, value="org-a"),
+                    FieldCondition(key="connectorIds", values_count_lte=1),
+                ]
+            )
+            assert expr.has_positive_match() is False
+
+    def test_org_alone_is_allowed(self) -> None:
+        """Whole-organisation removal is deliberate and has no bound."""
+        assert FilterExpression(
+            must=[FieldCondition(key="metadata.orgId", value="org-a")]
+        ).has_positive_match() is True
+
+    def test_org_with_a_real_value_is_allowed(self) -> None:
+        for sel in (
+            FieldCondition(key="metadata.virtualRecordId", value="v1"),
+            FieldCondition(key="connectorIds", value="conn-1"),
+        ):
+            expr = FilterExpression(
+                must=[
+                    FieldCondition(key="metadata.orgId", value="org-a"),
+                    sel,
+                    FieldCondition(key="connectorIds", values_count_lte=1),
+                ]
+            )
+            assert expr.has_positive_match() is True

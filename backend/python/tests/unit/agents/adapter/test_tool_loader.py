@@ -11,8 +11,9 @@ factories). Covered indirectly today via the chat-mode integration tests.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -56,6 +57,45 @@ class TestBuildDynamicToolsWebAdapterWiring:
         assert len(web_tools) == 2
         assert all(isinstance(t, WebToolAdapter) for t in web_tools)
 
+    @staticmethod
+    def _web_adapters(settings: dict | None) -> dict[str, WebToolAdapter]:
+        context = _make_context()
+        context.tool_state["web_search_config"] = {
+            "provider": "duckduckgo", "configuration": {}, **({"settings": settings} if settings is not None else {}),
+        }
+        return {t.name: t for t in _build_dynamic_tools(context) if isinstance(t, WebToolAdapter)}
+
+    @pytest.mark.parametrize("settings", [None, {"includeImages": False, "maxImages": 3}])
+    def test_pages_are_read_without_images_unless_an_admin_sends_them(self, settings: dict | None) -> None:
+        adapters = self._web_adapters(settings)
+        assert all(a._image_loader is None for a in adapters.values())
+
+    async def test_sent_images_are_read_for_fetch_url_through_the_runs_fetch_service(self) -> None:
+        from app.web.services import WebFetchService
+
+        adapters = self._web_adapters({"includeImages": True, "maxImages": 4})
+        fetch_url, web_search = adapters["dynamic__fetch_url"], adapters["dynamic__web_search"]
+        assert web_search._image_loader is None
+        assert fetch_url._max_images == 4
+
+        with patch.object(WebFetchService, "fetch_images", AsyncMock(return_value=[None])) as fetch_images:
+            assert await fetch_url._image_loader(["https://example.com/a.png"]) == [None]
+        urls, caller = fetch_images.await_args.args
+        assert urls == ["https://example.com/a.png"]
+        assert (caller.org_id, caller.user_id) == ("org-1", "user-1")
+
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [({"includeImages": True, "maxImages": "many"}, 3), ({"includeImages": True, "maxImages": 200}, 50)],
+        ids=["not a number", "past the per-page limit"],
+    )
+    def test_a_bad_or_large_count_never_costs_the_turn_its_web_tools(self, settings: dict, expected: int) -> None:
+        """Building the options sits inside the web tools' try: a raise there dropped web search
+        and fetch_url for the whole turn."""
+        adapters = self._web_adapters(settings)
+        assert set(adapters) == {"dynamic__web_search", "dynamic__fetch_url"}
+        assert adapters["dynamic__fetch_url"]._max_images == expected
+
     def test_no_web_search_config_yields_no_dynamic_web_tools(self) -> None:
         context = _make_context()
         context.tool_state["web_search_config"] = None
@@ -94,30 +134,35 @@ class TestSandboxToolsetGate:
             yield
 
     @pytest.mark.usefixtures("_only_coding_sandbox")
-    async def test_unset_mode_skips_sandbox_toolset_with_warning(self, monkeypatch) -> None:
+    async def test_unset_mode_skips_sandbox_toolset_with_warning(self, monkeypatch, caplog) -> None:
+        from app.utils import logging_fields
+
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
         monkeypatch.delenv("SANDBOX_MODE", raising=False)
         context = _make_context()
 
-        registry = await PipesHubToolLoader().load(context)
+        with caplog.at_level(logging.DEBUG):
+            registry = await PipesHubToolLoader().load(context)
+            await PipesHubToolLoader().load(_make_context())
 
         assert not any(name.startswith("coding_sandbox") for name in registry.names())
-        warning_calls = [
-            c for c in context.tool_state["logger"].warning.call_args_list
-            if "Skipping sandbox toolsets" in str(c.args[0])
-        ]
-        assert len(warning_calls) == 1
+        warnings = [r for r in caplog.records if r.getMessage() == "code_execution.unavailable"]
+        assert [r.levelno for r in warnings] == [logging.WARNING]
 
     @pytest.mark.usefixtures("_only_coding_sandbox")
-    async def test_local_mode_without_dev_flag_skips_sandbox_toolset(self, monkeypatch) -> None:
+    async def test_local_mode_without_dev_flag_skips_sandbox_toolset(self, monkeypatch, caplog) -> None:
+        from app.utils import logging_fields
+
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
         monkeypatch.setenv("SANDBOX_MODE", "local")
         monkeypatch.delenv("SANDBOX_ALLOW_LOCAL", raising=False)
         context = _make_context()
 
-        registry = await PipesHubToolLoader().load(context)
+        with caplog.at_level(logging.DEBUG):
+            registry = await PipesHubToolLoader().load(context)
 
         assert not any(name.startswith("coding_sandbox") for name in registry.names())
-        warnings = [str(c.args) for c in context.tool_state["logger"].warning.call_args_list]
-        assert any("SANDBOX_ALLOW_LOCAL" in w for w in warnings)
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == ["code_execution.unavailable"]
 
     @pytest.mark.usefixtures("_only_coding_sandbox")
     async def test_explicit_local_mode_loads_sandbox_toolset(self, monkeypatch) -> None:

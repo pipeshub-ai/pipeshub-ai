@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from app.api.middlewares.auth import connection_limit
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.selection_scope import (
     CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
     CONNECTION_OUTSIDE_MESSAGE,
@@ -16,6 +17,7 @@ from app.modules.retrieval.selection_scope import (
     SelectionTooLargeError,
     connection_coverage,
     connection_named_nodes,
+    groups_outside_connection,
     names_below_apps,
     outside_connection,
 )
@@ -25,9 +27,18 @@ _T = TypeVar("_T")
 
 
 async def _resolved(work: Awaitable[_T]) -> _T:
-    """``work``, with a limit too large to resolve answered as a 422."""
+    """``work``, with a limit too large to resolve answered as a 422 and a graph
+    that could not answer as a 503: never as a node outside the limit."""
     try:
         return await work
+    except PermissionVerificationUnavailableError as exc:
+        from app.modules.retrieval.retrieval_service import (
+            PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+        )
+
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+        ) from exc
     except SelectionTooLargeError as exc:
         raise HTTPException(
             status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value, detail=CONNECTION_LIMIT_TOO_LARGE_MESSAGE,
@@ -40,6 +51,16 @@ async def ids_outside_connection(
     """Of ``node_ids``, those the calling app may not see; none without a limit."""
     return await _resolved(outside_connection(
         graph_provider, user_id, org_id, node_ids, connection_limit(request.state.user),
+    ))
+
+
+async def groups_outside_limit(
+    request: Request, graph_provider: IGraphDBProvider, org_id: str, user_id: str, groups: dict[str, str],
+) -> set[str]:
+    """Of ``groups`` (record group id -> app id), those the calling app's limit
+    does not cover, by where they sit and not by the user's grant on the group."""
+    return await _resolved(groups_outside_connection(
+        graph_provider, user_id, org_id, groups, connection_limit(request.state.user),
     ))
 
 

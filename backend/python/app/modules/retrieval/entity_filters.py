@@ -244,6 +244,9 @@ def _part(part: Any, name: str) -> str:  # noqa: ANN401
         return f"an amount {span}" if span else f"an amount in{cur}" if cur else "any amount"
     if binds.get("quantityMin") is not None:
         unit = f" {_quoted(binds['dimension'])}" if binds.get("dimension") else ""
+        if binds.get("dimension") == "time":
+            span = _span(binds["quantityMin"], binds["quantityMax"], lambda v: f"{_digits(v)} seconds")
+            return f"a duration {span}" if span else "any duration"
         span = _span(binds["quantityMin"], binds["quantityMax"], lambda v: f"{_digits(v)}{unit}")
         return f"a quantity {span}" if span else f"a quantity in{unit}" if unit else "any quantity"
     if binds.get("percentMin") is not None:

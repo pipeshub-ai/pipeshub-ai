@@ -22,6 +22,7 @@ from app.services.messaging.error_classifier import (
     is_expected_outcome,
     is_record_deleted,
 )
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.services.messaging.test_record_handler import (
     _collect_events,
     _make_handler,
@@ -82,6 +83,7 @@ class TestHandler:
         logger = MagicMock()
         gp = AsyncMock()
         gp.update_node = AsyncMock(return_value=True)
+        gp.write_attempt_start = attempt_start_via(gp)
         record = {"_key": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "origin": "UPLOAD",
                   "recordType": "FILE", "recordName": "a.md", "indexingStatus": ProgressStatus.NOT_STARTED.value,
                   "mimeType": "text/markdown", "extension": "md", "version": 1,

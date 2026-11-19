@@ -150,6 +150,25 @@ class TestUnreadParts:
         assert notices[0]["type"] == NotificationType.CONNECTOR_SYNC_ERROR
         assert "#secret" in notices[0]["message"]
 
+    async def test_an_archived_channel_the_app_is_not_in_gets_its_own_notice(self, workspace, store, checkpoints) -> None:
+        workspace.channels[SECRET]["is_member"] = False
+        workspace.channels[GENERAL].update(is_archived=True, is_member=False)
+        connector, _ = await workspace_connector(store, checkpoints)
+        notices = record_notices(connector)
+
+        await connector.run_sync()
+
+        assert [n["message"] for n in notices if "#secret" in n["message"]] == [
+            f"{connector.display_name}: the Slack app cannot read #secret. Invite the app to these channels "
+            f"(/invite in the channel), or add the channels:join scope for public channels."
+        ]
+        assert [n["message"] for n in notices if "#general" in n["message"]] == [
+            "These channels are archived and the Slack app is not a member: #general. Slack does not allow "
+            "joining an archived channel, so their messages are not synced. Unarchive the channel and invite "
+            "the app (/invite), then sync again, or ignore this notice."
+        ]
+        assert len(notices) == 2
+
     async def test_a_channel_list_that_fails_fails_the_sync_and_tells_the_user(
         self, workspace, store, checkpoints,
     ) -> None:

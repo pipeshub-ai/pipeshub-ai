@@ -106,6 +106,7 @@ def _make_connector():
         MagicMock(email="bob@test.com"),
     ])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -677,7 +678,7 @@ class TestSyncIssuesForTeams:
         result = await connector._sync_issues_for_teams([(team_rg, [])])
         dep.on_new_records.assert_called()
         assert result == ({"team-1"}, [])
-        assert connector.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1_705_400_000_000
+        assert connector.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1_705_400_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_empty_teams(self):

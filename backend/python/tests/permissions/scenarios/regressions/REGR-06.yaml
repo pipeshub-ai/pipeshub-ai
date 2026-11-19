@@ -1,0 +1,28 @@
+- id: REGR-06
+  title: A deleted folder hides its child until the child moves out; a placeholder folder hides only itself
+  source: independent review of the conformance harness
+  rule: union
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: D, kind: app}
+      - {id: s, kind: group, connector: D, rule: OPEN, parents: [D], belongs: [D]}
+      - {id: fd, kind: record, connector: D, rule: OPEN, deleted: true, parents: [s], inherits: [s], belongs: [s]}
+      - {id: k, kind: record, connector: D, rule: OPEN, parents: [fd], inherits: [fd], belongs: [s]}
+      - {id: fp, kind: record, connector: D, rule: OPEN, placeholder: true, parents: [s], inherits: [s], belongs: [s]}
+      - {id: q, kind: record, connector: D, rule: OPEN, parents: [fp], inherits: [fp], belongs: [s]}
+    grants:
+      - [u, s]
+    gates:
+      - [u, D]
+  mutations:
+    - {kind: moved, node: k, ref: s}
+  expect:
+    before:
+      u: {fd: deny, k: deny, fp: deny, q: admit}
+    verdicts:
+      u: {k: admit, fd: deny, fp: deny, q: admit}
+    index_writes: 1
+  tags: [regression, qa, deleted, placeholder, move]
+  comment: A placeholder is guarded as a target only (R11); the walk passes through it. k is a leaf, so its move is one index write.

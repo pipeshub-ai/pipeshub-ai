@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -7,9 +8,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tup
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
     ExtensionTypes,
-    OriginTypes,
     ProgressStatus,
     RecordTypes,
 )
@@ -22,6 +21,7 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
     RecordStatusUpdateError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -33,50 +33,66 @@ from app.models.blocks import (
     DataFormat,
     GroupType,
     Point,
+    SemanticMetadata,
 )
-from app.models.entities import Record, RecordType
-from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD
+from app.models.entities import Record
+from app.models.record_convert import convert_record_dict_to_record  # re-exported for existing importers
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.structure_generation import leaving_vrid
+from app.modules.artifacts.reader import LegacyRecordArtifactReader
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
     drop_code_file_blocks,
     write_code_file_blocks_to_graph,
 )
+from app.modules.indexing.embed_resume import chain_end_fields
+from app.modules.indexing.parse_now_marker import (
+    run_settings,
+    shape_status_write,
+    store_only_active,
+)
 from app.modules.parsers import parse_pool
+from app.services.resource_governor.kinds import ParseKind
 from app.modules.parsers.code_parser import engine as code_parser_engine
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
-from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.csv.csv_parser import CSVParser
+from app.modules.parsers.email.msg_to_html import msg_to_html
+from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.excel.excel_parser import ExcelParser
-from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
-from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.markdown.image_references import extract_and_replace_images
+from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.ocr_handler import OCRHandler
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+    PDFPlumberOpenCVProcessor,
+)
 from app.modules.parsers.push_origin import (
     assert_images_inline,
     content_is_push_origin,
     record_is_push_origin,
 )
-from app.modules.parsers.epub.epub_reader import read_epub
-from app.modules.parsers.pdf.docling_processor import DoclingProcessor
-from app.modules.parsers.pdf.ocr_handler import OCRHandler
-from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.modules.parsers.text.plain_text_parser import plain_text_to_blocks
 from app.modules.parsers.text_decoding import decode_text
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
-from app.services.parsing.interface import ParseError
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.parsing.interface import ParseError, UnreadableFileError, damaged_file_reason
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
 from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
+from app.utils.libreoffice_convert import LibreOfficeCouldNotReadFileError, convert_with_libreoffice
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -87,66 +103,9 @@ if TYPE_CHECKING:
 
 
 SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
+# A mail's worker past this is stuck on the file, not slow.
+MSG_PARSE_TIMEOUT_SECONDS = 60
 
-
-def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
-    conn_name_value = record_dict.get("connectorName")
-    try:
-        connector_name = (
-            Connectors(conn_name_value)
-            if conn_name_value is not None
-            else Connectors.KNOWLEDGE_BASE
-        )
-    except ValueError:
-        connector_name = Connectors.KNOWLEDGE_BASE
-    origin_value = record_dict.get("origin", OriginTypes.UPLOAD.value)
-    try:
-        origin = OriginTypes(origin_value)
-    except ValueError:
-        origin = OriginTypes.UPLOAD
-
-    mime_type = cast(str, record_dict.get("mimeType"))
-
-    # Record validates the required string fields; a document missing one fails there.
-    return Record(
-        id=cast(str, record_dict.get("_key") or record_dict.get("id")),
-        org_id=cast(str, record_dict.get("orgId")),
-        record_name=cast(str, record_dict.get("recordName")),
-        record_type=RecordType(record_dict.get("recordType", "FILE")),
-        record_status=ProgressStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
-        indexing_status=record_dict.get("indexingStatus", ProgressStatus.QUEUED.value),
-        extraction_status=record_dict.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
-        external_record_id=cast(str, record_dict.get("externalRecordId")),
-        version=record_dict.get("version", 1),
-        origin=origin,
-        summary_document_id=record_dict.get("summaryDocumentId"),
-        created_at=(
-            record_dict["createdAtTimestamp"]
-            if record_dict.get("createdAtTimestamp") is not None
-            else get_epoch_timestamp_in_ms()
-        ),
-        updated_at=(
-            record_dict["updatedAtTimestamp"]
-            if record_dict.get("updatedAtTimestamp") is not None
-            else get_epoch_timestamp_in_ms()
-        ),
-        source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
-        source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
-        source_timestamp_origin=record_dict.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
-        weburl=record_dict.get("webUrl"),
-        mime_type=mime_type,
-        external_revision_id=record_dict.get("externalRevisionId"),
-        connector_name=connector_name,
-        is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
-        connector_id=cast(str, record_dict.get("connectorId")),
-        md5_hash=record_dict.get("md5Checksum"),
-        record_group_id=record_dict.get("recordGroupId"),
-        external_record_group_id=record_dict.get("externalGroupId"),
-        # A named-entity persist retry rebuilds the record from its document and finds the
-        # stored extraction by this.
-        virtual_record_id=record_dict.get("virtualRecordId"),
-        push_origin=record_dict.get(PUSH_ORIGIN_FIELD) is True,
-    )
 
 class Processor:
     def __init__(
@@ -177,10 +136,12 @@ class Processor:
         # but block construction (incl. LLM table enrichment) always happens here.
         self.docling_processor = DoclingProcessor(logger=self.logger, config=self.config_service)
 
-    async def _get_llm_for_role(self, role: str, *, reasoning_effort: str | None = None):
+    async def _get_llm_for_role(
+        self, role: str, *, reasoning_effort: str | None = None, sdk_retries: int | None = None,
+    ):
         """Resolve LLM for a role."""
         return await get_llm_for_role(
-            self.config_service, role, reasoning_effort=reasoning_effort
+            self.config_service, role, reasoning_effort=reasoning_effort, sdk_retries=sdk_retries,
         )
 
     def _pipeline(self) -> IndexingPipeline:
@@ -201,11 +162,74 @@ class Processor:
         prev_virtual_record_id: Optional[str] = None,
     ) -> TransformContext:
         """Create TransformContext with per-invocation reconciliation context."""
+        # The parse-now run, if any, rides in the settings (see parse_now_marker).
+        extra = {"settings": settings} if (settings := run_settings()) else {}
         return TransformContext(
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            **extra,
         )
+
+    async def load_checkpoint(
+        self, virtual_record_id: str, org_id: str, rev: str
+    ) -> tuple[BlocksContainer, Any] | None:
+        """The blocks and semantic metadata the interrupted run stored for ``virtual_record_id``.
+
+        Loading is only a shortcut, so anything that stops it (a missing, oversized, truncated or
+        undecodable document, a storage outage, a blob written for another revision than ``rev``)
+        returns ``None`` and the attempt parses as it always did. It never raises: a failure that
+        repeated on every retry would otherwise turn a recoverable record into a failed one.
+        """
+        blob_storage = self.sink_orchestrator.blob_storage
+        try:
+            lookup = await blob_storage.get_document_id_by_virtual_record_id(virtual_record_id)
+            if not lookup or lookup.get("storedRev") != rev:
+                self.logger.info("No stored blocks of this revision for %s; parsing again", virtual_record_id)
+                return None
+            # The stored record itself, not the configured reader: the checkpoint must be the exact
+            # document this revision wrote, and an artifact fallback would weaken that check.
+            blob = await LegacyRecordArtifactReader(blob_storage).read_record(
+                virtual_record_id, org_id, lookup=lookup, exact=True
+            )
+            containers = blob.get("block_containers") if isinstance(blob, dict) else None
+            if not isinstance(containers, dict) or not (containers.get("blocks") or containers.get("block_groups")):
+                return None
+            container = BlocksContainer.model_validate(containers)
+            raw_semantic = blob.get("semantic_metadata")
+            semantic = SemanticMetadata.model_validate(raw_semantic) if raw_semantic else None
+        except Exception as exc:
+            self.logger.warning(
+                "Stored blocks of %s could not be loaded (%s); parsing again", virtual_record_id, type(exc).__name__
+            )
+            return None
+        return container, semantic
+
+    async def resume_from_checkpoint(
+        self,
+        record_id: str,
+        checkpoint: tuple[BlocksContainer, Any],
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """Index a record from the blocks an interrupted run stored, without parsing or enriching it again."""
+        container, semantic = checkpoint
+        record_doc = await self.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        if record_doc is None:
+            raise RecordDeletedError(record_id)
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+
+        record = self._convert_record(record_doc)
+        record.block_containers = container
+        record.virtual_record_id = virtual_record_id
+        if semantic is not None:
+            record.semantic_metadata = semantic
+        ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+        await self._pipeline().apply(ctx)
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process image content, yielding phase completion events."""
@@ -221,7 +245,9 @@ class Processor:
             if record is None:
                 raise RecordDeletedError(record_id)
 
-            _ , config = await self._get_llm_for_role("indexing", reasoning_effort="low")
+            _ , config = await self._get_llm_for_role(
+                "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
             is_multimodal_llm = config.get("isMultimodal")
 
             embedding_config = await get_embedding_model_config(self.config_service)
@@ -233,10 +259,14 @@ class Processor:
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
                     }
+                    # Left IN_PROGRESS with processingStartedAt cleared, the record reads as a
+                    # crashed parse and stale recovery requeues it on every pass.
+                    if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+                        status_fields["parsingStatus"] = ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
                     success = await self.graph_provider.update_node(
                         record_id,
                         CollectionNames.RECORDS.value,
-                        status_fields,
+                        shape_status_write(status_fields),
                     )
                     if not success:
                         self.logger.warning(
@@ -395,10 +425,6 @@ class Processor:
             doc = await self.docling_client.parse_pdf_batched(record_name, pdf_binary)
             # Nothing reads the file again; the caller drops its copy on PARSING_COMPLETE.
             pdf_binary = None
-            if doc is None:
-                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
-                yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
-                return
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
@@ -427,7 +453,9 @@ class Processor:
 
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
             return
-        except IndexingError:
+        except (IndexingError, NonRetryableError):
+            # A deliberate stop (a table model call refused for good) is not a Docling failure: reported as one after
+            # PARSING_COMPLETE, it became a retryable error and the classifier never saw the stop.
             raise
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
@@ -1389,7 +1417,9 @@ class Processor:
 
         try:
             self.logger.debug("📊 Processing Excel content")
-            llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
+            llm, _ = await self._get_llm_for_role(
+                "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
             parser = cast(ExcelParser, self.parsers[ExtensionTypes.XLSX.value])
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
@@ -1492,7 +1522,9 @@ class Processor:
             else:
                 parser = cast(CSVParser, self.parsers[extension])
 
-            llm, _ = await self._get_llm_for_role("indexing", reasoning_effort="low")
+            llm, _ = await self._get_llm_for_role(
+                "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
 
             # A large file is read, and its tables found, in a parse worker
             # process: both steps hold the GIL, so a thread would not free the loop.
@@ -1585,11 +1617,14 @@ class Processor:
             "lastIndexTimestamp": timestamp,
             "extractionStatus": ProgressStatus.EMPTY.value,
             "lastExtractionTimestamp": timestamp,
+            **chain_end_fields(indexing_status.value),
         }
         if indexing_status == ProgressStatus.EMPTY:
             status_update["reason"] = ""
         elif reason is not None:
             status_update["reason"] = reason
+        if indexing_status == ProgressStatus.FAILED:
+            status_update["failedAt"] = timestamp
         # The parsing-service path writes parsingStatus=IN_PROGRESS before it
         # dispatches. Left there with processingStartedAt cleared, the record
         # reads as a crashed parse and stale recovery republishes it for ever.
@@ -1599,7 +1634,7 @@ class Processor:
         success = await self.graph_provider.update_node(
             record_id,
             CollectionNames.RECORDS.value,
-            status_update,
+            shape_status_write(status_update),
         )
         if not success:
             self.logger.warning(
@@ -1609,9 +1644,14 @@ class Processor:
             return
 
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None,
+        *, allow_remote_fetch: bool = True,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process HTML document, yielding phase completion events."""
+        """Process HTML document, yielding phase completion events.
+
+        ``allow_remote_fetch=False`` leaves remote images unfetched (an email's, whose sender
+        would learn it was opened).
+        """
         self.logger.debug(
             f"🚀 Starting HTML document processing for record: {recordName}"
         )
@@ -1657,8 +1697,9 @@ class Processor:
             if images:
                 image_parser = self.parsers[ExtensionTypes.PNG.value]
                 urls_to_convert = [image["url"] for image in images]
-                # An HTML file a connector synced: never a pushed blocks document.
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
 
                 for i, image in enumerate(images):
                     if base64_urls[i]:
@@ -1703,6 +1744,87 @@ class Processor:
             raise
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
+
+    async def process_msg_document(
+        self, recordName: str, recordId: str, version: int, source: str, orgId: str, msg_binary: bytes | str,
+        virtual_record_id: str, event_type: str | None = None, prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """An Outlook .msg file, read as the HTML page of its headers, body and attachment list."""
+        content = msg_binary.encode("utf-8") if isinstance(msg_binary, str) else bytes(msg_binary)
+        # A damaged file raises UnreadableFileError, which comes back from the worker intact.
+        html = await asyncio.to_thread(
+            parse_pool.run_blocking, msg_to_html, content,
+            label=recordName, size=len(content), timeout=MSG_PARSE_TIMEOUT_SECONDS, kind=ParseKind.TEXT,
+        )
+        content = msg_binary = None
+        async for event in self.process_html_document(
+            recordName, recordId, version, source, orgId, html, virtual_record_id, event_type,
+            prev_virtual_record_id, allow_remote_fetch=False,
+        ):
+            yield event
+
+    async def process_libreoffice_document(
+        self, recordName: str, recordId: str, version: int, source: str, orgId: str, binary: bytes,
+        input_ext: str, virtual_record_id: str, event_type: str | None = None,
+        prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """A word-processing file LibreOffice converts to DOCX (.odt, .rtf), read as that DOCX."""
+        try:
+            docx = await convert_with_libreoffice(bytes(binary), input_ext, "docx")
+        except LibreOfficeCouldNotReadFileError as exc:
+            raise UnreadableFileError(input_ext, damaged_file_reason(input_ext)) from exc
+        binary = None
+        async for event in self.process_docx_document(
+            recordName, recordId, version, source, orgId, io.BytesIO(docx), virtual_record_id, event_type,
+            prev_virtual_record_id,
+        ):
+            yield event
+
+    async def process_plain_text_document(
+        self, recordName: str, recordId: str, text_binary: bytes | str, virtual_record_id: str,
+        event_type: str | None = None, prev_virtual_record_id: str | None = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """A log or configuration file, already capped and decoded to UTF-8, as plain text blocks."""
+        try:
+            text = text_binary.decode("utf-8") if isinstance(text_binary, (bytes, bytearray)) else str(text_binary)
+            text_binary = None
+            if not text.strip():
+                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+            if parse_pool.should_offload(len(text)):
+                block_containers = await parse_pool.submit(
+                    plain_text_to_blocks, text, label=recordName, size=len(text), kind=ParseKind.TEXT,
+                )
+            else:
+                block_containers = await asyncio.to_thread(plain_text_to_blocks, text)
+            text = None
+
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if record is None:
+                raise RecordDeletedError(recordId)
+            record = self._convert_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            await self._pipeline().apply(ctx)
+
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+        except IndexingError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error processing plain text document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,
@@ -1803,7 +1925,8 @@ class Processor:
             # the GIL, so a thread would not keep the event loop turning.
             if parse_pool.should_offload(len(markdown)):
                 modified_markdown, images = await parse_pool.submit(
-                    extract_and_replace_images, markdown, label=recordName, size=len(markdown)
+                    extract_and_replace_images, markdown, label=recordName, size=len(markdown),
+                    kind=ParseKind.TEXT,
                 )
             else:
                 modified_markdown, images = await offload_if_large(
@@ -1883,8 +2006,10 @@ class Processor:
         self.logger.info(
             f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
         )
-        await self._drop_code_blocks(record_id)
-        await self._release_skipped_content(org_id, record_id, virtual_record_id)
+        # A store-only run never touched the code graph or what is stored, so it has nothing to take back.
+        if not store_only_active():
+            await self._drop_code_blocks(record_id)
+            await self._release_skipped_content(org_id, record_id, virtual_record_id)
         await self._mark_record(record_id, ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason=reason)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1900,16 +2025,26 @@ class Processor:
         """
         if not virtual_record_id:
             return
-        if not await self.graph_provider.update_node(
-            record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
-        ):
-            raise DocumentProcessingError(
-                "Failed to detach the virtual record of a skipped file", doc_id=record_id
+        fenced = leaving_vrid(self.graph_provider, record_id, virtual_record_id, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
+        # The cleanup runs inside the fence: the detach is durable once it is written, and a retry no longer has the id to clean up with.
+        async with fenced as write:
+            if write:
+                await write.renew()      # before the write that matters, and before each long step: a body past its lease would be recovered while it runs
+            detached = await self.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
             )
-        await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
-        await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
-            org_id, virtual_record_id
-        )
+            if not detached:
+                raise DocumentProcessingError(
+                    "Failed to detach the virtual record of a skipped file", doc_id=record_id
+                )
+            if write:
+                await write.renew()
+            await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
+            if write:
+                await write.renew()
+            await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
+                org_id, virtual_record_id
+            )
 
     async def _drop_code_blocks(self, record_id: str) -> None:
         """Remove a code file's previous blocks when it no longer has any.
@@ -1919,6 +2054,8 @@ class Processor:
         longer exists. Raises, like the projection: the status written next
         would otherwise claim a state the graph does not have.
         """
+        if store_only_active():
+            return
         await drop_code_file_blocks(self.graph_provider, record_id, self.logger)
 
     async def project_code_blocks_to_graph(
@@ -1953,7 +2090,7 @@ class Processor:
         table the file is missing from, which yields wrong edges rather than
         absent ones.
         """
-        if not code_graph_switch.CODE_GRAPH_ENABLED:
+        if not code_graph_switch.CODE_GRAPH_ENABLED or store_only_active():
             return
         try:
             if not file_path:

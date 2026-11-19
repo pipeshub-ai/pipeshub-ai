@@ -60,6 +60,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+from app.utils.error_class import innermost_type
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -138,8 +139,11 @@ async def execute_search_by_entities(
     except TimeoutError:
         logger.warning("search_by_entities: deadline after %dms", int((time.monotonic() - started) * 1000))
         return False, TOO_SLOW_MSG
-    except EntityAccessError:
-        logger.warning("search_by_entities: access check failed", exc_info=True)
+    except EntityAccessError as exc:
+        logger.warning(
+            "search_by_entities: access check failed",
+            extra={"error_type": type(exc).__name__, "cause_type": innermost_type(exc)},
+        )
         return False, LOOKUP_FAILED_MSG
     except Exception:
         # A failed lookup must read as a failure, never as "no records".
@@ -283,8 +287,6 @@ def render_preamble(
     lines.extend(_line(result, linking.names, counts.get(result.mention.name, "0")) for result in linking.results)
     if match_all and scope.virtual_record_ids:
         lines.append(_together_line(scope, shortener))
-    if linking.timed_out:
-        lines.append("Note: access checks were cut short for this call, so results may be incomplete; retry.")
     if scope.note:
         lines.append(f"Note: {scope.note.strip()}")
     lines.extend(f"Note: {note}" for note in notes)

@@ -21,6 +21,7 @@
 import { create } from 'zustand';
 import { devtools, persist, createJSONStorage } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 // ============================================================
 // Types
@@ -38,6 +39,8 @@ export interface UserProfile {
   /** Object URL created from the logo blob, or null if not set */
   avatarUrl: string | null;
   hasLoggedIn: boolean;
+  /** null = none set; undefined = unknown (the users/:id request failed). */
+  designation?: string | null;
 }
 
 interface UserProfileState {
@@ -171,6 +174,7 @@ export const useUserStore = create<UserProfileStore>()(
                 isAdmin: state.profile.isAdmin,
                 avatarUrl: null,
                 hasLoggedIn: state.profile.hasLoggedIn,
+                designation: state.profile.designation,
               }
             : null,
         }),
@@ -180,12 +184,19 @@ export const useUserStore = create<UserProfileStore>()(
   )
 );
 
+// The profile initializer is unmounted by the time auth turns false, so it cannot clear this;
+// without it the next person on the desktop app would inherit this name and admin role.
+onSessionEnd(() => useUserStore.getState().clearProfile());
+
 // ============================================================
 // Selectors (stable references — use in components)
 // ============================================================
 
 export const selectProfile = (s: UserProfileStore) => s.profile;
 export const selectIsAdmin = (s: UserProfileStore) => s.profile?.isAdmin ?? null;
+/** isAdmin once this session's profile refresh has finished; null before then, because the persisted value may be out of date. */
+export const selectRefreshedIsAdmin = (s: UserProfileStore) =>
+  s.isInitialized && !s.error ? (s.profile?.isAdmin ?? null) : null;
 export const selectAvatarUrl = (s: UserProfileStore) => s.profile?.avatarUrl ?? null;
 export const selectFullName = (s: UserProfileStore) => s.profile?.fullName ?? null;
 export const selectUserEmail = (s: UserProfileStore) => s.profile?.email ?? null;

@@ -20,6 +20,10 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.services.messaging.config import StreamMessage
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer import consumer as consumer_module
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
@@ -57,6 +61,21 @@ class InMemoryGraph:
         for node in nodes:
             key = node.get("id") or node.get("_key")
             bucket[key] = {**bucket.get(key, {}), **node}
+        return True
+
+    async def update_node_fields_if_match(
+        self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, **_: Any,  # noqa: ANN401
+    ) -> bool:
+        node = self.nodes.get(collection, {}).get(key)
+        if node is None or any(node.get(f) != v for f, v in expected.items()):
+            return False
+        node.update(updates)
+        return True
+
+    async def update_node(self, key: str, collection: str, node_updates: dict, transaction: str | None = None) -> bool:
+        self._maybe_fail(f"update:{collection}")
+        bucket = self.nodes.setdefault(collection, {})
+        bucket[key] = {**bucket.get(key, {}), **node_updates}
         return True
 
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
@@ -99,9 +118,9 @@ class InMemoryGraph:
         ]
 
     async def get_user_by_email(self, email: str, transaction: str | None = None, *,
-                                raise_on_error: bool = False) -> SimpleNamespace | None:
+                                raise_on_error: bool = False, org_id: str | None = None) -> SimpleNamespace | None:
         for node in self.nodes.get(CollectionNames.USERS.value, {}).values():
-            if node.get("email") == email:
+            if node.get("email") == email and (org_id is None or node.get("orgId") == org_id):
                 return SimpleNamespace(id=node["id"])
         return None
 
@@ -299,6 +318,7 @@ class TestPartialFailure:
         graph.fail_next[f"upsert:{CollectionNames.APPS.value}"] = ConnectionError("graph database unreachable")
         handler = await KafkaUtils.create_entity_message_handler(_container(), graph)
         message = StreamMessage(**_user_added("org-a", "u-1", "ada@a.example"))
-        handled = await handler(message)
+        with pytest.raises(ConnectionError) as caught:
+            await handler(message)
         assert graph.kb_apps() == []
-        assert handled is False
+        assert MessageErrorClassifier.classify_by_exception(caught.value) == MessageErrorType.TRANSIENT

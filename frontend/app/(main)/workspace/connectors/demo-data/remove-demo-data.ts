@@ -1,5 +1,6 @@
 import { isAxiosError } from 'axios';
 import { isProcessedError } from '@/lib/api/api-error';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { ConnectorsApi } from '../api';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
@@ -74,6 +75,9 @@ export async function removeDemoData(
       if (!(await alreadyRemoved(id, error))) throw error;
     }
   }
+  // A connector that was already gone skips the delete call's own refresh,
+  // and the cached list would bring the demo back.
+  revalidateSwrNamespace(SWR_NS.teamConnectorLists);
   const failedAccounts: SampleAccount[] = [];
   for (const account of accounts) {
     try {

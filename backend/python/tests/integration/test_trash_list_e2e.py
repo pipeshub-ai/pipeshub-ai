@@ -10,7 +10,9 @@ the KB's own ``DataSourceEntitiesProcessor`` with ``ENABLE_SOFT_DELETE`` on.
   remove it.
 - A file whose folder went to the trash after it is its own row, naming the
   folder and saying it is in the trash too.
-- Paging splits the rows and keeps the total.
+- Paging splits the rows and keeps the total; a keyset walk (``after``) and
+  the service's cursor list every batch once through tied delete times, and a
+  capped count stops at the cap plus one.
 - A file organizer's list holds single files only, as that is all they may
   restore.
 - Live records, a record marked deleted without a timestamp, and other orgs
@@ -111,7 +113,9 @@ async def test_the_service_says_from_when_each_item_may_go(seeded: _World, monke
     assert (item["id"], item["name"], item["isFolder"], item["itemCount"]) == (seeded.ids["folder"], "Docs", True, 4)
     assert item["deletedBy"] == {"name": "Restore Tester", "email": f"{seeded.user_id}@example.com"}
     assert item["removableAfterTimestamp"] == EARLIER + 21 * DAY_MS
-    assert result["pagination"] == {"page": 1, "limit": 25, "totalCount": 1, "totalPages": 1}
+    assert result["pagination"] == {
+        "page": 1, "limit": 25, "totalCount": 1, "totalPages": 1, "totalCapped": False, "nextCursor": None,
+    }
 
 
 async def test_a_file_whose_folder_was_trashed_after_it_names_the_folder(seeded: _World) -> None:
@@ -137,6 +141,42 @@ async def test_paging_splits_the_rows_and_keeps_the_total(seeded: _World) -> Non
     assert (_ids(first), first["total"]) == ([seeded.ids["folder"]], 2)
     assert (_ids(second), second["total"]) == ([seeded.ids["solo"]], 2)
     assert (_ids(past), past["total"]) == ([], 2)
+
+
+async def test_a_keyset_walk_lists_every_batch_once_through_ties_and_the_count_stops_at_its_cap(seeded: _World) -> None:
+    loose = await _seed_loose_files(seeded, "kp", 5)
+    for i, name in enumerate(loose):
+        await _trash_at(seeded, name, LATER if i < 3 else EARLIER)
+    whole = (await seeded.graph.list_trashed_records(seeded.kb_id, seeded.org_id, limit=100))["items"]
+    assert [i["batchDeletedAt"] for i in whole] == [LATER] * 3 + [EARLIER] * 2
+    assert [i["batchId"] for i in whole] == [i["record"]["deleteBatchId"] for i in whole]
+
+    seen, after = [], None
+    while True:
+        page = await seeded.graph.list_trashed_records(seeded.kb_id, seeded.org_id, limit=2, after=after)
+        seen += _ids(page)
+        if len(page["items"]) < 2:
+            break
+        after = (page["items"][-1]["batchDeletedAt"], page["items"][-1]["batchId"])
+    assert seen == [i["record"]["_key"] for i in whole]
+    assert sorted(seen) == sorted(seeded.ids[name] for name in loose)
+    last = whole[-1]
+    assert (await seeded.graph.list_trashed_records(
+        seeded.kb_id, seeded.org_id, after=(last["batchDeletedAt"], last["batchId"]),
+    ))["items"] == []
+    counted = [(await seeded.graph.list_trashed_records(seeded.kb_id, seeded.org_id, count_cap=cap))["total"] for cap in (0, 2, 4, 5, None)]
+    assert counted == [1, 3, 5, 5, 5]
+
+    listed, cursor, page_no = [], None, 1
+    while True:
+        result = await seeded.service.list_trash(seeded.kb_id, seeded.user_id, seeded.org_id, page=page_no, limit=2, cursor=cursor)
+        assert result["success"] is True, result
+        listed += [item["id"] for item in result["items"]]
+        cursor, page_no = result["pagination"]["nextCursor"], page_no + 1
+        if cursor is None:
+            break
+    assert listed == seen
+    assert (result["pagination"]["totalCount"], result["pagination"]["totalCapped"]) == (5, False)
 
 
 async def test_a_file_organizer_sees_single_files_only(seeded: _World) -> None:

@@ -59,6 +59,12 @@ const TARGETS: Target[] = [
     cutoff: expiredAnHourAgo,
   },
   {
+    name: 'agent_registrations',
+    sql: `/* pipeshub:oauth.ttl_sweep_agent_registrations */ DELETE FROM oauth.agent_registrations
+            WHERE ctid IN (SELECT ctid FROM oauth.agent_registrations WHERE purge_at < $1 LIMIT $2)`,
+    cutoff: (now) => now,
+  },
+  {
     name: 'delegation_events',
     sql: `/* pipeshub:oauth.ttl_sweep_delegation_events */ DELETE FROM oauth.delegation_events
             WHERE ctid IN (SELECT ctid FROM oauth.delegation_events WHERE created_at < $1 LIMIT $2)`,

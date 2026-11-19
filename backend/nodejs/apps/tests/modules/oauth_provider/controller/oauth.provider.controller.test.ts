@@ -51,6 +51,15 @@ describe('OAuthProviderController', () => {
   let mockRes: any
   let mockNext: any
 
+  // Client resolution goes through the DCR service; for a registered client id it is the app lookup.
+  const passThroughDcr = (): any => ({
+    register: sinon.stub(),
+    resolveAuthorizeClient: async (id: string) => {
+      const app = await mockOAuthAppService.getAppByClientId(id)
+      return { app, store: async () => app }
+    },
+  })
+
   beforeEach(() => {
     mockLogger = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
     mockOAuthAppService = {
@@ -60,8 +69,10 @@ describe('OAuthProviderController', () => {
       isGrantTypeAllowed: sinon.stub(),
     }
     mockOAuthTokenService = {
+      audienceFor: sinon.stub().returns(undefined),
       generateTokens: sinon.stub(),
       revokeToken: sinon.stub(),
+      revokeAgentToken: sinon.stub().resolves(false),
       introspectToken: sinon.stub(),
       refreshTokens: sinon.stub(),
     }
@@ -91,7 +102,7 @@ describe('OAuthProviderController', () => {
       mockOAuthTokenService,
       mockAuthCodeService,
       mockScopeValidatorService,
-      { register: sinon.stub() } as any,
+      passThroughDcr(),
       mockOAuthDeviceService,
     )
     mockRes = {
@@ -138,6 +149,50 @@ describe('OAuthProviderController', () => {
       const response = mockRes.json.firstCall.args[0]
       expect(response.requiresConsent).to.be.true
       expect(response.consentData.workspace).to.deep.equal({ name: 'Acme Inc.' })
+    })
+
+    it('says who registered an app that was not dynamically registered', async () => {
+      stubOrgLookup(null)
+      const creatorId = '507f1f77bcf86cd799439013'
+      const usersFind = sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([{ _id: creatorId, fullName: 'Mallory', email: 'mallory@example.com' }]),
+          }),
+        }),
+      } as any)
+      mockOAuthAppService.getAppByClientId.resolves({
+        orgId: '507f1f77bcf86cd799439012', name: 'Payroll', allowedScopes: ['org:read'], isConfidential: true, createdBy: creatorId,
+      })
+      const req = {
+        query: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope: 'org:read', state: 's' },
+        user: { userId: 'u1', orgId: '507f1f77bcf86cd799439012', email: 'u@e.com' },
+      } as any
+
+      await controller.authorize(req, mockRes, mockNext)
+
+      expect(mockRes.json.firstCall.args[0].consentData.app.registeredBy).to.equal('Mallory')
+      // Looked up in the signed-in person's org.
+      const filter = usersFind.firstCall.args[0] as Record<string, unknown>
+      expect(String(filter.orgId)).to.equal('507f1f77bcf86cd799439012')
+    })
+
+    it('names no registrant for a dynamically registered app', async () => {
+      stubOrgLookup(null)
+      const usersFind = sinon.stub(Users, 'find')
+      mockOAuthAppService.getAppByClientId.resolves({
+        orgId: 'o1', isDynamic: true, name: 'Agent', allowedScopes: ['org:read'], isConfidential: true,
+        createdBy: '507f1f77bcf86cd799439013',
+      })
+      const req = {
+        query: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope: 'org:read', state: 's' },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com' },
+      } as any
+
+      await controller.authorize(req, mockRes, mockNext)
+
+      expect(mockRes.json.firstCall.args[0].consentData.app).to.not.have.property('registeredBy')
+      expect(usersFind.called).to.equal(false)
     })
 
     it('should return 403 when the app belongs to another workspace', async () => {
@@ -193,6 +248,7 @@ describe('OAuthProviderController', () => {
         mockOAuthTokenService,
         mockAuthCodeService,
         new ScopeValidatorService(),
+        passThroughDcr(),
       )
       mockOAuthAppService.getAppByClientId.resolves({
         orgId: 'o1', name: 'App', allowedScopes: ['kb:read', 'conversation:chat'],
@@ -223,6 +279,7 @@ describe('OAuthProviderController', () => {
         mockOAuthTokenService,
         mockAuthCodeService,
         new ScopeValidatorService(),
+        passThroughDcr(),
       )
       mockOAuthAppService.getAppByClientId.resolves({
         orgId: 'o1', name: 'App', allowedScopes: ['kb:read'],
@@ -400,6 +457,7 @@ describe('OAuthProviderController', () => {
           mockOAuthTokenService,
           mockAuthCodeService,
           new ScopeValidatorService(),
+          passThroughDcr(),
         )
       })
 
@@ -682,6 +740,25 @@ describe('OAuthProviderController', () => {
 
       await controller.revoke(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('revokes an agent credential without a client_id, and stops there', async () => {
+      mockOAuthTokenService.revokeAgentToken.resolves(true)
+      const req = { body: { token: 'agent-token' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeAgentToken.calledOnceWith('agent-token')).to.be.true
+      expect(mockOAuthAppService.getAppByClientId.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('refuses a token that is no agent credential and names no client', async () => {
+      const req = { body: { token: 'tok' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
     })
 
     it('should return 401 for invalid client credentials', async () => {

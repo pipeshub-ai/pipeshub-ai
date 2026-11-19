@@ -1,10 +1,10 @@
 import asyncio
+import contextvars
 import logging
 import math
 import os
 import time
-import traceback
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +30,8 @@ from app.models.blocks import GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
+from app.modules.retrieval import degraded_notice
+from app.services.permissions import access_status
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -77,6 +79,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     SELECTION_APPS_FILTER_KEY,
     SELECTION_FILTER_KEYS,
+    STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     IGraphDBProvider,
     _unsupported_container_filters,
@@ -84,6 +87,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
+from app.services.permissions.metrics import SERVING_DEGRADED
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -121,9 +125,11 @@ from app.utils.chat_helpers import (
 )
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.embedding_retry import await_with_retry
+from app.utils.error_class import log_failure
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
+from app.utils.user_lookup import get_caller_user
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -255,6 +261,19 @@ class _RecordIdSearch:
     empty_scope: bool = False
 
 
+# The scope filter of the shadow comparison's search, set only inside that task: a real search never sees one.
+_SHADOW_SCOPE_FILTER: contextvars.ContextVar[Any] = contextvars.ContextVar("acl_shadow_scope_filter", default=None)
+
+
+def _served(plan: "_QueryPlan", scope_connector_ids: Collection[str] | None) -> bool:
+    """Whether the real search went through the serving plan's filter: it carried one and, for a request limited to some connectors, the filter
+    decides at least one of them (a request that reaches only connectors on the classic check was not filtered, so its comparison stays valid)."""
+    flt = plan.scope_filter
+    if flt is None:
+        return False
+    return scope_connector_ids is None or bool(set(scope_connector_ids) & set(flt.current))
+
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -270,6 +289,8 @@ class _QueryPlan:
     dense: list | None = None
     sparse: list | None = None
     collections: list[str] | None = None
+    access_notices: list[dict[str, str]] = field(default_factory=list)  # codes for the viewer; the client words them
+    access_apps: list[dict[str, Any]] = field(default_factory=list)  # the connectors those codes came from, for the empty-result variant
     # Largest single-query batch of the last attempt, before the cross-query
     # dedupe. Exhaustion is a per-query property: the merged total cannot show
     # it, because overlapping queries shrink it for a reason that has nothing
@@ -282,6 +303,14 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
+    # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
+    degraded: bool = False
+    # The viewer's deferring scope filter (``ServingPlanner``): set only for the main container search, and cleared by the record-id path,
+    # whose own filter is the enumerated ids.
+    scope_filter: Any = None
+    # Every connector the viewer is gated into is served and exact (``ServingPlanner.plan_exact``): the filter decides every point, so the first fetch is
+    # exactly the limit asked. Meaningless without ``scope_filter``.
+    served_exact: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -454,6 +483,8 @@ class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
     # A class default, so an instance built without __init__ (as some tests do) has it too.
     _cached_embedding_is_local = True
+    _shadow = None
+    _planner = None
 
     def __init__(
         self,
@@ -481,6 +512,10 @@ class RetrievalService:
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
         self.collection_registry = collection_registry
+        # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
+        self._shadow = self._build_shadow(graph_provider)
+        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE scopes, or shadow for a connector an admin switched); None in legacy.
+        self._planner = self._build_planner(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -502,6 +537,48 @@ class RetrievalService:
             f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
             f"supports_text_search={self._capabilities.supports_server_side_text_search}"
         )
+
+    def _build_shadow(self, graph_provider: IGraphDBProvider) -> object | None:
+        """The shadow comparator in shadow mode, else None. An invalid setting raises ValueError here, at start-up, naming the setting."""
+        from app.services.permissions.wiring import build_shadow_comparator
+
+        return build_shadow_comparator(graph_provider)
+
+    def _build_planner(self, graph_provider: IGraphDBProvider) -> object | None:
+        from app.services.permissions.wiring import build_serving_planner
+
+        return build_serving_planner(graph_provider)
+
+    def _submit_shadow(
+        self, queries, filter, asked: int, org_id: str, user_id: str | None, user_key: str | None,  # noqa: A002, ANN001
+        scope_connector_ids: frozenset[str] | None, scopes: Sequence[SelectionScope], plan: "_QueryPlan",
+        returned_vids: set[str], accessible: dict[str, str],
+    ) -> None:
+        """Hand the finished search to the shadow comparator (once per search, from the attempt that was kept), which repeats it with
+        the viewer's scope filter in a detached task. It gets a plan of its own (the embeddings are reused, nothing of the real plan is written) and never changes what this call returns."""
+        from app.services.permissions.shadow import ShadowIncomplete
+
+        shadow_plan = _QueryPlan(dense=plan.dense, sparse=plan.sparse, collections=plan.collections)
+
+        async def run_scoped(flt: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            token = _SHADOW_SCOPE_FILTER.set(flt)
+            try:
+                found = await self._execute_parallel_searches(queries, filter, asked, org_id, user_id, plan=shadow_plan)
+            finally:
+                _SHADOW_SCOPE_FILTER.reset(token)
+            if shadow_plan.failed_collections:      # a collection that failed to answer would read as recall loss
+                raise ShadowIncomplete
+            return found
+
+        async def check(vrids: set[str]) -> set[str]:
+            found = await self.graph_provider.check_access(
+                user_key or "", org_id, virtual_record_ids=vrids, indexed_only=True, connector_ids=scope_connector_ids, scopes=scopes)
+            return set(found.records_by_vrid)
+
+        try:
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check, served=_served(plan, scope_connector_ids))
+        except Exception as exc:  # the shadow must never cost a search
+            self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 
     @property
     def _result_merger(self) -> ResultMerger:
@@ -724,7 +801,7 @@ class RetrievalService:
             # None overrides it -- and HybridSearchRequest is a plain dataclass,
             # so the None survived all the way to `req.limit * 2` in
             # qdrant/utils.py and took the whole search down with a TypeError
-            # that the except below logged as "Filtered search failed",
+            # that the except below logged as `search.failed`,
             # returning an empty result set. The turn then answered with no
             # retrieved context and no visible error.
             if limit is None:
@@ -773,10 +850,7 @@ class RetrievalService:
                     # the scope and try that once.
                     narrow_access_memo.forget(memo_key)
                     remembered = False
-                    self.logger.warning(
-                        "record list unreadable for remembered scope (user=%s org=%s); "
-                        "trying the container search: %s", user_id, org_id, exc,
-                    )
+                    log_failure(self.logger, "search.remembered_scope_unreadable", exc, include_error_text=False)
                     containers, accessible_virtual_id_to_record_id, user = (
                         await self._resolve_search_scope(user_id, org_id, filters, time_range)
                     )
@@ -795,13 +869,22 @@ class RetrievalService:
                         await self._resolve_search_scope(user_id, org_id, filters, time_range)
                     )
             except PermissionVerificationUnavailableError as exc:
-                self.logger.warning(
-                    "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
-                )
+                log_failure(self.logger, "search.access_unreadable", exc, include_error_text=False)
                 return self._create_empty_response(
                     PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
                 )
             use_containers = containers is not None
+            # The connectors this search reached, on either path: what a notice may be about.
+            notice_apps = await self._notice_apps(
+                await self._notice_app_ids(containers, user, org_id, filters), user_id, org_id
+            )
+
+            def nothing_found(message: str, status: Status = Status.ACCESSIBLE_RECORDS_NOT_FOUND) -> dict[str, Any]:
+                response = self._create_empty_response(message, status)
+                if notices := access_status.notices(notice_apps, empty=True):
+                    degraded_notice.note_access(notices)
+                    response["accessNotices"] = notices
+                return response
 
             # Under container scoping the accessible map is not built up front —
             # it is the *output* of adjudicating what the search returned. So
@@ -813,10 +896,10 @@ class RetrievalService:
             if use_containers:
                 if containers.is_empty:
                     self.logger.warning(f"No accessible containers for user {user_id} and org {org_id}")
-                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    return nothing_found(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE)
             elif not accessible_virtual_id_to_record_id:
                 self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return nothing_found(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE)
 
             # The entity filter runs inside the permission scope: what it matches in
             # records this user cannot read must change neither the answer nor "too broad".
@@ -832,9 +915,12 @@ class RetrievalService:
                     entity_filtered = True
                     virtual_record_ids_from_tool = _narrow_virtual_ids(virtual_record_ids_from_tool, entity_vids)
                     if not virtual_record_ids_from_tool:
-                        return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
+                        return nothing_found(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
 
             plan = _QueryPlan()
+            plan.access_apps = notice_apps
+            plan.access_notices = access_status.notices(notice_apps)
+            degraded_notice.note_access(plan.access_notices)
 
             def empty(message: str, status: Status) -> dict[str, Any]:
                 if entity_filtered and status in (Status.EMPTY_RESPONSE, Status.ACCESSIBLE_RECORDS_NOT_FOUND):
@@ -846,6 +932,13 @@ class RetrievalService:
                     # as nothing matching.
                     response["message"] = f"{incomplete} {message}"
                     response["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response["searchDegraded"] = True
+                # Nothing found: a syncing connector is now worth saying, whatever its history.
+                notices = access_status.notices(plan.access_apps, empty=True)
+                if notices:
+                    degraded_notice.note_access(notices)
+                    response["accessNotices"] = notices
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -865,6 +958,8 @@ class RetrievalService:
             if permission_filter is None:
                 return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             filter, scope_virtual_ids = permission_filter
+            if use_containers and self._planner is not None and self.vector_db_service.supports_scope_filter:
+                plan.scope_filter, plan.served_exact = await self._planner.plan_exact(org_id, user_key)
 
             record_cut = _record_cut_for(scope_virtual_ids)
             # The search API's first page, varied across sources: the plain
@@ -921,20 +1016,13 @@ class RetrievalService:
                             # Nothing was admitted to keep: report the failure as
                             # the record-id path would, never as "no match".
                             if isinstance(exc, PermissionVerificationUnavailableError):
-                                self.logger.warning(
-                                    "Could not read what user %s may access in org %s: %s",
-                                    user_id, org_id, exc,
-                                )
+                                log_failure(self.logger, "search.access_unreadable", exc, include_error_text=False)
                                 return self._create_empty_response(
                                     PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
                                     Status.PERMISSION_CHECK_UNAVAILABLE,
                                 )
                             raise
-                        self.logger.warning(
-                            "record-id search after a container shortfall failed "
-                            "(user=%s org=%s); keeping the container results: %s",
-                            user_id, org_id, exc,
-                        )
+                        log_failure(self.logger, "search.record_id_retry_failed", exc, include_error_text=False)
                         replacement = None
                         plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
                     if replacement is None:
@@ -986,10 +1074,8 @@ class RetrievalService:
                         if not isinstance(result, dict)
                         or (result.get("metadata") or {}).get("virtualRecordId") not in denied
                     ]
-                except Exception:
-                    self.logger.exception(
-                        "Permission check of search hits failed (user=%s org=%s)", user_id, org_id,
-                    )
+                except Exception as exc:
+                    log_failure(self.logger, "search.hit_check_failed", exc, include_error_text=False)
                     return self._create_empty_response(
                         "Could not verify document permissions right now. "
                         "Please retry shortly.",
@@ -1129,10 +1215,9 @@ class RetrievalService:
             for idx, result in enumerate(search_results):
                 if not result or not isinstance(result, dict):
                     continue
-                if not result.get("metadata"):
-                    self.logger.warning(f"Result has no metadata: {result}")
-                    continue
-                virtual_id = result["metadata"].get("virtualRecordId")
+                # Normalisation gives every hit metadata, and a payload without it cannot pass
+                # the metadata.orgId filter; a hit lacking it has no record and falls to the else.
+                virtual_id = (result.get("metadata") or {}).get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id].get("_key")
                     record = record_id_to_record_map.get(record_id)
@@ -1206,7 +1291,7 @@ class RetrievalService:
             files_map = {}
             mails_map = {}
 
-            async def _fetch_by_ids(record_ids: list[str], collection: str, label: str) -> dict:
+            async def _fetch_by_ids(record_ids: list[str], collection: str) -> dict:
                 """One query per collection instead of one per chunk.
 
                 The id lists are appended per search result, so a record matched
@@ -1224,9 +1309,9 @@ class RetrievalService:
                             )
                             or []
                         )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to batch fetch {label}, per-id fallback: {str(e)}"
+                except Exception as exc:
+                    log_failure(
+                        self.logger, "search.batch_fetch_failed", exc, include_error_text=False, collection=collection,
                     )
                     nodes = []
 
@@ -1262,12 +1347,12 @@ class RetrievalService:
 
             async def fetch_files() -> dict:
                 return await _fetch_by_ids(
-                    file_record_ids_to_fetch, CollectionNames.FILES.value, "files"
+                    file_record_ids_to_fetch, CollectionNames.FILES.value
                 )
 
             async def fetch_mails() -> dict:
                 return await _fetch_by_ids(
-                    mail_record_ids_to_fetch, CollectionNames.MAILS.value, "mails"
+                    mail_record_ids_to_fetch, CollectionNames.MAILS.value
                 )
 
             async def fetch_locations() -> dict[str, str]:
@@ -1482,6 +1567,10 @@ class RetrievalService:
                 incomplete = plan.incomplete_notice()
                 if incomplete:
                     response_data["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response_data["searchDegraded"] = True
+                if plan.access_notices:
+                    response_data["accessNotices"] = plan.access_notices
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:
@@ -1509,7 +1598,8 @@ class RetrievalService:
             self.logger.error("Filtered search failed with a ValueError: %s", e, exc_info=True)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
         except Exception as e:
-            self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
+            # A refused query embedding lands here too, its text the provider's body.
+            log_failure(self.logger, "search.failed", e, include_error_text=False)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _diversity_candidates(
@@ -1566,6 +1656,7 @@ class RetrievalService:
                         plan=candidate_plan,
                         user_key=user_key,
                         scopes=scopes,
+                        compare=False,
                     )
                     if degraded:
                         return [], {}
@@ -1575,8 +1666,10 @@ class RetrievalService:
                     found = await by_record_ids(depth, candidate_plan)
                     hits, accessible = found.results, found.accessible
         except Exception as exc:
-            self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
+            log_failure(self.logger, "search.diversity_read_failed", exc, include_error_text=False)
             return [], {}
+        # These hits can join the response, so a partial search behind them is the response's too.
+        plan.degraded = plan.degraded or candidate_plan.degraded
         kept = [
             hit for hit in hits
             if isinstance(hit, dict) and hit_record_id(hit) in accessible
@@ -1610,11 +1703,11 @@ class RetrievalService:
                         exclude_app_ids=await self._excluded_demo_apps(user_id, org_id),
                     )
                 match = await resolver.match(org_id, raw, within=list(dict.fromkeys(accessible.values())))
-        except EntityFilterUnavailableError:
-            self.logger.warning("Named-entity filter lookup failed for org %s", org_id, exc_info=True)
+        except EntityFilterUnavailableError as exc:
+            log_failure(self.logger, "search.entity_filter_unavailable", exc, include_error_text=False)
             return None, self._create_empty_response(ENTITY_FILTER_UNAVAILABLE_MESSAGE, Status.ERROR)
         except PermissionVerificationUnavailableError as exc:
-            self.logger.warning("Could not read what user %s may access in org %s: %s", user_id, org_id, exc)
+            log_failure(self.logger, "search.access_unreadable", exc, include_error_text=False)
             return None, self._create_empty_response(PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE)
         if match.error:
             return None, self._create_empty_response(match.error, Status.INVALID_FILTER)
@@ -1657,7 +1750,7 @@ class RetrievalService:
         except SelectionNotReadyError:
             return self._create_empty_response(SELECTION_NOT_READY_MESSAGE, Status.SELECTION_NOT_READY)
         except PermissionVerificationUnavailableError as exc:
-            self.logger.warning("Could not resolve the selection of user %s in org %s: %s", user_id, org_id, exc)
+            log_failure(self.logger, "search.selection_unreadable", exc, include_error_text=False)
             return self._create_empty_response(
                 PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
             )
@@ -1691,30 +1784,25 @@ class RetrievalService:
                 exclude_app_ids=excluded,
             )
 
-        user_task = self._get_user_cached(user_id)
+        # Before the access reads, not beside them: for a brand-new caller this lookup is what writes their graph
+        # user, and a read that ran first would answer for a user who is not there yet.
+        user = await self._get_user_cached(user_id)
 
         # A container scope cannot leave one app out, so an exclusion keeps the
         # record-id path. So does a scope the container filter recently could
         # not serve (``narrow_access_memo``): the record-id path is the exact
         # one, so preferring it never widens what a search may return.
         if excluded or prefer_record_ids:
-            accessible, user = await asyncio.gather(_legacy(), user_task)
-            return None, accessible, user
+            return None, await _legacy(), user
 
         # Recognised locally, without asking the graph: no container expresses a
         # date range or a per-record metadata term, so those keep the record-id
         # path. This is a capability gap, not a preference. `apps` and `kb` are
         # containers and do not land here.
         if _unsupported_container_filters(filters, time_range):
-            accessible, user = await asyncio.gather(_legacy(), user_task)
-            return None, accessible, user
+            return None, await _legacy(), user
 
-        containers, user = await asyncio.gather(
-            self.graph_provider.get_accessible_containers(
-                user_id, org_id, filters, time_range
-            ),
-            user_task,
-        )
+        containers = await self.graph_provider.get_accessible_containers(user_id, org_id, filters, time_range)
         if containers.fallback_reason:
             # A data-readiness condition, not a rollout switch: an app whose
             # vector membership arrays were never built cannot be filtered by
@@ -1942,6 +2030,7 @@ class RetrievalService:
         query by the ids, keep the hits the access check admits. Raises when any
         step fails; the caller decides what stands instead.
         """
+        plan.scope_filter = None      # the enumerated ids are this path's filter
         enumerated = await self._get_accessible_virtual_ids_task(
             user_id, org_id, filters, self.graph_provider, time_range=time_range,
         )
@@ -2020,8 +2109,12 @@ class RetrievalService:
         plan: "_QueryPlan | None" = None,
         user_key: str | None = None,
         scopes: Sequence[SelectionScope] = (),
+        compare: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
+
+        ``compare``: hand the finished search to the shadow comparison (when it is on). The deeper read for source diversity passes False: it
+        is the same search read at a greater depth, and one search is compared once.
 
         Returns ``(results, accessible_map, verification_degraded)``. The third
         element is what stops a graph outage being reported as an empty corpus.
@@ -2035,7 +2128,7 @@ class RetrievalService:
         """
         plan = plan if plan is not None else _QueryPlan()
         plan.narrow_shortfall = False
-        fetch_limit = self._overfetch_limit(limit, containers)
+        fetch_limit = limit if plan.scope_filter is not None and plan.served_exact else self._overfetch_limit(limit, containers)
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
         # is against the whole fan-out, not one query's share.
@@ -2048,6 +2141,7 @@ class RetrievalService:
         best_surviving = -1
         best_degraded = False
         best_failed: list[str] = []
+        best_shadow: tuple[int, set[str], dict[str, str]] | None = None      # what the shadow comparison needs from the kept attempt
 
         for attempt in range(MAX_SEARCH_ATTEMPTS):
             # Per attempt, not per loop: a later attempt that fails verification
@@ -2103,10 +2197,9 @@ class RetrievalService:
                 # with a full workspace that nothing matched.
                 attempt_degraded = True
                 accessible = {}
-                self.logger.error(
-                    "container_search: verification unavailable for %d vrids "
-                    "(user=%s org=%s): %s",
-                    len(returned_vids), user_id, org_id, exc,
+                log_failure(
+                    self.logger, "container_search.verification_unavailable", exc,
+                    include_error_text=False, vrid_count=len(returned_vids),
                 )
             surviving = sum(
                 1
@@ -2128,6 +2221,7 @@ class RetrievalService:
                 )
                 best_degraded = attempt_degraded
                 best_failed = plan.failed_collections
+                best_shadow = None if attempt_degraded else (asked, returned_vids, accessible)
 
             if attempt_degraded:
                 # Retrying would hammer a graph that has just failed to answer.
@@ -2168,6 +2262,8 @@ class RetrievalService:
             )
 
         plan.failed_collections = best_failed
+        if compare and best_shadow is not None and self._shadow is not None and plan.dense is not None and self.vector_db_service.supports_scope_filter:
+            self._submit_shadow(queries, filter, best_shadow[0], org_id, user_id, user_key, scope_connector_ids, scopes, plan, best_shadow[1], best_shadow[2])
         # Over-fetching is a means, not a promise: drop the headroom this path
         # added, best-scoring first, or by record under the record cut.
         # `budget` is the record-id path's *ceiling*, not its typical output —
@@ -2281,9 +2377,10 @@ class RetrievalService:
         batches: list[list] = [[] for _ in queries]
         capped = [False] * len(queries)
         failed_collections = searched_collections = 0
+        degraded: list[bool] = []
         if requests:
             per_collection, failed_collections = await self._lexical_fan_out(
-                await self._resolve_search_collections(org_id, user_id), requests, limit,
+                await self._resolve_search_collections(org_id, user_id), requests, limit, degraded=degraded,
             )
             searched_collections = len(per_collection) + failed_collections
             for j, i in enumerate(sent):
@@ -2352,10 +2449,12 @@ class RetrievalService:
             empty_query=[sparse is None and text is None for sparse, text in requests_legs],
             failed_collections=failed_collections,
             searched_collections=searched_collections,
+            degraded=bool(degraded),
         )
 
     async def _lexical_fan_out(
         self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
+        *, degraded: list[bool] | None = None,
     ) -> tuple[list[tuple[str, list[list]]], int]:
         """Each collection's own per-request results, and how many collections
         could not be searched. Raises when none could."""
@@ -2363,8 +2462,9 @@ class RetrievalService:
 
         async def _one(name: str) -> list[list]:
             async with semaphore:
-                return await self._fan_out_searches([name], requests, limit)
+                return await self._fan_out_searches([name], requests, limit, degraded=degraded)
 
+        degraded_notice.track()
         outcomes = await asyncio.gather(*(_one(name) for name in collections), return_exceptions=True)
         answered = [(name, out) for name, out in zip(collections, outcomes) if not isinstance(out, BaseException)]
         failures = [out for out in outcomes if isinstance(out, BaseException)]
@@ -2473,6 +2573,40 @@ class RetrievalService:
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
 
+    async def _notice_app_ids(
+        self, containers: "AccessibleContainers | None", user: dict[str, Any] | None, org_id: str, filters: dict[str, Any] | None,
+    ) -> frozenset[str]:
+        """The connectors a notice may be about: those the containers reach, or, on the record-id path, those this person is gated into
+        (the one connector gate), narrowed to the connectors the request is scoped to. Never a connector outside their reach."""
+        if filters and filters.get(STRICT_SCOPE_FILTER_KEY) and requested_scope_ids(filters) is None:
+            # A project chat with nothing selected searches nothing, so no connector was reached: say nothing about any.
+            return frozenset()
+        if containers is not None:
+            return frozenset(containers.app_ids)
+        user_key = (user.get("_key") or user.get("id")) if user else None
+        if not user_key:
+            return frozenset()
+        try:
+            gated = frozenset((await self.graph_provider.get_knowledge_hub_access_v3(user_key, org_id)).get("gated_app_ids") or ())
+        except Exception as exc:
+            log_failure(self.logger, "search.notice_gate_failed", exc, include_error_text=False)
+            return frozenset()
+        scoped = requested_scope_ids(filters)
+        return gated if scoped is None else gated & frozenset(scoped)
+
+    async def _notice_apps(self, app_ids: Iterable[str], user_id: str, org_id: str) -> list[dict[str, Any]]:
+        """The documents of the connectors a notice may be about: the ones this person is gated into, minus the demo apps they switched off. A run
+        that searches several times reads each connector once (`degraded_notice.app_memo`)."""
+        ids = frozenset(app_ids) - await self._excluded_demo_apps(user_id, org_id)
+        memo = degraded_notice.app_memo()
+        need = sorted(i for i in ids if memo is None or i not in memo)
+        fetched = await access_status.read_apps(self.graph_provider, need) if need else []
+        if memo is None:
+            return fetched
+        memo.update(dict.fromkeys(need))
+        memo.update({str(a.get("id") or a.get("_key")): a for a in fetched})
+        return [a for i in sorted(ids) if (a := memo.get(i)) is not None]
+
     async def _excluded_demo_apps(self, user_id: str, org_id: str) -> frozenset[str]:
         """The Acme Corp demo connectors this person has switched off, if any."""
         try:
@@ -2481,7 +2615,7 @@ class RetrievalService:
             )
         except Exception as exc:
             # Unreadable setting: search as before rather than fail the search.
-            self.logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
+            log_failure(self.logger, "search.demo_setting_failed", exc, include_error_text=False)
             return frozenset()
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
@@ -2504,7 +2638,7 @@ class RetrievalService:
         # Cache miss - fetch from database
         self.logger.debug(f"User cache miss for user_id: {user_id}")
         try:
-            user_data = await self.graph_provider.get_user_by_user_id(user_id, raise_on_error=True)
+            user_data = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
         if user_data is None:
@@ -2541,12 +2675,8 @@ class RetrievalService:
             names = await self.graph_provider.get_accessible_connector_types(
                 user_id, org_id
             )
-        except Exception as e:
-            self.logger.warning(
-                "Could not resolve accessible connector types; searching every "
-                "managed collection instead: %s",
-                e,
-            )
+        except Exception as exc:
+            log_failure(self.logger, "search.connector_types_unreadable", exc, include_error_text=False)
             return None
         return names or None
 
@@ -2677,6 +2807,7 @@ class RetrievalService:
                 filter=filter,
                 limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
+                scope_filter=_SHADOW_SCOPE_FILTER.get() or (plan.scope_filter if plan is not None else None),
             )
             for query, dense_embedding, sparse_embedding in zip(
                 queries, dense_query_embeddings, sparse_query_embeddings
@@ -2690,12 +2821,16 @@ class RetrievalService:
             if plan is not None:
                 plan.collections = collections
         failed_collections: list[str] = []
+        degraded: list[bool] = []
         search_results = await self._fan_out_searches(
-            collections, requests, fused_limit, failed=failed_collections,
+            collections, requests, fused_limit, failed=failed_collections, degraded=degraded,
         )
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+        if degraded and plan is not None:
+            plan.degraded = True
+            SERVING_DEGRADED.inc("scopes" if requests and requests[0].scope_filter is not None and _SHADOW_SCOPE_FILTER.get() is None else "legacy")
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
@@ -2739,6 +2874,7 @@ class RetrievalService:
         limit: int,
         *,
         failed: list[str] | None = None,
+        degraded: list[bool] | None = None,
     ) -> list[list]:
         """Query every collection in parallel and reduce each query to one top-K.
 
@@ -2751,11 +2887,15 @@ class RetrievalService:
         A collection that fails degrades the result set instead of failing the
         search — a search over three collections should not error because one
         is briefly unreachable. Each one it could not search is appended to
-        ``failed``, so the caller can say the results are incomplete.
+        ``failed``, so the caller can say the results are incomplete. A store that
+        answered from a partial search (``degraded_notice``, by a note or by a marked hit)
+        appends to ``degraded``.
         """
         if not collections:
             return [[] for _ in requests]
 
+        degraded_notice.track()
+        noted_before = degraded_notice.count()
         semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
 
         async def _search(collection_name: str) -> list[list]:
@@ -2785,11 +2925,20 @@ class RetrievalService:
                     outcome,
                 )
                 continue
+            for batch in outcome:
+                for hit in batch:
+                    if isinstance(reason := getattr(hit, "degraded", None), str):
+                        degraded_notice.note(reason)
+                        break
             for i, batch in enumerate(outcome):
                 if i < len(per_query):
                     per_query[i].append(
                         CollectionResults(collection_name=collection_name, results=batch)
                     )
+
+        # Read before the merge trims: a store that found nothing, or whose hits fall below the cut, still counts.
+        if degraded is not None and degraded_notice.count() > noted_before:
+            degraded.append(True)
 
         # Degrading when one collection is unreachable is the point of
         # return_exceptions; degrading when *every* one failed is not — that is
@@ -2827,6 +2976,9 @@ class RetrievalService:
         }
 
         status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status
+        if status is Status.PERMISSION_CHECK_UNAVAILABLE:
+            # A chat run that hit this says so on its final answer too, like the other notices.
+            degraded_notice.note_access([{"code": "check_unavailable"}])
 
         return {
             "searchResults": [],
@@ -2834,6 +2986,8 @@ class RetrievalService:
             "status": status.value,
             "status_code": status_code,
             "message": message,
+            # The client words it ("we could not check just now"); the code carries no connector or record.
+            **({"accessNotices": [{"code": "check_unavailable"}]} if status is Status.PERMISSION_CHECK_UNAVAILABLE else {}),
         }
 
     def _create_virtual_to_record_mapping(

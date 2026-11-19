@@ -234,7 +234,10 @@ class TestNoBlindMappingWrites:
         calls = _calls_in(source, STORED_WRITE_FUNCTIONS)
         assert "batch_upsert_nodes" in calls["_store_in_place"]
 
-    def test_only_the_reconciliation_adoption_upserts_the_mapping(self) -> None:
+    def test_nothing_upserts_the_mapping(self) -> None:
+        """An upsert creates a missing mapping without its org, which leaves the content
+        it names unattributable; every write creates with ``create_node_if_absent`` (with
+        the org) or updates an existing row."""
         tree = ast.parse(inspect.getsource(blob_module))
         users = set()
         for node in ast.walk(tree):
@@ -242,7 +245,7 @@ class TestNoBlindMappingWrites:
                 for sub in ast.walk(node):
                     if isinstance(sub, ast.Attribute) and sub.attr == "batch_upsert_nodes":
                         users.add(node.name)
-        assert users == {"_map_reconciliation_document"}
+        assert users == set()
 
 
 # ---------------------------------------------------------------------------

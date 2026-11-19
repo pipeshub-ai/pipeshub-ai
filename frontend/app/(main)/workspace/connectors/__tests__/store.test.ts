@@ -4,6 +4,8 @@
  * rename and stale fetches.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
+import { onSwrNamespaceRevalidate, SWR_NS } from '@/lib/api/swr-cache';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { useConnectorsStore } from '../store';
 import type { Connector, ConnectorConfig, ConnectorInstance, ConnectorSchemaResponse } from '../types';
 
@@ -269,5 +271,31 @@ describe('instance lists', () => {
     store().clearInstanceData();
     expect(store().instances).toEqual([]);
     expect(store().localSyncStatuses).toEqual({});
+  });
+
+  it('keeps instance configs when leaving a type page, so going back shows them at once', () => {
+    store().setInstanceConfig('a', { name: 'kept' } as unknown as ConnectorConfig);
+    store().clearInstanceData();
+    expect(store().instanceConfigs.a).toEqual({ name: 'kept' });
+  });
+
+  it('forgets instance configs at sign-out', () => {
+    store().setInstanceConfig('a', {} as ConnectorConfig);
+    clearSessionCache();
+    expect(store().instanceConfigs).toEqual({});
+  });
+
+  it('a catalog refresh also refreshes the cached team list and instance configs', () => {
+    const refreshed: string[] = [];
+    const stops = [SWR_NS.teamConnectorLists, SWR_NS.connectorConfigs].map((ns) =>
+      onSwrNamespaceRevalidate(ns, () => refreshed.push(ns)),
+    );
+    const token = store().catalogRefreshToken;
+
+    store().bumpCatalogRefresh();
+
+    expect(store().catalogRefreshToken).toBe(token + 1);
+    expect(refreshed).toEqual([SWR_NS.teamConnectorLists, SWR_NS.connectorConfigs]);
+    stops.forEach((stop) => stop());
   });
 });

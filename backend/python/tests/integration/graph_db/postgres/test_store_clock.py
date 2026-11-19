@@ -1,0 +1,76 @@
+"""The store's clock on a real database: `store_time` is the database's time, and a write's lease written by it is not recovered by a sweeper whose
+host clock is far ahead.
+
+Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
+"""
+from __future__ import annotations
+
+import time
+import uuid
+from types import SimpleNamespace
+
+import pytest
+
+from app.config.constants.arangodb import CollectionNames
+from app.services.permissions import structure_generation as sg
+from app.services.permissions.structure_generation import (
+    OPEN_WRITES_KEY,
+    close_write,
+    open_write,
+    parse_open_writes,
+    recover_expired_writes,
+    unclosed_writes,
+)
+
+pytestmark = pytest.mark.integration
+
+
+async def test_the_store_clock_is_the_databases_and_a_skewed_sweeper_leaves_a_live_write_alone(pg_provider, org_ctx, monkeypatch) -> None:
+    with org_ctx(uuid.uuid4().hex[:24]):
+        assert abs(await pg_provider.store_time() - time.time()) < 30
+        assert await pg_provider.batch_upsert_nodes([{"_key": "c1", "name": "app"}], CollectionNames.APPS.value)
+        token = await open_write(pg_provider, "c1", ["r1"])
+        app = await pg_provider.get_document("c1", CollectionNames.APPS.value)
+        assert abs(parse_open_writes(app[OPEN_WRITES_KEY])[token]["u"] - await pg_provider.store_time() - sg.OPEN_WRITE_SECONDS) < 30
+        monkeypatch.setattr(sg, "time", SimpleNamespace(time=lambda: time.time() + 3600))      # a sweeper host an hour ahead
+        assert await recover_expired_writes(pg_provider, "c1") == 0
+        assert unclosed_writes(await pg_provider.get_document("c1", CollectionNames.APPS.value)) == 1
+        assert await close_write(pg_provider, "c1", token)
+
+
+async def test_a_compare_and_set_is_refused_once_the_databases_clock_is_past_the_callers_bound(pg_provider, org_ctx) -> None:
+    """A lease computed from a clock read is written only while the database's clock, read by the write itself, is within the bound."""
+    with org_ctx(uuid.uuid4().hex[:24]):
+        assert await pg_provider.batch_upsert_nodes([{"_key": "c1", "name": "app"}], CollectionNames.APPS.value)
+        now = await pg_provider.store_time()
+        assert not await pg_provider.update_node_fields_if_match("c1", CollectionNames.APPS.value, {"name": "late"}, {"name": "app"}, clock_at_most=now - 1)
+        assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "app"
+        assert await pg_provider.update_node_fields_if_match("c1", CollectionNames.APPS.value, {"name": "in time"}, {"name": "app"}, clock_at_most=now + 60)
+        assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "in time"
+
+
+async def test_a_write_that_waits_for_the_row_lock_past_its_bound_is_refused_when_the_holder_rolls_back(pg_provider, org_ctx) -> None:
+    """The bound is checked after the row lock is held: a holder that only locked the row, or that rolls back, would otherwise let a write that waited
+    past its bound apply (the clock read before the wait is not read again)."""
+    import asyncio
+    import os
+
+    import asyncpg
+
+    org = uuid.uuid4().hex[:24]
+    with org_ctx(org):
+        assert await pg_provider.batch_upsert_nodes([{"_key": "c1", "name": "app"}], CollectionNames.APPS.value)
+        holder = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+        try:
+            locked = holder.transaction()
+            await locked.start()
+            await holder.execute("SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = 'c1' FOR UPDATE", org, CollectionNames.APPS.value)
+            now = await pg_provider.store_time()
+            write = asyncio.ensure_future(pg_provider.update_node_fields_if_match(
+                "c1", CollectionNames.APPS.value, {"name": "late"}, {"name": "app"}, clock_at_most=now + 1))
+            await asyncio.sleep(2.5)                                          # the write waits for the row past its bound
+            await locked.rollback()
+            assert not await write
+        finally:
+            await holder.close()
+        assert (await pg_provider.get_document("c1", CollectionNames.APPS.value))["name"] == "app"

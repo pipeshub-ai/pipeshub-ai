@@ -22,6 +22,7 @@ def _make_connector() -> NotionPersonalConnector:
     data_entities_processor.org_id = "org-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
+    data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
 
@@ -153,6 +154,23 @@ class TestNotionTeamWarning:
         from app.connectors.sources.notion.connector import NotionConnector
 
         assert NotionConnector._connector_metadata["config"]["isAdminAccessRequired"] is False
+
+
+class TestNotionPersonalBots:
+    @pytest.mark.asyncio
+    async def test_a_reindex_before_any_sync_learns_its_own_bot_without_listing_members(self) -> None:
+        connector = _make_connector()
+        response = _bot_response("ws-1")
+        response.data.json.return_value = {**response.data.json.return_value, "id": "bot-own"}
+        datasource = MagicMock()
+        datasource.retrieve_bot_user = AsyncMock(return_value=response)
+        datasource.list_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=datasource)
+
+        await connector._load_bot_user_ids()
+
+        assert connector._bot_user_ids == {"bot-own"} and connector._bot_ids_complete is True
+        datasource.list_users.assert_not_called()
 
 
 class TestNotionPersonalWorkspaceResolution:

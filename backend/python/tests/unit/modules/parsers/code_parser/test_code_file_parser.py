@@ -322,3 +322,11 @@ def test_repeated_calls_keep_one_fact_and_facts_per_block_are_capped(
     monkeypatch.setattr(code_file_parser, "MAX_FACTS_PER_BLOCK", 4)
     container = CodeFileParser().parse_to_blocks(source, "m.py", "m.py", "python")
     assert [f["toName"] for f in _facts(container, "f")] == ["g0", "g1", "g2", "g3"]
+
+
+def test_functions_passed_as_values_never_crowd_out_a_blocks_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(code_file_parser, "MAX_FACTS_PER_BLOCK", 2)
+    source = b"def f():\n    consume(alpha, beta)\n    important()\n"
+    facts = _facts(CodeFileParser().parse_to_blocks(source, "m.py", "m.py", "python"), "f")
+    assert sorted((f["relation"], f["toName"]) for f in facts) == [
+        ("CALLS", "consume"), ("CALLS", "important"), ("INDIRECT_CALL", "alpha"), ("INDIRECT_CALL", "beta")]

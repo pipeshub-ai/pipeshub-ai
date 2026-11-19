@@ -9,6 +9,25 @@ describe('resolveConnectorType', () => {
 
   it('leaves app slugs to their own icons', () => {
     expect(resolveConnectorType('jira')).toBe('jira');
+    expect(resolveConnectorType('docusign')).toBe('docusign');
+    expect(resolveConnectorType('okta')).toBe('okta');
+    expect(resolveConnectorType('zoom')).toBe('zoom');
+    expect(resolveConnectorType('paypal')).toBe('paypal');
+    expect(resolveConnectorType('PayPal')).toBe('paypal');
+    expect(resolveConnectorType('gitlab')).toBe('gitlab');
+    expect(resolveConnectorType('GitLab')).toBe('gitlab');
+    expect(resolveConnectorType('egnyte')).toBe('egnyte');
+    expect(resolveConnectorType('intercom')).toBe('intercom');
+    expect(resolveConnectorType('granola')).toBe('granola');
+    expect(resolveConnectorType('fireflies')).toBe('fireflies');
+    expect(resolveConnectorType('fathom')).toBe('fathom');
+  });
+
+  it('matches Intercom, Granola, Fireflies and Fathom as whole words only', () => {
+    expect(resolveConnectorType('Fathom MCP')).toBe('fathom');
+    expect(resolveConnectorType('my-fireflies-server')).toBe('fireflies');
+    expect(resolveConnectorType('Unfathomable Drive')).toBe('google-drive');
+    expect(resolveConnectorType('Intercomm')).toBe('generic');
   });
 
   it('maps the bare Google toolset slugs to their logos', () => {

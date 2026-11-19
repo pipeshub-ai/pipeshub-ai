@@ -525,6 +525,7 @@ export const ensureProjectKnowledgeBase =
         req.headers as Record<string, string>,
         orgId,
         projectId,
+        userId,
       );
       res.status(200).json({ kbId });
     } catch (error) {

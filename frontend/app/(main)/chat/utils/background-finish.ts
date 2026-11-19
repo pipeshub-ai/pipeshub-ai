@@ -4,6 +4,7 @@ import { i18n } from '@/lib/i18n';
 import { toast } from '@/lib/store/toast-store';
 import { buildChatHref } from '../build-chat-url';
 import { useChatStore } from '../store';
+import { turnOfBranchSlot } from '../compare/compare-store';
 
 const TOAST_DURATION_MS = 8000;
 
@@ -33,7 +34,8 @@ export function notifyAnswerFinishedInBackground(slotId: string, wasStopped: boo
 
   const { slots, activeSlotId, markConversationUnread } = useChatStore.getState();
   const slot = slots[slotId];
-  if (!slot?.convId || isSlotInView(slotId, activeSlotId)) return;
+  // A hidden compare branch is not a chat of its own: nothing to open or mark unread.
+  if (!slot?.convId || isSlotInView(slotId, activeSlotId) || turnOfBranchSlot(slotId)) return;
 
   markConversationUnread(slot.convId);
 

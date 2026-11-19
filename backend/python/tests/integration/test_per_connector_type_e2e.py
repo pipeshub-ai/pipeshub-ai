@@ -5,6 +5,7 @@ actually can. Same machinery, different grouping axis — which is the check tha
 the abstraction is not quietly specialised to per-org.
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,11 +17,17 @@ from app.services.vector_db.membership import (
     rewrite_or_delete_virtual_record,
     sync_vector_membership,
 )
-from app.services.vector_db.models import CollectionConfig, ScrollResult, VectorCollectionInfo
+from app.services.vector_db.models import (
+    CollectionConfig,
+    ScrollResult,
+    VectorCollectionInfo,
+)
 from app.services.vector_db.strategies.per_connector_type import (
     PerConnectorTypeStrategy,
 )
 from app.services.vector_db.strategy import DeleteContext, QueryContext, RecordContext
+from tests.support.bound_org import bind_test_org
+from tests.support.in_memory_vector_db import InMemoryVectorDBService
 from tests.support.vector_db import make_config_service
 
 pytestmark = pytest.mark.asyncio
@@ -29,8 +36,15 @@ DRIVE = "drive_records"
 SLACK = "slack_records"
 
 
-class FakeVectorDB:
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """Membership and delete calls act for the bound org (a filter always carries one)."""
+    yield from bind_test_org()
+
+
+class FakeVectorDB(InMemoryVectorDBService):
     def __init__(self) -> None:
+        super().__init__()
         self.live: set[str] = set()
         self.created: list[str] = []
         self.payload_writes: list[str] = []
@@ -57,8 +71,8 @@ class FakeVectorDB:
     async def create_index(self, collection_name, field_name, field_schema) -> None:
         return None
 
-    async def filter_collection(self, must=None, should=None):
-        return {"must": must, "should": should}
+    async def filter_collection(self, must=None, should=None, must_not=None):
+        return {"must": must, "should": should, "must_not": must_not}
 
     async def set_payload(self, collection_name, payload, filter) -> None:
         self.payload_writes.append(collection_name)
@@ -70,7 +84,7 @@ class FakeVectorDB:
         self.searched.append(collection_name)
         return [[] for _ in requests]
 
-    async def scroll(self, collection_name, scroll_filter, limit, offset=None):
+    async def scroll(self, collection_name, scroll_filter, limit, offset=None, with_payload=None):
         return ScrollResult(points=[], next_offset=None)
 
 

@@ -95,6 +95,16 @@ class LegacyNode:
 
 
 @dataclass(frozen=True)
+class StrayNode:
+    """A merged node that records of the org still link to."""
+
+    key: str
+    name: str
+    merged_into: str
+    records: int
+
+
+@dataclass(frozen=True)
 class MergeResult:
     edges_moved: int
     dry_run: bool
@@ -217,6 +227,15 @@ class TaxonomyConsolidator:
             collection, winner_key, loser.key, org_id,
             set_merged_from=None, only_merged_from=loser.key, dry_run=dry_run,
         )
+        # A node still redirecting to the loser (a merge that stopped before
+        # _flatten) had its edges carried on with the loser's: they come back
+        # to the loser too, marked as they were, so that node's own unmerge,
+        # which ends at the loser now, still finds them.
+        for follower in await self._redirecting_to(collection, org_id, loser.key):
+            restored += await self.graph.move_taxonomy_edges(
+                collection, winner_key, loser.key, org_id,
+                set_merged_from=follower, only_merged_from=follower, dry_run=dry_run,
+            )
         self.logger.info(
             "kg_taxonomy: unmerge %s | org=%s winner=%s loser=%s edges=%d",
             "planned" if dry_run else "applied", org_id, winner_key, loser.key, restored,
@@ -226,6 +245,37 @@ class TaxonomyConsolidator:
         await self.graph.update_node(loser.key, collection, {MERGED_INTO_FIELD: None, MERGED_AT_FIELD: None})
         refreshed = await self._refresh_index(collection, org_id, keep=[winner_key, loser.key], drop=[])
         return MergeResult(restored, dry_run=False, index_refreshed=refreshed)
+
+    async def stray_nodes(self, collection: str, org_id: str) -> list[StrayNode]:
+        """The org's merged nodes that its records still link to, paged
+        through in key order."""
+        _check_collection(collection)
+        nodes: list[StrayNode] = []
+        after: str | None = None
+        while True:
+            rows = await self.graph.find_merged_taxonomy_nodes_with_edges(
+                collection, org_id, _LEGACY_PAGE, after_key=after,
+            )
+            for row in rows:
+                key = row.get("_key") or row.get("id")
+                if key and row.get("mergedInto"):
+                    nodes.append(StrayNode(
+                        str(key), str(row.get("name") or ""), str(row["mergedInto"]), int(row.get("records") or 0),
+                    ))
+            if len(rows) < _LEGACY_PAGE:
+                return nodes
+            after = str(rows[-1].get("_key") or rows[-1].get("id"))
+
+    async def sweep(self, collection: str, org_id: str, key: str, *, dry_run: bool = True) -> MergeResult:
+        """Move edges linked to merged node ``key`` since its merge on to
+        the node its redirect ends at: a re-run of that merge, so the edges
+        keep ``mergedFrom`` and ``unmerge`` still restores them."""
+        _check_collection(collection)
+        node = (await self._nodes(collection, [key])).get(key)
+        if node is None or node.org_id != org_id or not node.merged_into:
+            raise ValueError(f"{collection}/{key} is not a merged node of org {org_id}")
+        winner = await self._final(collection, org_id, node.merged_into)
+        return await self.merge(collection, org_id, winner.key, key, dry_run=dry_run)
 
     # ------------------------------------------------------------------
     # Legacy nodes
@@ -343,15 +393,30 @@ class TaxonomyConsolidator:
                 raise ValueError(f"redirect cycle or overlong chain at {collection}/{key}: {seen}")
             key = node.merged_into
 
+    async def _redirected_to(self, collection: str, org_id: str, keys: list[str]) -> list[str]:
+        """The org's nodes whose redirect is one of ``keys``."""
+        rows = await self.graph.get_nodes_by_field_in(
+            collection, MERGED_INTO_FIELD, keys, return_fields=["id", "orgId"], raise_on_error=True,
+        )
+        return [k for row in rows or [] if (k := row.get("id") or row.get("_key")) and row.get("orgId") == org_id]
+
+    async def _redirecting_to(self, collection: str, org_id: str, key: str) -> list[str]:
+        """The org's nodes whose redirect chain passes through ``key``."""
+        found: list[str] = []
+        frontier = [key]
+        # The bound is chain depth (redirect hops), not how many nodes a level holds.
+        for _ in range(MAX_MERGE_REDIRECT_HOPS):
+            if not frontier:
+                break
+            frontier = [k for k in await self._redirected_to(collection, org_id, frontier) if k != key and k not in found]
+            found += frontier
+        return found
+
     async def _flatten(self, collection: str, org_id: str, loser_key: str, winner_key: str) -> None:
         """Point the org's nodes that redirected to the loser at the winner,
         so no redirect leads to a node that is itself merged."""
-        rows = await self.graph.get_nodes_by_field_in(
-            collection, MERGED_INTO_FIELD, [loser_key], return_fields=["id", "orgId"], raise_on_error=True,
-        )
-        for row in rows or []:
-            key = row.get("id") or row.get("_key")
-            if key and key != winner_key and row.get("orgId") == org_id:
+        for key in await self._redirected_to(collection, org_id, [loser_key]):
+            if key != winner_key:
                 await self.graph.update_node(key, collection, {MERGED_INTO_FIELD: winner_key})
 
     async def _migration_target(self, collection: str, org_id: str, normalized: str) -> tuple[str, bool]:

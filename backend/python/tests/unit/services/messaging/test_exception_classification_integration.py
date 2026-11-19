@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from app.services.messaging.error_classifier import MessageErrorType
+from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 
 class TestExceptionClassificationInConsumers:
@@ -40,7 +41,7 @@ class TestExceptionClassificationInConsumers:
         message.partition = 0
         message.offset = 100
 
-        success, exc = await consumer._KafkaMessagingConsumer__process_message(message)
+        success, exc = await in_delivery(consumer._KafkaMessagingConsumer__process_message(message))
 
         assert success is False
         assert isinstance(exc, ValueError)
@@ -75,7 +76,7 @@ class TestExceptionClassificationInConsumers:
         message.partition = 0
         message.offset = 100
 
-        success, exc = await consumer._KafkaMessagingConsumer__process_message(message)
+        success, exc = await in_delivery(consumer._KafkaMessagingConsumer__process_message(message))
 
         assert success is False
         assert isinstance(exc, TimeoutError)
@@ -169,18 +170,12 @@ class TestExceptionClassificationInConsumers:
             "app.services.messaging.redis_streams.consumer.MessageErrorClassifier.classify_by_exception",
             return_value=MessageErrorType.TERMINAL,
         ):
-            success, is_terminal = await consumer._process_message_with_classification(
+            success, is_terminal = await in_delivery(consumer._process_message_with_classification(
                 "test-topic", "1-0", fields
-            )
+            ))
 
         assert success is False
         assert is_terminal is True
-
-        warning_calls = [
-            call for call in logger.warning.call_args_list
-            if "Terminal error" in str(call)
-        ]
-        assert len(warning_calls) > 0, "Terminal error should be logged"
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ on a process that doesn't own the run. Uses a real in-memory fake store
 from __future__ import annotations
 
 import asyncio
+import logging
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,6 +16,7 @@ from app.agent_loop_lib.core.context import CancellationToken
 from app.agents.agent_loop.cancellation import kv_backed as kv_backed_module
 from app.agents.agent_loop.cancellation.kv_backed import KVBackedRunCancellationRegistry
 from app.agents.agent_loop.cancellation.registry import RunOwner
+from app.utils import logging_fields
 
 
 def _owner(
@@ -229,3 +232,50 @@ class TestUnregister:
         assert outcome == "cancelled"
         await asyncio.sleep(0.05)
         assert token.is_cancelled is False
+
+
+class TestPollFailures:
+    """The store raises a failed read without logging it, so the poll is the
+    only layer that can report an unreachable store."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_log_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+
+    @staticmethod
+    async def _poll_failing(registry: KVBackedRunCancellationRegistry, run_id: str, ticks: int) -> None:
+        await registry.register(run_id, CancellationToken(), _owner())
+        await asyncio.sleep(kv_backed_module._POLL_INTERVAL_SECONDS * ticks)
+        await registry.unregister(run_id)
+
+    async def test_a_failing_poll_warns_once_then_stays_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        store = _FakeKVStore()
+        store.get_key = AsyncMock(side_effect=ConnectionError("Failed to get key: etcd down"))
+        registry = KVBackedRunCancellationRegistry(store)
+        caplog.set_level(logging.DEBUG, logger=kv_backed_module.__name__)
+
+        await self._poll_failing(registry, "run-1", ticks=10)
+        await self._poll_failing(registry, "run-2", ticks=10)
+
+        polls = [r for r in caplog.records if "poll failed" in r.getMessage()]
+        assert store.get_key.await_count >= 4
+        assert [r.levelno for r in polls if r.levelno >= logging.WARNING] == [logging.WARNING]
+        assert polls[0].levelno == logging.WARNING
+        assert polls[0].exc_info is not None
+        assert all(r.levelno == logging.DEBUG for r in polls[1:])
+
+    async def test_a_poll_failing_again_after_the_interval_warns_again(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = _FakeKVStore()
+        store.get_key = AsyncMock(side_effect=ConnectionError("Failed to get key: etcd down"))
+        registry = KVBackedRunCancellationRegistry(store)
+        caplog.set_level(logging.DEBUG, logger=kv_backed_module.__name__)
+
+        await self._poll_failing(registry, "run-1", ticks=5)
+        for key in logging_fields._log_once_last:
+            logging_fields._log_once_last[key] -= kv_backed_module._POLL_WARNING_INTERVAL_SECONDS + 1
+        await self._poll_failing(registry, "run-1", ticks=5)
+
+        warnings = [r for r in caplog.records if "poll failed" in r.getMessage() and r.levelno >= logging.WARNING]
+        assert len(warnings) == 2

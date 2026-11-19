@@ -451,6 +451,7 @@
     "created": "Creado",
     "updated": "Actualizado",
     "source": "Origen",
+    "actions": "Acciones",
     "noData": "No hay datos disponibles",
     "loading": "Cargando datos...",
     "selectAll": "Seleccionar todo",
@@ -502,6 +503,8 @@
     "pagination": {
       "showing": "Mostrando {{start}}-{{end}} de {{total}}",
       "pageOf": "{{page}} / {{total}}",
+      "showingAtLeast": "Mostrando {{start}}-{{end}} de al menos {{total}}",
+      "pageOfAtLeast": "{{page}} / {{total}}+",
       "perPage": "{{value}} por página"
     },
     "yes": "Sí",
@@ -654,6 +657,9 @@
     "indexingStatus": {
       "completed": "Completado",
       "inProgress": "En curso",
+      "embeddingProgress_one": "Incrustando {{done, number}} / {{total, number}} fragmento",
+      "embeddingProgress_many": "Incrustando {{done, number}} / {{total, number}} fragmentos",
+      "embeddingProgress_other": "Incrustando {{done, number}} / {{total, number}} fragmentos",
       "failed": "Error",
       "fileTypeNotSupported": "Tipo de archivo no compatible",
       "notStarted": "No iniciado",
@@ -714,7 +720,9 @@
     "nameRules": {
       "folderSeparator": "Los nombres de carpeta no pueden contener \"/\" ni \"\\\".",
       "collectionExists": "Ya tienes una colección llamada \"{{name}}\". Elige otro nombre."
-    }
+    },
+    "sourcesNotReady": "Algunas fuentes aún se están preparando y todavía no aparecen ({{count}}). Inténtalo de nuevo en un momento.",
+    "sourcePreparing": "Preparando esta fuente… Sus elementos aparecerán aquí en un momento."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -856,7 +864,17 @@
     "copy": "Copiar",
     "fork": "Bifurcar chat",
     "forkFromHere": "Bifurcar desde aquí",
+    "forkedHere": "Bifurcado aquí",
+    "untitledChat": "Chat sin título",
+    "forkedFrom": "Bifurcado de",
+    "copiedUpToHere": "Copiado hasta aquí · los mensajes nuevos empiezan abajo",
+    "forkOriginUnavailable": "el chat original ya no está disponible",
     "regenerate": "Regenerar",
+    "answerHidden": {
+      "lost": "Esta respuesta usó contenido al que ya no tienes acceso.",
+      "unconfirmed": "No pudimos confirmar tu acceso. Inténtalo de nuevo.",
+      "askAgain": "Preguntar de nuevo"
+    },
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
     "ttsNotSupported": "La conversión de texto a voz no es compatible con este navegador",
@@ -1405,6 +1423,11 @@
     "stopListening": "Dejar de escuchar",
     "voiceInput": "Entrada por voz",
     "regenerateResponse": "Regenerar la respuesta",
+    "quoteSelection": "Citar",
+    "quoteSelectionHint": "Preguntar por esto",
+    "quotedExcerpt": "Citado",
+    "quotedExcerptTruncated": "Citado (recortado)",
+    "dismissQuote": "Quitar cita",
     "editQuery": "Editar la consulta",
     "queryOptions": "Opciones de consulta",
     "models": "Modelos",
@@ -1499,6 +1522,8 @@
     },
     "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
     "noResultsFor": "No se encontraron resultados para «{{query}}»",
+    "matchedByName": "Coincidencias por nombre",
+    "contentNotIndexedYet": "Contenido aún no indexado",
     "removeSelectedSource": "Quitar {{name}}",
     "diagramSourceCopied": "Código del diagrama copiado",
     "diagramImageCopied": "Imagen del diagrama copiada",
@@ -1509,6 +1534,40 @@
       "internalSearch": "Búsqueda interna",
       "webSearch": "Búsqueda web",
       "internalAndWebSearch": "Búsqueda interna + web"
+    },
+    "searchDegraded": "Es posible que los resultados estén incompletos.",
+    "compare": {
+      "toggle": "Comparar modelos",
+      "pickTwo": "Elige {{max}} modelos para comparar.",
+      "pickedHint": "Cada pregunta la responden ambos modelos, lado a lado.",
+      "costNote": "Cada pregunta se ejecuta en ambos modelos, por lo que consume aproximadamente el doble. En el modo Agente, ambos pueden usar herramientas; las acciones que requieren aprobación se piden por separado en cada columna.",
+      "pillLabel": "Comparar {{picked}}/{{max}}",
+      "stop": "Detener",
+      "retry": "Reintentar",
+      "failed": "Este modelo no pudo responder. Inténtalo de nuevo.",
+      "useAnswer": "Usar esta respuesta",
+      "useAnswerLabel": "Usar la respuesta de {{model}}",
+      "columnLabel": "Respuesta de {{model}}",
+      "chooseConflict": "Esta respuesta aún no se puede conservar. Espera a que termine e inténtalo de nuevo.",
+      "chooseFailed": "No se pudo conservar esta respuesta. Inténtalo de nuevo.",
+      "primaryFallback": "Modelo",
+      "starting": "Iniciando...",
+      "status": {
+        "starting": "Iniciando",
+        "waiting": "En espera",
+        "streaming": "Respondiendo",
+        "done": "Listo",
+        "error": "Error"
+      }
+    },
+    "webSearchSetup": {
+      "title": "La búsqueda web aún no está configurada",
+      "adminBody": "Tu organización no tiene ningún proveedor de búsqueda configurado. Elige uno en Workspace → Búsqueda web para activar la búsqueda web para todos.",
+      "memberBody": "Tu organización aún no ha configurado un proveedor de búsqueda web, por lo que las respuestas no pueden usar la web.",
+      "memberHint": "Pide a tu administrador que lo configure en Workspace → Búsqueda web.",
+      "setUp": "Configurar la búsqueda web",
+      "notNow": "Ahora no",
+      "gotIt": "Entendido"
     }
   },
   "workspaceMenu": {
@@ -1556,6 +1615,8 @@
         "demoteAdminBeforeRemove": "Cambie el administrador a miembro y después quítelo.",
         "removeUserTitle": "¿Eliminar usuario?",
         "removeUserMessage": "¿Está seguro de que desea eliminar a {{email}} del espacio de trabajo {{workspace}}?",
+        "removeUserOAuthAppsOne": "Esta persona creó 1 aplicación OAuth. Pasará a ser suya, para que quienes se conectaron con ella sigan conectados.",
+        "removeUserOAuthAppsMany": "Esta persona creó {{count}} aplicaciones OAuth. Pasarán a ser suyas, para que quienes se conectaron con ellas sigan conectados.",
         "removeButton": "Eliminar",
         "cancelButton": "Cancelar",
         "removeSuccess": "Usuario eliminado exitosamente",
@@ -1710,7 +1771,6 @@
       "subtitle": "Crea y administra grupos para controlar el acceso y los permisos",
       "enterpriseTitle": "Los permisos de grupo están disponibles en la Enterprise Edition",
       "enterpriseMessage": "Actualice a la Enterprise Edition para usar permisos de grupo.",
-      "enterpriseContact": "Contáctanos",
       "createGroup": "Crear grupo",
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",
@@ -1791,6 +1851,21 @@
         "saveError": "No se han podido guardar los permisos",
         "loadError": "No se han podido cargar los permisos",
         "empty": "Aún no se ha definido ningún permiso."
+      }
+    },
+    "enterprise": {
+      "contact": "Hablar con ventas",
+      "scim": {
+        "heading": "El aprovisionamiento SCIM está disponible en la Enterprise Edition",
+        "message": "Deje que Okta o Microsoft Entra ID añadan, actualicen y desactiven personas en su espacio de trabajo automáticamente."
+      },
+      "auditLogs": {
+        "heading": "Los registros de auditoría están disponibles en la Enterprise Edition",
+        "message": "Vea quién hizo qué en su espacio de trabajo y cuándo."
+      },
+      "usage": {
+        "heading": "El uso, los créditos y la facturación están disponibles en la Enterprise Edition",
+        "message": "Vea el coste de la IA por persona, agente, conector y modelo, gestione los créditos, su plan y sus facturas, y configure alertas de gasto en la Configuración de consumo."
       }
     },
     "teams": {
@@ -1876,7 +1951,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Cree y administre las aplicaciones OAuth que ha registrado. Solo usted ve sus aplicaciones aquí.",
+      "subtitle": "Cree y administre las aplicaciones OAuth que ha registrado. Solo usted y los administradores de su organización las ven.",
+      "subtitleAdmin": "Todas las aplicaciones OAuth de su organización, con quién las creó. Suspenda o elimine cualquier aplicación que no reconozca.",
       "searchPlaceholder": "Buscar aplicaciones por nombre o descripción...",
       "newApplication": "Nueva aplicación OAuth",
       "emptyTitle": "No hay aplicaciones OAuth 2.0",
@@ -1886,6 +1962,7 @@
       "retry": "Reintentar",
       "scopesBadgeOne": "{{count}} permiso",
       "scopesBadgeMany": "{{count}} permisos",
+      "createdBy": "Creada por {{name}}",
       "manage": "Administrar",
       "noSearchResults": "Ninguna aplicación coincide con su búsqueda.",
       "manageComingSoonTitle": "Próximamente",
@@ -1896,6 +1973,7 @@
         "saveDisabledNoChanges": "No changes to save.",
         "saveDisabledInvalid": "Fix validation errors before saving.",
         "tabAdvanced": "Advanced",
+        "creatorOnlyNotice": "Solo quien creó esta aplicación puede cambiarla. Aún puede suspenderla o eliminarla en Avanzado.",
         "aboutHeading": "About",
         "aboutHelper": "Use this Client ID in your OAuth flows.",
         "copyClientIdAria": "Copy client ID",
@@ -2290,6 +2368,8 @@
       "sections": {
         "overview": "Resumen",
         "workspace": "Espacio de trabajo",
+        "usageAndCredits": "Uso y créditos",
+        "security": "Seguridad",
         "personal": "Personal",
         "people": "Personas",
         "developerSettings": "Configuración de desarrollador"
@@ -2297,6 +2377,7 @@
       "nav": {
         "general": "General",
         "labs": "Labs",
+        "mcpAccess": "Acceso MCP",
         "authentication": "Autenticación",
         "connectors": "Conectores",
         "mcpServers": "Servidores MCP",
@@ -2318,6 +2399,9 @@
         "archivedChats": "Chats archivados",
         "users": "Usuarios",
         "groups": "Grupos",
+        "scim": "SCIM",
+        "auditLogs": "Registros de auditoría",
+        "usage": "Uso y créditos",
         "teams": "Equipos",
         "webSearch": "Búsqueda Web",
         "tenants": "Inquilinos",
@@ -2590,6 +2674,30 @@
         "cancel": "Continue editing"
       }
     },
+    "mcpAccess": {
+      "title": "Acceso MCP",
+      "subtitle": "Elige qué pueden hacer los clientes MCP, como Claude, Cursor o ChatGPT, en este espacio de trabajo a través de su endpoint /mcp.",
+      "enabled": {
+        "label": "Permitir acceso MCP",
+        "description": "Si está desactivado, se rechaza cada solicitud de un cliente MCP. Los clientes conectados vuelven a funcionar en cuanto se reactiva."
+      },
+      "writeTools": {
+        "label": "Permitir herramientas de escritura",
+        "description": "Si está desactivado, los clientes MCP no pueden crear colecciones, subir archivos ni añadir sitios web, y el chat no ejecuta acciones conectadas."
+      },
+      "tools": {
+        "title": "Herramientas",
+        "subtitle": "Desactiva herramientas concretas. Una herramienta desactivada no se ofrece a los clientes MCP y se rechazan sus llamadas.",
+        "writes": "Escribe"
+      },
+      "appliesNote": "Los cambios se aplican a las nuevas solicitudes MCP en unos segundos.",
+      "loadError": "No se pudo cargar la configuración de acceso MCP. Recarga la página para volver a intentarlo.",
+      "toasts": {
+        "saveSuccess": "Configuración de acceso MCP guardada",
+        "saveError": "No se pudo guardar la configuración de acceso MCP",
+        "saveErrorDescription": "Comprueba tu conexión e inténtalo de nuevo."
+      }
+    },
     "labs": {
       "title": "Platform configuration",
       "subtitle": "Changes to platform settings affect all users and take effect immediately.",
@@ -2693,6 +2801,11 @@
           "samlSso": "SAML SSO",
           "oauth": "OAuth"
         }
+      },
+      "enterpriseSso": {
+        "title": "Inicio de sesión único SAML y OpenID Connect",
+        "description": "Permite iniciar sesión con Okta, OneLogin o cualquier otro proveedor de identidad SAML 2.0 u OpenID Connect.",
+        "contactSales": "Para comprar, escribe a {{email}}"
       }
     },
     "connectors": {
@@ -3148,7 +3261,28 @@
         "loadingOptions": "Cargando opciones…",
         "noResults": "No se han encontrado resultados",
         "optionsLoadFailed": "No se han podido cargar las opciones de este filtro. Cierre esta lista y vuelva a abrirla para reintentarlo.",
-        "loadingMore": "Cargando más…"
+        "loadingMore": "Cargando más…",
+        "folderPaths": {
+          "help": "Las rutas empiezan en el nivel superior. * coincide con cualquier carácter dentro de un nombre de carpeta, ** con cualquier número de carpetas y ? con un solo carácter. Se incluye todo lo que hay dentro de una carpeta que coincide. Un patrón que no coincide con nada se indica en la tarjeta del conector.",
+          "examples": {
+            "oneLevel": "customer/*/quotes: la carpeta quotes de cada cliente",
+            "anyDepth": "**/quotes: cada carpeta llamada quotes, a cualquier profundidad (lee todas las carpetas)",
+            "exclude": "archive con Excluir: todo excepto la carpeta archive"
+          },
+          "caseInsensitive": "Los nombres coinciden sin importar mayúsculas o minúsculas. \\ y / separan carpetas.",
+          "caseSensitive": "Los nombres distinguen mayúsculas de minúsculas. Escribe \\* o \\? para buscar esos caracteres en un nombre.",
+          "notFiles": "Los patrones eligen carpetas, no archivos. Para elegir tipos de archivo, usa File Extensions.",
+          "errors": {
+            "climbsOut": "La carpeta \"{{value}}\" debe ser una ruta desde el nivel superior, sin \"..\".",
+            "emptySegment": "La carpeta \"{{value}}\" tiene un nombre de carpeta vacío entre dos barras. Quita la \"/\" de más.",
+            "excludesEverything": "Excluir \"{{value}}\" no deja nada que sincronizar. Quítala o cambia a Incluir.",
+            "tooLong": "La carpeta \"{{value}}\" tiene más de 1024 caracteres.",
+            "uncPath": "La carpeta \"{{value}}\" parece una ruta de red. Empieza en el nivel superior del recurso compartido, sin \\\\server\\share.",
+            "doubleStarInName": "En la carpeta \"{{value}}\", \"**\" debe ser un nombre de carpeta completo, como en reports/**/2026. Usa \"*\" para parte de un nombre.",
+            "tooManyDoubleStars": "La carpeta \"{{value}}\" usa \"**\" más de 4 veces. Usa menos.",
+            "tooManyStars": "Un nombre de carpeta en \"{{value}}\" tiene más de 16 \"*\". Usa menos."
+          }
+        }
       },
       "syncStrategies": {
         "SCHEDULED": "Programada",
@@ -3294,7 +3428,24 @@
         "badge": "Acción necesaria",
         "title": "Acción necesaria",
         "openAuthentication": "Actualizar autenticación",
-        "viewSteps": "Ver los pasos de configuración"
+        "viewSteps": "Ver los pasos de configuración",
+        "known": {
+          "drupal_wiki_graphql_refused": {
+            "title": "Drupal Wiki rechaza las consultas de miembros y de estructura de páginas",
+            "message": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros.",
+            "message_dated": "Los espacios privados solo se sincronizan con el acceso confirmado en una sincronización anterior, y solo durante {{days}} días después de confirmarse. Los espacios privados nunca sincronizados, o confirmados hace más tiempo, se omiten y la jerarquía de páginas no está disponible. Los espacios abiertos no se ven afectados. Una sincronización completa, incluida la que se inicia al cambiar los filtros, pone fin a esto para los espacios privados hasta que Drupal Wiki vuelva a listar sus miembros. El acceso más antiguo en uso se confirmó el {{confirmedOn}}."
+          },
+          "folder_filter_unmatched": {
+            "title": "El patrón de carpeta no coincidió con nada",
+            "message": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no se sincroniza nada por él. Revisa la ortografía en el filtro Folders.",
+            "title_several": "{{count}} patrones de carpeta no coincidieron con nada",
+            "message_several": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no se sincroniza nada por ellos. Revisa la ortografía en el filtro Folders.",
+            "title_exclude": "El patrón de carpeta no coincidió con nada",
+            "message_exclude": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no excluye nada. Revisa la ortografía en el filtro Folders.",
+            "title_several_exclude": "{{count}} patrones de carpeta no coincidieron con nada",
+            "message_several_exclude": "Ninguna carpeta que sincroniza este conector coincide con {{values}}, así que no excluyen nada. Revisa la ortografía en el filtro Folders."
+          }
+        }
       },
       "teamVisibilityDialog": {
         "title": "Todos en tu organización verán estos datos",
@@ -3304,6 +3455,106 @@
         "cancel": "Cancelar",
         "continueTeam": "Continuar con el conector de equipo",
         "goToPersonal": "Configurar conector personal"
+      },
+      "accessCheck": {
+        "open": "Comprobar el acceso de una persona",
+        "title": "Comprobar el acceso de una persona",
+        "description": "Compruebe si una persona puede leer un registro de este conector y, si no, por qué.",
+        "personLabel": "Persona",
+        "personPlaceholder": "Elegir una persona",
+        "peopleLoading": "Cargando personas...",
+        "peopleFailed": "No pudimos cargar la lista de personas.",
+        "recordLabel": "ID del registro",
+        "recordHint": "Abra el registro y copie su ID.",
+        "check": "Comprobar",
+        "checking": "Comprobando...",
+        "close": "Cerrar",
+        "resultHeading": "Resultado",
+        "restrictedArea": "un área restringida",
+        "theyFallback": "Esta persona",
+        "pathLabel": "Ubicación: {{path}}",
+        "reference": "Referencia: {{ref}} (facilítela al soporte si el motivo parece incorrecto)",
+        "verdict": {
+          "granted": "{{name}} puede ver este registro.",
+          "denied": "{{name}} no puede ver este registro."
+        },
+        "reason": {
+          "granted": "Si no aparece en la búsqueda, puede que aún no esté indexado o que el conector siga sincronizando.",
+          "not_linked": "{{name}} no tiene ninguna cuenta vinculada a este conector.",
+          "no_grant": "Nada en {{container}} da acceso a {{name}}.",
+          "restricted_container": "{{container}} está limitado a otras personas.",
+          "item_restricted": "Este registro tiene su propio límite y {{name}} no está incluido.",
+          "parent_not_readable": "{{name}} no puede abrir un elemento superior que este registro necesita.",
+          "pending_rewrite": "La carpeta de este registro se está actualizando.",
+          "syncing": "El conector no ha terminado de sincronizar esta parte.",
+          "scheme_unreadable": "El conector no puede leer las reglas de acceso de esta área, por lo que está oculta para todos.",
+          "deleted_at_source": "Este registro se eliminó en el origen.",
+          "unexplained": "No podemos mostrar el motivo."
+        },
+        "next": {
+          "not_linked": "Corrija la cuenta en el origen y luego sincronice.",
+          "no_grant": "Añada a {{name}} en el origen.",
+          "restricted_container": "Pida al propietario que añada a {{name}}.",
+          "item_restricted": "Pida al propietario que añada a {{name}}.",
+          "parent_not_readable": "Comparta el elemento superior con {{name}}.",
+          "pending_rewrite": "Espere unos minutos y vuelva a comprobar.",
+          "syncing": "Espere a que termine la sincronización.",
+          "scheme_unreadable": "Corrija el permiso de la cuenta de sincronización en el origen.",
+          "deleted_at_source": "No hay nada que hacer.",
+          "unexplained": "Póngase en contacto con el soporte y facilite la referencia."
+        },
+        "errors": {
+          "failed": "No pudimos comprobarlo. Inténtelo de nuevo.",
+          "notFound": "No encontramos esa persona o ese registro en este conector.",
+          "rateLimited": "Demasiadas comprobaciones. Inténtelo de nuevo en un minuto."
+        },
+        "peopleRetry": "Reintentar",
+        "askedAbout": "Sobre el registro {{record}}"
+      },
+      "access": {
+        "title": "Acceso",
+        "loading": "Cargando los detalles de acceso…",
+        "loadError": "No se pudieron cargar los detalles de acceso.",
+        "retry": "Reintentar",
+        "reach": "Los cambios en {{connector}} llegan a PipesHub en {{interval}}.",
+        "reachUnknown": "Los cambios en {{connector}} llegan a PipesHub en su próxima sincronización.",
+        "syncNow": "Sincronizar permisos ahora",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Permisos",
+          "succeeded": "Última actualización: {{when}}.",
+          "failed": "La última actualización de permisos falló, así que puede que los cambios recientes en el origen aún no se hayan aplicado. Elija «Sincronizar permisos ahora» para volver a intentarlo.",
+          "never": "Los permisos aún no se han actualizado. El contenido de este conector permanece oculto hasta que termine la primera sincronización.",
+          "running": "Actualizando permisos ahora.",
+          "incomplete": "La última actualización de permisos no llegó a terminar."
+        },
+        "pending": {
+          "label": "Pendiente de aplicar",
+          "none": "No hay nada pendiente.",
+          "some_one": "Se está actualizando {{count}} carpeta. Permanece oculta para todos hasta que termine la actualización, normalmente unos minutos.",
+          "some_many": "Se están actualizando {{count}} de carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
+          "some_other": "Se están actualizando {{count}} carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
+          "overflow": "Un cambio afectó a todo el conector, por lo que su índice de permisos debe reconstruirse por completo. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
+          "unknown": "Desconocido: no se puede leer la lista de carpetas que esperan una actualización. Consulte «Requiere atención»."
+        },
+        "attention": {
+          "label": "Requiere atención ({{count}})",
+          "none": "Nada requiere atención.",
+          "warning": "{{items}} elementos de {{container}} están ocultos. La cuenta de sincronización no puede leer los permisos de este contenedor.",
+          "fix": "Solución: dé a la cuenta de sincronización el permiso {{permission}} en {{vendor}} y luego elija Sincronizar permisos ahora.",
+          "showAll": "Mostrar {{count}} más",
+          "warningNoContainer": "Algunos elementos están ocultos porque la cuenta de sincronización no puede leer sus permisos.",
+          "rebuild": "El índice de permisos de este conector necesita una reconstrucción completa. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
+          "unfinished": "Un cambio de permisos no terminó correctamente. Pida a quien administra PipesHub que revise el índice de permisos de este conector.",
+          "stale": "La búsqueda rápida no pudo comprobar algunos elementos; se encuentran con la búsqueda clásica.",
+          "sweep": "Las actualizaciones de permisos de este conector siguen fallando. Pida a quien administra PipesHub que revise sus registros.",
+          "other": "Algo en los permisos de este conector requiere que una persona lo revise.",
+          "unreadable": "No se puede leer la lista de carpetas que esperan una actualización. Pida a quien administra PipesHub que reconstruya el índice de permisos de este conector. Mientras tanto, la búsqueda comprueba cada resultado."
+        }
       }
     },
     "mcpServers": {
@@ -3410,6 +3661,8 @@
         "disconnected": "Desconectado correctamente",
         "disconnectError": "No se pudo desconectar",
         "credentialsSaveError": "Servidor guardado, pero no se pudieron guardar las credenciales. Puedes añadirlas más tarde desde Gestionar.",
+        "accessSaveError": "El servidor se guardó, pero no quién puede usarlo. Guarda de nuevo para aplicar el acceso.",
+        "logoSaveError": "Servidor guardado, pero no se pudo guardar su logotipo. Puedes volver a intentarlo desde Gestionar.",
         "credentialsSaved": "Credenciales guardadas",
         "credentialsReset": "Servidor MCP actualizado. Se eliminaron las credenciales guardadas porque la conexión cambió; vuelve a conectarte para usarlo.",
         "oauthTimedOut": "El inicio de sesión tardó demasiado y se detuvo. Inténtalo de nuevo.",
@@ -3424,6 +3677,16 @@
       "form": {
         "name": "Nombre",
         "description": "Descripción",
+        "logo": "Logotipo",
+        "logoHint": "PNG, JPEG, WebP, GIF o SVG, hasta 2 MB. Una imagen cuadrada se ve mejor.",
+        "logoUpload": "Subir logotipo",
+        "logoChange": "Cambiar logotipo",
+        "logoRemove": "Quitar",
+        "logoErrors": {
+          "type": "Usa una imagen PNG, JPEG, WebP, GIF o SVG.",
+          "size": "Usa una imagen de 2 MB o menos.",
+          "unreadable": "No se pudo leer esta imagen. Prueba con otro archivo."
+        },
         "transport": "Transporte",
         "command": "Comando",
         "args": "Argumentos",
@@ -3823,6 +4086,13 @@
       "verifyingConnection": "Verifying connection...",
       "sendImages": "Send images to LLM",
       "sendImagesDescription": "Control whether images are sent to the LLM during web search",
+      "imageSettingsTitle": "Imágenes",
+      "imageSettingsDescription": "Lo que un asistente ve de las imágenes de las páginas web que lee",
+      "maxImages": "Máximo de imágenes por página",
+      "maxImagesHelp": "Un número entero del 1 al 50. Solo los modelos que aceptan imágenes las reciben.",
+      "maxImagesInvalid": "Introduce un número entero del 1 al 50",
+      "imagesCostWarning": "Cada imagen aumenta el coste y el tiempo de lectura de una página.",
+      "imageSettingsUnavailable": "No se pudieron cargar los ajustes de imagen, así que aún no se pueden cambiar.",
       "toasts": {
         "providerAdded": "{{label}} is added",
         "providerAddedDescription": "Web search configured successfully. To use {{label}}, toggle off any other web search methods",
@@ -3832,6 +4102,7 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
+        "maxImagesUpdated": "Se enviarán hasta {{count}} imágenes por página",
         "updateError": "Failed to update setting",
         "saved": "Web search settings saved",
         "savedDescription": "Your changes have been applied successfully.",
@@ -3862,6 +4133,11 @@
         "settingDefault": "Estableciendo…",
         "editConfiguration": "Editar configuración",
         "deleteConfiguration": "Eliminar configuración"
+      },
+      "duckduckgoWarning": "Puede bloquearse o limitarse en servidores compartidos. No recomendado para equipos.",
+      "notSetUp": {
+        "title": "La búsqueda web aún no está configurada.",
+        "description": "Elige un proveedor abajo para activarla. Hasta entonces, nadie de tu organización puede buscar en la web desde el chat."
       }
     },
     "profile": {
@@ -4022,6 +4298,10 @@
         },
         "mongodb": {
           "label": "MongoDB",
+          "description": "Sesiones y metadatos de usuario"
+        },
+        "postgres": {
+          "label": "PostgreSQL",
           "description": "Sesiones y metadatos de usuario"
         },
         "messageBroker": {
@@ -4288,10 +4568,10 @@
         "errorNameRequired": "Introduzca un nombre para este token.",
         "errorCreateTitle": "No se ha podido crear el token",
         "expiryHeading": "Caducidad",
+        "expiry7Days": "7 días",
         "expiry30Days": "30 días",
         "expiry90Days": "90 días",
         "expiry365Days": "365 días",
-        "expiryNever": "Nunca",
         "permissionsHeading": "Ámbitos",
         "errorScopeRequired": "Seleccione al menos un ámbito.",
         "selectAllScopes": "Seleccionar todo",
@@ -4314,6 +4594,16 @@
       "scopeCount_one": "{{count}} ámbito",
       "scopeCount_other": "{{count}} ámbitos",
       "scopeCount_many": "{{count}} de ámbitos"
+    },
+    "agentSignIns": {
+      "title": "Inicios de sesión de agentes",
+      "subtitle": "Agentes que aprobó para actuar en su nombre. Revoque uno para que deje de obtener acceso nuevo.",
+      "columnApproved": "Aprobado",
+      "revoke": "Revocar",
+      "revokeAria": "Revocar el inicio de sesión de agente {{id}}",
+      "revokedTitle": "Inicio de sesión de agente revocado",
+      "errorTitle": "No se pudo revocar el inicio de sesión de agente",
+      "loadError": "No se pudieron cargar los inicios de sesión de agentes"
     },
     "common": {
       "loadingUsers": "Cargando usuarios...",
@@ -4806,6 +5096,8 @@
     "serviceAgentBadgeTooltip": "Este agente de servicio usa sus propias credenciales de conjunto de herramientas. Busca en el conocimiento con el acceso de quien lo creó, por lo que todos los que lo usan ven resultados de lo que esa persona puede leer.",
     "convertToServiceAgentTooltip": "Permanente: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con el acceso de quien lo creó. No se puede deshacer.",
     "convertToServiceAgentTooltipNewAgent": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con tu acceso.",
+    "convertToServiceAgentTooltipNoOrg": "Permanente: conjuntos de herramientas a nivel de agente y búsqueda de conocimiento con el acceso de quien lo creó. Use el botón Compartir para controlar quién puede acceder. No se puede deshacer.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente y búsqueda de conocimiento con tu acceso. Use el botón Compartir para controlar quién puede acceder.",
     "agentActionsMenuAria": "Menú del agente",
     "agentMenuCreateAsServiceAgent": "Crear como agente de servicio",
     "agentMenuConvertToServiceAgent": "Convertir a agente de servicio",
@@ -5147,6 +5439,7 @@
     "mcpServerNeedsToolsTooltip": "Elige herramientas para cada servidor MCP o activa «Todas las herramientas».",
     "mcpServerNeedsToolsBanner": "Elige al menos una herramienta para {{names}} o activa «Todas las herramientas».",
     "mcpPersonalOnSharedAgentNotify": "{{name}} es tu servidor MCP personal. No se puede añadir a un agente compartido con tu organización ni a uno que se ejecute como cuenta de servicio.",
+    "serviceAgentCollectionsNeedBinding": "Las colecciones se pueden añadir cuando este agente de servicio esté vinculado a una cuenta de servicio.",
     "mcpAgentApprovalsEnterprise": "Las aprobaciones de herramientas por agente forman parte de la Enterprise Edition. Aquí se aplican las aprobaciones propias de cada persona.",
     "mcpAgentApprovals": "Aprobaciones de herramientas por agente",
     "limitSource": "Elegir qué busca {{name}}",
@@ -5185,6 +5478,7 @@
       "noRecordMetadata": "No hay metadatos adicionales para este elemento."
     },
     "indexingReasonAria": "Detalles del error de indexación",
+    "indexingNoteAria": "Nota de indexación",
     "stageTrackLabel": "Canalización",
     "stageParsed": "Analizado",
     "stageSearchable": "Buscable",
@@ -5288,6 +5582,9 @@
     "signedInAs": "Sesión iniciada como {{display}}",
     "requestHeading": "Esta aplicación solicita acceso a:",
     "unreviewedApp": "Esta aplicación se ha registrado por sí misma. Ningún administrador la ha revisado.",
+    "clientIdHost": "Identificada por {{host}}",
+    "registeredBy": "Registrada por {{name}}",
+    "redirectTo": "Te devuelve a {{uri}}",
     "notGrantedHeading": "Esta aplicación también solicitó estos permisos. La configuración de la aplicación no los permite, por lo que no los obtendrá:",
     "notGrantedOwnerHint": "La persona que creó esta aplicación puede añadirlos en Configuración del espacio de trabajo → Configuración de desarrollador → Apps de OAuth 2.0.",
     "notGrantedOfflineAccess": "La aplicación no mantendrá la sesión iniciada. Tendrás que volver a iniciar sesión cuando la sesión termine.",
@@ -5583,6 +5880,7 @@
       "restoredMany_many": "Se han restaurado {{count}} de elementos",
       "restoredMany_other": "Se han restaurado {{count}} elementos",
       "showing": "Mostrando {{from}}–{{to}} de {{total}}",
+      "showingAtLeast": "Mostrando {{from}}–{{to}} de {{total, number}}+",
       "previous": "Anterior",
       "next": "Siguiente",
       "nameAndMore_one": "{{name}} y {{count}} más",
@@ -5604,6 +5902,19 @@
     "description": "Elija qué indexar para \"{{name}}\".",
     "thisItemOnly": "Solo este elemento",
     "withChildren": "Este elemento y todo su contenido"
+  },
+  "agentClaim": {
+    "title": "Conectar un agente",
+    "intro": "Un agente dice que trabaja para ti. Apruébalo solo si se lo pediste y el código coincide con el que te mostró.",
+    "scopesHeading": "Este agente podrá:",
+    "codeLabel": "Introduce el código de 6 dígitos que mostró el agente",
+    "approve": "Aprobar",
+    "loading": "Comprobando la solicitud…",
+    "missingLink": "Este enlace no incluye el token de reclamación. Pide uno nuevo al agente.",
+    "doneTitle": "Agente conectado",
+    "doneLine": "El agente ya puede continuar. Puedes cerrar esta ventana.",
+    "deniedTitle": "Solicitud denegada",
+    "deniedLine": "No se concedió acceso al agente."
   },
   "oauthDevice": {
     "title": "Conectar un dispositivo",
@@ -5765,6 +6076,172 @@
       "offDescription": "Han desaparecido de las respuestas, las búsquedas y los registros de todo el mundo, y las cuentas de ejemplo no pueden iniciar sesión. Vuelva a activarlos en Perfil → Datos de demostración.",
       "onTitle": "Datos de demostración reactivados para todos",
       "errorTitle": "No se han podido cambiar los datos de demostración para todos"
+    },
+    "about": {
+      "open": "¿Qué incluye la demo?",
+      "title": "Acerca de la demo de Acme Corp",
+      "description": "Acme Corp es una empresa de software ficticia. El conector Demo carga sus registros para que puedas probar PipesHub sin conectar tus propias herramientas. No se contacta con nada fuera de PipesHub y nada de esto son datos de tu empresa.",
+      "status": {
+        "shown": "Ahora aparece en tus respuestas, búsquedas y registros. Los resultados de la demo llevan la etiqueta Demo.",
+        "hiddenRealData": "Está oculta en tus respuestas porque tu organización ya tiene sus propios datos. Nadie la ve salvo que la active para sí.",
+        "hiddenByChoice": "Está oculta en tus respuestas porque la desactivaste.",
+        "offForEveryone": "Un administrador la desactivó para todos, así que no aparece en las respuestas de nadie y las cuentas de ejemplo no pueden iniciar sesión.",
+        "show": "Mostrarla en mis respuestas"
+      },
+      "tools": {
+        "title": "Qué incluye",
+        "tool": "Herramienta",
+        "places": "Lugares",
+        "records": "Registros",
+        "total": "Total"
+      },
+      "people": {
+        "title": "Personas",
+        "description": "Empleados de ejemplo. Sus nombres figuran como autores de los registros; solo dos pueden iniciar sesión.",
+        "canSignIn": "Puede iniciar sesión"
+      },
+      "restricted": {
+        "title": "Quién ve qué",
+        "description": "Quien añadió el conector Demo puede leer casi todo, y Alice y Bob pueden leer lo que sus equipos pueden leer. Nadie más en tu organización puede leer nada; mostrar la demo en tus respuestas no da acceso. Cada registro siguiente solo lo pueden leer los miembros de su grupo, así que la misma pregunta recibe otra respuesta según quién la haga.",
+        "readers": "Pueden abrirlos: {{names}}",
+        "noReaders": "Ninguna cuenta de ejemplo puede abrirlos."
+      },
+      "questions": {
+        "title": "Prueba a preguntar"
+      },
+      "accounts": {
+        "title": "Cuentas de ejemplo para iniciar sesión",
+        "description": "Inicia sesión como Alice o Bob en otro navegador para ver la misma pregunta respondida con otros permisos.",
+        "state": {
+          "checking": "Comprobando…",
+          "active": "Puede iniciar sesión",
+          "off": "Inicio de sesión desactivado",
+          "missing": "No creada",
+          "unknown": "No se pudo comprobar"
+        },
+        "password": "Usan la contraseña inicial elegida al instalar PipesHub (PIPESHUB_DEMO_PASSWORD). PipesHub solo guarda una versión cifrada, así que no se puede mostrar aquí.",
+        "lostPassword": "Si nadie la tiene, ¿Olvidaste tu contraseña? no sirve, porque las direcciones .example no reciben correo. Quien administra el servidor puede obtener un enlace para elegir una contraseña nueva ejecutando esto en el contenedor de PipesHub:",
+        "missing": "Las cuentas de ejemplo solo se crean al instalar, cuando se define PIPESHUB_DEMO_PERSONAS=1. La demo funciona sin ellas; simplemente no puedes iniciar sesión como Alice o Bob.",
+        "retry": "Reintentar"
+      },
+      "close": "Cerrar"
+    }
+  },
+  "graph": {
+    "status": {
+      "stale": "El grafo se está actualizando; puede que falten cambios recientes.",
+      "building": "El grafo se está generando, así que lo que ves puede estar incompleto.",
+      "retrying": "La generación del grafo tuvo un problema y se está reintentando.",
+      "failed": "La última generación del grafo falló, por lo que esta vista puede estar desactualizada.",
+      "unknown": "No se pudo leer el estado de este grafo."
+    },
+    "empty": {
+      "neverBuilt": "Este repositorio aún no tiene un grafo de código.",
+      "tooLarge": "Este repositorio es demasiado grande para crear un grafo."
+    },
+    "incomplete": "Puede que falten algunos enlaces. Acota por tipo de arista o dirección.",
+    "simplified": "Vista simplificada para un movimiento fluido.",
+    "verify": {
+      "degraded": "Ahora mismo no se puede verificar el acceso. Se muestra lo último confirmado.",
+      "blank": "No se pudo verificar el acceso durante varios minutos, así que se vació el grafo. Reconectando…"
+    },
+    "error": {
+      "unavailable": "No se pudo cargar ahora. Inténtalo de nuevo.",
+      "notAvailable": "Este elemento no está disponible.",
+      "unexpected": "Algo salió mal.",
+      "ambiguous": "Hay más de un repositorio con ese nombre. Elige el repositorio en el cuadro de búsqueda.",
+      "full": "Esta vista está llena. Abre un nodo para empezar otra.",
+      "revoked": "El elemento que estabas viendo ya no está disponible."
+    },
+    "title": "Grafo de código",
+    "ui": {
+      "back": "Atrás",
+      "forward": "Adelante",
+      "fit": "Ajustar a la vista",
+      "showTable": "Mostrar como tabla",
+      "showGraph": "Mostrar como grafo",
+      "direction": {
+        "any": "Ambos",
+        "inbound": "Llamantes",
+        "outbound": "Llamados"
+      },
+      "includeTests": "Incluir pruebas",
+      "showMore": "Mostrar más",
+      "expand": "Expandir",
+      "open": "Abrir",
+      "nothingSelected": "Selecciona un nodo para ver sus detalles.",
+      "details": "Detalles",
+      "links": "Enlaces: {{n}}",
+      "table": {
+        "caption": "Nodos de esta vista",
+        "name": "Nombre",
+        "kind": "Tipo",
+        "file": "Archivo",
+        "actions": "Acciones",
+        "moreRows": "Mostrar más filas",
+        "callersShown": "Llamantes mostrados",
+        "calleesShown": "Llamados mostrados",
+        "focus": "Centro"
+      },
+      "emptyPrompt": "Busca arriba una función, método o clase para ver qué la llama y a qué llama.",
+      "disclosure": "Solo muestra lo que puedes consultar.",
+      "legendInferred": "Las líneas discontinuas son enlaces inferidos por el nombre.",
+      "disabled": "El grafo de código no está habilitado.",
+      "search": {
+        "repo": "Repositorio",
+        "repoPlaceholder": "Elige un repositorio",
+        "placeholder": "Busca una función, método o clase por nombre",
+        "label": "Buscar código",
+        "results": "Resultados de búsqueda",
+        "noRepos": "No hay repositorios de código que puedas leer.",
+        "noMatches": "Sin coincidencias.",
+        "chooseFirst": "Elige primero un repositorio",
+        "minChars": "Escribe al menos 2 caracteres.",
+        "more": "Se muestran las primeras coincidencias. Escribe más para acotar la búsqueda."
+      },
+      "action": {
+        "retry": "Reintentar",
+        "restore": "Usar calidad completa"
+      },
+      "loading": "Cargando…",
+      "legend": {
+        "functions": "Funciones y métodos",
+        "classes": "Clases e interfaces",
+        "focus": "Centro de esta vista"
+      },
+      "openHint": "Abrir: convierte esto en el centro de una vista nueva.",
+      "expandHint": "Expandir: muestra sus vecinos aquí, conservando lo que hay en pantalla.",
+      "announce": {
+        "opened": "Se muestran {{n}} elementos.",
+        "added": "Se añadieron {{n}} elementos."
+      },
+      "canvasHint": "La imagen del grafo no está disponible para lectores de pantalla. Usa el botón «Mostrar como tabla» para leer y usar cada nodo.",
+      "selectionGone": "El elemento que seleccionaste ya no está disponible.",
+      "viewGraph": "Ver grafo",
+      "viewGraphOf": "Ver grafo de {{repo}}",
+      "fillerNode": "{{kind}} en {{file}}"
+    },
+    "capped": "La imagen muestra solo una parte de esta vista. La tabla lo lista todo.",
+    "crowded": "Esta vista se está llenando. Acótala con filtros.",
+    "hint": {
+      "testsOff": "Los archivos de prueba están ocultos. Si el elemento está en código de prueba, activa «Incluir pruebas»."
+    },
+    "nothingNew": "No hay nada más que mostrar para este nodo.",
+    "tableOnly": "Se muestra solo la tabla para mantener la fluidez."
+  },
+  "accessNotice": {
+    "permissions_updating": "Algunas fuentes están actualizando permisos, por lo que pueden faltar algunos resultados durante unos minutos.",
+    "connector_syncing": "{{name}} aún se está sincronizando, por lo que sus resultados pueden estar incompletos.",
+    "connector_syncing_unnamed": "Una fuente aún se está sincronizando, por lo que sus resultados pueden estar incompletos.",
+    "check_unavailable": "No pudimos comprobar a qué documentos tiene acceso en este momento, por lo que no se muestran resultados. Inténtelo de nuevo en un minuto.",
+    "emptySyncing": "Aún no hay nada que buscar. {{name}} se está sincronizando.",
+    "emptySyncing_unnamed": "Aún no hay nada que buscar. Una fuente se está sincronizando.",
+    "noAccess": {
+      "title": "No tiene acceso a este elemento",
+      "body": "Puede que se haya movido, eliminado o restringido. Pregunte al propietario o ábralo donde se originó si tiene el enlace.",
+      "justGotAccess": "¿Acaba de obtener acceso en el origen? El nuevo acceso aparece tras la próxima sincronización.",
+      "copyDetails": "Copiar los detalles para un administrador",
+      "copied": "Detalles copiados"
     }
   }
 }

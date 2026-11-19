@@ -4,6 +4,7 @@ Abstract base class for client factories.
 
 import asyncio
 import concurrent.futures
+import contextvars
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
@@ -108,7 +109,9 @@ class ClientFactory(ABC):
             Client instance
         """
         with concurrent.futures.ThreadPoolExecutor() as executor:
+            # In the caller's context: its log fields and org context reach the coroutine.
             future = executor.submit(
+                contextvars.copy_context().run,
                 asyncio.run,
                 self.create_client(config_service, logger, toolset_config, state)
             )

@@ -1,7 +1,7 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator
-from typing import Optional, Type, TypeVar
+from typing import Optional, TypeVar
 
 from arango import ArangoClient  # type: ignore
 from dependency_injector import containers, providers  # type: ignore
@@ -67,13 +67,13 @@ class BaseAppContainer(containers.DeclarativeContainer):
     async def _create_arango_client(config_service) -> Optional[ArangoClient]:
         """Async factory method to initialize ArangoClient.
 
-        Returns None if DATA_STORE is set to neo4j to avoid unnecessary connection.
+        Returns None if another graph store is selected, to avoid an unnecessary connection.
         """
         data_store = os.getenv("DATA_STORE", "arangodb").lower()
 
-        if data_store == "neo4j":
+        if data_store != "arangodb":
             logger = create_logger("base_service")
-            logger.info("⏭️  Skipping ArangoDB client initialization (DATA_STORE=neo4j)")
+            logger.info(f"⏭️  Skipping ArangoDB client initialization (DATA_STORE={data_store})")
             return None
 
         arangodb_config = await config_service.get_config(
@@ -92,7 +92,7 @@ class BaseAppContainer(containers.DeclarativeContainer):
     # based on its specific module dependencies
 
     @classmethod
-    def init(cls: Type[T], service_name: str) -> T:
+    def init(cls: type[T], service_name: str) -> T:
         """Initialize the container with the given service name."""
         container = cls()
         container.logger().info(f"🚀 Initializing {cls.__name__} for {service_name}")

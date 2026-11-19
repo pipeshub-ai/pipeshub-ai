@@ -150,3 +150,48 @@ class TestEntityToolGrant:
         assert any(
             name.startswith("progressive_entity_tools.") for name in qualnames
         ), qualnames
+
+
+@pytest.mark.asyncio
+class TestExplorerEntityToolGrant:
+    """Composed modes: the exploration child holds the entity tools under the
+    same gating as the parent, and the parent keeps them."""
+
+    async def test_explorer_gets_search_entities_and_defers_find_records(self) -> None:
+        _context, agent, runtime = await _create("react")
+
+        explorer = runtime.tool_registry.resolve_by_name("internal_exploration_agent")._spec
+        assert SEARCH_ENTITIES_TOOL_NAME in explorer.tool_names
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in explorer.tool_names
+        assert SEARCH_ENTITIES_TOOL_NAME in agent.spec.tool_names
+
+    async def test_explorer_gets_no_entity_tools_without_an_entity_store(self) -> None:
+        _context, _agent, runtime = await _create("react", with_store=False)
+
+        explorer = runtime.tool_registry.resolve_by_name("internal_exploration_agent")._spec
+        assert SEARCH_ENTITIES_TOOL_NAME not in explorer.tool_names
+        assert SEARCH_ENTITIES_TOOL_NAME not in explorer.system_prompt
+
+    async def test_the_explorers_own_entity_search_unlocks_find_records_for_it(self) -> None:
+        from app.agent_loop_lib.tools.registry import ToolRegistry
+        from app.agents.actions.knowledge_graph.ops.entity_filters import (
+            ENTITY_INDEX_CACHE_KEY,
+        )
+        from app.agents.agent_loop.hooks.progressive_tools import (
+            progressive_entity_tools,
+        )
+        from tests.unit.agents.adapter.test_progressive_entity_tools import (
+            _SEARCH_ENTITIES_PATH,
+            _noop_next,
+            _result_ctx,
+            _tool_scope,
+        )
+
+        context, _agent, runtime = await _create("react")
+        explorer = runtime.tool_registry.resolve_by_name("internal_exploration_agent")._spec
+        context.tool_state[ENTITY_INDEX_CACHE_KEY] = {"e1": {"type": "named_entity", "name": "Acme"}}
+        ctx = _result_ctx(_tool_scope(explorer, ToolRegistry()), tool_path=_SEARCH_ENTITIES_PATH)
+
+        await progressive_entity_tools(context)(ctx, _noop_next)
+
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in explorer.tool_names

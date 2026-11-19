@@ -13,9 +13,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: pytest finds it by name)
+
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 from app.utils.process_hardening import disable_vendor_telemetry
+from tests.support.sys_modules_guard import install as install_sys_modules_guard
 
+# Before any test module is collected, so a module-level patch.dict(sys.modules) is checked too.
+install_sys_modules_guard()
 # Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
 disable_vendor_telemetry()
 # The suite exercises the real metrics backend whatever the edition default.
@@ -291,6 +296,19 @@ def _reset_default_backpressure_coordinator():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_process_retry_budget() -> Iterator[None]:
+    """The retry budget (``spend_guard.retry_policy``) is one per process and shared by the LLM and embeddings gateways;
+    a test that fails many calls on purpose must not leave the next one with no retries to spend."""
+    from app.services.spend_guard.retry_policy import (
+        RETRY_BUDGET_CAPACITY,
+        process_retry_budget,
+    )
+
+    process_retry_budget().refund(RETRY_BUDGET_CAPACITY)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_narrow_access_memo() -> Iterator[None]:
     """Search remembers, per process, scopes its container filter could not
     serve. A scope marked in one test must not route another test's search."""
@@ -301,6 +319,16 @@ def _reset_narrow_access_memo() -> Iterator[None]:
     retrieval = sys.modules.get("app.modules.retrieval.retrieval_service")
     if retrieval is not None:
         retrieval.narrow_access_memo.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_log_once() -> Iterator[None]:
+    """``log_once`` remembers, per process, when each key last logged. A line throttled in one
+    test must not be silenced, or its flag left unset, in another."""
+    logging_fields = sys.modules.get("app.utils.logging_fields")
+    if logging_fields is not None:
+        logging_fields._log_once_last.clear()
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -391,3 +419,14 @@ def mock_config_service():
 def mock_blob_store():
     """Mock BlobStorage."""
     return MagicMock()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """``stress`` tests are probabilistic load tests: they run on request (``-m stress`` or
+    ``RUN_STRESS_TESTS=1``), never in a shared runner's unit job."""
+    if os.environ.get("RUN_STRESS_TESTS") == "1" or "stress" in (config.getoption("-m") or ""):
+        return
+    skip = pytest.mark.skip(reason="a stress test: run with -m stress or RUN_STRESS_TESTS=1")
+    for item in items:
+        if "stress" in item.keywords:
+            item.add_marker(skip)

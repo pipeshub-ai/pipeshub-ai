@@ -37,11 +37,12 @@ export function createProjectsRouter(container: Container): Router {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
 
-  router.use(requireProjectsEnabled);
-
+  // The Projects check follows authenticate on every route: the flag can
+  // belong to the signed-in workspace, which is known only once it has run.
   router.post(
     '/',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(createProjectSchema),
     createProject,
@@ -50,6 +51,7 @@ export function createProjectsRouter(container: Container): Router {
   router.get(
     '/',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_READ),
     ValidationMiddleware.validate(listProjectsQuerySchema),
     listProjects(appConfig),
@@ -58,6 +60,7 @@ export function createProjectsRouter(container: Container): Router {
   router.get(
     '/:projectId',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_READ),
     ValidationMiddleware.validate(projectIdParamsSchema),
     getProjectById(appConfig),
@@ -66,6 +69,7 @@ export function createProjectsRouter(container: Container): Router {
   router.patch(
     '/:projectId',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(updateProjectSchema),
     updateProject(appConfig),
@@ -74,6 +78,7 @@ export function createProjectsRouter(container: Container): Router {
   router.delete(
     '/:projectId',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_DELETE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     deleteProject(appConfig),
@@ -82,6 +87,7 @@ export function createProjectsRouter(container: Container): Router {
   router.post(
     '/:projectId/archive',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     archiveProject(appConfig),
@@ -90,6 +96,7 @@ export function createProjectsRouter(container: Container): Router {
   router.post(
     '/:projectId/unarchive',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     unarchiveProject(appConfig),
@@ -99,6 +106,7 @@ export function createProjectsRouter(container: Container): Router {
   router.post(
     '/:projectId/pin',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_READ, OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     pinProject(appConfig),
@@ -107,6 +115,7 @@ export function createProjectsRouter(container: Container): Router {
   router.post(
     '/:projectId/unpin',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_READ, OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),
     unpinProject(appConfig),
@@ -115,6 +124,7 @@ export function createProjectsRouter(container: Container): Router {
   router.get(
     '/:projectId/conversations',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_READ),
     ValidationMiddleware.validate(listProjectConversationsQuerySchema),
     getProjectConversations(appConfig),
@@ -123,6 +133,7 @@ export function createProjectsRouter(container: Container): Router {
   router.get(
     '/:projectId/members',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_READ),
     ValidationMiddleware.validate(projectIdParamsSchema),
     listProjectMembers(appConfig),
@@ -131,6 +142,7 @@ export function createProjectsRouter(container: Container): Router {
   router.put(
     '/:projectId/members',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(upsertProjectMembersSchema),
     upsertProjectMembers(appConfig),
@@ -139,6 +151,7 @@ export function createProjectsRouter(container: Container): Router {
   router.delete(
     '/:projectId/members/:memberUserId',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(removeProjectMemberParamsSchema),
     removeProjectMember(appConfig),
@@ -149,6 +162,7 @@ export function createProjectsRouter(container: Container): Router {
   router.post(
     '/:projectId/knowledge-base',
     authMiddleware.authenticate,
+    requireProjectsEnabled,
     requireScopes(OAuthScopeNames.PROJECT_WRITE),
     requireScopes(OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(projectIdParamsSchema),

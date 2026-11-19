@@ -1875,7 +1875,7 @@ class UsersGroupsDataSource:
                 if skip is not None:
                     query_params.skip = skip
                 # Directory advanced queries: $search and many $filter forms need $count=true + ConsistencyLevel.
-                if search or filter:
+                if search or filter or kwargs.get("count"):
                     query_params.count = True
 
                 config = UsersRequestBuilder.UsersRequestBuilderGetRequestConfiguration()
@@ -1886,7 +1886,7 @@ class UsersGroupsDataSource:
                     for hk, hv in headers.items():
                         if hv is not None:
                             hcol.try_add(hk, str(hv))
-                if search or filter:
+                if search or filter or kwargs.get("count"):
                     if not hcol.try_get("consistencylevel"):
                         hcol.try_add("ConsistencyLevel", "eventual")
                 config.headers = hcol

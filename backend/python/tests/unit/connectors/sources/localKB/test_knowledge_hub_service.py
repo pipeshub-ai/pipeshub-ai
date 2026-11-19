@@ -184,6 +184,49 @@ class TestDocToNodeItem:
         dumped = service._doc_to_node_item(doc).model_dump()
         assert "connectorId" in dumped and dumped["connectorId"] is None
 
+    @staticmethod
+    def _record(**extra: object) -> dict[str, object]:
+        return {
+            "id": "rec3", "name": "big.csv", "nodeType": "record", "origin": "COLLECTION",
+            "indexingStatus": "IN_PROGRESS", "createdAt": 1, "updatedAt": 2, "hasChildren": False,
+            **extra,
+        }
+
+    def test_embedding_progress_is_returned(self, service) -> None:
+        dumped = service._doc_to_node_item(self._record(embedDone=340, embedTotal=1200)).model_dump()
+        assert (dumped["embedDone"], dumped["embedTotal"]) == (340, 1200)
+
+    def test_a_record_without_progress_sends_null_counts(self, service) -> None:
+        dumped = service._doc_to_node_item(self._record()).model_dump()
+        assert dumped["embedDone"] is None and dumped["embedTotal"] is None
+
+    def test_a_count_ahead_of_the_total_is_held_at_it(self, service) -> None:
+        item = service._doc_to_node_item(self._record(embedDone=1300, embedTotal=1200))
+        assert (item.embedDone, item.embedTotal) == (1200, 1200)
+
+    @pytest.mark.parametrize("done,total", [
+        (5, None), (None, 5), (5, 0), (-1, 5), (True, 5), ("5", "9"), (float("nan"), 5), (1, float("inf")),
+        (5, 2**53), (2**53, 2**53 + 1), (1.5e300, 1.5e300),
+    ])
+    def test_unusable_progress_is_dropped(self, service, done, total) -> None:
+        item = service._doc_to_node_item(self._record(embedDone=done, embedTotal=total))
+        assert item.embedDone is None and item.embedTotal is None
+
+    def test_the_largest_json_safe_count_is_kept(self, service) -> None:
+        item = service._doc_to_node_item(self._record(embedDone=2**53 - 1, embedTotal=2**53 - 1))
+        assert (item.embedDone, item.embedTotal) == (2**53 - 1, 2**53 - 1)
+
+    @pytest.mark.parametrize("status", [
+        "QUEUED", "PAUSED", "NOT_STARTED", "AUTO_INDEX_OFF", "COMPLETED", "FAILED", "EMPTY", None,
+    ])
+    def test_progress_left_on_a_record_that_is_not_in_progress_is_hidden(self, service, status) -> None:
+        item = service._doc_to_node_item(self._record(indexingStatus=status, embedDone=340, embedTotal=1200))
+        assert item.embedDone is None and item.embedTotal is None
+
+    def test_whole_number_floats_from_the_graph_are_accepted(self, service) -> None:
+        item = service._doc_to_node_item(self._record(embedDone=340.0, embedTotal=1200.0))
+        assert (item.embedDone, item.embedTotal) == (340, 1200)
+
     def test_full_doc(self, service):
         doc = {
             "id": "node1",

@@ -17,8 +17,8 @@ the parser makes of a worksheet (``cell``, ``iter_rows``, merged cells, the
 extent of the data), so table finding and its LLM steps run in the parent on it
 unchanged.
 
-Keep this module's imports to the standard library and openpyxl: the worker
-imports it by name and must not pay for the service's own modules.
+Keep this module's imports to the standard library, openpyxl and the light parse-worker helpers
+(``parse_worker``): the worker imports it by name and must not pay for the rest of the service.
 """
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ import contextlib
 import gc
 import io
 import pickle
-import signal
 import threading
 import zipfile
 import zlib
@@ -41,6 +40,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.utils.cell import coordinate_from_string
 from openpyxl.worksheet.cell_range import CellRange
 
+from app.modules.parsers import parse_worker
 from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR
 
 if TYPE_CHECKING:
@@ -727,11 +727,6 @@ def _portable_failure(exc: Exception) -> Exception:
     return exc
 
 
-class _CpuLimit(BaseException):
-    """Raised by the SIGXCPU handler; a BaseException so no ``except Exception`` in openpyxl or
-    lxml callers swallows it."""
-
-
 # The in-worker CPU limit sits this many seconds above the parent's wall-clock limit, so the
 # parent's timeout is the normal stop and RLIMIT_CPU the backstop inside the worker.
 _CPU_SLACK_SECONDS = 2
@@ -739,15 +734,17 @@ _CPU_SLACK_SECONDS = 2
 
 @contextlib.contextmanager
 def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
-    """Refuse the load as too large once the worker has used *max_seconds* of CPU, however little
-    memory it holds: SIGXCPU from ``RLIMIT_CPU`` (counted from this process's CPU time now, since a
-    pool worker lives across jobs) raises ``_CpuLimit`` in the main thread. The soft limit is put
-    back afterwards; the hard limit is never touched. Where it cannot be set, only the parent's
-    timeout bounds the load."""
-    if max_seconds is None or resource is None or not hasattr(resource, "RLIMIT_CPU"):
-        yield
-        return
-    if threading.current_thread() is not threading.main_thread():
+    """End this parse worker once it has used *max_seconds* of CPU, however little memory it holds.
+
+    ``RLIMIT_CPU`` (counted from this process's CPU time now, since a pool worker lives across jobs)
+    sends SIGXCPU, whose default action ends the process; the pool reports the job as timed out, as
+    for its own timeout, and the parser refuses the workbook as too large. Nothing is raised here: an
+    exception from a signal handler can land between a lock's acquire and its release (coverage's
+    tracer, logging, ``threading.Condition``) and leave this reused worker hung on a later job. Only
+    in a parse worker, the one process that may be ended. The soft limit is put back afterwards; the
+    hard limit is never touched. Where it cannot be set, only the parent's timeout bounds the load.
+    """
+    if max_seconds is None or resource is None or not hasattr(resource, "RLIMIT_CPU") or not parse_worker.in_worker():
         yield
         return
     soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
@@ -755,12 +752,7 @@ def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
     target = int(used.ru_utime + used.ru_stime) + int(max_seconds) + _CPU_SLACK_SECONDS
     if hard != resource.RLIM_INFINITY:
         target = min(target, hard)
-
-    def on_cpu_limit(_signum: int, _frame: object) -> None:
-        raise _CpuLimit
-
     try:
-        previous = signal.signal(signal.SIGXCPU, on_cpu_limit)
         resource.setrlimit(resource.RLIMIT_CPU, (target, hard))
     except (ValueError, OSError):
         yield
@@ -768,12 +760,8 @@ def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
     try:
         yield
     finally:
-        # Both must be undone for the worker's next job, even if one of them fails.
-        try:
-            with contextlib.suppress(ValueError, OSError, MemoryError):
-                resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
-        finally:
-            signal.signal(signal.SIGXCPU, previous)
+        with contextlib.suppress(ValueError, OSError, MemoryError):
+            resource.setrlimit(resource.RLIMIT_CPU, (soft, hard))
 
 
 def load_workbook_model(
@@ -789,11 +777,11 @@ def load_workbook_model(
     (``too_large`` when the load needed more than the allowance, the decompressed
     bytes passed *max_xml_bytes*, or the text the blocks would hold (every use of a
     shared string counted, in UTF-8 bytes) passed *max_text_bytes*, the merged ranges
-    declare more positions than ``max_merged_positions(max_text_bytes)``, or the load used more than
-    *max_seconds* of CPU (the work openpyxl does on a flat amount of memory: ranges that overlap,
-    hyperlinks on merged cells, anything not yet known); ``unreadable`` for a DOCTYPE or
+    declare more positions than ``max_merged_positions(max_text_bytes)``); ``unreadable`` for a DOCTYPE or
     entity declaration). Anything else is the loader's own error for a file it
-    cannot read, as the caller would have seen it before.
+    cannot read, as the caller would have seen it before. In a parse worker, a load that uses more
+    than *max_seconds* of CPU (the work openpyxl does on a flat amount of memory: ranges that
+    overlap, hyperlinks on merged cells, anything not yet known) ends the worker (``_cpu_limited``).
     """
     restore, cap = _enforce_growth_limit(limit_bytes)
     over = False
@@ -816,8 +804,6 @@ def load_workbook_model(
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model
-        except _CpuLimit:
-            raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU") from None
         except MemoryError:
             over = True
         except WorkbookRefused:

@@ -18,6 +18,7 @@ from app.modules.parsers.markdown.image_references import (
     extract_and_replace_images as _extract_and_replace_images,
 )
 from app.modules.parsers import parse_pool
+from app.services.resource_governor.kinds import ParseKind
 from app.modules.parsers.markdown.markdown_to_blocks import (
     MarkdownToBlocksConverter,
     convert_markdown_to_blocks,
@@ -66,7 +67,8 @@ class MarkdownItParser:
         # that holds the GIL, so those go to a parse worker process.
         if parse_pool.should_offload(len(markdown)):
             modified_markdown, images = await parse_pool.submit(
-                _extract_and_replace_images, markdown, label=record_name, size=len(markdown)
+                _extract_and_replace_images, markdown, label=record_name, size=len(markdown),
+                kind=ParseKind.TEXT,
             )
         else:
             modified_markdown, images = await asyncio.to_thread(
@@ -127,6 +129,7 @@ class MarkdownItParser:
                 page_number,
                 label=name or "markdown",
                 size=len(md_content),
+                kind=ParseKind.TEXT,
             )
         return await asyncio.to_thread(
             self._converter.convert,

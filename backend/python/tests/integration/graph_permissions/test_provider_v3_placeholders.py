@@ -104,10 +104,10 @@ def _rows(page: dict) -> dict[str, dict]:
 
 async def test_browsing_the_space_lists_the_placeholder_flagged(placeholder_graph, provider) -> None:
     rows = _rows(await _page(provider, start_id="ph-space", start_type="recordGroup"))
-    assert set(rows) == {"ph-home", "ph-empty-stub", "ph-folder"}
+    # A stub is listed as the way to something readable below it, so the empty one is not.
+    assert set(rows) == {"ph-home", "ph-folder"}
     assert rows["ph-home"]["isPlaceholder"] is True
     assert rows["ph-home"]["hasChildren"] is True
-    assert rows["ph-empty-stub"]["isPlaceholder"] is True
     assert rows["ph-folder"]["isPlaceholder"] is False
 
 

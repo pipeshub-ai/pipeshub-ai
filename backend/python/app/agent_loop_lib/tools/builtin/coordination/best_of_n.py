@@ -26,6 +26,10 @@ class BestOfNTool(Tool):
     """
 
     @property
+    def log_kind(self) -> str:
+        return "sub_agent"
+
+    @property
     def name(self) -> str:
         return "best_of_n"
 

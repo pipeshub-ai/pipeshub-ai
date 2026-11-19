@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { HttpError } from '../../../../src/libs/errors/http.errors'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../../src/libs/utils/error.middleware.utils'
@@ -203,6 +204,25 @@ describe('es_controller non-streaming chat routes', () => {
         })
       }
 
+      if (!flow.create) {
+        it('hides an earlier answer the reader lost access to, in the history and in the response', async () => {
+          sinon.stub(MongoConversationRepository.prototype, 'isConnected').returns(true)
+          const r = await run(flow, (ai, store) => {
+            store.messages.find((m) => m.get('messageType') === 'bot_response')?.set('attachments', [{ recordId: 'rec-lost', recordName: 'lost.pdf' }])
+            ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] })
+            ai.reply(exactPath(flow.aiPath), 200, answer('A fresh answer.'))
+          })
+
+          expect(r.next.called, String(r.error()?.message)).to.be.false
+          const sent = r.ai.calls.find((c) => c.url.endsWith(flow.aiPath))!.body.previousConversations as Array<{ content: string }>
+          expect(JSON.stringify(sent)).to.not.contain('An older answer.')
+          const stored = (r.res.jsonBody as { conversation: { messages: Array<Record<string, unknown>> } }).conversation.messages
+          expect(JSON.stringify(stored)).to.not.contain('An older answer.')
+          expect(stored.some((m) => m.answerHidden !== undefined)).to.equal(true)
+          expect(stored.some((m) => m.content === 'A fresh answer.' && m.answerHidden === undefined)).to.equal(true)
+        })
+      }
+
       it('saves citations and counts them', async () => {
         const citation = {
           content: 'SSO landed in 2.1',
@@ -216,6 +236,16 @@ describe('es_controller non-streaming chat routes', () => {
         const bot = r.messages().at(-1) as { citations: unknown[] }
         expect(bot.citations).to.have.length(1)
         if (!flow.create) expect((r.res.jsonBody as { recordsUsed: number }).recordsUsed).to.equal(1)
+      })
+
+      it('tells the client when the answer\'s search was degraded', async () => {
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 200, answer('ok', { searchDegraded: true })))
+        expect((r.res.jsonBody as { meta: { searchDegraded?: boolean } }).meta.searchDegraded).to.equal(true)
+      })
+
+      it('adds no degraded flag for a complete search', async () => {
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 200, answer('ok')))
+        expect((r.res.jsonBody as { meta: object }).meta).not.to.have.property('searchDegraded')
       })
 
       it('keeps a 4xx from the AI backend, with its message, and records the failure', async () => {

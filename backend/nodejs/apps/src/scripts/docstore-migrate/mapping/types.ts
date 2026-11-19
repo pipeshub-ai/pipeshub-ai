@@ -82,6 +82,8 @@ export interface CollectionMapping {
   custom?: boolean;
   /** The id a source document is known by in the table (default: its `_id`); the decoder's `_id` is this too. */
   sourceKey?: (doc: Record<string, unknown>) => string;
+  /** The table key of a source `_id` (lower-case text) when the two differ: the outbox folds an ObjectId into a bigint. */
+  tableId?: (sourceId: string) => string;
   /**
    * SQL that returns the rows breaking a rule that must hold after the copy (a citation stamped with another
    * organisation than its message, a member whose user is missing). Zero rows = holds. Run by the verifier with the jobs login

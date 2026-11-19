@@ -94,7 +94,7 @@ class TestStopWaitParsing:
         assert stop_wait_sec(LOG) == expected
 
 
-def _drain_env(rows: list[dict], specs: dict[str, object], budget: int | None = None):
+def _drain_env(rows: list[dict], budget: int | None = None):
     graph = AsyncMock()
     state = {r["id"]: dict(r) for r in rows}
 
@@ -108,6 +108,9 @@ def _drain_env(rows: list[dict], specs: dict[str, object], budget: int | None = 
 
     graph.get_nodes_by_field_in = AsyncMock(side_effect=get_nodes)
     graph.update_node = AsyncMock(side_effect=update_node)
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
+    graph.get_org_apps = AsyncMock(return_value=[
+        {"_key": r["id"], "type": "Gmail", "isActive": r.get(ConnectorStateKeys.IS_ACTIVE, True)} for r in rows])
 
     from app.connectors.core.sync.sync_dispatcher import SubmitResult
 
@@ -118,21 +121,20 @@ def _drain_env(rows: list[dict], specs: dict[str, object], budget: int | None = 
     if budget is not None:
         coordinator.drain_budget = MagicMock(return_value=budget)
 
-    async def resolve(_gp, ids, _logger):
-        return [specs[i] for i in ids if i in specs]
-
     patches = (
         patch("app.connectors.core.sync.sync_dispatcher.get_dispatcher", return_value=dispatcher),
         patch("app.connectors.core.sync.sync_coordinator.get_coordinator", return_value=coordinator),
-        patch.object(sync_runner, "resolve_resync_specs", AsyncMock(side_effect=resolve)),
     )
     return graph, state, dispatcher, patches
+
+
+def _submitted(dispatcher: MagicMock) -> list[tuple[str, str]]:
+    return [(c.args[0].connector_id, c.args[0].org_id) for c in dispatcher.submit.await_args_list]
 
 
 class TestDrain:
     @pytest.mark.asyncio
     async def test_an_inactive_queued_connector_is_dropped_not_published(self) -> None:
-        spec_b = MagicMock(connector_id="b")
         graph, state, dispatcher, patches = _drain_env(
             [
                 {"id": "a", "status": AppStatus.QUEUED.value, "pendingResync": True,
@@ -140,13 +142,12 @@ class TestDrain:
                 {"id": "b", "status": AppStatus.QUEUED.value, "pendingResync": True,
                  ConnectorStateKeys.IS_ACTIVE: True},
             ],
-            {"a": MagicMock(connector_id="a"), "b": spec_b},
         )
-        with patches[0], patches[1], patches[2]:
+        with patches[0], patches[1]:
             started = await sync_runner.drain_queued_syncs(graph, LOG)
 
         assert started == ["b"]
-        dispatcher.submit.assert_awaited_once_with(spec_b)
+        assert _submitted(dispatcher) == [("b", "o1")]
         assert state["a"]["status"] == AppStatus.IDLE.value
         assert state["a"]["pendingResync"] is False
 
@@ -157,9 +158,8 @@ class TestDrain:
         graph, _state, dispatcher, patches = _drain_env(
             [{"id": "q", "status": AppStatus.QUEUED.value, "pendingResync": True,
               "updatedAtTimestamp": 10**15}],
-            {"q": MagicMock(connector_id="q")},
         )
-        with patches[0], patches[1], patches[2]:
+        with patches[0], patches[1]:
             await asyncio.gather(*(sync_runner.drain_queued_syncs(graph, LOG) for _ in range(3)))
 
         assert dispatcher.submit.await_count == 1
@@ -220,30 +220,26 @@ class TestDrainOrderAndBudget:
             {"id": "c", "status": q, "pendingResync": True, "updatedAtTimestamp": 200},
         ]
 
-    def _specs(self):
-        return {k: MagicMock(connector_id=k) for k in "abc"}
-
     @pytest.mark.asyncio
     async def test_oldest_first_and_no_more_than_the_free_slots(self) -> None:
-        specs = self._specs()
-        graph, _s, dispatcher, patches = _drain_env(self._rows(), specs, budget=2)
-        with patches[0], patches[1], patches[2]:
+        graph, _s, dispatcher, patches = _drain_env(self._rows(), budget=2)
+        with patches[0], patches[1]:
             started = await sync_runner.drain_queued_syncs(graph, LOG)
         assert started == ["b", "c"]
-        assert [c.args[0] for c in dispatcher.submit.await_args_list] == [specs["b"], specs["c"]]
+        assert _submitted(dispatcher) == [("b", "o1"), ("c", "o1")]
 
     @pytest.mark.asyncio
     async def test_no_free_slot_publishes_nothing(self) -> None:
-        graph, _s, dispatcher, patches = _drain_env(self._rows(), self._specs(), budget=0)
-        with patches[0], patches[1], patches[2]:
+        graph, _s, dispatcher, patches = _drain_env(self._rows(), budget=0)
+        with patches[0], patches[1]:
             assert await sync_runner.drain_queued_syncs(graph, LOG) == []
         dispatcher.submit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_coordinator_that_cannot_count_slots_still_publishes_all(self) -> None:
         """Across a fleet another worker may have room, so no local budget applies."""
-        graph, _s, dispatcher, patches = _drain_env(self._rows(), self._specs())
-        with patches[0], patches[1], patches[2]:
+        graph, _s, dispatcher, patches = _drain_env(self._rows())
+        with patches[0], patches[1]:
             started = await sync_runner.drain_queued_syncs(graph, LOG)
         assert started == ["b", "c", "a"]
 

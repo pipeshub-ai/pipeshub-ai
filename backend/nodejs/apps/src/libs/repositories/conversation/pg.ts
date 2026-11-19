@@ -17,7 +17,7 @@ import type { Tx as PgKernelTx } from '../../db';
 import { CONVERSATION_STATUS } from '../../../modules/enterprise_search/constants/constants';
 import { BadRequestError, InternalServerError } from '../../errors/http.errors';
 import { ConflictError, NotFoundError } from '../errors';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   Params,
   assertOrg,
@@ -546,6 +546,28 @@ export class PgConversationRepository
     return this.lookup(FIND_OWNED, scope, id, actor, tx);
   }
 
+  async listForksOf(
+    scope: SessionScope,
+    sourceId: string,
+    actor: SessionActor,
+  ): Promise<ChatSessionDto[]> {
+    const [kind, key] = scopeArgs(scope);
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, actor.orgId);
+      const { rows } = await k.query<SessionRow>(
+        SQL(
+          `/* pipeshub:conversation.list_forks_of */ SELECT @{S} FROM conversation.chat_sessions s
+           WHERE s.org_id = $1 AND s.session_type = $2 AND ($3::text IS NULL OR s.agent_key = $3)
+             AND s.user_id = $4::text AND NOT s.is_deleted AND NOT s.is_archived
+             AND s.metadata->>'forkedFromConversationId' = $5
+           ORDER BY s.created_at, s.id LIMIT 50`,
+        ),
+        [k.orgId, kind, key, actor.userId, sourceId],
+      );
+      return rows.map((r) => sessionDto(r, k.orgId, LEAN_SHAPE));
+    });
+  }
+
   findForShare(
     id: string,
     actor: SessionActor,
@@ -634,6 +656,8 @@ export class PgConversationRepository
         'modelInfo',
         'projectId',
         'projectVisibility',
+        'metadata',
+        'agentKey',
       ])
         if (d[f] !== undefined) out[f] = d[f];
       return out as unknown as SessionSummary;
@@ -962,6 +986,19 @@ export class PgConversationRepository
       );
       return new Map(rows.map((r) => [r.project_id, r.n]));
     });
+  }
+
+  // Compare models is off on this store (ChatCompareFeature), so no session ever has a branch.
+  listBranches(): Promise<ChatSessionDto[]> {
+    return Promise.resolve([]);
+  }
+
+  listStaleBranches(): Promise<ChatSessionDto[]> {
+    return Promise.resolve([]);
+  }
+
+  discardBranches(): Promise<void> {
+    return Promise.resolve();
   }
 
   async unlinkProject(projectId: string, tx?: Tx): Promise<void> {

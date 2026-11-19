@@ -1,0 +1,32 @@
+# OneDrive drive written the way the connector writes it on main: every item has inherit_permissions=False and the full effective list as
+# its own grants (microsoft/onedrive/connector.py:513). The structural scenarios below change where an item sits or how it inherits;
+# the connector itself never restores inheritance, so those cases are synthetic and say so.
+principals:
+  - {id: ann}
+  - {id: ben}
+  - {id: cat}
+  - {id: g:team, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: ONEDRIVE}
+  - {id: drive:Ann, kind: group, connector: app, rule: OPEN, parents: [app], belongs: [app]}
+  - {id: folder:Shared, kind: record, connector: app, rule: OPEN, parents: [drive:Ann], belongs: [drive:Ann]}
+  - {id: f1, kind: record, connector: app, rule: OPEN, parents: [folder:Shared], belongs: [drive:Ann]}
+  - {id: f2, kind: record, connector: app, rule: OPEN, parents: [folder:Shared], belongs: [drive:Ann]}
+  - {id: folder:Private, kind: record, connector: app, rule: OPEN, parents: [drive:Ann], belongs: [drive:Ann]}
+  - {id: diary, kind: record, connector: app, rule: OPEN, parents: [folder:Private], belongs: [drive:Ann]}
+grants:
+  - [ann, drive:Ann]
+  - [ann, folder:Shared]
+  - [g:team, folder:Shared]
+  - [ann, f1]
+  - [g:team, f1]
+  - [ann, f2]
+  - [g:team, f2]
+  - [ann, folder:Private]
+  - [ann, diary]
+memberships:
+  - [ben, g:team]
+gates:
+  - [ann, app]
+  - [ben, app]
+  - [cat, app]

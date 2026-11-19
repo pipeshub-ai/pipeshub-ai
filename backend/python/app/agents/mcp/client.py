@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Optional
+from urllib.parse import urlsplit
 
 import anyio
 import httpx
@@ -42,6 +43,7 @@ from app.agents.mcp.errors import (
     first_leaf,
     is_http_unauthorized,
 )
+from app.agents.mcp.failure import classify_mcp_failure, mcp_error_class
 from app.agents.mcp.models import MCPServerConfig, MCPTransport
 from app.agents.mcp.stdio_policy import (
     StdioPolicyError,
@@ -55,6 +57,8 @@ from app.agents.mcp.url_guard import (
     private_network_allowed,
 )
 from app.utils.env_utils import env_int
+from app.utils.error_class import innermost_type
+from app.utils.logging_fields import log_event
 from app.utils.url_redaction import redact_url, redact_urls_in_text
 from mcp import Client
 from mcp.client.sse import sse_client
@@ -307,7 +311,8 @@ def _keep_results_that_miss_their_schema(client: Client) -> None:
         try:
             await validate(name, result)
         except Exception as e:
-            logger.warning(f"MCP tool {name} returned output its declared schema doesn't allow; kept as is: {e}")
+            # Kept as is. Not the error's text: it quotes the result.
+            log_event(logger, "mcp.result.schema_mismatch", level=logging.WARNING, error_type=type(e).__name__)
 
     session.validate_tool_result = _validate_leniently
 
@@ -624,10 +629,11 @@ class MCPClientManager:
             if mode == "auto" or not _remembered_initialize_only(self.config) or not _worth_renegotiating(e):
                 raise
             _forget_handshake(self.config)
-            logger.info(f"MCP server {self.config.id} refused the remembered handshake; probing its version again")
+            log_event(logger, "mcp.retry", mcp_server_id=self.config.id, op="connect", reason="renegotiate")
             return await self._start_session_in("auto")
 
     async def _start_session_in(self, mode: str) -> _Session:
+        started = time.perf_counter()
         stderr_path = _new_stderr_capture_path(self.config)
         transport: Optional[_Transport] = None
         try:
@@ -655,12 +661,26 @@ class MCPClientManager:
             await runner.stop()
             _cleanup_stderr_capture_path(stderr_path)
             error = self._connect_error(e, runner.connect_record, stderr_tail)
-            logger.error(f"Failed to connect to MCP server {self.config.id} ({self.config.name}): {error.detail}")
-            # A connection error raised inside the SDK keeps its own cause.
-            raise error from (error.__cause__ if error is first_leaf(e) else e)
+            # A connection error raised inside the SDK keeps its own cause. Set before the line,
+            # which classifies the whole chain; the raise sets the same.
+            error.__cause__ = error.__cause__ if error is first_leaf(e) else e
+            # A record, not the verdict: the layer that retries or gives up logs the severity.
+            self._log_connect_end(
+                mode, started, outcome="failure", error_class=mcp_error_class(error),
+                mcp_reason=classify_mcp_failure(error).value, status=getattr(error, "status_code", None),
+                error_type=type(error).__name__, cause_type=innermost_type(error),
+            )
+            raise error from error.__cause__
         _remember_handshake(self.config, client, mode)
         _keep_results_that_miss_their_schema(client)
+        self._log_connect_end(mode, started, level=logging.DEBUG, outcome="success", protocol_version=client.protocol_version)
         return _Session(runner, stderr_path)
+
+    def _log_connect_end(self, mode: str, started: float, *, level: int = logging.INFO, **fields: object) -> None:
+        log_event(
+            logger, "mcp.connect.end", level=level, mcp_server_id=self.config.id, transport=self.config.transport.value,
+            mode=mode, duration_ms=round((time.perf_counter() - started) * 1000), **fields,
+        )
 
     def _connect_error(self, e: BaseException, record: wire.WireRecord, stderr_tail: str) -> MCPConnectionError:
         leaf = first_leaf(e)
@@ -678,7 +698,7 @@ class MCPClientManager:
                     challenge=from_wire.challenge,
                 )
         elif isinstance(leaf, MCPError) and _is_refused_redirect(leaf):
-            logger.warning(f"MCP server {self.config.id} redirected elsewhere: {redact_urls_in_text(leaf.message)}")
+            self._log_refused_redirect(leaf)
             error = MCPUrlBlockedError(_REFUSED_REDIRECT)
         elif isinstance(leaf, httpx2.HTTPStatusError) and leaf.response.is_redirect:
             error = MCPUrlBlockedError(_REFUSED_REDIRECT)
@@ -765,18 +785,9 @@ class MCPClientManager:
         `CallToolResult`. `on_progress` hears the server's progress reports; it must not block.
 
         Raises MCPConnectionError if no session is open."""
-        session = self._live_session()
-        try:
-            return await self._call(session, tool_name, arguments, on_progress)
-        except Exception as e:
-            # The stderr tail is for operators only: the error travels on to the model and
-            # the tool card, and a server's stderr can echo its environment.
-            if stderr_tail := _read_stderr_tail(session.stderr_path):
-                logger.warning(
-                    f"MCP tool call {tool_name} on {self.config.id} ({self.config.name}) failed: "
-                    f"{_describe_error(e)} | subprocess stderr: {stderr_tail}"
-                )
-            raise
+        # Failures are logged once, by the tool executor. Not the server's stderr: it can echo
+        # earlier calls' arguments and its environment.
+        return await self._call(self._live_session(), tool_name, arguments, on_progress)
 
     def _live_session(self) -> _Session:
         session = self._session
@@ -890,6 +901,15 @@ class MCPClientManager:
             session.lost = True
         return failed
 
+    def _log_refused_redirect(self, error: MCPError) -> None:
+        """The target's host only: the rest of the SDK's message is the server's Location header, which a server controls."""
+        target = error.message.removeprefix("Redirect to ").split(" ", 1)[0]
+        try:
+            host = urlsplit(target).hostname or "unknown"
+        except ValueError:          # a malformed target ("https://[broken") must not replace the blocked-URL error
+            host = "unknown"
+        log_event(logger, "mcp.redirect_refused", level=logging.WARNING, mcp_server_id=self.config.id, target_host=host)
+
     def _operation_error(
         self, session: _Session, error: MCPError, record: wire.WireRecord, *, method: str, what: str,
         may_have_run_once_taken: bool,
@@ -923,13 +943,14 @@ class MCPClientManager:
         if _is_sdk_timeout(error, method):
             return TimeoutError(f"The MCP server didn't answer {what} within {call_timeout(self.config):g}s")
         if _is_refused_redirect(error):
-            logger.warning(f"MCP server {self.config.id} redirected elsewhere: {redact_urls_in_text(error.message)}")
+            self._log_refused_redirect(error)
             return MCPUrlBlockedError(_REFUSED_REDIRECT)
         if error.code == CONNECTION_CLOSED and error.message == _SDK_CONNECTION_CLOSED:
             session.lost = True
             if session.runner.failure is not None:
-                logger.warning(
-                    f"MCP session for {self.config.id} ({self.config.name}) ended: {_describe_error(session.runner.failure)}"
+                log_event(
+                    logger, "mcp.session.ended", level=logging.WARNING,
+                    mcp_server_id=self.config.id, error_type=innermost_type(session.runner.failure),
                 )
             return MCPConnectionLostError("The connection to the MCP server closed.")
         if error.code == CONNECTION_CLOSED and error.message.startswith(_SDK_STREAM_LOST):

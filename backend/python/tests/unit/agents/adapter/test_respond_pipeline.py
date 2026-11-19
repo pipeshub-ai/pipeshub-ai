@@ -86,6 +86,17 @@ class TestErrorPath:
         )
 
 
+def _failure_line(context: object) -> tuple:
+    """The finalizer's own failure line: DEBUG, since `agent_turn.end` says why at INFO."""
+    calls = [
+        c.args for c in context.logger.debug.call_args_list
+        if c.args and str(c.args[0]).startswith("AnswerFinalizer: agent run failed")
+    ]
+    assert len(calls) == 1, calls
+    context.logger.error.assert_not_called()
+    return calls[0]
+
+
 class TestModelCallFailure:
     async def test_unclassified_model_call_failure_is_logged_and_named(self) -> None:
         context = make_context(conversation_id="conv-1", run_id="run-1")
@@ -102,8 +113,7 @@ class TestModelCallFailure:
         assert result["answer"] != _USER_MESSAGES["unknown"]
         assert "AI model" in result["answer"]
         assert [e["event"] for e in sink.events] == ["answer_chunk", "complete"]
-        context.logger.error.assert_called_once()
-        logged = context.logger.error.call_args.args
+        logged = _failure_line(context)
         assert "unknown" in logged
         assert "conv-1" in logged and "run-1" in logged and "org-1" in logged
         assert "APIError: upstream hiccup" in logged[-1]
@@ -121,7 +131,7 @@ class TestModelCallFailure:
             event_sink=_RecordingSink(),
         )
 
-        logged = context.logger.error.call_args.args[-1]
+        logged = _failure_line(context)[-1]
         assert "AIzaSECRET" not in logged
         assert "org-abc12345" not in logged
         assert "APIError: 403 for [url]" in logged
@@ -143,8 +153,7 @@ class TestModelCallFailure:
 
         assert result["errorCode"] == "content_filter"
         assert result["answer"] == _USER_MESSAGES["content_filter"]
-        context.logger.error.assert_called_once()
-        assert "content_filter" in context.logger.error.call_args.args
+        assert "content_filter" in _failure_line(context)
 
 
 class TestSuccessPath:

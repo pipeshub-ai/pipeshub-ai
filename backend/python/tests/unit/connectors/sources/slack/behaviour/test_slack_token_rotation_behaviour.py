@@ -40,6 +40,7 @@ from app.connectors.core.base.token_service.token_refresh_service import (
 )
 from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 from app.models.entities import FileRecord
+from app.utils.logger import log_record_fields
 from tests.support.slack_oauth import FakeSlackOAuth
 
 OLD_ACCESS = "xoxe.xoxp-1-first-access"
@@ -180,7 +181,8 @@ class TestRotatingTokenIsRenewed:
         new_access, _ = oauth.issued[0]
         assert {c.token for c in workspace.calls} == {new_access}
         assert dm in store.records
-        assert "Refreshing token for connector" in caplog.text
+        [end] = [r for r in caplog.records if r.getMessage() == "credential_refresh.end"]
+        assert (end.levelno, log_record_fields(end)["outcome"]) == (logging.INFO, "success")
         assert _tokens_in(caplog.text) == set()
 
     @pytest.mark.parametrize("nested", [False, True], ids=["flat-answer", "authed-user-answer"])

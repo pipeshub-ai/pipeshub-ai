@@ -1,0 +1,614 @@
+{
+ "bodies": {
+  "DoclingProcessor.parse_document": {
+   "args": [
+    "self",
+    "doc_name",
+    "content",
+    "page_range"
+   ],
+   "body": "5e3fb5289352cf7f"
+  },
+  "_run_in_pool": {
+   "args": [
+    "fn"
+   ],
+   "body": "60da79fbd11487e2"
+  },
+  "render_all_pages_from_bytes": {
+   "args": [
+    "pdf_bytes",
+    "resolution"
+   ],
+   "body": "01dcdee91de4b8ef"
+  }
+ },
+ "docling": {
+  "executor": [
+   "t",
+   "t"
+  ],
+  "executor_broken": "BrokenProcessPool",
+  "executor_cache_after_break": 0,
+  "executor_incident": [
+   "docling worker OOM-killed (BrokenProcessPool)"
+  ],
+  "executor_log": [
+   [
+    "create",
+    3,
+    "spawn",
+    "start_housekeeping",
+    1
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_parse_document_in_worker",
+    3
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_parse_document_in_worker",
+    3
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_parse_document_in_worker",
+    3
+   ]
+  ],
+  "grid": {
+   "docling/' 3 '": 3,
+   "docling/''": 1,
+   "docling/'-3'": 1,
+   "docling/'0'": 1,
+   "docling/'1'": 1,
+   "docling/'2'": 2,
+   "docling/'7'": 7,
+   "docling/'AUTO'": 1,
+   "docling/'auto'": 1,
+   "docling/'x'": 1,
+   "docling/None": 1,
+   "raster/' 3 '": 3,
+   "raster/''": "default",
+   "raster/'-3'": 1,
+   "raster/'0'": 1,
+   "raster/'1'": 1,
+   "raster/'2'": 2,
+   "raster/'7'": 7,
+   "raster/'AUTO'": 2,
+   "raster/'auto'": 2,
+   "raster/'x'": 2,
+   "raster/None": 2
+  },
+  "thread": [
+   "DOC",
+   "DOC"
+  ],
+  "thread_failure": "DocumentProcessingError",
+  "thread_log": [
+   [
+    "convert",
+    "a.docx",
+    [],
+    false
+   ],
+   [
+    "convert",
+    "a.pdf",
+    [
+     "page_range"
+    ],
+    false
+   ]
+  ]
+ },
+ "hashes": {
+  "docling_processor.py": {
+   "DoclingProcessor.__init__": "4fc5603ab1ec1f70",
+   "DoclingProcessor.create_blocks": "fd9c9b06d445170c",
+   "DoclingProcessor.parse_document": "6f348b22ca903c72",
+   "DoclingProcessor.process_document": "991525f7fa3dbb52",
+   "_get_converter": "874c64ac6ebb2641",
+   "_get_local_parse_worker_count": "1228a151dcd05530",
+   "_get_page_batch_size": "37c7be4a23789550",
+   "_get_process_pool": "beea5d2a9f2510c0",
+   "_parse_document_in_worker": "4e78f325bc227065",
+   "assign:DEFAULT_PAGE_BATCH_SIZE": "a64e61679cf13d2d",
+   "assign:DOCLING_ROUTED_FORMATS": "5a84d206bfc1e955",
+   "assign:DOCUMENT_TIMEOUT_SECONDS": "fa14bddc46732c06",
+   "assign:LOCAL_DOCLING_PARSE_WORKERS": "5de160a057307cf8",
+   "assign:PAGE_BATCH_SIZE": "65b86d33f6a625d2",
+   "assign:SUCCESS_STATUS": "aba082a0e41f78b8",
+   "assign:_resource_governor": "caf1eb176608059f",
+   "class DoclingProcessor": "ed4f7ce359e282fb",
+   "if:TYPE_CHECKING": "aa6fd3f433809d47",
+   "import:from app.exceptions.indexing_exceptions import DocumentProcessingError": "ef895e7eddf50a7d",
+   "import:from app.models.blocks import BlocksContainer": "d5a78637a39e8f9e",
+   "import:from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter": "6bdbedb4271d18b3",
+   "import:from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count": "1982c8ced360c994",
+   "import:from app.utils.pool_worker import run_and_release, start_housekeeping": "ed193fee1c54185f",
+   "import:from app.utils.worker_scaling import scaled": "27c9dcf17e422eda",
+   "import:from concurrent.futures import ProcessPoolExecutor": "a0fc8800e8220866",
+   "import:from concurrent.futures.process import BrokenProcessPool": "17baef0260ff9ff6",
+   "import:from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend": "4d88a517a1a3de5a",
+   "import:from docling.datamodel.base_models import DocumentStream, InputFormat": "619b4ffbd7c73ff5",
+   "import:from docling.datamodel.pipeline_options import TableFormerMode, TableStructureOptions, ThreadedPdfPipelineOptions": "19d5b63cfc697ac8",
+   "import:from docling.document_converter import DocumentConverter, MarkdownFormatOption, PdfFormatOption, WordFormatOption": "20dad7399421be33",
+   "import:from docling_core.types.doc.document import DoclingDocument": "a3176737733e0928",
+   "import:from functools import lru_cache": "c519b84a63035f6a",
+   "import:from io import BytesIO": "49ec29f883d47548",
+   "import:from typing import TYPE_CHECKING": "45507282da06a387",
+   "import:import asyncio": "8058853a01547215",
+   "import:import logging": "12943183c5b9deb3",
+   "import:import multiprocessing": "704b389eb5da1415",
+   "import:import os": "ac3a74d6dd975a8e",
+   "set_resource_governor": "31aa0a9aa853bb37"
+  },
+  "docling_service.py": {
+   "DoclingService.__init__": "07b83ed6ebda151f",
+   "DoclingService.health_check": "938365d88c0b0745",
+   "DoclingService.initialize": "749b6ed5ab9fad6a",
+   "DoclingService.parse_pdf_only": "77894205bd36294d",
+   "ParseResponse.error": "a878cbd81bfbbc98",
+   "ParseResponse.parse_result": "086fc3582defb508",
+   "ParseResponse.success": "152c3ec9fa20694a",
+   "_acquire_docling_gate": "34c5dbfc372b4980",
+   "_backpressure_response": "4e200f66009539bf",
+   "_parse_failure_response": "1c38d848c193dd40",
+   "_parse_holding_gate": "0b0a930bb088a808",
+   "_parse_task_done": "80556518ec3daa04",
+   "_release_docling_gate": "3db9f440095f78cf",
+   "assign:DOCLING_BACKPRESSURE_RETRY_AFTER_SECONDS": "bf102362de26d1e9",
+   "assign:DOCLING_GATE_TIMEOUT_SECONDS": "eaee4c0e0fbc9848",
+   "assign:DOCLING_QUEUE_WAIT_WARN_SECONDS": "4f3879bf2596e79a",
+   "assign:PDF_PARSING_TIMEOUT_SECONDS": "499f6df1bf16dad5",
+   "assign:PDF_PROCESSING_TIMEOUT_SECONDS": "43c23d22772cfad5",
+   "assign:_abandoned": "45850d04444c62da",
+   "assign:_parse_tasks": "32db41e21e92a0f9",
+   "assign:_resource_governor": "befb55824e2db8a0",
+   "assign:app": "efff4157604b4e2d",
+   "assign:docling_service": "c00034c3e050c702",
+   "assign:logger": "fa49a10e7315bca5",
+   "class DoclingService": "cd478296793c8a93",
+   "class ParseResponse": "028f1703538ace3b",
+   "health_check": "04492b87e84f74f7",
+   "import:from app.core.org_context import spawn_in_request": "ce1215d914f581cc",
+   "import:from app.modules.parsers.pdf.docling_processor import DoclingProcessor": "05d213d774ef4913",
+   "import:from app.services.resource_governor import ParseTier, ResourceGovernor, acquire_gate_with_backpressure, gate_pool, parse_cost": "b5b2b75495cfb520",
+   "import:from app.services.resource_governor.memory_domain import parse_admission_cap": "4bfaa94bd39bfe7e",
+   "import:from app.utils.logger import create_logger": "501b2faa02413f38",
+   "import:from app.utils.memory_release import release_freed_memory": "eb853a0cc0452dd1",
+   "import:from docling_core.types.doc.document import DoclingDocument": "a3176737733e0928",
+   "import:from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile": "63826f13b9fd3460",
+   "import:from fastapi.responses import JSONResponse": "1952e79c78b09eb5",
+   "import:from pydantic import BaseModel": "d77d90ca447c52c1",
+   "import:from typing import Any": "68c3503c96524a29",
+   "import:import asyncio": "8058853a01547215",
+   "import:import logging": "12943183c5b9deb3",
+   "import:import time": "ff05bad0fd9a7212",
+   "parse_pdf_endpoint": "2184dba02c0fc6db",
+   "serialize_docling_doc": "4daf4279b16cacd4",
+   "set_docling_service": "6a75e2fbf40ab48a",
+   "set_resource_governor": "33cc32da74ef2b66",
+   "startup_event": "a3fe518885502ae6"
+  },
+  "pdf_rasterizer.py": {
+   "_effective_resolution": "f45e9e19a2c1d4c8",
+   "_get_pdf_raster_pool": "802795d2ceff9d44",
+   "_get_pdf_raster_worker_count": "d094709f4d91dd96",
+   "_page_to_rgb_array": "669590cb74cb755a",
+   "_render_all_pages_impl": "b2d2f3ac5cc27f6c",
+   "_render_batch_impl": "61daf659c3bf947e",
+   "_run_in_pool": "90e9ca2536339795",
+   "_shutdown_pdf_raster_pool_on_exit": "cb4e469a3366649b",
+   "_worker_render_all_from_bytes": "fb299e698d828eda",
+   "_worker_render_all_from_path": "cd0722c6fb75d1e3",
+   "_worker_render_batch_from_bytes": "71d04152bbf35b96",
+   "_worker_render_batch_from_path": "df3bb59b683237e4",
+   "_worker_render_page_from_bytes": "7f3da6e5c1a37de1",
+   "_worker_render_page_from_path": "248aa3dab26c3ec9",
+   "assign:MAX_RASTER_PIXELS": "3ccd09f7886bff2e",
+   "assign:PDF_RASTER_WORKERS": "8b6c253c84061b85",
+   "assign:_logger": "2ea9d8b20c6505e8",
+   "assign:_pool_lock": "80acec1caa201ebb",
+   "assign:_resource_governor": "caf1eb176608059f",
+   "if:TYPE_CHECKING": "f3d3cf3a9738b9a7",
+   "import:from PIL import Image": "eb355e0b2477a9d2",
+   "import:from __future__ import annotations": "890bede517510aea",
+   "import:from app.services.resource_governor.probe import effective_cpu_count": "49918e0eb136dcbb",
+   "import:from app.utils.pool_worker import run_and_release, start_housekeeping": "ed193fee1c54185f",
+   "import:from app.utils.worker_scaling import scaled": "27c9dcf17e422eda",
+   "import:from concurrent.futures import ProcessPoolExecutor": "a0fc8800e8220866",
+   "import:from concurrent.futures.process import BrokenProcessPool": "17baef0260ff9ff6",
+   "import:from functools import lru_cache": "c519b84a63035f6a",
+   "import:from io import BytesIO": "49ec29f883d47548",
+   "import:from typing import TYPE_CHECKING, Dict, List, Optional, Tuple": "de7fbd6de6ea8c37",
+   "import:import asyncio": "8058853a01547215",
+   "import:import atexit": "d4a7dad22ce6c725",
+   "import:import logging": "12943183c5b9deb3",
+   "import:import math": "f329650e2c61a07a",
+   "import:import multiprocessing": "704b389eb5da1415",
+   "import:import numpy as np": "271fc31378e1108a",
+   "import:import os": "ac3a74d6dd975a8e",
+   "import:import pdfplumber": "6be21b3b76275077",
+   "import:import threading": "80f21c52b46d18d9",
+   "pdf_raster_pool_size": "3fccd5e36e25da01",
+   "render_all_pages_as_pil_from_bytes": "f0b4de605f127678",
+   "render_all_pages_as_png": "c01480a8b964b518",
+   "render_all_pages_from_bytes": "a262b2b846d80e2f",
+   "render_all_pages_from_bytes_sync": "95f17fcc4f47f1f0",
+   "render_all_pages_from_path_sync": "ba7b300b99bb442f",
+   "render_batch_from_bytes_sync": "789d514ad036a88c",
+   "render_batch_from_path_sync": "ccbf47da8c513383",
+   "render_page_from_bytes_sync": "a05b23754381e0e8",
+   "render_page_from_path_sync": "db42d975af6e33d3",
+   "set_resource_governor": "ef88ac7574148a99",
+   "shutdown_pdf_raster_pool": "cff62c9f9b4739cd",
+   "stmt:'\\nThread-safe PDF page rasterization vi": "80ca3aec68fa30fe"
+  }
+ },
+ "raster": {
+  "async": "{1: ('page', 1.0)}",
+  "broken": "BrokenProcessPool",
+  "cache_after_break": 0,
+  "incident": [
+   "pdf_rasterizer worker OOM-killed (BrokenProcessPool)"
+  ],
+  "log": [
+   [
+    "create",
+    2,
+    "spawn",
+    "start_housekeeping",
+    1
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_all_from_path",
+    2
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_all_from_bytes",
+    2
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_batch_from_path",
+    3
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_batch_from_bytes",
+    3
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_page_from_path",
+    3
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_page_from_bytes",
+    3
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_all_from_bytes",
+    2
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_all_from_path",
+    2
+   ],
+   [
+    "create",
+    2,
+    "spawn",
+    "start_housekeeping",
+    1
+   ],
+   [
+    "submit",
+    "run_and_release",
+    "_worker_render_all_from_path",
+    2
+   ],
+   [
+    "shutdown",
+    false,
+    true
+   ]
+  ],
+  "pages": [
+   "('page', 2.0)",
+   "('page', 2.0)"
+  ],
+  "shutdown": true,
+  "shutdown_again": false,
+  "sync": [
+   "{1: ('page', 1.0)}",
+   "{1: ('page', 1.0)}",
+   "{1: ('page', 1.0)}",
+   "{1: ('page', 1.0)}"
+  ]
+ },
+ "recorded_from": "672843561324d6ac5f88bd0fe75f9eebcf0e15c4",
+ "service": {
+  "backpressure": {
+   "abandoned_after": 0,
+   "calls": [],
+   "events_at_answer": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     0
+    ]
+   ],
+   "events_final": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     0
+    ]
+   ],
+   "response": [
+    429,
+    {
+     "error": "PARSE_BACKPRESSURE: Docling service is at capacity; retry later.",
+     "success": false
+    },
+    "5"
+   ],
+   "tasks_after": 0
+  },
+  "holding_gate": {
+   "after_caller_timeout": [
+    false,
+    []
+   ],
+   "fail": [
+    "RuntimeError:x",
+    [
+     5
+    ],
+    [
+     [
+      "a.pdf",
+      "b'x'"
+     ]
+    ],
+    [
+     [
+      "page_range"
+     ]
+    ]
+   ],
+   "ok": [
+    "{}",
+    [
+     5
+    ],
+    [
+     [
+      "a.pdf",
+      "b'x'"
+     ]
+    ],
+    [
+     [
+      "page_range"
+     ]
+    ]
+   ],
+   "released_at_end": [
+    9
+   ],
+   "result_after_finish": "{}"
+  },
+  "parse_error": {
+   "abandoned_after": 0,
+   "calls": [
+    [
+     2,
+     [
+      "page_range"
+     ],
+     [
+      2,
+      5
+     ]
+    ]
+   ],
+   "events_at_answer": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     7
+    ]
+   ],
+   "events_final": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     7
+    ]
+   ],
+   "response": [
+    422,
+    {
+     "error": "Parsing failed",
+     "errorCode": "PARSE_FAILED",
+     "success": false
+    },
+    null
+   ],
+   "tasks_after": 0
+  },
+  "serialization_error": {
+   "abandoned_after": 0,
+   "calls": [
+    [
+     2,
+     [
+      "page_range"
+     ],
+     [
+      2,
+      5
+     ]
+    ]
+   ],
+   "events_at_answer": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     7
+    ]
+   ],
+   "events_final": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     7
+    ]
+   ],
+   "response": [
+    422,
+    {
+     "error": "Parsing failed",
+     "errorCode": "PARSE_FAILED",
+     "success": false
+    },
+    null
+   ],
+   "tasks_after": 0
+  },
+  "success": {
+   "abandoned_after": 0,
+   "calls": [
+    [
+     2,
+     [
+      "page_range"
+     ],
+     [
+      2,
+      5
+     ]
+    ]
+   ],
+   "events_at_answer": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     7
+    ]
+   ],
+   "events_final": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     7
+    ]
+   ],
+   "response": [
+    200,
+    {
+     "error": null,
+     "parse_result": "{}",
+     "success": true
+    }
+   ],
+   "tasks_after": 0
+  },
+  "timeout": {
+   "abandoned_after": 0,
+   "calls": [
+    [
+     2,
+     [
+      "page_range"
+     ],
+     [
+      2,
+      5
+     ]
+    ]
+   ],
+   "events_at_answer": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ]
+   ],
+   "events_final": [
+    [
+     "acquire",
+     4,
+     "a.pdf"
+    ],
+    [
+     "release",
+     7
+    ]
+   ],
+   "response": [
+    422,
+    {
+     "error": "Parsing timed out after 0.3 seconds",
+     "errorCode": "PARSE_TIMEOUT",
+     "success": false
+    },
+    null
+   ],
+   "tasks_after": 0
+  }
+ }
+}

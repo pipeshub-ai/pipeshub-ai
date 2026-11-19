@@ -386,7 +386,7 @@ export function ProjectList() {
     }
     setBusyId(pendingLeave._id);
     try {
-      const { removed } = await ProjectApi.removeMember(pendingLeave._id, myUserId);
+      const { removed } = await ProjectApi.leave(pendingLeave._id, myUserId);
       if (!removed) {
         setPendingLeave(null);
         toast.error(t('chat.projects.leaveDialog.inherited'));

@@ -18,6 +18,7 @@ import {
   makeOrgContext,
   runWithOrgContext,
 } from '../../../libs/context/orgContext';
+import { setContextIdentity } from '../../../libs/context/request-context';
 
 /**
  * A delegated token has to satisfy the rules that issued it on every request,
@@ -180,6 +181,7 @@ export class OAuthAuthMiddleware {
         scopes,
         payload,
       };
+      setContextIdentity(payload);
 
       // The handlers after this one run in the token's organisation.
       asToken(payload, next);
@@ -442,6 +444,7 @@ export function scopeCheck(
             scopes: tokenScopes,
             payload,
           };
+          setContextIdentity(payload);
 
           next();
           return;

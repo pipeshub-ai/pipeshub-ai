@@ -102,7 +102,7 @@ async def test_a_held_lease_is_a_hint_to_wait() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_finish_runs_bound_to_the_intents_org(monkeypatch) -> None:
+async def test_the_finish_runs_bound_to_the_intents_org(monkeypatch: pytest.MonkeyPatch) -> None:
     """The loop runs with no ambient org; the org-checked graph calls of the delete fail closed without one."""
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
     seen: list[str | None] = []
@@ -196,3 +196,53 @@ async def test_a_retry_after_a_failed_attempt_is_due_without_the_grace_wait() ->
     r, _, _ = await reconciler(DELETING_KB, age_ms=60_000, finish=finish, attempts=1)
 
     assert await r.tick() == "deleted"
+
+
+DELETING_CONNECTOR = {"_key": KB, "type": "DRIVE", "status": "DELETING"}
+
+
+@pytest.mark.asyncio
+async def test_a_connector_stuck_deleting_is_finished_by_the_connector_finisher_not_the_kb_one() -> None:
+    kb, connector = AsyncMock(return_value={"success": True}), AsyncMock(return_value={"success": True})
+    r, _, _ = await reconciler(DELETING_CONNECTOR, age_ms=GRACE_MS + 1, finish=kb)
+    r.finish_connector_delete = connector
+
+    assert await r.tick() == "deleted"
+
+    connector.assert_awaited_once_with(ORG, KB)
+    kb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_without_a_connector_finisher_a_connector_stuck_deleting_is_left_alone() -> None:
+    r, _, _ = await reconciler(DELETING_CONNECTOR, age_ms=GRACE_MS + 1, finish=AsyncMock())
+
+    assert await r.tick() == "idle"
+
+
+def finisher_with(monkeypatch: pytest.MonkeyPatch, result: dict, *, gone: bool = False) -> tuple:
+    import app.connectors.services.storage_release as sr
+    monkeypatch.setattr(sr, "notify_principals_changed", AsyncMock())
+    monkeypatch.setattr(sr, "free_lane_of_deleted_connector", AsyncMock())
+    graph = SimpleNamespace(delete_connector_instance=AsyncMock(return_value=result), get_document=AsyncMock(return_value=None if gone else DELETING_CONNECTOR))
+    kafka = SimpleNamespace(publish_event=AsyncMock(return_value=True))
+    return sr._connector_finisher(MagicMock(), graph, kafka), graph, kafka
+
+
+@pytest.mark.asyncio
+async def test_the_connector_finisher_runs_the_graph_delete_and_publishes_the_vector_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    finish, graph, kafka = finisher_with(monkeypatch, {"success": True, "vector_membership_backfilled": True, "connector_name": "DRIVE", "record_group_ids": ["g"], "virtual_record_ids": []})
+
+    assert await finish(ORG, KB) == {"success": True}
+
+    graph.delete_connector_instance.assert_awaited_once_with(connector_id=KB, org_id=ORG)
+    assert kafka.publish_event.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_the_connector_finisher_fails_while_the_graph_delete_fails_and_succeeds_when_the_app_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    finish, _, kafka = finisher_with(monkeypatch, {"success": False, "partial": True, "error": "x"})
+    assert await finish(ORG, KB) == {"success": False}
+    finish, _, kafka = finisher_with(monkeypatch, {"success": False, "error": "not found"}, gone=True)
+    assert await finish(ORG, KB) == {"success": True}
+    kafka.publish_event.assert_not_awaited()

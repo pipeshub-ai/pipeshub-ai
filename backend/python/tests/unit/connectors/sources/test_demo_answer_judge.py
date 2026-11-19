@@ -300,6 +300,16 @@ def test_the_prompt_says_the_receipt_duty_is_not_a_conflict() -> None:
     assert 'sentence 1 also conflicting' in prompt
 
 
+def test_the_prompt_says_a_transition_term_does_not_take_back_the_plan() -> None:
+    prompt = " ".join(aj.SYSTEM_PROMPT.split())
+    # q5 failed bob on 2026-11-05: grandfathering existing customers, with a discount for
+    # moving early, was read as taking back the move to a platform fee.
+    assert "How a plan is carried out does not take back what the plan is" in prompt
+    assert "grandfathering, a phased roll-out or an incentive to move early" in prompt
+    # A reversal inside the claim's subject is still a conflict.
+    assert 'like "Existing Enterprise customers stay on per-seat pricing for good"' in prompt
+
+
 def test_a_must_state_claim_with_a_conflicting_sentence_is_contradicted_whatever_the_verdict() -> None:
     judge, _ = judge_with(reply_with_conflicts("supported", [2], [1]))
     claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]

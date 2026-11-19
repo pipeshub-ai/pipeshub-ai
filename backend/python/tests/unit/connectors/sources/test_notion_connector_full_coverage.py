@@ -54,6 +54,7 @@ def _make_connector():
     dep.org_id = "org-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)

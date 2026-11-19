@@ -3,6 +3,7 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import axios from 'axios';
+import { installUpstreamLogging } from '../../../libs/http/upstream-call';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../storage/constants/constants';
 import { storedServiceEndpoint } from '../../storage/utils/service-endpoint';
@@ -40,6 +41,8 @@ const INDEX_OPERATION = 'add this file to the knowledge base';
 const axiosInstance = axios.create({
   maxRedirects: 0,
 });
+// Created at import, possibly before index.ts instruments the default instance; a no-op if it inherited that.
+installUpstreamLogging(axiosInstance);
 
 export interface StorageResponseMetadata {
   documentId: string;

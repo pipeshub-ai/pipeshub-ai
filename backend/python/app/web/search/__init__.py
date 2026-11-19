@@ -16,6 +16,7 @@ from app.web.search.ddgs_search import DdgsSearch
 from app.web.search.duckduckgo_html import DuckDuckGoHtml
 from app.web.search.exa import ExaSearch
 from app.web.search.firecrawl import FirecrawlSearch
+from app.web.search.keenable import KeenableSearch
 from app.web.search.searxng import SearxngSearch
 from app.web.search.serper import SerperSearch
 from app.web.search.tavily import TavilySearch
@@ -43,11 +44,12 @@ PROVIDERS: dict[str, ProviderSpec] = {
         ProviderSpec("brave", BraveSearch.name, BraveSearch),
         ProviderSpec("searxng", SearxngSearch.name, SearxngSearch),
         ProviderSpec("firecrawl", FirecrawlSearch.name, FirecrawlSearch),
+        ProviderSpec("keenable", KeenableSearch.name, KeenableSearch),
     )
 }
 
-# Tried after the configured provider, and alone when none is configured: ddgs first, because it
-# spreads a query over several engines; DuckDuckGo's own page last.
+# What the stored "duckduckgo" provider runs, in this order: ddgs first, because it spreads a query
+# over several engines; DuckDuckGo's own page last. Never used unless an admin stored DuckDuckGo.
 FREE_PROVIDERS = ("ddgs", "duckduckgo")
 
 

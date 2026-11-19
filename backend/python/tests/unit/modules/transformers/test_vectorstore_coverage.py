@@ -16,6 +16,9 @@ from tests.support.vector_db import (
 
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     with patch(

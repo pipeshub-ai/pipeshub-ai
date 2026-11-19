@@ -21,7 +21,8 @@ import random
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.exceptions import TransportError
-from app.agent_loop_lib.transport.base import RetryConfig
+from app.agent_loop_lib.transport.base import RetryConfig, llm_error_class
+from app.utils.logging_fields import log_event, log_fields
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.responses import ModelResponse
@@ -65,6 +66,9 @@ def retry_with_status(
 
     `event_sink=None` (e.g. non-streaming/background runs) silently skips
     the SSE emission and just retries.
+
+    Each attempt runs with `attempt` (1-based) bound, so the `llm_call.end`
+    line of that model call carries it; each retry logs one WARN `llm_call.retry`.
     """
     cfg = config or RetryConfig()
 
@@ -74,11 +78,18 @@ def retry_with_status(
 
         for attempt in range(cfg.max_retries + 1):
             try:
-                return await next_fn()
+                with log_fields(attempt=attempt + 1):
+                    return await next_fn()
             except TransportError as exc:
                 if not _is_retryable(exc, cfg) or attempt >= cfg.max_retries:
                     raise
                 last_exc = exc
+                sleep_s = delay + random.uniform(0, delay * 0.1)
+                log_event(
+                    logger, "llm_call.retry", level=logging.WARNING,
+                    attempt=attempt + 1, max_attempts=cfg.max_retries + 1, status=exc.status_code,
+                    error_class=llm_error_class(exc), delay_ms=round(sleep_s * 1000),
+                )
                 if event_sink is not None:
                     try:
                         await event_sink.write({
@@ -92,8 +103,7 @@ def retry_with_status(
                         })
                     except Exception:
                         logger.debug("retry_with_status: event_sink.write failed", exc_info=True)
-                jitter = random.uniform(0, delay * 0.1)
-                await asyncio.sleep(delay + jitter)
+                await asyncio.sleep(sleep_s)
                 delay = min(delay * cfg.backoff_factor, cfg.max_delay)
 
         # Unreachable: loop either returns or raises on the last attempt.

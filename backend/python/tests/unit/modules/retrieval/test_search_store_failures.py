@@ -14,12 +14,14 @@ import pytest
 
 import app.modules.retrieval.retrieval_service as mod
 from app.exceptions.fastapi_responses import Status
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.retrieval_service import (
     SEARCH_INDEX_TIMEOUT_MESSAGE,
     SEARCH_INDEX_UNREACHABLE_MESSAGE,
     RetrievalService,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.services.vector_db.models import VectorDBCapabilities
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 
 pytestmark = pytest.mark.asyncio
@@ -212,3 +214,115 @@ async def test_an_ordinary_empty_search_carries_no_failure(service, mock_vector_
     assert result["status"] == Status.EMPTY_RESPONSE.value
     assert "searchIncomplete" not in result
     assert mock_vector_db_service.query_nearest_points.await_count == 1
+
+
+async def test_a_degraded_answer_from_the_store_is_flagged_in_the_response(service, mock_vector_db_service) -> None:
+    point = _point()
+    point.degraded = "admission"
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[point]])
+
+    result = await _search(service)
+
+    assert result["status"] == Status.SUCCESS.value
+    assert result["searchDegraded"] is True
+
+
+async def test_a_complete_answer_carries_no_degraded_flag(service, mock_vector_db_service) -> None:
+    point = _point()
+    point.degraded = None
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[point]])
+
+    assert "searchDegraded" not in await _search(service)
+
+
+async def test_a_degraded_collection_whose_hits_fall_below_the_cut_still_flags_the_answer(service, mock_vector_db_service) -> None:
+    strong, weak = _point("strong"), _point("weak")
+    strong.score, strong.degraded = 0.9, None
+    weak.score, weak.degraded = 0.1, "timeout"
+
+    async def by_collection(collection_name: str, requests: list) -> list[list]:
+        return [[strong]] if collection_name == "full" else [[weak]]
+
+    mock_vector_db_service.query_nearest_points = AsyncMock(side_effect=by_collection)
+    plan = mod._QueryPlan(collections=["full", "partial"])
+
+    hits = await service._run_searches(["q"], None, 1, "o1", "u1", [[0.1]], [None], plan=plan)
+
+    assert len(hits) == 1  # the weak hit was trimmed ...
+    assert plan.degraded is True  # ... and the flag was kept
+
+
+async def test_a_deeper_read_for_source_diversity_passes_its_degraded_flag_on(service) -> None:
+    plan = mod._QueryPlan(dense=[[0.1]], sparse=[None], collections=["records"])
+
+    async def deeper_read(*_args: object, plan: mod._QueryPlan, **_kwargs: object) -> list:
+        plan.degraded = True
+        return []
+
+    service._execute_parallel_searches = AsyncMock(side_effect=deeper_read)
+    service._keep_permitted_hits = AsyncMock(return_value={})
+
+    await service._diversity_candidates(
+        ["q"], None, 30, "o1", "u1", plan, containers=None, enumerated={"vr1": "rec1"}, by_record_ids=AsyncMock(),
+        record_ids_first=False, record_cut=None, allow_requery=True, user_key="user-key",
+        scope_connector_ids=None, scopes=(),
+    )
+
+    assert plan.degraded is True
+
+
+def _partial_and_empty(reason: str = "timeout") -> AsyncMock:
+    """A provider whose partial search found nothing, and says so without any hit to mark."""
+    async def query(collection_name: str, requests: list) -> list[list]:
+        degraded_notice.note(reason)
+        return [[] for _ in requests]
+
+    return AsyncMock(side_effect=query)
+
+
+@pytest.fixture
+def tracked_request() -> Iterator[None]:
+    token = degraded_notice._seen.set(None)
+    degraded_notice.track()
+    yield
+    degraded_notice._seen.reset(token)
+
+
+async def test_an_empty_partial_answer_flags_the_dense_search(service, mock_vector_db_service, tracked_request) -> None:
+    mock_vector_db_service.query_nearest_points = _partial_and_empty()
+
+    result = await _search(service)
+
+    assert result["searchDegraded"] is True
+    assert degraded_notice.was_degraded() is True
+
+
+async def test_an_empty_partial_answer_flags_the_dense_search_outside_a_tracked_request(service, mock_vector_db_service) -> None:
+    mock_vector_db_service.query_nearest_points = _partial_and_empty()
+
+    assert (await _search(service))["searchDegraded"] is True
+
+
+async def test_a_complete_empty_answer_is_not_flagged(service, mock_vector_db_service, tracked_request) -> None:
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[]])
+
+    assert "searchDegraded" not in await _search(service)
+
+
+async def test_an_empty_partial_answer_flags_the_lexical_search(service, mock_vector_db_service, tracked_request) -> None:
+    mock_vector_db_service.get_capabilities = MagicMock(return_value=VectorDBCapabilities(supports_server_side_text_search=True))
+    mock_vector_db_service.query_nearest_points = _partial_and_empty()
+    service._capabilities = mock_vector_db_service.get_capabilities()
+    service._container_filter_enabled = AsyncMock(return_value=False)
+
+    result = await service.search_lexical(["rollback"], user_id="u1", org_id="o1")
+
+    assert result.degraded is True
+
+
+async def test_a_complete_lexical_search_is_not_flagged(service, mock_vector_db_service, tracked_request) -> None:
+    mock_vector_db_service.query_nearest_points = AsyncMock(return_value=[[]])
+    service._capabilities = VectorDBCapabilities(supports_server_side_text_search=True)
+    service._container_filter_enabled = AsyncMock(return_value=False)
+
+    assert (await service.search_lexical(["rollback"], user_id="u1", org_id="o1")).degraded is False

@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Button, Flex, IconButton, Separator, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { isPersonalToolset, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
-import { apiClient } from '@/lib/api';
-import { formatRelativeTime } from '@/lib/utils/formatters';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { formatRelativeTime, shortUserName } from '@/lib/utils/formatters';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { ToolsetToolRulesDialog } from '@/config';
 import { ToolsetToolRulesDialog as OwnToolRulesDialog } from './toolset-tool-rules-dialog';
@@ -46,44 +46,11 @@ export function ToolsetInstanceRowCard({
     !isNoneAuthType(authTypeUpper) &&
     (isOAuthType(authTypeUpper) || scope === 'personal');
 
-  const [enabledByName, setEnabledByName] = useState<string | null>(null);
-  const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
+  const enabledBy = useUserDirectoryEntry(instance.createdBy);
+  const enabledByName = shortUserName(enabledBy?.name);
   const [toolRulesOpen, setToolRulesOpen] = useState(false);
   // A personal action's rules are its owner's in every edition; an org action's editor is the edition's.
   const RulesDialog = isPersonalToolset(instance) ? OwnToolRulesDialog : ToolsetToolRulesDialog;
-
-  useEffect(() => {
-    if (!instance.createdBy) return;
-    let cancelled = false;
-
-    async function fetchUserData() {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [instance.createdBy],
-        });
-        if (cancelled) return;
-
-        const users = Array.isArray(data) ? data : data.users ?? [];
-        if (users.length > 0) {
-          const user = users[0] as Record<string, unknown>;
-          const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId = (user.id as string) ?? (user._id as string) ?? instance.createdBy;
-          const parts = fullName.trim().split(/\s+/);
-          const displayName =
-            parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}` : parts[0] || '';
-          setEnabledByName(displayName);
-          if (userId) setEnabledByAvatar(`/api/v1/users/${userId}/dp`);
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    void fetchUserData();
-    return () => {
-      cancelled = true;
-    };
-  }, [instance.createdBy]);
 
   const ts = instance.updatedAtTimestamp ?? instance.createdAtTimestamp;
   const when = ts ? formatRelativeTime(ts) : '';
@@ -222,7 +189,7 @@ export function ToolsetInstanceRowCard({
             <Flex align="center" gap="2">
               <Avatar
                 size="1"
-                src={enabledByAvatar ?? undefined}
+                src={enabledBy?.profilePicture}
                 fallback={enabledByName?.[0] ?? '?'}
                 radius="full"
               />

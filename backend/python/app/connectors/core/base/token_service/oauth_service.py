@@ -36,6 +36,14 @@ class RefreshTokenInvalidError(Exception):
     """The OAuth provider permanently rejected the refresh token (expired or
     revoked). Retrying cannot succeed — the user must re-authenticate."""
 
+    refresh_reason = "invalid_grant"
+
+
+class RefreshConfigError(ValueError):
+    """A refresh cannot start: the stored config or the OAuth client credentials are missing."""
+
+    refresh_reason = "config_missing"
+
 
 class OAuthTokenRequestError(Exception):
     """The token endpoint refused a request. `error_code` is the RFC 6749 `error` it sent, if any."""

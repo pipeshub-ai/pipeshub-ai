@@ -129,7 +129,7 @@ class TestInitialisation:
         budget.report_incident()
         good = bytearray((lane_dir / "ledger").read_bytes())
         other_version = bytearray(good)
-        other_version[8] = 2
+        other_version[8] = 1
         assert LedgerRecord.decode(bytes(other_version)) is None
         other_magic = bytearray(good)
         other_magic[0] = ord("Q")
@@ -286,7 +286,8 @@ class TestLockBudget:
             reap(writer)
             budget.close()
 
-    def test_real_stopped_holder_does_degrade_within_2_5_seconds(self, lane_dir: Path) -> None:
+    def test_real_stopped_holder_degrades_once_the_lock_has_failed_for_the_fallback_time(self, lane_dir: Path) -> None:
+        from app.services.resource_governor.lane_ledger import LEDGER_FALLBACK_SECONDS
         from app.services.resource_governor.lanes import LaneBudget, plan_lanes
 
         budget = LaneBudget.open(plan_lanes(cpus=16, heavy=16), lane_dir, memory_reader=Mem(10 * GIB, GIB))
@@ -294,13 +295,24 @@ class TestLockBudget:
         try:
             first_line(holder)
             os.kill(holder.pid, signal.SIGSTOP)
-            start = time.monotonic()
-            while time.monotonic() - start < 2.5:
-                budget.admit_spawn(0)
-                if budget._ledger.degraded:
+            ledger = budget._ledger
+            budget.admit_spawn(0)
+            failed_at = ledger._fail_since
+            assert failed_at is not None  # the first try already failed against the stopped holder
+            # Judged on the ledger's own clock at each poll, not by an outside wall-clock window (it was "2.0 <= t <= 2.5",
+            # which a busy runner could push past 2.5): not degraded before the fallback time, degraded at the first poll
+            # after it. The fake-clock test above pins the same rule exactly.
+            hang_bound = time.monotonic() + 30
+            while True:
+                age = ledger._clock() - failed_at
+                if ledger.degraded:
                     break
+                assert age < LEDGER_FALLBACK_SECONDS, f"not degraded {age:.2f}s after the lock started failing"
+                assert time.monotonic() < hang_bound, "the ledger never degraded"
                 time.sleep(0.05)
-            assert 2.0 <= time.monotonic() - start <= 2.5
+                budget.admit_spawn(0)
+            assert ledger._fail_since == failed_at  # the polls in between did not restart the timer
+            assert ledger._clock() - failed_at >= LEDGER_FALLBACK_SECONDS
         finally:
             os.kill(holder.pid, signal.SIGCONT)
             reap(holder)
@@ -897,3 +909,51 @@ class TestAtomicRecord:
             txn.write(replace(good, cap=3))
         assert record_on_disk(lane_dir) == replace(good, cap=3)
         ledger.close()
+
+
+class TestWaiterFields:
+    """Ledger v2 (T65): the waiter flag lives in the record, and the version in the directory name."""
+
+    def test_waiter_fields_roundtrip(self) -> None:
+        record = LedgerRecord(
+            cap=3, waiter_at=1234.5, waiter_weight=3, waiter_pid=4242, waiter_clear_at=1237.0, reap_request_at=9.0
+        )
+        again = LedgerRecord.decode(record.encode())
+        assert again == record
+        assert len(record.encode()) == RECORD_SIZE
+
+    def test_a_v1_record_is_not_accepted(self) -> None:
+        import zlib
+
+        raw = bytearray(LedgerRecord(cap=3).encode())
+        lane_ledger._HEADER.pack_into(raw, 0, lane_ledger._MAGIC, 1, 0)
+        lane_ledger._HEADER.pack_into(raw, 0, lane_ledger._MAGIC, 1, zlib.crc32(bytes(raw)))  # a whole, valid v1 record
+        assert LedgerRecord.decode(bytes(raw)) is None
+
+    def test_directory_name_carries_ledger_version(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from app.services.resource_governor import lanes
+
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr(lanes, "LEDGER_VERSION", 7)  # the name follows the constant, not a literal
+        budget = lanes.open_lane_budget(
+            lanes.plan_lanes(cpus=4, heavy=4), local_share=1, environ={"PARSE_LANES": "on"}, memory_reader=Mem()
+        )
+        assert budget is not None
+        budget.close()
+        assert [p.name.split("-")[3] for p in tmp_path.iterdir() if "cpu-lanes" in p.name] == ["v7"]
+        assert lane_ledger.LEDGER_VERSION == 3
+
+    def test_v3_never_opens_a_v1_directory(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from app.services.resource_governor import lanes
+
+        old = tmp_path / "pipeshub-cpu-lanes-v1-64"
+        old.mkdir(mode=0o700)
+        (old / "marker").write_text("v1")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        budget = lanes.open_lane_budget(
+            lanes.plan_lanes(cpus=4, heavy=4), local_share=1, environ={"PARSE_LANES": "on"}, memory_reader=Mem()
+        )
+        assert budget is not None
+        budget.close()
+        assert sorted(p.name for p in old.iterdir()) == ["marker"]  # untouched
+        assert any(p.name.startswith("pipeshub-cpu-lanes-v3-64") for p in tmp_path.iterdir())

@@ -23,7 +23,7 @@ function Harness({ left, right }: { left: KbColumn | 'name'; right: KbColumn | n
 }
 
 const drag = (dx: number) => {
-  const handle = screen.getByRole('separator', { name: 'handle' });
+  const handle = screen.getByRole('separator', { name: 'handle', hidden: true });
   fireEvent.pointerDown(handle, { button: 0, clientX: 100 });
   act(() => {
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: 100 + dx }));
@@ -54,7 +54,7 @@ describe('records table column widths', () => {
     drag(-500);
     // Updated stops at its 120px minimum, wide enough for "29 Oct 2026"
     expect(screen.getByTestId('w').textContent).toBe('96px 147px 120px');
-    fireEvent.doubleClick(screen.getByRole('separator', { name: 'handle' }));
+    fireEvent.doubleClick(screen.getByRole('separator', { name: 'handle', hidden: true }));
     expect(screen.getByTestId('w').textContent).toBe('96px 147px 146px');
   });
 });

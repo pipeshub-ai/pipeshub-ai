@@ -1,0 +1,41 @@
+# SharePoint team site whose items hold no snapshot of the inherited list: an item inherits its folder's access until it breaks
+# inheritance, and a folder with unique permissions is the nearest scope of everything below it. (The connector on main stores the
+# snapshot on every item; this world is the shape the structural scenarios need, where a break or a move changes what hangs
+# below the folder. Item-level connectors such as the ones listed as item-acl in the matrix write this shape.)
+principals:
+  - {id: ann}
+  - {id: ben}
+  - {id: cat}
+  - {id: g:all, kind: group}
+  - {id: g:eng, kind: group}
+  - {id: g:ops, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: SHAREPOINT}
+  - {id: site:Team, kind: group, connector: app, rule: OPEN, parents: [app], belongs: [app]}
+  - {id: library:Docs, kind: group, connector: app, rule: OPEN, parents: [site:Team], inherits: [site:Team], belongs: [site:Team]}
+  - {id: folder:Eng, kind: record, connector: app, rule: OPEN, parents: [library:Docs], belongs: [library:Docs]}
+  - {id: folder:Specs, kind: record, connector: app, rule: OPEN, parents: [folder:Eng], inherits: [folder:Eng], belongs: [library:Docs]}
+  - {id: spec-a, kind: record, connector: app, rule: OPEN, parents: [folder:Specs], inherits: [folder:Specs], belongs: [library:Docs]}
+  - {id: spec-b, kind: record, connector: app, rule: OPEN, parents: [folder:Specs], inherits: [folder:Specs], belongs: [library:Docs]}
+  - {id: folder:Deep, kind: record, connector: app, rule: OPEN, parents: [folder:Specs], inherits: [folder:Specs], belongs: [library:Docs]}
+  - {id: deep-a, kind: record, connector: app, rule: OPEN, parents: [folder:Deep], inherits: [folder:Deep], belongs: [library:Docs]}
+  - {id: folder:Ops, kind: record, connector: app, rule: OPEN, parents: [library:Docs], belongs: [library:Docs]}
+  - {id: runbook, kind: record, connector: app, rule: OPEN, parents: [folder:Ops], inherits: [folder:Ops], belongs: [library:Docs]}
+  - {id: folder:Plans, kind: record, connector: app, rule: OPEN, parents: [folder:Eng], belongs: [library:Docs]}
+  - {id: plan-a, kind: record, connector: app, rule: OPEN, parents: [folder:Plans], inherits: [folder:Plans], belongs: [library:Docs]}
+  - {id: plan-b, kind: record, connector: app, rule: OPEN, parents: [folder:Plans], inherits: [folder:Plans], belongs: [library:Docs]}
+grants:
+  - [g:all, site:Team]
+  - [g:eng, folder:Eng]
+  - [g:ops, folder:Ops]
+  - [g:ops, folder:Plans]
+memberships:
+  - [ann, g:all]
+  - [ben, g:all]
+  - [cat, g:all]
+  - [ann, g:eng]
+  - [ben, g:ops]
+gates:
+  - [ann, app]
+  - [ben, app]
+  - [cat, app]

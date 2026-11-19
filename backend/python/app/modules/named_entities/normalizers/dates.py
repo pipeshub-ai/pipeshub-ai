@@ -13,6 +13,7 @@ import re
 import threading
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
+from decimal import Decimal
 from functools import lru_cache
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -495,15 +496,18 @@ def _duration(text: str) -> DurationValue | None:
     match = _DURATION.match(text.strip())
     if not match:
         return None
-    amount = float(match.group("n"))
+    # Decimal, so "1.1 hours" is 3960 seconds, not 3960.0000000000005: a filter
+    # ending at 3960 must take it in.
+    written = Decimal(match.group("n"))
+    amount = float(written)
     unit = _DURATION_UNITS.get(match.group("u").casefold(), match.group("u").casefold().rstrip("s"))
     if unit == "millisecond":
         # ISO 8601 has no millisecond designator: fractional seconds.
-        seconds = amount / 1000
+        seconds = float(written / 1000)
         return DurationValue(iso=f"PT{_plain(seconds)}S", seconds=seconds, approx=False)
     seconds_map = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
     if unit in seconds_map:
-        seconds = amount * seconds_map[unit]
+        seconds = float(written * seconds_map[unit])
         iso_unit = {"second": "S", "minute": "M", "hour": "H", "day": "D", "week": "W"}[unit]
         prefix = "PT" if unit in {"second", "minute", "hour"} else "P"
         number = int(amount) if amount == int(amount) else amount

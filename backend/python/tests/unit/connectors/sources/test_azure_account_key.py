@@ -207,3 +207,14 @@ class TestSave:
 
         saved = config_service.set_config.await_args.args[1]
         assert saved["auth"]["azureBlobConnectionString"] == GOOD
+
+
+@pytest.mark.usefixtures("_route_access")
+async def test_an_auth_save_cannot_change_the_auth_type() -> None:
+    # A rewritten authType picks another client at sync time (Jira Cloud: BASIC_AUTH skipped the site check).
+    request, config_service = _auth_save(GOOD, {"azureBlobConnectionString": GOOD, "authType": "BASIC_AUTH"})
+
+    await update_connector_instance_auth_config("az-1", request, AsyncMock())
+
+    saved = config_service.set_config.await_args.args[1]
+    assert saved["auth"]["authType"] == AuthType.CONNECTION_STRING

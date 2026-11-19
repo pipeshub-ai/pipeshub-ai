@@ -690,7 +690,7 @@ class TestPerformEmbeddingHealthCheck:
 
         assert resp.status_code == 200
         assert [call.kwargs["model_name"] for call in mock_get.call_args_list] == ["model-a", "model-b"]
-        collection_check.assert_awaited_once_with(mock_request, first_model, 768, logger)
+        collection_check.assert_awaited_once_with(mock_request, first_model, 768, logger, new_config=config)
 
 
 class TestHealthCheckEndpoint:

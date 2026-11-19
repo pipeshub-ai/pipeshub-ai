@@ -42,6 +42,7 @@ def mock_data_entities_processor() -> object:
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.on_record_content_update = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()
     proc.get_all_app_users = AsyncMock(return_value=[])

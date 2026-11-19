@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Flex, IconButton, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { apiClient } from '@/lib/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
@@ -55,38 +55,8 @@ export function McpInstanceRow({
   const hasDiscoveredTools = Boolean(toolsResult && !toolsResult.loading && !toolsResult.error && toolsResult.tools.length > 0);
 
   const isReadOnly = isMcpInstanceReadOnly(instance);
-  const [createdByName, setCreatedByName] = useState<string | null>(null);
-  const [createdByAvatar, setCreatedByAvatar] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!instance.createdBy || isReadOnly) return;
-    let cancelled = false;
-
-    async function fetchCreatedByUser() {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [instance.createdBy],
-        });
-        if (cancelled) return;
-
-        const users = Array.isArray(data) ? data : data.users ?? [];
-        if (users.length > 0) {
-          const user = users[0] as Record<string, unknown>;
-          const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId = (user.id as string) ?? (user._id as string) ?? instance.createdBy;
-          setCreatedByName(fullName.trim() || instance.createdBy);
-          if (userId) setCreatedByAvatar(`/api/v1/users/${userId}/dp`);
-        }
-      } catch {
-        /* ignore — fall back to the raw id */
-      }
-    }
-
-    void fetchCreatedByUser();
-    return () => {
-      cancelled = true;
-    };
-  }, [instance.createdBy, isReadOnly]);
+  const createdBy = useUserDirectoryEntry(isReadOnly ? null : instance.createdBy);
+  const createdByName = createdBy?.name?.trim() || null;
 
   return (
     <Flex
@@ -184,7 +154,7 @@ export function McpInstanceRow({
           <InfoRow label={t('workspace.mcpServers.details.createdBy', { defaultValue: 'Created by' })}>
             <Avatar
               size="1"
-              src={createdByAvatar ?? undefined}
+              src={createdBy?.profilePicture}
               fallback={createdByName?.[0] ?? '?'}
               radius="full"
             />

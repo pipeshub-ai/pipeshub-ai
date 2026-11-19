@@ -50,6 +50,9 @@ describe('getSafeReturnTo', () => {
       ' //evil.example',
       ' https://evil.example/phish',
       '\t/chat',
+      '/.//evil.example/phish',
+      '/chat/..//evil.example',
+      '/%2e//evil.example',
     ]) {
       expect(getSafeReturnTo(value), JSON.stringify(value)).toBeNull();
     }

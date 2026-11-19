@@ -7,6 +7,8 @@ import {
 } from '@/lib/storage/chat-unread';
 import { getCurrentUserId } from './utils/current-user-id';
 import { orderPinnedFirst, withPinned } from './utils/pinned-conversations';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import {
   ChatKnowledgeFilters,
   CollectionMeta,
@@ -170,6 +172,12 @@ export interface ChatPreviewFile {
    * not the first citation on the target page.
    */
   initialCitationId?: string;
+  /** Which stream the content came from: the original file or its PDF conversion. */
+  variant?: 'original' | 'pdf';
+  /** Increments on every jump within the shown record, so the same citation twice re-scrolls. */
+  jumpSeq?: number;
+  /** Hold on the cached content behind `url`/`blob`; released when the preview is replaced or closed. */
+  lease?: { release(): void };
   /**
    * External URL for the record (e.g. Jira ticket, Confluence page).
    * Used by UnknownPreview to open the source in a new browser tab.
@@ -218,6 +226,17 @@ export interface ChatPreviewFile {
    * on every version switch.
    */
   isSwitchingVersion?: boolean;
+}
+
+interface ConversationsPage {
+  conversations: Conversation[];
+  pagination: ConversationsListResponse['pagination'];
+}
+
+export interface SidebarConversationLists {
+  owned: ConversationsPage;
+  shared: ConversationsPage;
+  excludeProjectChats: boolean;
 }
 
 /**
@@ -328,8 +347,11 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     stopping: false,
     messagePagination: null,
     rawMessages: null,
+    forkedFrom: null,
+    forks: [],
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
+    sharedWith: isNew ? [] : null,
   };
 }
 
@@ -376,6 +398,8 @@ interface ChatState {
   conversationsError: string | null;
   pagination: ConversationsListResponse['pagination'] | null;
   sharedPagination: ConversationsListResponse['pagination'] | null;
+  /** Which Recents filter the lists above were fetched with; null until the first load. */
+  sidebarListsExcludeProjectChats: boolean | null;
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
@@ -582,12 +606,10 @@ interface ChatState {
   invalidateConversation: (convId: string) => void;
 
   // ── Sidebar actions ──
-  setConversations: (conversations: Conversation[]) => void;
-  setSharedConversations: (conversations: Conversation[]) => void;
+  /** Replaces Recents (owned + shared, page 1) with a server response. */
+  setSidebarLists: (lists: SidebarConversationLists) => void;
   setIsConversationsLoading: (loading: boolean) => void;
   setConversationsError: (error: string | null) => void;
-  setPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
-  setSharedPagination: (pagination: ConversationsListResponse['pagination'] | null) => void;
   toggleMoreChatsPanel: (sectionType: 'shared' | 'your') => void;
   closeMoreChatsPanel: () => void;
   toggleAgentsSidebar: () => void;
@@ -803,6 +825,7 @@ const initialState = {
   conversationsError: null as string | null,
   pagination: null as ConversationsListResponse['pagination'] | null,
   sharedPagination: null as ConversationsListResponse['pagination'] | null,
+  sidebarListsExcludeProjectChats: null as boolean | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
   unreadConversationIds: new Set<string>(),
@@ -1079,17 +1102,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Sidebar actions ──────────────────────────────────────────────
 
-  setConversations: (conversations) => set({ conversations }),
-
-  setSharedConversations: (conversations) => set({ sharedConversations: conversations }),
+  setSidebarLists: ({ owned, shared, excludeProjectChats }) =>
+    set({
+      conversations: owned.conversations,
+      sharedConversations: shared.conversations,
+      pagination: owned.pagination,
+      sharedPagination: shared.pagination,
+      sidebarListsExcludeProjectChats: excludeProjectChats,
+    }),
 
   setIsConversationsLoading: (loading) => set({ isConversationsLoading: loading }),
 
   setConversationsError: (error) => set({ conversationsError: error }),
-
-  setPagination: (pagination) => set({ pagination }),
-
-  setSharedPagination: (sharedPagination) => set({ sharedPagination }),
 
   toggleMoreChatsPanel: (sectionType) =>
     set((state) => {
@@ -1127,33 +1151,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   closeAgentsSidebar: () => set({ isAgentsSidebarOpen: false }),
 
+  // Resets only the sidebar's own state. The agent's tools, knowledge, name and access belong to
+  // the chat page, which sets and clears them from the agent detail as the URL's agent changes.
   setAgentSidebarAgentId: (id) =>
     set((state) => {
-      if (id === null) {
-        return {
-          agentSidebarAgentId: null,
-          agentConversations: [],
-          agentConversationsPagination: null,
-          agentConversationsError: null,
-          isAgentMoreChatsPanelOpen: false,
-          agentMoreChatsPagination: null,
-          agentStreamTools: null,
-          agentToolCatalogFullNames: [],
-          agentChatConnectors: [],
-          agentChatKbIds: [],
-          agentKnowledgeCollectionRows: [],
-          agentChatToolGroups: [],
-          agentChatMcpGroups: [],
-          agentKnowledgeDefaults: { apps: [], kb: [] },
-          agentKnowledgeScope: null,
-          agentContextDisplayName: null,
-          agentContextCreatedBy: null,
-          agentContextAccess: null,
-          agentDeprecatedToolNames: [],
-          isAgentsSidebarOpen: false,
-        };
-      }
-      if (state.agentSidebarAgentId === id) {
+      if (id !== null && state.agentSidebarAgentId === id) {
         return state.isAgentsSidebarOpen ? { isAgentsSidebarOpen: false } : state;
       }
       return {
@@ -1163,19 +1165,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentConversationsError: null,
         isAgentMoreChatsPanelOpen: false,
         agentMoreChatsPagination: null,
-        agentStreamTools: null,
-        agentToolCatalogFullNames: [],
-        agentChatConnectors: [],
-        agentChatKbIds: [],
-        agentKnowledgeCollectionRows: [],
-        agentChatToolGroups: [],
-        agentChatMcpGroups: [],
-        agentKnowledgeDefaults: { apps: [], kb: [] },
-        agentKnowledgeScope: null,
-        agentContextDisplayName: null,
-        agentContextCreatedBy: null,
-        agentContextAccess: null,
-        agentDeprecatedToolNames: [],
         isAgentsSidebarOpen: false,
       };
     }),
@@ -1512,8 +1501,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     })),
 
-  bumpConversationsVersion: () =>
-    set((state) => ({ conversationsVersion: state.conversationsVersion + 1 })),
+  bumpConversationsVersion: () => {
+    set((state) => ({ conversationsVersion: state.conversationsVersion + 1 }));
+    revalidateSwrNamespace(SWR_NS.conversationLists);
+  },
 
   // ── Project actions ──────────────────────────────────────────────
 
@@ -1632,7 +1623,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Settings actions ─────────────────────────────────────────────
 
-  setPreviewFile: (file) => set({ previewFile: file }),
+  setPreviewFile: (file) =>
+    set((state) => {
+      const held = state.previewFile?.lease;
+      if (held && held !== file?.lease) held.release();
+      return { previewFile: file };
+    }),
 
   setPreviewMode: (mode) => set({ previewMode: mode }),
 
@@ -1640,8 +1636,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearPreview: () =>
     set((state) => {
-      // Revoke blob URL if present
-      if (state.previewFile?.url?.startsWith('blob:')) {
+      if (state.previewFile?.lease) {
+        state.previewFile.lease.release();
+      } else if (state.previewFile?.url?.startsWith('blob:')) {
         URL.revokeObjectURL(state.previewFile.url);
       }
       return { previewFile: null, previewMode: 'sidebar' };
@@ -1791,10 +1788,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     for (const slot of Object.values(slots)) {
       slot.abortController?.abort();
     }
+    get().previewFile?.lease?.release();
     unreadOwnerId = null;
-    set(initialState);
+    // The capability toggles are a device setting kept in localStorage; the
+    // snapshot taken at module load may be older than what was chosen since.
+    set({ ...initialState, settings: { ...initialState.settings, agentCapabilities: lsGetAgentCapabilities() } });
   },
 }));
+
+// Electron signs out without a page load: a stream or list left from the last
+// user must not reach the next one's chats.
+onSessionEnd(() => useChatStore.getState().reset());
 
 /**
  * Sentinel context key for the non-agent (Assistant) chat. Using a Unicode

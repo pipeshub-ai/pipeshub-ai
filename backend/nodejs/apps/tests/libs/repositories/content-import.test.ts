@@ -104,6 +104,30 @@ describe('content importers: documents become rows', () => {
     expect(st.skipped).to.have.length(1)
   })
 
+  it('notification: visibleAt is carried to visible_at (a date or its ISO string), and a copy without one has none', async () => {
+    const { tx, writes } = capture()
+    const d = { _id: I, orgId: O, assignedTo: U, type: 'info', createdAt: T }
+    const later = '2026-02-03T04:05:06.000Z'
+    await importNotificationDocs(tx, [d, { ...d, visibleAt: later }, { ...d, visibleAt: new Date(later), updatedAt: T }])
+    const [plain, scheduled, asDate] = writes['platform.notifications']!
+    expect(plain!.visible_at).to.equal(null)
+    expect(scheduled).to.include({ visible_at: later, updated_at: later })
+    expect(asDate).to.include({ visible_at: later, updated_at: T })
+  })
+
+  it('notification mapping: visible_at is mapped, and a copy that lost it is a difference on that notification', () => {
+    const m = CONTENT_MAPPINGS.find((x) => x.collection === 'notifications')!
+    expect(m.fields.find((f) => f.col === 'visible_at')).to.deep.include({ path: 'visibleAt', type: 'date' })
+    const scheduled = (contentDocs().notifications ?? []).find((n) => (n as R).type === 'scheduled')!
+    const source = prepareSource(m, scheduled, new SourceReport())!
+    expect(compareDocs([source], [{ ...source }])).to.have.length(0)
+    const lost = { ...source } as R
+    delete lost.visibleAt
+    const diffs = compareDocs([source], [lost as never])
+    expect(diffs).to.have.length(1)
+    expect(diffs[0]!.detail.join(' ')).to.include('visibleAt')
+  })
+
   it('OAuth app: defaults, and the slug it is given or one made from the id', async () => {
     const { tx, writes } = capture()
     const d = { _id: I, orgId: O, createdBy: U, clientId: 'c', clientSecretEncrypted: 's', name: 'app', createdAt: T }
@@ -145,6 +169,20 @@ describe('content importers: documents become rows', () => {
     const none = capture()
     const st2 = await importOAuthTokenDocs(none.tx, 'oauthDeviceCodes', [d])
     expect(st2.skipped[0]!.reason).to.contain('no organisation')
+  })
+
+  it('agent registrations: held by the install organisation, approved scopes kept, those past their retention left out', async () => {
+    const future = new Date(Date.now() + 3600_000).toISOString()
+    const d = { _id: I, claimEmail: 'a@example.test', claimTokenHash: 'c', attemptTokenHash: 'a', userCodeHash: 'u', attemptExpiresAt: future, expiresAt: future, purgeAt: future, status: 'claimed', claimedUserId: U, claimedOrgId: O, approvedScopes: ['org:read'] }
+    const withOrg = capture((sql) => (sql.includes('import.install_org') ? [{ org_id: O }] : []))
+    const st = await importOAuthTokenDocs(withOrg.tx, 'oauthAgentRegistrations', [d, { ...d, _id: U, purgeAt: '2000-01-01T00:00:00.000Z' }, { ...d, _id: U, claimTokenHash: 1 }, { ...d, _id: O, approvedScopes: undefined, status: undefined }])
+    const rows = withOrg.writes['oauth.agent_registrations']!
+    expect(rows[0]).to.include({ org_id: O, status: 'claimed', failed_attempts: 0, claimed_user_id: U, claimed_org_id: O })
+    expect(rows[0]!.approved_scopes).to.deep.equal(['org:read'])
+    expect(rows[1]).to.include({ status: 'pending', approved_scopes: null })
+    expect(st.skipped.map((s) => s.reason)).to.deep.equal(['agent registration is past its retention', 'agent registration without a usable _id, hash, email or expiry'])
+    const none = capture()
+    expect((await importOAuthTokenDocs(none.tx, 'oauthAgentRegistrations', [d])).skipped[0]!.reason).to.contain('no organisation')
   })
 
   it('outbox: ids keep the creation order, published events are history, publishing becomes pending', async () => {

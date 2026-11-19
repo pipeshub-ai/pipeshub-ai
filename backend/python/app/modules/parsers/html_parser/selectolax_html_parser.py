@@ -16,6 +16,7 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.html_parser.image_sources import img_source
 from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
@@ -43,9 +44,11 @@ class SelectolaxHtmlParser:
       using ``<base>``, canonical link, or other heuristics in the document.
     """
 
-    def __init__(self, **kwargs: object) -> None:
+    def __init__(self, *, allow_remote_fetch: bool = True, **kwargs: object) -> None:
         self._converter = HtmlToBlocksConverter()
         self._logger = kwargs.get("logger") or logging.getLogger(__name__)
+        # False for a mail's HTML: fetching its remote images would tell the sender it was read.
+        self._allow_remote_fetch = allow_remote_fetch
 
     # ------------------------------------------------------------------
     # Public API
@@ -75,7 +78,7 @@ class SelectolaxHtmlParser:
             
             urls_to_convert = [image["url"] for image in images]
             base64_urls = await ImageParser.urls_to_base64(
-                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+                urls_to_convert, allow_remote_fetch=self._allow_remote_fetch
             )
 
             for i, image in enumerate(images):
@@ -180,13 +183,7 @@ class SelectolaxHtmlParser:
         image_counter = 1
 
         for img_tag in soup.find_all("img"):
-            src = img_tag.get("src", "").strip()
-            if not src:
-                srcset = img_tag.get("srcset", "")
-                if srcset:
-                    first_part = srcset.split(",")[0].split()
-                    if first_part:
-                        src = first_part[0].strip()
+            src = img_source(img_tag)
             if not src:
                 continue
             # A raster data: image already is the image; the converter stores it

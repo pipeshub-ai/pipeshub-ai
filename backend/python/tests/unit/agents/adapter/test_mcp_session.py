@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from typing import Any
 
 import httpx
@@ -32,6 +33,7 @@ from app.agents.mcp.errors import (
 )
 from app.agents.mcp.models import OAuthTokens
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService
 
@@ -590,6 +592,86 @@ class TestDiscovery:
 
         with pytest.raises(MCPError, match="boom"):
             await session_manager.discover(_server(), "jira")
+
+
+_RETRY_LOG = logging.getLogger("tests.mcp_session.retry")
+
+
+def _retries(caplog: pytest.LogCaptureFixture) -> list[tuple[int, dict[str, object]]]:
+    return [(r.levelno, log_record_fields(r)) for r in caplog.records if r.getMessage() == "mcp.retry"]
+
+
+class TestEachRetryIsOneWarning:
+    """`mcp.retry`: the decision to try again, at WARNING, with what was retried and why."""
+
+    async def test_a_401_on_a_call(
+        self, client_manager_factory: _FakeClientManagerFactory, tokens: _TokenStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        session_manager = MCPSessionManager(make_context(logger=_RETRY_LOG))
+        server = _oauth_server()
+        (await session_manager._get_or_open(server)).responses = [MCPHttpStatusError(401), "ok"]
+
+        with caplog.at_level(logging.DEBUG):
+            assert await session_manager.call(server, "search", {"q": "x"}) == "ok"
+
+        assert _retries(caplog) == [(logging.WARNING, {
+            "mcp_server_id": "inst-1", "op": "call", "reason": "token_refresh", "error_type": "MCPHttpStatusError",
+        })]
+
+    async def test_a_401_while_connecting(
+        self, client_manager_factory: _FakeClientManagerFactory, tokens: _TokenStore,
+        monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        opens = 0
+        real_open = _FakeClientManager.open
+
+        async def _open(self: _FakeClientManager) -> _FakeClientManager:
+            nonlocal opens
+            opens += 1
+            if opens == 1:
+                raise MCPHttpStatusError(401, "The MCP server answered HTTP 401")
+            return await real_open(self)
+
+        monkeypatch.setattr(_FakeClientManager, "open", _open)
+        with caplog.at_level(logging.DEBUG):
+            await MCPSessionManager(make_context(logger=_RETRY_LOG)).call(_oauth_server(), "search", {})
+
+        assert [(level, f["op"], f["reason"]) for level, f in _retries(caplog)] == [(logging.WARNING, "connect", "token_refresh")]
+
+    async def test_a_call_that_never_left(
+        self, client_manager_factory: _FakeClientManagerFactory, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        client_manager_factory.queued_responses = [[MCPRequestNotSentError("refused"), "done"]]
+
+        with caplog.at_level(logging.DEBUG):
+            await MCPSessionManager(make_context(logger=_RETRY_LOG)).call(_server(), "search", {})
+
+        assert [(f["op"], f["reason"], f["error_type"]) for _, f in _retries(caplog)] == [
+            ("call", "resend", "MCPRequestNotSentError"),
+        ]
+
+    async def test_a_lost_listing_and_a_refused_listing(
+        self, client_manager_factory: _FakeClientManagerFactory, tokens: _TokenStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            for failure in (MCPRequestLostError("reset"), MCPHttpStatusError(401)):
+                session_manager = MCPSessionManager(make_context(logger=_RETRY_LOG))
+                server = _oauth_server()
+                (await session_manager._get_or_open(server)).list_responses = [failure]
+                await session_manager.discover(server, "jira")
+
+        assert [(f["op"], f["reason"]) for _, f in _retries(caplog)] == [("list", "relist"), ("list", "token_refresh")]
+
+    async def test_a_failure_that_isnt_retried_logs_no_retry(
+        self, client_manager_factory: _FakeClientManagerFactory, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        session_manager = MCPSessionManager(make_context(logger=_RETRY_LOG))
+        (await session_manager._get_or_open(_server())).list_responses = [MCPError(-32603, "boom")]
+
+        with caplog.at_level(logging.DEBUG), pytest.raises(MCPError):
+            await session_manager.discover(_server(), "jira")
+
+        assert _retries(caplog) == []
 
 
 class TestAcloseAll:

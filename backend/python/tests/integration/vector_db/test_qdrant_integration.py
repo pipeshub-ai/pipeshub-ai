@@ -169,7 +169,7 @@ class TestQdrantMutations:
             await qdrant_service.upsert_points(col, sample_points("org1"))
 
             del_filter = FilterExpression(
-                must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]
+                must=[FieldCondition(key="metadata.orgId", value="org1"), FieldCondition(key="metadata.virtualRecordId", value="r1")]
             )
             await qdrant_service.delete_points(col, del_filter)
 
@@ -202,7 +202,7 @@ class TestQdrantMutations:
             await qdrant_service.upsert_points(col, sample_points("org1"))
 
             update_filter = FilterExpression(
-                must=[FieldCondition(key="metadata.virtualRecordId", value="r1")]
+                must=[FieldCondition(key="metadata.orgId", value="org1"), FieldCondition(key="metadata.virtualRecordId", value="r1")]
             )
             await qdrant_service.overwrite_payload(
                 col, {"status": "archived"}, update_filter

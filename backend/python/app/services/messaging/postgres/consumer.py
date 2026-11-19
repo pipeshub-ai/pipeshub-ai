@@ -6,7 +6,8 @@ transient failure makes the row visible again after a backoff; a delivery that r
 terminally) is marked dead, after telling the disposition sink so the record it names is left in a terminal status.
 
 Left out on purpose, because they exist for a fleet on a shared broker: lanes, the fair (DRR) scheduler, the resource governor's
-parse gates and the capacity leases. The indexing variant runs up to ``MAX_CONCURRENT_INDEXING`` handlers at once.
+parse gates and the capacity leases. The indexing variant runs up to ``MAX_CONCURRENT_INDEXING`` handlers at once; the consumer of
+the priority topic runs up to its lane's cap, with no per-org share and no backpressure pause (neither exists for this broker).
 """
 
 import asyncio
@@ -22,12 +23,14 @@ from app.core.envelope import (
     DuplicateEnvelope,
     EnvelopeRejected,
     ctx_of,
+    decode_message,
     open_configured,
     open_stream_message,
 )
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -36,22 +39,30 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
     messaging_env,
 )
-from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt, work_key
+from app.services.messaging.consumer_concurrency import (
+    RequeueWithoutAttempt,
+    backstop_give_up_reason,
+    work_key,
+)
 from app.services.messaging.disposition import describe_message, notify_abandoned
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+    is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
+from app.services.messaging.membership import register_group
 from app.services.messaging.postgres.queue import Delivery, PgQueue
+from app.services.messaging.storage_protocol import tagged
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
+from app.utils import error_class
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
     from app.services.distributed.interface import IDistributedLeaseManager
-    from app.services.messaging.consumer_concurrency import StageAdmission
+    from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
     from app.services.messaging.worker_loop import WorkerLoop
 
@@ -73,17 +84,16 @@ def _handback_limit() -> int:
 class RecordHeld(RequeueWithoutAttempt):
     """The record's lease is held by another delivery (a stage rewriting the record, a duplicate): not a reason to pause a consumer."""
 
+    pauses_consumer = False
+
 
 def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
 
 
-def _loads(value: str) -> Any:  # noqa: ANN401
-    raw = json.loads(value)
-    return (
-        json.loads(raw) if isinstance(raw, str) else raw
-    )  # a double-encoded body, as the Redis consumers accept
-
+class _ExpectedOutcome(str):
+    """The error text of an outcome nobody acts on (deleted while indexed, refused by
+    the source), so settling it does not log a second, warning-level line."""
 
 class PgMessagingConsumer(IMessagingConsumer):
     def __init__(
@@ -96,15 +106,25 @@ class PgMessagingConsumer(IMessagingConsumer):
         queue: PgQueue | None = None,
         concurrency_manager: "IDistributedLeaseManager | None" = None,
         stage_admission: "StageAdmission | None" = None,
+        priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
     ) -> None:
         self._worker = worker  # the loop the indexing handler runs on; claims, heartbeats and settling stay on this one
         self.stage_admission = stage_admission  # a pipeline-stage consumer: its own permits and lease pool, no record lease
+        self.priority_lane = priority_lane  # the consumer of the priority topic: its own handler cap and lease pool
         self.concurrency_manager = concurrency_manager  # cluster-wide cap on records indexing at once, across worker processes
         self._leases: set[tuple[str, str]] = set()
+        # A delivery's record lease -> the task driving it, and the record leases the manager reported lost: the driver is cancelled
+        # when its lease is not renewed, so a delivery whose lease lapsed stops writing (as on the other indexing consumers).
+        self._lease_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._lost_leases: set[tuple[str, str]] = set()
         self.logger = logger
         self.config = config
         self.indexing = indexing
+        # The name its claims are taken under, which the indexing membership check reads (``membership.PgClaimCheck``).
+        self.consumer_name = tagged(config.client_id) if indexing else config.client_id
+        if indexing:
+            register_group(config.group_id, list(config.topics))
         self.disposition_sink = disposition_sink
         self.queue = queue or PgQueue()
         self.running = False
@@ -217,6 +237,8 @@ class PgMessagingConsumer(IMessagingConsumer):
     def _concurrency(self) -> int:
         if self.stage_admission is not None:
             return self.stage_admission.limit
+        if self.priority_lane is not None:
+            return self.priority_lane.limit
         return max(1, messaging_env.max_concurrent_indexing) if self.indexing else 1
 
     # -- loops ---------------------------------------------------------------------------------------------------
@@ -249,7 +271,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                 batch = await self.queue.claim(
                     self.config.group_id,
                     self.config.topics,
-                    self.config.client_id,
+                    self.consumer_name,
                     min(free, max(self.config.batch_size, 1))
                     if self.indexing
                     else max(self.config.batch_size, 1),
@@ -324,10 +346,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await self.queue.extend(
                         self.config.group_id, held, self._visibility_s
                     )
-                if self._leases and self.concurrency_manager is not None:
-                    await self.concurrency_manager.renew_many(
-                        list(self._leases), self._visibility_s
-                    )
+                await self._renew_leases()
                 if self.config.ephemeral_group:
                     await self.queue.touch(self.config.group_id, self.config.topics)
                 if time.monotonic() - self._last_sweep > _SWEEP_EVERY_S:
@@ -389,9 +408,15 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason = type(e).__name__
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
-            if self.stage_admission is not None and not isinstance(e, RecordHeld):
+            if self.stage_admission is not None and e.pauses_consumer:
                 self._paused_until = max(self._paused_until, time.monotonic() + delay)     # stop claiming until the stage can run
             if e.counts_toward_backstop and n > _handback_limit():
+                if e.give_up_label:
+                    # A hand-back that names itself (a same-bytes update whose skip cannot finish) is given up on here,
+                    # with the reason the other brokers use, so what handles an abandoned message can tell it apart.
+                    self._handbacks.pop(key, None)
+                    await self._abandon(d, await self._parse_for_sink(d), backstop_give_up_reason(e, n, _handback_limit()))
+                    return
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
                 await self.queue.nack(group, d, delay, f"handed back {n} times: {e}"[:500])
                 return
@@ -424,7 +449,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if not self.indexing:
             return None
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
             return await open_stream_message(d.topic, raw, StreamMessage) if isinstance(raw, dict) else None
         except Exception as e:
             self.logger.warning("Could not read the exhausted message %s for its record: %s", d.message_id, e)
@@ -440,9 +465,9 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason=reason,
             attempts=d.attempts,
         )
-        self.logger.warning(
-            "Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason
-        )
+        # An expected outcome was logged once at INFO when the handler raised it.
+        log = self.logger.info if isinstance(reason, _ExpectedOutcome) else self.logger.warning
+        log("Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason)
         await self.queue.dead(self.config.group_id, d, reason)
 
     async def _process(
@@ -452,7 +477,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if self.message_handler is None:
             return False, True, None, "no message handler"
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
         except json.JSONDecodeError as e:
             return False, True, None, f"JSON parsing failed: {e}"
         if not isinstance(raw, dict):
@@ -470,6 +495,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 if parsed is None:
                     return False, True, None, "unparseable message"
                 parsed.is_final_failure = final
+                # A hand-back is a nack of the same row, so the row names the event across its retries.
+                stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}", parsed.org_ctx)
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:
@@ -486,18 +513,39 @@ class PgMessagingConsumer(IMessagingConsumer):
         except RequeueWithoutAttempt:
             raise
         except Exception as e:
-            self.logger.error(
-                "Error in message handler for %s: %s", d.message_id, e, exc_info=True
-            )
+            expected = is_expected_outcome(e)
+            if expected:
+                # Expected (deleted while indexed, refused by the source): the handler
+                # already logged it once, so no traceback at error level here.
+                self.logger.info(
+                    "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
+                )
+            else:
+                # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                error_class.log_failure(
+                    self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
+                )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
                 == MessageErrorType.TERMINAL
             )
             if terminal and parsed is not None:
                 parsed.is_final_failure = True
-            return False, terminal, parsed, f"{type(e).__name__}: {e}"
+            reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
+            return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
         finally:
             reset_context(token)
+
+    async def _renew_leases(self) -> None:
+        """Renew every held lease; a record lease the manager says is no longer ours cancels the delivery that holds it."""
+        if not self._leases or self.concurrency_manager is None:
+            return
+        renewed = await self.concurrency_manager.renew_many(list(self._leases), self._visibility_s)
+        for lease, ok in (renewed or {}).items():
+            task = self._lease_tasks.get(lease)
+            if not ok and task is not None:
+                self._lost_leases.add(lease)
+                task.cancel()
 
     async def _on_worker[T](self, make: "Callable[[], Coroutine[Any, Any, T]]") -> T:
         """Run a handler on the shared worker loop, as the other indexing consumers do: parsing that blocks that loop cannot then stall
@@ -528,8 +576,18 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await gen.aclose()
                 return complete
 
-            async with asyncio.timeout(timeout):
-                complete = await self._on_worker(drain)
+            try:
+                async with asyncio.timeout(timeout):
+                    complete = await self._on_worker(drain)
+            except asyncio.CancelledError:
+                if record_slot is not None and record_slot in self._lost_leases:
+                    # Our own cancel, sent because the record lease was not renewed: another delivery may own the record now.
+                    self._lost_leases.discard(record_slot)
+                    task = asyncio.current_task()
+                    if task is not None:
+                        _ = task.uncancel()
+                    raise RecordHeld(f"{record_slot[0]} was lost while the delivery ran; it is redone") from None
+                raise
             if not complete:
                 raise RuntimeError("handler ended without INDEXING_COMPLETE")
         finally:
@@ -537,6 +595,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             for held in (record_slot, slot):
                 if held is not None:
                     self._leases.discard(held)
+                    self._lease_tasks.pop(held, None)
                     with contextlib.suppress(Exception):
                         await self.concurrency_manager.release(*held)  # type: ignore[union-attr]
 
@@ -548,6 +607,8 @@ class PgMessagingConsumer(IMessagingConsumer):
         pool, limit = _INDEX_POOL, max(1, messaging_env.max_concurrent_indexing)
         if self.stage_admission is not None:    # a stage's own pool, sized for every worker process
             pool, limit = self.stage_admission.lease_pool, self.stage_admission.lease_limit
+        elif self.priority_lane is not None:    # the priority topic's own pool, so the backlog's claims cannot hold it up
+            pool, limit = self.priority_lane.index_lease_pool, self.priority_lane.index_lease_limit
         slot = (pool, f"{self.config.client_id}:{uuid.uuid4().hex}")
         while self.running:
             if await self.concurrency_manager.try_acquire(slot[0], slot[1], limit, self._visibility_s):
@@ -567,5 +628,8 @@ class PgMessagingConsumer(IMessagingConsumer):
         holder = f"{self.config.client_id}:{uuid.uuid4().hex}"
         if await self.concurrency_manager.try_acquire(pool, holder, 1, messaging_env.concurrency_lease_seconds):
             self._leases.add((pool, holder))
+            task = asyncio.current_task()
+            if task is not None:
+                self._lease_tasks[(pool, holder)] = task
             return pool, holder
         raise RecordHeld(f"{pool} is held by another delivery")

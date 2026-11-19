@@ -33,6 +33,7 @@ vi.mock('@/lib/store/mobile-sidebar-store', () => ({
 }));
 vi.mock('@/app/(main)/agents/api', () => ({
   AgentsApi: { getAgent: h.getAgent, fetchAgentConversations: h.fetchAgentConversations },
+  agentDetailKey: (id: string) => ['agents/detail', id] as const,
 }));
 vi.mock('@/chat/build-chat-url', () => ({ openFreshAgentChat: vi.fn() }));
 vi.mock('../agent-sidebar-row-access', () => ({ getAgentSidebarRowMenuAccess: () => ({}) }));
@@ -66,6 +67,9 @@ vi.mock('../chat-section', () => ({
   },
 }));
 
+import { act } from '@testing-library/react';
+import { clearSessionCache } from '@/lib/api/session-cache';
+import { useChatStore } from '@/chat/store';
 import { AgentScopedChatSidebar } from '../agent-scoped-chat-sidebar';
 
 const conv = (id: string, title: string, isOwner: boolean) =>
@@ -81,6 +85,8 @@ const renderSidebar = () =>
   );
 
 beforeEach(() => {
+  // The agent detail is cached for 60 s; each case starts from an empty cache.
+  clearSessionCache();
   h.getAgent.mockResolvedValue({ agent: { _key: 'agent-7' } });
 });
 
@@ -159,7 +165,44 @@ describe('agent sidebar: chats shared with the user', () => {
     renderSidebar();
 
     await waitFor(() => expect(screen.getByTestId('chat.sharedChats')).toBeTruthy());
-    expect(screen.queryByText('chat.newChat')).toBeNull();
+    await waitFor(() => expect(screen.queryByText('chat.newChat')).toBeNull());
     expect(screen.getByText('chat.noChatsYet')).toBeTruthy();
+  });
+
+  it('offers New Chat while the agent is still loading', async () => {
+    h.getAgent.mockReturnValue(new Promise(() => {}));
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [], sharedConversations: [], pagination });
+
+    renderSidebar();
+
+    expect(await screen.findByText('chat.newChat')).toBeTruthy();
+  });
+});
+
+describe('agent sidebar: the agent detail', () => {
+  it('asks for the agent once, and a chats refresh does not ask again', async () => {
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [], sharedConversations: [], pagination });
+
+    renderSidebar();
+    await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(1));
+    expect(h.getAgent).toHaveBeenCalledTimes(1);
+    expect(h.getAgent).toHaveBeenCalledWith('agent-7', { quiet: true });
+
+    act(() => useChatStore.getState().bumpConversationsVersion());
+
+    await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(2));
+    expect(h.getAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the agent for a remount within 60 s', async () => {
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [], sharedConversations: [], pagination });
+
+    renderSidebar();
+    await waitFor(() => expect(h.getAgent).toHaveBeenCalledTimes(1));
+    cleanup();
+    renderSidebar();
+
+    await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(2));
+    expect(h.getAgent).toHaveBeenCalledTimes(1);
   });
 });

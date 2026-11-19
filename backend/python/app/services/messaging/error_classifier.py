@@ -17,6 +17,7 @@ import asyncio
 import json
 from typing import Optional
 
+from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
 from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
@@ -36,6 +37,16 @@ try:
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
+
+
+# The content could not be processed: a retry fails the same way.
+CONTENT_ERRORS = (
+    DocumentProcessingError,
+    ChunkingError,
+    ExtractionError,
+    ProcessingError,
+    BlockContainerValidationError,
+)
 
 
 class MessageErrorType:
@@ -68,7 +79,7 @@ _RETRYABLE_HTTP_STATUSES = frozenset({
 })
 
 
-def _extract_status_code(exc: Exception) -> Optional[int]:
+def extract_status_code(exc: Exception) -> Optional[int]:
     """Extract HTTP status code from various exception types.
 
     Supports:
@@ -207,7 +218,7 @@ def is_expected_outcome(exc: BaseException | None) -> bool:
     """Whether ``exc`` ends a record the way nobody needs to act on (the source
     refused it, or it was deleted while it was being indexed): logged once below
     error level by the handler, not as a fault."""
-    return is_source_refusal(exc) or is_record_deleted(exc)
+    return is_source_refusal(exc) or is_record_deleted(exc) or bool(getattr(exc, "expected_outcome", False))
 
 
 def _classify_aiohttp_transport_error(exc: Exception) -> Optional[str]:
@@ -323,6 +334,11 @@ class MessageErrorClassifier:
         if any(isinstance(chain_exc, EntityLookupUnavailableError) for chain_exc in chain):
             return MessageErrorType.TRANSIENT
 
+        # 0a3. The records schema was narrower than this process's and the transaction was aborted with nothing kept:
+        # the next delivery finds the schema wide. Its root is the store's 400, which would otherwise read as terminal.
+        if any(isinstance(chain_exc, RecordSchemaNarrowError) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
+
         # 0b. Scan full chain for aiohttp transport errors before HTTP status rules.
         # ClientPayloadError may wrap TransferEncodingError whose .code is not HTTP status.
         for chain_exc in chain:
@@ -391,11 +407,7 @@ class MessageErrorClassifier:
             if isinstance(
                 chain_exc,
                 (
-                    DocumentProcessingError,
-                    ChunkingError,
-                    ExtractionError,
-                    ProcessingError,
-                    BlockContainerValidationError,
+                    *CONTENT_ERRORS,
                     NonRetryableError,
                     ImportError,
                     ModuleNotFoundError,
@@ -432,7 +444,7 @@ class MessageErrorClassifier:
             cause = cause.__cause__
 
         # 1. Check for HTTP status code in exception
-        status_code = _extract_status_code(root_exc)
+        status_code = extract_status_code(root_exc)
         if status_code is not None:
             return MessageErrorClassifier.classify_by_http_status(status_code)
 
@@ -463,16 +475,7 @@ class MessageErrorClassifier:
 
         # 6-10. Processing/content-based errors = terminal (will always fail on retry)
         # These are checked BEFORE the generic IndexingError check
-        if isinstance(
-            root_exc,
-            (
-                DocumentProcessingError,
-                ChunkingError,
-                ExtractionError,
-                ProcessingError,
-                BlockContainerValidationError,
-            ),
-        ):
+        if isinstance(root_exc, CONTENT_ERRORS):
             return MessageErrorType.TERMINAL
 
         # 11. Timeout/network = transient (infrastructure)

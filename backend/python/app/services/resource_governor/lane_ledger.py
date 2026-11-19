@@ -62,10 +62,20 @@ BRAKE_SPACING_SECONDS = LANE_BRAKE_PERIOD_SECONDS - 2.0
 
 NO_CAP = 0xFFFFFFFF
 _MAGIC = b"PXLEDGR\0"
-_VERSION = 1
+# The version is part of the shared directory's name (see ``open_lane_budget``), so a
+# process of another layout never reads or rewrites this one's record.
+LEDGER_VERSION = 3
+_VERSION = LEDGER_VERSION
 RECORD_SIZE = 128
 _HEADER = struct.Struct("<8sII")
-_BODY = struct.Struct("<IIdIdIddId")
+_BODY = struct.Struct("<IIdIdIddIddIIdQd")
+# A waiting weighted request keeps its flag fresh by rewriting it; one that stops
+# (killed, stopped) is ignored after this long.
+WAITER_FRESH_SECONDS = 2.0
+WAITER_REWRITE_SECONDS = 0.5
+# After a weighted request is admitted or gives up, no other may register for this
+# long and every acquirer ignores the flag, so weight-1 work gets a window.
+WAITER_COOLDOWN_SECONDS = 2.5
 
 
 @dataclass(frozen=True)
@@ -80,6 +90,14 @@ class LedgerRecord:
     window_start: float = 0.0
     spawns_in_window: int = 0
     reap_request_at: float = 0.0
+    waiter_at: float = 0.0
+    waiter_weight: int = 0
+    waiter_pid: int = 0
+    waiter_clear_at: float = 0.0
+    # Bytes charged to workers still loading (spawn charges and growth deltas). Independent of the
+    # spawn-count window: they expire at ``bytes_until``, one warm-up after the last addition.
+    window_bytes: int = 0
+    bytes_until: float = 0.0
 
     def encode(self) -> bytes:
         body = _BODY.pack(
@@ -93,6 +111,12 @@ class LedgerRecord:
             self.window_start,
             self.spawns_in_window,
             self.reap_request_at,
+            self.waiter_at,
+            self.waiter_weight,
+            self.waiter_pid,
+            self.waiter_clear_at,
+            self.window_bytes,
+            self.bytes_until,
         )
         raw = bytearray(RECORD_SIZE)
         _HEADER.pack_into(raw, 0, _MAGIC, _VERSION, 0)
@@ -137,6 +161,20 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def active_waiter(record: LedgerRecord, now: float) -> tuple[int, int] | None:
+    """``(weight, pid)`` of the weighted request that others must leave room for, if any.
+
+    None when no flag is set, when it has gone stale, or while the cooldown after
+    the last waiter is running (every acquirer ignores the flag then).
+    """
+    if record.waiter_at <= 0 or record.waiter_weight <= 0:
+        return None
+    age = now - record.waiter_at
+    if age < -1.0 or age > WAITER_FRESH_SECONDS or now < record.waiter_clear_at:
+        return None
+    return record.waiter_weight, record.waiter_pid
 
 
 def cap_is_live(record: LedgerRecord, now: float, alive: Callable[[int], bool]) -> bool:
@@ -192,12 +230,38 @@ def next_lane_cap(cap_eff: int, pressure: float | None) -> int | None:
     return max(1, cap_eff - 1)
 
 
+def live_window_bytes(record: LedgerRecord, now: float) -> int:
+    """Bytes charged to workers still loading; zero once ``bytes_until`` has passed."""
+    if record.window_bytes <= 0 or now >= record.bytes_until or now < record.bytes_until - 3600.0:
+        return 0
+    return record.window_bytes
+
+
+def add_window_bytes(record: LedgerRecord, nbytes: int, now: float, warmup_seconds: float) -> LedgerRecord:
+    """The record with *nbytes* added to the live window, whose expiry restarts from *now*."""
+    return replace(
+        record,
+        window_bytes=live_window_bytes(record, now) + max(0, int(nbytes)),
+        bytes_until=now + warmup_seconds,
+    )
+
+
+def remove_window_bytes(record: LedgerRecord, nbytes: int, now: float) -> LedgerRecord:
+    """A ticket's bytes given back: only while they are still live, never below zero."""
+    live = live_window_bytes(record, now)
+    if live <= 0:
+        return record
+    return replace(record, window_bytes=max(0, live - max(0, int(nbytes))))
+
+
 @dataclass(frozen=True)
 class SpawnDecision:
     admit: bool
     window_start: float
     spawns_in_window: int
     reason: str
+    window_bytes: int = 0
+    bytes_until: float = 0.0
 
 
 def spawn_allowance(plan_lanes: int) -> int:
@@ -216,6 +280,9 @@ def decide_spawn(
     ws_bytes: int,
     warmup_seconds: float,
     allowance: int | None = None,
+    window_bytes: int | None = None,
+    bytes_until: float = 0.0,
+    count_spawn: bool = True,
 ) -> SpawnDecision:
     """Whether one more worker may start now.
 
@@ -225,20 +292,36 @@ def decide_spawn(
     busy box never refuses its first worker. Otherwise a worker still loading
     is charged at *ws_bytes* because the memory reading cannot show it yet.
     """
-    if held_before == 0 or now - window_start >= warmup_seconds or now < window_start - 1.0:
+    restarted = held_before == 0 or now - window_start >= warmup_seconds or now < window_start - 1.0
+    if restarted:
         window_start, spawns_in_window = now, 0
+    # Bytes expire on their own clock (R6-2): a spawn window restarting does not forget a growth
+    # admitted late in it. Callers that keep no byte window get the count times one figure.
+    if window_bytes is None:
+        carried = spawns_in_window * ws_bytes
+    else:
+        carried = window_bytes if now < bytes_until else 0
     if held_before == 0:
-        return SpawnDecision(True, window_start, spawns_in_window + 1, "first")
+        carried = 0
+    counted = 1 if count_spawn else 0
+    first = SpawnDecision(
+        True, window_start, spawns_in_window + counted, "first", carried + ws_bytes, now + warmup_seconds
+    )
+    if held_before == 0:
+        return first
     limit = spawn_allowance(plan_lanes) if allowance is None else allowance
-    if spawns_in_window >= limit:
-        return SpawnDecision(False, window_start, spawns_in_window, "allowance")
+    # A worker that retires after its job loads no models, so the allowance (a rate limit on
+    # cold model loads) does not apply to it.
+    if count_spawn and spawns_in_window >= limit:
+        return SpawnDecision(False, window_start, spawns_in_window, "allowance", carried, bytes_until)
     if mem_limit is not None and mem_limit > 0:
         if raw_working_set is None:
-            return SpawnDecision(False, window_start, spawns_in_window, "unknown_memory")
-        charged = raw_working_set + (spawns_in_window + 1) * ws_bytes
-        if charged / mem_limit >= MEM_SOFT:
-            return SpawnDecision(False, window_start, spawns_in_window, "headroom")
-    return SpawnDecision(True, window_start, spawns_in_window + 1, "headroom_ok")
+            return SpawnDecision(False, window_start, spawns_in_window, "unknown_memory", carried, bytes_until)
+        if (raw_working_set + carried + ws_bytes) / mem_limit >= MEM_SOFT:
+            return SpawnDecision(False, window_start, spawns_in_window, "headroom", carried, bytes_until)
+    return SpawnDecision(
+        True, window_start, spawns_in_window + counted, "headroom_ok", carried + ws_bytes, now + warmup_seconds
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,8 @@ import type {
   McpAuthenticatePayload,
   McpCatalogResponse,
   McpInstancesResponse,
+  McpLogoResponse,
+  McpLogosResponse,
   McpMyServerEntry,
   McpMyServersResponse,
   McpOAuthAuthorizationUrlResponse,
@@ -63,6 +65,24 @@ export const McpServersApi = {
 
   async deleteInstance(instanceId: string): Promise<McpSuccessResponse & { _id: string }> {
     const { data } = await apiClient.delete(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}`);
+    return data;
+  },
+
+  // ── Logos (custom servers only) ──
+
+  async getLogos(): Promise<McpLogosResponse> {
+    const { data } = await apiClient.get(`${BASE_URL}/logos`);
+    return data;
+  },
+
+  /** `logo` is a data URL; the server keeps a PNG it draws from it and returns that. */
+  async setLogo(instanceId: string, logo: string): Promise<McpLogoResponse> {
+    const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/logo`, { logo });
+    return data;
+  },
+
+  async removeLogo(instanceId: string): Promise<McpSuccessResponse> {
+    const { data } = await apiClient.delete(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/logo`);
     return data;
   },
 

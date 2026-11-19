@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    DriveSyncIncomplete,
+)
+
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from logging import Logger
 
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -33,16 +39,32 @@ class FullSyncLedger:
         self.incomplete = False
         self.incremental = False
         self.item_failures = 0
+        # Items that failed to read, by id. A failure with no id leaves the run incomplete instead.
+        self.failed_ids: set[str] = set()
         self.skipped_drives = 0
         self.full_listings = 0
+        # Ancestors a sweep kept unread. Seen only once every sweep of the run is done (see_kept_ancestors): seen
+        # earlier, they would stop a later user who can read one from writing it again.
+        self.kept_ancestors: set[str] = set()
 
     def see(self, external_id: str | None) -> None:
         if external_id:
             self.seen.add(str(external_id))
 
-    def fail_item(self) -> None:
+    def keep_ancestor(self, external_id: str | None) -> None:
+        if external_id:
+            self.kept_ancestors.add(str(external_id))
+
+    def see_kept_ancestors(self) -> None:
+        """Count the ancestors no sweep of the run could read as seen, so the stale-record cleanup keeps them."""
+        self.seen |= self.kept_ancestors
+
+    def fail_item(self, external_id: str | None = None) -> None:
         self.item_failures += 1
-        self.incomplete = True
+        if external_id:
+            self.failed_ids.add(str(external_id))
+        else:
+            self.incomplete = True
 
     def note_incomplete(self) -> None:
         self.incomplete = True
@@ -63,6 +85,12 @@ class FullSyncLedger:
         return self.incomplete or self.item_failures > 0 or self.skipped_drives > 0
 
     @property
+    def unlink_safe(self) -> bool:
+        """Whether a full sync may unlink what this run did not see: every gap is an item it names, which
+        ``keep_failed_items_linked`` kept as stored."""
+        return not self.incomplete and self.skipped_drives == 0
+
+    @property
     def can_reconcile(self) -> bool:
         return (
             self.full_listings > 0
@@ -74,13 +102,58 @@ class FullSyncLedger:
         )
 
 
+class DriveItemsUnread(DriveSyncIncomplete, IncompleteSyncError):
+    """A run whose only gaps are items it failed to read and kept as stored: it fails, and a full sync still unlinks
+    what it did not see."""
+
+
+def incomplete_run_error(ledger: FullSyncLedger) -> DriveSyncIncomplete:
+    error = DriveItemsUnread if ledger.unlink_safe else DriveSyncIncomplete
+    return error("Part of Google Drive could not be read in this run; it is read again on the next run")
+
+
+async def keep_failed_items_linked(
+    processor: DataSourceEntitiesProcessor, connector_id: str, ledger: FullSyncLedger, logger: Logger
+) -> None:
+    """In a full sync the runner started, note the stored record of each item this run failed to read as kept, so
+    one unreadable item keeps its own links instead of holding back the unlink of everything the run did not see.
+    A lookup that fails marks the run incomplete, so nothing is unlinked."""
+    if not ledger.failed_ids or processor.full_sync_running(connector_id) is not True:
+        return
+    kept: list[str] = []
+    try:
+        for external_id in sorted(ledger.failed_ids):
+            record = await processor.get_record_by_external_id(
+                connector_id=connector_id, external_record_id=external_id, raise_on_error=True
+            )
+            if record is not None and record.id:
+                kept.append(record.id)
+    except Exception:
+        logger.warning("The items this run could not read were not looked up; nothing unseen is unlinked", exc_info=True)
+        ledger.note_incomplete()
+        return
+    processor.note_kept_records(connector_id, kept)
+
+
+def _unknown_unseen(ledger: FullSyncLedger, keep: object) -> None:
+    # Which unseen records ``keep`` would keep is not known, so the run is incomplete: nothing is unlinked after it.
+    if keep is not None:
+        ledger.note_incomplete()
+
+
 async def reconcile_unseen_records(
     processor: DataSourceEntitiesProcessor,
     connector_id: str,
     ledger: FullSyncLedger,
     logger: Logger,
+    keep: Callable[[list], Awaitable[set[str]]] | None = None,
 ) -> int:
     """Delete non-placeholder records whose external id this full sync did not see.
+
+    ``keep`` answers which of the unseen records (by id) may exist although no
+    listing can show them; those stay. When it fails, or the stored records
+    cannot be listed in full to ask it, the run is marked incomplete and
+    nothing is deleted.
 
     Returns the number of records the delete call reported. Returns 0, and
     deletes nothing, when the run was incremental, incomplete, saw nothing, or
@@ -115,9 +188,11 @@ async def reconcile_unseen_records(
                 "Skipping stale-record cleanup; the stored records could not be listed",
                 exc_info=True,
             )
+            _unknown_unseen(ledger, keep)
             return 0
         if not isinstance(page, list):
             logger.warning("Skipping stale-record cleanup; the record listing was not readable")
+            _unknown_unseen(ledger, keep)
             return 0
         if not page:
             break
@@ -136,6 +211,21 @@ async def reconcile_unseen_records(
     ]
     if not existing or not stale:
         return 0
+    if keep is not None:
+        try:
+            kept = await keep(stale)
+        except Exception:
+            ledger.note_incomplete()
+            logger.warning(
+                "Skipping stale-record cleanup; whether the unseen records may still exist could not be read",
+                exc_info=True,
+            )
+            return 0
+        if kept:
+            logger.info("Keeping %s unseen Drive record(s) that no listing can show", len(kept))
+            stale = [record for record in stale if getattr(record, "id", None) not in kept]
+        if not stale:
+            return 0
     if len(stale) > len(existing) * _MAX_DELETE_FRACTION:
         logger.warning(
             "Skipping stale-record cleanup: %s of %s Drive records were not in the listing",

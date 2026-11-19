@@ -6,6 +6,9 @@ The connector syncs from ``zammad-railsserver``, a Zammad instance in the
 integration stack (compose profile ``zammad-source``), so it needs no external
 account. See ``zammad_source_helper.py`` for how the admin, the API token and
 the content are set up.
+
+The ``zammad_sim`` suite syncs from the Zammad simulator instead; its fixtures
+are in ``sim_world.py`` (ZAMMAD_SIM_ITS.md).
 """
 
 import os
@@ -28,6 +31,11 @@ from connectors.zammad.zammad_seed import (
     LAPTOP,
     PRINTER,
     SUPPORT_GROUP,
+)
+from connectors.zammad.sim_world import (  # noqa: F401 - fixtures of the zammad_sim suite
+    zammad_sim,
+    zammad_sim_people,
+    zammad_world,
 )
 from connectors.zammad.zammad_source_helper import ZammadSourceHelper
 from helper.graph_provider import GraphProviderProtocol

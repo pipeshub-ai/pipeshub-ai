@@ -1,5 +1,5 @@
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -69,6 +69,11 @@ KB_ROLE_PRIORITY: dict[str, int] = {
 # against a cycle, not a product limit: a cascade that stopped at 20 left
 # anything deeper behind.
 CONTAINMENT_MAX_DEPTH = 1000
+
+# Folders ``list_user_knowledge_bases`` returns per collection, the first by id;
+# ``foldersTruncated`` says more exist; browsing the collection pages through
+# them all.
+KB_LIST_FOLDERS_CAP = 100
 
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
@@ -253,18 +258,37 @@ PERSON_ENTITY_TYPE = "person"
 PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY,
     EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
+    EntityRelations.AUTHORED_BY, EntityRelations.OWNED_BY,
+    EntityRelations.REVIEWED_BY, EntityRelations.ADDRESSED_TO,
+    EntityRelations.LAST_MODIFIED_BY,
 ))
 PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
 ))
 
 
+_FULL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+")
+
+
+def is_full_address(text: str) -> bool:
+    """Whether ``text`` is one whole email address, not a fragment such as "@acme" or "acme.com"."""
+    return _FULL_ADDRESS.fullmatch(text) is not None
+
+
 def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:
     """The person fields of a ``person`` ref as a candidate query reads them:
     its user ids, and its edge types kept to the allow-list of each direction
-    (Record->User ``outTypes``, User->Record ``inTypes``)."""
+    (Record->User ``outTypes``, User->Record ``inTypes``). A ref naming
+    neither (a person entity from search) links by every person relation."""
+    person_ids = list(dict.fromkeys(str(i) for i in ref.get("personIds") or () if i))
+    # A person from search is a User node: the ref id stands for it when no node list is given.
+    user_ids = list(dict.fromkeys(str(i) for i in ref.get("userIds") or ([] if person_ids else [ref.get("id")]) if i))
+    if "outTypes" not in ref and "inTypes" not in ref:
+        return {"userIds": user_ids, "personIds": person_ids,
+                "outTypes": list(PERSON_EDGES_TO_USER), "inTypes": list(PERSON_EDGES_FROM_USER)}
     return {
-        "userIds": list(dict.fromkeys(str(i) for i in ref.get("userIds") or [ref.get("id")] if i)),
+        "userIds": user_ids,
+        "personIds": person_ids,
         "outTypes": [t for t in PERSON_EDGES_TO_USER if t in (ref.get("outTypes") or ())],
         "inTypes": [t for t in PERSON_EDGES_FROM_USER if t in (ref.get("inTypes") or ())],
     }
@@ -421,8 +445,11 @@ TRASH_STATE_FIELDS = (
 
 # Bookkeeping the services keep on a stored record for their own use: the trash
 # state (the record endpoint refuses a trashed record, and a restore clears it),
-# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
-# taxonomy copy, and the mark a push leaves for indexing. No client reads them, and the record endpoint's response
+# when a rate-limit wait began, the stranded sweep's re-sends, the record processing diagnostics
+# (`firstQueuedAt`, `failedAt`, `indexingAttempts`, `pageCount`) and the duplicate
+# taxonomy copy, the mark a push leaves for indexing, and the projected property values with their controls
+# (`recordProps`, `propsSet`, `propsGen`, `propsSrc`, `propsVer`; on Neo4j the values are flat `p_<name>` keys,
+# dropped by `api_record` too). No client reads them, and the record endpoint's response
 # schema rejects fields it does not list, so the endpoint leaves these out.
 # `deletedByUserId` predates the trash and is documented, so it stays in.
 INTERNAL_RECORD_FIELDS = frozenset({
@@ -433,19 +460,57 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "purgeLastError",
     "trashedExternalRecordId",
     "rateLimitedSince",
+    "deferredUntilMs",
+    "rateLimitedSinceMs",
     "lastRepublishedAt",
     "republishCount",
+    "firstQueuedAt",
+    "failedAt",
+    "indexingAttempts",
+    "pageCount",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
     "extractionDeferred",
     "duplicateReconcileDueAt",
     "pushOrigin",
+    "recordProps",
+    "propsSet",
+    "propsGen",
+    "propsSrc",
+    "propsVer",
+    "embedVrid",
+    "embedRev",
+    "embedKey",
+    "embedDigest",
+    "embedTotal",
+    "embedDeliveryId",
+    "embedStartedMs",
+    "embedSeconds",
+    "embedUncounted",
+    "embedDone",
 })
 
+#: A projected property value on a Neo4j record node (``p_<name>``); never part of a record the API returns.
+_PROJECTED_PROPERTY_KEY = re.compile(r"^p_[a-zA-Z0-9_]{1,64}$")
 
-def api_record(record: dict[str, Any]) -> dict[str, Any]:
-    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
-    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+
+def api_record(record: dict[str, Any], *, keep: Collection[str] = ()) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``.
+
+    ``keep`` names fields a response documents although they are internal elsewhere (the trash
+    fields on the record update response); only those are left in.
+    """
+    return {
+        key: value for key, value in record.items()
+        if (key not in INTERNAL_RECORD_FIELDS or key in keep) and not _PROJECTED_PROPERTY_KEY.match(key)
+    }
+
+
+def api_records(records: list[object] | dict[str, object]) -> list[object] | dict[str, object]:
+    """``api_record`` over a list of stored records, or over the values of a map of them."""
+    if isinstance(records, dict):
+        return {key: api_record(value) if isinstance(value, dict) else value for key, value in records.items()}
+    return [api_record(value) if isinstance(value, dict) else value for value in records]
 
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
@@ -467,7 +532,8 @@ def restore_items(
     items: list[dict[str, Any]] = []
     reclaims: list[dict[str, str]] = []
     for item in restores:
-        fields = dict(item.get("set") or {})
+        # the trash state is cleared by the restore: a caller's value for it is not written back over the clearing
+        fields = {k: v for k, v in dict(item.get("set") or {}).items() if k != "isDeleted" and k not in TRASH_STATE_FIELDS}
         if external_id := item.get("reclaimExternalRecordId"):
             fields["externalRecordId"] = external_id
             reclaims.append({"id": item["id"], "ext": external_id})

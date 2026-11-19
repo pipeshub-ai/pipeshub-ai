@@ -12,8 +12,11 @@ import {
   ExpiredTokenError,
   InvalidGrantError,
   InvalidScopeError,
+  InvalidTargetError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
+import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
 
 // The re-read after a user grant stores its tokens.
 function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown } | null) {
@@ -80,6 +83,59 @@ describe('OAuthTokenService', () => {
       createdBy: new Types.ObjectId(),
     } as any
 
+    describe('resource indicators (RFC 8707)', () => {
+      const mcp = 'http://test-issuer.com/mcp'
+
+      it('names the /mcp audience for that resource, and none when no resource is named', () => {
+        expect(service.mcpResource).to.equal(mcp)
+        expect(service.audienceFor(undefined)).to.be.undefined
+        expect(service.audienceFor('')).to.be.undefined
+        expect(service.audienceFor(mcp)).to.equal(mcp)
+        expect(service.audienceFor(`${mcp}/`)).to.equal(mcp)
+        expect(service.audienceFor([mcp, mcp])).to.equal(mcp)
+      })
+
+      it('refuses a resource it does not issue tokens for', () => {
+        for (const resource of ['https://other.example/api', [mcp, 'https://other.example/api']]) {
+          expect(() => service.audienceFor(resource)).to.throw(InvalidTargetError)
+        }
+      })
+
+      it('stamps the audience on the access token and keeps it in the refresh token', async () => {
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        const result = await service.generateTokens(
+          mockApp, new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+          ['kb:read', 'offline_access'], true, undefined, undefined, { audience: mcp },
+        )
+
+        expect((jwt.decode(result.accessToken) as any).aud).to.equal(mcp)
+        expect((jwt.decode(result.refreshToken!) as any).resource).to.equal(mcp)
+      })
+
+      it('issues tokens without an audience when none is asked for, as before', async () => {
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const result = await service.generateTokens(mockApp, null, new Types.ObjectId().toString(), ['org:read'], false)
+        expect(jwt.decode(result.accessToken)).to.not.have.property('aud')
+      })
+
+      it('refuses a refresh that swaps the resource, before touching the stored token', async () => {
+        const refreshToken = jwt.sign(
+          { isRefreshToken: true, userId: 'u1', orgId: 'o1', resource: mcp },
+          testSecret,
+        )
+        const findOne = sinon.stub(OAuthRefreshToken, 'findOne').resolves(null)
+        try {
+          await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken, undefined, 'https://other.example/api')
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidTargetError)
+        }
+        expect(findOne.called).to.be.false
+      })
+    })
+
     it('should generate access token without refresh token', async () => {
       sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
@@ -95,6 +151,46 @@ describe('OAuthTokenService', () => {
       expect(result.tokenType).to.equal('Bearer')
       expect(result.expiresIn).to.equal(3600)
       expect(result.refreshToken).to.be.undefined
+    })
+
+    it('names no creator in the tokens of a client registered once for the instance; an app a person made keeps theirs', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+      const userId = new Types.ObjectId().toString()
+      const org = new Types.ObjectId().toString()
+      const claims = async (app: any) => {
+        const t = await service.generateTokens(app, userId, org, ['org:read', 'offline_access'], true)
+        return [jwt.decode(t.accessToken) as any, jwt.decode(t.refreshToken as string) as any]
+      }
+
+      // A dynamic client stored before this change still names the person it borrowed.
+      for (const app of [
+        { ...mockApp, isDynamic: true, createdBy: new Types.ObjectId().toString() },
+        { ...mockApp, clientId: FIRST_PARTY_DEVICE_CLIENT_ID, createdBy: NO_APP_CREATOR },
+        { ...mockApp, createdBy: NO_APP_CREATOR },
+      ]) {
+        for (const payload of await claims(app)) {
+          expect(payload, app.clientId).to.not.have.property('createdBy')
+          expect(payload.userId).to.equal(userId)
+        }
+      }
+
+      const creator = new Types.ObjectId().toString()
+      for (const payload of await claims({ ...mockApp, createdBy: creator })) {
+        expect(payload.createdBy).to.equal(creator)
+      }
+    })
+
+    it('stamps the agent registration on the access token only when asked', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const org = new Types.ObjectId().toString()
+      const withReg = await service.generateTokens(
+        mockApp, null, org, ['org:read'], false, undefined, undefined,
+        { agentRegistrationId: 'reg_' + 'a'.repeat(24) },
+      )
+      expect((jwt.decode(withReg.accessToken) as any).agent_registration_id).to.equal('reg_' + 'a'.repeat(24))
+      const without = await service.generateTokens(mockApp, null, org, ['org:read'], false)
+      expect(jwt.decode(without.accessToken)).to.not.have.property('agent_registration_id')
     })
 
     it('should generate access and refresh tokens when offline_access scope present', async () => {

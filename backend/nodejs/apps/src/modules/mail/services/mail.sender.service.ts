@@ -53,6 +53,70 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /** SMTP delivery, shared by the HTTP route and the broker consumer. */
+/**
+ * Headers a caller inside the process may add to one outgoing mail. Anything else is refused, so a value that came from a request can
+ * never name an arbitrary header. This is an argument of `send()`, not a field of `MailBody`: it is not part of the HTTP API.
+ */
+export interface MailSendHeaders {
+  'Message-ID'?: string;
+  'List-Unsubscribe'?: string;
+  'List-Unsubscribe-Post'?: string;
+  'Auto-Submitted'?: string;
+}
+
+const ALLOWED_MAIL_HEADERS = [
+  'Message-ID',
+  'List-Unsubscribe',
+  'List-Unsubscribe-Post',
+  'Auto-Submitted',
+] as const;
+const MAX_HEADER_VALUE_LENGTH = 998;
+// `<left@right>`, each side a dot-atom (RFC 5322 3.6.4): one or more nonempty atoms joined by single dots, so `a..b`, `.a` and `a.` are refused.
+// The lookaheads keep the length bounds: the left side at most 200 characters, the right side at most 253.
+const MESSAGE_ID_PATTERN =
+  /^<(?=[^@>]{1,200}@)[A-Za-z0-9_%+=-]+(?:\.[A-Za-z0-9_%+=-]+)*@(?=[^>]{1,253}>$)[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*>$/;
+
+/** The nodemailer options for the extra headers, or the reason they are refused. */
+export function buildMailHeaders(
+  extra?: MailSendHeaders,
+):
+  { messageId?: string; headers?: Record<string, string> } | { error: string } {
+  if (!extra) {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  let messageId: string | undefined;
+  for (const [name, value] of Object.entries(extra)) {
+    if (!(ALLOWED_MAIL_HEADERS as readonly string[]).includes(name)) {
+      return { error: 'Mail header is not allowed' };
+    }
+    if (value === undefined) {
+      // An optional header left unset is an omitted header, not an invalid one.
+      continue;
+    }
+    if (
+      typeof value !== 'string' ||
+      value.length === 0 ||
+      value.length > MAX_HEADER_VALUE_LENGTH ||
+      /[\r\n]/.test(value)
+    ) {
+      return { error: 'Mail header value is not valid' };
+    }
+    if (name === 'Message-ID') {
+      if (!MESSAGE_ID_PATTERN.test(value)) {
+        return { error: 'Message-ID is not valid' };
+      }
+      messageId = value;
+    } else {
+      out[name] = value;
+    }
+  }
+  return {
+    ...(messageId ? { messageId } : {}),
+    ...(Object.keys(out).length ? { headers: out } : {}),
+  };
+}
+
 @injectable()
 export class MailSenderService {
   private pooled?: PooledTransport;
@@ -138,8 +202,7 @@ export class MailSenderService {
   private closeQuietly(transporter: Transporter): void {
     try {
       transporter.close();
-    } catch {
-    }
+    } catch {}
   }
 
   private onSendSettled(pool: PooledTransport): void {
@@ -260,7 +323,12 @@ export class MailSenderService {
     bodyData: MailBody,
     requestedConfig: SmtpConfig,
     deadlineMs: number = SMTP_SEND_DEADLINE_MS,
+    extraHeaders?: MailSendHeaders,
   ): Promise<MailSendResult> {
+    const mailHeaders = buildMailHeaders(extraHeaders);
+    if ('error' in mailHeaders) {
+      return { status: 'permanent', error: mailHeaders.error };
+    }
     let smtpConfig = requestedConfig;
     if (this.readStoredSmtpConfig) {
       let stored: SmtpConfig | null;
@@ -326,6 +394,7 @@ export class MailSenderService {
           subject: bodyData.subject,
           html: emailContent,
           attachments: bodyData.attachments || [],
+          ...mailHeaders,
         },
         deadlineMs,
       );

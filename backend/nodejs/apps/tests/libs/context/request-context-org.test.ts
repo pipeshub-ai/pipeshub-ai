@@ -7,41 +7,93 @@ import {
   getRequestContext,
   injectEnvelope,
   newSystemRoot,
+  LogContextFields,
+  bindLogContext,
   runWithRequestContext,
-  setContextOrgId,
+  setContextIdentity,
 } from '../../../src/libs/context/request-context';
 
-describe('request-context org', () => {
-  describe('setContextOrgId / getOrgId', () => {
-    it('attaches the org to the current context', () => {
+describe('request-context org and log context', () => {
+  describe('setContextIdentity / getOrgId', () => {
+    it('attaches the org and the user to the current context', () => {
       runWithRequestContext({ rootId: 'root-1' }, () => {
-        setContextOrgId('org-1');
+        setContextIdentity({ orgId: 'org-1', userId: 'user-1' });
         expect(getOrgId()).to.equal('org-1');
-        expect(getRequestContext()?.orgId).to.equal('org-1');
+        expect(getRequestContext()).to.include({ orgId: 'org-1', userId: 'user-1' });
       });
     });
 
     it('is a no-op without a context', () => {
-      setContextOrgId('org-1');
+      setContextIdentity({ orgId: 'org-1', userId: 'user-1' });
       expect(getOrgId()).to.equal(undefined);
+      expect(getRequestContext()).to.equal(undefined);
     });
 
-    it('ignores empty and non-string values', () => {
+    it('ignores empty and non-string values, each id on its own', () => {
       runWithRequestContext({ rootId: 'root-1' }, () => {
-        setContextOrgId('');
-        setContextOrgId(undefined);
-        setContextOrgId(null);
-        setContextOrgId(42);
-        setContextOrgId({ id: 'org-1' });
-        expect(getOrgId()).to.equal(undefined);
+        for (const bad of ['', undefined, null, 42, { id: 'x' }]) {
+          setContextIdentity({ orgId: bad, userId: bad });
+        }
+        expect(getRequestContext()).to.deep.equal({ rootId: 'root-1' });
+        setContextIdentity({ orgId: 'org-1', userId: 7 });
+        expect(getRequestContext()).to.deep.equal({ rootId: 'root-1', orgId: 'org-1' });
       });
     });
 
-    it('sanitizes the org id', () => {
+    it('sanitizes both ids', () => {
       runWithRequestContext({ rootId: 'root-1' }, () => {
-        setContextOrgId('org\r\n-1');
-        expect(getOrgId()).to.equal('org-1');
+        setContextIdentity({ orgId: 'org\r\n-1', userId: 'user <1>' });
+        expect(getRequestContext()).to.include({ orgId: 'org-1', userId: 'user1' });
       });
+    });
+  });
+
+  describe('bindLogContext', () => {
+    it('merges ids across calls for the rest of the context', () => {
+      runWithRequestContext({ rootId: 'root-1' }, () => {
+        bindLogContext({ conversation_id: 'c1' });
+        bindLogContext({ kb_id: 'kb1', record_id: 3 });
+        bindLogContext({ kb_id: 'kb2' });
+        expect(getRequestContext()?.logFields).to.deep.equal({ conversation_id: 'c1', kb_id: 'kb2', record_id: 3 });
+      });
+    });
+
+    it('skips null and undefined values', () => {
+      runWithRequestContext({ rootId: 'root-1' }, () => {
+        bindLogContext({ kb_id: 'kb1' });
+        bindLogContext({ kb_id: undefined, record_id: null as unknown as string });
+        expect(getRequestContext()?.logFields).to.deep.equal({ kb_id: 'kb1' });
+      });
+    });
+
+    it('drops keys outside LOG_CONTEXT_KEYS, the identity and record keys included', () => {
+      runWithRequestContext({ rootId: 'root-1' }, () => {
+        bindLogContext({
+          kb_id: 'kb1',
+          org_id: 'forged', user_id: 'forged', request_id: 'r', level: 'error', message: 'm', service: 's', metadata: 'x',
+        } as unknown as LogContextFields);
+        expect(getRequestContext()?.logFields).to.deep.equal({ kb_id: 'kb1' });
+        bindLogContext({ level: 'error' } as unknown as LogContextFields);
+        expect(getRequestContext()?.logFields).to.deep.equal({ kb_id: 'kb1' });
+      });
+    });
+
+    it('is a no-op without a context', () => {
+      expect(() => bindLogContext({ kb_id: 'kb1' })).not.to.throw();
+      expect(getRequestContext()).to.equal(undefined);
+    });
+
+    it('keeps concurrent requests apart', async () => {
+      const seen = await Promise.all(
+        Array.from({ length: 50 }, (_, i) =>
+          runWithRequestContext({ rootId: `root-${i}` }, async () => {
+            bindLogContext({ kb_id: `kb-${i}` });
+            await new Promise((r) => setImmediate(r));
+            return getRequestContext()?.logFields?.kb_id === `kb-${i}`;
+          }),
+        ),
+      );
+      expect(seen.every(Boolean)).to.equal(true);
     });
   });
 

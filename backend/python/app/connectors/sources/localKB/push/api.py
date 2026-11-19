@@ -2,22 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import dataclasses
 import logging
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.core import org_context
 from app.models.record_metadata import MetadataSchema, PropertyDefinition
+from app.modules.record_metadata.projection import (
+    default_union_cache,
+    projection_enabled,
+)
 from app.modules.record_metadata.schemas import (
     MAX_SCHEMA_VERSIONS,
     MetadataSchemaError,
     MetadataSchemaRegistry,
+    SchemaRuleError,
+    check_new_schema,
 )
 
 from .admission import Admission
 from .contract import PushRefusal
-from .spool import Spool, default_root, sweep
+from .image_admission import ImageAdmission
+from .ledger import PushLedger
+from .materialiser import Materialiser
+from .spool import Spool, spool_report, sweep_loop
 from .worker import PushWorker
 
 if TYPE_CHECKING:
@@ -38,16 +52,65 @@ class PushRuntime:
     worker: PushWorker
     spool: Spool
     admission: Admission
+    ledger: PushLedger = dataclasses.field(default_factory=PushLedger)
+    #: The spool sweep timer; made with the runtime, so with the push routes off nothing exists.
+    sweeper: Any = None
+    # Both are made on first use and start no process until the first image task.
+    _materialiser: Materialiser | None = None
+    _materialiser_failed: bool = False
+    _image_admission: ImageAdmission | None = None
+
+    @property
+    def materialiser(self) -> Materialiser | None:
+        """None when ``KB_PUSH_SIGNED_URL_ORIGINS`` is malformed: pushes with images then answer 503, every other push is untouched."""
+        if self._materialiser is None and not self._materialiser_failed:
+            try:
+                self._materialiser = Materialiser(listed_origins=_signed_url_origins())
+            except ValueError as e:
+                self._materialiser_failed = True
+                logger.error("KB_PUSH_SIGNED_URL_ORIGINS is not usable, so pushes with storage images are refused: %s", e)
+        return self._materialiser
+
+    @property
+    def image_admission(self) -> ImageAdmission:
+        if self._image_admission is None:
+            self._image_admission = ImageAdmission()
+        return self._image_admission
+
+
+def _signed_url_origins() -> list[str]:
+    """``KB_PUSH_SIGNED_URL_ORIGINS``: comma-separated https origins of an operator's S3-compatible endpoint."""
+    return [o.strip() for o in os.environ.get("KB_PUSH_SIGNED_URL_ORIGINS", "").split(",") if o.strip()]
 
 
 def runtime_for(app: FastAPI) -> PushRuntime:
     """One worker, spool and admission per connectors process, made on first use."""
     runtime = getattr(app.state, "kb_push_runtime", None)
     if runtime is None:
-        sweep(default_root())
-        runtime = PushRuntime(PushWorker(), Spool(), Admission())
+        # Takes its lock before the timer exists; the timer's first pass (in a thread) cleans up after earlier runs.
+        spool = Spool()
+        report = spool_report(spool.root)
+        (logger.warning if report["fstype"] in ("tmpfs", "ramfs") else logger.info)(
+            "the push spool is on %s (%s)%s", report["fstype"], report["mount"],
+            "; its files count as memory of this container" if report["fstype"] in ("tmpfs", "ramfs") else "",
+        )
+        runtime = PushRuntime(PushWorker(), spool, Admission())
+        runtime.sweeper = org_context.spawn_detached(sweep_loop(spool), name="kb-push-spool-sweep")
         app.state.kb_push_runtime = runtime
     return runtime
+
+
+async def close_runtime(app: FastAPI) -> None:
+    """Lifespan teardown: stop the spool timer, then remove this run's spool directory. Nothing to do if no push ran."""
+    runtime = getattr(app.state, "kb_push_runtime", None)
+    if runtime is None:
+        return
+    app.state.kb_push_runtime = None
+    if runtime.sweeper is not None:
+        runtime.sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.sweeper
+    await asyncio.to_thread(runtime.spool.close)
 
 
 def error_body(r: PushRefusal, request_id: str | None = None) -> dict[str, Any]:
@@ -131,7 +194,16 @@ async def put_schema(registry: MetadataSchemaRegistry, org_id: str, kb_id: str, 
     definitions = definitions_from(body)
     try:
         last, _ = await registry._scan(org_id, kb_id)
+        if projection_enabled():
+            # The registration rules go live with the projection (the flag), so with it off a request is
+            # answered exactly as before them.
+            try:
+                check_new_schema(await registry.versions(org_id, kb_id), definitions)
+            except SchemaRuleError as e:
+                raise PushRefusal(422, e.code, str(e), "properties", extra={"property": e.property}) from None
         schema = await registry.register(org_id, kb_id, definitions)
+        # This process learns the new union now; other processes learn it within the cache's TTL.
+        default_union_cache().invalidate(org_id, kb_id)
     except MetadataSchemaError as e:
         if f"{MAX_SCHEMA_VERSIONS} schema versions" in str(e):
             raise PushRefusal(409, "SCHEMA_VERSION_LIMIT", "This knowledge base has reached its schema version limit.") from None

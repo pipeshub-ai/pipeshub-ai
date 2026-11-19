@@ -64,6 +64,8 @@ import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 import { StreamError } from '@/lib/api/stream-errors';
+import { readAccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
+import { discardCompare, onPrimaryTurnStarted } from './compare/compare-controller';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -224,6 +226,52 @@ function followRemoteRun(slotId: string, convId: string): void {
   useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true });
 }
 
+/** The assistant row a finished turn ends on, or null when the turn kept no reply (the history ends on the question). */
+function turnReply(messages: ThreadMessageLike[]): ThreadMessageLike | null {
+  const last = messages[messages.length - 1];
+  return last?.role === 'assistant' ? last : null;
+}
+
+type AnswerCustom = { messageId?: string; searchDegraded?: boolean; accessNotices?: AccessNotice[] };
+const answerCustom = (m: ThreadMessageLike | undefined) => m?.metadata?.custom as AnswerCustom | undefined;
+
+/** Whether `row` is the assistant answer `target` names: by row id, or by the backend message id when the row id differs from it. */
+function isAnswerRow(row: ThreadMessageLike, target: string | null | undefined, backendId?: string | null): boolean {
+  if (row.role !== 'assistant') return false;
+  if (target && row.id === target) return true;
+  const id = backendId ?? target;
+  return Boolean(id) && (row.id === id || answerCustom(row)?.messageId === id);
+}
+
+/**
+ * The partial-search note belongs to an answer, so it is kept on the message (`metadata.custom.searchDegraded`) and shown from there: an
+ * old answer that stays on screen keeps its note, and a new answer brings its own. A list reloaded from the server carries no flags,
+ * so the notes of the answers already on screen are carried over by row id or backend message id. `mark` is the answer whose final
+ * event said its search was partial; `fresh` is an answer that was just replaced, so its old note is not carried.
+ */
+function withSearchDegraded(
+  next: ThreadMessageLike[],
+  previous: ThreadMessageLike[],
+  opts: { mark?: ThreadMessageLike | null; fresh?: string | null; degraded?: boolean; notices?: AccessNotice[] } = {},
+): ThreadMessageLike[] {
+  // The access notices (a source syncing or updating permissions) are kept on the answer the same way as the partial-search note.
+  const flaggedBefore = previous.filter((m) => m.role === 'assistant' && (answerCustom(m)?.searchDegraded === true || answerCustom(m)?.accessNotices?.length));
+  return next.map((row) => {
+    if (row.role !== 'assistant') return row;
+    const marked = Boolean(opts.mark) && row.id === opts.mark!.id;
+    const before = !isAnswerRow(row, opts.fresh ?? null)
+      ? flaggedBefore.find((p) => isAnswerRow(row, typeof p.id === 'string' ? p.id : null, answerCustom(p)?.messageId))
+      : undefined;
+    const degraded = (marked && opts.degraded !== false) || answerCustom(before)?.searchDegraded === true;
+    const notices = marked && opts.notices?.length ? opts.notices : answerCustom(before)?.accessNotices;
+    if (!degraded && !notices?.length) return row;
+    return {
+      ...row,
+      metadata: { ...row.metadata, custom: { ...row.metadata?.custom, ...(degraded ? { searchDegraded: true } : {}), ...(notices?.length ? { accessNotices: notices } : {}) } },
+    };
+  });
+}
+
 /**
  * Builds the post-stop message list for the offline fallback (grace-timeout
  * abort) — commits whatever text streamed so far as a locally-synthesized
@@ -251,11 +299,12 @@ function buildStoppedMessages(
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>
-      m.id === regenerateMessageId
+      isAnswerRow(m, regenerateMessageId)
         ? {
             ...m,
             content: [{ type: 'text' as const, text: streamingContent }],
-            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const } },
+            // The streamed text replaces the old answer, so the old answer's note goes with it.
+            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const, searchDegraded: undefined } },
           }
         : m
     );
@@ -1256,6 +1305,10 @@ export async function streamMessageForSlot(
         }
       },
 
+      onTurnStarted: (data) => {
+        if (request.compareTurn && slotIsOnRun(slotId, streamRunId)) onPrimaryTurnStarted(slotId, data);
+      },
+
       onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
         if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
         // Stop accumulating answer_chunks so no partial answer is shown
@@ -1341,7 +1394,7 @@ export async function streamMessageForSlot(
                 if (current?.convId !== reloadId || current.messages !== settledMessages) return;
                 // History returns its latest page only, so pagination restarts from it.
                 useChatStore.getState().updateSlot(slotId, {
-                  messages: loadHistoricalMessages(detail.messages).messages,
+                  messages: withSearchDegraded(loadHistoricalMessages(detail.messages).messages, current.messages),
                   rawMessages: detail.messages,
                   messagePagination: {
                     currentPage: detail.pagination.page,
@@ -1500,7 +1553,17 @@ export async function streamMessageForSlot(
             streamingParts: [],
             pendingCollections: [],
             artifacts: [],
-            messages: finalMessages,
+            messages: withSearchDegraded(finalMessages, slotBeforeComplete?.messages ?? [], {
+              // This turn's own reply is the row the history ends on. A turn stopped before any text has none (history drops the
+              // empty reply and ends on the question), and then the note belongs to no row: an earlier answer must not get it.
+              degraded: data.meta?.searchDegraded === true,
+              notices: readAccessNotices(data.meta?.accessNotices),
+              mark: data.meta?.searchDegraded === true || readAccessNotices(data.meta?.accessNotices).length > 0
+                ? (reuseExistingAssistant
+                    ? (cardRow ?? turnReply(finalMessages))
+                    : turnReply(finalMessages))
+                : null,
+            }),
             hasLoaded: true,
             abortController: null,
             runId: null,
@@ -1719,6 +1782,8 @@ export async function streamRegenerateForSlot(
   if (!slot || !slot.convId) return;
   if (slot.remoteRunInProgress) return;
 
+  // Rebuilding the primary answer leaves nothing to compare against.
+  discardCompare(slotId);
   const editConvId = slot.convId;
   const preEditMessages = slot.messages;
   const preEditPending = slot.pendingAskUserQuestion;
@@ -1772,7 +1837,6 @@ export async function streamRegenerateForSlot(
   const abortController = new AbortController();
   const runId = generateRunId();
   const streamRunId = runId ?? null;
-
   store.updateSlot(slotId, {
     // An answered card is not this run's: left in the slot it would be opened again when the run ends,
     // and the next click on it would add an answer message after the reply.
@@ -1951,7 +2015,7 @@ export async function streamRegenerateForSlot(
       stopIdleStatus();
     },
 
-    onComplete: async () => {
+    onComplete: async (data) => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
       const wasStopped = Boolean(useChatStore.getState().slots[slotId]?.stopping);
       if (flushTimer !== null) {
@@ -2019,7 +2083,18 @@ export async function streamRegenerateForSlot(
           currentStatusMessage: null,
           streamingCitationMaps: null,
           streamingParts: [],
-          messages: finalMessages,
+          messages: withSearchDegraded(
+            finalMessages,
+            useChatStore.getState().slots[slotId]?.messages ?? [],
+            {
+              fresh: regenRowId,
+              degraded: data?.meta?.searchDegraded === true,
+              notices: readAccessNotices(data?.meta?.accessNotices),
+              mark: data?.meta?.searchDegraded === true || readAccessNotices(data?.meta?.accessNotices).length > 0
+                ? (finalMessages.find((m) => m.id === regenRowId) ?? null)
+                : null,
+            },
+          ),
           rawMessages: detail.messages,
           abortController: null,
           runId: null,

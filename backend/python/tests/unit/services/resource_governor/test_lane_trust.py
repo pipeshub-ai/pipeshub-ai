@@ -221,6 +221,10 @@ class TestUseAfterClose:
         assert seen.get("inode") == ledger_inode != sentinel_inode, seen
         assert "error" not in seen
 
+    # Hundreds of rounds of four threads that spin on the GIL: about 25 s of CPU on a
+    # quiet host, so the 30 s default fails on a slower or busier one, and the timed-out
+    # test leaves its threads spinning, which starves the tests after it in that worker.
+    @pytest.mark.timeout(300)
     def test_ledger_calls_racing_close_never_touch_a_reused_descriptor(self, tmp_path: Path) -> None:
         errors: list[BaseException] = []
         record = LedgerRecord(plan_lanes=4, cap=2, cap_stamp=1.0)
@@ -262,6 +266,10 @@ class TestUseAfterClose:
             assert (tmp_path / f"sentinel{round_no}").read_bytes() == CANARY, round_no
         assert not errors, errors[:3]
 
+    # Hundreds of rounds of four threads that spin on the GIL: about 25 s of CPU on a
+    # quiet host, so the 30 s default fails on a slower or busier one, and the timed-out
+    # test leaves its threads spinning, which starves the tests after it in that worker.
+    @pytest.mark.timeout(300)
     def test_budget_calls_racing_close_get_only_budget_closed(self, tmp_path: Path) -> None:
         unexpected: list[BaseException] = []
         for round_no in range(25):

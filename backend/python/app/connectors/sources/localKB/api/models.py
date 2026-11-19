@@ -191,9 +191,14 @@ class KnowledgeBaseFiltersResponse(BaseModel):
     available: Dict[str, List[str]] = Field(..., description="Available filter options")
 
 
+class KnowledgeBaseListItem(KnowledgeBaseResponse):
+    """A knowledge base in the list: at most 100 of its folders, the first by id"""
+    foldersTruncated: bool = Field(False, description="Whether the knowledge base has more folders than the list returns")
+
+
 class ListKnowledgeBaseResponse(BaseModel):
     """Response model for paginated knowledge base listing"""
-    knowledgeBases: List[KnowledgeBaseResponse] = Field(..., description="List of knowledge bases")
+    knowledgeBases: List[KnowledgeBaseListItem] = Field(..., description="List of knowledge bases")
     pagination: KnowledgeBasePaginationResponse = Field(..., description="Pagination information")
     filters: KnowledgeBaseFiltersResponse = Field(..., description="Filter information")
 
@@ -283,7 +288,7 @@ class UpdateRecordResponse(BaseModel):
     location: str = Field(..., description="The location of the record, e.g., 'kb_root' or 'folder'.")
     folderId: Optional[str] = Field(None, description="The ID of the parent folder, if the record is in a folder.")
     kb: Dict[str, Any] = Field(..., description="Information about the knowledge base containing the record.")
-    userPermission: str = Field(..., description="The permission role of the user who performed the update.")
+    userPermission: Optional[str] = Field(None, description="The permission role of the user who performed the update. Null when it could not be read.")
 
 class DeleteRecordResponse(BaseModel):
     """Response model for deleting a record"""
@@ -412,11 +417,17 @@ class TrashRetention(BaseModel):
     minAgeMs: int = Field(..., description="Items stay at least this long before the cleanup may remove them")
 
 
+class TrashPagination(PaginationResponse):
+    """Paging of the recently deleted list, whose total stops counting at a cap"""
+    totalCapped: bool = Field(False, description="More items than the cap; totalCount is the cap")
+    nextCursor: Optional[str] = Field(None, description="Pass as cursor for the next page; null on the last page")
+
+
 class ListTrashResponse(BaseModel):
     """One page of a collection's recently deleted items"""
     success: bool = Field(True, description="Success status")
     items: list[TrashItem] = Field(..., description="Deleted items, newest first")
-    pagination: PaginationResponse = Field(..., description="Pagination information")
+    pagination: TrashPagination = Field(..., description="Pagination information")
     retention: TrashRetention | None = Field(None, description="Retention; none when it can't be read")
 class FileUploadResponse(BaseModel):
     """Response model for file upload"""

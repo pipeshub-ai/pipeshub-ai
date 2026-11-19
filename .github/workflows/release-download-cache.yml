@@ -1,0 +1,50 @@
+name: Release download cache
+
+# Fills, from main, the caches that keep CI off GitHub release downloads (actionlint, Electron and
+# electron-builder's tools), so a release-download outage (HTTP 502/504) does not fail a pull request.
+# A cache saved by a pull_request run is scoped to that pull request's merge ref: no other pull request,
+# and no release tag, can restore it. Only a cache saved on main is shared, and none of the workflows that
+# read these caches runs on main.
+# The schedule keeps the caches from expiring: GitHub evicts a cache nobody has read for 7 days.
+on:
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'frontend/package-lock.json'
+      - '.github/workflows/electron-build-reusable.yml'
+      - '.github/workflows/release-download-cache.yml'
+      - '.github/actions/install-actionlint/**'
+  schedule:
+    - cron: '23 4 * * 1,4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-download-cache
+  cancel-in-progress: false
+
+jobs:
+  actionlint:
+    name: Cache the actionlint release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+
+      - name: Install actionlint
+        uses: ./.github/actions/install-actionlint
+
+  electron:
+    name: Cache Electron downloads
+    uses: ./.github/workflows/electron-build-reusable.yml
+    with:
+      # Every platform a pull request or a release builds (electron-pr-build.yml, electron-build.yml).
+      targets: '["win", "linux"]'
+      warm_cache_only: true

@@ -75,6 +75,14 @@ class TestNeo4jPaths:
         query = neo4j.client.execute_query.await_args.args[0]
         assert f"collect(DISTINCT {CYPHER_RULE}) AS team_roles" in query
         assert "ut.role" not in query
+        assert "direct_role IN ['OWNER', 'WRITER', 'READER']" in query
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ["ADMIN", "owner", None])
+    async def test_kb_role_other_than_a_kb_role_is_none(self, neo4j: Neo4jProvider, stored: str | None) -> None:
+        neo4j.client.execute_query.return_value = [{"role": stored}]
+
+        assert await neo4j.get_user_kb_permission("kb1", "u1") is None
 
     @pytest.mark.asyncio
     async def test_kb_list(self, neo4j: Neo4jProvider) -> None:
@@ -82,6 +90,7 @@ class TestNeo4jPaths:
 
         for call in neo4j.client.execute_query.await_args_list:
             assert f"RETURN kb, {CYPHER_RULE} AS stored_role, false AS is_direct" in call.args[0]
+            assert "IN ['OWNER', 'WRITER', 'READER']\n" in call.args[0]
 
     @pytest.mark.parametrize("node_type", ["record", "recordGroup", "app"])
     def test_hub_roles(self, neo4j: Neo4jProvider, node_type: str) -> None:
@@ -99,6 +108,15 @@ class TestArangoPaths:
         query = arango.http_client.execute_aql.await_args.args[0]
         assert f"LET team_role = {AQL_RULE}" in query
         assert "role: team_info.role" not in query
+        assert "FILTER direct_role IN @kb_roles" in query
+        assert arango.http_client.execute_aql.await_args.kwargs["bind_vars"]["kb_roles"] == ["OWNER", "WRITER", "READER"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ["ADMIN", "owner"])
+    async def test_kb_role_other_than_a_kb_role_is_none(self, arango: ArangoHTTPProvider, stored: str) -> None:
+        arango.http_client.execute_aql.return_value = [stored]
+
+        assert await arango.get_user_kb_permission("kb1", "u1") is None
 
     @pytest.mark.asyncio
     async def test_kb_list_page_count_and_filters(self, arango: ArangoHTTPProvider) -> None:
@@ -108,6 +126,7 @@ class TestArangoPaths:
         assert len(queries) == 3
         for query in queries:
             assert f"LET team_role = {AQL_RULE}" in query
+            assert 'IN @kb_roles' in query
             assert "team_info" not in query
 
     @pytest.mark.parametrize("node_type", ["record", "recordGroup", "app"])

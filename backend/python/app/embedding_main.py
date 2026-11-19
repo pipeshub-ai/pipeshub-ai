@@ -11,8 +11,10 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 import asyncio
 import base64
 import contextlib
+import copy
 import ctypes
 import gc
+import math
 import os
 import struct
 import threading
@@ -25,11 +27,16 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any
 
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.api.middlewares.body_limit import BodyLimitMiddleware
+from app.api.validation_errors import input_free_422
+from app.capacity.admission import parse_class, reserve_or_adopt
+from app.capacity.member_budget import AdmissionTimeout
+from app.capacity.budget_policy import EMBED_WEIGHT, QUERY_EMBED_WEIGHT, Demand, Family
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -41,15 +48,22 @@ from app.config.constants.ai_models import (
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.core.org_context import spawn_detached
+from app.edition import check_runtime_settings
 from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
-from app.utils.env_utils import env_positive_int
+from app.utils.env_utils import bind_host, bind_port, env_positive_int
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
+
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from sentence_transformers import SentenceTransformer
+    from transformers import PreTrainedTokenizerBase
 
 logger = create_logger("embedding_service")
 
@@ -62,9 +76,58 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
 _ENV_MAX_CONCURRENT_EMBEDDINGS = (os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY") or "").strip()
 
 
+# Above this many CPUs the slot count is the CPU count, as before.
+_SMALL_TIER_MAX_CPUS = 8
+
+
+def _omp_threads_per_encode() -> int:
+    """Threads one encode uses, from OMP_NUM_THREADS; 2 unless it is a positive integer."""
+    raw = (os.getenv("OMP_NUM_THREADS") or "").strip()
+    return int(raw) if raw.isdecimal() and int(raw) > 0 else 2
+
+
+def _planned_slots() -> int | None:
+    """``PIPESHUB_CAPACITY_PROFILE=auto`` only: this process's share of the plan's encode slots, else ``None``."""
+    from app.capacity.runtime import current_plan
+
+    plan = current_plan()
+    if plan is None or plan.widths is None:
+        return None
+    return max(2, plan.widths.embed_slots // max(1, plan.widths.embed_processes))
+
+
+def default_executor_threads(slots: int, reserved: int) -> int:
+    """Threads for the loop's default executor: every encode slot runs at once, plus the reserved query slots
+    and two for the model loads. The stdlib default is ``min(32, cpus + 4)``, which caps 74 slots at 32."""
+    return slots + max(0, reserved) + 2
+
+
+def configure_default_executor(loop: asyncio.AbstractEventLoop, slots: int, reserved: int) -> None:
+    """Size the loop's default executor to the slots (``auto`` only); with the flag off nothing changes."""
+    from app.capacity.knobs import capacity_profile
+
+    if capacity_profile() == "auto":
+        from concurrent.futures import ThreadPoolExecutor
+
+        loop.set_default_executor(
+            ThreadPoolExecutor(max_workers=default_executor_threads(slots, reserved), thread_name_prefix="embed")
+        )
+
+
 def _default_max_concurrent_embeddings() -> int:
-    """Encode slots when not set explicitly: the container's CPUs, at least 2."""
-    return max(2, effective_cpu_count())
+    """Encode slots when not set explicitly.
+
+    On a small container every slot is a torch encode running ``omp`` threads,
+    so as many slots as CPUs would oversubscribe it several times over and
+    stretch every batch (queries included). Slots are sized so the threads
+    fill the CPUs once. Larger containers keep one slot per CPU.
+    """
+    if (planned := _planned_slots()) is not None:
+        return planned
+    cpus = effective_cpu_count()
+    if cpus <= _SMALL_TIER_MAX_CPUS:
+        return max(2, cpus // _omp_threads_per_encode())
+    return max(2, cpus)
 
 
 MAX_CONCURRENT_EMBEDDINGS = (
@@ -356,6 +419,35 @@ class EncodePriority(StrEnum):
         return cls.BULK
 
 
+class EncodeAbandoned(Exception):
+    """The caller left before its vectors were wanted; nobody will read the result."""
+
+
+# The longest an encode waits for its member tokens; a wait is always bounded.
+# How long an encode that holds an encode slot waits for its member tokens before it answers 429. Short on purpose:
+# the wait is spent holding an encode slot and a model lease, so a long one would let bulk requests queued for tokens
+# take every slot; a caller that is told to back off (Retry-After) retries and queues behind the others instead.
+EMBED_PERMIT_WAIT_S = 10.0
+EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
+
+
+def embed_class(priority: EncodePriority, header: str | None) -> str | None:
+    """The cost class an encode runs under: a search query is small work, an indexing batch carries its record's
+    class in ``X-Parse-Class`` (no header: small, as light-format records send none), and a value that is not a class
+    is unclassified (big work), never trusted."""
+    if priority is EncodePriority.QUERY:
+        return "small"
+    if header is None:
+        return "small"
+    return parse_class(header)
+
+
+def embed_demand(priority: EncodePriority, cls: str | None) -> Demand:
+    if priority is EncodePriority.QUERY:
+        return Demand(Family.QUERY_EMBED, QUERY_EMBED_WEIGHT, 0, "small")
+    return Demand(Family.EMBED, EMBED_WEIGHT, 0, cls)
+
+
 class EncodeGate:
     """Encode slots shared by search queries and bulk indexing batches.
 
@@ -374,18 +466,39 @@ class EncodeGate:
     batch frees goes to a waiting query first, so a steady stream of
     batches cannot keep queries waiting either. With a single slot the two
     take turns. Event-loop only; no locking.
+
+    ``stats()`` reads accounting kept on the side (when each slot was taken,
+    recent queue waits); none of it takes part in admission.
     """
 
-    def __init__(self, capacity: int, reserved_for_queries: int = 1) -> None:
+    # Wait samples kept per priority for the percentile in ``stats()``.
+    _WAIT_WINDOW = 256
+
+    def __init__(
+        self,
+        capacity: int,
+        reserved_for_queries: int = 1,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         if capacity < 1:
             raise ValueError(f"capacity must be at least 1, got {capacity}")
         self._capacity = capacity
         self._bulk_limit = max(1, capacity - max(0, reserved_for_queries))
         self._in_use = 0
         self._bulk_in_use = 0
-        self._waiting: dict[EncodePriority, deque[asyncio.Future[None]]] = {
+        self._waiting: dict[EncodePriority, deque[asyncio.Future[int]]] = {
             EncodePriority.QUERY: deque(),
             EncodePriority.BULK: deque(),
+        }
+        self._clock = clock
+        # Class rank of each waiting bulk request (0 = small): under PARSE_ADMISSION=classes small waits ahead of large and huge.
+        self._rank: dict[asyncio.Future[int], int] = {}
+        self._next_token = 0
+        # token -> (priority, time taken); a token tells a release which slot it frees.
+        self._held: dict[int, tuple[EncodePriority, float]] = {}
+        self._waits: dict[EncodePriority, deque[float]] = {
+            p: deque(maxlen=self._WAIT_WINDOW) for p in EncodePriority
         }
 
     @property
@@ -413,10 +526,13 @@ class EncodeGate:
             return True
         return self._in_use < self._bulk_limit and not self.waiting(EncodePriority.QUERY)
 
-    def _take(self, priority: EncodePriority) -> None:
+    def _take(self, priority: EncodePriority) -> int:
         self._in_use += 1
         if priority is EncodePriority.BULK:
             self._bulk_in_use += 1
+        self._next_token += 1
+        self._held[self._next_token] = (priority, self._clock())
+        return self._next_token
 
     def _grant_next(self, priority: EncodePriority, *, any_free_slot: bool = False) -> bool:
         queue = self._waiting[priority]
@@ -429,8 +545,7 @@ class EncodeGate:
             return False
         # The slot is taken on the waiter's behalf, so nothing that runs
         # before it resumes can take it first.
-        self._take(priority)
-        queue.popleft().set_result(None)
+        queue.popleft().set_result(self._take(priority))
         return True
 
     def _wake(self, *, bulk_released: bool = False) -> None:
@@ -450,24 +565,74 @@ class EncodeGate:
             if not any(self._grant_next(priority) for priority in order):
                 return
 
-    async def acquire(self, priority: EncodePriority) -> None:
+    def stats(self) -> dict[str, object]:
+        """Gate state for ``/health``. Read-only."""
+        now = self._clock()
+
+        def p95_ms(priority: EncodePriority) -> float:
+            waits = sorted(self._waits[priority])
+            return round(waits[max(0, math.ceil(0.95 * len(waits)) - 1)] * 1000, 1) if waits else 0.0
+
+        def oldest_age_s(priority: EncodePriority) -> float:
+            taken = [t for p, t in self._held.values() if p is priority]
+            return round(now - min(taken), 1) if taken else 0.0
+
+        return {
+            "slots": self._capacity,
+            # What bulk cannot use; the configured reservation is capped so bulk keeps a slot.
+            "reserved": self._capacity - self._bulk_limit,
+            "bulk_limit": self._bulk_limit,
+            "in_use": self._in_use,
+            "waiting": self.waiting(EncodePriority.QUERY) + self.waiting(EncodePriority.BULK),
+            "wait_p95_ms": {"query": p95_ms(EncodePriority.QUERY), "bulk": p95_ms(EncodePriority.BULK)},
+            "oldest_in_use_age_s": {
+                "query": oldest_age_s(EncodePriority.QUERY),
+                "bulk": oldest_age_s(EncodePriority.BULK),
+            },
+        }
+
+    async def acquire(self, priority: EncodePriority, *, rank: int = 0) -> int:
+        """Take a slot; the returned token goes back to ``release`` to say which one.
+
+        *rank* orders the waiting bulk requests: a lower rank is served first, first come first served inside a
+        rank. Left at 0 for every request, the queue is the plain arrival order it always was."""
+        started = self._clock()
         if not self.waiting(priority) and self._has_room(priority):
-            self._take(priority)
-            return
-        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._waiting[priority].append(waiter)
+            token = self._take(priority)
+            self._waits[priority].append(0.0)
+            return token
+        waiter: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        queue = self._waiting[priority]
+        if rank:
+            self._rank[waiter] = rank
+            queue.append(waiter)
+        elif not self._rank:
+            queue.append(waiter)  # nobody waits with a rank: the plain arrival order
+        else:
+            # Behind every waiter of rank 0, ahead of the first of a higher rank.
+            at = next((i for i, w in enumerate(queue) if self._rank.get(w, 0) > 0 and not w.done()), len(queue))
+            queue.insert(at, waiter)
         # Settles the queue at once if there is room after all (its head
         # was only waiters that have since given up).
         self._wake()
         try:
-            await waiter
+            token = await waiter
         except asyncio.CancelledError:
             if waiter.done() and not waiter.cancelled():
                 # Granted, then cancelled before it could run: hand it back.
-                self.release(priority)
+                self.release(priority, waiter.result())
             raise
+        finally:
+            self._rank.pop(waiter, None)
+        self._waits[priority].append(self._clock() - started)
+        return token
 
-    def release(self, priority: EncodePriority) -> None:
+    def release(self, priority: EncodePriority, token: int | None = None) -> None:
+        if token is None:
+            # No token (a caller that did not keep it): the oldest of that priority.
+            token = next((t for t, (p, _) in self._held.items() if p is priority), None)
+        if token is None or self._held.pop(token, None) is None:
+            return  # nothing held under that token: a second release must not free another slot
         self._in_use = max(0, self._in_use - 1)
         if priority is EncodePriority.BULK:
             self._bulk_in_use = max(0, self._bulk_in_use - 1)
@@ -475,11 +640,11 @@ class EncodeGate:
 
     @asynccontextmanager
     async def slot(self, priority: EncodePriority) -> AsyncIterator[None]:
-        await self.acquire(priority)
+        token = await self.acquire(priority)
         try:
             yield
         finally:
-            self.release(priority)
+            self.release(priority, token)
 
 
 def release_memory() -> None:
@@ -498,6 +663,20 @@ def release_memory() -> None:
         logger.debug("torch cache release skipped", exc_info=True)
     with contextlib.suppress(OSError, AttributeError):
         ctypes.CDLL("libc.so.6").malloc_trim(0)
+
+
+@dataclass(eq=False)
+class _Counter:
+    """What counting needs from one loaded model.
+
+    ``tokenizer`` is a private copy, or ``None`` when none could be made.
+    ``lock`` serialises counts on the event loop.
+    """
+
+    model: Any
+    tokenizer: PreTrainedTokenizerBase | None
+    prompt_tokens: int
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class ModelManager:
@@ -521,6 +700,10 @@ class ModelManager:
         self._last_used: dict[str, float] = {}
         self._normalize = normalize_embeddings
         self._models: dict[str, Any] = {}
+        # Counting tokenizers, one per loaded model (see ``_build_counter``).
+        self._counters: dict[str, _Counter] = {}
+        # In-flight builds, so concurrent first counts share one copy.
+        self._counter_builds: dict[str, tuple[Any, asyncio.Future[_Counter]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
         self._encode_gate = EncodeGate(max_concurrency, query_reserved_slots)
@@ -548,10 +731,106 @@ class ModelManager:
 
     def prompt_tokens(self, model_name: str) -> int:
         model = self._models.get(self._cache_key(model_name))
-        prompt = self._default_prompt(model) if model is not None else ""
-        if not prompt:
+        if model is None or not self._default_prompt(model):
             return 0
-        return len(model.tokenizer([prompt], add_special_tokens=False)["input_ids"][0])
+        counter = self._counters.get(self._cache_key(model_name))
+        if counter is None or counter.model is not model:
+            # Normally built when the model loads. Never build here: this runs
+            # on the event loop, and counting on the encoders' tokenizer would
+            # bring the truncation race back. Start the shared build instead
+            # and report 0 until it is done (the next listing has the number).
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:  # no running loop: nothing to start
+                return 0
+            self._start_counter_build(model_name, model)
+            return 0
+        return counter.prompt_tokens
+
+    def _build_counter(
+        self, model_name: str, model: SentenceTransformer, *, trust_remote_code: bool = False,
+    ) -> _Counter:
+        """A tokenizer that only counting uses, with the default prompt's length.
+
+        Fast tokenizers keep their truncation and padding settings on the
+        instance, and a call with ``truncation=False`` rewrites them for as
+        long as it runs. Sharing the model's tokenizer with the encoders let a
+        count running beside them make some encodes come back untruncated, so
+        counting works on a private copy. If neither a copy nor a fresh load is
+        possible, counting falls back to the model's own tokenizer, as it always
+        did, and goes through the encode gate.
+
+        Blocking (copying can take a while for a large vocabulary): run it off
+        the event loop.
+        """
+        tokenizer: PreTrainedTokenizerBase | None
+        try:
+            tokenizer = copy.deepcopy(model.tokenizer)
+        except Exception:
+            try:
+                from transformers import AutoTokenizer
+
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_name, local_files_only=True, trust_remote_code=trust_remote_code,
+                )
+            except Exception:
+                logger.warning(
+                    "Model '%s': no private tokenizer for counting; counting shares the "
+                    "encoder's tokenizer and takes an encode slot",
+                    model_name,
+                )
+                tokenizer = None
+        prompt = self._default_prompt(model)
+        source = tokenizer if tokenizer is not None else model.tokenizer
+        prompt_tokens = len(source([prompt], add_special_tokens=False)["input_ids"][0]) if prompt else 0
+        return _Counter(model=model, tokenizer=tokenizer, prompt_tokens=prompt_tokens)
+
+    async def _counter(
+        self, model_name: str, model: SentenceTransformer, *, trust_remote_code: bool = False,
+    ) -> _Counter:
+        key = self._cache_key(model_name)
+        counter = self._counters.get(key)
+        if counter is not None and counter.model is model:
+            return counter
+        build = self._start_counter_build(model_name, model, trust_remote_code=trust_remote_code)
+        # Shielded: a waiter that goes away must not cancel the build the others wait on.
+        return await asyncio.shield(build)
+
+    def _start_counter_build(
+        self, model_name: str, model: SentenceTransformer, *, trust_remote_code: bool = False,
+    ) -> asyncio.Future[_Counter]:
+        """The one build in flight for *model*, started if there is none. Needs a running loop."""
+        key = self._cache_key(model_name)
+        pending = self._counter_builds.get(key)
+        if pending is not None and pending[0] is model:
+            return pending[1]
+        build = spawn_detached(
+            self._build_and_store(key, model_name, model, trust_remote_code), name="embedding-counter-build",
+        )
+        pending = (model, build)
+        self._counter_builds[key] = pending
+
+        def _forget(_: object) -> None:
+            if self._counter_builds.get(key) is pending:
+                del self._counter_builds[key]
+            if not build.cancelled() and build.exception() is not None:
+                # Waiters raise it themselves; this covers a build nobody awaits.
+                logger.warning("Model '%s': could not prepare token counting", model_name)
+
+        build.add_done_callback(_forget)
+        return build
+
+    async def _build_and_store(
+        self, key: str, model_name: str, model: SentenceTransformer, trust_remote_code: bool,  # noqa: FBT001
+    ) -> _Counter:
+        built = await asyncio.to_thread(
+            self._build_counter, model_name, model, trust_remote_code=trust_remote_code,
+        )
+        counter = self._counters.get(key)
+        if counter is not None and counter.model is model:
+            return counter
+        self._counters[key] = built
+        return built
 
     def max_seq_length(self, model_name: str) -> int | None:
         limit = getattr(self._models.get(self._cache_key(model_name)), "max_seq_length", None)
@@ -636,12 +915,15 @@ class ModelManager:
         try:
             yield await self.get_model(model_name, trust_remote_code=trust_remote_code)
         finally:
-            remaining = self._in_use[key] - 1
-            if remaining:
-                self._in_use[key] = remaining
-            else:
-                del self._in_use[key]
-            self._last_used[key] = time.monotonic()
+            self._drop_lease(key)
+
+    def _drop_lease(self, key: str) -> None:
+        remaining = self._in_use[key] - 1
+        if remaining:
+            self._in_use[key] = remaining
+        else:
+            del self._in_use[key]
+        self._last_used[key] = time.monotonic()
 
     def reap_idle(self, now: float | None = None) -> list[str]:
         """Drop models nobody has used for ``idle_seconds``; return their names.
@@ -662,6 +944,7 @@ class ModelManager:
             del self._models[key]
             self._last_used.pop(key, None)
             self._locks.pop(key, None)
+            self._counters.pop(key, None)
         return dropped
 
     async def run_idle_reaper(self) -> None:
@@ -780,6 +1063,18 @@ class ModelManager:
                     return model
 
             model = await asyncio.to_thread(_load)
+            # Best effort: a model that can embed must load even if its counting
+            # tokenizer cannot be prepared; the first count tries again.
+            try:
+                self._counters[cache_key] = await asyncio.to_thread(
+                    self._build_counter, model_name, model, trust_remote_code=trust_remote_code,
+                )
+            except Exception:
+                logger.warning(
+                    "Model '%s': could not prepare token counting; it will be retried on first use",
+                    model_name,
+                    exc_info=True,
+                )
             self._models[cache_key] = model
             self._last_used[cache_key] = time.monotonic()
             logger.info("Embedding model '%s' loaded", model_name)
@@ -791,14 +1086,56 @@ class ModelManager:
         """Tokens the model itself reads for each text, special tokens included."""
         async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
             prompt = self._default_prompt(model)
+            counter = await self._counter(model_name, model, trust_remote_code=trust_remote_code)
+            tokenizer = counter.tokenizer if counter.tokenizer is not None else model.tokenizer
 
             def _count() -> list[int]:
                 # What encode reads: the default prompt, then the text.
-                ids = model.tokenizer([prompt + t for t in texts], add_special_tokens=True, truncation=False)["input_ids"]
+                ids = tokenizer([prompt + t for t in texts], add_special_tokens=True, truncation=False)["input_ids"]
                 return [len(i) for i in ids]
 
-            async with self._encode_gate.slot(EncodePriority.BULK):
-                return await asyncio.to_thread(_count)
+            if counter.tokenizer is None:
+                # Uses the model's own tokenizer, so it holds an encode slot and
+                # the model's lease until its thread ends, even if this request is
+                # cancelled meanwhile: the idle reaper must not drop the model.
+                token = await self._encode_gate.acquire(EncodePriority.BULK)
+                try:
+                    fallback = spawn_detached(asyncio.to_thread(_count), name="embedding-count")
+                except BaseException:
+                    self._encode_gate.release(EncodePriority.BULK, token)
+                    raise
+                lease_key = self._cache_key(model_name)
+                self._in_use[lease_key] += 1
+
+                def _release_slot(done: asyncio.Future[list[int]]) -> None:
+                    self._drop_lease(lease_key)
+                    self._encode_gate.release(EncodePriority.BULK, token)
+                    if not done.cancelled():
+                        done.exception()  # mark retrieved when nobody is waiting any more
+
+                fallback.add_done_callback(_release_slot)
+                return await asyncio.shield(fallback)
+            # No encode slot: counting never touches the model weights, so it
+            # must not compete with indexing for encode capacity. Counts queue
+            # on the event loop, not on worker threads: a thread parked behind
+            # another count would be taken from every other ``to_thread`` call,
+            # query encodes included.
+            # The lock is held until the thread has finished, not until this
+            # coroutine stops waiting: a cancelled request must not let the next
+            # count onto a tokenizer that is still in use.
+            await counter.lock.acquire()
+            work = spawn_detached(asyncio.to_thread(_count), name="embedding-count")
+
+            def _release(done: asyncio.Future[list[int]]) -> None:
+                counter.lock.release()
+                if not done.cancelled():
+                    done.exception()  # mark retrieved when nobody is waiting any more
+
+            work.add_done_callback(_release)
+            return await asyncio.shield(work)
+
+    def encode_gate_stats(self) -> dict[str, object]:
+        return self._encode_gate.stats()
 
     async def encode(
         self,
@@ -807,7 +1144,32 @@ class ModelManager:
         *,
         trust_remote_code: bool = False,
         priority: EncodePriority = EncodePriority.BULK,
+        should_stop: Callable[[], Awaitable[bool]] | None = None,
+        parse_class: str | None = None,
     ) -> list[list[float]]:
+        """Embed ``texts``.
+
+        ``should_stop`` (for a request: whether the client has gone) is asked
+        once the slot is held and again before the vectors are returned. A
+        request whose caller left while it queued costs an instant skip rather
+        than a batch of CPU. Work already inside the model cannot be
+        interrupted, so the slot is held until that thread ends even if this
+        request is cancelled meanwhile.
+        """
+
+        async def _abandoned(stage: str) -> bool:
+            if should_stop is None:
+                return False
+            try:
+                if not await should_stop():
+                    return False
+            except Exception:
+                # A broken check must not fail work the caller may still want.
+                logger.debug("Disconnect check failed %s; treating the client as present", stage, exc_info=True)
+                return False
+            logger.info("Embedding request abandoned %s: model=%s inputs=%d", stage, model_name, len(texts))
+            return True
+
         async with self._lease(model_name, trust_remote_code=trust_remote_code) as model:
 
             def _encode() -> list[list[float]]:
@@ -821,8 +1183,42 @@ class ModelManager:
                 )
                 return embeddings.tolist()
 
-            async with self._encode_gate.slot(priority):
-                return await asyncio.to_thread(_encode)
+            cls = embed_class(priority, parse_class)
+            token = await self._encode_gate.acquire(priority, rank=0 if cls == "small" else 1)
+            try:
+                # PIPESHUB_CAPACITY_PROFILE=auto: the encode holds its member tokens (embed, or query_embed for a search),
+                # with the class of its record; no component upstream reserves them (reserved once, here).
+                permit = await reserve_or_adopt(None, embed_demand(priority, cls), deadline_s=EMBED_PERMIT_WAIT_S)
+            except BaseException:
+                self._encode_gate.release(priority, token)
+                raise
+            try:
+                if await _abandoned("before start"):
+                    raise EncodeAbandoned
+                work = spawn_detached(asyncio.to_thread(_encode), name="embedding-encode")
+            except BaseException:
+                if permit is not None:
+                    permit.release()
+                self._encode_gate.release(priority, token)
+                raise
+            # The thread outlives a cancelled request, so it keeps the model leased
+            # too: the idle reaper must not drop a model that is still encoding.
+            lease_key = self._cache_key(model_name)
+            self._in_use[lease_key] += 1
+
+            def _release(done: asyncio.Future[list[list[float]]]) -> None:
+                self._drop_lease(lease_key)
+                if permit is not None:
+                    permit.release()
+                self._encode_gate.release(priority, token)
+                if not done.cancelled():
+                    done.exception()  # mark retrieved when nobody is waiting any more
+
+            work.add_done_callback(_release)
+            vectors = await asyncio.shield(work)
+            if await _abandoned("after encode"):
+                raise EncodeAbandoned
+            return vectors
 
 
 model_manager = ModelManager()
@@ -889,6 +1285,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
     install_log_redaction()
     app.state.model_manager = model_manager
+    configure_default_executor(asyncio.get_running_loop(), MAX_CONCURRENT_EMBEDDINGS, QUERY_RESERVED_SLOTS)
     logger.info(
         "Starting embedding server (max_concurrency=%d, "
         "slots reserved for search queries=%d, model idle unload=%ss)",
@@ -962,6 +1359,7 @@ app = FastAPI(
     description="OpenAI-compatible API for local dense embedding models",
     version="1.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 
 # Size caps: refuse before the body is buffered. The indexing client sends at
@@ -993,6 +1391,7 @@ async def health_check() -> JSONResponse:
                     "source": effective_cpu_source(),
                     "max_concurrent_embeddings": MAX_CONCURRENT_EMBEDDINGS,
                 },
+                "encode_gate": model_manager.encode_gate_stats(),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -1083,7 +1482,9 @@ async def download_progress(model_name: str) -> JSONResponse:
 @app.post("/v1/embeddings")
 async def create_embeddings(
     request: EmbeddingRequest,
+    http_request: Request,
     x_embedding_priority: Annotated[str | None, Header()] = None,
+    x_parse_class: Annotated[str | None, Header()] = None,
 ) -> EmbeddingResponse:
     # --- server-side policy checks (fail fast, before any I/O) ---
     if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
@@ -1109,7 +1510,20 @@ async def create_embeddings(
             texts,
             trust_remote_code=request.trust_remote_code,
             priority=EncodePriority.from_header(x_embedding_priority),
+            should_stop=http_request.is_disconnected,
+            **({"parse_class": x_parse_class} if x_parse_class is not None else {}),
         )
+    except EncodeAbandoned:
+        # Nobody is reading this; 499 is the conventional "client closed request".
+        raise HTTPException(status_code=499, detail="Client closed request") from None
+    except AdmissionTimeout:
+        # The node is busy, not broken: no member tokens came free in time. The client treats a 429 with Retry-After as
+        # backpressure (its own bounded retry), not as a failure that feeds retry counts and circuit breakers.
+        raise HTTPException(
+            status_code=429,
+            detail="Embedding capacity is busy; retry shortly.",
+            headers={"Retry-After": str(EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+        ) from None
     except Exception as exc:
         logger.exception("Embedding failed for model=%s", request.model)
         raise HTTPException(
@@ -1158,13 +1572,12 @@ async def tokenize(request: EmbeddingRequest) -> TokenizeResponse:
 
 
 def run(
-    host: str = "0.0.0.0",
+    host: str | None = None,
     port: int | None = None,
     reload: bool = False,
 ) -> None:
-    resolved_port = port or int(
-        os.getenv("EMBEDDING_SERVER_PORT", str(EMBEDDING_SERVER_PORT))
-    )
+    host = host or bind_host()
+    resolved_port = port if port is not None else bind_port(EMBEDDING_SERVER_PORT, "EMBEDDING_SERVER_PORT")
     uvicorn.run(
         "app.embedding_main:app",
         host=host,

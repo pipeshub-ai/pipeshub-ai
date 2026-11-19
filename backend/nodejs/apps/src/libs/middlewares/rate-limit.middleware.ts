@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
+import { isMcpRelay } from './mcp-relay';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
 /**
@@ -23,6 +24,7 @@ function getClientIpKey(req: Request): string {
 }
 
 export const CALLER_ROLE_LOOKUP_PATH = '/api/v1/users/me/role';
+export const MCP_PATH = '/mcp';
 export const SERVICE_AUTHORIZATION_HEADER = 'x-service-authorization';
 
 /**
@@ -89,6 +91,16 @@ export function createGlobalRateLimiter(
 
     skip: (req: Request): boolean => {
       if (isVerifiedCallerRoleLookup(req, serviceKey)) {
+        return true;
+      }
+      // /mcp counts its callers by account once they are authenticated
+      // (modules/mcp/routes); counted here, every caller behind one address,
+      // such as a hosted AI client's, would share one bucket.
+      if (req.path === MCP_PATH || req.path === `${MCP_PATH}/`) {
+        return true;
+      }
+      // An API call made for an /mcp tool call: that call was counted already.
+      if (isMcpRelay(req, serviceKey)) {
         return true;
       }
       // Internal routes (/…/internal/…) are service-to-service calls protected
@@ -161,8 +173,12 @@ export interface KeyedRateLimiterOptions {
   maxRequestsPerMinute: number;
   message: string;
   countOnlyFailures?: boolean;
+  // With `countOnlyFailures`: which responses count (default: any status of 400 or more).
+  isFailure?: (req: Request, res: Response) => boolean;
   // Narrows an anonymous caller's per-IP bucket, e.g. to the account it names.
   anonymousSubKey?: (req: Request) => string | undefined;
+  // Writes the 429 body, for surfaces whose clients expect another shape than the REST error.
+  respond?: (res: Response, message: string, retryAfter: number | null) => void;
 }
 
 /**
@@ -180,7 +196,9 @@ export function createKeyedRateLimiter(
     maxRequestsPerMinute,
     message,
     countOnlyFailures = false,
+    isFailure,
     anonymousSubKey,
+    respond,
   } = options;
 
   const keyFor = (req: Request): string => {
@@ -199,6 +217,12 @@ export function createKeyedRateLimiter(
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: countOnlyFailures,
+    ...(isFailure
+      ? {
+          requestWasSuccessful: (req: Request, res: Response) =>
+            !isFailure(req, res),
+        }
+      : {}),
     keyGenerator: keyFor,
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
@@ -209,12 +233,18 @@ export function createKeyedRateLimiter(
         ip: getClientIp(req),
         retryAfter,
       });
+      const retrySeconds =
+        retryAfter === undefined ? null : parseInt(String(retryAfter), 10);
+      if (respond) {
+        respond(res, message, retrySeconds);
+        return;
+      }
       const error = new TooManyRequestsError(message);
       res.status(429).json({
         error: {
           code: error.code,
           message: error.message,
-          retryAfter: retryAfter ? parseInt(retryAfter as string, 10) : null,
+          retryAfter: retrySeconds,
         },
       });
     },

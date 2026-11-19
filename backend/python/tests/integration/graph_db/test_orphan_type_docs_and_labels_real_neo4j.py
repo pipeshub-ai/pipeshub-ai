@@ -131,7 +131,7 @@ async def test_connector_delete_keeps_the_other_connectors_label_link(neo4j) -> 
         await provider.batch_create_edges([{
             "from_id": record_key, "from_collection": RECORDS,
             "to_id": topic, "to_collection": TOPICS,
-            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+            "createdAtTimestamp": now,
         }], BELONGS_TO_TOPIC)
 
     result = await provider.delete_connector_instance(conn_a, org_id)
@@ -177,7 +177,7 @@ async def test_connector_delete_keeps_a_label_it_never_linked(neo4j) -> None:
     await provider.batch_create_edges([{
         "from_id": record_key, "from_collection": RECORDS,
         "to_id": linked, "to_collection": TOPICS,
-        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        "createdAtTimestamp": now,
     }], BELONGS_TO_TOPIC)
 
     result = await provider.delete_connector_instance(connector_id, org_id)
@@ -210,7 +210,7 @@ async def test_a_link_committed_while_the_label_delete_waits_keeps_the_label(neo
     await provider.batch_create_edges([{
         "from_id": rec_a, "from_collection": RECORDS,
         "to_id": topic, "to_collection": TOPICS,
-        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        "createdAtTimestamp": now,
     }], BELONGS_TO_TOPIC)
 
     rel = edge_collection_to_relationship(BELONGS_TO_TOPIC)

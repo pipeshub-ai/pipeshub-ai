@@ -12,6 +12,13 @@ nodeSelector:
 tolerations: []
 spreadAcrossNodes: true
 
+# A cluster you already run may have no parsing node group, so parsing pods are
+# not pinned to one. They keep the toleration for its taint, so they can also
+# use that group if you add it (cluster.yaml creates it tainted).
+parsing:
+  nodeSelector:
+    pipeshub/role: null
+
 ingress:
   annotations:
     alb.ingress.kubernetes.io/scheme: internal

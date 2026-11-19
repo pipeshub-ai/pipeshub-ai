@@ -84,6 +84,8 @@ class AgentContext(BaseModel):
     web_search_config: dict[str, Any] | None = None
     # Deep research: the research method in the prompt, more turns and a larger web budget.
     deep_research: bool = False
+    # No provider is set up org-wide: the prompt says so, so the model answers instead of hunting for a web tool.
+    web_search_unset: bool = False
 
     # MCP servers — parallel to the toolset fields above. `mcp_servers` is the
     # attached/authenticated instance metadata (from `agent.py`'s chat handler);
@@ -471,6 +473,7 @@ class AgentContext(BaseModel):
             api_toolset_tools=state.get("api_toolset_tools") or [],
             web_search_config=state.get("web_search_config"),
             deep_research=bool(state.get("deep_research", False)) and bool(state.get("web_search_config")),
+            web_search_unset=bool(state.get("web_search_unset", False)) and not state.get("web_search_config"),
             has_knowledge=bool(state.get("has_knowledge", False)),
             apps=state.get("apps"),
             kb=state.get("kb"),
@@ -632,9 +635,8 @@ class AgentContext(BaseModel):
             # Mirrored so a tool can see the flag without reaching for the
             # context (`fetch.py` records render outcomes only when it is on).
             "include_retrieval_context": self.include_retrieval_context,
-            # Tools that call a model themselves (grep-command generation)
-            # report into it; absent unless the request opted in.
-            "usage_ledger": self.usage_ledger if self.include_retrieval_context else None,
+            # Tools that call a model themselves (grep-command generation) report into it.
+            "usage_ledger": self.usage_ledger,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,

@@ -1,6 +1,6 @@
-"""Fakes for behaviour tests of the Zammad connector's ticket removal.
+"""Fakes for behaviour tests of the Zammad connector.
 
-Two things are faked. Zammad is an in-memory set of groups and tickets behind
+Two things are faked. Zammad is an in-memory set of groups, roles and tickets behind
 the ``ZammadDataSource`` methods the ticket sync calls, with a search index that
 can lag behind the tickets, as Zammad's Elasticsearch index does. Our databases
 are in-memory stand-ins that hand back what the real stores hand back: a plain
@@ -17,8 +17,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
-from app.models.entities import Record
+from app.models.entities import Record, RecordType
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     matches_visibility,
@@ -28,7 +29,20 @@ from app.sources.client.zammad.zammad import ZammadResponse
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
+    from app.sources.client.http.http_request import HTTPRequest
+
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+AGENT_ROLE_ID = 2
+
+
+def agent_role(role_id: int = AGENT_ROLE_ID, *, name: str = "Agent", active: bool = True,
+               permissions: tuple[str, ...] = ("ticket.agent",),
+               group_ids: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    """A role as ``GET /roles?expand=true`` lists it: ``permissions`` holds the permission names."""
+    return {
+        "id": role_id, "name": name, "active": active, "permissions": list(permissions),
+        "permission_ids": list(range(1, len(permissions) + 1)), "group_ids": dict(group_ids or {}),
+    }
 
 
 def iso(epoch_ms: int) -> str:
@@ -63,6 +77,8 @@ class FakeZammad:
     # Elasticsearch's index.max_result_window: a page past it is a 400.
     result_window: int = 10_000
     fail_articles_for: set[int] = field(default_factory=set)
+    # ticket id -> the article list Zammad answers for it, instead of the made-up one
+    articles: dict[int, object] = field(default_factory=dict)
     fail_search_at_offset: int | None = None
     fail_list_groups: bool = False
     ticket_read_status: dict[int, int] = field(default_factory=dict)
@@ -74,6 +90,11 @@ class FakeZammad:
     # Zammad before 6.5 ignores only_total_count and answers with a page of tickets.
     supports_count: bool = True
     count_calls: list[tuple[str, list[int]]] = field(default_factory=list)
+    # Roles as GET /roles?expand=true lists them.
+    roles: list[dict[str, Any]] = field(default_factory=lambda: [agent_role()])
+    # HTTP status answered instead of the role list.
+    list_roles_status: int | None = None
+    role_reads: list[bool | None] = field(default_factory=list)
 
     def add_ticket(self, ticket_id: int, group_id: int, *, day: int = 0, minute: int = 0,
                    attachments: int = 0) -> None:
@@ -103,8 +124,15 @@ class FakeZammad:
         start = ((page or 1) - 1) * (per_page or 100)
         return ZammadResponse(success=True, data=rows[start:start + (per_page or 100)])
 
-    async def get_group(self, group_id: int) -> ZammadResponse:
-        return ZammadResponse(success=True, data={"id": group_id, "user_ids": []})
+    async def list_roles(self, page: int | None = None, per_page: int | None = None,
+                         expand: bool | None = None) -> ZammadResponse:
+        self.role_reads.append(expand)
+        if self.list_roles_status:
+            return ZammadResponse(success=False, message="list_roles failed", status_code=self.list_roles_status)
+        # Without expand Zammad sends permission_ids only, not the names.
+        rows = [r if expand else {k: v for k, v in r.items() if k != "permissions"} for r in self.roles]
+        start = ((page or 1) - 1) * (per_page or 100)
+        return ZammadResponse(success=True, data=rows[start:start + (per_page or 100)], status_code=200)
 
     async def search_tickets(self, query: str, limit: int | None = None, offset: int | None = None) -> ZammadResponse:
         # ZammadDataSource.search_tickets turns these into page/per_page and refuses what can't be.
@@ -178,6 +206,8 @@ class FakeZammad:
     async def list_ticket_articles(self, ticket_id: int) -> ZammadResponse:
         if ticket_id in self.fail_articles_for:
             return ZammadResponse(success=False, message="list_ticket_articles failed", status_code=500)
+        if ticket_id in self.articles:
+            return ZammadResponse(success=True, data=self.articles[ticket_id], status_code=200)
         count = self.tickets[ticket_id]["attachments"] if ticket_id in self.tickets else 0
         attachments = [
             {"id": n, "filename": f"file-{ticket_id}-{n}.txt", "size": 3,
@@ -202,6 +232,7 @@ class FakeRecordsDb:
         self.records: dict[str, Any] = {}  # external id -> record as written
         self.record_groups: dict[str, Any] = {}
         self.deleted: list[str] = []  # external ids, in delete order
+        self.deleted_groups: list[str] = []  # external group ids, in delete order
         self.fail_delete_for: set[str] = set()
         self.group_page_reads: list[str] = []
 
@@ -251,14 +282,43 @@ class FakeRecordsDb:
         del self.records[record.external_record_id]
         self.deleted.append(record.external_record_id)
 
+    async def get_records_by_record_type(self, connector_id: str, record_type: RecordType | str) -> list[Record]:
+        wanted = record_type.value if isinstance(record_type, RecordType) else record_type
+        return [self._plain(r) for r in self.records.values() if r.record_type.value == wanted]
+
+    async def get_records_by_parent(
+        self, connector_id: str, parent_external_record_id: str, record_type: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Record]:
+        return [
+            self._plain(r) for r in self.records.values()
+            if r.parent_external_record_id == parent_external_record_id and matches_visibility(r, visibility)
+            and (record_type is None or r.record_type.value == record_type)
+        ]
+
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, _ in groups:
             self.record_groups.setdefault(group.external_group_id, group)
+
+    async def on_record_group_deleted(
+        self, external_group_id: str, connector_id: str, *, trash_live_records: bool = False,
+    ) -> bool:
+        """The group and every record still in it go, as the processor deletes them."""
+        self.record_groups.pop(external_group_id, None)
+        for external_id, record in list(self.records.items()):
+            if record.external_record_group_id == external_group_id:
+                del self.records[external_id]
+                self.deleted.append(external_id)
+        self.deleted_groups.append(external_group_id)
+        return True
 
     async def on_new_user_groups(self, user_groups: list[Any]) -> None:
         return None
 
     async def on_new_app_users(self, users: list[Any]) -> None:
+        return None
+
+    async def on_new_app_roles(self, roles: list[Any]) -> None:
         return None
 
 
@@ -302,3 +362,116 @@ class FakeConfigService:
             "auth": {"authType": "API_TOKEN", "baseUrl": "https://zammad.test", "token": "t"},
             "filters": {"sync": {"values": self.sync_filters}, "indexing": {"values": {}}},
         }
+
+
+class FakeZammadPeople:
+    """Users, groups and roles behind Zammad's REST API, with the failures it can answer with.
+
+    A user's ``group_ids`` maps a group id to its access levels, as Zammad sends it,
+    and a role carries its permission names under ``expand=true`` only, as Zammad does.
+    """
+
+    def __init__(self, groups: dict[int, str]) -> None:
+        self.users: dict[int, dict[str, Any]] = {}
+        self.groups: dict[int, dict[str, Any]] = {
+            gid: {"id": gid, "name": name, "active": True} for gid, name in groups.items()
+        }
+        self.roles: dict[int, dict[str, Any]] = {AGENT_ROLE_ID: agent_role()}
+        # page number -> HTTP status answered instead of that page of users
+        self.users_page_status: dict[int, int] = {}
+        self.users_page_unanswered: set[int] = set()
+        # page number -> HTTP status answered instead of that page of roles
+        self.roles_page_status: dict[int, int] = {}
+        self.roles_page_unanswered: set[int] = set()
+        # path -> HTTP status answered instead of whatever the path has (any page)
+        self.path_status: dict[str, int] = {}
+        # False: answers /roles as if expand were not asked (permission_ids only), as an old Zammad might.
+        self.honours_expand = True
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    def add_user(self, user_id: int, groups: tuple[int, ...] = (1,), roles: tuple[int, ...] = (AGENT_ROLE_ID,),
+                 access: tuple[str, ...] = ("full",), *, active: bool = True) -> None:
+        self.users[user_id] = {
+            "id": user_id, "email": f"u{user_id}@example.com", "firstname": "User", "lastname": str(user_id),
+            "active": active, "role_ids": list(roles),
+            "group_ids": {str(group): list(access) for group in groups},
+        }
+
+    def remove_user(self, user_id: int) -> None:
+        del self.users[user_id]
+
+    def set_access(self, user_id: int, group: int, access: tuple[str, ...]) -> None:
+        """The user's own access row to the group; an empty one removes the row."""
+        rows = self.users[user_id]["group_ids"]
+        if access:
+            rows[str(group)] = list(access)
+        else:
+            rows.pop(str(group), None)
+
+    def members_of(self, group: int) -> set[int]:
+        """Users with any direct access row to the group: what ``GET /groups/{id}`` lists as ``user_ids``."""
+        return {uid for uid, user in self.users.items() if str(group) in user["group_ids"]}
+
+    async def execute(self, request: HTTPRequest) -> FakeHttpResponse:
+        path = urlparse(request.url).path
+        params = dict(request.query_params or {})
+        self.calls.append((path, params))
+        page, per_page = int(params.get("page", 1)), int(params.get("per_page", 100))
+        if path in self.path_status:
+            return FakeHttpResponse(self.path_status[path], {"error": "not now"})
+        if path == "/api/v1/users/me":
+            return FakeHttpResponse(200, {"id": 1, "email": "admin@example.com"})
+        if path == "/api/v1/users":
+            if page in self.users_page_unanswered:
+                raise ConnectionError("connection reset by peer")
+            if page in self.users_page_status:
+                return FakeHttpResponse(self.users_page_status[page], {"error": "not now"})
+            rows = [self.users[uid] for uid in sorted(self.users)]
+            return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
+        if path == "/api/v1/groups":
+            rows = [dict(self.groups[gid]) for gid in sorted(self.groups)]
+            return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
+        if path == "/api/v1/roles":
+            if page in self.roles_page_unanswered:
+                raise ConnectionError("connection reset by peer")
+            if page in self.roles_page_status:
+                return FakeHttpResponse(self.roles_page_status[page], {"error": "not now"})
+            expand = params.get("expand") == "true" and self.honours_expand
+            rows = [
+                dict(role) if expand else {k: v for k, v in role.items() if k != "permissions"}
+                for _, role in sorted(self.roles.items())
+            ]
+            return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
+        return FakeHttpResponse(404, {"error": f"no route {path}"})
+
+    def group_detail_reads(self) -> list[str]:
+        return [path for path, _ in self.calls if re.fullmatch(r"/api/v1/groups/\d+", path)]
+
+
+class FakeDirectory:
+    """Groups and roles as the processor stores them: each write replaces the members."""
+
+    def __init__(self) -> None:
+        self.org_id = "org-1"
+        self.group_members: dict[str, set[str]] = {}
+        self.role_members: dict[str, set[str]] = {}
+        self.record_groups: dict[str, Any] = {}
+        self.group_writes = 0
+        self.role_writes = 0
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
+        return None
+
+    async def on_new_user_groups(self, user_groups: list[tuple[Any, list[Any]]]) -> None:
+        self.group_writes += 1
+        for group, members in user_groups:
+            self.group_members[group.source_user_group_id] = {m.email for m in members}
+
+    async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
+        self.role_writes += 1
+        for role, members in roles:
+            self.role_members[role.source_role_id] = {m.email for m in members}
+
+    async def on_new_record_groups(self, record_groups: list[tuple[Any, list[Any]]]) -> None:
+        for group, _ in record_groups:
+            self.record_groups[group.external_group_id] = group

@@ -86,6 +86,7 @@ def _make_connector() -> LinearConnector:
     dep.org_id = "org-linear-gaps"
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.on_new_app_users = AsyncMock()
+    dep.get_all_app_users = AsyncMock(return_value=[])
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
@@ -1232,7 +1233,7 @@ class TestSyncIssuesForTeamsExtended:
         conn = _make_connector()
         conn._now = MagicMock(return_value=1704070000000)
         rg, perms = _make_team_rg()
-        conn.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1700000000000}
+        conn.issues_sync_point.store["team_issues_v2_team-1"] = {"last_sync_time": 1700000000000}
 
         ticket = _ticket_record(source_updated_at=1704067200000)
         file_rec = _file_record()
@@ -1250,7 +1251,7 @@ class TestSyncIssuesForTeamsExtended:
         assert (full_sync_team_ids, failed) == (set(), [])
         # The checkpoint is when this run started, not the newest updatedAt it saw:
         # an issue changed while the list was being read is picked up next time.
-        assert conn.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1704070000000
+        assert conn.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_skips_empty_batches_from_fetch(self):
@@ -2872,7 +2873,7 @@ class TestCoverageBoostFinal:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_projects_for_teams([(rg, perms)])
 
-        mock_ds.projects.assert_awaited_once_with(first=10, after=None, filter={
+        mock_ds.projects.assert_awaited_once_with(first=10, after=None, includeArchived=True, filter={
             "accessibleTeams": {"some": {"id": {"in": ["team-1"]}}},
             "updatedAt": {"gt": conn._linear_datetime_from_timestamp(1704067200000 - 60_000)},
         })

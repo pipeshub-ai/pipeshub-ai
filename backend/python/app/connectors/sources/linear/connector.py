@@ -150,9 +150,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Config path for Linear connector
 LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
-# Renamed when projects stopped being shared into their non-lead teams: a key with no
-# checkpoint re-lists every project once, and that rewrite drops the old team edges.
-PROJECTS_CHECKPOINT_KEY = "projects-by-lead-team"
+# Renamed when projects stopped being shared into their non-lead teams, and again when archived
+# projects joined the listing: a key with no checkpoint re-lists every project once.
+PROJECTS_CHECKPOINT_KEY = "projects-with-archived"
 
 # Placeholder ancestor sweep (parent sub-issue hierarchy left out of sync filters)
 PLACEHOLDER_SWEEP_BATCH: int = 50
@@ -465,6 +465,7 @@ class LinearConnector(BaseConnector):
         self._refreshed_issue_ids: set[str] = set()
         self._refreshed_project_ids: set[str] = set()
         self._team_visibility: dict[str, str] = {}
+        self._team_permissions: dict[str, list[Permission]] = {}
         # False once this run skipped something after an error; see full_sync_coverage
         self._read_everything = True
         # Parents of the issues this run wrote; see _sweep_placeholder_records
@@ -752,6 +753,8 @@ class LinearConnector(BaseConnector):
             if linear_users:
                 await self.data_entities_processor.on_new_app_users(linear_users)
                 self.logger.info(f"👥 Synced {len(linear_users)} Linear users")
+            # Also when nobody is eligible: everyone stored then loses the connector.
+            await self._withdraw_absent_app_users(linear_users)
 
             # Step 3: Get team_ids filter and fetch teams
             team_ids = None
@@ -966,6 +969,20 @@ class LinearConnector(BaseConnector):
         if await self._reconciler.due(forced=forced):
             await self._reconciler.run(synced_team_ids)
 
+    async def _withdraw_absent_app_users(self, listed: list[AppUser]) -> None:
+        """Take the connector away from stored users the complete user read no longer lists as
+        active: Linear leaves suspended accounts out of it. A failed read raises before this
+        runs, so an incomplete list never strips anyone. Reactivation saves the user again."""
+        # PipesHub finds a user by email, so an account whose email changed gets a second node
+        # while the old one keeps the connector: match the stored relation on both.
+        kept = {(u.email.lower(), u.source_user_id) for u in listed}
+        gone = [
+            u for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            if ((u.email or "").lower(), u.source_user_id) not in kept
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
     async def _fetch_users(self) -> List[AppUser]:
         """
         Fetch all Linear users using cursor-based pagination.
@@ -1102,6 +1119,7 @@ class LinearConnector(BaseConnector):
 
         # Convert teams to both UserGroups and RecordGroups
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        self._team_permissions = {}  # this run's teams only
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
         # Linear has no per-issue access, so a team's audience is everything in it.
         # A team with sub-teams is not declared: a private sub-team is hidden from the
@@ -1181,7 +1199,8 @@ class LinearConnector(BaseConnector):
             # 3. Permissions: see team_access (team members; workspace members for public
             #    teams; parent team members for restricted teams)
             self._team_visibility[team_id] = visibility(team)
-            record_groups.append((record_group, team_permissions(team, teams_by_id)))
+            self._team_permissions[team_id] = team_permissions(team, teams_by_id)
+            record_groups.append((record_group, self._team_permissions[team_id]))
 
         self.logger.info(
             f"📥 Fetched {len(all_teams)} Linear teams, "
@@ -1328,11 +1347,13 @@ class LinearConnector(BaseConnector):
         """Whether the team has any issue the incremental listing would return."""
         team_filter: dict[str, Any] = {"team": {"id": {"eq": team_id}}}
         self._apply_date_filters_to_linear_filter(team_filter, since)
-        data = await self._api.call("issueIds", {"first": 1, "filter": team_filter})
+        data = await self._api.call("issueIds", {"first": 1, "filter": team_filter, "includeArchived": True})
         return bool(((data.get("issues") or {}).get("nodes") or []))
 
     def _team_issue_checkpoint(self, team_id: str) -> ListingCheckpoint:
-        return self._checkpoint(self.issues_sync_point, f"team_issues_{team_id}")
+        # v2: listings include archived issues. The new key lists each team once in full, so
+        # issues archived before an older checkpoint are picked up.
+        return self._checkpoint(self.issues_sync_point, f"team_issues_v2_{team_id}")
 
     async def _hold_checkpoint(self, checkpoint: ListingCheckpoint, team_key: str, failures: list[str]) -> bool:
         """Some issues of this run could not be stored. Keep the checkpoint so the next
@@ -1698,7 +1719,7 @@ class LinearConnector(BaseConnector):
             try:
                 pages = self._api.pages(
                     "issues", ["issues"], page_size=batch_size, after=after_cursor,
-                    fetch=lambda ds, first, after: ds.issues(first=first, after=after, filter=team_filter),
+                    fetch=lambda ds, first, after: ds.issues(first=first, after=after, filter=team_filter, includeArchived=True),
                 )
                 async for issues_list, end_cursor, _ in pages:
                     if issues_list:
@@ -1710,6 +1731,9 @@ class LinearConnector(BaseConnector):
                         # Linear's team filter also returns sub-team issues; each is synced in its own team's pass.
                         issue_team_id = (issue_data.get("team") or {}).get("id")
                         if issue_team_id and issue_team_id != team_id:
+                            continue
+                        # includeArchived also lists the trash; trashed issues leave through the deletion sync.
+                        if issue_data.get("trashed"):
                             continue
                         try:
                             batch_records.extend(await self._issue_to_records(
@@ -2255,9 +2279,13 @@ class LinearConnector(BaseConnector):
 
             async for projects_list, end_cursor, _ in self._api.pages(
                 "projects", ["projects"], page_size=PROJECT_PAGE_SIZE, after=run.cursor,
-                fetch=lambda ds, first, after: ds.projects(first=first, after=after, filter=project_filter),
+                fetch=lambda ds, first, after: ds.projects(
+                    first=first, after=after, filter=project_filter, includeArchived=True),
             ):
                 for project_data in projects_list:
+                    # includeArchived also lists the trash; trashed projects leave through the deletion sync.
+                    if project_data.get("trashed"):
+                        continue
                     try:
                         records = await self._project_to_records(project_data.get("id", ""), set(scope))
                         if records:
@@ -2297,20 +2325,48 @@ class LinearConnector(BaseConnector):
                 ),
             )
 
+    @staticmethod
+    def _project_teams(project_data: dict[str, Any], scope: set[str]) -> list[str]:
+        """The synced teams a project belongs to, sorted by id."""
+        return sorted(t["id"] for t in ((project_data.get("teams") or {}).get("nodes") or [])
+                      if t and t.get("id") in scope)
+
     def _project_home(self, project_data: dict[str, Any], scope: set[str]) -> str | None:
         """The one synced team a project is filed under: its lead team, else the first by
         id, so the choice never depends on the order teams are read.
 
-        Only this team's readers see the project and its children. Linear also shows it
-        to the readers of its other teams; filing it under those too listed its documents,
-        links and files at the top of each of them as well as under the project.
+        Filing it under every team listed its documents, links and files at the top of
+        each of them as well as under the project, so the other teams' readers are
+        granted on the project record instead (``_project_extra_permissions``).
         ``leadTeamId`` is marked internal in Linear's schema, hence the fallback."""
         lead_team_id = project_data.get("leadTeamId")
         if lead_team_id in scope:
             return lead_team_id
-        teams = sorted(t["id"] for t in ((project_data.get("teams") or {}).get("nodes") or [])
-                       if t and t.get("id") in scope)
+        teams = self._project_teams(project_data, scope)
         return teams[0] if teams else None
+
+    def _project_extra_permissions(
+        self, project_data: dict[str, Any], scope: set[str], home: str
+    ) -> list[Permission]:
+        """Linear shows a project to the readers of every team it belongs to
+        (linear.app/docs/private-teams). Those of the synced teams other than its home
+        team; its children inherit them from the project."""
+        grants = {
+            (p.entity_type, p.external_id): p
+            for team_id in self._project_teams(project_data, scope) if team_id != home
+            for p in self._team_permissions.get(team_id, [])
+        }
+        return list(grants.values())
+
+    def _project_grants_stamp(self, project_data: dict[str, Any], scope: set[str]) -> str:
+        """A fingerprint of what the project's synced teams grant in this run, kept in its
+        revision so a team made private, or taken out of the sync, refreshes the project."""
+        keys = sorted({
+            f"{p.entity_type}:{p.external_id}:{p.email}:{p.type}"
+            for team_id in self._project_teams(project_data, scope)
+            for p in self._team_permissions.get(team_id, [])
+        })
+        return hashlib.sha256("|".join(keys).encode()).hexdigest()[:16]
 
     async def _fetch_full_project(self, project_id: str) -> dict[str, Any] | None:
         """A project with every nested list read to its end. None when Linear no longer
@@ -2323,6 +2379,7 @@ class LinearConnector(BaseConnector):
         if not project:
             return None
         for field, operation, size in (
+            ("teams", "projectTeams", NESTED_PAGE_SIZE),
             ("externalLinks", "projectExternalLinks", NESTED_PAGE_SIZE),
             ("documents", "projectDocuments", NESTED_PAGE_SIZE),
             ("projectMilestones", "projectMilestones", NESTED_PAGE_SIZE),
@@ -2346,7 +2403,8 @@ class LinearConnector(BaseConnector):
         if not project_id:
             return []
         full_project_data = await self._fetch_full_project(project_id)
-        if full_project_data is None:
+        # Trashed projects leave through the deletion sync; a comment on one must not write it back.
+        if full_project_data is None or full_project_data.get("trashed"):
             return []
 
         team_id = self._project_home(full_project_data, scope)
@@ -2427,8 +2485,18 @@ class LinearConnector(BaseConnector):
         for child_record, _ in batch_records:
             child_record.shared_groups_complete = project_record.shared_groups_complete
 
+        grants: list[Permission] = []
+        if self._team_permissions:
+            # A rewrite, so a team taken off the project takes its readers' grants with it.
+            project_record.rewrite_permissions = True
+            grants = self._project_extra_permissions(full_project_data, scope, team_id)
+            if project_record.external_revision_id:
+                project_record.external_revision_id += f":{self._project_grants_stamp(full_project_data, scope)}"
+        else:
+            # Without this run's teams a rewrite would wipe the grants; keep the stored ones.
+            self.logger.warning(f"Team permissions not read in this run; project {project_id} keeps its stored grants")
         # The project first: a child written before it finds no parent in its team.
-        return [(project_record, []), *batch_records]
+        return [(project_record, grants), *batch_records]
 
     async def _sync_comment_activity(self, synced_team_ids: set[str]) -> None:
         """Queue issues and projects for re-indexing when their discussion changed.
@@ -2478,10 +2546,10 @@ class LinearConnector(BaseConnector):
         for start in range(0, len(issue_ids), ISSUE_REFRESH_BATCH):
             batch = issue_ids[start:start + ISSUE_REFRESH_BATCH]
             data = await self._api.run(
-                "issues", lambda ds, ids=batch: ds.issues(first=len(ids), filter={"id": {"in": ids}}))
+                "issues", lambda ds, ids=batch: ds.issues(first=len(ids), filter={"id": {"in": ids}}, includeArchived=True))
             for issue_data in ((data.get("issues") or {}).get("nodes") or []):
                 team_id = (issue_data.get("team") or {}).get("id")
-                if not team_id or team_id not in scope:
+                if not team_id or team_id not in scope or issue_data.get("trashed"):
                     continue
                 known = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=issue_data.get("id", ""))
@@ -3523,17 +3591,18 @@ class LinearConnector(BaseConnector):
 
     @staticmethod
     def _project_children_stamp(project_data: dict[str, Any]) -> str | None:
-        """A fingerprint of a project's external links and milestones.
+        """A fingerprint of a project's teams, external links and milestones.
 
         Adding, editing or removing one does not change the project's ``updatedAt``, so
         the fingerprint is kept in the record's revision and compared on every sync with
         what the light project listing reports. None when a list is not fully known.
         """
         parts: list[str] = []
-        for field in ("externalLinks", "projectMilestones"):
+        for field in ("teams", "externalLinks", "projectMilestones"):
             connection = project_data.get(field) or {}
             if (connection.get("pageInfo") or {}).get("hasNextPage"):
                 return None
+            # A team has no updatedAt: its id alone says whether the set changed.
             parts.append(",".join(sorted(
                 f"{node.get('id')}@{node.get('updatedAt')}" for node in connection.get("nodes") or [] if node)))
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
@@ -4132,9 +4201,11 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"✅ Removed {removed} projects that are gone from Linear")
             changed = []
             for project_id, record in stored.items():
-                stamp = self._project_children_stamp(listed.get(project_id) or {})
-                if (stamp and project_id not in self._refreshed_project_ids
-                        and not (record.external_revision_id or "").endswith(f":{stamp}")):
+                project = listed.get(project_id) or {}
+                stamp = self._project_children_stamp(project)
+                # No stamp (a list longer than the listing's page): refresh, so a team change is never missed.
+                if project_id not in self._refreshed_project_ids and (stamp is None or not (
+                        record.external_revision_id or "").endswith(f":{stamp}:{self._project_grants_stamp(project, team_ids)}")):
                     changed.append(project_id)
             await self._refresh_projects(sorted(changed), team_ids)
         except Exception as e:

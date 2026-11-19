@@ -2,7 +2,7 @@
 import pytest
 
 from app.agents.actions.code_graph.neighbours import get_neighbour_impl
-from app.agents.actions.code_graph.ops import RecordAccess, _degrees
+from app.agents.actions.code_graph.ops import RecordAccess, _degrees, nodes_in_org
 from app.agents.actions.code_graph.path import find_symbol_path_impl
 from app.agents.actions.code_graph.results import without_marker
 
@@ -90,3 +90,18 @@ async def test_a_failure_reaches_the_model_as_an_id_not_its_text() -> None:
     out = await tool._run("get_neighbour", CONN, call, "Neighbour lookup failed")
     assert out["error"].startswith("Neighbour lookup failed (error id ")
     assert "10.0.0.7" not in out["error"]
+
+
+@pytest.mark.parametrize("org", [None, ""])
+async def test_an_org_filter_without_an_org_refuses_rather_than_match_rows_with_none(org) -> None:
+    graph = FakeGraphProvider()
+    graph.blocks["k_orphan"] = {**graph.blocks["k_caller"], "_key": "k_orphan", "id": "k_orphan", "orgId": org}
+    with pytest.raises(ValueError, match="needs the caller's org"):
+        await nodes_in_org(graph, org, BLOCKS, ["k_orphan"], ["_key"])
+
+
+async def test_an_org_filter_keeps_only_the_callers_org() -> None:
+    graph = FakeGraphProvider()
+    graph.blocks["k_other"] = {**graph.blocks["k_caller"], "_key": "k_other", "id": "k_other", "orgId": "org-2"}
+    rows = await nodes_in_org(graph, ORG, BLOCKS, ["k_caller", "k_other"], ["_key"])
+    assert [r["_key"] for r in rows] == ["k_caller"]

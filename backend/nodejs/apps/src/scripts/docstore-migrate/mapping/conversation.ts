@@ -147,6 +147,18 @@ export const chatSessions: CollectionMapping = {
   ],
   children: [sharedChild('conversation.chat_session_members', 'session_id')],
   derived: [],
+  dropped: [
+    {
+      path: 'compareOf',
+      reason:
+        'Compare models is off on the PostgreSQL document store; branches are not copied yet',
+    },
+    {
+      path: 'compareFromMessageId',
+      reason:
+        'Compare models is off on the PostgreSQL document store; branches are not copied yet',
+    },
+  ],
   transforms: [
     sharedTransform,
     {

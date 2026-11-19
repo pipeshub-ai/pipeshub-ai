@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
+import { useRenderSlotId } from './render-slot';
 import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
 import type { ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 
@@ -39,7 +40,8 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const [remember, setRemember] = useState(false);
   const [showAll, setShowAll] = useState(false);
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const renderSlotId = useRenderSlotId();
+  const canSend = useChatStore((s) => (renderSlotId ? s.slots[renderSlotId]?.isOwner ?? null : null)) !== false;
 
   const tool = approvalToolLabel(approval);
   const server = approval.serverName;
@@ -59,7 +61,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
   const anyCut = !showAll && lines.some((line) => line.cut);
 
   const answer = (decision: ToolApprovalDecision) => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = renderSlotId;
     if (!slotId || useChatStore.getState().slots[slotId]?.isStreaming) return;
     const query = toolApprovalResumeQuery(decision);
     const request = buildStreamChatRequestForSlot(slotId, query, undefined, {

@@ -96,6 +96,7 @@ export function MobileQueryOptionsSheet({
           onModelSelect={handleModelSelect}
           hideHeader
           agentId={agentId}
+          allowCompare
         />
       )}
       {activePanel === 'connectors' && (

@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import * as drain from '../../../../src/libs/repositories/drain'
 import * as nonStreaming from '../../../../src/modules/enterprise_search/controller/non-streaming-chat.controller'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
+import * as compare from '../../../../src/modules/enterprise_search/controller/compare.controller'
 
 // While the system is being moved to a new document store, every handler that starts a chat turn
 // answers before it touches the request (no stream, no saved conversation).
@@ -14,6 +15,8 @@ describe('chat-turn handlers during a document store move', () => {
     ['streamChat', controller.streamChat as any],
     ['addMessageStream', controller.addMessageStream as any],
     ['regenerateAnswers', controller.regenerateAnswers as any],
+    ['createCompareBranch', compare.createCompareBranchHandler as any],
+    ['chooseCompare', compare.chooseCompare as any],
     ['streamAgentConversation', controller.streamAgentConversation as any],
     ['addMessageStreamToAgentConversation', controller.addMessageStreamToAgentConversation as any],
     ['regenerateAgentAnswers', controller.regenerateAgentAnswers as any],

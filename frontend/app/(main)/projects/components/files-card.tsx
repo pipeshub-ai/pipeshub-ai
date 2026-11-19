@@ -138,11 +138,14 @@ export function FilesCard({
     (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
       void uploadFiles(Array.from(fileList))
-        .then(() =>
-          // Re-resolve the kbId (idempotent — `ensureLinkedKb` short-circuits
-          // once linked) since the very first upload creates it mid-flight and
-          // this closure's `linkedKnowledgeBaseId` may still be stale.
-          getKbId().then((kbId) => load(kbId)),
+        .then((finished) =>
+          // Cancelled by a sign-out: reloading would run in the next person's session.
+          finished
+            ? // Re-resolve the kbId (idempotent — `ensureLinkedKb` short-circuits
+              // once linked) since the very first upload creates it mid-flight and
+              // this closure's `linkedKnowledgeBaseId` may still be stale.
+              getKbId().then((kbId) => load(kbId))
+            : undefined,
         )
         .catch(() => setLoadError(true));
     },

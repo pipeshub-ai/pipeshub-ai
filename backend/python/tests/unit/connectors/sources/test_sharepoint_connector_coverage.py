@@ -1525,7 +1525,7 @@ class TestSharePointRunSyncMultiBatch:
         c.certificate_path = None
         c.client = MagicMock()
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
 
         def _site(suffix: str):
             site = MagicMock()

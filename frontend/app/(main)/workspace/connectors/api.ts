@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import { desktopAuthorizeParams } from '@/lib/electron';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
@@ -12,8 +13,10 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  PermissionStatus,
   ReindexStage,
   CodeGraphRepo,
+  AccessExplanation,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -167,6 +170,7 @@ export const ConnectorsApi = {
     baseUrl?: string;
   }) {
     const { data } = await apiClient.post(BASE_URL, payload);
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -176,6 +180,7 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}`,
       { suppressErrorToast: true }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return parseDeleteConnectorInstanceBody(data ?? null, connectorId);
   },
 
@@ -184,6 +189,7 @@ export const ConnectorsApi = {
     const { data } = await apiClient.put(`${BASE_URL}/${connectorId}/name`, {
       instanceName,
     });
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -209,6 +215,8 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/config/auth`,
       payload
     );
+    // The panel saves auth without bumping the catalog, so the cards' configs are refreshed here.
+    revalidateSwrNamespace(SWR_NS.connectorConfigs);
     return data;
   },
 
@@ -372,6 +380,7 @@ export const ConnectorsApi = {
       { type, ...device },
       { suppressErrorToast: isDesktopOfflineError }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -468,6 +477,8 @@ export const ConnectorsApi = {
       params: query,
       suppressErrorToast: true,
     });
+    // The desktop app completes OAuth here even when the instance panel was closed meanwhile.
+    revalidateSwrNamespace(SWR_NS.connectorConfigs);
     return data ?? {};
   },
 
@@ -507,6 +518,28 @@ export const ConnectorsApi = {
   ): Promise<ConnectorStatsResponse> {
     const { data } = await apiClient.get<ConnectorStatsResponse>(
       `${BASE_URL}/${connectorId}/stats`
+    );
+    return data;
+  },
+
+  /** Why a person can or cannot read a record. Org admins only. The caller words every failure. */
+  async explainAccess(
+    connectorId: string,
+    userId: string,
+    recordId: string
+  ): Promise<AccessExplanation> {
+    const { data } = await apiClient.get<AccessExplanation>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/permissions/explain`,
+      { params: { userId, recordId }, suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  /** Admin only: how fresh a connector's permissions are. */
+  async getPermissionStatus(connectorId: string): Promise<PermissionStatus> {
+    const { data } = await apiClient.get<PermissionStatus>(
+      `${BASE_URL}/${connectorId}/permissions/status`,
+      { suppressErrorToast: true }
     );
     return data;
   },

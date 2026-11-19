@@ -114,6 +114,24 @@ export interface SharedByInfo {
  * `hasNextPage` means there are older message batches to load;
  * the API sorts messages newest-first so page 1 = most recent.
  */
+/** Where a forked conversation was copied from (GET conversation detail `forkedFrom`). */
+export interface ForkOrigin {
+  conversationId: string;
+  messageId: string;
+  /** `null` when the viewer cannot open the original (deleted, archived, or not theirs). */
+  title: string | null;
+  /** This chat's copy of the fork point; the "forked from here" line goes after it. */
+  atMessageId?: string;
+}
+
+/** A chat the viewer made from this one (GET conversation detail `forks`). */
+export interface ForkChild {
+  conversationId: string;
+  title: string;
+  /** The message of this chat the fork was made at; the link goes after it. */
+  fromMessageId: string;
+}
+
 export interface ConversationPagination {
   page: number;
   limit: number;
@@ -879,6 +897,8 @@ export interface ConversationMessage {
   parts?: MessagePart[];
   /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
   status?: 'stopped';
+  /** The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed. */
+  answerHidden?: { redacted: true; reason: 'no_longer_accessible' | 'access_check_unavailable' };
 }
 
 export interface ConversationCompleteData {
@@ -909,6 +929,10 @@ export interface SSECompleteEvent {
     requestId: string;
     timestamp: string;
     duration: number;
+    searchDegraded?: boolean;
+    accessNotices?: unknown;
+    /** Name-only hits for records whose content is not indexed yet. */
+    unindexedMatches?: UnindexedMatch[];
   };
 }
 
@@ -995,6 +1019,8 @@ export interface StreamChatRequest {
   projectId?: string;
   /** The person's answer to a tool approval card; the call itself is saved server-side. */
   toolApproval?: ToolApprovalAnswer;
+  /** Compare mode only: asks the server for a `turn_started` event once the question is saved. */
+  compareTurn?: true;
 }
 
 export type ToolApprovalDecision = 'allow' | 'deny';
@@ -1200,6 +1226,7 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
+
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
 
@@ -1238,6 +1265,10 @@ export interface ChatSlot {
    */
   rawMessages: ConversationMessage[] | null;
 
+  /** Set when this chat is a fork; `null` for any other chat or before the detail has loaded. */
+  forkedFrom: ForkOrigin | null;
+  forks: ForkChild[];
+
   /** Epoch ms of last interaction — used for LRU eviction. */
   lastAccessedAt: number;
 
@@ -1246,6 +1277,11 @@ export interface ChatSlot {
    * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
    */
   isOwner: boolean | null;
+  /**
+   * Who the conversation is shared with: from the loaded detail, or from the
+   * last share/unshare answer. `null` when not known.
+   */
+  sharedWith: SharedWithEntry[] | null;
   /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.
@@ -1303,9 +1339,19 @@ export interface SearchResultItem {
   block_group_index?: number;
 }
 
+export interface UnindexedMatch {
+  recordId: string;
+  recordName: string;
+  connector?: string | null;
+  note?: string;
+}
+
 export interface SearchResponse {
   searchId: string;
   searchResponse: {
     searchResults: SearchResultItem[];
+    /** The search store answered with less than its full search (e.g. it was busy). */
+    searchDegraded?: boolean;
+    accessNotices?: unknown;
   };
 }

@@ -15,7 +15,11 @@ import {
   validateMode,
 } from './orgContext';
 import { Logger } from '../services/logger.service';
-import { ENVELOPE_REQUEST_ID, sanitizeRootId } from './request-context';
+import {
+  ENVELOPE_REQUEST_ID,
+  sanitizeRootId,
+  setContextIdentity,
+} from './request-context';
 
 /**
  * Signed broker envelope (v2); the Python twin is `app/core/envelope.py` and
@@ -420,18 +424,29 @@ export function setKeyRetryInitialMs(ms: number): void {
   keyRetryInitialMs = ms;
 }
 
+/** The message with a top-level `eventId` (a UUID) unless it already names one. */
+export function withEventId<T extends Record<string, unknown>>(
+  message: T,
+): T | (T & { eventId: string }) {
+  const existing = message.eventId;
+  if (typeof existing === 'string' && existing.length > 0) return message;
+  return { ...message, eventId: randomUUID() };
+}
+
 /**
- * Producer hook: sign when `ENVELOPE_SIGN` is on.
+ * Producer hook: sign when `ENVELOPE_SIGN` is on, and give every message an event id (a UUID at publish).
+ * Signing adds integrity, not identity: a signed message carries the id in `ctx.eventId`, any other leaves with a
+ * top-level `eventId`, so consumers can tell a redelivery of an event from a new event.
  * Signed shape: top-level fields stay, `payload` becomes the signed JSON string, `ctx` is added.
- * With the flag off the message is sent unchanged (v1). With it on, a message that cannot be signed
- * (no org bound, payload naming another org) is counted in `envelopeUnsigned` and sent unchanged;
+ * With the flag off the message is sent as v1, plus `eventId`. With it on, a message that cannot be signed
+ * (no org bound, payload naming another org) is counted in `envelopeUnsigned` and sent unsigned (with `eventId`);
  * with no key it throws in enforce mode and is counted and logged in shadow mode.
  */
 export function signMessage<T extends Record<string, unknown>>(
   topic: string,
   message: T,
 ): T | Record<string, unknown> {
-  if (!signEnabled()) return message;
+  if (!signEnabled()) return withEventId(message);
   const ctx = orgContextStorage.getStore();
   const payload = message.payload;
   if (
@@ -442,12 +457,12 @@ export function signMessage<T extends Record<string, unknown>>(
     Array.isArray(payload)
   ) {
     bump(envelopeUnsigned, `${topic}:no_org`);
-    return message;
+    return withEventId(message);
   }
   const bodyOrg = (payload as Record<string, unknown>).orgId;
   if (bodyOrg !== undefined && bodyOrg !== null && bodyOrg !== ctx.orgId) {
     bump(envelopeUnsigned, `${topic}:org_mismatch`);
-    return message;
+    return withEventId(message);
   }
   if (!signKey) {
     bump(envelopeUnsigned, `${topic}:no_key`);
@@ -460,7 +475,7 @@ export function signMessage<T extends Record<string, unknown>>(
       'envelope signing enabled but no key is available: sent unsigned (shadow mode)',
       { topic },
     );
-    return message;
+    return withEventId(message);
   }
   const { payload: _p, ctx: _c, ...rest } = message;
   const eventType =
@@ -507,5 +522,8 @@ export async function runWithEnvelope<V, R>(
     throw e;
   }
   const run = (): Promise<R> => fn(opened.message as V);
-  return opened.ctx ? runWithOrgContext(opened.ctx, run) : run();
+  if (!opened.ctx) return run();
+  // Only a verified signature replaces the unverified org the consumer's log context was opened with.
+  if (opened.ctx.source === 'envelope') setContextIdentity(opened.ctx);
+  return runWithOrgContext(opened.ctx, run);
 }

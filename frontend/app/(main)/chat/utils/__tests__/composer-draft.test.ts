@@ -6,6 +6,7 @@ import {
   buildDraftKey,
   clearDraft,
   loadDraft,
+  loadDraftFields,
   saveDraft,
 } from '../composer-draft';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
@@ -70,6 +71,31 @@ describe('saving and loading', () => {
 
   it('returns nothing for a draft that was never saved', () => {
     expect(loadDraft('pipeshub-chat-draft:missing')).toBe('');
+  });
+
+  it('keeps a quoted excerpt with the typed follow-up', () => {
+    saveDraft('pipeshub-chat-draft:a', 'What does this cover?', { excerpt: 'the SLA is 99.9%' });
+
+    expect(loadDraft('pipeshub-chat-draft:a')).toBe('What does this cover?');
+    expect(loadDraftFields('pipeshub-chat-draft:a')).toEqual({
+      text: 'What does this cover?',
+      quotedExcerpt: 'the SLA is 99.9%',
+      quotedExcerptTruncated: false,
+    });
+  });
+
+  it('keeps an excerpt when there is no follow-up yet', () => {
+    saveDraft('pipeshub-chat-draft:a', '  ', { excerpt: 'only this' });
+
+    expect(loadDraft('pipeshub-chat-draft:a')).toBe('  ');
+    expect(loadDraftFields('pipeshub-chat-draft:a').quotedExcerpt).toBe('only this');
+  });
+
+  it('drops the excerpt when a later save has none', () => {
+    saveDraft('pipeshub-chat-draft:a', 'question', { excerpt: 'quoted' });
+    saveDraft('pipeshub-chat-draft:a', 'question');
+
+    expect(loadDraftFields('pipeshub-chat-draft:a').quotedExcerpt).toBeNull();
   });
 
   it('replaces the previous text', () => {

@@ -482,7 +482,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # the org's apps, by id
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
                   "subcategory": None, "version": "1.0.0", "status": "active",
                   "deprecatedReason": None, "replacedBy": None}],  # skills
@@ -566,7 +566,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
-                [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
+                [{"app": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # the org's apps, by id
                 [],  # skills query
                 [],  # mcp servers projection
                 [],  # org share query
@@ -576,7 +576,7 @@ class TestGetAgent:
             side_effect=lambda node, _collection: {**node, "_key": node.get("id")}
         )
 
-        result = await neo4j_provider.get_agent("agent-1")
+        result = await neo4j_provider.get_agent("agent-1", org_id="org-1")
 
         assert result is not None
         assert result["knowledge"][0]["filtersParsed"] == {}
@@ -1199,7 +1199,7 @@ class TestNodeOperations:
         neo4j_provider._arango_to_neo4j_node = MagicMock(  # type: ignore[method-assign]
             side_effect=[{"_key": "n1", "name": "A"}, {"id": "n2", "name": "B"}]
         )
-        neo4j_provider.validator.validate_node_update = MagicMock()
+        neo4j_provider.validator.validate_node_upsert = MagicMock(return_value=[])
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"id": "n1"}, {"id": "n2"}])
 
         result = await neo4j_provider.batch_upsert_nodes(
@@ -1217,7 +1217,7 @@ class TestNodeOperations:
     @pytest.mark.asyncio
     async def test_batch_upsert_nodes_raises_on_exception(self, neo4j_provider: Neo4jProvider):
         neo4j_provider._arango_to_neo4j_node = MagicMock(return_value={"id": "n1"})  # type: ignore[method-assign]
-        neo4j_provider.validator.validate_node_update = MagicMock(side_effect=RuntimeError("invalid"))
+        neo4j_provider.validator.validate_node_upsert = MagicMock(side_effect=RuntimeError("invalid"))
 
         with pytest.raises(RuntimeError, match="invalid"):
             await neo4j_provider.batch_upsert_nodes([{"id": "n1"}], "apps")
@@ -1523,7 +1523,10 @@ class TestAdvancedEdgeOperations:
 
         result = await neo4j_provider.batch_create_entity_relations(
             [
-                {"_from": "users/u1", "_to": "records/r1", "edgeType": "ASSIGNED_TO", "weight": 10},
+                {
+                    "_from": "users/u1", "_to": "records/r1", "edgeType": "ASSIGNED_TO", "weight": 10,
+                    "createdAtTimestamp": 1,
+                },
                 {
                     "from_id": "u2",
                     "to_id": "r2",
@@ -1531,6 +1534,7 @@ class TestAdvancedEdgeOperations:
                     "to_collection": "records",
                     "edgeType": "CREATED_BY",
                     "weight": 20,
+                    "createdAtTimestamp": 1,
                 },
             ],
             transaction="txn-er",
@@ -1541,8 +1545,11 @@ class TestAdvancedEdgeOperations:
 
     @pytest.mark.asyncio
     async def test_batch_create_entity_relations_skips_invalid_edges(
-        self, neo4j_provider: Neo4jProvider
+        self, neo4j_provider: Neo4jProvider, monkeypatch
     ):
+        # Schema validation rejects the edge with no edgeType before the skip logic runs (see
+        # test_neo4j_review_fixes.py); with it off, the skip is what this test is about.
+        monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
         neo4j_provider.client.execute_query = AsyncMock()
 
         result = await neo4j_provider.batch_create_entity_relations(
@@ -1576,6 +1583,7 @@ class TestAdvancedEdgeOperations:
                         "from_collection": "users",
                         "to_collection": "records",
                         "edgeType": "ASSIGNED_TO",
+                        "createdAtTimestamp": 1,
                     }
                 ]
             )
@@ -2238,6 +2246,17 @@ class TestGetGroupsWithPermissionToNode:
 
 class TestUserAndOrganizationLookups:
     @pytest.mark.asyncio
+    async def test_get_user_by_email_in_an_org_reads_only_that_orgs_users(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_user_by_email("a@x.com", org_id="org-1")
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "u.orgId = $org_id" in query
+        assert neo4j_provider.client.execute_query.await_args.kwargs["parameters"] == {"email": "a@x.com", "org_id": "org-1"}
+
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await neo4j_provider.get_user_by_email("a@x.com")  # type: ignore[call-arg]
+
+    @pytest.mark.asyncio
     async def test_get_user_by_email_success_and_none(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"u": {"id": "u1", "email": "a@x.com"}}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "u1", "email": "a@x.com"})  # type: ignore[method-assign]
@@ -2245,11 +2264,11 @@ class TestUserAndOrganizationLookups:
             "app.services.graph_db.neo4j.neo4j_provider.User.from_arango_user",
             return_value={"user": "ok"},
         ):
-            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue")
+            found = await neo4j_provider.get_user_by_email("a@x.com", transaction="txn-ue", org_id="org-1")
         assert found == {"user": "ok"}
 
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        assert await neo4j_provider.get_user_by_email("missing@x.com") is None
+        assert await neo4j_provider.get_user_by_email("missing@x.com", org_id="org-1") is None
 
     @pytest.mark.asyncio
     async def test_get_user_by_source_id_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2427,6 +2446,16 @@ class TestUserAndOrganizationLookups:
         assert params["status"] == "NOT_STARTED"
         assert params["exclude_statuses"] == ["IN_PROGRESS"]
         assert "n.reason" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_locks_each_record_before_it_reads_the_run_fields(self, neo4j_provider: Neo4jProvider) -> None:
+        """The run fields (attempt count, first queued) are read after the write lock is held, and the status filters are checked again then."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector("app-1", "NOT_STARTED", exclude_statuses=["IN_PROGRESS"])
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        lock = query.index("SET n.matchLock = true")
+        assert lock < query.index("n.indexingStatus AS _st") < query.index("SET n.indexingStatus = $status")
+        assert query.index("NOT coalesce(n.indexingStatus, '') IN $exclude_statuses", lock) > lock
 
     @pytest.mark.asyncio
     async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider) -> None:
@@ -4728,6 +4757,23 @@ class TestListUserKnowledgeBases:
             assert "kb2" not in query
 
     @pytest.mark.asyncio
+    async def test_folders_are_the_first_100_by_id_read_per_collection_of_the_page_and_say_when_there_are_more(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[], [{"total": 0}], []])
+
+        await neo4j_provider.list_user_knowledge_bases("user1", "org1", skip=0, limit=10)
+
+        call = neo4j_provider.client.execute_query.call_args_list[0]
+        query, params = call[0][0], call[1]["parameters"]
+        assert params["folders_cap"] == 100 and params["folders_fetch"] == 101
+        # The page of collections is cut before any folder is read, and each collection reads at most one folder more than the cap, in id order.
+        assert query.index("LIMIT $limit") < query.index("MATCH (folderRecord:Record)")
+        assert query.index("ORDER BY folderRecord.id") < query.index("LIMIT $folders_fetch") < query.index("RETURN collect({")
+        assert "folders: folders[0..$folders_cap]" in query
+        assert "foldersTruncated: size(folders) > $folders_cap" in query
+
+    @pytest.mark.asyncio
     async def test_exception_raises(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=Exception("neo4j error")
@@ -5210,7 +5256,7 @@ class TestExternalCollaboratorBrowse:
     def test_a_membership_edge_passes_the_connector_gate(self, provider):
         """An external collaborator holds no permission on the App, only the
         USER_APP_RELATION edge the sync writes; without it the listing is empty."""
-        assert "(grantee)-[:PERMISSION|USER_APP_RELATION]->(gatedApp:App)" in provider._kh_gate_cypher()
+        assert "(grantee)-[gateRel:PERMISSION|USER_APP_RELATION]->(gatedApp:App)" in provider._kh_gate_cypher()
 
     def test_candidates_include_group_role_team_grants(self, provider):
         """Access via a group must count, or the reaper and browse disagree about who
@@ -5238,8 +5284,23 @@ class TestExternalCollaboratorBrowse:
         )
 
         call = provider.client.execute_query.await_args
-        assert "WITH app, allNodes + kh_placed AS allNodes" in call.args[0]
+        assert "WITH app, allNodes + [kh_x IN kh_placed WHERE NOT kh_x IN allNodes] AS allNodes" in call.args[0]      # each once
         assert call.kwargs["parameters"]["kh_lists"]["kh_placed"] == ["r9", "g9"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("start", [None, "f1"])
+    async def test_the_stubs_are_read_once_after_the_children_are_collected(self, provider, start) -> None:
+        """Joined to the collect in one WITH, the planner read the start's children for the stubs once per child: 25M rows and a timeout
+        on a 5k-record folder. In a WITH of its own it runs once per page."""
+        provider._kh_v3_connector_and_size = AsyncMock(return_value=("app1", 1))
+        await provider.get_knowledge_hub_connector_page_v3(
+            "app1", "org1", ["uk1"], ["app1"], ["r9"], flatten=False,
+            **({"start_id": start, "start_type": "folder"} if start else {}),
+        )
+        query = next(c.args[0] for c in provider.client.execute_query.await_args_list if "kh_sn IN" in c.args[0])
+        with_stubs = next(line for line in query.splitlines() if "kh_sn IN" in line)
+        assert "collect(" not in with_stubs
+        assert ("collect(DISTINCT na) AS rawNodes" if start else "collect(DISTINCT ca) AS allNodes") in query
 
 
     @pytest.mark.asyncio
@@ -5721,7 +5782,7 @@ class TestAppUserMembershipClearsExternalFlag:
                 email="member@corp.com",
                 full_name="Member",
             )
-        ])
+        ], org_id="org-1")
 
         app_edges = [
             c for c in mocked.batch_create_edges.await_args_list
@@ -5893,7 +5954,9 @@ class TestRecordLinksAreOneStatement:
         assert "(:RecordGroup)\n                DELETE link" in query
         assert "$group_id" not in query
         assert (parameters["to_id"], parameters["record_id"]) == ("r1", "r1")
-        assert parameters["edges_0"] == [{"from_key": "u1", "to_key": "r1", "props": {"role": "READER"}}]
+        assert parameters["edges_0"] == [
+            {"from_key": "u1", "to_key": "r1", "props": {"role": "READER"}, "sem": {"role": "READER"}}
+        ]
         assert call.kwargs["txn_id"] == "tx"
 
     @pytest.mark.asyncio
@@ -6159,7 +6222,8 @@ class TestPrincipalLookupsCanRaise:
             "get_person_by_email": ("a@b.com", "org-1"),
             "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
         }[method]
-        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+        scope = {"org_id": "org-1"} if method == "get_user_by_email" else {}
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error, **scope)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])
@@ -6430,3 +6494,67 @@ class TestStartupDedupeTouchesOnlyCodeEdgeBuildSyncPoints:
         assert await neo4j_provider.ensure_schema()
         queries = [c.args[0] for c in neo4j_provider.client.execute_query.await_args_list]
         assert any("syncpoint_key_unique" in q for q in queries)
+
+
+class TestReplaceEdgesToStatementShape:
+    """The properties of the diffed replace statement that the live tests rely on."""
+
+    @staticmethod
+    def _edge(user: str, role: str = "READER", **extra: object) -> dict:
+        return {"from_id": user, "from_collection": "users", "to_id": "g1", "to_collection": "groups",
+                "role": role, "type": "USER", "createdAtTimestamp": 1, "updatedAtTimestamp": 2, **extra}
+
+    def _build(self, provider: Neo4jProvider, edges: list[dict]) -> tuple[str, dict]:
+        return provider._replace_edges_to_cypher("g1", "groups", edges, "permission")
+
+    def test_semantic_props_exclude_timestamps_and_nulls(self, neo4j_provider: Neo4jProvider) -> None:
+        _, params = self._build(neo4j_provider, [self._edge("u1", extra=None, other="x")])
+        row = params["edges_0"][0]
+        assert row["sem"] == {"role": "READER", "type": "USER", "other": "x"}
+        assert row["props"]["createdAtTimestamp"] == 1
+        assert params["time_keys"] == ["createdAtTimestamp", "updatedAtTimestamp"]
+
+    def test_keep_lists_each_member_once_by_label_and_id(self, neo4j_provider: Neo4jProvider) -> None:
+        edges = [self._edge("u1"), self._edge("u1", "WRITER"), self._edge("u2")]
+        edges.append({**self._edge("x"), "from_collection": "groups"})
+        _, params = self._build(neo4j_provider, edges)
+        assert sorted(params["keep"]) == ["Group|x", "User|u1", "User|u2"]
+
+    def test_an_edge_into_another_node_of_the_label_keeps_no_old_edge_into_the_target(
+        self, neo4j_provider: Neo4jProvider,
+    ) -> None:
+        """A source whose only supplied edge goes to g2 must lose its old edge into g1, as the interface replaces."""
+        edges = [self._edge("u1"), {**self._edge("u2"), "to_id": "g2"}, {**self._edge("u1"), "to_id": "g2"}]
+        _, params = self._build(neo4j_provider, edges)
+        assert params["keep"] == ["User|u1"]
+        assert sorted((r["from_key"], r["to_key"]) for r in params["edges_0"]) == [("u1", "g1"), ("u1", "g2"), ("u2", "g2")]
+
+    def test_duplicate_member_last_row_wins(self, neo4j_provider: Neo4jProvider) -> None:
+        _, params = self._build(neo4j_provider, [self._edge("u1"), self._edge("u1", "OWNER")])
+        users = [r for r in params["edges_0"] if r["from_key"] == "u1"]
+        assert [r["props"]["role"] for r in users] == ["OWNER"]
+
+    def test_empty_list_keeps_nothing(self, neo4j_provider: Neo4jProvider) -> None:
+        statement, params = self._build(neo4j_provider, [])
+        assert params["keep"] == []
+        assert "DELETE old" in statement
+        assert statement.rstrip().endswith("WITH count(*) AS _")
+
+    def test_shape_rules(self, neo4j_provider: Neo4jProvider) -> None:
+        statement, _ = self._build(neo4j_provider, [self._edge("u1")])
+        # Optional scan and lock, each folded back to one row; no top-level UNWIND; no collect over old edges.
+        assert statement.index("OPTIONAL MATCH (target:Group") < statement.index("OPTIONAL MATCH (source)")
+        assert "matchLock" in statement
+        assert statement.count("WITH count(*) AS _") == 2
+        assert "collect(" not in statement.lower()
+        first_unwind = statement.index("UNWIND")
+        assert statement.rindex("CALL {", 0, first_unwind) < first_unwind  # inside a unit subquery
+        assert "RETURN" not in statement
+        assert "IN $keep" in statement
+
+    @pytest.mark.asyncio
+    async def test_record_permissions_appends_after_the_replace(self, neo4j_provider: Neo4jProvider) -> None:
+        await neo4j_provider.replace_record_permissions("r1", [self._edge("u1")], "g1", inherit=True)
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert query.index("IN $keep") < query.index("MERGE (record)-[link:INHERIT_PERMISSIONS]")
+        assert query.rstrip().endswith("RETURN count(*) AS done")

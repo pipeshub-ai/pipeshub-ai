@@ -12,7 +12,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useUserStore } from '@/lib/store/user-store';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { ProjectApi, type ProjectConversationRow } from '@/chat/project-api';
-import type { ProjectDetail } from '@/chat/project-types';
+import { useProjectDetail } from '@/chat/hooks/use-project-detail';
 import type { Conversation } from '@/chat/types';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from '@/config';
@@ -93,29 +93,26 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
   const pendingConversations = useChatStore((s) => s.pendingConversations);
   const slots = useChatStore((s) => s.slots);
 
-  const [project, setProject] = useState<ProjectDetail | null>(null);
+  const { project, unavailable: projectUnavailable, gone: projectGone } = useProjectDetail(projectId);
   const [conversations, setConversations] = useState<ProjectConversationRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
+  const [conversationsFailed, setConversationsFailed] = useState(false);
+  // A project deleted or left in this tab is not a load failure: the page is about to move away.
+  const hasError = conversationsFailed || (projectUnavailable && !projectGone);
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    setHasError(false);
+    setConversationsFailed(false);
     try {
       // The row shows its own "Failed to load"; the chat page owns the one toast.
-      const [detail, conv] = await Promise.all([
-        ProjectApi.get(projectId, { suppressErrorToast: true }),
-        ProjectApi.listConversations(
-          projectId,
-          { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE },
-          { suppressErrorToast: true },
-        ),
-      ]);
-      setProject(detail);
+      const conv = await ProjectApi.listConversations(
+        projectId,
+        { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE },
+        { suppressErrorToast: true },
+      );
       setConversations(conv.conversations);
     } catch {
-      setHasError(true);
-      setProject(null);
+      setConversationsFailed(true);
       setConversations([]);
     } finally {
       setIsLoading(false);

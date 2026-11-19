@@ -158,6 +158,21 @@ class TestFetchCallerRole:
         assert "x-organization-id" not in sent
         assert "x-is-admin" not in sent
         assert sent["host"] == "nodejs:3000"
+        assert "x-pipeshub-mcp-relay" not in sent
+
+    async def test_forwards_the_mcp_relay_header(self) -> None:
+        # Node accepts a token issued for /mcp on the lookup only with the relay header.
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"role": "member"})
+
+        headers = {"Authorization": "Bearer caller-token", "X-Pipeshub-Mcp-Relay": "relay-1"}
+        with _node(handler):
+            await fetch_caller_role(_request(headers), _config_service())
+
+        assert seen[0].headers["x-pipeshub-mcp-relay"] == "relay-1"
 
     async def test_carries_a_caller_role_service_token_for_nodes_rate_limiter(self):
         seen: list = []
@@ -317,3 +332,36 @@ class TestCallerRoleCache:
         with pytest.raises(RuntimeError):
             await cache.get("tok", AsyncMock(side_effect=RuntimeError("boom")))
         assert await cache.get("tok", AsyncMock(return_value=_LIVE)) == _LIVE
+
+
+class TestFetchOwnIdentity:
+    async def test_the_token_names_exactly_the_user_and_org_asked_about(self) -> None:
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"_id": "u1", "orgId": "o1", "email": "a@example.com"})
+
+        with _node(handler):
+            body = await caller_role.fetch_own_identity(_config_with_secret(), "o1", "u1", "/api/v1/users/internal/u1")
+
+        assert body == {"_id": "u1", "orgId": "o1", "email": "a@example.com"}
+        (request,) = seen
+        assert str(request.url) == f"{_NODE}/api/v1/users/internal/u1"
+        token = request.headers["authorization"].removeprefix("Bearer ")
+        claims = jwt.decode(token, _SCOPED_SECRET, algorithms=["HS256"])
+        assert (claims["userId"], claims["orgId"], claims["scopes"]) == ("u1", "o1", [TokenScopes.USER_LOOKUP.value])
+
+    async def test_no_live_record_is_none(self) -> None:
+        with _node(lambda _request: httpx.Response(404, json={"error": "not found"})):
+            assert await caller_role.fetch_own_identity(_config_with_secret(), "o1", "u1", "/api/v1/org/internal") is None
+
+    async def test_any_other_answer_raises(self) -> None:
+        with _node(lambda _request: httpx.Response(500)), pytest.raises(httpx.HTTPStatusError):
+            await caller_role.fetch_own_identity(_config_with_secret(), "o1", "u1", "/api/v1/org/internal")
+
+    async def test_without_the_scoped_secret_nothing_is_sent(self) -> None:
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={})
+        with _node(lambda _request: pytest.fail("no request expected")), pytest.raises(RuntimeError):
+            await caller_role.fetch_own_identity(config_service, "o1", "u1", "/api/v1/org/internal")

@@ -87,6 +87,14 @@ class TestBuildInitialState:
         state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
         assert state["deep_research"] is expected
 
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "webSearchUnset": True}, True),
+        ({"query": "q"}, False),
+    ], ids=["unset", "absent"])
+    def test_an_org_without_web_search_reaches_the_agent(self, mock_deps, minimal_user_info, chat_query, expected) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["web_search_unset"] is expected
+
     def test_the_resolved_web_config_keeps_every_stored_provider(self, mock_deps, minimal_user_info) -> None:
         """The agent route resolves the fallbacks and page readers; they must reach the tools."""
         others = [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}, "junk"]
@@ -95,7 +103,23 @@ class TestBuildInitialState:
         assert state["web_search_config"] == {
             "provider": "serper", "configuration": {"apiKey": "k"},
             "providers": [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}],
+            "settings": {"includeImages": False, "maxImages": 3},
         }
+
+    def test_agent_runs_keep_send_images_settings(self, mock_deps, minimal_user_info) -> None:
+        """Agent mode and custom agents build their tools from this dict; without the settings
+        "Send images to LLM" never reached them."""
+        chat_query = {"query": "q", "webSearchConfig": {
+            "provider": "serper", "configuration": {}, "settings": {"includeImages": True, "maxImages": 4},
+        }}
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["web_search_config"]["settings"] == {"includeImages": True, "maxImages": 4}
+
+    @pytest.mark.parametrize("settings", [None, "junk", {"includeImages": "yes", "maxImages": "many"}])
+    def test_missing_or_bad_send_images_settings_read_as_off(self, mock_deps, minimal_user_info, settings) -> None:
+        chat_query = {"query": "q", "webSearchConfig": {"provider": "serper", "configuration": {}, "settings": settings}}
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["web_search_config"]["settings"] == {"includeImages": False, "maxImages": 3}
 
     def test_default_values(self, mock_deps, minimal_chat_query, minimal_user_info):
         state = build_initial_state(

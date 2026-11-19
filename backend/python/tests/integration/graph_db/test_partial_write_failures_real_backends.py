@@ -726,6 +726,28 @@ async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_
     assert await _readers(w, record.id, alice, bob) == {alice}
 
 
+async def test_a_users_own_grants_go_from_many_records_and_nothing_else_does(world: _World) -> None:
+    """remove_user_grants_from_records reads each record's incoming edges in the store's own shape and deletes the
+    users' own edges, a batch at a time; other users' grants stay."""
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    records = [_file(w, f"doc{i}") for i in range(3)]
+    for record in records:
+        await _upsert(w, record)
+        await w.processor.add_permission_to_record(record, _grants(alice_email, bob_email))
+
+    removed = await w.processor.remove_user_grants_from_records(
+        [r.id for r in records], {bob_email}, w.connector_id, batch=2
+    )
+
+    assert removed == 3
+    for record in records:
+        assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
+        assert await _readers(w, record.id, alice, bob) == {alice}
+
+
 async def _share_with(w: _World, target: _Target, record: FileRecord) -> None:
     """Let the user group or app role read the record."""
     entity_type = EntityType.GROUP if target.kind == "user_group" else EntityType.ROLE
@@ -954,13 +976,13 @@ async def test_a_failed_permission_upgrade_keeps_the_old_permission(world: _Worl
             alice, CollectionNames.USERS.value, record.id, CollectionNames.RECORDS.value, permission
         )
 
-    # Neither store can write this edge: Neo4j takes no map as a property value,
-    # and ArangoDB's schema wants a number.
+    # Neither store can write this edge: both refuse a map for createdAtTimestamp, which the
+    # permissions schema wants as a number (Neo4j through the shared schema, before any statement).
     refused = Permission.model_construct(
         type=PermissionType.WRITE, entity_type=EntityType.USER, created_at={"refused": True},
         updated_at=get_epoch_timestamp_in_ms(),
     )
-    expected = "Property values can only be of primitive types" if w.neo4j else "permissions schema"
+    expected = "is not of type 'number'" if w.neo4j else "permissions schema"
     assert expected in await _failure(lambda: upgrade(refused))
 
     assert await _roles(w, alice, record.id) == ["READER"]

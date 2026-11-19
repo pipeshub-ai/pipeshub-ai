@@ -33,10 +33,22 @@ def _gp_with_jira(jira_rec=None, confluence_rec=None):
     gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
     gp.get_record_by_issue_key = AsyncMock(return_value=jira_rec)
     gp.get_record_by_external_id = AsyncMock(return_value=confluence_rec)
-    gp.get_record_by_weburl = AsyncMock(return_value=None)
+    gp.get_records_by_weburls = AsyncMock(return_value=[])
     gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
     gp.get_knowledge_hub_filter_options = AsyncMock(return_value={"apps": []})
     return gp
+
+
+def _weburl_row(rec: Record) -> dict:
+    """A `get_records_by_weburls` row for `rec`."""
+    return {"id": rec.id, "recordType": rec.record_type.value, "connectorName": rec.connector_name.value,
+            "webUrl": rec.weburl, "isDependentNode": False}
+
+
+def _serve_at_weburl(gp, rec: Record) -> None:
+    """`rec` is the record stored at whatever URL is looked up, and is read back by its id."""
+    gp.get_records_by_weburls = AsyncMock(return_value=[_weburl_row(rec)])
+    gp.get_record_by_id = AsyncMock(return_value=rec)
 
 
 def _make_state(**overrides):
@@ -72,7 +84,7 @@ def _mock_record(id: str, name: str, record_type: str = "TICKET", connector: str
     """Build a real `Record` (or `TicketRecord` for TICKET) instance.
 
     Provider lookups (`get_record_by_issue_key`/`get_record_by_external_id`/
-    `get_record_by_weburl`) return this Pydantic model, not a
+    `get_record_by_id`) return this Pydantic model, not a
     camelCase-attributed `MagicMock` — the bug `_record_to_match` had was
     reading `rec.recordName`/`rec.recordType`/etc., which only a `MagicMock`
     tolerates. A real instance is the regression guard: it fails loudly if
@@ -156,7 +168,7 @@ class TestChatbotModeScoping:
         })
         rec = _mock_record("r1", "PA-1787 issue")
         gp.get_record_by_issue_key = AsyncMock(return_value=rec)
-        gp.get_record_by_weburl = AsyncMock(return_value=None)
+        gp.get_records_by_weburls = AsyncMock(return_value=[])
         gp.get_record_by_external_id = AsyncMock(return_value=None)
         gp.get_knowledge_hub_node_access = AsyncMock(return_value=_access_node("r1", "PA-1787 issue"))
 
@@ -180,7 +192,7 @@ class TestChatbotModeScoping:
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
         gp.get_knowledge_hub_filter_options = AsyncMock(return_value={"apps": []})
-        gp.get_record_by_weburl = AsyncMock(return_value=None)
+        gp.get_records_by_weburls = AsyncMock(return_value=[])
 
         state = {
             "org_id": "org-1",
@@ -192,7 +204,7 @@ class TestChatbotModeScoping:
         success, text = await tool.lookup_record(identifiers=["PA-1787"])
         assert success
         assert "Not found" in text
-        gp.get_record_by_weburl.assert_awaited()
+        gp.get_records_by_weburls.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +251,7 @@ class TestIssueKeyRoutingToJiraOnly:
         state = _make_state()
         gp = state["graph_provider"]
         gp.get_record_by_issue_key = AsyncMock(return_value=None)
-        gp.get_record_by_weburl = AsyncMock(return_value=None)
+        gp.get_records_by_weburls = AsyncMock(return_value=[])
         gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
 
         tool = KnowledgeGraph(state=state)
@@ -364,7 +376,7 @@ class TestGmailUrlWebUrlFallback:
         ])
         gp = state["graph_provider"]
         rec = _mock_record("email1", "Q4 Report email", record_type="EMAIL", connector="GMAIL")
-        gp.get_record_by_weburl = AsyncMock(return_value=rec)
+        _serve_at_weburl(gp, rec)
         gp.get_record_by_external_id = AsyncMock(return_value=None)
         gp.get_knowledge_hub_node_access = AsyncMock(return_value={
             "id": "email1", "name": "Q4 Report email", "nodeType": "record", "subType": "EMAIL",
@@ -375,7 +387,7 @@ class TestGmailUrlWebUrlFallback:
         success, text = await tool.lookup_record(identifiers=[url])
 
         assert success
-        gp.get_record_by_weburl.assert_awaited()
+        gp.get_records_by_weburls.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_url_canonical_miss_fires_weburl_fallback(self):
@@ -386,7 +398,7 @@ class TestGmailUrlWebUrlFallback:
         gp.get_record_by_issue_key = AsyncMock(return_value=None)
 
         rec = _mock_record("p1", "Some Page", record_type="CONFLUENCE_PAGE", connector="CONFLUENCE")
-        gp.get_record_by_weburl = AsyncMock(return_value=rec)
+        _serve_at_weburl(gp, rec)
         gp.get_knowledge_hub_node_access = AsyncMock(return_value={
             "id": "p1", "name": "Some Page", "nodeType": "record", "subType": "CONFLUENCE_PAGE",
         })
@@ -397,7 +409,7 @@ class TestGmailUrlWebUrlFallback:
         success, text = await tool.lookup_record(identifiers=[url])
 
         assert success
-        gp.get_record_by_weburl.assert_awaited()
+        gp.get_records_by_weburls.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -417,14 +429,15 @@ class TestWebUrlNormalization:
         rec = _mock_record("p1", "Clean Page", record_type="CONFLUENCE_PAGE")
         call_order = []
 
-        async def mock_weburl(url, org_id=None):
-            call_order.append(url)
+        async def mock_weburls(urls, org_id, per_address=2):
+            call_order.extend(urls)
             # Return record only for the clean URL (no tracking params)
-            if "atlOrigin" not in url and "utm_source" not in url:
-                return rec
-            return None
+            if all("atlOrigin" not in u and "utm_source" not in u for u in urls):
+                return [_weburl_row(rec)]
+            return []
 
-        gp.get_record_by_weburl = AsyncMock(side_effect=mock_weburl)
+        gp.get_records_by_weburls = AsyncMock(side_effect=mock_weburls)
+        gp.get_record_by_id = AsyncMock(return_value=rec)
         gp.get_knowledge_hub_node_access = AsyncMock(return_value={
             "id": "p1", "name": "Clean Page", "nodeType": "record", "subType": "CONFLUENCE_PAGE",
         })
@@ -435,7 +448,7 @@ class TestWebUrlNormalization:
 
         assert success
         # First call must be to the normalized URL (no tracking params)
-        assert call_order, "get_record_by_weburl should have been called"
+        assert call_order, "get_records_by_weburls should have been called"
         assert "atlOrigin" not in call_order[0]
         assert "utm_source" not in call_order[0]
 
@@ -454,14 +467,14 @@ class TestPermissionNonLeak:
         gp_denied = state_denied["graph_provider"]
         gp_denied.get_record_by_issue_key = AsyncMock(return_value=rec)
         gp_denied.get_knowledge_hub_node_access = AsyncMock(return_value=None)  # denied
-        gp_denied.get_record_by_weburl = AsyncMock(return_value=None)
+        gp_denied.get_records_by_weburls = AsyncMock(return_value=[])
 
         # Not-found state
         state_missing = _make_state()
         gp_missing = state_missing["graph_provider"]
         gp_missing.get_record_by_issue_key = AsyncMock(return_value=None)
         gp_missing.get_knowledge_hub_node_access = AsyncMock(return_value=None)
-        gp_missing.get_record_by_weburl = AsyncMock(return_value=None)
+        gp_missing.get_records_by_weburls = AsyncMock(return_value=[])
 
         _, denied_text = await KnowledgeGraph(state=state_denied).lookup_record(identifiers=["PA-1"])
         _, missing_text = await KnowledgeGraph(state=state_missing).lookup_record(identifiers=["PA-1"])
@@ -490,7 +503,7 @@ class TestLookupBatch:
             return records.get(key)
 
         gp.get_record_by_issue_key = AsyncMock(side_effect=mock_issue_key)
-        gp.get_record_by_weburl = AsyncMock(return_value=None)
+        gp.get_records_by_weburls = AsyncMock(return_value=[])
         gp.get_knowledge_hub_node_access = AsyncMock(side_effect=lambda **kw: {
             "id": kw["node_id"], "name": "rec", "nodeType": "record", "subType": "TICKET",
         } if kw["node_id"] in ("r1", "r2") else None)
@@ -601,12 +614,12 @@ class TestEnrichedLookupOutput:
 
         state_denied = _make_state()
         gp_denied = state_denied["graph_provider"]
-        gp_denied.get_record_by_weburl = AsyncMock(return_value=rec)
+        _serve_at_weburl(gp_denied, rec)
         gp_denied.get_knowledge_hub_node_access = AsyncMock(return_value=None)
 
         state_missing = _make_state()
         gp_missing = state_missing["graph_provider"]
-        gp_missing.get_record_by_weburl = AsyncMock(return_value=None)
+        gp_missing.get_records_by_weburls = AsyncMock(return_value=[])
         gp_missing.get_knowledge_hub_node_access = AsyncMock(return_value=None)
 
         _, denied_text = await KnowledgeGraph(state=state_denied).lookup_record(identifiers=[url])
@@ -731,7 +744,7 @@ def _gp_for_record_id(record: Record | None, access: dict | None) -> AsyncMock:
     })
     gp.get_record_by_id = AsyncMock(return_value=record)
     gp.get_record_by_external_id = AsyncMock(return_value=None)
-    gp.get_record_by_weburl = AsyncMock(return_value=None)
+    gp.get_records_by_weburls = AsyncMock(return_value=[])
     gp.get_knowledge_hub_node_access = AsyncMock(return_value=access)
     return gp
 
@@ -774,8 +787,8 @@ class TestRecordIdLookup:
 
 
 def _base_pr_record(id: str = "pr1") -> Record:
-    """What `get_record_by_weburl`/`get_record_by_external_id` return on both
-    graph providers: a base `Record`, without the prs document's fields."""
+    """What `get_record_by_external_id` returns on both graph providers, and what
+    a stored record document reads as: a base `Record`, without the prs document's fields."""
     return Record(
         id=id,
         record_name="Fix login redirect",
@@ -813,8 +826,10 @@ class TestLookupShowsTypedFields:
         gp = state["graph_provider"]
         gp.get_record_by_issue_key = AsyncMock(return_value=None)
         gp.get_record_by_external_id = AsyncMock(return_value=None)
-        gp.get_record_by_weburl = AsyncMock(return_value=base)
+        # The URL read answers ids; each is read back typed, else as its stored document.
+        gp.get_records_by_weburls = AsyncMock(return_value=[_weburl_row(base)] if base else [])
         gp.get_record_by_id = AsyncMock(return_value=typed)
+        gp.get_document = AsyncMock(return_value=base.to_arango_base_record() if base else None)
         gp.get_knowledge_hub_node_access = AsyncMock(return_value=_access_node(
             "pr1", "Fix login redirect", record_type="PULL_REQUEST",
         ))
@@ -860,6 +875,7 @@ class TestLookupShowsTypedFields:
 
         assert success
         assert "Fix login redirect" in text
+        assert "External ID: 123/pull/42" in text
         assert "* Status" not in text
 
     @pytest.mark.asyncio
@@ -877,11 +893,19 @@ class TestLookupShowsTypedFields:
 
     @pytest.mark.asyncio
     async def test_already_typed_record_is_not_read_again(self):
-        state = self._state(_typed_pr_record(), _typed_pr_record())
+        state = self._state(None, _typed_pr_record())
+        gp = state["graph_provider"]
+        gp.get_record_by_external_id = AsyncMock(return_value=_typed_pr_record())
 
-        _success, text = await KnowledgeGraph(state=state).lookup_record(
-            identifiers=["https://github.com/acme/app/pull/42"],
-        )
+        _success, text = await KnowledgeGraph(state=state).lookup_record(identifiers=["123/pull/42"])
 
-        state["graph_provider"].get_record_by_id.assert_not_awaited()
+        gp.get_record_by_id.assert_not_awaited()
         assert "* Status: Merged" in text
+
+    @pytest.mark.asyncio
+    async def test_a_url_match_is_read_once_by_its_id(self) -> None:
+        state = self._state(_base_pr_record(), _typed_pr_record())
+
+        await KnowledgeGraph(state=state).lookup_record(identifiers=["https://github.com/acme/app/pull/42"])
+
+        state["graph_provider"].get_record_by_id.assert_awaited_once_with("pr1")

@@ -375,7 +375,7 @@ class RSSConnector(BaseConnector):
         rolled off the feed, not been deleted, and keeps its record. A feed that
         could not be read keeps its records too. Feeds taken out of the settings
         are removed by the sync itself (_remove_unconfigured_feeds)."""
-        return FullSyncCoverage(complete=False)
+        return FullSyncCoverage(lists_everything=False)
 
     async def run_sync(self) -> None:
         """Main sync method: parse feeds, crawl articles, and index content."""

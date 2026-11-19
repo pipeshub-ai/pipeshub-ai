@@ -1,0 +1,134 @@
+- id: RULE-K01
+  title: 'APP_LEVEL app: record BELONGS_TO the app, user gated'
+  source: rule cases R1-R13 (spec)
+  rule: personal
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL}
+      - {id: f, kind: record, connector: A, rule: RESTRICTED, belongs: [A]}
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, personal]
+- id: RULE-K02
+  title: 'APP_LEVEL app: record under a group (no BELONGS_TO app) admitted by the walk (every hop opens)'
+  source: rule cases R1-R13 (spec)
+  rule: personal
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL}
+      - {id: S, kind: group, connector: A, rule: RESTRICTED, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: RESTRICTED, parents: [S], belongs: [S]}
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, personal]
+- id: RULE-K03
+  title: APP_LEVEL app, user not gated (another user's personal connector)
+  source: rule cases R1-R13 (spec)
+  rule: personal
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+    nodes:
+      - {id: A, kind: app, model: APP_LEVEL}
+      - {id: f, kind: record, connector: A, rule: OPEN, belongs: [A]}
+    gates:
+      - [v, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, personal]
+- id: RULE-K04
+  title: 'KB: user granted on the KB app sees a KB record'
+  source: rule cases R1-R13 (spec)
+  rule: kb
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: KB, kind: app, app_type: KB}
+      - {id: f, kind: record, connector: KB, rule: OPEN, origin: UPLOAD, inherits: [KB], belongs: [KB]}
+    grants:
+      - [u, KB]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, kb]
+- id: RULE-K05
+  title: 'KB: access through a team''s PERMISSION on the KB'
+  source: rule cases R1-R13 (spec)
+  rule: kb
+  world:
+    principals:
+      - {id: t, kind: team, org_member: false}
+      - {id: u}
+    nodes:
+      - {id: KB, kind: app, app_type: KB}
+      - {id: f, kind: record, connector: KB, rule: OPEN, origin: UPLOAD, belongs: [KB]}
+    grants:
+      - [t, KB, TEAM]
+    memberships:
+      - [u, t]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, kb]
+- id: RULE-K06
+  title: 'KB: a RESTRICTED record inside a KB is still admitted (KB opens everything)'
+  source: rule cases R1-R13 (spec)
+  rule: kb
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: KB, kind: app, app_type: KB}
+      - {id: f, kind: record, connector: KB, rule: RESTRICTED, origin: UPLOAD, belongs: [KB]}
+    grants:
+      - [u, KB]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, kb]
+- id: RULE-K07
+  title: 'KB: org member with no KB grant'
+  source: rule cases R1-R13 (spec)
+  rule: kb
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: KB, kind: app, app_type: KB}
+      - {id: f, kind: record, connector: KB, rule: OPEN, origin: UPLOAD, belongs: [KB]}
+    gates:
+      - [org, KB, ORG_APP_RELATION]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, kb]
+- id: RULE-K08
+  title: 'KB: file in a folder (folder BELONGS_TO KB; file only PARENT_CHILD under folder)'
+  source: rule cases R1-R13 (spec)
+  rule: kb
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: KB, kind: app, app_type: KB}
+      - {id: folder, kind: record, connector: KB, rule: OPEN, origin: UPLOAD, parents: [KB], belongs: [KB]}
+      - {id: f, kind: record, connector: KB, rule: OPEN, origin: UPLOAD, parents: [folder]}
+    grants:
+      - [u, KB]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, kb]

@@ -193,12 +193,13 @@ class FakeRecordsDb:
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
             self.record_groups[group.external_group_id] = group
-            self.record_group_permissions[group.external_group_id] = list(permissions)
+            if permissions is not None:  # None: the grants are unknown and the stored ones stay
+                self.record_group_permissions[group.external_group_id] = list(permissions)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
 
-    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any], *, drop_grants: bool = False) -> None:
         self.withdrawn_users.extend(users)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
@@ -288,8 +289,18 @@ class FakeRecordsDb:
             if record.id == record_id:
                 del self.records[external_id]
 
-    async def on_record_content_update(self, record: Record, permissions: list[Any] | None = None) -> None:
+    async def on_record_content_update(
+        self, record: Record, permissions: list[Any] | None = None, *, content_changed: bool = True,
+    ) -> None:
         self.content_updates.append(record)
+        # The processor upserts the record before it publishes updateRecord.
+        self.records[record.external_record_id] = record
+        if permissions is not None:
+            self.record_permissions[record.external_record_id] = list(permissions)
+
+    async def on_record_metadata_update(self, record: Record) -> None:
+        # Source metadata only (timestamps, name): the record is upserted, its grants are left as they are.
+        self.records[record.external_record_id] = record
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, permissions))

@@ -883,9 +883,10 @@ class TestRefreshAllTokensInternal:
     @pytest.mark.asyncio
     async def test_success(self):
         gp = MagicMock()
-        # Only the OAuth apps are read, one lookup per OAuth auth type.
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
+        # Only the org's OAuth apps are read, one lookup per OAuth auth type.
         gp.get_nodes_by_filters = AsyncMock(side_effect=lambda collection, filters, **_: (
-            [{"_key": "c1", "authType": "OAUTH"}] if filters == {"authType": "OAUTH"} else []
+            [{"_key": "c1", "authType": "OAUTH", "orgId": "o1"}] if filters == {"authType": "OAUTH", "orgId": "o1"} else []
         ))
         cs = MagicMock()
         cs.get_config = AsyncMock(return_value={
@@ -896,13 +897,13 @@ class TestRefreshAllTokensInternal:
         await svc._refresh_all_tokens_internal()
         svc._process_connectors_for_refresh.assert_awaited_once()
         assert [c.args[1] for c in gp.get_nodes_by_filters.await_args_list] == [
-            {"authType": "OAUTH"}, {"authType": "OAUTH_ADMIN_CONSENT"},
+            {"authType": "OAUTH", "orgId": "o1"}, {"authType": "OAUTH_ADMIN_CONSENT", "orgId": "o1"},
         ]
 
     @pytest.mark.asyncio
     async def test_exception_handled(self):
         gp = MagicMock()
-        gp.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("db down"))
+        gp.get_all_orgs = AsyncMock(side_effect=RuntimeError("db down"))
         svc = _make_service(graph_provider=gp)
         # Should not raise
         await svc._refresh_all_tokens_internal()

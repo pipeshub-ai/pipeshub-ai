@@ -109,6 +109,9 @@ _RECORDS = CollectionNames.RECORDS.value
 _RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 _APPS = CollectionNames.APPS.value
 _AUTO_INDEX_OFF = ProgressStatus.AUTO_INDEX_OFF.value
+_INDEXING_UNSETTLED = frozenset(
+    s.value for s in (ProgressStatus.NOT_STARTED, ProgressStatus.QUEUED, ProgressStatus.IN_PROGRESS)
+)
 
 # The B2 sync can read the seed group's members before Graph drops S from them.
 _MEMBERSHIP_RESYNCS = 3
@@ -737,6 +740,17 @@ class TestReindex:
         new_subject = ctx.world.name("reindex updated")
         fresh = await ctx.helper.update_message(p, m["reindex_update"], {"subject": new_subject})
         assert mail_content_revision(fresh) != before.external_revision_id
+
+        # Reindex skips a record the indexer is still working on, so a reindex sent while
+        # the sync's own indexing of this mail is queued or running can be dropped and
+        # never fetch the edit.
+        async def _indexing_settled() -> bool:
+            status = (await _index_mark(ctx, before.id))[1]
+            return status is not None and status not in _INDEXING_UNSETTLED
+
+        await _await_condition(
+            _indexing_settled, "reindex-update mail's own indexing finished", timeout=C.REINDEX_TIMEOUT,
+        )
         _reindex_as(ctx, ctx.p.session, before.id)
 
         async def _updated() -> bool:
@@ -1042,9 +1056,11 @@ async def phase_b2(ctx: Ctx, phase_b1: dict[str, Any]) -> dict[str, Any]:
     await h.set_account_enabled(uid, False)
 
     async def _disabled() -> bool:
-        return await h.account_enabled(uid) is False
+        return await h.listed_account_enabled(uid) is False
 
-    await wait_until_outlook_condition(_disabled, description="throwaway user disabled")
+    await wait_until_outlook_condition(
+        _disabled, description="throwaway user disabled in the user list", timeout=600,
+    )
     await h.delete_group(phase_b1["new_group_id"])
     w.m365_group_ids.remove(phase_b1["new_group_id"])
     w.deleted_directory_ids.append(phase_b1["new_group_id"])
@@ -1058,8 +1074,22 @@ async def phase_b2(ctx: Ctx, phase_b1: dict[str, Any]) -> dict[str, Any]:
 
     await wait_until_outlook_condition(_gone, description="throwaway group gone from the group list", timeout=600)
     state["sync_count"] = await ctx.incremental_sync("B2 incremental sync")
-    # The re-syncs below are for S's membership only; the other removals must land in this sync.
+    # The re-syncs below are for the deleted group and S's membership only; the other removals
+    # must land in this sync.
     state["after_first_sync"] = await _b2_removals(ctx, phase_b1, state)
+
+    async def _group_still_synced() -> bool:
+        # The connector's own /groups read can still list the group after ours stopped (11-06).
+        return await ctx.graph.get_user_group_by_external_id(ctx.cid, phase_b1["new_group_id"]) is not None
+
+    state["group_resyncs"] = await resync_while(
+        _group_still_synced,
+        lambda n: ctx.incremental_sync(f"B2 re-sync {n} for the deleted group"),
+        attempts=_MEMBERSHIP_RESYNCS,
+        wait_sec=_MEMBERSHIP_RESYNC_WAIT_SEC,
+        description="the deleted M365 group",
+    )
+    state["after_group_resyncs"] = await _b2_removals(ctx, phase_b1, state)
     state["membership_resyncs"] = await resync_while(
         lambda: _seed_group_member_edge(ctx),
         lambda n: ctx.incremental_sync(f"B2 re-sync {n} for S leaving the seed group"),
@@ -1126,9 +1156,11 @@ class TestB2Removals:
     @pytest.mark.order(61)
     async def test_tc_ol_incr_021_m365_group_deleted(self, ctx: Ctx, phase_b1: dict[str, Any], phase_b2: dict[str, Any]) -> None:
         """A deleted M365 group no longer grants anything."""
-        first = phase_b2["after_first_sync"]
-        assert first["deleted_group"] is None, "deleted group still synced"
-        assert first["deleted_group_grants"] == 0, "deleted group's mailbox still carries a grant"
+        after = phase_b2["after_group_resyncs"]
+        assert after["deleted_group"] is None, (
+            f"deleted group still synced after {phase_b2['group_resyncs']} re-sync(s)"
+        )
+        assert after["deleted_group_grants"] == 0, "deleted group's mailbox still carries a grant"
 
     @pytest.mark.order(62)
     @pytest.mark.xfail(

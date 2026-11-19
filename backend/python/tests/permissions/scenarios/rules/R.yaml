@@ -1,0 +1,135 @@
+- id: RULE-R01
+  title: 'RGL group granted: RESTRICTED non-inheriting record that BELONGS_TO it is admitted'
+  source: rule cases R1-R13 (spec)
+  rule: gmail/slack
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: GMAIL}
+      - {id: mailbox, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+      - {id: mail, kind: record, connector: A, rule: RESTRICTED, parents: [mailbox], belongs: [mailbox]}
+    grants:
+      - [u, mailbox]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {mail: admit}
+  tags: [rules, gmail/slack]
+  comment: Declared arm ignores the record's own rule.
+- id: RULE-R02
+  title: Gmail mailbox (RGL) of another user
+  source: rule cases R1-R13 (spec)
+  rule: gmail
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+    nodes:
+      - {id: A, kind: app, app_type: GMAIL}
+      - {id: mailbox, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+      - {id: mail, kind: record, connector: A, rule: OPEN, parents: [mailbox], inherits: [mailbox], belongs: [mailbox]}
+    grants:
+      - [v, mailbox]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {mail: deny}
+  tags: [rules, gmail]
+- id: RULE-R03
+  title: RGL group not granted but reachable from the app (inherits, STRICT)
+  source: rule cases R1-R13 (spec)
+  rule: outlook-individual
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: OUTLOOK}
+      - {id: mailbox, kind: group, connector: A, rule: STRICT, model: RECORD_GROUP_LEVEL, parents: [A], inherits: [A], belongs: [A]}
+      - {id: mail, kind: record, connector: A, rule: OPEN, parents: [mailbox], belongs: [mailbox]}
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {mail: admit}
+  tags: [rules, outlook-individual]
+- id: RULE-R04
+  title: 'Walk does not pass through an RGL group: record hangs under it but does not BELONGS_TO it'
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: SLACK}
+      - {id: chan, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+      - {id: msg, kind: record, connector: A, rule: OPEN, parents: [chan], inherits: [chan]}
+    grants:
+      - [u, chan]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {msg: deny}
+  tags: [rules, any]
+- id: RULE-R05
+  title: 'Slack: thread group (child RGL) under a granted channel; message BELONGS_TO the thread'
+  source: rule cases R1-R13 (spec)
+  rule: slack
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: SLACK}
+      - {id: chan, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+      - {id: thread, kind: group, connector: A, rule: OPEN, parents: [chan], inherits: [chan]}
+      - {id: msg, kind: record, connector: A, rule: OPEN, parents: [thread], inherits: [thread], belongs: [thread]}
+    grants:
+      - [u, chan]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {msg: admit}
+  tags: [rules, slack]
+- id: RULE-R06
+  title: 'Slack private channel: non-member'
+  source: rule cases R1-R13 (spec)
+  rule: slack
+  world:
+    principals:
+      - {id: u}
+      - {id: v}
+    nodes:
+      - {id: A, kind: app, app_type: SLACK}
+      - {id: chan, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+      - {id: msg, kind: record, connector: A, rule: OPEN, parents: [chan], inherits: [chan], belongs: [chan]}
+    grants:
+      - [v, chan]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {msg: deny}
+  tags: [rules, slack]
+- id: RULE-R07
+  title: Deleted RGL group admits nothing
+  source: rule cases R1-R13 (spec)
+  rule: lifecycle
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: SLACK}
+      - {id: chan, kind: group, connector: A, rule: OPEN, deleted: true, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+      - {id: msg, kind: record, connector: A, rule: OPEN, parents: [chan], belongs: [chan]}
+    grants:
+      - [u, chan]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {msg: deny}
+  tags: [rules, lifecycle]

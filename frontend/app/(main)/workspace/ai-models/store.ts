@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type { AIModelProvider, ConfiguredModel } from './types';
@@ -159,3 +160,5 @@ export const useAIModelsStore = create<AIModelsState & AIModelsActions>()(
     { name: 'ai-models-store' }
   )
 );
+
+resetStoreOnSessionEnd(useAIModelsStore);

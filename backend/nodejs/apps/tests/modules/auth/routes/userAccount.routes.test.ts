@@ -9,10 +9,8 @@ import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { Logger } from '../../../../src/libs/services/logger.service';
 import * as appConfigModule from '../../../../src/modules/tokens_manager/config/config';
 import { AUTH_APP_CONFIG_RELOADER } from '../../../../src/modules/auth/container/authService.container';
-import {
-  authSessionMiddleware,
-  userValidator,
-} from '../../../../src/modules/auth/middlewares/userAuthentication.middleware';
+import { authSessionMiddleware } from '../../../../src/modules/auth/middlewares/userAuthentication.middleware';
+import { requireSessionAuth } from '../../../../src/libs/middlewares/require-session-auth.middleware';
 
 describe('createUserAccountRouter', () => {
   let container: Container;
@@ -37,6 +35,7 @@ describe('createUserAccountRouter', () => {
     };
 
     mockAuthMiddleware = {
+      authenticate: sinon.stub(),
       scopedTokenValidator: sinon.stub().returns(
         (_req: any, _res: any, next: any) => next(),
       ),
@@ -78,9 +77,9 @@ describe('createUserAccountRouter', () => {
     // /authenticate counts after the session lookup, which names the account.
     expect(handlers('/authenticate').slice(0, 2)).to.deep.equal([ipLimiter, authSessionMiddleware]);
     expect(handlers('/authenticate')[2]).to.be.a('function');
-    // Signed-in routes count per user, so the limiter runs after userValidator.
+    // Signed-in routes count per user, so the limiter runs after authentication.
     for (const path of ['/password/reset', '/password/setup/email']) {
-      expect(handlers(path).slice(0, 2), path).to.deep.equal([userValidator, accountLimiter]);
+      expect(handlers(path).slice(1, 3), path).to.deep.equal([requireSessionAuth, accountLimiter]);
     }
     expect(handlers('/refresh/token')).to.not.include(accountLimiter);
     // Loading the sign-in page calls /initAuth; it has its own bucket.
@@ -335,16 +334,25 @@ describe('createUserAccountRouter', () => {
       expect(refreshRoute.route.stack.length).to.be.greaterThanOrEqual(2);
     });
 
-    it('should have user validator on password/reset route', () => {
+    // A PAT or OAuth token signed with the same secret as a session must not
+    // reach the password routes, and a revoked or logged-out session must not either.
+    it('should require a live interactive session on every signed-in route', () => {
       const router = createUserAccountRouter(container);
-      const routes = router.stack.filter((layer: any) => layer.route);
-
-      const resetRoute = routes.find(
-        (layer: any) => layer.route.path === '/password/reset' && layer.route.methods.post,
-      );
-      expect(resetRoute).to.not.be.undefined;
-      // userValidator + validation + handler
-      expect(resetRoute.route.stack.length).to.be.greaterThanOrEqual(2);
+      for (const [path, method] of [
+        ['/password/status', 'get'],
+        ['/password/setup/email', 'post'],
+        ['/password/reset', 'post'],
+        ['/logout/manual', 'post'],
+      ]) {
+        const layer = (router.stack as any[]).find(
+          (l) => l.route?.path === path && l.route.methods[method],
+        );
+        const chain = layer.route.stack.map((l: any) => l.handle);
+        mockAuthMiddleware.authenticate.resetHistory();
+        chain[0]({}, {}, () => undefined);
+        expect(mockAuthMiddleware.authenticate.calledOnce, path).to.be.true;
+        expect(chain[1], path).to.equal(requireSessionAuth);
+      }
     });
 
     it('should have scoped token validator on internal/password/check route', () => {

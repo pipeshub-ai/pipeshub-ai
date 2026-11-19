@@ -38,6 +38,7 @@ from app.connectors.sources.google.drive.utils.drive_run_report import (
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     drive_error_reasons,
+    is_permission_denied_403,
     is_retryable_403,
     is_unrecognised_403,
 )
@@ -131,7 +132,11 @@ _CORRUPT_KEY = json.dumps({
 class TestUnreadableServiceAccountKey:
     """Turning on a connector whose saved key is not a usable key file says so, instead of 'try again'."""
 
-    @pytest.mark.parametrize("saved_key", ["this is not a key file", _CORRUPT_KEY], ids=["not-json", "corrupt-key"])
+    @pytest.mark.parametrize(
+        "saved_key",
+        ["this is not a key file", _CORRUPT_KEY, "[]", '"a key file"', "null"],
+        ids=["not-json", "corrupt-key", "json-list", "json-string", "json-null"],
+    )
     async def test_init_names_the_key_as_the_problem(self, saved_key: str) -> None:
         from unittest.mock import AsyncMock, MagicMock
 
@@ -215,6 +220,147 @@ class TestRunReport:
         await report.finish(complete=False)
         assert len(sent) == 1 and sent[0]["severity"].value == "error" and "1234" in sent[0]["message"]
 
+    async def test_users_google_refuses_for_delegation_make_one_notice_naming_the_scopes(self, caplog) -> None:
+        """unauthorized_client acting as each user: one warning line, one notice that names the client ID
+        and every scope the grant needs, and no traceback per user."""
+        sent: list = []
+
+        async def notify(**kwargs: object) -> None:
+            sent.append(kwargs)
+
+        scopes = ["https://www.googleapis.com/auth/drive.readonly",
+                  "https://www.googleapis.com/auth/admin.directory.user.readonly"]
+        report = DriveRunReport(personal=False, notify=notify, title=lambda e: f"Drive: {e}", sync_point=_SyncPoint(),
+                                logger=LOGGER, client_id="1234", scopes=scopes)
+        refused = _refresh("unauthorized_client", "Client is unauthorized to retrieve access tokens using this method")
+        with caplog.at_level(logging.WARNING, logger=LOGGER.name):
+            assert all(report.note_user_failure(refused, f"user{i}@acme.example") for i in range(3))
+            await report.finish(complete=False)
+
+        assert len(sent) == 1
+        message = sent[0]["message"]
+        assert "1234" in message and all(scope in message for scope in scopes)
+        assert "Domain-wide delegation" in message
+        # Replacing the client ID's list with only these would drop another connector's scopes.
+        assert "at least these scopes, keeping any already listed" in message
+        lines = [r for r in caplog.records if r.name == LOGGER.name]
+        assert [r.levelno for r in lines] == [logging.WARNING, logging.WARNING]
+        assert "3 user(s)" in lines[-1].getMessage()
+        assert not any(r.exc_info for r in lines)
+
+    async def test_another_failure_acting_as_a_user_is_left_to_the_caller(self) -> None:
+        report = self._report([], _SyncPoint())
+        assert report.note_user_failure(_http_error(503, "backendError"), "a@acme.example") is False
+        assert report.note_user_failure(_refresh("invalid_grant", "Invalid email or User ID"), "b@acme.example") is False
+        assert report.refused_users == set()
+
+    async def test_creating_personal_drives_skips_refused_users_without_a_traceback(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
+
+        sent: list = []
+
+        async def notify(**kwargs: object) -> None:
+            sent.append(kwargs)
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.logger = MagicMock()
+        conn.drive_data_source = AsyncMock()
+        conn.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+        conn._remove_deleted_shared_drives = AsyncMock()
+        conn._sync_ledger = MagicMock()
+        conn.synced_users = [_user("refused1@acme.example"), _user("ok@acme.example"),
+                             _user("refused2@acme.example"), _user("broken@acme.example")]
+        refused = _refresh("unauthorized_client", "Client is unauthorized")
+        outcomes = {"refused1@acme.example": refused, "refused2@acme.example": refused,
+                    "broken@acme.example": RuntimeError("drive answered nonsense")}
+
+        async def create(user: AppUser) -> None:
+            if user.email in outcomes:
+                raise outcomes[user.email]
+
+        conn._create_personal_record_group = AsyncMock(side_effect=create)
+        conn._run_report = DriveRunReport(personal=False, notify=notify, title=str, sync_point=_SyncPoint(),
+                                          logger=conn.logger, client_id="1234", scopes=["s1"])
+
+        await conn._sync_record_groups()
+        await conn._run_report.finish(complete=False)
+
+        assert conn._create_personal_record_group.await_count == 4
+        assert conn._run_report.refused_users == {"refused1@acme.example", "refused2@acme.example"}
+        errors = [c for c in conn.logger.error.call_args_list if "My Drive" in str(c.args[0])]
+        assert len(errors) == 1 and "broken@acme.example" in errors[0].args[0]
+        assert errors[0].kwargs.get("exc_info") is True
+        assert len(sent) == 1 and "s1" in sent[0]["message"]
+
+    async def test_syncing_users_reports_refused_users_once_and_keeps_the_others_errors(self, monkeypatch) -> None:
+        """unauthorized_client during each user's file sync: no traceback for those users, the run is still
+        incomplete (so cleanup does not read their files as deleted), and only other failures are counted."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team import connector as team_connector
+
+        monkeypatch.setattr(team_connector.asyncio, "sleep", AsyncMock())
+        conn = object.__new__(team_connector.GoogleDriveTeamConnector)
+        conn.logger = MagicMock()
+        conn.max_concurrent_batches = 10
+        conn._sync_ledger = MagicMock()
+        users = [_user("refused1@acme.example"), _user("ok@acme.example"), _user("refused2@acme.example"),
+                 _user("broken@acme.example")]
+        conn._get_users_to_sync = AsyncMock(return_value=users)
+        refused = _refresh("unauthorized_client", "Client is unauthorized")
+        outcomes = {"refused1@acme.example": refused, "refused2@acme.example": refused,
+                    "broken@acme.example": RuntimeError("drive answered nonsense")}
+
+        async def sync(user: AppUser) -> None:
+            if user.email in outcomes:
+                raise outcomes[user.email]
+
+        conn._run_sync_with_yield = AsyncMock(side_effect=sync)
+        conn._run_report = DriveRunReport(personal=False, notify=AsyncMock(), title=str, sync_point=_SyncPoint(),
+                                          logger=conn.logger, client_id="1234", scopes=["s1"])
+
+        await conn._process_users_in_batches(users)
+
+        errors = conn.logger.error.call_args_list
+        assert len(errors) == 1 and "broken@acme.example" in errors[0].args[0]
+        conn._sync_ledger.note_incomplete.assert_called()
+        assert [c.args[0] for c in conn.logger.warning.call_args_list if "batch failed" in c.args[0]] == [
+            "1 user sync(s) in this batch failed"
+        ]
+        assert conn._run_report.refused_users == {"refused1@acme.example", "refused2@acme.example"}
+
+    async def test_a_users_sync_leaves_reporting_its_failure_to_the_batch(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.logger = MagicMock()
+        refused = _refresh("unauthorized_client", "Client is unauthorized")
+        conn._build_user_drive_data_source = AsyncMock(side_effect=refused)
+
+        with pytest.raises(RefreshError):
+            await conn._run_sync_with_yield(_user("refused@acme.example"))
+        conn.logger.error.assert_not_called()
+
+    def test_a_refused_setup_names_the_client_id_from_the_saved_key(self) -> None:
+        from app.connectors.sources.google.drive.team.connector import (
+            GoogleDriveTeamConnector,
+        )
+
+        conn = object.__new__(GoogleDriveTeamConnector)
+        conn.config = {"credentials": {"auth": {"serviceAccountJson": json.dumps({"client_id": "987654321"})}}}
+        with pytest.raises(ConnectorInitError) as refused:
+            conn._raise_setup_problem(_refresh("unauthorized_client", "Client is unauthorized"), "admin@acme.example")
+        assert "987654321" in str(refused.value)
+        assert "https://www.googleapis.com/auth/drive.readonly" in str(refused.value)
+
     async def test_a_passing_gap_is_reported_only_when_it_lasts(self) -> None:
         sent: list = []
         sync_point = _SyncPoint()
@@ -241,6 +387,21 @@ class TestRunReport:
 
 
 class TestUserStatus:
+    @pytest.mark.asyncio
+    async def test_a_suspension_a_cut_listing_shows_is_kept_by_a_later_cut_listing_and_undone_by_a_complete_one(self) -> None:
+        sync_point = _SyncPoint()
+        tracker = UserStatusTracker(sync_point)
+        await tracker.compare([_user("a@x.com"), _user("b@x.com")])
+        await tracker.save()
+
+        # a cut listing shows b unable to sign in: b is saved as inactive at once
+        assert await tracker.inactive_on_partial_listing([_user("b@x.com", active=False)]) == {"b@x.com"}
+        # a later cut listing that does not show b at all still treats b as unable to sign in
+        assert await UserStatusTracker(sync_point).inactive_on_partial_listing([_user("a@x.com")]) == {"b@x.com"}
+        # a complete listing that shows b active again restores b
+        change = await UserStatusTracker(sync_point).compare([_user("a@x.com"), _user("b@x.com")])
+        assert change.restore == {"b@x.com"} and not change.inactive
+
     async def test_suspended_and_deleted_accounts_are_withdrawn_once(self) -> None:
         sync_point = _SyncPoint()
         tracker = UserStatusTracker(sync_point)
@@ -263,6 +424,20 @@ class TestUserStatus:
         await tracker.save()
         third = await tracker.compare([_user("a@x")])
         assert third.restore == {"a@x"} and not third.withdraw
+
+    async def test_the_domains_of_the_last_complete_listing_are_kept_and_the_fingerprint_follows_the_listing(self) -> None:
+        sync_point = _SyncPoint()
+        tracker = UserStatusTracker(sync_point)
+        await tracker.compare([_user("a@x.com"), _user("b@alias.org")])
+        await tracker.save()
+        assert await tracker.known_domains() == {"x.com", "alias.org"}
+
+        same = tracker.fingerprint([_user("a@x.com"), _user("b@alias.org")])
+        assert same == tracker.fingerprint([_user("b@alias.org"), _user("a@x.com")])
+        assert same != tracker.fingerprint([_user("a@x.com")])
+        assert not await tracker.fingerprint_is_remembered(same)
+        await tracker.remember_fingerprint(same)
+        assert await tracker.fingerprint_is_remembered(same)
 
     async def test_nothing_is_saved_until_asked(self) -> None:
         sync_point = _SyncPoint()
@@ -331,6 +506,12 @@ class TestReasons:
     def test_quota_reasons_are_read_from_errors_even_when_details_are_present(self) -> None:
         error = _http_error(403, "rateLimitExceeded", details=True)
         assert {"rateLimitExceeded", "RATELIMITEXCEEDED"} <= drive_error_reasons(error)
+        assert is_retryable_403(error) and not is_unrecognised_403(error)
+
+
+    def test_a_domain_policy_refusal_is_app_wide_retried_and_never_skips_an_item(self) -> None:
+        error = _http_error(403, "domainPolicy")
+        assert not is_permission_denied_403(error), "it refuses the app everywhere, not this item"
         assert is_retryable_403(error) and not is_unrecognised_403(error)
 
 

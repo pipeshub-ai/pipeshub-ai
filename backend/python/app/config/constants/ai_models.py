@@ -11,6 +11,9 @@ EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
 # (embedding_main.EncodeGate); any other value, or none, is bulk.
 EMBEDDING_PRIORITY_HEADER = "X-Embedding-Priority"
 EMBEDDING_PRIORITY_QUERY = "query"
+# Request header that carries the cost class of the record an indexing batch belongs to (small, large, huge)
+# under PARSE_ADMISSION=classes. The server's encode gate serves small ahead of large and huge.
+PARSE_CLASS_HEADER = "X-Parse-Class"
 # One /v1/tokenize request: the server rejects more (413), the indexing client splits to fit.
 TOKENIZE_MAX_ITEMS = 2048
 TOKENIZE_MAX_CHARS = 2_000_000
@@ -84,8 +87,6 @@ def validate_reasoning_effort(value: str | None) -> str | None:
     non-``None`` value must be one of ``REASONING_EFFORT_VALUES``.
     """
     if value is not None and value not in REASONING_EFFORT_VALUES:
-        raise ValueError(
-            f"Invalid reasoningEffort '{value}'. Must be one of: "
-            f"{', '.join(sorted(REASONING_EFFORT_VALUES))}."
-        )
+        # Not the value: this message reaches the 400 body, which Node logs and shows.
+        raise ValueError(f"Invalid reasoningEffort. Must be one of: {', '.join(sorted(REASONING_EFFORT_VALUES))}.")
     return value

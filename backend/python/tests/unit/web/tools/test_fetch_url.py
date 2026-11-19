@@ -92,6 +92,7 @@ class TestTool:
             "title": "Final page",
             "fetched_by": "builtin",
             "blocks": [{"type": "text", "content": "Hello"}],
+            "images": [],
         }
         fake.fetch.assert_awaited_once_with("https://example.com/start", CALLER)
 

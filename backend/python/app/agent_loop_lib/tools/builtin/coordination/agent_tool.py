@@ -4,7 +4,7 @@ import contextvars
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.context.protection import current_request_text
-from app.agent_loop_lib.core.exceptions import ToolError
+from app.agent_loop_lib.core.exceptions import ToolError, spawn_refusal
 from app.agent_loop_lib.core.types import Goal, ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
@@ -126,6 +126,10 @@ class AgentTool(Tool):
                 required=False, default=None,
             ),
         ]
+
+    @property
+    def log_kind(self) -> str:
+        return "sub_agent"
 
     @property
     def name(self) -> str:
@@ -280,11 +284,15 @@ class AgentTool(Tool):
                     user_request=current_request_text(ctx.messages),
                 )
         except Exception as e:
-            return CoreToolResult(tool_call_id=call.id, name=call.name, content=str(e), is_error=True)
+            return CoreToolResult(
+                tool_call_id=call.id, name=call.name, content=str(e), is_error=True,
+                cause=e, end_fields={"reason": "exception", **(spawn_refusal(e) or {})},
+            )
         if not result.success:
             return CoreToolResult(
                 tool_call_id=call.id, name=call.name,
                 content=result.error or f"{self._name} agent failed", is_error=True,
+                end_fields={"reason": "sub_agent_failed", "error_class": result.error_class},
             )
         return CoreToolResult(
             tool_call_id=call.id, name=call.name,

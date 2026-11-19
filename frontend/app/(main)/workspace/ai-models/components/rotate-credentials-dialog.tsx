@@ -9,7 +9,7 @@ import type { ConfiguredModel } from '../types';
 interface RotateCredentialsDialogProps {
   model: ConfiguredModel | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved?: () => void;
 }
 
 export function RotateCredentialsDialog({ model, onClose, onSaved }: RotateCredentialsDialogProps) {
@@ -31,7 +31,7 @@ export function RotateCredentialsDialog({ model, onClose, onSaved }: RotateCrede
     try {
       await AIModelsApi.rotateConnectionCredentials(model.connectionId, { apiKey: apiKey.trim() });
       setApiKey('');
-      onSaved();
+      onSaved?.();
       onClose();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('workspace.aiModels.rotateCredentialsFailed'));

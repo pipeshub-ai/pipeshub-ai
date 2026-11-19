@@ -11,12 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import multiprocessing
+import time
 import tracemalloc
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
+
+import pytest
 
 from app.modules.parsers.excel import excel_parser as module
 from tests.support.excel_workbooks import load, workbook_zip
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 TABLES = 1500
 
@@ -39,7 +47,7 @@ def _many_small_tables() -> bytes:
     return workbook_zip("<sheetData>" + "".join(rows) + "</sheetData>")
 
 
-def _allocated_and_charged(data: bytes, monkeypatch) -> tuple[int, int, int]:
+def _measure(data: bytes, monkeypatch: pytest.MonkeyPatch) -> tuple[int, int, int]:
     parser = load(data)
     quiet = logging.getLogger("qa.round3.quiet")
     quiet.setLevel(logging.CRITICAL + 1)  # captured log records would be counted as allocations
@@ -74,19 +82,48 @@ def _allocated_and_charged(data: bytes, monkeypatch) -> tuple[int, int, int]:
     return peak - before, start - lowest[0], len(container.block_groups)
 
 
-def test_many_small_tables_are_charged_at_least_what_they_allocate(monkeypatch) -> None:
-    allocated, charged, groups = _allocated_and_charged(_many_small_tables(), monkeypatch)
+def _measure_in_child(data: bytes) -> tuple[int, int, int]:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        return _measure(data, monkeypatch)
+
+
+def _in_child(func: Callable[..., tuple[int, int, int]], *args: bytes, timeout: float = 50) -> tuple[int, int, int]:
+    # leaving the Pool terminates the child, so a hung build fails here instead of outliving the test timeout
+    with multiprocessing.get_context("spawn").Pool(1) as pool:
+        return pool.apply_async(func, args).get(timeout)
+
+
+def _allocated_and_charged(data: bytes) -> tuple[int, int, int]:
+    # tracemalloc counts every thread of the process, so a pytest-xdist worker's other threads add to the
+    # peak (28.2 MB seen against 16.1 MB); a spawned child has only the build running in it
+    return _in_child(_measure_in_child, data)
+
+
+def _hang() -> tuple[int, int, int]:
+    time.sleep(600)
+    raise AssertionError
+
+
+def test_a_hung_child_is_killed_and_reported() -> None:
+    started = time.monotonic()
+    with pytest.raises(multiprocessing.TimeoutError):
+        _in_child(_hang, timeout=1)
+    assert time.monotonic() - started < 30
+
+
+def test_many_small_tables_are_charged_at_least_what_they_allocate() -> None:
+    allocated, charged, groups = _allocated_and_charged(_many_small_tables())
     assert groups == TABLES + 1
     assert allocated <= charged, f"allocated {allocated / 1e6:.1f} MB but charged {charged / 1e6:.1f} MB"
 
 
-def test_one_large_table_is_charged_at_least_what_it_allocates(monkeypatch) -> None:
+def test_one_large_table_is_charged_at_least_what_it_allocates() -> None:
     # control: the same check on a single 1500 x 30 table passes (about 0.94 of the charge)
     rows = "".join(
         f'<row r="{r}">' + "".join(f'<c r="{chr(65 + c)}{r}"><v>{c}</v></c>' for c in range(26)) + "</row>"
         for r in range(1, 1501)
     )
-    allocated, charged, _ = _allocated_and_charged(workbook_zip(f"<sheetData>{rows}</sheetData>"), monkeypatch)
+    allocated, charged, _ = _allocated_and_charged(workbook_zip(f"<sheetData>{rows}</sheetData>"))
     assert allocated <= charged, f"allocated {allocated / 1e6:.1f} MB but charged {charged / 1e6:.1f} MB"
 
 

@@ -1,11 +1,24 @@
 """Unit tests for app.utils.oauth_errors."""
+import logging
+
 import pytest
 
+from app.utils.error_class import ERROR_CLASSES, level_for
 from app.utils.oauth_errors import (
     PERMANENT_GRANT_ERROR_CODES,
+    authorization_error_class,
+    authorization_error_code,
     is_permanent_grant_rejection,
+    is_transient_status,
     oauth_error_code,
 )
+
+
+@pytest.mark.parametrize(("status", "transient"), [
+    (None, False), (200, False), (400, False), (428, False), (429, True), (499, False), (500, True), (503, True), (599, True),
+])
+def test_only_an_overloaded_or_rate_limiting_status_is_transient(status: int | None, transient: bool) -> None:
+    assert is_transient_status(status) is transient
 
 
 class TestIsPermanentGrantRejection:
@@ -53,3 +66,27 @@ class TestOAuthErrorCode:
     ])
     def test_returns_only_a_non_empty_error_string_of_an_object(self, body: object, expected: str | None) -> None:
         assert oauth_error_code(body) == expected
+
+
+# RFC 6749 §4.1.2.1, then OpenID Connect Core §3.1.2.6.
+_AUTHORIZATION_CODES = {
+    "invalid_request": "bad_request", "unauthorized_client": "bad_request", "access_denied": "cancelled",
+    "unsupported_response_type": "bad_request", "invalid_scope": "bad_request", "server_error": "upstream_5xx",
+    "temporarily_unavailable": "unavailable",
+    "interaction_required": "bad_request", "login_required": "bad_request", "account_selection_required": "bad_request",
+    "consent_required": "bad_request", "invalid_request_uri": "bad_request", "invalid_request_object": "bad_request",
+    "request_not_supported": "bad_request", "request_uri_not_supported": "bad_request",
+    "registration_not_supported": "bad_request",
+}
+
+
+def test_authorization_errors_map_to_a_class_that_is_never_error() -> None:
+    for code, cls in _AUTHORIZATION_CODES.items():
+        assert (authorization_error_class(code), authorization_error_code(code)) == (cls, code)
+    for code in ("SENTINEL-made-up", "", None, "Access_Denied"):
+        assert (authorization_error_class(code), authorization_error_code(code)) == ("forbidden", "other")
+    # The redirect is unauthenticated input: no value may write an ERROR line.
+    for code in [*_AUTHORIZATION_CODES, "x", None]:
+        cls = authorization_error_class(code)
+        assert cls in ERROR_CLASSES and level_for(cls) < logging.ERROR
+    assert level_for(authorization_error_class("access_denied")) == logging.INFO

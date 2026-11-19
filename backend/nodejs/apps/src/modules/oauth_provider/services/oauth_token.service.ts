@@ -12,6 +12,7 @@ import {
 } from '../../../libs/repositories/oauth-token';
 import {
   getOAuthAppRepository,
+  NO_APP_CREATOR,
   type OAuthAppDto,
 } from '../../../libs/repositories/oauth-app';
 import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
@@ -24,10 +25,12 @@ import {
   InvalidTokenError,
   ExpiredTokenError,
   InvalidScopeError,
+  InvalidTargetError,
 } from '../../../libs/errors/oauth.errors';
 import {
   APP_WORKSPACE_MISMATCH_MESSAGE,
   isAppUsableInOrg,
+  isInstanceApp,
 } from './oauth.app.service';
 import {
   OAuthTokenPayload,
@@ -38,7 +41,15 @@ import {
   TokenListItem,
 } from '../types/oauth.types';
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
-import { stripTokenDisplayPrefix } from '../constants/constants';
+import {
+  FIRST_PARTY_DEVICE_CLIENT_ID,
+  stripTokenDisplayPrefix,
+} from '../constants/constants';
+import {
+  ASSERTION_TTL_SECONDS,
+  ASSERTION_TYP,
+  REGISTRATION_ID_PREFIX,
+} from '../constants/agent-auth.constants';
 import { parseScopeString } from './scope.validator.service';
 import { hashOpaqueToken } from '../../../libs/repositories/oauth-token/token-hash';
 
@@ -110,6 +121,13 @@ export class OAuthTokenService {
 
     const jti = randomUUID();
     const now = Math.floor(Date.now() / 1000);
+    // An instance app, or one no person created, acts as nobody: its tokens name no creator
+    // (a dynamic client stored before NO_APP_CREATOR existed still holds a borrowed user).
+    const actsAs = app.tokenIdentityUserId ?? app.createdBy;
+    const creatorClaim =
+      isInstanceApp(app) || actsAs === NO_APP_CREATOR
+        ? {}
+        : { createdBy: actsAs };
     // A personal access token names its own limit, and a user grant carries
     // the one its user agreed to. Every other token takes its app's.
     const knowledgeLimit =
@@ -143,8 +161,12 @@ export class OAuthTokenService {
       //
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
-      createdBy: app.tokenIdentityUserId ?? app.createdBy,
+      ...creatorClaim,
       knowledgeLimit,
+      ...(opts?.audience === undefined ? {} : { aud: opts.audience }),
+      ...(opts?.agentRegistrationId
+        ? { agent_registration_id: opts.agentRegistrationId }
+        : {}),
     };
 
     // A delegated token speaks as the person named in `userId`, so every
@@ -225,7 +247,9 @@ export class OAuthTokenService {
         fullName,
         accountType,
         // Same resolved identity as the access token above.
-        createdBy: app.tokenIdentityUserId ?? app.createdBy,
+        ...creatorClaim,
+        // Kept in the signed token, so a refresh keeps the audience with nothing stored.
+        ...(opts?.audience === undefined ? {} : { resource: opts.audience }),
       };
 
       const refreshToken = jwt.sign(
@@ -330,6 +354,61 @@ export class OAuthTokenService {
     );
   }
 
+  /**
+   * The identity assertion of an agent registration: a JWT only this service
+   * verifies, signed with the key access tokens use. `typ` keeps it from
+   * being read as an access token or the reverse.
+   */
+  signAgentAssertion(registrationId: string): {
+    assertion: string;
+    expiresAt: Date;
+  } {
+    const now = Math.floor(Date.now() / 1000);
+    const exp = now + ASSERTION_TTL_SECONDS;
+    const assertion = jwt.sign(
+      {
+        iss: this.issuer,
+        aud: this.issuer,
+        sub: registrationId,
+        jti: randomUUID(),
+        iat: now,
+        exp,
+      },
+      this.signingKey,
+      {
+        algorithm: this.algorithm,
+        header: { alg: this.algorithm, typ: ASSERTION_TYP },
+        ...(this.keyId ? { keyid: this.keyId } : {}),
+      },
+    );
+    return { assertion, expiresAt: new Date(exp * 1000) };
+  }
+
+  /** The registration id an assertion names; any defect is an invalid_grant. */
+  verifyAgentAssertion(assertion: string): string {
+    try {
+      const header = jwt.decode(assertion, { complete: true })?.header;
+      if (header?.typ !== ASSERTION_TYP) {
+        throw new InvalidGrantError('assertion has the wrong type');
+      }
+      const payload = jwt.verify(assertion, this.verifyKey, {
+        algorithms: [this.algorithm],
+        issuer: this.issuer,
+        audience: this.issuer,
+      }) as jwt.JwtPayload;
+      if (
+        typeof payload.sub !== 'string' ||
+        !payload.sub.startsWith(REGISTRATION_ID_PREFIX)
+      ) {
+        throw new InvalidGrantError('assertion names no registration');
+      }
+      return payload.sub;
+    } catch (error) {
+      if (error instanceof InvalidGrantError) throw error;
+      throw new InvalidGrantError('assertion is invalid or expired');
+    }
+  }
+
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
       // Personal access tokens and service tokens carry a display-only
@@ -420,6 +499,29 @@ export class OAuthTokenService {
     return payload;
   }
 
+  /** The MCP endpoint: the one protected resource this server issues audience-bound tokens for. */
+  get mcpResource(): string {
+    return `${this.issuer}/mcp`;
+  }
+
+  /**
+   * The audience for the RFC 8707 `resource` of a token request. A request that names none
+   * gets a token without an audience, as before resource indicators were read, so clients that
+   * do not send one keep working.
+   */
+  audienceFor(resource: string | string[] | undefined): string | undefined {
+    const named = (Array.isArray(resource) ? resource : [resource]).filter(
+      (r): r is string => typeof r === 'string' && r !== '',
+    );
+    if (named.length === 0) return undefined;
+    if (named.every((r) => r.replace(/\/$/, '') === this.mcpResource)) {
+      return this.mcpResource;
+    }
+    throw new InvalidTargetError(
+      `Tokens are issued only for ${this.mcpResource}`,
+    );
+  }
+
   /**
    * Refresh tokens - rotates refresh token for security
    */
@@ -427,8 +529,20 @@ export class OAuthTokenService {
     app: OAuthAppDto,
     refreshToken: string,
     requestedScopes?: string[],
+    requestedAudience?: string,
   ): Promise<GeneratedTokens> {
     const payload = this.readRefreshPayload(refreshToken);
+    // RFC 8707 §2.2: a refresh may name the resource again, but not swap it for another.
+    if (
+      requestedAudience !== undefined &&
+      payload.resource !== undefined &&
+      requestedAudience !== payload.resource
+    ) {
+      throw new InvalidTargetError(
+        'The refresh token was issued for another resource',
+      );
+    }
+    const audience = payload.resource ?? requestedAudience;
 
     // Ends refresh tokens that an app got for another workspace before the check existed.
     if (!isAppUsableInOrg(app, payload.orgId)) {
@@ -511,6 +625,7 @@ export class OAuthTokenService {
       {
         recheckAppScopes: true,
         grantedKnowledgeLimit: storedToken.knowledgeLimit,
+        audience,
       },
     );
 
@@ -610,10 +725,52 @@ export class OAuthTokenService {
   }
 
   /**
+   * RFC 7009 for the agent flow, where the token is the only credential (no client_id): an identity assertion, or an access token
+   * issued under a registration, revokes that registration (and the access token itself). False for any other token.
+   */
+  async revokeAgentToken(token: string): Promise<boolean> {
+    const repo = getOAuthTokenRepository();
+    let registrationId: string | undefined;
+    try {
+      registrationId = this.verifyAgentAssertion(token);
+    } catch {
+      // not an assertion: it may still be an access token
+    }
+    let accessClient: string | undefined;
+    if (!registrationId) {
+      try {
+        // RFC 7009 revokes any token the holder has, expired ones included; the signature still has to be ours.
+        const payload = jwt.verify(token, this.verifyKey, {
+          algorithms: [this.algorithm],
+          ignoreExpiration: true,
+        }) as OAuthTokenPayload;
+        if (typeof payload.agent_registration_id !== 'string') return false;
+        registrationId = payload.agent_registration_id;
+        accessClient = payload.client_id;
+      } catch {
+        return false;
+      }
+    }
+    if (!registrationId.startsWith(REGISTRATION_ID_PREFIX)) return false;
+    if (accessClient) {
+      await repo.revokeAccessByHash(this.hashToken(token), accessClient);
+    }
+    await repo.revokeAgentRegistration(
+      registrationId.slice(REGISTRATION_ID_PREFIX.length),
+    );
+    this.logger.info('Agent registration revoked by token', { registrationId });
+    return true;
+  }
+
+  /**
    * Revoke all tokens for an app
    */
   async revokeAllTokensForApp(clientId: string): Promise<void> {
     await getOAuthTokenRepository().revokeAllForClient(clientId);
+    // The agent app's assertions would mint fresh tokens, so they go with it.
+    if (clientId === FIRST_PARTY_DEVICE_CLIENT_ID) {
+      await getOAuthTokenRepository().revokeAllAgentRegistrations();
+    }
 
     this.logger.info('All tokens revoked for app', { clientId });
   }
@@ -648,6 +805,7 @@ export class OAuthTokenService {
    */
   async revokeEveryTokenForUser(userId: string): Promise<void> {
     await getOAuthTokenRepository().revokeAllForUser(userId);
+    await getOAuthTokenRepository().revokeAgentRegistrationsForUser(userId);
   }
 
   async revokeAllTokensForUser(
@@ -655,6 +813,9 @@ export class OAuthTokenService {
     userId: string,
   ): Promise<void> {
     await getOAuthTokenRepository().revokeAllForClientUser(clientId, userId);
+    if (clientId === FIRST_PARTY_DEVICE_CLIENT_ID) {
+      await getOAuthTokenRepository().revokeAgentRegistrationsForUser(userId);
+    }
 
     this.logger.info('All tokens revoked for user in app', {
       clientId,

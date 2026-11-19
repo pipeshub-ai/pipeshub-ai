@@ -26,7 +26,7 @@ import pytest
 
 if TYPE_CHECKING:
     import threading
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Iterator
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_IT_BOOTSTRAP", "localhost:29192")
 REDIS_HOST = os.environ.get("REDIS_IT_HOST", "localhost")
@@ -244,7 +244,7 @@ class OneTopicProducer:
         )
 
 
-async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_later: float) -> int:
+async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_later: float, org_id: str = "org-1") -> int:
     """The real stranded-record sweep, asking ``consumer`` what is still
     waiting on ``topic``, run as if ``hours_later`` hours had gone by since."""
     from app import indexing_main
@@ -264,5 +264,22 @@ async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_lat
             run_coordination=run_coordination,
             concurrency_manager=None,
             page_size=100,
+            org_id=org_id,
             read_backlog=lambda: consumer.lane_backlog(topic),
         )
+
+
+@pytest.fixture
+def signing(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Producers sign their messages and consumers verify them, so a delivery carries the envelope event id."""
+    from app.core import envelope
+
+    key = envelope.derive_key("messaging-it-envelope-secret")
+    monkeypatch.setenv("ENVELOPE_SIGN", "true")
+
+    async def keys() -> tuple[bytes]:
+        return (key,)
+
+    envelope.configure(keys, None, key)
+    yield
+    envelope.configure(None, None, None)

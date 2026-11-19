@@ -11,6 +11,8 @@ import json
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
 from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
@@ -727,6 +729,41 @@ class TestRunAgentLoopStream:
 
         assert captured["allowed"] == {"pg-attached"}
 
+    @pytest.mark.parametrize(("is_service_account", "expected"), [
+        (False, {"pg-mine", "pg-team"}),
+        # The agent runs as its creator but anyone in the org may use it.
+        (True, {"pg-team"}),
+    ])
+    async def test_a_service_account_agent_queries_only_the_orgs_databases(self, is_service_account, expected) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            captured["allowed"] = context.tool_state.get("allowed_sql_connector_ids")
+            return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
+
+        async def _fake_finalizer_run(self, **kwargs: object) -> dict[str, str]:
+            return {"answer": "ok"}
+
+        instances = [
+            {"_key": "pg-mine", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-1", "scope": "personal"},
+            {"_key": "pg-team", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-1", "scope": "team"},
+        ]
+        knowledge = [{"connectorId": "pg-mine", "type": "POSTGRESQL"}, {"connectorId": "pg-team", "type": "POSTGRESQL"}]
+        kwargs = self._base_kwargs()
+        kwargs["query_info"]["is_service_account"] = is_service_account
+        with (
+            patch("app.utils.connector_instances.fetch_user_connector_instances", new=AsyncMock(return_value=instances)),
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello", "agent_knowledge": knowledge},
+            ),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**kwargs)]
+
+        assert captured["allowed"] == expected
+
     async def test_terminal_answer_streamed_live_before_finalizer_runs(self) -> None:
         """`_produce()` must drive the agent via `agent.stream(goal)` and
         feed every yielded event through `TerminalAnswerStreamer` — a
@@ -1256,14 +1293,17 @@ class TestHeartbeat:
     async def test_heartbeat_puts_heartbeat_frames_on_queue(self) -> None:
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.create_task(_heartbeat(queue, interval=0.01))
-        await asyncio.sleep(0.05)  # enough for ~4 heartbeats
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        try:
+            # Wait for the frames, not for a fixed time: a loaded host delays them but does not stop them. A heartbeat
+            # that never fires fails here after the bound instead of passing or failing by luck of the clock.
+            items = [await asyncio.wait_for(queue.get(), timeout=10) for _ in range(2)]  # at least a couple fired
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
-        assert queue.qsize() >= 2  # at least a couple fired
-        item = await queue.get()
-        assert item["event"] == "HEARTBEAT"
-        assert item["data"]["type"] == "HEARTBEAT"
+        for item in items:
+            assert item["event"] == "HEARTBEAT"
+            assert item["data"]["type"] == "HEARTBEAT"
 
     async def test_no_heartbeat_events_for_legacy_protocol(self) -> None:
         """Default `protocol="legacy"` must not start the heartbeat task at

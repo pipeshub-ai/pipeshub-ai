@@ -197,7 +197,16 @@ export interface FingerprintState {
 
 export interface ArtifactSet {
   virtualRecordId: string;
+  /**
+   * The set's key, unique per virtual record: the revision for the revision's one shared set, or
+   * `{rev}-{writeId}` for a stored write's own set. A rev is hex only, so a write's key never equals a
+   * revision: code that looks a set up by revision alone never finds a write's set.
+   */
   rev: string;
+  /** A stored write's own set only: the content revision it holds (`rev` is then its key). */
+  contentRev?: string;
+  /** A stored write's own set only: the write it is of, so none can overwrite another's files. */
+  writeId?: string;
   /** Storage key prefix holding the revision's files. */
   root: string;
   /** Epoch ms a delete claimed the revision; absent while it is writable. */
@@ -217,6 +226,25 @@ export interface SignObjectUrlOptions {
   method: 'GET' | 'PUT';
   contentType?: string;
   expiresInSeconds: number;
+  /**
+   * A PUT that must not replace an object already there (`If-None-Match: *`):
+   * the uploader sends the header returned with the URL, and a lost race
+   * answers 412 or 409 and keeps the first writer's object.
+   */
+  ifAbsent?: boolean;
+}
+
+/** One object in a prefix listing. `key` is the full storage key. */
+export interface ListedObject {
+  key: string;
+  size: number;
+  lastModifiedMs: number;
+}
+
+/** One page of a prefix listing; `next` is an opaque cursor, absent on the last page. */
+export interface ObjectPage {
+  objects: ListedObject[];
+  next?: string;
 }
 
 /**

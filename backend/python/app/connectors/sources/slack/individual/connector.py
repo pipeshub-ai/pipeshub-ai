@@ -105,6 +105,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackApp
+from app.connectors.sources.slack.common.people import file_uploader
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
     slack_stream_error,
@@ -330,6 +331,13 @@ class RateLimiter:
     .with_categories(["Messaging"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
     .with_permission_model(PermissionModel.APP_LEVEL)\
+    .with_resilience_config(
+        # A ceiling across all methods; RateLimiter below paces each Slack tier.
+        rate_limit=20,
+        max_retries=3,  # a 429 is retried after its Retry-After, up to max_delay
+        base_delay=1.0,
+        max_delay=60.0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Slack",
@@ -676,13 +684,20 @@ class SlackIndividualConnector(BaseConnector):
     def _token_renewal(self) -> SlackTokenRenewal:
         return SlackTokenRenewal(
             self.connector_id, type(self)._connector_metadata["name"], self.config_service, self.logger,
+            resilience=self.resilience,
         )
 
-    async def _fresh_datasource(self) -> RenewingSlackDataSource:
-        """Return a SlackDataSource backed by the always-current token, renewed when it expires."""
+    async def _fresh_datasource(self, *, retry_rate_limits: bool = True) -> RenewingSlackDataSource:
+        """Return a SlackDataSource backed by the always-current token, renewed when it expires.
+
+        Sync retries a 429 after its Retry-After. Streaming passes ``retry_rate_limits=False``:
+        a user is waiting, so the 429 goes back with its Retry-After instead.
+        """
         if not self.external_client:
             raise RuntimeError("Call init() first.")
-        return await self._token_renewal.datasource(self.external_client, self._current_token)
+        return await self._token_renewal.datasource(
+            self.external_client, self._current_token, retry_rate_limits=retry_rate_limits,
+        )
 
     async def _current_token(self) -> tuple[dict[str, Any], str]:
         cfg = await self.config_service.get_config(
@@ -1123,7 +1138,6 @@ class SlackIndividualConnector(BaseConnector):
             await self.rate_limiter.acquire(Tier.T2)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_list(
-                exclude_archived=True,
                 types=types_param,
                 limit=PAGE_SIZE_CHANNELS,
                 cursor=cursor,
@@ -1152,11 +1166,12 @@ class SlackIndividualConnector(BaseConnector):
                 if not self._should_include_channel_in_filter(cd):
                     continue
                 if (
-                    not cd.get("is_im")
+                    cd.get("is_private")
+                    and not cd.get("is_im")
                     and not cd.get("is_mpim")
                     and not cd.get("is_member")
                 ):
-                    continue
+                    continue  # a user token reads a public channel it is not in, never a private one
                 if include_ids and cid not in include_ids:
                     continue
 
@@ -1970,8 +1985,9 @@ class SlackIndividualConnector(BaseConnector):
             if not resp or not resp.success:
                 error = getattr(resp, "error", "no response")
                 # The thread or channel is gone: nothing more can be read, so
-                # a retry would fail the same way. Treat it as finished.
-                if error in ("thread_not_found", "channel_not_found", "not_in_channel"):
+                # a retry would fail the same way. Treat it as finished, but only
+                # before any page was fetched; after that the replies are partial.
+                if cursor is None and error in ("thread_not_found", "channel_not_found", "not_in_channel"):
                     self.logger.warning(
                         f"Skipping replies of thread ts={thread_ts} in {channel_id}: {error}"
                     )
@@ -2750,6 +2766,7 @@ class SlackIndividualConnector(BaseConnector):
                 sha256_hash=file_hash,
                 is_dependent_node=True,
                 inherit_permissions=True,
+                authored_by=file_uploader(fd, ctx.user_id_to_email, ctx.user_id_to_name),
             )
         except Exception as exc:
             self.logger.error(f"_process_file_raw({fid}): {exc}")
@@ -4122,7 +4139,7 @@ class SlackIndividualConnector(BaseConnector):
                 raise HTTPException(400, f"Burst record {ext_id} missing start_ts/end_ts")
 
             await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
             resp = await ds.conversations_history(
                 channel=ch, oldest=start_ts, latest=end_ts,
                 inclusive=True, limit=200,
@@ -4178,7 +4195,7 @@ class SlackIndividualConnector(BaseConnector):
                 )
 
             await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
             resp = await ds.conversations_replies(
                 channel=ch, ts=thread_ts_val,
                 oldest=start_ts, latest=end_ts,
@@ -4225,7 +4242,7 @@ class SlackIndividualConnector(BaseConnector):
         # ── Single message record ─────────────────────────────────────────
         else:
             await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
             resp = await ds.conversations_history(
                 channel=ch, oldest=ext_id, latest=ext_id,
                 inclusive=True, limit=1,
@@ -4240,7 +4257,7 @@ class SlackIndividualConnector(BaseConnector):
                 tid = getattr(record, "thread_id", None)
                 if tid and tid != ext_id:
                     await self.rate_limiter.acquire(Tier.T3)
-                    resp = await (await self._fresh_datasource()).conversations_replies(
+                    resp = await (await self._fresh_datasource(retry_rate_limits=False)).conversations_replies(
                         channel=ch, ts=tid, oldest=ext_id, latest=ext_id,
                         inclusive=True, limit=1,
                     )
@@ -4288,7 +4305,7 @@ class SlackIndividualConnector(BaseConnector):
             raise HTTPException(400, f"No file ID for {record.id}")
 
         await self.rate_limiter.acquire(Tier.T4)
-        ds   = await self._fresh_datasource()
+        ds   = await self._fresh_datasource(retry_rate_limits=False)
         info = await ds.files_info(file=fid)
         if not info or not info.success:
             raise slack_stream_error(info, connector=self.display_name)
@@ -4555,7 +4572,6 @@ class SlackIndividualConnector(BaseConnector):
                 await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.conversations_list(
-                    exclude_archived=True,
                     types=types_param,
                     limit=PAGE_SIZE_CHANNELS,
                     cursor=api_cursor,
@@ -4571,7 +4587,8 @@ class SlackIndividualConnector(BaseConnector):
                     if not cid:
                         continue
                     if (
-                        not ch.get("is_im")
+                        ch.get("is_private")
+                        and not ch.get("is_im")
                         and not ch.get("is_mpim")
                         and not ch.get("is_member")
                     ):

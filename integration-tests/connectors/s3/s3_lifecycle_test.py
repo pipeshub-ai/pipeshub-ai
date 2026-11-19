@@ -159,10 +159,15 @@ class TestS3Lifecycle:
     ) -> None:
         cid = synced["connector_id"]
         pipeshub_client.resync_connector(cid, full_sync=True, connector_name="S3")
-        # The resync is only queued; delete once the sync is seen running.
+        # The resync is only queued; delete once the sync is seen running. A full sync locks the connector
+        # while it clears its sync points, and a delete in that moment is refused with 409 by design, so
+        # wait for the lock to go too.
         deadline = time.monotonic() + 60
-        while pipeshub_client.get_connector(cid).get("status") not in ("FULL_SYNCING", "SYNCING"):
-            assert time.monotonic() < deadline, "the full sync was never seen running"
+        while True:
+            connector = pipeshub_client.get_connector(cid)
+            if connector.get("status") in ("FULL_SYNCING", "SYNCING") and not connector.get("isLocked"):
+                break
+            assert time.monotonic() < deadline, f"the full sync was never seen running unlocked: {connector!r}"
             time.sleep(0.2)
 
         first = pipeshub_client.request("DELETE", f"/api/v1/connectors/{cid}")

@@ -64,6 +64,19 @@ Připojte Slack, Google Drive, GitHub, Microsoft 365, Notion a více než 50 dal
   <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Podívejte se na 2½minutové demo</a></strong>: Claude Code odpovídá ze systémů Jira, Slack, GitHub a Drive s respektováním oprávnění každého uživatele
 </p>
 
+### Jak PipesHub funguje
+
+PipesHub vytváří **jednotnou kontextovou vrstvu** nad dokumenty, konverzacemi, strukturovanými daty, wiki, tikety a kódem. Konektory synchronizují každý zdroj včetně jeho oprávnění. Indexační pipeline obsah zpracuje, rozdělí na části, vytvoří embeddingy a propojí záznamy, lidi a entity ve znalostním grafu.
+
+Na otázky odpovídá **agentní smyčka**, nikoli jediný průchod „vyhledat a vygenerovat“. Agent plánuje, volá nástroje, čte výsledky a pokračuje, dokud nemá důkazy:
+
+- **Hybridní vyhledávání** — sémantické vyhledávání i vyhledávání podle klíčových slov, aby našel význam i přesné výrazy.
+- **Grep / vyhledávání vzorů** — přesné identifikátory, chybové zprávy, klíče tiketů a symboly v kódu.
+- **Procházení znalostního grafu** — sleduje vazby mezi dokumenty, lidmi, tikety, pull requesty a vlákny.
+- **Čtení dokumentů** — otevře celý zdroj, místo aby spoléhal na jediný nalezený úsek.
+
+Každé volání nástroje je filtrováno podle oprávnění uživatele, který se ptá, a každá odpověď cituje bloky, ze kterých pochází.
+
 ## Co můžete s PipesHub vytvořit?
 
 PipesHub nejen používejte — stavějte na něm.

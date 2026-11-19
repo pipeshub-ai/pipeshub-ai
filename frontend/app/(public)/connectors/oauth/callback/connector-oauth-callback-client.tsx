@@ -6,6 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ConnectorsApi } from '@/app/(main)/workspace/connectors/api';
 import { isProcessedError } from '@/lib/api';
+import { failOnSessionEnd } from '@/lib/api/session-cache';
 import { integrationHandoffLink } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import {
@@ -95,12 +96,15 @@ export function ConnectorOAuthCallbackClient() {
           throw new Error('No state parameter received.');
         }
 
-        const data = await ConnectorsApi.completeConnectorOAuthCallback({
-          code,
-          state,
-          oauthError: null,
-          baseUrl: window.location.origin,
-        });
+        // A sign-out (e.g. in another tab) drops the answer: fail into the error state rather than spin forever.
+        const data = await failOnSessionEnd(
+          ConnectorsApi.completeConnectorOAuthCallback({
+            code,
+            state,
+            oauthError: null,
+            baseUrl: window.location.origin,
+          }),
+        );
 
         const { redirectUrl } = parseConnectorOAuthCallbackPayload(data);
 

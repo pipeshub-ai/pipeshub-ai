@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from parser_fixture_images import fixture_images
 
 if TYPE_CHECKING:
     from app.events.processor import Processor
@@ -131,7 +132,7 @@ async def _parse_html_via_processor(
         return_value=_mock_record_dict(recordName=html_path.name)
     )
 
-    with patch("app.events.processor.IndexingPipeline") as mock_pipeline_cls:
+    with fixture_images(), patch("app.events.processor.IndexingPipeline") as mock_pipeline_cls:
         mock_pipeline_cls.return_value.apply = AsyncMock(side_effect=capture_apply)
 
         async for _ in processor.process_html_document(

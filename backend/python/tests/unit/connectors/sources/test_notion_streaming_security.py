@@ -25,6 +25,7 @@ def _connector() -> NotionConnector:
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
     dep.get_records_by_parent = AsyncMock(return_value=[])

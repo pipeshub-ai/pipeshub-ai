@@ -44,12 +44,9 @@ export function SettingsTab({
   const syncInterval = getSyncIntervalLabel(t, config ?? undefined);
   const isScheduled = config?.config?.sync?.selectedStrategy === 'SCHEDULED';
 
-  const creatorEntry = useUserDirectoryEntry(instance.createdBy);
-  const creatorNameFromDirectory =
-    creatorEntry?.fullName.trim() ? creatorEntry.fullName.trim() : null;
-  const creatorAvatarUrl = creatorEntry?.resolvedUserId
-    ? `/api/v1/users/${creatorEntry.resolvedUserId}/dp`
-    : null;
+  const creator = useUserDirectoryEntry(instance.createdBy);
+  const creatorNameFromDirectory = creator?.name?.trim() || null;
+  const creatorAvatarUrl = creator?.profilePicture ?? null;
 
   const displayCreatorName =
     creatorNameFromDirectory ?? instance.enabledBy?.name ?? null;

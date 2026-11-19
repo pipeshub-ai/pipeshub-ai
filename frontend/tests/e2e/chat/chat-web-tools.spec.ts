@@ -119,6 +119,19 @@ function webToolsStream(): string {
 }
 
 async function mockChatApis(page: Page, onStream: (body: Record<string, unknown>) => void) {
+  // Web search is on only once an admin has set up a provider.
+  await page.route('**/api/v1/configurationManager/web-search', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'success',
+        providers: [{ providerKey: 'k1', provider: 'serper', configuration: {}, isDefault: true }],
+        configured: true,
+        settings: { includeImages: false, maxImages: 3 },
+      }),
+    }),
+  );
   await page.route('**/api/v1/configurationManager/ai-models/available/llm', (route) =>
     route.fulfill({
       status: 200,

@@ -5,6 +5,7 @@ import { isElectron } from '@/lib/electron';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import { allowChatUnreadWrites, discardAllChatUnread } from '@/lib/storage/chat-unread';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import {
   clearElectronLogoutServerState,
   persistElectronServerUrlOnLogin,
@@ -124,6 +125,7 @@ export const useAuthStore = create<AuthStore>()(
           state.user = null;
           state.isAuthenticated = false;
         });
+        clearSessionCache();
       },
 
       setHydrated: (value) =>
@@ -255,6 +257,11 @@ export function logoutFromWorkspaceMenu(): void {
 /** One workspace per sign-in in this edition, so there is nothing to switch to. */
 export function switchToSignedInWorkspace(_orgId: string): boolean {
   return false;
+}
+
+/** The refresh token stored for this browser; a sign-out in another tab removes it. */
+export function readStoredRefreshToken(): string | null {
+  return typeof window !== 'undefined' ? window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) : null;
 }
 
 // Selectors for common access patterns

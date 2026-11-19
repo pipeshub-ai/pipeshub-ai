@@ -3718,6 +3718,22 @@ class TestOrgCoverage:
         assert roundtrip.duns_id == "123"
 
 
+class TestOrgKeyForExtractedNames:
+    """A CRM account carries the key extracted organisation names are matched
+    on (KG-13 slice 3b); the org itself does not."""
+
+    def test_an_external_org_carries_its_key(self) -> None:
+        from app.models.entities import Org
+
+        doc = Org(id="a", name="Globex Corp.", is_external=True, parent_org_id="t").to_arango_org()
+        assert doc["normalizedName"] == "globex"
+
+    def test_the_org_itself_has_no_key(self) -> None:
+        from app.models.entities import Org
+
+        assert "normalizedName" not in Org(id="t", name="Northwind", is_external=False).to_arango_org()
+
+
 class TestAppMetadataCoverage:
     def test_from_db_document(self):
         from app.models.entities import AppMetadata

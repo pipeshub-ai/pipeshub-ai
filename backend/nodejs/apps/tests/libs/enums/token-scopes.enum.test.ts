@@ -61,12 +61,16 @@ describe('TokenScopes', () => {
     expect(TokenScopes.CALLER_ROLE).to.equal('caller:role');
   });
 
+  it('should have MCP_RELAY as "mcp:relay"', () => {
+    expect(TokenScopes.MCP_RELAY).to.equal('mcp:relay');
+  });
+
   it('should have SLACK_BOT_VERIFY as "slack-bot:verify"', () => {
     expect(TokenScopes.SLACK_BOT_VERIFY).to.equal('slack-bot:verify');
   });
 
-  it('should have exactly 15 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(15);
+  it('should have exactly 16 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(16);
   });
 
   it('should contain only the expected keys', () => {
@@ -85,6 +89,7 @@ describe('TokenScopes', () => {
       'EMAIL_VERIFIED',
       'DESKTOP_COMMAND',
       'CALLER_ROLE',
+      'MCP_RELAY',
       'SLACK_BOT_VERIFY',
     ];
     expect(Object.keys(TokenScopes)).to.have.members(expectedKeys);
@@ -128,6 +133,7 @@ describe('isUserActionScope', () => {
       TokenScopes.CONVERSATION_CREATE,
       TokenScopes.DESKTOP_COMMAND,
       TokenScopes.CALLER_ROLE,
+      TokenScopes.MCP_RELAY,
       TokenScopes.SLACK_BOT_VERIFY,
       TokenScopes.ENTITY_USER_WRITE,
       'not:a:scope',

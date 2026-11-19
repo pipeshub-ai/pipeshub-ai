@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { toLookupUserIds } from '@/lib/utils/user-ids';
 import { USER_ROLES } from '../constants';
 import type {
@@ -108,6 +109,7 @@ export const UsersApi = {
     config?: { suppressErrorToast?: boolean },
   ): Promise<void> {
     await apiClient.put(`${BASE_URL}/${userId}`, payload, config);
+    revalidateSwrNamespace(SWR_NS.userDirectory);
   },
 
   /**
@@ -115,6 +117,7 @@ export const UsersApi = {
    */
   async unblockUser(userId: string): Promise<void> {
     await apiClient.put(`${BASE_URL}/${userId}/unblock`);
+    revalidateSwrNamespace(SWR_NS.userDirectory);
   },
 
   /**
@@ -157,12 +160,15 @@ export const UsersApi = {
    * Use this to enrich known user IDs with name/email without scanning
    * the whole user list.
    */
-  async getUsersByIds(ids: ReadonlyArray<string | null | undefined>): Promise<User[]> {
+  async getUsersByIds(
+    ids: ReadonlyArray<string | null | undefined>,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<User[]> {
     const userIds = toLookupUserIds(ids);
     if (userIds.length === 0) return [];
     const { data } = await apiClient.post<
       UserByIdsDoc[] | { users: UserByIdsDoc[] }
-    >(`${BASE_URL}/by-ids`, { userIds });
+    >(`${BASE_URL}/by-ids`, { userIds }, options);
     const raw = Array.isArray(data) ? data : data.users ?? [];
     return raw.map(userFromByIdsDoc);
   },
@@ -225,6 +231,20 @@ export const UsersApi = {
    */
   async deleteUser(userId: string): Promise<void> {
     await apiClient.delete(`${BASE_URL}/${userId}`);
+    revalidateSwrNamespace(SWR_NS.userDirectory);
+  },
+
+  /**
+   * How many OAuth apps this person created. Deleting them moves those apps
+   * to the admin who deletes them.
+   * GET /api/v1/oauth-clients?createdBy=:userId&limit=1
+   */
+  async countOAuthAppsCreatedBy(userId: string): Promise<number> {
+    const { data } = await apiClient.get<{ pagination?: { total?: number } }>(
+      '/api/v1/oauth-clients',
+      { params: { createdBy: userId, limit: 1 }, suppressErrorToast: true }
+    );
+    return data.pagination?.total ?? 0;
   },
 
   /**
@@ -248,6 +268,7 @@ export const UsersApi = {
       userIds.map((id) => apiClient.delete(`${BASE_URL}/${id}`))
     );
     const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    if (succeeded > 0) revalidateSwrNamespace(SWR_NS.userDirectory);
     return { succeeded, failed: results.length - succeeded };
   },
 

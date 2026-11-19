@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import type {
   ArtifactListItem,
   ArtifactsOwnership,
@@ -101,3 +102,5 @@ export const useArtifactsStore = create<ArtifactsState>((set) => ({
       return { items, totalCount, totalPages, page, counts };
     }),
 }));
+
+resetStoreOnSessionEnd(useArtifactsStore);

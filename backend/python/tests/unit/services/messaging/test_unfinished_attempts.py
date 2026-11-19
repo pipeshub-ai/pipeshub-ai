@@ -370,9 +370,7 @@ class TestKafkaConsumer:
         assert indexer.ran_together("suspect-1", "fresh") or indexer.ran_together("suspect-2", "fresh")
         assert [await tracker.unfinished_attempts(r) for r in ("suspect-1", "suspect-2", "fresh")] == [0, 0, 0]
 
-    async def test_a_delivery_that_waits_out_its_records_lease_is_not_counted(self, tracker) -> None:
-        indexer = Indexer(tracker)
-        consumer = _kafka_consumer(tracker, Sink(), indexer)
+    def _lease_never_free(self, consumer) -> None:
         manager = AsyncMock()
 
         async def try_acquire(pool, _owner, _limit, _lease_seconds) -> bool:
@@ -380,19 +378,72 @@ class TestKafkaConsumer:
 
         manager.try_acquire.side_effect = try_acquire
         consumer.concurrency_manager = manager
-        with (
+
+    @staticmethod
+    def _short_lease_wait() -> tuple:
+        return (
             patch.object(
                 type(messaging_env), "record_lease_wait_seconds", new_callable=PropertyMock, return_value=0.05,
             ),
             patch.object(
                 type(messaging_env), "concurrency_acquire_poll_seconds", new_callable=PropertyMock, return_value=0.01,
             ),
-        ):
+        )
+
+    async def test_a_delivery_that_waits_out_its_records_lease_is_requeued_uncounted(self, tracker) -> None:
+        indexer = Indexer(tracker)
+        consumer = _kafka_consumer(tracker, Sink(), indexer)
+        self._lease_never_free(consumer)
+        wait, poll = self._short_lease_wait()
+        with wait, poll:
             assert await _run(consumer, "r1") is False
 
         assert indexer.seen == []
         assert await tracker.unfinished_attempts("r1") == 0
         assert await tracker.record_delivery("record-events-0-0") == 1
+        consumer._requeue_message.assert_awaited_once()
+        assert consumer._requeue_message.await_args.kwargs["delay_s"] == 0.05
+        consumer._commit_offset.assert_awaited_once()
+
+    async def test_a_failed_hand_back_raises_so_fifo_seeks_back_and_commits_nothing(self, tracker) -> None:
+        consumer = _kafka_consumer(tracker, Sink(), Indexer(tracker))
+        self._lease_never_free(consumer)
+        consumer._requeue_message = AsyncMock(side_effect=RuntimeError("broker unavailable"))
+        wait, poll = self._short_lease_wait()
+        with wait, poll, pytest.raises(RuntimeError, match="broker unavailable"):
+            await _run(consumer, "r1")
+
+        consumer._commit_offset.assert_not_awaited()
+
+    async def test_a_held_lease_never_fails_the_record_however_long_it_lasts(self, tracker) -> None:
+        sink = Sink()
+        consumer = _kafka_consumer(tracker, sink, Indexer(tracker))
+        self._lease_never_free(consumer)
+        wait, poll = self._short_lease_wait()
+        with wait, poll:
+            for _ in range(messaging_env.redis_max_deliveries + 2):
+                assert await _run(consumer, "r1") is False
+
+        assert sink.abandoned == []
+        assert consumer._requeue_message.await_count == messaging_env.redis_max_deliveries + 2
+
+    async def test_shutdown_during_the_lease_wait_leaves_the_offset_for_redelivery(self, tracker) -> None:
+        consumer = _kafka_consumer(tracker, Sink(), Indexer(tracker))
+        self._lease_never_free(consumer)
+        consumer._IndexingKafkaConsumer__resolve_offset = AsyncMock()
+        real_acquire = consumer._acquire_distributed_slot
+
+        async def stop_on_record_lease(pool, *args, **kwargs) -> bool:
+            if pool.startswith("record:"):
+                consumer.running = False
+                return False
+            return await real_acquire(pool, *args, **kwargs)
+
+        consumer._acquire_distributed_slot = stop_on_record_lease
+        assert await _run(consumer, "r1") is False
+
+        consumer._requeue_message.assert_not_awaited()
+        assert consumer._IndexingKafkaConsumer__resolve_offset.await_args.kwargs["done"] is False
 
     async def test_a_record_handed_back_for_ever_without_a_parse_slot_is_failed(self, tracker) -> None:
         indexer = Indexer(tracker, fail={"r1": concurrency.ParseAdmissionTimeout("light_parse", 1.0)})

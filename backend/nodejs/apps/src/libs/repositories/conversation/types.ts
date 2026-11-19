@@ -74,6 +74,9 @@ export interface ChatSessionDto {
   compactedAtTimestamp?: number;
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  /** Compare models: present only on a hidden branch, the id of the chat it branched from. */
+  compareOf?: string;
+  compareFromMessageId?: string;
   createdAt?: Date;
   updatedAt?: Date;
   __v?: number;
@@ -100,6 +103,8 @@ export interface NewSession {
   conversationSource?: 'agent_chat';
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  compareOf?: string;
+  compareFromMessageId?: string;
 }
 
 export interface MessageCitationDto {
@@ -256,6 +261,8 @@ export type SessionSummary = Pick<
   | 'modelInfo'
   | 'projectId'
   | 'projectVisibility'
+  | 'metadata'
+  | 'agentKey'
 >;
 
 export interface AgentArchiveGroup {
@@ -337,6 +344,12 @@ export interface ConversationRepository {
     actor: SessionActor,
     tx?: Tx,
   ): Promise<ChatSessionDto | null>;
+  /** The caller's own live, unarchived chats copied from `sourceId`, oldest first, so the original can link to its forks. */
+  listForksOf(
+    scope: SessionScope,
+    sourceId: string,
+    actor: SessionActor,
+  ): Promise<ChatSessionDto[]>;
   /** Initiator of a conversation the caller may share. Plain chats unless a scope says otherwise. */
   findForShare(
     id: string,
@@ -434,6 +447,26 @@ export interface ConversationRepository {
     userId: string,
     projectIds: string[],
   ): Promise<Map<string, number>>;
+  /** Compare models: the hidden branches of a chat that its owner started, oldest first. */
+  listBranches(
+    orgId: string,
+    parentId: string,
+    userId: string,
+    tx?: Tx,
+  ): Promise<ChatSessionDto[]>;
+  /** Compare models: every branch the user started, in any chat, last touched before `beforeMs`. */
+  listStaleBranches(
+    orgId: string,
+    userId: string,
+    beforeMs: number,
+  ): Promise<ChatSessionDto[]>;
+  /** Compare models: removes branches of a chat for good, with their messages. Every branch when `ids` is omitted. */
+  discardBranches(
+    orgId: string,
+    parentId: string,
+    ids?: string[],
+    tx?: Tx,
+  ): Promise<void>;
   /** Clears the project link of every session of a project. */
   unlinkProject(projectId: string, tx?: Tx): Promise<void>;
   /** Clears one session's project link, only while it still points at `projectId`. */

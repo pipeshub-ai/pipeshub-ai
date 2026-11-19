@@ -28,6 +28,9 @@ from app.services.parsing.interface import (
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import Pool, ResourceGovernor
 from app.services.resource_governor.models import ResourceSnapshot
+from app.utils.error_class import log_failure
+from app.utils.logger import JsonFormatter, TextFormatter
+from tests.support.provider_errors import assert_text_free, failure_line, openai_error
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -248,8 +251,9 @@ def test_parse_endpoint_invalid_provider() -> None:
 
 
 def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -> None:
-    """The 500 body names the failure without echoing the exception text,
-    which stays in the service's own log with its traceback."""
+    """The 500 body names the failure without echoing the exception text. The log
+    line has its class and frames but not its text either: a model provider's error
+    (VLM OCR) carries its response body, and any text can quote the document."""
     registry = MagicMock(spec=ParserRegistry)
     mock_parser = MagicMock()
     mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom /srv/secret token=abc"))
@@ -274,7 +278,47 @@ def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -
     assert "RuntimeError" not in response.text
     assert "Boom" not in response.text
     assert "/srv/secret" not in response.text
-    assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)
+    fields = failure_line(caplog.records, "parse.failed", "internal", logging.ERROR)
+    assert fields["provider"] == "default"
+    assert isinstance(fields["parse_ms"], int)
+    (line,) = [r for r in caplog.records if r.getMessage() == "parse.failed"]
+    assert "RuntimeError: <message omitted>" in line.exc_text
+    # The file name can be personal: neither the line nor its stack carries it, in either format.
+    for rendered in (TextFormatter().format(line), JsonFormatter().format(line)):
+        assert "Boom" not in rendered and "test.pdf" not in rendered
+
+
+def test_a_model_provider_error_while_parsing_is_logged_without_its_text(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG):
+        response = _post_pdf_to_parser_raising(openai_error(401))
+
+    assert response.status_code == 500
+    failure_line(caplog.records, "parse.failed", "misconfigured", logging.ERROR)
+    assert_text_free(caplog.records)
+
+
+@pytest.mark.parametrize(("status", "error_class", "level"), [
+    (400, "bad_request", logging.WARNING),
+    (401, "misconfigured", logging.ERROR),
+])
+def test_a_parse_failure_already_logged_below_keeps_its_line_at_its_level(
+    caplog: pytest.LogCaptureFixture, status: int, error_class: str, level: int,
+) -> None:
+    # VLM OCR logs vlm_ocr.page_failed for the last page, then re-raises that error once every page failed.
+    error = openai_error(status)
+    log_failure(logging.getLogger("test.vlm_ocr"), "vlm_ocr.page_failed", error, include_error_text=False)
+
+    with caplog.at_level(logging.DEBUG):
+        response = _post_pdf_to_parser_raising(error)
+
+    assert response.status_code == 500
+    (line,) = [r for r in caplog.records if r.getMessage() == "parse.failed"]
+    assert (line.levelno, line.error_class, line.error_type, line.provider) == (
+        level, error_class, type(error).__name__, "default",
+    )
+    assert isinstance(line.parse_ms, int)
+    assert line.exc_text is None
+    assert_text_free(caplog.records)
 
 
 def _post_pdf_to_parser_raising(exc: Exception) -> Response:
@@ -696,8 +740,21 @@ async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
     monkeypatch.setattr(memory_domain_module, "memory_domain_id", lambda: "dom-1")
 
     release_event = asyncio.Event()
+    entered: list[asyncio.Event] = [asyncio.Event(), asyncio.Event()]
+    started = 0
+
+    async def _parse(*_args: object, **_kwargs: object) -> ParseResult:
+        # Holds its slot until released, so no wall-clock hold can expire under load.
+        nonlocal started
+        entered[started].set()
+        started += 1
+        await release_event.wait()
+        return _ok_result()
+
+    parser = MagicMock()
+    parser.parse = _parse
     registry = MagicMock(spec=ParserRegistry)
-    registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
+    registry.resolve = MagicMock(return_value=parser)
     app = _build_app(registry, heavy_limit=4)
     # As parsing_main installs it: it reads the stamp an upstream service sent.
     app.add_middleware(RequestContextMiddleware)
@@ -707,17 +764,34 @@ async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
     form = {"mime_type": "application/pdf", "extension": "pdf", "provider": "default"}
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        first = asyncio.create_task(client.post("/api/v1/parse", files=pdf, data=form))
-        await asyncio.sleep(0.05)  # the first request holds the one braked slot
-        braked_elsewhere = await client.post(
-            "/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-2"}
-        )
-        braked_here = asyncio.create_task(
-            client.post("/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-1"})
-        )
-        await asyncio.sleep(0.2)
-        release_event.set()
-        first_response, same_memory_response = await asyncio.gather(first, braked_here)
+        tasks: list[asyncio.Task] = []
+
+        def post(headers: dict[str, str] | None = None) -> asyncio.Task:
+            task = asyncio.create_task(client.post("/api/v1/parse", files=pdf, data=form, headers=headers))
+            tasks.append(task)
+            return task
+
+        try:
+            first = post()
+            await asyncio.wait_for(entered[0].wait(), timeout=30)  # the first request holds the one braked slot
+            elsewhere = post({"x-pipeshub-admitted-in": "dom-2"})
+            # Rejected it ends at once; wrongly admitted it would sit in the parser, so the wait is bounded.
+            await asyncio.wait({elsewhere}, timeout=10)
+            assert elsewhere.done(), "a parse braked in another memory was admitted"
+            braked_here = post({"x-pipeshub-admitted-in": "dom-1"})
+            # Admitted past the brake it enters the parser; if it queued instead it ends as a 429.
+            entry = asyncio.create_task(entered[1].wait())
+            tasks.append(entry)
+            done, _ = await asyncio.wait({entry, braked_here}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+            assert entry in done, "a parse braked in this memory was not admitted"
+            release_event.set()
+            first_response, same_memory_response = await asyncio.gather(first, braked_here)
+            braked_elsewhere = elsewhere.result()
+        finally:
+            release_event.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     assert first_response.status_code == 200
     assert braked_elsewhere.status_code == 429

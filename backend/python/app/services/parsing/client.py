@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from docling_core.types.doc.document import DoclingDocument
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from app.config import file_types
 from app.config.constants.service import TokenScopes
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.models.blocks import BlocksContainer
@@ -31,13 +32,14 @@ from app.services.base_client import (
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.config import messaging_env
+from app.services.paid_cache.run import current_run
 from app.services.parsing.interface import (
     ParseErrorCode,
     ParseResult,
     ParserProvider,
 )
+from app.services.parsing.remote_concurrency import remote_parse_concurrency
 from app.utils.converters.caption_map import apply_caption_map
-from app.utils.image_utils import get_extension_from_mimetype
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
@@ -119,6 +121,9 @@ class ParsingClient(BaseServiceClient):
             backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
             config_service=config_service,
             service_scope=TokenScopes.DOCUMENT_PARSE,
+            # One connection per parse the indexing side may have in flight; the default pool
+            # of 10 would hold the rest back whatever PARSING_SERVICE_CONCURRENCY says.
+            max_connections=max(10, remote_parse_concurrency() or 0),
         )
         # Docling-backed providers defer block construction to keep the Parsing
         # service stateless; this client completes that phase locally on demand.
@@ -155,7 +160,7 @@ class ParsingClient(BaseServiceClient):
         Raises :class:`ServiceCallError` on connection / retry exhaustion.
         """
         if not extension:
-            extension = get_extension_from_mimetype(mime_type)
+            extension = file_types.extension_for_mime(mime_type)
             if not extension and "." in record_name:
                 extension = record_name.rsplit(".", 1)[-1]
 
@@ -171,6 +176,14 @@ class ParsingClient(BaseServiceClient):
             form_data["provider"] = provider.value
         if file_path:
             form_data["file_path"] = file_path
+        # The record budget this call waits under: the service bounds its stage (and its late writes) by it.
+        form_data["record_budget_s"] = str(messaging_env.record_processing_timeout_for(extension, mime_type))
+        run = current_run()
+        if run is not None and run.refresh:
+            # A refreshPaidOutputs run bypasses the stored outputs in the parsing service too.
+            form_data["refresh_paid_outputs"] = "true"
+            # Names this refresh: the client's own retry of the request carries the same one.
+            form_data["refresh_token"] = run.refresh_token
 
         record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
         try:

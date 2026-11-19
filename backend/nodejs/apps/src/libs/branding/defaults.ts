@@ -15,5 +15,5 @@ export const DEFAULT_BRAND: BrandConfig = {
   privacyUrl: 'https://pipeshub.com/privacy-policy',
   websiteUrl: 'https://pipeshub.com',
   footerBlurb:
-    'Where your team and AI work together. PipesHub is a fully extensible and explainable workplace AI platform for enterprise search and workflow automation.',
+    'Where your team and AI work together. PipesHub is an open-source context layer for AI agents and an enterprise search platform, with permission-aware, cited answers across your work apps.',
 };

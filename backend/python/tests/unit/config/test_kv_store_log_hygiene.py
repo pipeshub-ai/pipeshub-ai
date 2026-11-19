@@ -256,11 +256,14 @@ async def test_decode_failure_logs_exception_type_not_message(
     assert await store.create_key(SECRET_PATH, VALUE) is True
     monkeypatch.setattr(store, "_decode_value", leaky_decode)
     if raise_on_error:
+        # Raised for the caller to handle and log: the store logs nothing, so nothing can leak.
+        captured.records.clear()
         with pytest.raises(_LeakyDecodeError):
             await store.get_key(SECRET_PATH, raise_on_error=True)
+        assert [r for r in captured.records if r.levelno >= logging.WARNING] == []
     else:
         assert await store.get_key(SECRET_PATH) is None
-    _assert_clean(captured, SECRET_PATH, "_LeakyDecodeError")
+        _assert_clean(captured, SECRET_PATH, "_LeakyDecodeError")
 
 
 @pytest.mark.parametrize("kind", ["redis", "etcd3"])

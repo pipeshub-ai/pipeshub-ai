@@ -81,7 +81,7 @@ class FakeGraph:
     ) -> list[dict]:
         self.pending_queries.append((due_before_ms, limit))
         rows = [
-            {"_key": k, RECONCILE_ATTEMPTS_FIELD: d.get(RECONCILE_ATTEMPTS_FIELD), DUE_AT: d.get(DUE_AT)}
+            {"_key": k, "orgId": d.get("orgId"), RECONCILE_ATTEMPTS_FIELD: d.get(RECONCILE_ATTEMPTS_FIELD), DUE_AT: d.get(DUE_AT)}
             for k, d in sorted(self.docs.items())
             if d.get(DUPLICATE_RECONCILE_PENDING_FIELD) is True
             and (d.get(DUE_AT) or 0) < due_before_ms
@@ -111,6 +111,21 @@ def _group(graph: FakeGraph, *, primary: str = "p1", siblings: tuple[str, ...] =
 
 
 class TestReconciler:
+    async def test_the_membership_sync_runs_for_the_records_org(self) -> None:
+        """The retry sweep binds no org; the vector write must still name one."""
+        from app.core import org_context
+
+        graph = FakeGraph()
+        _group(graph, org="org-7")
+        seen: list[str] = []
+
+        async def _sync(vrid: str) -> None:
+            seen.append(org_context.current_org_id())
+
+        reconciler, _ = _reconciler(graph, membership=_sync)
+        assert await reconciler.reconcile("p1", "vr1") is True
+        assert seen == ["org-7"]
+
     async def test_copies_and_syncs_every_sibling(self) -> None:
         graph = FakeGraph()
         _group(graph, siblings=("s1", "s2"))
@@ -270,6 +285,67 @@ class TestRetrySweep:
         assert doc[DUPLICATE_RECONCILE_PENDING_FIELD] is False
         assert doc[RECONCILE_ATTEMPTS_FIELD] == 0 and doc[DUE_AT] is None
         assert graph.pending_queries == [(NOW, 10)]
+
+    async def test_each_row_is_followed_up_under_its_own_org_and_a_row_with_none_is_skipped(self) -> None:
+        from app.core.org_context import current_org_id
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["p2"] = {**graph.docs["p1"], "_key": "p2", "orgId": "org-2"}
+        graph.docs["p3"] = {**graph.docs["p1"], "_key": "p3", "orgId": None}
+        seen: dict[str, str] = {}
+        read = graph.get_document
+
+        async def get_document(key, collection, **kw: object) -> dict | None:
+            seen.setdefault(key, current_org_id())
+            return await read(key, collection, **kw)
+
+        graph.get_document = get_document  # type: ignore[method-assign]
+        reconciler, _ = _reconciler(graph)
+        await _sweep(graph, reconciler)
+        assert (seen["p1"], seen["p2"], "p3" in seen) == (graph.docs["p1"]["orgId"], "org-2", False)      # p3 has no organisation: nothing ran for it
+
+    async def test_rows_with_no_org_are_dropped_and_do_not_fill_the_page(self) -> None:
+        """Skipped and left pending, a page of them would take every later pass's place and the rows behind them would never be read."""
+        graph = FakeGraph()
+        _pending(graph)
+        for key in ("a1", "a2"):
+            graph.docs[key] = {**graph.docs["p1"], "_key": key, "orgId": None}
+        reconciler, _ = _reconciler(graph)
+
+        async def sweep() -> int:
+            return await retry_pending_duplicate_reconciles(
+                graph_provider=graph, reconciler=reconciler, logger=LOGGER, page_size=2, now_ms=lambda: NOW,
+            )
+
+        assert await sweep() == 0                                      # the page held the two rows with no org
+        assert graph.docs["a1"][DUPLICATE_RECONCILE_PENDING_FIELD] is False and graph.docs["a2"][DUPLICATE_RECONCILE_PENDING_FIELD] is False
+        assert await sweep() == 1                                      # the row behind them is read now
+        assert graph.docs["p1"][DUPLICATE_RECONCILE_PENDING_FIELD] is False
+
+    @pytest.mark.parametrize("applied", [False, RuntimeError("write failed")])
+    async def test_a_row_with_no_org_is_counted_as_dropped_only_once_its_flag_is_cleared(self, applied: object) -> None:
+        from unittest.mock import patch
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
+        graph.update_node_fields_if_match = AsyncMock(side_effect=[applied] if isinstance(applied, Exception) else None, return_value=applied)  # type: ignore[method-assign]
+        reconciler, _ = _reconciler(graph)
+        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+            await _sweep(graph, reconciler)
+        counted.assert_not_called()
+
+    async def test_a_row_with_no_org_whose_flag_was_cleared_is_counted(self) -> None:
+        from unittest.mock import patch
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
+        reconciler, _ = _reconciler(graph)
+        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+            await _sweep(graph, reconciler)
+        counted.assert_called_once_with("duplicate_reconcile", "no_org_row")
 
     async def test_not_yet_due_is_left_alone(self) -> None:
         graph = FakeGraph()

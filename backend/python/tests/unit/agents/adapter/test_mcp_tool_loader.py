@@ -8,6 +8,7 @@ fallback tool was worse than no tool at all."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -24,7 +25,12 @@ from app.agents.mcp.service import (
     credentials_to_discovery_dict,
     instance_config_from_dict,
 )
+from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.conftest import make_context
+from tests.unit.agents.mcp.refresh_failures import (
+    lock_contention_error,
+    token_endpoint_error,
+)
 
 
 def _instance(instance_id: str = "inst-1", *, type_id: str = "jira_mcp") -> dict[str, Any]:
@@ -444,6 +450,21 @@ class TestRefreshOnExpiredTokenAtDiscovery:
         assert fake_sessions.seen_tokens == ["Bearer old"]
         assert context.mcp_tool_load_failures[0]["reason"] == "auth_expired"
 
+    @pytest.mark.parametrize("make_failure", [
+        pytest.param(lambda: token_endpoint_error(503, {"error": "temporarily_unavailable"}), id="provider-503"),
+        pytest.param(lock_contention_error, id="lock-held"),
+    ])
+    async def test_a_refresh_that_couldnt_run_is_recorded_as_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch, fake_sessions: type[_FakeClientManager], make_failure: Any,  # noqa: ANN401
+    ) -> None:
+        # The model is then told the server is temporarily unavailable, not to reconnect it.
+        monkeypatch.setattr(mcp_session_module, "refresh_credential_record", AsyncMock(side_effect=await make_failure()))
+        context = _oauth_context()
+
+        await MCPToolProvider().load_into(ToolRegistry(), context)
+
+        assert context.mcp_tool_load_failures[0]["reason"] == "unreachable"
+
 
 class TestOneConnectionPerTurn:
     async def test_discovery_and_calls_share_the_session(
@@ -577,3 +598,83 @@ class TestServerInstructions:
         await MCPToolProvider().load_into(ToolRegistry(), context)
 
         assert context.mcp_server_instructions == []
+
+
+_LOADER_LOG = logging.getLogger("tests.mcp_tool_loader")
+
+
+def _two_server_context() -> Any:  # noqa: ANN401
+    return make_context(
+        logger=_LOADER_LOG,
+        mcp_servers=[
+            {"instanceId": "inst-1", "name": "JiraMCP", "typeId": "jira_mcp"},
+            {"instanceId": "inst-2", "name": "SlackMCP", "typeId": "slack_mcp"},
+        ],
+        mcp_server_configs={
+            "inst-1": {"instance": _instance("inst-1", type_id="jira_mcp"), "auth": {}, "ownerId": "user-1"},
+            "inst-2": {"instance": _instance("inst-2", type_id="slack_mcp"), "auth": {}, "ownerId": "user-1"},
+        },
+    )
+
+
+def _second_server_fails(error: BaseException) -> Any:  # noqa: ANN401
+    async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:  # noqa: ANN401
+        if config.id == "inst-1":
+            return [MCPToolInfo(name="search", namespaced_name="mcp_jira_search", input_schema={})]
+        raise error
+    return _discover
+
+
+def _lines(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == event]
+
+
+class TestTheLoadIsLoggedOncePerServerAndTurn:
+    async def test_a_dead_server_is_one_warning_and_the_turn_one_summary(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from app.agents.mcp.errors import MCPConnectionError
+
+        monkeypatch.setattr(MCPSessionManager, "tools", _session_discovery(_second_server_fails(MCPConnectionError("sentinel-d refused"))))
+        with caplog.at_level(logging.DEBUG):
+            await MCPToolProvider().load_into(ToolRegistry(), _two_server_context())
+
+        (failed,) = _lines(caplog, "mcp.discover.end")
+        fields = log_record_fields(failed)
+        assert failed.levelno == logging.WARNING and failed.exc_text is None
+        assert isinstance(fields.pop("duration_ms"), int)
+        assert fields == {
+            "mcp_server_id": "inst-2", "outcome": "failure", "error_class": "unavailable", "error_type": "MCPConnectionError",
+            "source": "turn", "mcp_reason": "unreachable",
+        }
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == [failed]
+        (summary,) = _lines(caplog, "mcp.load.end")
+        assert summary.levelno == logging.INFO
+        assert log_record_fields(summary) == {"servers": 2, "servers_loaded": 1, "tools_listed": 1, "failed": 1}
+        assert "sentinel-d" not in caplog.text
+
+    async def test_our_own_bug_is_an_error_with_its_stack_and_no_text(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(MCPSessionManager, "tools", _session_discovery(_second_server_fails(KeyError("sentinel-k"))))
+        with caplog.at_level(logging.DEBUG):
+            await MCPToolProvider().load_into(ToolRegistry(), _two_server_context())
+
+        (failed,) = _lines(caplog, "mcp.discover.end")
+        assert failed.levelno == logging.ERROR and failed.exc_text is not None
+        assert log_record_fields(failed)["error_class"] == "internal"
+        assert "error_message" not in log_record_fields(failed)
+        assert "sentinel-k" not in caplog.text
+
+    async def test_a_server_with_none_of_the_attached_tools_is_a_skipped_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(MCPSessionManager, "tools", _session_discovery(_discover_ok))
+        context = _context_with_server(attached_tools=[{"name": "gone", "fullName": "mcp_jira_gone"}], logger=_LOADER_LOG)
+        with caplog.at_level(logging.DEBUG):
+            await MCPToolProvider().load_into(ToolRegistry(), context)
+
+        (skipped,) = _lines(caplog, "mcp.discover.end")
+        assert skipped.levelno == logging.WARNING
+        assert (log_record_fields(skipped)["outcome"], log_record_fields(skipped)["reason"]) == ("skipped", "no_attached_tools")
+        assert log_record_fields(_lines(caplog, "mcp.load.end")[0])["servers_loaded"] == 0

@@ -5,7 +5,7 @@
  */
 import { MissingOrgContext } from '../../context/orgContext';
 import { installOrg } from '../oauth-app/pg-org';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { asOrg, inUnit, orgForKey } from '../pg-util';
 import type { SlackThreadRepository } from './types';
 import type { Importable, ImportStats, NeutralDoc } from '../import';

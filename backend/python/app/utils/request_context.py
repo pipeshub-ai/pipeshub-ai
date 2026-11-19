@@ -39,6 +39,9 @@ class RequestContext:
     # before auth, so org is unknown at store-creation time). Never written to a
     # log record raw: the logging provider decides how, or whether, to show it.
     org_id: str | None = None
+    # The root of a long-lived detached task (spawn_detached), shared by everything it does:
+    # a unit of work started under it (a sync) mints its own root instead of inheriting it.
+    detached: bool = False
 
 
 _ctx: contextvars.ContextVar[Optional[RequestContext]] = contextvars.ContextVar(
@@ -128,14 +131,19 @@ def reset_admitted_in(token: AdmittedToken | None) -> None:
         _admitted_in.set(None)
 
 
-def new_system_root() -> str:
+_MAX_ROOT_NAME_LEN = 24
+
+
+def new_system_root(name: str | None = None) -> str:
     """Root id for a system/automation-initiated unit of work.
 
     The ``sys-`` prefix marks the work as machine-originated (scheduled sync,
     token refresh, migration, broker message with no inbound id), the way a
-    user request carries its ``<userId>-`` prefix.
+    user request carries its ``<userId>-`` prefix. ``name`` (a loop or job
+    name) makes it ``sys-<name>-<hex>``, cut so the root stays within 64 chars.
     """
-    return f"sys-{uuid.uuid4().hex}"
+    label = _UNSAFE_ID_CHARS.sub("", name or "")[:_MAX_ROOT_NAME_LEN]
+    return f"sys-{label}-{uuid.uuid4().hex}" if label else f"sys-{uuid.uuid4().hex}"
 
 
 def new_anon_root() -> str:

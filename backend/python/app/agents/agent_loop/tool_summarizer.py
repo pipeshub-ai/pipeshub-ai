@@ -175,7 +175,7 @@ _WEB_SEARCH_FAILURES = {
     "unreachable": "The search engines couldn't be reached",
     "auth_failed": "The search provider rejected its API key",
     "quota_exceeded": "The search provider's credits are used up",
-    "not_configured": "The search provider has no API key",
+    "not_configured": "Web search isn't set up: ask an admin to configure a search provider",
     "unknown_provider": "The configured search provider isn't available",
     "access_denied": "Web search isn't allowed here",
     "budget_exhausted": "The searches for this answer are used up",

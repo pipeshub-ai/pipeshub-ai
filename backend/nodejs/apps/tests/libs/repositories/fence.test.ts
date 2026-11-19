@@ -101,8 +101,8 @@ describe('Mongo store fence', () => {
     expect(active.state.log.some((l) => l[0] === 'drop')).to.equal(true)
   })
 
-  it('while armed the client changes only the wait queue bound; off, it adds nothing', () => {
-    expect(fenceClientOptions()).to.deep.equal({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS })
+  it('while armed the client changes only the wait queue bound and names its connections; off, it adds nothing', () => {
+    expect(fenceClientOptions()).to.deep.equal({ waitQueueTimeoutMS: FENCE_WAIT_QUEUE_MS, appName: 'pipeshub-fenced' })
     process.env.DOC_STORE_FENCE = 'off'
     try { expect(fenceClientOptions()).to.deep.equal({}) } finally { process.env.DOC_STORE_FENCE = 'on' }
   })

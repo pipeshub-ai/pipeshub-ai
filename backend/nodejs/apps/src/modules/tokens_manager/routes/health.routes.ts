@@ -3,6 +3,7 @@ import { Container } from 'inversify';
 import { readStoreEpoch } from '../../../libs/db/boot';
 import { pgRuntime } from '../../../libs/db/uow';
 import { MongoService } from '../../../libs/services/mongo.service';
+import { defaultRedisMode } from '../../../libs/services/redis/connectionProviderFactory';
 import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
@@ -18,6 +19,15 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { buildProxyHeaders } from '../controllers/connector.controllers';
 import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
+
+/** What the health page calls the session cache: PostgreSQL, this process's memory or the Redis server. */
+function cacheDisplayName(redisMode: string): string {
+  if (redisMode === 'postgres') return 'PostgreSQL cache';
+  if (redisMode === 'inprocess') return 'In-process cache';
+  if (redisMode === 'cluster') return 'Redis (Cluster)';
+  if (redisMode === 'memorydb') return 'Redis (MemoryDB)';
+  return 'Redis';
+}
 
 const STORAGE_WARNING_TIMEOUT_MS = 2000;
 
@@ -49,9 +59,9 @@ export interface HealthStatus {
     messageBrokerType: string;
     graphDbType: string;
     vectorDbType: string;
-    // Not written to the KV deployment config -- REDIS_MODE is a
-    // process-env setting (R21/R22), so it is read directly rather than
-    // via getDeploymentConfig()'s KV-store fresh/fallback path.
+    // The cache mode this process runs (defaultRedisMode): REDIS_MODE, else
+    // `postgres` when KV_STORE_TYPE and MESSAGE_BROKER are both postgres.
+    // Read from the process env, not the KV deployment config.
     redisMode: string;
   };
   build: BuildInfo;
@@ -113,20 +123,24 @@ export function createHealthRouter(
         vectorDb: 'unknown',
       };
 
-      const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
-      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
+      const brokerName =
+        deployment.messageBrokerType === 'redis'
+          ? 'Redis Streams'
+          : deployment.messageBrokerType === 'postgres'
+            ? 'PostgreSQL queue'
+            : 'Kafka';
+      const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : deployment.dataStoreType === 'postgres' ? 'PostgreSQL' : 'Neo4j';
       const vectorDbNames: Record<string, string> = {
         qdrant: 'Qdrant',
         opensearch: 'OpenSearch',
         redis: 'Redis',
+        pgvector: 'pgvector',
       };
       const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
-      const redisMode = process.env.REDIS_MODE || 'standalone';
-      const redisDisplayName =
-        redisMode === 'cluster' ? 'Redis (Cluster)'
-        : redisMode === 'memorydb' ? 'Redis (MemoryDB)'
-        : 'Redis';
+      // One value for the row name and the published mode the page draws its logo from.
+      const redisMode = defaultRedisMode().toLowerCase();
+      const redisDisplayName = cacheDisplayName(redisMode);
 
       const serviceNames: Record<string, string> = {
         redis: redisDisplayName,
@@ -200,11 +214,15 @@ export function createHealthRouter(
         // Python backend hasn't written dataStoreType to KV store yet
         services.graphDb = 'pending';
         logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
-      } else if (deployment.dataStoreType === 'neo4j' || deployment.dataStoreType === 'arangodb') {
+      } else if (
+        deployment.dataStoreType === 'neo4j' ||
+        deployment.dataStoreType === 'arangodb' ||
+        deployment.dataStoreType === 'postgres'
+      ) {
         try {
           // Delegate to the Python connector service which probes the graph DB
           // using the same driver the application uses (Bolt for Neo4j,
-          // python-arango for ArangoDB). This avoids the Node.js layer having
+          // python-arango for ArangoDB, the graph provider for PostgreSQL). This avoids the Node.js layer having
           // to manage DB credentials or knowing which HTTP ports to probe —
           // both of which break for managed cloud deployments (e.g. Neo4j Aura
           // doesn't expose the HTTP discovery ports 7474/7473).
@@ -292,7 +310,7 @@ export function createHealthRouter(
           messageBrokerType: deployment.messageBrokerType,
           graphDbType: deployment.dataStoreType || 'pending',
           vectorDbType: deployment.vectorDbType || 'pending',
-          redisMode: process.env.REDIS_MODE || 'standalone',
+          redisMode,
         },
         build,
         ...(warnings.length > 0 ? { warnings } : {}),

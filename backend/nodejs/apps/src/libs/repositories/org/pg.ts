@@ -11,7 +11,7 @@ import {
   currentOrgContextOrSystem,
 } from '../../context/orgContext';
 import { getIdentityPort } from '../identity';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { assertOrg, inUnit, newObjectId } from '../pg-util';
 import { nextSlug } from '../slug/pg';
 import type {

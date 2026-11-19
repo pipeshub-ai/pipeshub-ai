@@ -37,6 +37,13 @@ def _one_search_per_request(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
+@pytest.fixture(autouse=True)
+def _no_lookup_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lookup of records found by name has its own tests
+    # (test_search_unindexed_matches.py); here it must not add to the request's logs.
+    monkeypatch.setattr("app.api.routes.search._unindexed_matches", AsyncMock(return_value=[]))
+
+
 # ---------------------------------------------------------------------------
 # Pydantic model validation tests
 # ---------------------------------------------------------------------------
@@ -283,26 +290,28 @@ class TestSearchEndpoint:
         assert call_kwargs.kwargs["filter_groups"]["kb"] == ["kb1", "kb2"]
 
     @pytest.mark.asyncio
-    async def test_search_llm_none_and_get_fails(self):
-        """When LLM is None and get_llm_instance also returns None, raise 500."""
+    async def test_search_without_chat_model_searches_query_as_typed(self):
+        """No chat model configured: the search runs on the typed query, not a 500."""
         request = self._build_request()
 
         mock_retrieval = MagicMock()
         mock_retrieval.llm = None
         mock_retrieval.get_llm_instance = AsyncMock(return_value=None)
+        mock_retrieval.search_with_filters = AsyncMock(
+            return_value={"searchResults": [], "status_code": 200}
+        )
 
-        mock_graph = MagicMock()
-        body = SearchQuery(query="hello")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await search(
+        with patch("app.api.routes.search.setup_query_transformation") as mock_setup:
+            response = await search(
                 request=request,
-                body=body,
+                body=SearchQuery(query="  hello  "),
                 retrieval_service=mock_retrieval,
-                graph_provider=mock_graph,
+                graph_provider=MagicMock(),
             )
-        assert exc_info.value.status_code == 500
-        assert exc_info.value.detail == "Failed to initialize LLM service. LLM configuration is missing."
+
+        assert response.status_code == 200
+        mock_setup.assert_not_called()
+        assert mock_retrieval.search_with_filters.call_args.kwargs["queries"] == ["hello"]
 
     @pytest.mark.asyncio
     async def test_search_http_exception_keeps_its_status(self):
@@ -358,6 +367,9 @@ class TestSearchEndpoint:
 
         assert response.status_code == 200
         mock_setup.assert_called_once_with(new_llm)
+        assert mock_retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "test", "rewritten", "exp",
+        ]
 
     @pytest.mark.asyncio
     async def test_search_exception_raises_http_500(self):
@@ -1173,10 +1185,10 @@ class TestSearchWithoutQueryRewrite:
         lines = [
             call.args[0] % call.args[1:]
             for call in logger.info.call_args_list
-            if call.args and str(call.args[0]).startswith("⏱")
+            if call.args and str(call.args[0]).startswith("%s total=")
         ]
         assert len(lines) == 1
-        assert lines[0].startswith("⏱ search total=")
+        assert lines[0].startswith("search total=")
         assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
         assert lines[0].endswith("| rewrite=off queries=1")
 

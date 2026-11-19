@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import logging
 import math
 import time
 from contextlib import suppress
@@ -51,7 +50,12 @@ from app.agents.mcp.errors import (
     first_leaf,
     is_http_unauthorized,
 )
-from app.agents.mcp.failure import MCPFailureReason, classify_mcp_failure
+from app.agents.mcp.failure import (
+    MCPFailureReason,
+    classify_mcp_failure,
+    mcp_error_class,
+    misconfigured_level,
+)
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
 from app.utils.url_redaction import redact_urls_in_text
@@ -65,8 +69,6 @@ if TYPE_CHECKING:
     from app.agents.agent_loop.mcp_session import MCPSessionManager
     from app.agents.mcp.models import MCPToolInfo
     from app.agents.mcp.tool_kind import ToolKind
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["MCPToolAdapter"]
 
@@ -160,6 +162,14 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
         return self._server.instance_id
 
     @property
+    def log_kind(self) -> str:
+        return "mcp"
+
+    @property
+    def log_ids(self) -> dict[str, str]:
+        return {"mcp_server_id": self._server.instance_id}
+
+    @property
     def raw_name(self) -> str:
         """The server's own name for the tool. Unlike `name`, it doesn't depend on which other
         servers this request loaded."""
@@ -241,20 +251,21 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
                 success=False,
                 error=f"Stopped before the {self._server.display_name} MCP server answered. "
                 "The call may still finish on the server.",
+                end_fields={"reason": "stopped", "error_class": "cancelled"},
             )
         except Exception as exc:
             reason = classify_mcp_failure(exc)
-            # A timeout, a dead server or an expired sign-in needs no stack trace, and the
-            # error's text can carry the request URL with an API key in its query.
-            logger.warning(
-                "MCP tool %s failed (%s): %s: %s", self.name, reason.value, type(exc).__name__,
-                redact_urls_in_text(str(exc)),
-                exc_info=reason is MCPFailureReason.ERROR,
-            )
             error = self._error_message(exc)
             if note_sign_in_needed(self._context, self._server, exc):
                 error = f"{error} {BUTTON_HINT}"
-            return ToolOutput(success=False, error=error)
+            # The executor logs it once, by class: no stack for a timeout, a dead server or an
+            # expired sign-in, and never the error's text (a URL with an API key, the arguments).
+            cls = mcp_error_class(exc, reason)
+            return ToolOutput(success=False, error=error, cause=exc, end_fields={
+                "error_class": cls, "mcp_reason": reason.value,
+                "status": getattr(first_leaf(exc), "status_code", None),
+                "level": misconfigured_level(self._server.instance_id, cls),
+            })
         return await mcp_result_to_tool_output(raw_result, self._context)
 
     async def _call_unless_stopped(self, arguments: dict[str, Any]) -> Any:  # noqa: ANN401
@@ -309,6 +320,11 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
         can carry an API key) and stack detail stay in the server log."""
         server = self._server.display_name
         if isinstance(exc, (MCPTokenRefreshError, MCPOAuthError)):
+            if classify_mcp_failure(exc) is MCPFailureReason.UNREACHABLE:
+                return (
+                    f"The sign-in to the {server} MCP server couldn't be renewed: its sign-in provider is down or busy. "
+                    "Try again in a few minutes."
+                )
             return (
                 f"Authentication with the {server} MCP server has expired and could not be refreshed. "
                 "Reconnect it in Workspace → MCP Servers."

@@ -35,6 +35,8 @@ import pytest
 from .fixture_graph import DRIVE, ORG, USER_U, _principals, app, ip, nr, perm, rec
 from .loaders import arango_shape, load_into_arango, load_into_neo4j
 
+pytestmark = pytest.mark.integration
+
 APP = "hop-app"
 ITEM = {"record_type": "FILE", "connector_id": APP}
 
@@ -119,7 +121,7 @@ async def _visible(provider) -> set[str]:
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=500, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )

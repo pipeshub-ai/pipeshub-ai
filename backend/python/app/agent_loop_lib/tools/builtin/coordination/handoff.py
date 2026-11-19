@@ -22,6 +22,10 @@ class HandoffTool(Tool):
     """
 
     @property
+    def log_kind(self) -> str:
+        return "sub_agent"
+
+    @property
     def name(self) -> str:
         return "handoff"
 

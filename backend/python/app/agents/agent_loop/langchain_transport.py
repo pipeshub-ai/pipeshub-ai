@@ -52,6 +52,7 @@ from app.agent_loop_lib.core.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.content_filter import (
     CONTENT_FILTER_STOP_REASONS,
@@ -79,7 +80,6 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
-from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (
@@ -87,6 +87,7 @@ from app.utils.llm_api_mode_store import (
     LLMApiMode,
     get_llm_api_mode_store,
 )
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.message_chunks import merge_message_chunks_off_loop
 
 if TYPE_CHECKING:
@@ -148,15 +149,16 @@ _is_reasoning_mandatory_conflict = is_reasoning_mandatory_conflict
 _is_tool_result_image_conflict = is_tool_result_image_conflict
 
 
-def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
-    """Best-effort string preview of the raw LLM response for diagnostics."""
+def _error_type(error: object) -> str | None:
+    return type(error).__name__ if error is not None else None
+
+
+def _raw_chars(raw: Any) -> int:  # noqa: ANN401
+    """The size of a raw model response, logged instead of the response itself."""
     try:
-        text = str(raw)
+        return len(str(raw))
     except Exception:
-        return "<unrenderable>"
-    if len(text) > max_len:
-        return text[:max_len] + "... [truncated]"
-    return text
+        return 0
 
 
 def _extract_json_from_raw(raw: Any) -> dict[str, Any] | None:
@@ -440,16 +442,12 @@ class LangChainTransport(LLMTransport):
         try:
             bound = llm.bind_tools(lc_tools, **choice_kwargs)
         except Exception as exc:
-            logger.error(
-                "LangChainTransport: bind_tools() failed for %d tool(s) %s — "
-                "refusing to silently run this turn without them",
-                len(tool_names), tool_names, exc_info=True,
-            )
+            # Refuse to run this turn silently without its tools; the agent logs the failure once.
             raise TransportError(
                 f"bind_tools() failed for {len(tool_names)} tool(s) {tool_names}: {exc}",
                 retryable=False,
             ) from exc
-        logger.info(
+        logger.debug(
             "LangChainTransport: bound %d tool(s) to LLM call: %s",
             len(tool_names), tool_names,
         )
@@ -682,28 +680,6 @@ class LangChainTransport(LLMTransport):
             return
         await store.record(self._model_key, self._model, mode)
 
-    def _log_turn_outcome(
-        self, tools: list[ToolSchema] | None, ai_message: AIMessage, stop_reason: StopReason,
-    ) -> None:
-        """Correlates "how many tools were offered" with "did the model
-        call one" — the missing link needed to tell "tool wasn't available"
-        apart from "tool was available but the model didn't call it" from
-        logs alone (both looked identical before this)."""
-        if not tools:
-            return
-        tool_calls = getattr(ai_message, "tool_calls", None) or []
-        if tool_calls:
-            logger.info(
-                "LangChainTransport: model called %d tool(s): %s",
-                len(tool_calls), [tc.get("name") for tc in tool_calls],
-            )
-        else:
-            logger.info(
-                "LangChainTransport: model did NOT call any tool this turn "
-                "(%d tool(s) were offered, stop_reason=%s)",
-                len(tools), stop_reason,
-            )
-
     def _stop_reason_from(self, ai_message: AIMessage) -> StopReason:
         if ai_message.tool_calls:
             return StopReason.TOOL_USE
@@ -773,7 +749,7 @@ class LangChainTransport(LLMTransport):
                 try:
                     ai_message = await self._ainvoke(messages, tools, prompt, relocate=True, tool_choice=tool_choice)
                 except Exception as retry_exc:
-                    logger.error(
+                    logger.warning(
                         "LangChainTransport.complete: tool-image relocation retry also "
                         "failed for model=%s: %s — raising the ORIGINAL error",
                         self._model, redact_error_for_log(str(retry_exc)),
@@ -797,7 +773,7 @@ class LangChainTransport(LLMTransport):
                     messages, tools, prompt, llm=fallback_llm, tool_choice=tool_choice,
                 )
             except Exception as retry_exc:
-                logger.error(
+                logger.warning(
                     "LangChainTransport.complete: retry with api_mode=%s also failed for "
                     "model=%s: %s — raising the ORIGINAL error",
                     mode, self._model, redact_error_for_log(str(retry_exc)),
@@ -828,7 +804,6 @@ class LangChainTransport(LLMTransport):
             StopReason.MAX_TOKENS if assistant_message.truncated
             else self._stop_reason_from(ai_message)
         )
-        self._log_turn_outcome(tools, ai_message, stop_reason)
         return ModelResponse(
             message=assistant_message,
             usage=token_usage_from_ai_message(ai_message, input_excludes_cached=self._input_excludes_cached),
@@ -884,15 +859,12 @@ class LangChainTransport(LLMTransport):
             parsing_error = result.get("parsing_error") if isinstance(result, dict) else None
             logger.warning(
                 "LangChainTransport: raw-schema attempt returned parsed=None; "
-                "parsing_error=%s; raw=%s",
-                parsing_error, _truncate_raw_for_log(first_raw),
+                "parsing_error=%s; raw_chars=%d",
+                _error_type(parsing_error), _raw_chars(first_raw),
             )
         except Exception as exc:
             first_attempt_error = exc
-            logger.warning(
-                "LangChainTransport: raw-schema attempt raised %s: %s",
-                type(exc).__name__, redact_error_for_log(str(exc)),
-            )
+            logger.warning("LangChainTransport: raw-schema attempt raised %s", type(exc).__name__)
 
         second_raw: Any = None
         second_parsing_error: Exception | None = None
@@ -911,8 +883,8 @@ class LangChainTransport(LLMTransport):
             return parsed, second_raw
         logger.warning(
             "LangChainTransport: Pydantic-model attempt also returned parsed=None; "
-            "parsing_error=%s; raw=%s",
-            second_parsing_error, _truncate_raw_for_log(second_raw),
+            "parsing_error=%s; raw_chars=%d",
+            _error_type(second_parsing_error), _raw_chars(second_raw),
         )
 
         best_raw = second_raw or first_raw
@@ -924,16 +896,16 @@ class LangChainTransport(LLMTransport):
             )
             return manual, best_raw
 
-        raw_preview = _truncate_raw_for_log(best_raw)
+        # Class names and a size only: parser errors and the raw response echo the completion.
         parts = [
             "LangChain structured output parsing failed for both raw-schema and "
             "Pydantic-model attempts",
         ]
         if first_attempt_error:
-            parts.append(f"first attempt error: {first_attempt_error}")
+            parts.append(f"first attempt error: {_error_type(first_attempt_error)}")
         if second_parsing_error:
-            parts.append(f"second attempt parsing_error: {second_parsing_error}")
-        parts.append(f"raw response: {raw_preview}")
+            parts.append(f"second attempt parsing_error: {_error_type(second_parsing_error)}")
+        parts.append(f"raw_chars={_raw_chars(best_raw)}")
         raise TransportError("; ".join(parts))
 
     async def stream(
@@ -986,7 +958,7 @@ class LangChainTransport(LLMTransport):
                         {next_chunk_task} if cancel_task is None
                         else {next_chunk_task, cancel_task}
                     )
-                    await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+                    await wait_owned(wait_set, return_when=asyncio.FIRST_COMPLETED)
                     if self._cancellation_token is not None and self._cancellation_token.is_cancelled:
                         # `cancel_task` (racing `CancellationToken.wait()` against
                         # the next chunk) is what makes this fire even when the
@@ -1079,7 +1051,7 @@ class LangChainTransport(LLMTransport):
                 # client already received, so `chunks` (and `retried`, to
                 # cap this to exactly one attempt) gate the retry.
                 if retried:
-                    logger.error(
+                    logger.warning(
                         "LangChainTransport.stream: retry (api_mode=%s, "
                         "relocated_images=%s) also failed for model=%s: %s — "
                         "raising the ORIGINAL error",
@@ -1189,7 +1161,6 @@ class LangChainTransport(LLMTransport):
                 StopReason.MAX_TOKENS if assistant_message.truncated
                 else self._stop_reason_from(final_ai_message)
             )
-        self._log_turn_outcome(tools, final_ai_message, stop_reason)
         yield StreamCompleteEvent(
             response=ModelResponse(
                 message=assistant_message,

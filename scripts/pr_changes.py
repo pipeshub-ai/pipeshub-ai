@@ -67,6 +67,8 @@ PYTHON_APP = (
     f"{PYTHON}/pyproject.toml",
     f"{PYTHON}/pytest.ini",
     f"{PYTHON}/.coveragerc",
+    # Generated from app/config/file_types.py: the Python parity test is what catches a hand edit.
+    "backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts",
 )
 
 PYTHON_PACKAGING = (f"{PYTHON}/pyproject.toml", f"{PYTHON}/pytest.ini")
@@ -78,8 +80,18 @@ CHECKS: dict[str, tuple[str, ...]] = {
     "node_unit": NODE_APP + (".github/workflows/unit-test.yml",),
     "python_unit": PYTHON_APP
     + (
+        # A frontend file a Python unit test checks against the API
+        # (test_knowledge_hub_sort_matches_spec.py): changed alone, it must still run.
+        "frontend/app/(main)/knowledge-base/sort-fields.json",
         "scripts/unit_shards.py",
         "scripts/unit_shard_durations.json",
+        # test_knob_passthrough.py reads these; capacity_blank_env_test.sh runs in the services shard.
+        f"{COMPOSE}/docker-compose.yml",
+        f"{COMPOSE}/env.template",
+        f"{COMPOSE}/tests/capacity_blank_env_test.sh",
+        "deployment/helm/pipeshub-ai/templates/deployment.yaml",
+        "deployment/helm/pipeshub-ai/values.yaml",
+        "deployment/process_monitor.sh",
         ".github/workflows/unit-test.yml",
     ),
     # main.yml
@@ -134,8 +146,12 @@ STORAGE_NODE = (
 INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/conftest.py",
     f"{PYTHON}/tests/support/**",
+    f"{PYTHON}/tests/unit/attempt_start.py",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/fake_storage.py",
+    f"{PYTHON}/tests/unit/connectors/sources/localKB/push/image_harness.py",
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
@@ -144,6 +160,23 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
     f"{PYTHON}/tests/unit/services/vector_db/test_strategy_contract.py",
     f"{PYTHON}/tests/unit/web/qa/lab.py",
+    f"{PYTHON}/tests/permissions/graph.py",
+    f"{PYTHON}/tests/permissions/model.py",
+    f"{PYTHON}/tests/permissions/runner.py",
+    f"{PYTHON}/tests/permissions/scenario.py",
+    f"{PYTHON}/tests/permissions/mutations.py",
+    f"{PYTHON}/tests/permissions/oracle.py",
+    f"{PYTHON}/tests/permissions/scope_corpus.py",
+    f"{PYTHON}/tests/permissions/serving_corpus.py",
+    f"{PYTHON}/tests/permissions/gen/**",
+    f"{PYTHON}/tests/permissions/test_scope_projector.py",
+    f"{PYTHON}/tests/permissions/scope_layer.py",
+    f"{PYTHON}/tests/permissions/stamp_world.py",
+    f"{PYTHON}/tests/permissions/store_harness.py",
+    f"{PYTHON}/tests/permissions/rewrite_kit.py",
+    f"{PYTHON}/tests/permissions/kh_layer.py",
+    f"{PYTHON}/tests/permissions/kh_worlds.py",
+    f"{PYTHON}/tests/permissions/scenarios/**",
 )
 
 # backend-matrix.yml's Python suites. Their tests import more than their own
@@ -160,6 +193,8 @@ MATRIX_PYTHON = (
     f"{COMPOSE}/docker-compose.integration.graph-db.yml",
     f"{COMPOSE}/docker-compose.integration.kv.yml",
     ".github/workflows/backend-matrix.yml",
+    # Which test files each suite runs.
+    "scripts/integration_discovery.py",
 ) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):
@@ -212,6 +247,7 @@ CONNECTOR_SHARDS = {
     ),
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
+        "zammad_sim",
     ),
     "connectors-3": ("notion", "confluence", "gcs", "zammad", "sharepoint_sim", "postgres", "salesforce"),
     "connectors-4": ("google_drive_individual", "gitlab", "azure_blob", "rss", "github_teams", "linear", "servicenow_sim"),
@@ -314,7 +350,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "salesforce": ("salesforce",),
     "servicenow": ("servicenow", "servicenow_sim"),
     "smb": ("smb",),
-    "zammad": ("zammad",),
+    "zammad": ("zammad", "zammad_sim"),
     "zendesk": ("zendesk",),
 }
 CONNECTOR_TESTS = "integration-tests/connectors"
@@ -323,6 +359,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
     "servicenow": ("servicenow", "servicenow_sim"),
+    "zammad": ("zammad", "zammad_sim"),
     "github_personal": ("github",),
     "gmail": ("gmail_workspace", "gmail_individual"),
     "local_fs": ("local_fs", "local_fs_sim"),

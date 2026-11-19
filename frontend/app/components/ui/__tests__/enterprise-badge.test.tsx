@@ -7,6 +7,8 @@ import en from '@/lib/i18n/locales/en-US.json';
 import { EnterpriseBadge, EnterpriseFeatureNotice } from '../enterprise-badge';
 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+let showEnterprise = true;
+vi.mock('@/lib/hooks/use-enterprise-prompt', () => ({ useEnterprisePrompt: () => showEnterprise }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => {
@@ -22,6 +24,22 @@ vi.mock('react-i18next', () => ({
 
 afterEach(() => {
   cleanup();
+  showEnterprise = true;
+});
+
+describe('for someone who is not an admin', () => {
+  it('renders neither the badge nor the notice', () => {
+    showEnterprise = false;
+    const { container } = render(
+      <Theme>
+        <EnterpriseBadge />
+        <EnterpriseFeatureNotice title="Organization approval rules" description="Decide which tools run." />
+      </Theme>
+    );
+    expect(screen.queryByText(en.common.enterprise.label)).toBeNull();
+    expect(screen.queryByTestId('enterprise-feature-notice')).toBeNull();
+    expect(container.textContent).toBe('');
+  });
 });
 
 describe('EnterpriseBadge', () => {
@@ -46,5 +64,19 @@ describe('EnterpriseFeatureNotice', () => {
     expect(notice.textContent).toContain('Organization approval rules');
     expect(notice.textContent).toContain('Decide which tools run.');
     expect(notice.textContent).toContain(en.common.enterprise.label);
+  });
+
+  it('shows the action it is given, such as a contact link', () => {
+    render(
+      <Theme>
+        <EnterpriseFeatureNotice
+          title="SAML"
+          description="Sign in through your identity provider."
+          action={<a href="mailto:sales@pipeshub.com">Talk to sales</a>}
+        />
+      </Theme>
+    );
+    const link = screen.getByRole('link', { name: 'Talk to sales' });
+    expect(link.getAttribute('href')).toBe('mailto:sales@pipeshub.com');
   });
 });

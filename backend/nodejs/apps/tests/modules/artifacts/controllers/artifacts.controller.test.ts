@@ -410,6 +410,15 @@ function valueMatches(actual: unknown, expected: unknown): boolean {
     const rejected = (expected as { $ne: unknown }).$ne;
     return !(sameId(actual, rejected) || actual === rejected);
   }
+  if (
+    expected &&
+    typeof expected === 'object' &&
+    '$exists' in (expected as object)
+  ) {
+    return (
+      (actual !== undefined) === (expected as { $exists: boolean }).$exists
+    );
+  }
   if (Array.isArray(actual)) {
     return actual.some(
       (value) => sameId(value, expected) || value === expected,

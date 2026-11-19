@@ -27,7 +27,7 @@ def _agent(**extra: object) -> dict:
             "createdBy": "caller-key", "isServiceAccount": False, **extra}
 
 
-async def _run(agent_id: str, body: dict, *, agent: dict | None = None) -> dict:
+async def _run(agent_id: str, body: dict, *, agent: dict | None = None, resolved: dict | None = DUCKDUCKGO) -> dict:
     """Run chat_stream; return the query_info the agent loop got."""
     from app.api.routes.agent import chat_stream
 
@@ -62,7 +62,7 @@ async def _run(agent_id: str, body: dict, *, agent: dict | None = None) -> dict:
         ("get_llm_for_chat", {"new_callable": AsyncMock, "return_value": (MagicMock(), {}, {})}),
         ("load_entity_vector_store", {"new_callable": AsyncMock, "return_value": None}),
         ("get_assistant_agent", {"new_callable": AsyncMock, "return_value": (_agent(_key=ASSISTANT), {})}),
-        ("resolve_web_search", {"new_callable": AsyncMock, "return_value": DUCKDUCKGO}),
+        ("resolve_web_search", {"new_callable": AsyncMock, "return_value": resolved}),
         ("run_agent_loop_stream", {"new": _recording_loop}),
     ]
     flag_patches = [
@@ -97,6 +97,26 @@ class TestAssistant:
         query_info = await _run(ASSISTANT, {"query": "q", "agentCapabilities": {"webSearch": False}})
         assert query_info["webSearchConfig"] is None
         assert query_info["webSearch"] is None
+
+
+class TestOrgWithoutWebSearch:
+    async def test_the_turn_runs_without_web_search_when_the_org_has_not_set_it_up(self) -> None:
+        query_info = await _run(ASSISTANT, {"query": "q", "agentCapabilities": {"webSearch": True}}, resolved=None)
+        assert query_info["webSearchConfig"] is None
+        assert query_info["webSearch"] is None
+        assert query_info["webSearchUnset"] is True
+
+    async def test_a_provider_that_is_set_up_is_not_unset(self) -> None:
+        query_info = await _run(ASSISTANT, {"query": "q"})
+        assert query_info["webSearchUnset"] is False
+
+    async def test_a_turn_with_web_search_switched_off_is_not_asked_to_set_it_up(self) -> None:
+        off = await _run(ASSISTANT, {"query": "q", "agentCapabilities": {"webSearch": False}}, resolved=None)
+        assert off["webSearchUnset"] is False
+
+    async def test_an_agent_without_web_search_is_not_an_unset_org(self) -> None:
+        query_info = await _run(NAMED, {"query": "q"}, resolved=None)
+        assert query_info["webSearchUnset"] is False
 
 
 class TestNamedAgent:
@@ -143,6 +163,12 @@ class TestReasonIsLogged:
             agent=_agent(webSearch={"provider": "duckduckgo"}),
         )
         assert messages == [f"chat_stream: web search off, reason=tools_filter (agent_id={NAMED})"]
+
+    async def test_org_has_not_set_web_search_up(self, caplog) -> None:
+        with caplog.at_level(logging.INFO, logger=LOGGER):
+            await _run(ASSISTANT, {"query": "q"}, resolved=None)
+        messages = [r.getMessage() for r in caplog.records if "web search" in r.getMessage()]
+        assert messages == [f"chat_stream: web search off, reason=not_configured (agent_id={ASSISTANT})"]
 
     async def test_not_configured(self, caplog) -> None:
         messages = await self._messages(caplog, NAMED, {"query": "q"})

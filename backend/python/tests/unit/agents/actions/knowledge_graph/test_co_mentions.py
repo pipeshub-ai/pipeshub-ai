@@ -118,20 +118,34 @@ async def test_no_readable_record_is_one_answer_whatever_the_reason(listing: Asy
         state["graph_provider"].get_named_entity_mentions_from_records.assert_not_awaited()
 
 
-async def test_a_failed_or_slow_listing_is_a_failure_not_an_empty_answer(
-    listing: AsyncMock, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_failed_listing_is_a_failure_not_an_empty_answer(listing: AsyncMock) -> None:
     listing.side_effect = EntityAccessError("down")
     ok, body = await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[ACME])
     assert (ok, body) == (False, co_mentions.LOOKUP_FAILED_MSG)
 
+
+@pytest.mark.parametrize("page", [
+    EntityRecordPage(records=[], next_cursor="2000"),
+    EntityRecordPage(records=[], next_cursor=None, capped=True),
+])
+async def test_an_id_whose_scan_ran_out_unread_reads_as_an_unknown_one(listing: AsyncMock, page) -> None:
+    """"Too slow" would say the id names an entity with records the user cannot read."""
+    listing.return_value = page
+    assert await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[ACME]) == (
+        True, co_mentions.NO_RECORDS_MSG,
+    )
+
+
+async def test_a_slow_listing_with_nothing_found_reads_as_an_unknown_id(
+    listing: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _slow(*_: object, **__: object) -> EntityRecordPage:
         await asyncio.sleep(1)
         return EntityRecordPage(records=[], next_cursor=None)
 
     listing.side_effect = _slow
     monkeypatch.setattr(co_mentions, "DEADLINE_SECONDS", 0.01)
-    assert await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[ACME]) == (False, co_mentions.TOO_SLOW_MSG)
+    assert await co_mentions.execute_find_co_mentioned_entities(_state(), entity_ids=[ACME]) == (True, co_mentions.NO_RECORDS_MSG)
 
 
 async def test_a_slow_later_id_keeps_the_records_already_listed_as_a_sample(

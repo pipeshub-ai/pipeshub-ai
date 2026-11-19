@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.utils.logger import log_record_fields
 
 
 # ---------------------------------------------------------------------------
@@ -438,8 +439,8 @@ class TestInitializeConnector:
         mock_connector.on_background_init_failed.assert_awaited_once_with(None)
 
     @pytest.mark.asyncio
-    async def test_init_exception_returns_none(self):
-        """If init() raises, returns None."""
+    async def test_init_exception_is_reported_disposed_and_raised(self):
+        """If init() raises, the connector hears why and the caller gets the failure (F27)."""
         logger = MagicMock()
         data_store = MagicMock()
         config_service = MagicMock()
@@ -454,18 +455,19 @@ class TestInitializeConnector:
         mock_processor.initialize = AsyncMock()
         mock_processor_cls = MagicMock(return_value=mock_processor)
 
-        result = await ConnectorFactory.initialize_connector(
-            name="test_init_exc",
-            logger=logger,
-            data_store_provider=data_store,
-            config_service=config_service,
-            connector_id="conn-7",
-            scope="personal",
-            created_by="user-123",
-            data_entities_processor_cls=mock_processor_cls,
-        )
+        with pytest.raises(RuntimeError, match="init boom"):
+            await ConnectorFactory.initialize_connector(
+                name="test_init_exc",
+                logger=logger,
+                data_store_provider=data_store,
+                config_service=config_service,
+                connector_id="conn-7",
+                scope="personal",
+                created_by="user-123",
+                data_entities_processor_cls=mock_processor_cls,
+            )
 
-        assert result is None
+        logger.error.assert_not_called()  # the caller logs it once
         (error,) = mock_connector.on_background_init_failed.await_args.args
         assert str(error) == "init boom", "the connector hears why it could not start"
 
@@ -604,9 +606,10 @@ class TestCreateAndStartSync:
 
     @pytest.mark.asyncio
     @patch("app.connectors.core.factory.connector_factory.get_coordinator")
-    async def test_sync_exception_returns_none(self, mock_gc):
+    async def test_sync_exception_returns_none(self, mock_gc, caplog):
         """If start_sync raises, returns None."""
-        logger = MagicMock()
+        logger = logging.getLogger("test.factory.start_failed")
+        caplog.set_level(logging.DEBUG, logger="test.factory.start_failed")
         data_store = MagicMock()
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value={"sync": {"selectedStrategy": "FULL_SYNC"}})
@@ -638,7 +641,9 @@ class TestCreateAndStartSync:
             data_entities_processor_cls=mock_processor_cls,
         )
         assert result is None
-        logger.error.assert_called()
+        failed = [r for r in caplog.records if r.getMessage() == "sync_run.start_failed"]
+        assert len(failed) == 1 and failed[0].levelno == logging.ERROR and failed[0].exc_info is not None
+        assert log_record_fields(failed[0])["error_class"] == "internal"
         # spawn raised before it could own the lease, so nothing else will release it.
         coord.end.assert_awaited_once_with(coord.begin.return_value[1])
 
