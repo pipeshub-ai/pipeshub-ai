@@ -1,4 +1,4 @@
-- id: REGR-11
+- id: REGR-14
   title: 'A Jira level held through a group: the reporter Browse names on the issue reads it alone, and not once out of the group'
   source: >-
     Jira Cloud access harness on the connector simulator (JUNI-121). Browse holder `reporter` is "Grant for the user who reported the issue";

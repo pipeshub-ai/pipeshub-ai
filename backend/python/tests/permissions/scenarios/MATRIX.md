@@ -141,7 +141,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | confluence | user-removed | change | CONF-C-11 |
 | confluence | audit-event | change | **gap** |
 | jira | no-level | static | **gap** |
-| jira | level-holder | static | REGR-11 |
+| jira | level-holder | static | REGR-14 |
 | jira | browse-less-holder | static | **gap** |
 | jira | reporter-holder | static | **gap** |
 | jira | sub-task | static | **gap** |
@@ -153,7 +153,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | jira | placeholder-parent | static | **gap** |
 | jira | scheme-change | change | **gap** |
 | jira | role-actor-change | change | **gap** |
-| jira | level-members-change | change | REGR-11 |
+| jira | level-members-change | change | REGR-14 |
 | jira | level-set | change | **gap** |
 | jira | level-cleared | change | **gap** |
 | jira | reporter-assignee-change | change | **gap** |
