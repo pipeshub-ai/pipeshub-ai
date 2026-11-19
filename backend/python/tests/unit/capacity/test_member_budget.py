@@ -146,7 +146,7 @@ def test_a_wait_ends_at_the_deadline_and_leaves_no_waiter(ledger: Path, monkeypa
         assert b.snapshot()["families"]["parse"]["waiting"] == 0
     finally:
         stop.cancel()
-        waiter.join(10)
+        waiter.join(1)  # cancel ends a healthy waiter at once; a deadlocked one must not push the test past pytest's timeout
 
 
 def test_a_wait_stops_on_cancel_and_a_waiter_is_granted_when_capacity_frees(ledger: Path) -> None:

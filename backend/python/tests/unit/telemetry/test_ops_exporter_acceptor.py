@@ -55,8 +55,9 @@ def _wait_until(predicate, timeout_s: float) -> bool:
 
 @contextlib.contextmanager
 def _nothing_on_this_thread_waits() -> Iterator[None]:
-    """Fail any call made on this thread that would block: a condition or event wait, a sleep, a select with a
-    timeout and nothing ready, or a socket read or write with nothing ready. "Never waits" with no wall-clock bound."""
+    """Fail these calls on this thread when they would block: a Condition or Event wait, time.sleep, select.select with a
+    timeout and nothing ready, and socket recv/send/sendall with nothing ready. "Never waits" with no wall-clock bound.
+    It does not see a contended Lock.acquire, recv_into or makefile reads, poll or selectors, or os.read."""
     me = threading.get_ident()
     real_select = select.select
 
