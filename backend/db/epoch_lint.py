@@ -25,6 +25,7 @@ def revision_attrs(f: Path) -> dict:
                         if t.id in ("revision", "down_revision"):
                             raise
                         # the id lint never read these: a computed one is skipped here, not a crash of the lint
+                        vals.setdefault("computed", []).append(t.id)
     return vals
 
 
@@ -64,6 +65,10 @@ def expected_heads(dirs: list[Path]) -> tuple[dict[str, tuple[int, int]], set[st
     epochs, attrs = {}, []
     for d in map(Path, dirs):
         files = {f: revision_attrs(f) for f in sorted(d.glob("*.py"))}
+        for f, a in files.items():
+            if a.get("computed"):
+                # a value only the migration run knows: guessing it would expect less than the database records
+                raise ValueError(f"{d.name}/{f.name}: {', '.join(a['computed'])} must be a literal for the expected heads")
         parents = {p for a in files.values() for p in _refs(a.get("down_revision"))}
         tips = [f for f, a in files.items() if a.get("revision") not in parents]
         if len(tips) != 1:
