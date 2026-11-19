@@ -89,6 +89,7 @@ from app.edition_services import (
     get_startup_extra_kwargs,
     max_connector_workers,
     pre_sync_hook,
+    public_paths,
     register_extra_connectors,
     scope_org_resources,
     start_sync_reaper,
@@ -1351,6 +1352,7 @@ EXCLUDE_PATHS = [
     "/drive/webhook",   # Google Drive webhook (has its own WebhookAuthVerifier)
     "/gmail/webhook",   # Gmail webhook (uses Google Pub/Sub authentication)
     "/admin/webhook",   # Admin webhook (has its own WebhookAuthVerifier)
+    *public_paths(),    # Edition routes that check their caller themselves
 ]
 
 @app.middleware("http")
