@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import os
 from logging import Logger
 from typing import TYPE_CHECKING
@@ -44,6 +45,7 @@ from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
     FairSchedulerConfig,
+    IndexingFairness,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
@@ -157,6 +159,29 @@ def lane_topics_for(
     # The base stream only holds what was written before laning; every
     # replica keeps draining it.
     return [topic] + [router.lane_name(topic, lane) for lane in sorted(only_lanes)]
+
+
+def _applicable_fairness(
+    fairness: IndexingFairness,
+    fair_config: FairSchedulerConfig,
+    consumer_type: ConsumerType,
+    key_extractor: FairnessKeyExtractor | None,
+    weight_provider: WeightProvider | None,
+    stage_admission: "StageAdmission | None",
+    priority_lane: "PriorityLane | None",
+) -> IndexingFairness | None:
+    if (
+        consumer_type != ConsumerType.INDEXING
+        or priority_lane is not None
+        or stage_admission is not None
+        or key_extractor is not None
+        or weight_provider is not None
+    ):
+        return None
+    if not fair_config.enabled or fair_config.key_fields != FairSchedulerConfig().key_fields:
+        logging.getLogger(__name__).warning("Ignoring the record consumer's extra parts: fair scheduling is off or key fields are set")
+        return None
+    return fairness
 
 
 def _reject_namespaced_redis_streams() -> None:
@@ -340,6 +365,7 @@ class MessagingFactory:
         stage_admission: "StageAdmission | None" = None,
         priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: IndexingFairness | None = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -379,6 +405,9 @@ class MessagingFactory:
                       the priority topic: records are admitted ahead of the queued
                       backlog but under the lane's own caps and lease pools.
 
+            fairness: Optional parts for the record consumer (INDEXING, no priority lane or stage admission,
+                      no explicit extractor or weights, fair scheduling on, default key fields); else ignored.
+
         Returns:
             IMessagingConsumer instance
         """
@@ -386,6 +415,17 @@ class MessagingFactory:
             broker_type = get_message_broker_type()
 
         effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()
+        if fairness is not None:
+            fairness = _applicable_fairness(
+                fairness, effective_fair_config, consumer_type, key_extractor, weight_provider, stage_admission, priority_lane
+            )
+        if fairness is not None:
+            effective_fair_config = dataclasses.replace(effective_fair_config, key_fields=fairness.key_fields)
+            key_extractor, weight_provider = fairness.key_extractor, fairness.weights
+            if fairness.extra_topics and config is not None:
+                topics = [*config.topics, *(t for t in fairness.extra_topics if t not in config.topics)]
+                config = (dataclasses.replace(config, topics=topics) if dataclasses.is_dataclass(config)
+                          else config.model_copy(update={"topics": topics}))
         if priority_lane is not None:
             # The lane's per-org share is the fair scheduler's, and a priority record is not
             # ordered against its partition's others: its cap, not the partition, bounds it.
@@ -413,6 +453,7 @@ class MessagingFactory:
                 stage_admission=stage_admission,
                 priority_lane=priority_lane,
                 worker=worker if consumer_type == ConsumerType.INDEXING else None,
+                fairness=fairness,
             )
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
@@ -445,6 +486,7 @@ class MessagingFactory:
                     stage_admission=stage_admission,
                     priority_lane=priority_lane,
                     worker=worker,
+                    fairness=fairness,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -471,5 +513,6 @@ class MessagingFactory:
                     stage_admission=stage_admission,
                     priority_lane=priority_lane,
                     worker=worker,
+                    fairness=fairness,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

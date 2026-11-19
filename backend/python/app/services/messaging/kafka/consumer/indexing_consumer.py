@@ -76,6 +76,9 @@ from app.services.messaging.scheduling.interface import (
     FairnessKey,
     FairnessKeyExtractor,
     FairSchedulerConfig,
+    IndexingFairness,
+    SlotPlan,
+    SlotPlanner,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import (
@@ -83,7 +86,7 @@ from app.services.messaging.scheduling.key_extractors import (
     TieredKeyExtractor,
 )
 from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker
-from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
+from app.services.messaging.scheduling.slot_share import SlotShare
 from app.services.messaging.storage_protocol import tagged
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
@@ -98,7 +101,7 @@ from app.utils.request_context import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Hashable
 
     from app.services.messaging.backpressure import BackpressureCoordinator
     from app.services.messaging.distributed_concurrency import (
@@ -298,7 +301,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         stage_admission: "concurrency.StageAdmission | None" = None,
         priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: IndexingFairness | None = None,
     ) -> None:
+        self._fairness = fairness
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
@@ -364,6 +369,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         from app import edition_services
 
         self.admission_backlog = edition_services.admission_backlog()
+        if fairness is not None and fairness.observer is not None:
+            self.admission_backlog.observer = fairness.observer
         self._suspects_waiting = 0
         # Held by a record whose last attempt never finished, so such records
         # run one at a time: when the process dies again, the record that
@@ -471,10 +478,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
         # than its share of the slots (see scheduling.slot_share).
-        self._slot_share: SlotShare | None = None
+        self._slot_share: SlotPlanner | None = None
         if self.fair_scheduler_config.enabled:
-            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider)
-            self._slot_share = SlotShare(
+            room = fairness.buffer_room if fairness is not None else None
+            self._scheduler = DRRScheduler(
+                self.fair_scheduler_config, self.weight_provider,
+                room=(lambda key: room(key, self._scheduler)) if room is not None else None,
+            )
+            self._slot_share = (fairness.planner if fairness is not None and fairness.planner else SlotShare)(
                 self.fair_scheduler_config.entity_depth, self.weight_provider
             )
             self._offset_tracker = PartitionOffsetTracker(logger=logger)
@@ -792,7 +803,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     def _slot_share_plan(
         self, can_dispatch: "Callable[[Any], bool] | None" = None
-    ) -> SlotSharePlan | None:
+    ) -> SlotPlan | None:
         """Each waiting connector's cap on records in flight, for one
         dispatch decision. None when fair scheduling is off.
 
@@ -2477,8 +2488,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             - self.__held_beside_scheduler()
         )
         plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
+        planned: dict[Hashable, int] = {}
+        buffer_room = self._fairness.buffer_room if self._fairness is not None else None
         for entity in remembered.entities():
             free = cap - scheduler.pending_count_for(entity)
+            # What earlier entities of this plan already took from the same shared bucket is not room.
+            shared = buffer_room(entity, scheduler) if buffer_room is not None else None
+            if shared is not None:
+                free = min(free, shared[1] - planned.get(shared[0], 0))
             # Refilled in chunks, not a message at a time as the connector's
             # buffered work is dispatched: each fetch is a broker round trip.
             if free < max(1, min(cap // 2, remembered.count(entity))):
@@ -2488,6 +2505,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 continue
             plan[entity] = remembered.peek(entity, take)
             room -= len(plan[entity])
+            if shared is not None:
+                planned[shared[0]] = planned.get(shared[0], 0) + len(plan[entity])
             if room <= 0:
                 break
         if not plan:
