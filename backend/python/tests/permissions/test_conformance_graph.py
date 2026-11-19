@@ -88,16 +88,22 @@ async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_se
     assert not found, "\n".join(found[:40])
 
 
-async def test_a_linked_user_account_still_gives_its_organisation_role(graph_layers) -> None:
-    """A source account stored as a User (as before SourceAccount nodes) keeps what its organisation gives in the context role, as it did:
-    in REGR-11, u reads f as OWNER through acct's organisation, while the access check still admits f and refuses g."""
-    world = next(s for s in load_all() if s.id == "REGR-11").final_world()
-    for layer in graph_layers:
-        await layer.preload([world])
-        ns = await layer._ns(world)
-        got = await snapshot(layer._provider, world, "u", ns, ns.org)
-        assert got[("context", "f")]["role"] == "OWNER", (layer.name, got)
-        assert await layer.admitted(world, "u", [n.id for n in world.nodes]) >= {"f"}
+async def test_a_linked_accounts_organisation_gives_no_role_and_the_viewers_own_still_does(graph_layers, account_layers) -> None:
+    """A linked account's organisation gives the viewer nothing, as in the access check, whether the account is stored as a User or as a
+    SourceAccount. REGR-11: u reads f as READER (its own grant) and not as OWNER through acct's organisation's grant on f itself. REGR-13:
+    the same through the organisation's OWNER on S, which f inherits from; w, a member itself, still reads f as OWNER."""
+    for sid, cases in (("REGR-11", (("u", "f", "READER"),)), ("REGR-13", (("u", "f", "READER"), ("w", "f", "OWNER")))):
+        world = next(s for s in load_all() if s.id == sid).final_world()
+        for layer in [*graph_layers, *account_layers]:
+            await layer.preload([world])
+            ns = await layer._ns(world)
+            for viewer, node, role in cases:
+                got = await snapshot(layer._provider, world, viewer, ns, ns.org)
+                assert got[("context", node)]["role"] == role, (sid, layer.name, viewer, got)
+                # Neo4j's details find the organisation by the org's id, which the org node of these worlds does not carry
+                if role != "OWNER":
+                    assert set(got[("details", node)]) == {role}, (sid, layer.name, viewer, got)
+                assert node in await layer.admitted(world, viewer, [n.id for n in world.nodes])
 
 
 async def test_a_linked_accounts_grant_gives_a_role_only_inside_the_links_connector(graph_layers, account_layers) -> None:

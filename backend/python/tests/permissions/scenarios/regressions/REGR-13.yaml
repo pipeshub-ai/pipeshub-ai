@@ -1,0 +1,32 @@
+- id: REGR-13
+  title: 'Linked account stored as a User: its organisation''s grant on what a record inherits from gives the viewer no role; the viewer''s own organisation still does'
+  source: review of the source-account readers
+  rule: linked-account
+  world:
+    principals:
+      - {id: u, org_member: false}
+      - {id: w}
+      - {id: acct}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [S], inherits: [S]}
+    grants:
+      - [u, f, USER, READER]
+      - [w, f, USER, READER]
+      - [org, S, ORG, OWNER]
+    gates:
+      - [u, A]
+      - [w, A]
+    links:
+      - [u, acct, A]
+      - [w, acct, A]
+  expect:
+    verdicts:
+      u: {f: admit, S: deny}
+      w: {f: admit, S: admit}
+  tags: [regression, linked-account]
+  comment: >-
+    The organisation holds OWNER on S, which f inherits from. acct, linked for A, is a member of the organisation; u is not, w is. The
+    access check counts a linked account's own and its groups' grants only, never its organisation's, so u reads f by its own READER grant,
+    and every reader must give u READER on f, not acct's organisation's OWNER. w's own membership still gives w OWNER on f.

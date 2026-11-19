@@ -201,14 +201,25 @@ async def test_linked_source_accounts_add_no_organisation_to_roles_details_or_se
     assert not found, "\n".join(found[:40])
 
 
-async def test_a_linked_user_account_still_gives_its_organisation_role(layer: PgLayer, pg_provider) -> None:
-    """A source account stored as a User keeps what its organisation gives in the context role, as it did (REGR-11: u reads f as OWNER)."""
-    world = next(s for s in load_all() if s.id == "REGR-11").final_world()
-    await layer.preload([world])
-    ns = await layer._ns(world)
-    with bind(OrgContext(_hex(ns.org), None, "job", "job:test", "t")):
-        got = await snapshot(pg_provider, world, "u", ns, _hex(ns.org))
-    assert got[("context", "f")]["role"] == "OWNER", got
+@pytest.mark.parametrize("variant", ["", "accounts"])
+async def test_a_linked_accounts_organisation_gives_no_role_and_the_viewers_own_still_does(layer: PgLayer, pg_provider, variant: str) -> None:
+    """A linked account's organisation gives the viewer nothing, as in the access check, whether the account is stored as a User or as a
+    SourceAccount. REGR-11: u reads f as READER, not as OWNER through acct's organisation. REGR-13: the same through the organisation's OWNER on
+    what f inherits from, in the batched role too; w, a member itself, still reads f as OWNER."""
+    layer.variant = variant
+    for sid, cases in (("REGR-11", (("u", "f", "READER"),)), ("REGR-13", (("u", "f", "READER"), ("w", "f", "OWNER")))):
+        world = next(s for s in load_all() if s.id == sid).final_world()
+        await layer.preload([world])
+        ns = await layer._ns(world)
+        org = _hex(ns.org)
+        for viewer, node, role in cases:
+            with bind(OrgContext(org, None, "job", "job:test", "t")):
+                got = await snapshot(pg_provider, world, viewer, ns, org)
+                batch = await pg_provider._q(lambda tx, viewer=viewer, node=node, org=org, ns=ns: pg_provider._roles_on(tx, org, ns.id(viewer), "records", [ns.id(node)]), None)
+            assert got[("context", node)]["role"] == role, (sid, viewer, got)
+            assert set(got[("details", node)]) == {role}, (sid, viewer, got)
+            assert batch[ns.id(node)][0] == role, (sid, viewer, batch)
+            assert node in await layer.admitted(world, viewer, [n.id for n in world.nodes])
 
 
 @pytest.mark.parametrize("variant", ["", "accounts"])
