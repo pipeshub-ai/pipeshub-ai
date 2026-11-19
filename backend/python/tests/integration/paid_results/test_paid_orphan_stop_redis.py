@@ -27,7 +27,13 @@ if TYPE_CHECKING:
 
 # The storage job of backend-matrix.yml runs the files that read ARTIFACTS_IT_STORAGE_URL, and it starts the Redis these tests
 # need (PAID_RESULTS_IT_REDIS_URL); these tests need no storage service themselves.
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
+# Skipped where there is no storage job (the offline integration job has no Redis): same gate as the other paid-result ITs.
+# In the storage job the variable is set, so a missing Redis there fails the tests instead.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.timeout(300),
+    pytest.mark.skipif(not os.environ.get("ARTIFACTS_IT_STORAGE_URL"), reason="set ARTIFACTS_IT_STORAGE_URL to a running storage service"),
+]
 
 
 @pytest.fixture
