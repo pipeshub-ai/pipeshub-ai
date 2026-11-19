@@ -727,7 +727,7 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 def _as_newer_build(cluster, name, revision=None, min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
-    revision = revision or next(r for r in REVISION_HEADS if r.startswith("platform_"))   # the platform head of this tree
+    revision = revision or next(r for r in REVISION_HEADS if r.startswith("platform_0"))  # the platform head (not platform_data)
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))
         if min_code is not None:
