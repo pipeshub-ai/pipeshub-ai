@@ -49,6 +49,7 @@ from app.connectors.core.base.user_access import (
     get_invite,
     get_members,
     is_per_user,
+    link_org_id,
     list_connections,
     list_invites,
     mark_removed,
@@ -810,7 +811,13 @@ async def _link_user(graph_provider: IGraphDBProvider, org_id: str, user_id: str
 
 async def _open_link(request: Request, graph_provider: IGraphDBProvider, token: str) -> ConnectLink:
     """The link. 404 for a link that is unknown or expired."""
-    link = await resolve_link(_config_service(request), token.strip(), get_epoch_timestamp_in_ms())
+    token = token.strip()
+    org_id = link_org_id(token)
+    if org_id is None:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=_LINK_GONE)
+    # Read in the org the token names: an org-scoped config store keeps the link there.
+    with bind(OrgContext(org_id, None, "service", "connect_link", "-")):
+        link = await resolve_link(_config_service(request), token, get_epoch_timestamp_in_ms())
     if link is None:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=_LINK_GONE)
     return link

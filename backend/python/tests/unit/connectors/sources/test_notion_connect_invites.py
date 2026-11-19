@@ -286,19 +286,26 @@ class TestConnectLinks:
     async def test_a_link_names_its_user_until_it_expires_and_only_its_hash_is_stored(self) -> None:
         store = _Store()
         token = await create_link(store, "c1", "u1", "org-1", now_ms=1000)
-        connector_id, user_id, secret = token.split(".", 2)
-        assert (connector_id, user_id) == ("c1", "u1") and len(secret) >= 40
+        org_id, connector_id, user_id, secret = token.split(".", 3)
+        assert (org_id, connector_id, user_id) == ("org-1", "c1", "u1") and len(secret) >= 40
         assert all(secret not in key for key in store.data)
         link = await resolve_link(store, token, now_ms=1000 + LINK_TTL_MS - 1)
         assert (link.connector_id, link.user_id, link.org_id) == ("c1", "u1", "org-1")
         assert await resolve_link(store, token, now_ms=1000 + LINK_TTL_MS) is None
 
-    @pytest.mark.parametrize("token", ["", "c1", "c1.", ".secret", "c1.u1", "c1.u1.wrong", "c1.u2.x", "a/b.u1.s",
-                                       "c1.u/1.s"])
+    @pytest.mark.parametrize("token", ["", "c1", "c1.", ".secret", "org-1.c1.u1", "org-1.c1.u1.wrong",
+                                       "org-1.c1.u2.x", "org-1.a/b.u1.s", "org-1.c1.u/1.s", "o/1.c1.u1.s"])
     async def test_a_malformed_or_unknown_token_names_nobody(self, token) -> None:
         store = _Store()
         await create_link(store, "c1", "u1", "org-1", now_ms=0)
         assert await resolve_link(store, token, now_ms=0) is None
+
+    async def test_a_token_naming_another_org_finds_nothing(self) -> None:
+        store = _Store()
+        token = await create_link(store, "c1", "u1", "org-1", now_ms=10**13)
+        assert user_access.link_org_id(token) == "org-1"
+        forged = "org-2" + token[len("org-1"):]
+        assert await resolve_link(store, forged, now_ms=10**13) is None
 
     async def test_a_user_keeps_their_newest_three_links(self) -> None:
         store = _Store()
@@ -627,6 +634,27 @@ class TestConnectLinkRoutes:
         result = await self._call(routes.connect_link_info, store, MagicMock(), token=token)
         assert result["connectorName"] == "Team Notion" and result["email"] == "u1@acme.com"
         assert result["connected"] is False and result["signInAvailable"] is True
+
+    async def test_the_link_is_read_in_the_org_its_token_names(self) -> None:
+        """A store that keeps each org's keys apart (as an org-scoped deployment does) still finds the link."""
+        routes = _routes()
+
+        class _OrgStore(_Store):
+            def _k(self, key) -> str:
+                return f"{routes.current_org_id()}{key}"
+
+            async def get_config(self, key, *args, **kwargs) -> dict | None:
+                return await super().get_config(self._k(key))
+
+            async def set_config(self, key, value, **kwargs) -> bool:
+                return await super().set_config(self._k(key), value)
+
+        store = _OrgStore()
+        with routes.bind(routes.OrgContext("org-7", None, "service", "test", "-")):
+            token = await create_link(store, "c1", "u1", "org-7", now_ms=10**13)
+        assert all(k.startswith("org-7/") for k in store.data)
+        result = await self._call(routes.connect_link_info, store, MagicMock(), token=token, user=_user("u1", org="org-7"))
+        assert result["email"] == "u1@acme.com"
 
     async def test_the_link_runs_in_its_own_organisation(self) -> None:
         routes = _routes()

@@ -388,10 +388,13 @@ async def _user_links(config_service: ConfigurationService, connector_id: str, u
 async def create_link(
     config_service: ConfigurationService, connector_id: str, user_id: str, org_id: str, now_ms: int
 ) -> str:
-    """A new link token for ``user_id``: ``<connectorId>.<userId>.<secret>``. Their earlier links keep
-    working until they expire, up to the newest few."""
+    """A new link token for ``user_id``: ``<orgId>.<connectorId>.<userId>.<secret>``. Their earlier links
+    keep working until they expire, up to the newest few. The org comes first so a public route can read
+    the link inside that org (``link_org_id``) before it knows anything else."""
     if not user_id or _LINK_SEPARATOR in user_id or "/" in user_id:
         raise ValueError("A connect link needs a plain user id")
+    if not org_id or _LINK_SEPARATOR in org_id or "/" in org_id:
+        raise ValueError("A connect link needs a plain org id")
     secret = secrets.token_urlsafe(32)
     current = await _user_links(config_service, connector_id, user_id)
     links = [x for x in current.get("links", []) if isinstance(x, dict) and int(x.get("expiresAt") or 0) > now_ms]
@@ -399,17 +402,24 @@ async def create_link(
     record = {"userId": user_id, "orgId": org_id, "links": links}
     if not await config_service.set_config(_link_key(connector_id, user_id), record, keep_in_cache=False):
         raise RuntimeError(f"Could not save a connect link for user {user_id} to {connector_id}")
-    return _LINK_SEPARATOR.join((connector_id, user_id, secret))
+    return _LINK_SEPARATOR.join((org_id, connector_id, user_id, secret))
+
+
+def link_org_id(token: str) -> str | None:
+    """The org a link token names (its first part), or None when the token is malformed."""
+    org_id = token.split(_LINK_SEPARATOR, 1)[0]
+    return org_id if org_id and "/" not in org_id and _LINK_SEPARATOR in token else None
 
 
 async def resolve_link(config_service: ConfigurationService, token: str, now_ms: int) -> ConnectLink | None:
-    """The link ``token`` names, or None when it is malformed, unknown or expired."""
-    parts = token.split(_LINK_SEPARATOR, 2)
-    if len(parts) != 3 or not all(parts) or any("/" in p for p in parts[:2]):
+    """The link ``token`` names, or None when it is malformed, unknown or expired. Call it inside the
+    org ``link_org_id`` names: the link is stored there, and a token naming another org finds nothing."""
+    parts = token.split(_LINK_SEPARATOR, 3)
+    if len(parts) != 4 or not all(parts) or any("/" in p for p in parts[:3]):
         return None
-    connector_id, user_id, secret = parts
+    org_id, connector_id, user_id, secret = parts
     data = await _user_links(config_service, connector_id, user_id)
-    if str(data.get("userId") or "") != user_id or not data.get("orgId"):
+    if str(data.get("userId") or "") != user_id or str(data.get("orgId") or "") != org_id:
         return None
     wanted = _hash(secret)
     for link in data["links"]:
