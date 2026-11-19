@@ -224,14 +224,14 @@ async def test_a_twin_in_another_collection_is_attached_as_before_when_the_old_c
 
 
 @pytest.mark.asyncio
-async def test_a_redelivery_resumes_into_the_pending_copy_not_into_the_vrid_the_record_names(swap_on):
+async def test_a_redelivery_resumes_into_the_pending_copy_not_into_the_vrid_the_record_names(swap_on) -> None:
     """Scenario 25: the marker names the copy the interrupted run was writing, which the record only has as its pending vrid."""
     from app.modules.indexing.embed_resume import DELIVERY_ID_KEY
 
     ep, processor, gp = _processor()
     seen: dict = {}
 
-    def spy(marker, **kwargs):
+    def spy(marker, **kwargs) -> bool:
         seen.update(kwargs)
         return False
 

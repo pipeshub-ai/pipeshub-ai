@@ -21,7 +21,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-async def world(runtime, monkeypatch: pytest.MonkeyPatch, uid: str):
+async def world(runtime: object, monkeypatch: pytest.MonkeyPatch, uid: str) -> tuple[PgQueue, str, list[str]]:
     monkeypatch.setenv(keep_old_copy.ENV_ENABLED, "on")
     monkeypatch.setenv(keep_old_copy.ENV_PG_BROKER_CONFIRMED, "on")
     monkeypatch.setattr(mconfig, "get_message_broker_type", lambda: mconfig.MessageBrokerType.POSTGRES)

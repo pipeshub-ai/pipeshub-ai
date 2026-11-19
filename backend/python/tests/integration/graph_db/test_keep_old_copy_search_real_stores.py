@@ -24,13 +24,28 @@ from app.models.entities import Record, RecordType
 from app.modules.indexing import keep_old_copy
 from app.modules.transformers.swap_commit import SwapCommitter
 from app.services.vector_db.models import ScrollResult
-from tests.integration.real_graph import backend_unavailable, connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 from tests.support.require_service import missing
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 qdrant_client = pytest.importorskip("qdrant_client")
-from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams  # noqa: E402
+from qdrant_client.models import (  # noqa: E402
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 RECORDS = CollectionNames.RECORDS.value
 ORG = "org-search-it"
@@ -61,7 +76,7 @@ class _Qdrant:
 
 
 @pytest.fixture(params=["neo4j", "arango"])
-async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple]:
     try:
         client = qdrant_client.QdrantClient(url=URL, timeout=30, prefer_grpc=False)
         client.get_collections()

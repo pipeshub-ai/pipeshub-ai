@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from app.modules.transformers.swap_commit import SwapCommitter
 from app.services.graph_db.common.record_visibility import holds_vrid
 from app.services.graph_db.conditions import holds
 from app.services.vector_db.models import ScrollResult
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class FakeGraph:
