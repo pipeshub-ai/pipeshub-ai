@@ -120,9 +120,13 @@ async def test_indexed_values_are_queryable_and_only_for_readable_in_scope_recor
     stored = await provider.get_named_entities_for_record(readable)
     kinds = {row["kind"] for row in stored}
     assert {"organization", "currency", "date"} <= kinds
-    # The declined card's digits are in no stored value. Ids are left out: a random block id or revision can hold "4111".
-    without_ids = [{k: v for k, v in row.items() if not (k.startswith("_") or k.lower().endswith(("id", "ids")))} for row in stored]
-    assert not any("4111" in json.dumps(value, default=str) for value in without_ids)
+    # The declined card's digits are in no stored value. Ids and timestamps are left out: a random block id, a revision or
+    # the clock can hold "4111".
+    def _metadata(key: str) -> bool:
+        return key.startswith("_") or key.lower().endswith(("id", "ids", "timestamp")) or key in ("createdAt", "updatedAt")
+
+    stored_values = [{k: v for k, v in row.items() if not _metadata(k)} for row in stored]
+    assert not any("4111" in json.dumps(value, default=str) for value in stored_values)
     doc = await provider.get_document(readable, "records")
     assert doc.get("entityExtractionStatus") is None
 
