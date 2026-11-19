@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ENV_MODE = "PDF_TABLE_EXTRACTION"
-MODES = ("legacy", "shadow", "evidence")
+MODES = ("legacy", "shadow", "evidence", "hybrid")
 DEFAULT_MODE = "legacy"
 
 SNAP = 3.0  # rules closer than this are one rule (pdfplumber's snap distance), pt

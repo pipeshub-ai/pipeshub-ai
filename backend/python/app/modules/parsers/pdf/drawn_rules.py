@@ -96,3 +96,13 @@ def _crosses_v(ws: list[dict[str, Any]], x: float, a: float, d: float, x0: float
     le = [w for w in ws if w["x1"] <= x + 1.0]
     ri = [w for w in ws if w["x0"] >= x - 1.0]
     return bool(le and ri and len(le) + len(ri) == len(ws))
+
+
+def h_crossing_ys(ws: list[dict[str, Any]], h_rules: list[Stroke]) -> list[float]:
+    """The horizontal rules (their y) that run over a cell's words with every word on one side or the other: the rules a
+    cell would be cut along. The same test as the horizontal count of ``crossings``."""
+    if len(ws) < 2:
+        return []
+    x0, x1 = min(w["x0"] for w in ws), max(w["x1"] for w in ws)
+    t0, b0 = min(w["top"] for w in ws), max(w["bottom"] for w in ws)
+    return [y for y, a, d in h_rules if _crosses_h(ws, y, a, d, x0, x1, t0, b0)]

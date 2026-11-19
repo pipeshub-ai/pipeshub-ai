@@ -237,9 +237,21 @@ class PDFPlumberOpenCVProcessor:
 
         coordinator, admission, request_id = self._shadow_admit(record_id, table_model=table_model)
         parse_started = time.monotonic()
+        model_cfg = self._hybrid_cfg(record_id, request_id, table_model=table_model)
         # The worker may run as long as the PDF record it parses for.
         try:
-            if admission is None:
+            if model_cfg is not None:
+                pages_data = await parse_pool.submit(
+                    parse_pdf_layout,
+                    pdf_bytes,
+                    None,
+                    model_cfg,
+                    label=doc_name,
+                    size=len(pdf_bytes),
+                    timeout=messaging_env.pdf_record_processing_timeout,
+                    kind=ParseKind.PDF_LAYOUT,
+                )
+            elif admission is None:
                 pages_data = await parse_pool.submit(
                     parse_pdf_layout,
                     pdf_bytes,
@@ -273,6 +285,27 @@ class PDFPlumberOpenCVProcessor:
             )
         self._log_table_hybrid(pages_data)
         return pages_data
+
+    def _hybrid_cfg(self, record_id: str | None, request_id: str | None, *, table_model: bool):  # noqa: ANN202
+        """The worker's configuration for ``PDF_TABLE_EXTRACTION=hybrid``, or ``None``: the mode is off, the caller is not a
+        record-indexing one, or the service is known to be unavailable (the parse is then the evidence result)."""
+        if not table_model:
+            return None
+        try:
+            from app.modules.parsers.pdf import table_hybrid_emit
+            from app.modules.parsers.pdf.table_hybrid_client import service_url
+            from app.modules.parsers.pdf.table_hybrid_flow import get_coordinator
+
+            if not table_hybrid_emit.hybrid_active() or get_coordinator()._latched() is not None:
+                return None
+            if request_id is None:
+                from app.utils.request_context import current_display_id
+
+                request_id = current_display_id()
+            return table_hybrid_emit.make_cfg(record_id, request_id, service_url(), record_timeout_s=messaging_env.pdf_record_processing_timeout)
+        except Exception:
+            self.logger.warning("table hybrid emit: not started", exc_info=True)
+            return None
 
     def _shadow_admit(self, record_id: str | None, *, table_model: bool):  # noqa: ANN202
         """(coordinator, admission, request id) for the structure-model shadow run, decided before the parse; all

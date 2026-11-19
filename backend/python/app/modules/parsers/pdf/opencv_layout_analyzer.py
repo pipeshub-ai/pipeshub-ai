@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from pdfplumber.page import Page
     from pdfplumber.table import Row, Table
 
+    from app.modules.parsers.pdf.table_hybrid_emit import TableEmitter
     from app.modules.parsers.pdf.table_hybrid_flow import TableJobCollector
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ class LayoutRegion:
     table_q: float | None = None
     # TABLE only, shadow mode: the hybrid defect report of the emitted grid (table_hybrid.Report.log_fields()); never read by the emitters.
     table_hybrid: dict[str, Any] | None = None
+    # TABLE only, hybrid mode: the grid is the table-structure model's, filled from the page's own words. It is never merged
+    # with another region, never re-read from the page and never demoted to text (see table_hybrid_emit).
+    from_model_grid: bool = False
 
 
 @dataclass
@@ -1553,6 +1557,7 @@ def extract_layout_regions(
     model_raster_cache: Optional[DocumentRasterCache] = None,
     table_collector: "TableJobCollector | None" = None,
     page_index: int = 0,
+    table_emitter: "TableEmitter | None" = None,
 ) -> List[LayoutRegion]:
     page_w = float(page.width)
     page_h = float(page.height)
@@ -1613,14 +1618,9 @@ def extract_layout_regions(
         )
         table_regions, suppressed_boxes = _apply_table_evidence(
             page, page_w, page_h, table_regions, all_words, model_boxes["table"],
-            collector=table_collector, page_index=page_index,
+            collector=table_collector, page_index=page_index, emitter=table_emitter,
         )
 
-    # Lazy raster cache: rasterization is expensive, so we set up the
-    # getter once and let consumers pull on demand. Column detection
-    # uses it for the optional projection-based rescue (only invoked
-    # when a candidate is about to be hard-rejected); downstream image
-    # cropping and ink-density checks share the same cached raster.
     _raster: Dict[str, Any] = {}
 
     def _get_raster() -> Tuple[np.ndarray, float]:
@@ -1630,6 +1630,36 @@ def extract_layout_regions(
             )
         return _raster["img"], _raster["scale"]
 
+    tail = {
+        "page": page, "page_w": page_w, "page_h": page_h, "all_words": all_words, "suppressed_boxes": suppressed_boxes,
+        "model_boxes": model_boxes, "stripe_frames": stripe_frames, "get_raster": _get_raster,
+        "exclusive_words": table_emitter is not None,
+    }
+    ordered = _page_tail(table_regions=table_regions, **tail)
+    # The model grids must have come through the page pass whole, each in its own box; if not, this page is the evidence
+    # result (the tail is deterministic, so the rerun from the evidence regions is the evidence mode's page).
+    if table_emitter is not None and table_emitter.page_swaps() and table_emitter.violations(ordered, all_words):
+        table_emitter.tail_conflict()
+        ordered = _page_tail(table_regions=table_emitter.evidence_copy(), **tail)
+    if table_emitter is not None:
+        table_emitter.finalize_page()
+    # After every grid is chosen: the choices prefer more columns, and the sign
+    # columns this removes would otherwise count.
+    for region in ordered:
+        if region.type == LayoutRegionType.TABLE and region.table_grid and not region.from_model_grid:
+            _merge_table_currency_columns(region)
+    return _inject_hyperlinks_into_regions(ordered, page, all_words)
+
+
+def _page_tail(
+    *, page: "Page", page_w: float, page_h: float, all_words: list[dict[str, Any]], table_regions: list[LayoutRegion],
+    suppressed_boxes: list[tuple[float, float, float, float]], model_boxes: Optional[dict[str, list[Any]]],
+    stripe_frames: list[tuple[float, float, float, float]], get_raster: Callable[[], tuple[np.ndarray, float]],
+    exclusive_words: bool = False,
+) -> list[LayoutRegion]:
+    """Everything after the table decisions: gutter, blocks, images, text classification, overlap resolution, ordering.
+    Deterministic in its inputs; the hybrid mode calls it a second time for a page whose model grids did not survive."""
+    _get_raster = get_raster
     # Detect column gutter once -- threaded through everything that does
     # line grouping or reading-order sorting. Stays None on single-column
     # pages so the rest of the pipeline behaves exactly as before. The
@@ -1682,7 +1712,7 @@ def extract_layout_regions(
     higher_priority = image_regions + table_regions
 
     text_list_regions = _classify_text_blocks(
-        block_boxes, higher_priority, all_words, gutter_x=gutter_x,
+        block_boxes, higher_priority, all_words, gutter_x=gutter_x, exclusive_words=exclusive_words,
     )
 
     resolved = _resolve_overlaps(
@@ -1747,12 +1777,7 @@ def extract_layout_regions(
         (fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h)
         for (fx0, fy0, fx1, fy1), _s in (model_boxes or {}).get("caption", [])
     ])
-    # After every grid is chosen: the choices prefer more columns, and the sign
-    # columns this removes would otherwise count.
-    for region in ordered:
-        if region.type == LayoutRegionType.TABLE and region.table_grid:
-            _merge_table_currency_columns(region)
-    return _inject_hyperlinks_into_regions(ordered, page, all_words)
+    return ordered
 
 
 # "Figure 3", "Fig. 2a", "图 6-3-1", "Chart 4": how a figure caption opens.
@@ -3057,9 +3082,11 @@ def _apply_table_evidence(
     boxes: list[Any],
     collector: "TableJobCollector | None" = None,
     page_index: int = 0,
+    emitter: "TableEmitter | None" = None,
 ) -> tuple[list[LayoutRegion], list[tuple[float, float, float, float]]]:
     """``PDF_TABLE_EXTRACTION``: legacy (the default) returns ``legacy``; shadow computes and logs the
-    ruled-table decisions and returns ``legacy``; evidence applies them (see ``table_reconcile``).
+    ruled-table decisions and returns ``legacy``; evidence applies them (see ``table_reconcile``); hybrid applies them
+    and then swaps in the table-structure model's grids where the emitter's ledger passes them (``table_hybrid_emit``).
     Returns the regions and the model boxes found not to be tables."""
     from app.modules.parsers.pdf import table_reconcile
 
@@ -3096,7 +3123,10 @@ def _apply_table_evidence(
                 evidence = None
             collector.collect_page(page_index, page_w, page_h, decisions, legacy, evidence, all_words, page)
         return legacy, []
-    return table_reconcile.apply(legacy, decisions)
+    regions, suppressed = table_reconcile.apply(legacy, decisions)
+    if mode == "hybrid" and emitter is not None:
+        regions = emitter.swap_page(page_index, page, page_w, page_h, decisions, regions, all_words)
+    return regions, suppressed
 
 
 def _prefer_model_pictures(
@@ -3363,7 +3393,7 @@ def _demote_lossy_tables(
     """Re-emit as text any TABLE whose grid drops part of the text inside it."""
     out: list[LayoutRegion] = []
     for r in regions:
-        if r.type != LayoutRegionType.TABLE or not r.table_grid:
+        if r.type != LayoutRegionType.TABLE or not r.table_grid or r.from_model_grid:
             out.append(r)
             continue
         words = [w for w in all_words if _word_center_in_bbox(w, r.bbox)]
@@ -4603,9 +4633,15 @@ def _classify_text_blocks(
     higher_priority,
     all_words,
     gutter_x: Optional[float] = None,
+    *,
+    exclusive_words: bool = False,
 ):
+    """Text regions from the native blocks. Each block takes the words whose centre it holds, so two blocks that overlap
+    (a column of rotated margin text inside a wide paragraph block) both emit the same words. With *exclusive_words* a
+    word goes only to the smallest block that holds its centre; the modes that existed before keep the old behaviour."""
     regions = []
 
+    kept = []
     for box in block_boxes:
         covered_by = [r for r in higher_priority if _overlap_ratio(box, r.bbox) > 0.5]
         words = [w for w in all_words if _word_center_in_bbox(w, box)]
@@ -4618,7 +4654,23 @@ def _classify_text_blocks(
             for r in covered_by
         ):
             continue
+        kept.append((box, words))
 
+    if exclusive_words:
+        def area(b: tuple[float, float, float, float]) -> float:
+            return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+        owner: dict[int, int] = {}
+        for i, (box, words) in enumerate(kept):
+            for w in words:
+                j = owner.get(id(w))
+                if j is None or area(box) < area(kept[j][0]):
+                    owner[id(w)] = i
+        kept = [(box, [w for w in words if owner[id(w)] == i]) for i, (box, words) in enumerate(kept)]
+
+    for box, words in kept:
+        if not words:
+            continue
         tables = [
             r.bbox for r in higher_priority
             if r.type == LayoutRegionType.TABLE and _overlap_ratio(r.bbox, box) > 0
@@ -5047,6 +5099,8 @@ def _resolve_overlaps(
         best_idx = -1
         best_gap = None
         for i, a in enumerate(accepted):
+            if r.from_model_grid or a.from_model_grid:
+                continue
             hgap, vgap = _bbox_gap(r.bbox, a.bbox)
             gap = None
             if _x_projections_overlap(r.bbox, a.bbox) and 0.0 < vgap <= proximity:
@@ -5110,6 +5164,8 @@ def _resolve_overlaps(
             best_idx = -1
             best_ratio = 0.0
             for i, a in enumerate(accepted):
+                if r.from_model_grid or a.from_model_grid:
+                    continue  # a model grid is never merged: the page-pass check decides what to do with the overlap
                 if not _compatible(r, a, gap=0.0):
                     continue
                 if not _table_overlap_with_large_neighbor_allowed(r, a):
@@ -5224,6 +5280,7 @@ def _merge_regions(primary: LayoutRegion, other: LayoutRegion) -> LayoutRegion:
         table_grid=primary.table_grid,
         list_items=new_list_items,
         from_model=primary.from_model,
+        from_model_grid=primary.from_model_grid,
     )
 
 
@@ -5232,7 +5289,7 @@ def _reextract_region_payload(
     gutter_x: Optional[float] = None,
 ):
     if region.type == LayoutRegionType.TABLE:
-        if page is None:
+        if page is None or region.from_model_grid:
             return region
         grid, own_bbox = _reextract_grid_and_bbox(page, region.bbox, page_w, page_h)
         if grid:
