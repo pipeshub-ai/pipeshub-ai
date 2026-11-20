@@ -4,6 +4,7 @@ import importlib
 import random
 from collections import deque
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from app.services.resource_governor.feedback import FeedbackWindow
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
     Limits,
     Pool,
     PoolDemand,
@@ -1730,6 +1732,93 @@ class TestDownstreamBrake:
         )
         assert limits.get(Pool.INDEX_HEAVY) == 32
         assert limits.get(Pool.INDEX_LIGHT) == 64
+
+
+class TestDownstreamBrakeScope:
+    """A dependency only one tier calls brakes only that tier's index pool. Docling parses PDF-route (heavy)
+    records: its outage must not narrow the light pool, which takes no load off it."""
+
+    CEILINGS = Ceilings(heavy=8, light=32, index_heavy=32, index_light=64)
+    SNAP = _snapshot(cpu_quota=16.0, mem_limit_bytes=64 * 1024 ** 3, mem_working_set_bytes=8 * 1024 ** 3)
+
+    @staticmethod
+    def _busy(limits: Limits) -> dict[Pool, PoolDemand]:
+        return {
+            p: PoolDemand(permit_seconds=limits.get(p) * INTERVAL, blocked_acquires=3, completions=limits.get(p))
+            for p in Pool
+        }
+
+    def _step(
+        self, window: FeedbackWindow, heavy: int = 32, light: int = 64, ceilings: Ceilings | None = None,
+    ) -> tuple[Limits, ControllerState]:
+        limits = Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 16, Pool.INDEX_HEAVY: heavy, Pool.INDEX_LIGHT: light})
+        return next_limits(
+            limits, self.SNAP, ceilings or self.CEILINGS, ControllerState.initial(), self._busy(limits),
+            now=1000.0, feedback=window,
+        )
+
+    def test_a_docling_outage_halves_heavy_and_leaves_light_unbraked(self) -> None:
+        limits, state = self._step(FeedbackWindow(unavailable={"DoclingService": 3}))
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 64
+        light = state.get(Pool.INDEX_LIGHT)
+        assert light.rule is not LimitRule.DOWNSTREAM
+        assert light.cooldown_until < 1000.0
+        assert light.downstream_holdoff == 0
+
+    @pytest.mark.parametrize(
+        ("window", "heavy"),
+        [
+            (FeedbackWindow(throttles={"DoclingService": 1}), 16),
+            (FeedbackWindow(timeouts={"DoclingService": 2}), 24),
+        ],
+    )
+    def test_a_docling_throttle_or_timeouts_brake_heavy_only(self, window: FeedbackWindow, heavy: int) -> None:
+        limits, _ = self._step(window)
+        assert limits.get(Pool.INDEX_HEAVY) == heavy
+        assert limits.get(Pool.INDEX_LIGHT) == 64
+
+    def test_a_shared_dependency_in_the_same_window_still_brakes_light(self) -> None:
+        limits, state = self._step(FeedbackWindow(unavailable={"DoclingService": 3}, pool_exhaustions={"neo4j": 1}))
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 32
+        assert state.get(Pool.INDEX_LIGHT).rule_services == ("neo4j",)
+        assert state.get(Pool.INDEX_HEAVY).rule_services == ("DoclingService", "neo4j")
+
+    def test_the_timeout_threshold_is_counted_per_pool_after_scoping(self) -> None:
+        limits, _ = self._step(FeedbackWindow(timeouts={"DoclingService": 1, "neo4j": 1}))
+        assert limits.get(Pool.INDEX_HEAVY) == 24  # two timeouts: a quarter off
+        assert limits.get(Pool.INDEX_LIGHT) == 64  # one timeout: no shrink
+
+    def test_light_grows_through_a_sustained_docling_outage_as_on_a_clean_window(self) -> None:
+        def run(window: FeedbackWindow) -> list[tuple[int, int]]:
+            limits = Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 16, Pool.INDEX_HEAVY: 32, Pool.INDEX_LIGHT: 32})
+            state = ControllerState.initial()
+            seen = []
+            for i in range(6):
+                limits, state = next_limits(
+                    limits, self.SNAP, self.CEILINGS, state, self._busy(limits), now=1000.0 + i * INTERVAL,
+                    feedback=window,
+                )
+                seen.append((limits.get(Pool.INDEX_HEAVY), limits.get(Pool.INDEX_LIGHT)))
+            return seen
+
+        outage = run(FeedbackWindow(unavailable={"DoclingService": 1}))
+        clean = run(FeedbackWindow.empty())
+        assert [light for _, light in outage] == [light for _, light in clean]
+        assert clean[-1][1] > 32
+        assert all(heavy < clean_heavy for (heavy, _), (clean_heavy, _) in zip(outage, clean, strict=True))
+
+    def test_a_collapsed_light_tier_still_brakes_heavy(self) -> None:
+        ceilings = Ceilings(heavy=8, light=32, index_heavy=32, index_light=0)
+        limits, _ = self._step(FeedbackWindow(unavailable={"DoclingService": 3}), light=0, ceilings=ceilings)
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 0
+
+    def test_the_docling_key_is_the_name_the_client_reports_under(self) -> None:
+        source = (Path(__file__).resolve().parents[4] / "app/services/docling/client.py").read_text()
+        assert 'service_name="DoclingService"' in source
+        assert policy_mod._SERVICE_POOL["DoclingService"] is Pool.INDEX_HEAVY
 
 
 class TestBrakesNeverRaiseALimit:
