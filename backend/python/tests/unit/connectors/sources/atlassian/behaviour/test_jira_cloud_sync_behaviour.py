@@ -398,9 +398,6 @@ class SiteDb(CloudRecordsDb):
         for role, members in roles:
             self.app_roles[role.source_role_id] = list(members)
 
-    async def open_app_to_org_team(self, connector_id: str) -> None:
-        self.team_gate_open = True
-
     async def withdraw_team_app_edge(self, connector_id: str) -> None:
         self.team_gate_open = False
 

@@ -6003,18 +6003,6 @@ class IGraphDBProvider(ABC):
         teams or the organization are left alone. Returns how many edges were deleted."""
         raise NotImplementedError
 
-    async def remove_unlinked_user_access_to_connector(
-        self,
-        connector_id: str,
-        transaction: str | None = None,
-    ) -> int:
-        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
-        when that user has no USER_APP_RELATION edge to the connector, the link checked in the same statement (a user
-        linked meanwhile, say by a verified email taking over a stub, keeps them). Before the org's All team passes
-        the connector gate, no grant may wait there for a person the connector does not link. Returns how many
-        edges were deleted."""
-        raise NotImplementedError
-
     @abstractmethod
     async def get_uploaded_document_ids(
         self,

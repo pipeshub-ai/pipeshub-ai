@@ -7601,29 +7601,8 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.ensure_team_app_edge(connector_id, self.org_id)
 
-    @retry_on_deadlock()
-    async def open_app_to_org_team(self, connector_id: str) -> bool:
-        """Let the org's All team through the connector gate, for content the source opens to everyone, and say whether
-        the edge is there afterwards (an org without its All team gets none). Until then the gate alone kept every
-        user the connector does not link away from grants still naming them (left from before withdrawals took them),
-        so those grants go first, in one statement that checks the link (``remove_unlinked_user_access_to_connector``):
-        deactivated users and guests are included, and a user linked meanwhile keeps theirs. Every call removes them
-        again, gate open or not, so a pass that missed some is made good."""
-        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
-            await tx_store.remove_unlinked_user_access_to_connector(connector_id)
-            await tx_store.ensure_team_app_edge(connector_id, self.org_id)
-        return await self.org_team_app_edge_exists(connector_id)
-
-    async def org_team_app_edge_exists(self, connector_id: str) -> bool:
-        """Whether the org's All team passes the connector gate now. A failed read raises."""
-        async with self.data_store_provider.transaction() as tx_store:
-            return bool(await tx_store.get_edge(
-                f"all_{self.org_id}", CollectionNames.TEAMS.value, connector_id, CollectionNames.APPS.value,
-                CollectionNames.USER_APP_RELATION.value, raise_on_error=True,
-            ))
-
     async def withdraw_team_app_edge(self, connector_id: str) -> None:
-        """Undo ``open_app_to_org_team``: the org's members pass the gate again only through their own links."""
+        """Take the org's All team off the connector gate: its members pass it again only through their own links."""
         async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_edge(
                 f"all_{self.org_id}", CollectionNames.TEAMS.value,

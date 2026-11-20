@@ -346,11 +346,6 @@ class BaseDataStore(ABC):
         Returns how many were deleted."""
         raise NotImplementedError
 
-    async def remove_unlinked_user_access_to_connector(self, connector_id: str) -> int:
-        """Delete every user's own PERMISSION edges to this connector's nodes when the user is not linked to the connector
-        (no USER_APP_RELATION edge), checked in the same statement. Returns how many were deleted."""
-        raise NotImplementedError
-
     @abstractmethod
     async def delete_user_group_by_id(self, group_id: str) -> None:
         pass

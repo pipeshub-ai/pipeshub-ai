@@ -136,7 +136,6 @@ DELETE_CALLS = {"batch_delete_edges", "delete_edge", "delete_edges_from", "delet
 # Provider methods that remove edges or nodes people read through (a connector with its apps, a group, a role, a record
 # group, a team's or a knowledge base's members): every caller outside the providers is flagged like a direct edge delete.
 COMPOUND_DELETES = {"delete_connector_instance", "delete_user_group_by_id", "remove_user_access_to_connector",
-                    "remove_unlinked_user_access_to_connector",
                     "remove_kb_permission", "delete_team_member_edges", "delete_all_team_permissions", "delete_kb_hub_app",
                     "reap_stale_external_app_relations"}
 # `delete_nodes_and_edges` is flagged when it removes nodes that hold or carry access.
@@ -169,7 +168,6 @@ NO_BUMP = {
     "connectors/core/base/data_store/graph_data_store.py::delete_user_group_by_id": STORE,
     "connectors/core/base/data_store/graph_data_store.py::reap_stale_external_app_relations": STORE,
     "connectors/core/base/data_store/graph_data_store.py::remove_user_access_to_connector": STORE,
-    "connectors/core/base/data_store/graph_data_store.py::remove_unlinked_user_access_to_connector": STORE,
     "migrations/kb_apps_migration.py::_migrate_org":
         "one-off startup migration of legacy knowledge bases; a scope cached before it expires with its entry TTL",
     "scripts/connector_deletion_integration_test.py::run_deletion_test": "a manual test script, not run by a service",

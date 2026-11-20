@@ -780,11 +780,11 @@ async def _org_member(world: dict[str, Any], name: str) -> str:
     return user_id
 
 
-async def test_a_public_project_is_read_by_the_whole_org_and_no_longer_once_it_is_private(world: dict[str, Any]) -> None:
-    """Browse held by `anyone` (Jira's anonymous access): erin, a PipesHub user with no Jira account, and dave, who
-    cannot browse the project, read its issues with no level; a leveled one stays with its level. frank has no
-    Jira account but a grant left on dave's leveled issue: opening the gate to the org removes it first. When the
-    project is private again, the org's All team stops passing the gate and erin reads nothing."""
+async def test_a_project_open_to_anyone_is_read_only_by_linked_jira_accounts(world: dict[str, Any]) -> None:
+    """Browse held by `anyone` (Jira's public access): dave, a linked Jira account that cannot browse the project
+    otherwise, reads its issues with no level; erin, a PipesHub user with no Jira account, reads nothing, and neither
+    does frank, who has no Jira account but a grant left on dave's leveled issue. An All-team edge an earlier release
+    opened is withdrawn at the start of the next sync, and erin and frank read nothing again."""
     await _sync_project(world)
     graph, run, org_id, connector = world["graph"], world["run"], world["org_id"], world["connector"]
     erin_id = await _org_member(world, "erin")
@@ -813,18 +813,15 @@ async def test_a_public_project_is_read_by_the_whole_org_and_no_longer_once_it_i
     # dave can now browse the project, so he also reads the issue in his own level.
     public = {key: who | {"dave"} if who == PROJECT_READERS else who for key, who in readers.items()} | {"PROJ-9": {"dave"}}
     await world["processor"].on_new_record_groups([(project, [*browse, anyone])])
-    connector._read_anonymously = AsyncMock(return_value=True)  # a signed-out search reads the project
-    await connector._admit_everyone_to_public_projects([(project, [*browse, anyone])], written_in_full=True)
-    # A closed gate opens only after the issue pass has written each stored issue's level (``_sync_project`` ran it).
-    assert await reads(erin_id) == set()
-    await connector._settle_org_gate(set())
-    assert await world["processor"].org_team_app_edge_exists(world["connector_id"])
     assert not await _mismatches(world, public, by_key)
-    assert await reads(erin_id) == unleveled
-    assert await reads(frank_id) == unleveled  # not PROJ-9: his stale grant went before the gate opened
-
-    await world["processor"].on_new_record_groups([(project, browse)])
-    await connector._admit_everyone_to_public_projects([(project, browse)], written_in_full=True)
-    assert not await world["processor"].org_team_app_edge_exists(world["connector_id"])
-    assert not await _mismatches(world, readers, by_key)
     assert await reads(erin_id) == set()
+    assert await reads(frank_id) == set()
+
+    await world["processor"].ensure_team_app_edge(world["connector_id"])  # as an earlier release opened it
+    assert await reads(erin_id) == unleveled
+    connector.data_source = None  # the sync stops at its first step, after the withdrawal
+    with pytest.raises(RuntimeError):
+        await connector.run_sync()
+    assert await reads(erin_id) == set()
+    assert await reads(frank_id) == set()
+    assert not await _mismatches(world, public, by_key)

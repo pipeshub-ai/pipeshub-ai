@@ -52,7 +52,6 @@ def _make_mock_deps():
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-jira-1"
     data_entities_processor.on_new_app_users = AsyncMock()
-    data_entities_processor.open_app_to_org_team = AsyncMock()
     data_entities_processor.withdraw_team_app_edge = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -623,10 +622,21 @@ class TestJiraFullSync:
             connector._sync_project_lead_roles.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_the_org_gate_is_settled_before_the_issue_checkpoint_is_saved(self) -> None:
-        """An incomplete pass of a public project closes an open gate; a checkpoint write that fails must not skip that."""
-        connector, dep, dsp, cs, tx = _make_connector()
+    async def test_a_project_open_to_anyone_reaches_only_linked_jira_accounts(self) -> None:
+        """Browse held by `anyone` is an ORG grant, which reaches only the accounts linked to the connector: people
+        without an account in Jira read nothing through it, even on a site whose signed-out visitors read the project.
+        The org's All team never passes the gate, and an All-team edge left by an earlier release goes on the sync."""
+        connector, dep, *_ = _make_connector()
         connector.data_source = MagicMock()
+        # Earlier releases searched signed out and, when the search read the project, opened the gate to the org.
+        connector._read_anonymously = AsyncMock(return_value=True)
+        dep.open_app_to_org_team = AsyncMock(return_value=True)
+        dep.org_team_app_edge_exists = AsyncMock(return_value=False)
+        project = RecordGroup(
+            id=str(uuid4()), org_id="org-jira-1", external_group_id="p1", connector_id="conn-jira-1",
+            connector_name=Connectors.JIRA, name="Public", short_name="PUB", group_type=RecordGroupType.PROJECT,
+        )
+        anyone = Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated", type=PermissionType.READ)
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
                    new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
             connector._fetch_users = AsyncMock(return_value=[AppUser(
@@ -634,17 +644,19 @@ class TestJiraFullSync:
                 email="alice@test.com", full_name="Alice", is_active=True)])
             connector._keep_licensed_users = AsyncMock(side_effect=lambda found, _mapping: found)
             connector._sync_user_groups = AsyncMock(return_value={})
-            connector._fetch_projects = AsyncMock(return_value=([], []))
+            connector._fetch_projects = AsyncMock(return_value=([(project, [anyone])], [{"key": "PUB"}]))
+            connector._stored_projects = AsyncMock(return_value=[("p1", "PUB")])
             connector._sync_project_roles = AsyncMock()
             connector._sync_project_lead_roles = AsyncMock()
             connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
-            connector._sync_all_project_issues = AsyncMock(return_value={"incomplete_project_keys": ["PUB"]})
-            connector._update_issues_sync_checkpoint = AsyncMock(side_effect=ConnectionError("store down"))
-            connector._settle_org_gate = AsyncMock()
+            connector._sync_all_project_issues = AsyncMock(return_value={"total_synced": 1, "new_count": 1, "updated_count": 0})
+            connector._update_issues_sync_checkpoint = AsyncMock()
+            connector._handle_issue_deletions = AsyncMock()
             connector.notify = AsyncMock()
-            with pytest.raises(ConnectionError):
-                await connector.run_sync()
-            connector._settle_org_gate.assert_awaited_once_with({"PUB"})
+            await connector.run_sync()
+        dep.on_new_record_groups.assert_awaited_once_with([(project, [anyone])])
+        assert [name for name, *_ in dep.mock_calls if "team" in name] == ["withdraw_team_app_edge"]
+        dep.withdraw_team_app_edge.assert_awaited_once_with("conn-jira-1")
 
     @pytest.mark.asyncio
     async def test_run_sync_no_users_returns(self):

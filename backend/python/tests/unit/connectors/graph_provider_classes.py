@@ -110,7 +110,7 @@ STRUCTURAL = frozenset("""
     delete_nodes_and_edges delete_parent_child_edge_to_record delete_record delete_record_by_external_id
     delete_records_and_relations delete_records_recursive delete_single_record drop_redundant_group_edges link_record_to_group
     migrate_legacy_kb_to_app migrate_legacy_relation_edge purge_trash_kept_record_groups purge_trashed_records
-    remove_unlinked_user_access_to_connector remove_user_access_to_connector remove_user_access_to_record replace_edges_to
+    remove_user_access_to_connector remove_user_access_to_record replace_edges_to
     replace_record_permissions restore_records
     soft_delete_records split_link_edges take_back_kept_record_group unlink_nodes_missed_by_full_sync update_edge
     upsert_record_under_parent

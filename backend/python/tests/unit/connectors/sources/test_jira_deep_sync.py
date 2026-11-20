@@ -55,9 +55,7 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-jira-1"
     dep.on_new_app_users = AsyncMock()
-    dep.open_app_to_org_team = AsyncMock(return_value=True)
     dep.withdraw_team_app_edge = AsyncMock()
-    dep.org_team_app_edge_exists = AsyncMock(return_value=False)
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
