@@ -48,6 +48,7 @@ export function ShareSearchInput({
   onEmailSubmit,
 }: ShareSearchInputProps) {
   const { t } = useTranslation();
+  const searchLabel = t(supportsTeams ? 'shareSidebar.searchPlaceholderTeams' : 'shareSidebar.searchPlaceholderUsers');
   const inputRef = useRef<HTMLInputElement>(null);
   const hasRoleSelection = selections.some((s) => s.type === 'user' || (teamsHaveRoles && s.type === 'team'));
 
@@ -137,11 +138,9 @@ export function ShareSearchInput({
               onSearchChange('');
             }
           }}
-          placeholder={
-            selections.length === 0
-              ? t(supportsTeams ? 'shareSidebar.searchPlaceholderTeams' : 'shareSidebar.searchPlaceholderUsers')
-              : ''
-          }
+          // Its name is the placeholder's words, kept when the placeholder goes after the first pick.
+          aria-label={searchLabel}
+          placeholder={selections.length === 0 ? searchLabel : ''}
           style={{
             border: 'none',
             outline: 'none',
