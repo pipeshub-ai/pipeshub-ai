@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from app.modules.parsers.pdf import table_hybrid as th
@@ -215,12 +216,18 @@ class SupervisorClient:
         self.sup = TableSupervisor(weights_dir=lambda _mode: weights, memory_available=lambda: 10**12, model_timeout_ceiling=120.0)
         self.calls = 0
         self.history: list[float] = []  # the model's own wall seconds of each table
+        self.cpu_history: list[float] = []  # the model's own cpu seconds of each table
+        self.round_trip: list[float] = []  # seconds from the request to the answer of each table, as the caller sees it
 
     def post_batch(self, meta: dict[str, Any], files: dict[str, bytes], *, deadline_ms: int, timeout_s: float) -> BatchOutcome:
         self.calls += 1
         tables = []
         for spec in meta["tables"]:
+            t0 = time.perf_counter()
             raw = self._loop.run_until_complete(self.sup.run_table({k: v for k, v in spec.items() if k != "image"}, files[spec["image"]]))
+            self.round_trip.append(time.perf_counter() - t0)
+            if raw.get("cpu_ms") is not None:
+                self.cpu_history.append(raw["cpu_ms"] / 1000.0)
             tables.append(TableResult(id=spec["id"], **raw))
             if raw.get("wall_ms") is not None:
                 self.history.append(raw["wall_ms"] / 1000.0)

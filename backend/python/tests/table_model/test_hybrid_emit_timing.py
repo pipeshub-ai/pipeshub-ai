@@ -33,8 +33,17 @@ def test_the_figures_are_measured_and_reported(figures: dict[int, dict]) -> None
     for n, f in figures.items():
         assert f["table_pages"] >= 5 and f["tables_timed"] >= 8
         lines.append(f"| {n} | {f['table_pages']} | {f['added_per_page_median']:.3f} / {f['added_per_page_max']:.3f} | {f['cpu_added_per_page_median']:.3f} | {f['model_seconds_per_table_median']:.3f} / {f['model_seconds_per_table_mean']:.3f} |")
+    for n, f in figures.items():
+        h = f["host"]
+        lines += [
+            "",
+            f"threads {n}: model load {f['model_load_s']:.2f} s, first table {f['first_table_model_s']:.3f} s, later tables median {f['model_s_after_first_median']:.3f} s "
+            f"(cpu {f['model_cpu_s_median']:.3f} s, round trip {f['round_trip_s_median']:.3f} s); child starts {f['child_starts']}, respawns {f['child_respawns']}, child threads {f['child_threads']}",
+            f"threads {n}: cpu {h.get('cpu_model')}, cores {h['cpu_count']} (allowed {h.get('cpus_allowed')}), cgroup {h.get('cgroup_cpu_max')}, torch {h['torch']} threads here {h.get('torch_num_threads_here')}, env {h['thread_env']}",
+        ]
     text = "\n".join(lines)
     print(text)
+    print(figures[2]["host"].get("torch_config", ""))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as fh:
