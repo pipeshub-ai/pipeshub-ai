@@ -285,10 +285,8 @@ def _partial_and_empty(reason: str = "timeout") -> AsyncMock:
 
 @pytest.fixture
 def tracked_request() -> Iterator[None]:
-    token = degraded_notice._seen.set(None)
-    degraded_notice.track()
-    yield
-    degraded_notice._seen.reset(token)
+    with degraded_notice.tracking():      # every list of the module, reset after: a sync fixture's context is the worker's own
+        yield
 
 
 async def test_an_empty_partial_answer_flags_the_dense_search(service, mock_vector_db_service, tracked_request) -> None:
@@ -462,3 +460,28 @@ async def test_the_shadow_comparisons_partial_search_is_its_own(service, mock_ve
 
     assert own == []
     assert not degraded_notice.was_degraded()
+
+
+async def test_a_diversity_read_that_moved_to_the_record_ids_keeps_only_their_partial_search(service) -> None:
+    """The deeper container search stopped short and was dropped for the record-id search (narrow shortfall), which ran in full: its hits, and its
+    complete search, are what joins the response."""
+    from types import SimpleNamespace
+
+    plan = mod._QueryPlan(dense=[[0.1]], sparse=[None], collections=["records"])
+
+    async def container(*_a: object, plan: mod._QueryPlan, **_k: object) -> tuple:
+        plan.degraded = True
+        plan.degraded_reasons.add("timeout")
+        plan.narrow_shortfall = True
+        return [], {}, False
+    service._search_and_adjudicate = container
+    hit = {"score": 0.9, "content": "c", "metadata": {"virtualRecordId": "v1", "recordId": "r1"}}
+    by_record_ids = AsyncMock(return_value=SimpleNamespace(results=[hit], accessible={"v1": "r1"}))
+
+    await service._diversity_candidates(
+        ["q"], None, 30, "o1", "u1", plan, containers=AccessibleContainers(), enumerated=None, by_record_ids=by_record_ids,
+        record_ids_first=False, record_cut=None, allow_requery=True, user_key="user-key", scope_connector_ids=None, scopes=(),
+    )
+
+    assert by_record_ids.await_count == 1
+    assert plan.degraded is False and plan.incomplete_notice() is None

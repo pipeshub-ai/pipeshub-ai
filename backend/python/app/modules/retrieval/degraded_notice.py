@@ -28,6 +28,18 @@ def track() -> None:
         _apps.set({})
 
 
+@contextlib.contextmanager
+def tracking() -> Iterator[None]:
+    """Track the block on its own (every list of this module new), and leave the context as it was after it: ``scoped`` for code that is not a stream."""
+    tokens = (_seen.set([]), _access.set([]), _apps.set({}))
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            for var, token in zip((_seen, _access, _apps), tokens, strict=True):
+                var.reset(token)
+
+
 def scoped(stream: Callable[_P, AsyncGenerator[_T, None]]) -> Callable[_P, AsyncGenerator[_T, None]]:
     """Give each run of an async-generator entry point (a chat stream) its own scope, ended when the stream ends.
 
@@ -92,6 +104,20 @@ def collect() -> Iterator[list[str]]:
     finally:
         with contextlib.suppress(ValueError):
             _search.reset(token)
+
+
+@contextlib.contextmanager
+def held() -> Iterator[list[str]]:
+    """Hold what the block notes (an attempt that may be cancelled or retried): it reaches neither the request nor an open ``collect`` block until the
+    caller publishes it (``note`` each reason) once the attempt has answered."""
+    mine: list[str] = []
+    seen, search = _seen.set(None), _search.set((mine,))
+    try:
+        yield mine
+    finally:
+        with contextlib.suppress(ValueError):
+            _seen.reset(seen)
+            _search.reset(search)
 
 
 @contextlib.contextmanager

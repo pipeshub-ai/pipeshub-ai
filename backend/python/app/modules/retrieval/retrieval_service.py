@@ -1700,7 +1700,9 @@ class RetrievalService:
                         return [], {}
                     record_ids_first = candidate_plan.narrow_shortfall
                 if record_ids_first:
-                    # As for the page: the record-id search, with its own cut and check.
+                    # As for the page: the record-id search, with its own cut and check. Its hits replace the container search's, and so does its
+                    # partial search: only what this search said joins the response.
+                    candidate_plan.degraded, candidate_plan.degraded_reasons = False, set()
                     found = await by_record_ids(depth, candidate_plan)
                     hits, accessible = found.results, found.accessible
         except Exception as exc:
