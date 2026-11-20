@@ -12,6 +12,7 @@ import {
 } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { aiModelFormOptions } from '@/config';
 import type { DiscoveredModel } from '../types';
+import { NO_CREDENTIAL_AUTOFILL_PROPS } from '@/app/components/ui/secret-text-field';
 
 const MAX_VISIBLE_OPTIONS = 200;
 
@@ -222,6 +223,7 @@ export function ModelCombobox({
             ))}
             <input
               ref={inputRef}
+              {...NO_CREDENTIAL_AUTOFILL_PROPS}
               role="combobox"
               aria-label={label}
               aria-expanded={open}

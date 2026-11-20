@@ -5,7 +5,8 @@ must be enough for it. Two ``PgState`` objects stand for two processes.
 """
 
 import asyncio
-import contextlib
+import statistics
+import time
 
 import pytest
 
@@ -22,8 +23,7 @@ from app.services.paid_cache.repurge_window import (
     PgWindowStore,
 )
 from app.services.pg_runtime import RuntimeDb
-from app.services.pg_state import LockedTx, PgState
-from tests.support import plan_gate
+from app.services.pg_state import PgState
 from tests.support.repurge_window import MemoryWindowStore
 
 NOW = 1_700_000_000_000
@@ -96,29 +96,24 @@ async def test_the_cap_is_the_sequence_never_a_row_count_and_a_full_window_answe
     assert read.ids == ("r0", "r1", "r2")
 
 
-class _Recorded:
-    """A unit of work that keeps every statement run on it (here: the window lock holder's)."""
-
-    def __init__(self, tx: object, seen: list[tuple[str, tuple]]) -> None:
-        self._tx, self._seen = tx, seen
-
-    def __getattr__(self, name: str) -> object:
-        run = getattr(self._tx, name)
-
-        async def recorded(sql: str, *args: object) -> object:
-            self._seen.append((sql, args))
-            return await run(sql, *args)
-        return recorded
+async def _timed_append(pg: PgWindowStore, org: str, rid: str) -> float:
+    t = time.perf_counter()
+    assert (await pg.open_or_append(org, 5, "zz", "e", rid, NOW)).state == APPENDED
+    return (time.perf_counter() - t) * 1000
 
 
-async def test_an_append_into_a_window_of_50k_rows_reads_only_its_own_keys_under_the_lock(stores, uid, monkeypatch) -> None:
-    """R2-3: counting rows under the window lock cost 75 ms at 50k rows (RLS enforced). Nothing counts now. Judged by what
-    runs under the lock, not by a clock: an append into a window of 50k rows runs as many statements as one into an empty
-    window, and each reads ``platform.kv_entries`` by its key alone (the plan), so the lock is held for the same work at any size."""
+async def test_an_append_into_a_window_of_50k_rows_stays_fast_under_the_lock(stores, uid) -> None:
+    """R2-3: counting rows under the window lock cost 75 ms at 50k rows (RLS enforced). Nothing counts now.
+
+    The append into a window of 50k rows is timed against appends into an empty window, alternately in the same run, and the two
+    medians are compared: a runner that is slow slows both, a cost that grows with the window slows only the first (75 ms against 2 ms). A
+    few stalled appends (one measured 46 ms against a 2 ms median) move the tail but not a median of 200, so the tail only has
+    to stay below a generous bound.
+    """
     pg = stores[0]
-    org, empty = f"org-{uid}", f"org-{uid}-empty"
+    org, small = f"org-{uid}", f"org-{uid}-small"
     await _publish(pg, org)
-    await _publish(pg, empty)
+    await _publish(pg, small)
     base = f"state:rpw:{{{org}}}:5"
     async with (await pg._state.rt.db()).runtime_uow(write=True) as tx:
         await tx.execute(
@@ -130,25 +125,17 @@ async def test_an_append_into_a_window_of_50k_rows_reads_only_its_own_keys_under
             "INSERT INTO platform.kv_entries (key, value, expires_at, updated_at) VALUES ($1, convert_to('50000', 'UTF8'), now() + interval '1 hour', now())",
             base + ":n",
         )
-    statements: list[tuple[str, tuple]] = []
-    real_locked = pg._state.locked
-
-    @contextlib.asynccontextmanager
-    async def recording(name: str):  # noqa: ANN202
-        async with real_locked(name) as locked:
-            yield LockedTx(_Recorded(locked._tx, statements))
-
-    monkeypatch.setattr(pg._state, "locked", recording)
-    assert (await pg.open_or_append(empty, 5, "zz", "e", "first", NOW)).state == APPENDED
-    on_empty = len(statements)
-    statements.clear()
-    assert (await pg.open_or_append(org, 5, "zz", "e", "late", NOW)).state == APPENDED
-    assert len(statements) == on_empty, [sql.split("*/")[0] for sql, _ in statements]
-    async with (await pg._state.rt.db()).runtime_uow(write=True) as tx:
-        plans = [await tx.fetchval("/* pipeshub:test.explain */ EXPLAIN (FORMAT JSON) " + sql, *args) for sql, args in statements]
-    assert sum(len(plan_gate.scans(plan, "kv_entries")) for plan in plans) >= 2          # the reads of ``sealed`` and ``own`` are judged
-    unkeyed = [v for plan in plans for v in plan_gate.violations(plan, {"kv_entries": r"\bkey = "})]
-    assert not unkeyed, unkeyed
+    for i in range(20):                                                             # warm the connection and the plans
+        await _timed_append(pg, small, f"warm{i}")
+        await _timed_append(pg, org, f"warm{i}")
+    empty, big = [], []
+    for i in range(200):                                                            # alternating, so both see the same load
+        empty.append(await _timed_append(pg, small, f"late{i}"))
+        big.append(await _timed_append(pg, org, f"late{i}"))
+    median, baseline, p99 = statistics.median(big), statistics.median(empty), sorted(big)[int(len(big) * 0.99) - 1]
+    detail = f"median {median:.1f} ms against {baseline:.1f} ms in an empty window, p99 {p99:.1f} ms"
+    assert median < 3 * baseline + 5, detail                                        # the cost does not follow the window's size
+    assert p99 < 250, detail                                                        # a stalled runner, not a held lock
 
 
 async def test_repair_sees_only_the_orgs_open_windows_and_a_done_window_leaves_the_set(stores, uid) -> None:

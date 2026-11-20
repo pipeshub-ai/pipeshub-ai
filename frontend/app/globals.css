@@ -599,6 +599,23 @@ summary {
 }
 
 /* ========================
+   Secret fields
+   ======================== */
+
+/* API keys, tokens and client secrets are masked text inputs, not type="password":
+   browsers treat every password input as a login and fill saved credentials into it
+   (app/components/ui/secret-text-field.tsx). The placeholder stays readable. */
+.secret-field-masked input,
+input.secret-field-masked {
+  -webkit-text-security: disc;
+}
+
+.secret-field-masked input::placeholder,
+input.secret-field-masked::placeholder {
+  -webkit-text-security: none;
+}
+
+/* ========================
    Scrollbar Utilities
    ======================== */
 
