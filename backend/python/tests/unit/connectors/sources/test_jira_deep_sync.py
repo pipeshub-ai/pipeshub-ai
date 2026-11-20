@@ -1016,7 +1016,7 @@ class TestSyncUserGroups:
         result = await connector._sync_user_groups([user])
 
         assert "g1" in result
-        assert "devs" in result
+        assert "devs" not in result  # by id only: a name resolves through _group_ids_by_name
         connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
