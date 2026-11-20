@@ -21,6 +21,7 @@ from tests.integration.graph_db.drupal_wiki_world import (
     a_deleted_attachment_goes_on_the_next_sync_that_lists_its_page,
     a_deleted_page_goes_on_the_next_sync,
     a_disabled_reader_loses_every_space_until_enabled_again,
+    a_protected_spaces_members_read_it_until_removed,
     a_reader_enabled_again_gets_only_what_the_wiki_shows_now,
     a_shared_page_reaches_the_other_spaces_readers_and_its_sub_page_does_not,
     grants_an_older_sync_wrote_on_a_protected_space_go,
@@ -80,6 +81,10 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
 async def test_a_disabled_or_removed_reader_reads_nothing(world: DrupalWorld) -> None:
     await a_disabled_reader_loses_every_space_until_enabled_again(world)
+
+
+async def test_a_protected_spaces_members_read_it_until_removed(world: DrupalWorld) -> None:
+    await a_protected_spaces_members_read_it_until_removed(world)
 
 
 async def test_a_reader_enabled_again_reads_only_what_the_wiki_shows_now(world: DrupalWorld) -> None:

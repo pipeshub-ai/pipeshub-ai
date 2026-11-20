@@ -27,7 +27,6 @@ from app.connectors.sources.drupal_wiki.connector import (
     GRAPHQL_PROBE_TIMEOUT_S,
     PAGE_SIZE,
     PAGE_STRUCTURE_REFUSED_ACTION_CODE,
-    READERS_NOT_DOCUMENTED,
     TREE_UNREADABLE,
     DrupalWikiAuthError,
     DrupalWikiConnector,
@@ -155,7 +154,9 @@ def connector(processor: MagicMock) -> DrupalWikiConnector:
     # that cannot be read is the failure a test opts into.
     instance.graphql = MagicMock()
     instance.graphql.get_space_tree = AsyncMock(return_value=[])
-    instance.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLError("no members"))
+    # A protected space has no members unless a test gives it some.
+    instance.graphql.get_space_members = AsyncMock(return_value={"users": [], "groups": []})
+    instance._enabled_emails = set()
     return instance
 
 
@@ -386,14 +387,12 @@ class TestSpaces:
         assert permissions[0].entity_type == EntityType.ORG
 
     @pytest.mark.asyncio
-    async def test_a_protected_space_grants_nobody_whatever_roles_its_members_hold(
+    async def test_a_protected_space_grants_its_enabled_members_and_groups(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
-        # Only the Reader role opens a protected space (handbook node 363), and roles are
-        # free checkboxes: a member list without roles names no reader. The member list is
-        # not even asked for; stored grants from an earlier run are replaced by none.
+        connector._enabled_emails = {"alice@example.com"}
         connector.graphql.get_space_members = AsyncMock(return_value={
-            "users": [{"email": "alice@example.com"}], "groups": [{"id": 7}],
+            "users": [{"email": "alice@example.com"}, {"email": "blocked@example.com"}], "groups": [{"id": 7}],
         })
         connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
             {"id": 12, "name": "HR", "type": "BASIC", "accessStatus": "PRIVATE"},
@@ -403,10 +402,31 @@ class TestSpaces:
 
         assert set(spaces) == {12}
         [(group, permissions)] = processor.on_new_record_groups.await_args.args[0]
-        assert (group.external_group_id, permissions) == ("12", [])
-        connector.graphql.get_space_members.assert_not_awaited()
-        assert connector._space_problems == {READERS_NOT_DOCUMENTED: ["'HR'"]}
+        assert group.external_group_id == "12"
+        assert sorted((p.entity_type, p.email, p.external_id) for p in permissions) == [
+            (EntityType.GROUP, None, "7"), (EntityType.USER, "alice@example.com", None),
+        ]
         assert connector.full_sync_coverage().complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_protected_space_whose_members_cannot_be_read_is_left_as_it_is(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Not written, its pages not synced, and not removed as a space the run did not sync.
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLTransientError("502"))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
+            {"id": 12, "name": "HR", "type": "BASIC", "accessStatus": "PRIVATE"},
+            {"id": 3, "name": "Team", "type": "BASIC", "accessStatus": "AUTHENTICATED"},
+        ])))
+        processor.get_nodes_by_filters = AsyncMock(return_value=[{"externalGroupId": "12"}, {"externalGroupId": "3"}])
+
+        spaces = await connector._sync_spaces()
+
+        assert set(spaces) == {3}
+        assert [g.external_group_id for g, _ in processor.on_new_record_groups.await_args.args[0]] == ["3"]
+        processor.on_record_group_deleted.assert_not_awaited()
+        assert connector._space_unknown(12)
+        assert connector.full_sync_coverage().complete is False
 
     @pytest.mark.asyncio
     async def test_space_with_an_unusable_id_is_skipped(
@@ -2645,8 +2665,12 @@ class TestTheConnectionTestProbeIsBounded:
 
 
 class TestProtectedSpacesAreAnnouncedOnce:
-    """A protected space nobody can be granted is a steady state: it is announced when it
-    starts or changes, as a warning, and real failures still notify every run."""
+    """A protected space whose members the wiki refuses to list is a steady state: it is
+    announced when it starts or changes, as a warning, and real failures still notify every run."""
+
+    @pytest.fixture(autouse=True)
+    def members_refused(self, connector: DrupalWikiConnector) -> None:
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLRefusedError("refused"))
 
     @pytest.mark.asyncio
     async def test_three_runs_send_one_warning(self, connector: DrupalWikiConnector) -> None:
@@ -2781,6 +2805,35 @@ class TestSharedPages:
 
         assert self.rewrites(processor) == []
         assert self.memory(checkpoints)["1"] == {"spaces": [14], "grants": "", "open": []}
+
+    @pytest.mark.asyncio
+    async def test_a_page_shared_into_a_protected_space_reaches_its_members_until_unshared(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Members of a space a page is shared into see it (node 461). Not inheriting, the page
+        # carries its home space's members as well; a change of the target's members rewrites it.
+        alice = Permission(external_id=None, email="alice@example.com", type=PermissionType.READ, entity_type=EntityType.USER)
+        group = lambda gid: Permission(external_id=gid, email=None, type=PermissionType.READ, entity_type=EntityType.GROUP)  # noqa: E731
+        listed = {12: [self.PAGE], 13: [], 14: [self.PAGE], 15: []}
+        checkpoints = self.wiki(connector, processor, listed)
+        connector._space_grants = {12: [alice], 13: [ORG_GRANT], 14: [group("7")], 15: []}
+
+        await connector._sync_pages(self.SPACES)
+        assert self.rewrites(processor) == [("page:1", "OPEN", False, keys([alice, group("7")]))]
+
+        processor.on_updated_record_permissions.reset_mock()
+        shares = self.memory(checkpoints)
+        checkpoints = self.wiki(connector, processor, listed, shares=shares, stored_open=True)
+        connector._space_grants[14] = [group("8")]
+        await connector._sync_pages(self.SPACES)
+        assert self.rewrites(processor) == [("page:1", "OPEN", False, keys([alice, group("8")]))]
+
+        processor.on_updated_record_permissions.reset_mock()
+        shares = self.memory(checkpoints)
+        listed[14] = []
+        self.wiki(connector, processor, listed, shares=shares, stored_open=True)
+        await connector._sync_pages(self.SPACES)
+        assert self.rewrites(processor) == [("page:1", "STRICT", True, [])]
 
     @pytest.mark.asyncio
     async def test_an_unchanged_share_is_not_written_again_whoever_its_spaces_members_are(
@@ -3262,6 +3315,7 @@ class TestPeopleWhoLostAccess:
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
         # An empty window that says more follow is a misread, not the end of the directory.
+        connector._enabled_emails = None  # as each run starts
         connector.data_source.list_users = AsyncMock(side_effect=[
             response(spring_page([{"id": 1, "email": "a@example.com", "status": "ENABLED"}], last=False)),
             response(spring_page([], last=False)),

@@ -4,9 +4,10 @@ The connector, ``DataSourceEntitiesProcessor`` and the graph provider run for re
 answers are faked. After each step, what each PipesHub user may open (the provider's batch access check) is
 compared with what Drupal Wiki lets them read: a page is read by whoever reads its home space and by the members of
 a space it is shared into (handbook node 461), never by a disabled account (node 248). An open space is read by
-everyone; a protected one only by holders of the Reader role (node 363), whom no documented API names, so PipesHub
-grants them nothing: each step checks that nobody reads more than the wiki allows, and that PipesHub gives exactly
-the reads that come from open spaces. The trash (node 460) and a personal workspace (node 226) are never synced.
+everyone; a protected one by its members (node 226), as the member query names them, which is the connector's rule
+too (node 363 narrows it to the Reader role, which no documented API names): each step checks that nobody reads
+more than that allows, and that PipesHub gives exactly those reads, except a personal workspace's, which PipesHub
+cannot name. The trash (node 460) and a personal workspace (node 226) are never synced.
 Used on Neo4j and ArangoDB by ``test_drupal_wiki_access_real_backends.py`` and on PostgreSQL by
 ``postgres/test_drupal_wiki_access.py``.
 """
@@ -68,7 +69,7 @@ class _Response:
 
 @dataclass
 class FakeWiki:
-    """Alice holds the Reader role on the protected space; everyone enabled reads the open one. Page 11 sits
+    """Alice is the protected space's member; everyone enabled reads the open one. Page 11 sits
     under page 10. The trash and Alice's personal workspace each hold a page."""
 
     users: dict[int, dict[str, Any]] = field(default_factory=lambda: {
@@ -83,7 +84,7 @@ class FakeWiki:
         TRASH_SPACE: {"id": TRASH_SPACE, "name": "Trash", "type": "TRASH", "accessStatus": "AUTHENTICATED"},
         PERSONAL_SPACE: {"id": PERSONAL_SPACE, "name": "Alice", "type": "USERSPACE", "accessStatus": "AUTHENTICATED"},
     })
-    # Holders of the Reader role, the only role that opens a protected space.
+    # The members of each protected space, as the member query names them.
     readers: dict[int, list[str]] = field(default_factory=lambda: {PRIVATE_SPACE: [ALICE]})
     pages: dict[int, dict[str, Any]] = field(default_factory=lambda: {
         PRIVATE_PAGE: {"space": PRIVATE_SPACE, "parent": None, "modified": 1000},
@@ -99,20 +100,22 @@ class FakeWiki:
     # another page is deleted between two of its windows
     skipped_once: set[int] = field(default_factory=set)
 
-    def readable(self, *, nameable_only: bool = False) -> dict[str, set[str]]:
-        """email -> pages the wiki lets them read; with ``nameable_only``, only the reads an open content space
-        gives, the ones PipesHub can grant."""
+    def readable(self, *, nameable_only: bool = False, excluded: tuple[int, ...] = ()) -> dict[str, set[str]]:
+        """email -> pages the wiki lets them read; with ``nameable_only``, only the reads PipesHub can grant (not
+        a personal workspace's, nor those of spaces the sync filter leaves out)."""
         enabled = {u["email"] for u in self.users.values() if u["status"] == "ENABLED"}
 
         def readers(space: int) -> set[str]:
             kind = self.spaces[space]["type"]
+            if nameable_only and space in excluded:
+                return set()
             if kind == "TRASH":
                 return set()  # node 460: only two system roles, none of these people
             if kind == "USERSPACE":
                 return set() if nameable_only else {ALICE} & enabled  # node 226: its owner alone
             if self.spaces[space]["accessStatus"] != "PRIVATE":
                 return set(enabled)
-            return set() if nameable_only else set(self.readers.get(space, [])) & enabled
+            return set(self.readers.get(space, [])) & enabled
 
         out: dict[str, set[str]] = {email: set() for email in (ALICE, BOB, CAROL)}
         for page_id, page in self.pages.items():
@@ -162,8 +165,7 @@ class FakeWiki:
     # ---- the GraphQL data source
 
     async def get_space_members(self, space_id: int) -> dict[str, Any]:
-        # Role holders of every kind, as the member query answers: no role says who reads.
-        return {"users": [{"email": e} for e in (*self.readers.get(space_id, []), BOB)], "groups": []}
+        return {"users": [{"email": e} for e in self.readers.get(space_id, [])], "groups": []}
 
     async def get_space_tree(self, space_id: int) -> list[dict[str, Any]]:
         return [
@@ -227,16 +229,16 @@ class DrupalWorld:
         assert connector._failures == [], connector._failures
 
     async def store_as_an_older_sync_did(self) -> None:
-        """The protected space and its page as a sync that granted every role holder read wrote them: alice holds a
-        grant on the space, and the page inherits it."""
+        """The protected space and its page as an earlier sync wrote them when bob, no member now, was one: bob holds
+        a grant on the space, and the page inherits it."""
         await self.processor.on_new_app_users([AppUser(
-            app_name=Connectors.DRUPAL_WIKI, connector_id=self.connector_id, org_id=self.org_id, source_user_id="1",
-            email=ALICE, full_name="alice", is_active=True,
+            app_name=Connectors.DRUPAL_WIKI, connector_id=self.connector_id, org_id=self.org_id, source_user_id="2",
+            email=BOB, full_name="bob", is_active=True,
         )])
         await self.processor.on_new_record_groups([(RecordGroup(
             org_id=self.org_id, name="Private", external_group_id=str(PRIVATE_SPACE), connector_name=Connectors.DRUPAL_WIKI,
             connector_id=self.connector_id, group_type=RecordGroupType.DRUPAL_WIKI_SPACE, inherit_permissions=False,
-        ), [Permission(external_id=None, email=ALICE, type=PermissionType.READ, entity_type=EntityType.USER)])])
+        ), [Permission(external_id=None, email=BOB, type=PermissionType.READ, entity_type=EntityType.USER)])])
         await self.processor.on_new_records([(WebpageRecord(
             org_id=self.org_id, record_name="Page 10", record_type=RecordType.WEBPAGE,
             external_record_id=f"page:{PRIVATE_PAGE}", external_revision_id="1000",
@@ -244,7 +246,7 @@ class DrupalWorld:
             origin=OriginTypes.CONNECTOR, connector_name=Connectors.DRUPAL_WIKI, connector_id=self.connector_id,
             mime_type=MimeTypes.HTML.value, weburl="https://wiki.test/node/10", inherit_permissions=True,
         ), [])])
-        assert f"page:{PRIVATE_PAGE}" in (await self.observed())[ALICE], "control: the old grant opens the page"
+        assert f"page:{PRIVATE_PAGE}" in (await self.observed())[BOB], "control: the old grant opens the page"
 
     async def observed(self) -> dict[str, set[str]]:
         ids = {}
@@ -258,11 +260,12 @@ class DrupalWorld:
             out[email] = {ids[i] for i in allowed}
         return out
 
-    async def check(self, step: str) -> None:
-        allowed, nameable, got = self.wiki.readable(), self.wiki.readable(nameable_only=True), await self.observed()
+    async def check(self, step: str, *, excluded: tuple[int, ...] = ()) -> None:
+        allowed, nameable = self.wiki.readable(), self.wiki.readable(nameable_only=True, excluded=excluded)
+        got = await self.observed()
         extra = {email: got[email] - allowed[email] for email in got if got[email] - allowed[email]}
         assert not extra, f"{step}: PipesHub lets people read what Drupal Wiki does not: {extra}"
-        assert got == nameable, f"{step}: PipesHub {got} != the reads open spaces give {nameable}"
+        assert got == nameable, f"{step}: PipesHub {got} != the reads it can grant {nameable}"
 
 
 async def a_disabled_reader_loses_every_space_until_enabled_again(world: DrupalWorld) -> None:
@@ -278,6 +281,18 @@ async def a_disabled_reader_loses_every_space_until_enabled_again(world: DrupalW
     world.wiki.users[2]["status"] = "ENABLED"
     await world.sync()
     await world.check("bob enabled again")
+
+
+async def a_protected_spaces_members_read_it_until_removed(world: DrupalWorld) -> None:
+    await world.sync()
+    await world.check("alice is the protected space's member")
+    world.wiki.readers[PRIVATE_SPACE].append(CAROL)
+    await world.sync()
+    await world.check("carol added to the protected space")
+    assert f"page:{PRIVATE_PAGE}" in (await world.observed())[CAROL]
+    world.wiki.readers[PRIVATE_SPACE].remove(CAROL)
+    await world.sync()
+    await world.check("carol removed from the protected space")
 
 
 async def a_reader_enabled_again_gets_only_what_the_wiki_shows_now(world: DrupalWorld) -> None:
@@ -369,11 +384,11 @@ async def the_trash_personal_and_deleted_spaces_are_read_by_nobody(world: Drupal
 
 
 async def grants_an_older_sync_wrote_on_a_protected_space_go(world: DrupalWorld) -> None:
-    """Every role holder was once granted a protected space; the first sync takes that back, whether the space is
-    synced or left out by the filter."""
+    """A former member was granted a protected space; the first sync takes that back, whether the space is synced
+    or left out by the filter."""
     await world.store_as_an_older_sync_did()
     await world.sync(excluded_spaces=(PRIVATE_SPACE,))
-    await world.check("protected space left out by the filter")
+    await world.check("protected space left out by the filter", excluded=(PRIVATE_SPACE,))
     assert await world.processor.get_record_by_external_id(world.connector_id, f"page:{PRIVATE_PAGE}") is None
     await world.store_as_an_older_sync_did()
     await world.sync()

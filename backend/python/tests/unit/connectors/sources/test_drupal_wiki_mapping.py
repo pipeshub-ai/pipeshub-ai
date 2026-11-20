@@ -12,13 +12,14 @@ import pytest
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.drupal_wiki.connector import (
+    MEMBERS_REFUSED,
     PAGE_ID_PREFIX,
     DrupalWikiConnector,
     source_id_from_external,
 )
 from app.models.entities import RecordType
 from app.models.permission import EntityType, PermissionType
-from app.sources.external.drupal_wiki.graphql import DrupalWikiGraphQLError
+from app.sources.external.drupal_wiki.graphql import DrupalWikiGraphQLError, DrupalWikiGraphQLRefusedError
 
 CONNECTOR_ID = "conn-1"
 ORG_ID = "org-1"
@@ -56,18 +57,45 @@ PAGE = {
 
 
 class TestSpacePermissions:
-    def test_open_spaces_grant_the_whole_org(self, connector: DrupalWikiConnector) -> None:
-        for status in ("AUTHENTICATED", "ANONYMOUS"):
-            permissions = connector._build_space_permissions({"id": 3, "accessStatus": status})
-            assert len(permissions) == 1
-            assert permissions[0].entity_type == EntityType.ORG
-            assert permissions[0].type == PermissionType.READ
+    @pytest.mark.asyncio
+    async def test_a_protected_space_grants_its_enabled_people_and_its_groups(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        # Its members see it (handbook node 226); node 363 narrows that to the Reader role,
+        # which no documented API names, so every member is granted (a shortcut in the code).
+        connector._enabled_emails = {"a@example.com"}
+        connector.graphql.get_space_members = AsyncMock(return_value={
+            "users": [{"email": "A@example.com "}, {"email": "blocked@example.com"}, {"email": None}],
+            "groups": [{"id": 7}, {"id": "7"}, {"id": None}],
+        })
 
-    def test_a_protected_space_grants_nobody(self, connector: DrupalWikiConnector) -> None:
-        # Only the Reader role opens it (handbook node 363), and roles are free checkboxes:
-        # holding some role is no read, and no documented API names the Reader role's holders.
-        assert connector._build_space_permissions({"id": 12, "accessStatus": "PRIVATE"}) == []
-        assert connector._build_space_permissions({"id": 12}) == []
+        permissions = await connector._protected_space_permissions(12, "HR")
+
+        assert sorted((p.entity_type, p.email, p.external_id, p.type) for p in permissions) == [
+            (EntityType.GROUP, None, "7", PermissionType.READ),
+            (EntityType.USER, "a@example.com", None, PermissionType.READ),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_members_that_cannot_be_read_leave_the_space_as_it_is(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector._enabled_emails = {"a@example.com"}
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLError("502"))
+        assert await connector._protected_space_permissions(12, "HR") is None
+        connector.graphql.get_space_members = AsyncMock(return_value={"users": None, "groups": []})
+        assert await connector._protected_space_permissions(12, "HR") is None
+        connector._enabled_emails = None
+        assert await connector._protected_space_permissions(12, "HR") is None
+
+    @pytest.mark.asyncio
+    async def test_a_wiki_that_refuses_the_member_query_grants_nobody(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector._enabled_emails = {"a@example.com"}
+        connector.graphql.get_space_members = AsyncMock(side_effect=DrupalWikiGraphQLRefusedError("refused"))
+        assert await connector._protected_space_permissions(12, "HR") == []
+        assert MEMBERS_REFUSED in connector._space_problems
 
 class TestRecords:
     def test_page_record(self, connector: DrupalWikiConnector) -> None:

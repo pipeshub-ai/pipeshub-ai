@@ -9,9 +9,10 @@ Sync model, with the vendor's words where it documents a rule (all read 2026-11-
   workspace, or the system and news-draft spaces, whose readers the API cannot name
 * an open space maps to one org-wide read (https://help.drupal-wiki.com/node/363:
   "'Offen' bedeutet, dass alle angemeldeten Nutzer des Wikis grundsätzlich Lesezugriff
-  auf den Space haben."); a protected one is read only by holders of the Reader role
-  ("haben nur Nutzer und Gruppen mit der Rolle 'Leser' Zugriff auf den Space"), which no
-  documented API names, so nobody is granted it and the admin is told
+  auf den Space haben."); a protected one is granted to its members, its enabled people
+  and its groups, as the GraphQL member query names them (https://help.drupal-wiki.com/node/226:
+  "Geschlossen: Der Space ist explizit nur für Mitglieder des Space sichtbar"); see
+  ``_protected_space_permissions`` for where the vendor's pages disagree
 * each run lists every selected space in full and writes the pages changed since the
   space's checkpoint, the wiki's own ``lastModified`` (spec: "The unix timestamp when the
   page was last updated (or created)", silent on shares and moves), or not stored there
@@ -306,10 +307,9 @@ TREE_UNREADABLE = SpaceProblem(
 # in all, rather than the sync's retries and timeouts.
 GRAPHQL_PROBE_TIMEOUT_S = 10.0
 
-READERS_NOT_DOCUMENTED = SpaceProblem(
-    "Only holders of the Reader role may read the protected spaces {spaces}, and Drupal Wiki's "
-    "API does not say who holds it, so their pages are synced but nobody can see them in "
-    "PipesHub.",
+MEMBERS_REFUSED = SpaceProblem(
+    "Drupal Wiki refused to list the members of the protected spaces {spaces}, so their pages "
+    "are synced but nobody can see them in PipesHub until it lists them.",
     incomplete=False,
 )
 
@@ -322,11 +322,11 @@ READERS_NOT_DOCUMENTED = SpaceProblem(
 SYNCED_SPACE_TYPES = frozenset({"BASIC", "CONTAINER", "CORPORATEBLOG", "CORPORATENEWS"})
 
 PAGE_STRUCTURE_REFUSED_ACTION_CODE = "drupal_wiki_page_structure_refused"
-PAGE_STRUCTURE_REFUSED_TITLE = "Drupal Wiki refuses the page structure query"
+PAGE_STRUCTURE_REFUSED_TITLE = "Drupal Wiki refuses the member and page structure queries"
 PAGE_STRUCTURE_REFUSED_MESSAGE = (
     "Pages are synced without their place in the page tree: they keep the parent they "
-    "already have, and new ones sit at the top of their space. Who can read them is not "
-    "affected."
+    "already have, and new ones sit at the top of their space. Nobody can see the pages of "
+    "a protected space whose members it refuses to list; open spaces are not affected."
 )
 
 
@@ -509,6 +509,10 @@ class DrupalWikiConnector(BaseConnector):
         # an id, a space it did not name is unknown, not gone.
         self._space_listing_complete = True
         self._spaces_named: set[int] = set()
+        # Grants each space synced this run was written with; spaces left as they are because
+        # their members could not be read this run.
+        self._space_grants: dict[int, list[Permission]] = {}
+        self._spaces_kept: set[int] = set()
         # Removal candidates this run left unchecked: a full sync must not unlink them.
         self._removals_unchecked = False
         # Emails of the wiki's enabled users this run; None when the directory was not read
@@ -685,6 +689,8 @@ class DrupalWikiConnector(BaseConnector):
             self._space_status = {}
             self._space_listing_complete = True
             self._spaces_named = set()
+            self._space_grants = {}
+            self._spaces_kept = set()
             self._removals_unchecked = False
             self._enabled_emails = None
 
@@ -987,12 +993,12 @@ class DrupalWikiConnector(BaseConnector):
         """Content spaces become record groups; their permissions are replaced every run.
 
         Only the space types whose readers the vendor documents are synced
-        (``SYNCED_SPACE_TYPES``). An open space is read by everyone; a protected one only
-        by holders of the Reader role, which no documented API names, so nobody reads it
-        here. Every synced space's grants are written each run, which takes back what an
-        earlier sync granted. A stored space this run does not sync (gone, of a type no
-        longer synced, or left out by the space filter) is removed with its pages, so no
-        grant it carries is left behind.
+        (``SYNCED_SPACE_TYPES``). An open space is read by everyone; a protected one by its
+        members (``_protected_space_permissions``). Every synced space's grants are written
+        each run, which takes back what an earlier sync granted. A protected space whose
+        members this run could not read is left as it is, pages included. A stored space
+        this run does not sync (gone, of a type no longer synced, or left out by the space
+        filter) is removed with its pages, so no grant it carries is left behind.
         """
         allowed_ids, exclude_ids = self._get_space_id_filters()
         spaces: dict[int, dict[str, Any]] = {}
@@ -1024,10 +1030,17 @@ class DrupalWikiConnector(BaseConnector):
                 if exclude_ids and str(space_id) in exclude_ids:
                     continue
                 access_status = (space.get("accessStatus") or "").upper()
+                if access_status in OPEN_SPACE_ACCESS_STATUSES:
+                    permissions = [Permission(
+                        external_id=None, email=None, type=PermissionType.READ, entity_type=EntityType.ORG,
+                    )]
+                else:
+                    permissions = await self._protected_space_permissions(space_id, space_name)
+                    if permissions is None:
+                        self._spaces_kept.add(space_id)
+                        continue
                 self._space_status[space_id] = access_status
-                if access_status not in OPEN_SPACE_ACCESS_STATUSES:
-                    self._report_space_problem(READERS_NOT_DOCUMENTED, f"'{space_name}'")
-
+                self._space_grants[space_id] = permissions
                 spaces[space_id] = space
                 groups_with_permissions.append((
                     RecordGroup(
@@ -1040,7 +1053,7 @@ class DrupalWikiConnector(BaseConnector):
                         group_type=RecordGroupType.DRUPAL_WIKI_SPACE,
                         inherit_permissions=False,
                     ),
-                    self._build_space_permissions(space),
+                    permissions,
                 ))
 
             if groups_with_permissions:
@@ -1060,7 +1073,8 @@ class DrupalWikiConnector(BaseConnector):
                 "did not name were kept"
             )
         await self._run_phase(
-            "removed spaces", self._remove_spaces_gone({str(s) for s in spaces}, None if complete else named)
+            "removed spaces",
+            self._remove_spaces_gone({str(s) for s in spaces.keys() | self._spaces_kept}, None if complete else named),
         )
         self.logger.info("Synced %d Drupal Wiki space(s)", len(spaces))
         return spaces
@@ -1088,21 +1102,56 @@ class DrupalWikiConnector(BaseConnector):
                     await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id):
                 self._fail(f"Could not remove the Drupal Wiki space {external_id}, which the wiki no longer lists")
 
-    @staticmethod
-    def _build_space_permissions(space: dict[str, Any]) -> list[Permission]:
-        """An open space is read by everyone (https://help.drupal-wiki.com/node/363:
-        "'Offen' bedeutet, dass alle angemeldeten Nutzer des Wikis grundsätzlich Lesezugriff
-        auf den Space haben."), one org-wide read. A protected one is read only by holders of
-        the Reader role (same page: "Steht der Space-Status auf 'Geschützt', haben nur Nutzer
-        und Gruppen mit der Rolle 'Leser' Zugriff auf den Space."), and roles are free
-        checkboxes, so holding some role is no read. No documented API names the Reader
-        role's holders, so nobody is granted (fail closed)."""
-        if (space.get("accessStatus") or "").upper() in OPEN_SPACE_ACCESS_STATUSES:
-            return [Permission(
-                external_id=None, email=None,
-                type=PermissionType.READ, entity_type=EntityType.ORG,
-            )]
-        return []
+    async def _protected_space_permissions(self, space_id: int, space_name: str) -> list[Permission] | None:
+        """A protected space's members, as the GraphQL member query names them: each enabled
+        person (by email) and each group. None when they cannot be read this run (the people
+        directory or the query failed): the space is left as it is. A wiki that refuses the
+        query gets no grants (fail closed), and the admin is told.
+
+        shortcut: the vendor's pages disagree on who reads a protected space. Node 226 says
+        members ("Geschlossen: Der Space ist explizit nur für Mitglieder des Space sichtbar";
+        "Fügt man einen Benutzer zu einem Space hinzu, hat er zunächst nur Leserechte"), node
+        363 says the Reader role ("Steht der Space-Status auf 'Geschützt', haben nur Nutzer und
+        Gruppen mit der Rolle 'Leser' Zugriff auf den Space"), and the member query names every
+        role holder without their roles. So a member whose roles leave out Reader is granted
+        read here. Narrow it to Reader holders once a documented API names them.
+        """
+        if self._enabled_emails is None:
+            self._fail(
+                f"Could not read the list of people from Drupal Wiki, so the protected space "
+                f"'{space_name}' was left as it is this time"
+            )
+            return None
+        try:
+            members = await self._graphql_read(self.graphql.get_space_members(space_id))
+        except DrupalWikiGraphQLRefusedError:
+            self._report_space_problem(MEMBERS_REFUSED, f"'{space_name}'")
+            return []
+        except DrupalWikiGraphQLError as e:
+            self._fail(
+                f"Could not read who has access to the Drupal Wiki space '{space_name}', so it was "
+                f"left as it is this time: {e}"
+            )
+            return None
+        users, groups = (members or {}).get("users"), (members or {}).get("groups")
+        if not isinstance(users, list) or not isinstance(groups, list):
+            self._fail(f"Drupal Wiki answered the members of the space '{space_name}' without their lists, "
+                       "so it was left as it is this time")
+            return None
+        grants: dict[tuple[str, str], Permission] = {}
+        for user in users:
+            email = ((user or {}).get("email") or "").strip().lower()
+            if email in self._enabled_emails:
+                grants.setdefault(("user", email), Permission(
+                    external_id=None, email=email, type=PermissionType.READ, entity_type=EntityType.USER,
+                ))
+        for group in groups:
+            group_id = _as_int((group or {}).get("id"))
+            if group_id is not None:
+                grants.setdefault(("group", str(group_id)), Permission(
+                    external_id=str(group_id), email=None, type=PermissionType.READ, entity_type=EntityType.GROUP,
+                ))
+        return list(grants.values())
 
     # ------------------------------------------------------------------
     # Pages and attachments
@@ -1436,14 +1485,17 @@ class DrupalWikiConnector(BaseConnector):
         share. Members of a space a page is shared into may see it
         (https://help.drupal-wiki.com/node/461: "Die Mitglieder der Ziel-Spaces, die das Recht
         haben entsprechende Inhaltstypen zu sehen, können den geteilten Inhalt dann sehen").
-        Only an open space has readers PipesHub can name (``_build_space_permissions``), so a
-        page of a protected space shared into an open one is granted to the org; any other
-        page is plain. A space this run did not list (yet, or in full) keeps the shares the
-        page had into it, and so does a space the space listing may have left out as a row
-        without an id (``_space_unknown``); such a share keeps the grant the page holds only if
-        it was one that gave it (remembered as ``open``), and never adds one. A space no longer
-        synced or gone loses them. Until every page of its home space is ``STRICT``, a page gets
-        no grants of its own.
+        A page of a protected space shared into an open one is granted to the org; one shared
+        only into protected spaces is granted their members and its home space's
+        (``_space_grants``); a page of an open space stays plain. A space this run did not
+        list (yet, or in full) keeps the shares the page had into it, and so does a space the
+        space listing may have left out as a row without an id, or whose members could not be
+        read (``_space_unknown``); such a share keeps the org grant the page holds only if it
+        was one that gave it (remembered as ``open``), and never adds one. A protected space
+        not listed in full adds its members only to a page that already holds grants of its
+        own; one whose members could not be read adds none this run. A space no longer synced
+        or gone loses them. Until every page of its home space is ``STRICT``, a page gets no
+        grants of its own.
         """
         had = listing.shares_before.get(str(page_id)) or {}
         listed = listing.shared.get(page_id, set()) - {home}
@@ -1457,19 +1509,33 @@ class DrupalWikiConnector(BaseConnector):
             opening |= gave & unknown | {
                 space for space in gave & known if self._space_status.get(space) in OPEN_SPACE_ACCESS_STATUSES
             }
-        if (
-            not opening or home not in listing.settled
-            or self._space_status.get(home) in OPEN_SPACE_ACCESS_STATUSES
-        ):
+        if home not in listing.settled or self._space_status.get(home) in OPEN_SPACE_ACCESS_STATUSES:
             return shares, opening, None
-        return shares, opening, [
-            Permission(external_id=None, email=None, type=PermissionType.READ, entity_type=EntityType.ORG)
-        ]
+        if opening:
+            return shares, opening, [
+                Permission(external_id=None, email=None, type=PermissionType.READ, entity_type=EntityType.ORG)
+            ]
+        held = bool(had.get("grants")) and page_id in listing.stored_shared
+        protected = sorted(
+            space for space in (listed | known if held else listed)
+            if space in self._space_grants and self._space_status.get(space) not in OPEN_SPACE_ACCESS_STATUSES
+        )
+        # Not inheriting, the page carries its home space's members as well as theirs.
+        grants: dict[tuple[str, str, str], Permission] = {}
+        for space in (home, *protected):
+            for grant in self._space_grants.get(space, []):
+                grants.setdefault((grant.entity_type.value, grant.email or "", grant.external_id or ""), grant)
+        if len(grants) == len({(g.entity_type.value, g.email or "", g.external_id or "") for g in self._space_grants.get(home, [])}):
+            return shares, opening, None  # the shares add no reader: plain, inheriting its home space
+        return shares, opening, list(grants.values())
 
     def _space_unknown(self, space: int | None) -> bool:
-        """A space this run neither synced nor saw named, while the space listing had a row
-        without an id: it may be that row, so it is unknown, not gone."""
-        return not self._space_listing_complete and space not in self._space_status and space not in self._spaces_named
+        """A protected space whose members this run could not read, or a space this run neither
+        synced nor saw named while the space listing had a row without an id (it may be that
+        row): unknown, not gone."""
+        return space in self._spaces_kept or (
+            not self._space_listing_complete and space not in self._space_status and space not in self._spaces_named
+        )
 
     def _share_unconfirmed(self, page_id: int, home: int | None, listing: PageListing) -> bool:
         """True for a page stored with grants of its own (``OPEN``) that the share memory does
