@@ -1574,6 +1574,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORD_LINKS.value, ["recordGroupId"], sparse=True,
         )
+        # SPARSE: records.refreshIntentId, the intent sweep's lookup (only a record with a Force reindex pending
+        # is indexed; sweeps filter on `!= null`, which the sparse index serves).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value, ["refreshIntentId"], sparse=True,
+        )
         # SINGLE: virtualRecordToDocIdMapping.virtualRecordId, the fallback of
         # get_document_id_by_virtual_record_id when the keyed lookup misses
         # (every record indexed the first time).
@@ -3108,7 +3113,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
             return {"success": False, "code": 500, "reason": str(e)}
 
-    async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str, *, fields: dict[str, Any] | None = None
+    ) -> None:
         """
         Update indexingStatus to the specified status for each id (deduplicated).
         Skips missing ids and isInternal records.
@@ -3116,6 +3123,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             record_ids: List of record IDs to update
             status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+            fields: Further fields set in the same statement (a Force reindex's refresh intent)
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
@@ -3124,8 +3132,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
             lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status")
-            written = "{ indexingStatus: @status }" if patch == "{}" else f"MERGE({{ indexingStatus: @status }}, {patch})"
+            head = "{ indexingStatus: @status }" if not fields else "MERGE({ indexingStatus: @status }, @fields)"
+            written = head if patch == "{}" else f"MERGE({head}, {patch})"
             bind_vars = {"@collection": coll, "keys": unique_ids, "status": status}
+            if fields:
+                bind_vars["fields"] = dict(fields)
             if patch != "{}":
                 bind_vars["now"] = get_epoch_timestamp_in_ms()
             updated = await self.http_client.execute_aql(
@@ -3144,6 +3155,41 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if isinstance(e, RecordSchemaNarrowError):
                 raise
             self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
+
+    async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
+        """Set ``fields`` on each existing record that is neither internal nor a placeholder, whatever its status; the
+        statement writes nothing else (a Force reindex requested while the record runs). Returns how many were written;
+        a failure raises, so the caller does not read a lost write as a request that was made."""
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids or not fields:
+            return 0
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys AND doc.isInternal != true AND doc.isPlaceholder != true
+                UPDATE doc WITH @fields IN @@collection
+                RETURN 1
+            """,
+            {"@collection": CollectionNames.RECORDS.value, "keys": unique_ids, "fields": dict(fields)},
+        )
+        return len(rows or [])
+
+    async def get_records_with_refresh_intent(
+        self, org_id: str, *, after_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_records_with_refresh_intent`. The sparse index on ``refreshIntentId`` serves the filter."""
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc.refreshIntentId != null AND doc.orgId == @org AND doc.isDeleted != true
+                    AND (@after == null OR doc._key > @after)
+                SORT doc._key
+                LIMIT @limit
+                RETURN doc
+            """,
+            {"@collection": CollectionNames.RECORDS.value, "org": org_id, "after": after_key, "limit": max(1, int(limit))},
+        )
+        return list(rows or [])
 
     async def reset_indexing_status_for_connector(
         self,
@@ -10660,6 +10706,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND record.indexingStatus == @queued_status
                 AND record.orgId == @org_id
                 AND {aql_live_record("record")}
+                AND record.refreshIntentId == null /* a record holding a Force reindex request runs as a refresh of its own */
             """
 
             bind_vars = {
@@ -25867,6 +25914,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
                 AND {aql_live_record("record")}
+                AND record.refreshIntentId == null /* a record holding a Force reindex request runs as a refresh of its own */
             """
 
             bind_vars = {

@@ -31,6 +31,7 @@ from app.services.paid_cache.locks import (
     deleted_name,
     lock_name,
     manifest_lock_name,
+    refresh_done_name,
     refresh_name,
 )
 from app.services.paid_cache.orphan import STOPPED, RecordGone, current_guard
@@ -332,6 +333,25 @@ class PaidResultCache:
         if held is not None and (held.lost or not await held.still_owned()):
             raise RefreshPurgeInProgress("the purge lease was lost before the delete; another delivery owns it")
         await self.purge_record(org_id, record_id, before_ms=cutoff)
+
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> None:
+        """Records that a refresh run under ``event_id`` has ended, for ``DELETED_TTL_MS``. Best effort: without a lock
+        backend that can be asked, nothing is recorded and a second event of the refresh runs again (compute only: it
+        reuses what the first stored, under the refresh's own marker)."""
+        try:
+            backend = await self._backend()
+            await backend.mark(refresh_done_name(org_id, record_id, event_id), DELETED_TTL_MS)
+        except Exception:
+            self.logger.debug("Paid-result refresh-done marker not written", exc_info=True)
+
+    async def refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        """Whether a refresh run under ``event_id`` has ended. False when that cannot be asked."""
+        try:
+            backend = await self._backend()
+            return bool(await backend.is_marked(refresh_done_name(org_id, record_id, event_id)))
+        except Exception:
+            self.logger.debug("Paid-result refresh-done marker not read", exc_info=True)
+            return False
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         """Claims the refresh named ``event_id`` for its first request, atomically (``SET NX`` with a TTL on Redis).
@@ -885,6 +905,12 @@ class NullPaidResultCache:
 
     async def claim_refresh(self, org_id: str, record_id: str, event_id: str) -> str | None:
         return "unclaimed"
+
+    async def mark_refresh_done(self, org_id: str, record_id: str, event_id: str) -> None:
+        return None
+
+    async def refresh_done(self, org_id: str, record_id: str, event_id: str) -> bool:
+        return False
 
     @contextlib.asynccontextmanager
     async def refresh_purge(self, org_id: str, record_id: str, event_id: str) -> AsyncIterator[bool]:

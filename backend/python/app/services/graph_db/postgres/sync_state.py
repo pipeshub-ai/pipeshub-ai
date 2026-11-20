@@ -190,6 +190,7 @@ class SyncStateMixin(PgBase):
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.queued_duplicates */ SELECT n.id FROM graph.nodes n
                 WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'md5Checksum' = $2 AND n.id <> $3 AND n.doc->>'indexingStatus' = 'QUEUED'
                   AND n.doc->>'orgId' = $4 AND coalesce((n.doc->>'isDeleted')::boolean, false) = false
+                  AND n.doc->>'refreshIntentId' IS NULL
                   AND ($5::jsonb IS NULL OR n.doc->'sizeInBytes' = $5::jsonb) ORDER BY n.id""",
                                                   org, ref["md5Checksum"], record_id, ref[_ORG_FIELD],
                                                   None if ref.get("sizeInBytes") is None else _j(ref["sizeInBytes"])), transaction)

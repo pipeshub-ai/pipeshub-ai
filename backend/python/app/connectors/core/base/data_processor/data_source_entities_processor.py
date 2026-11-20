@@ -25,7 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.connectors.services.reindex_force import user_forced_reindex
+from app.connectors.services.reindex_force import user_forced_intent_id, user_forced_reindex
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
@@ -5047,6 +5047,9 @@ class DataSourceEntitiesProcessor:
             # A user's Force reindex: every stored paid result is bypassed and paid for again. The platform's own
             # reindexes of unchanged records (a policy change) keep reusing them.
             payload["refreshPaidOutputs"] = True
+            if intent_id := user_forced_intent_id():
+                # The refresh's identity, the same one the walk stored on the record: a re-send keeps it.
+                payload["refreshIntentId"] = intent_id
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:

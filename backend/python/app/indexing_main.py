@@ -51,6 +51,7 @@ from app.edition_services import configure_app, indexing_fairness
 from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing import refresh_intent
 from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
@@ -439,6 +440,8 @@ async def recover_in_progress_records(
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
                                     "reason": CONNECTOR_REMOVED,
+                                    # The refresh cannot run for a connector that is gone or off.
+                                    **refresh_intent.CLEARED_FIELDS,
                                 },
                             )
                             results["skipped"] += 1
@@ -457,19 +460,22 @@ async def recover_in_progress_records(
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
                                     "reason": CONNECTOR_OFF,
+                                    # The refresh cannot run for a connector that is gone or off.
+                                    **refresh_intent.CLEARED_FIELDS,
                                 },
                             )
                             results["skipped"] += 1
                             return True
 
-                    tracking_id = recovery_tracking_id(record_id, record.get("version", 0))
+                    recovered_intent = refresh_intent.live_intent(record, get_epoch_timestamp_in_ms())
+                    tracking_id = recovery_tracking_id(record_id, record.get("version", 0), recovered_intent)
                     # Without a sink to end it (and move its queued copies on),
                     # the record is recovered with no budget, as before.
                     if exhausted_sink is not None and await recovery_exhausted(
                         retry_tracker, tracking_id, logger
                     ):
                         await exhausted_sink.on_recovery_exhausted(
-                            record_id, resume_enrichment=resume_enrichment
+                            record_id, resume_enrichment=resume_enrichment, intent_id=recovered_intent
                         )
                         logger.warning(
                             "Gave up recovering record %s (%s): it kept failing or "
@@ -502,6 +508,8 @@ async def recover_in_progress_records(
                         # A recovered record continues the run that was interrupted, so an
                         # embedding it left half done is resumed rather than started over.
                         payload[RESUME_DELIVERY_ID_KEY] = record[EMBED_DELIVERY_ID]
+                    # A Force reindex the record still holds is recovered as that refresh (which also never resumes).
+                    refresh_intent.with_intent(payload, record, get_epoch_timestamp_in_ms())
 
                     # Determine event type - default to NEW_RECORD for recovery
                     # Only treat as REINDEX if version > 0 AND virtualRecordId exists
@@ -771,6 +779,23 @@ async def recover_in_progress_records(
                     )
             except Exception as exc:
                 _org_pass_failed(logger, "stranded_republish", org_id, exc)
+
+        # The Force reindex requests whose event was lost, whatever status their record is in: the status cannot say.
+        for org_id in org_ids:
+            try:
+                with for_org(org_id, job="refresh_intent_republish"):
+                    total_records += await _republish_refresh_intents(
+                        graph_provider=graph_provider,
+                        logger=logger,
+                        producer=retry_producer,
+                        run_coordination=run_coordination,
+                        concurrency_manager=concurrency_manager,
+                        page_size=page_size,
+                        org_id=org_id,
+                        read_backlog=read_backlog,
+                    )
+            except Exception as exc:
+                _org_pass_failed(logger, "refresh_intent_republish", org_id, exc)
 
         await _upkeep_lanes(
             graph_provider=graph_provider,
@@ -1574,6 +1599,171 @@ def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
     cap = max(after_seconds, STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS)
     # The exponent is clamped only so a corrupt counter cannot overflow.
     return min(after_seconds * 2 ** min(republishes, 32), cap) * 1000
+
+
+def _intent_resend_wait_ms(record: dict[str, Any], after_seconds: float) -> float:
+    """How long after its last touch a record's Force reindex request waits before it is sent again.
+
+    The first send comes ``after_seconds`` after the request (or its hand-over); each re-send doubles the wait, up to
+    the stranded sweep's cap. Counted from the intent's own writes, which reset ``republishCount``, so a record that
+    waited long before the request does not inherit that wait.
+    """
+    at = record.get(refresh_intent.AT_FIELD)
+    last = record.get("lastRepublishedAt")
+    sent_since = _is_clock(last) and _is_clock(at) and float(last) >= float(at)
+    n = 0
+    if sent_since:
+        try:
+            n = max(1, int(record.get("republishCount") or 0))
+        except (TypeError, ValueError):
+            n = 1
+    return _republish_wait_ms(after_seconds, n)
+
+
+async def _republish_refresh_intents(
+    *,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    producer: "IMessagingProducer",
+    run_coordination: CoordinationRunner,
+    concurrency_manager: DistributedConcurrencyManager | None,
+    page_size: int,
+    org_id: str,
+    read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
+) -> int:
+    """Send again the Force reindex requests whose event was lost, whatever status their record is in.
+
+    A request is stored on the record when it is made (``modules/indexing/refresh_intent.py``). The event that
+    carries it can be lost (dropped, a hand-back that never came back, a publish that failed), and a plain event or
+    a twin's completion can write the record's final status before it is served; the status says nothing, so this
+    selects on the field. A record is left alone while its lease is held, while a rate-limit wait is on, and while
+    the queue still holds work older than it. The wait before the first send and between sends is the stranded
+    sweep's, counted from the request. An intent older than its life is cleared, counted and, on a row that is not
+    COMPLETED, explained in the record's reason.
+    """
+    after_seconds = messaging_env.stranded_record_republish_after_seconds
+    if after_seconds <= 0:
+        return 0
+    pass_started_ms = get_epoch_timestamp_in_ms()
+    backlog: LaneBacklog | None = None
+    backlog_read = False
+    sent = 0
+    after_key: str | None = None
+
+    async def _lanes() -> LaneBacklog | None:
+        nonlocal backlog, backlog_read
+        if not backlog_read:
+            backlog_read = True
+            if read_backlog is not None:
+                try:
+                    backlog = await read_backlog()
+                except Exception as e:
+                    logger.warning("Could not read the indexing queue's backlog for the refresh sweep: %s: %s", type(e).__name__, e)
+        return backlog
+
+    async def _expire(record: dict[str, Any], key: str) -> None:
+        held = refresh_intent.stored_intent(record)
+        updates: dict[str, Any] = dict(refresh_intent.CLEARED_FIELDS)
+        if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+            updates["reason"] = refresh_intent.REFRESH_EXPIRED_REASON
+        cleared = await graph_provider.update_node_fields_if_match(
+            key, CollectionNames.RECORDS.value, updates, {refresh_intent.ID_FIELD: held[0] if held else None}
+        )
+        if cleared:
+            refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
+            logger.warning(
+                "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
+                key, record.get("indexingStatus"),
+            )
+
+    async def _send(record: dict[str, Any], key: str, intent_id: str) -> bool:
+        owner = f"refresh-intent:{uuid4().hex}"
+        pool = f"record:{key}"
+        lock_held = False
+        try:
+            if concurrency_manager is not None:
+                lock_held = await concurrency_manager.try_acquire(pool, owner, 1, messaging_env.concurrency_lease_seconds)
+                if not lock_held:
+                    return False
+            # The snapshot may be old: read the record again under the lease, and send only the request it still holds.
+            fresh = await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
+            now_ms = get_epoch_timestamp_in_ms()
+            if (
+                fresh is None or not is_live_record(fresh) or is_deferred_until_later(fresh, now_ms)
+                or refresh_intent.live_intent(fresh, now_ms) != intent_id
+            ):
+                return False
+            republishes = int(fresh.get("republishCount") or 0) if _is_clock(fresh.get("lastRepublishedAt")) else 0
+            claim_expected = {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": fresh.get("lastRepublishedAt")}
+            claim = {"lastRepublishedAt": now_ms, "republishCount": republishes + 1}
+            # Claimed before the send and only when nobody claimed since the read (a compare-and-set on the value read).
+            if not await graph_provider.update_node_fields_if_match(key, CollectionNames.RECORDS.value, claim, claim_expected):
+                return False
+            event_type, payload = record_event(
+                fresh, record_key=key, connector_id=str(fresh.get("connectorId") or ""), restored_upload=False,
+            )
+            try:
+                await run_coordination(
+                    producer.send_event(topic=Topic.RECORD_EVENTS.value, event_type=event_type, payload=payload, key=str(key))
+                )
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await graph_provider.update_node_fields_if_match(
+                        key, CollectionNames.RECORDS.value,
+                        {"lastRepublishedAt": fresh.get("lastRepublishedAt"), "republishCount": fresh.get("republishCount")},
+                        {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": now_ms},
+                    )
+                raise
+            refresh_intent.REFRESH_INTENT_EVENTS.inc("resent")
+            return True
+        except Exception as exc:
+            logger.error("Failed to re-send the Force reindex of record %s: %s", key, exc)
+            return False
+        finally:
+            if lock_held and concurrency_manager is not None:
+                try:
+                    await concurrency_manager.release(pool, owner)
+                except Exception as release_exc:
+                    logger.warning("Failed to release the refresh-sweep lease for %s: %s", key, release_exc)
+
+    while True:
+        page = await graph_provider.get_records_with_refresh_intent(org_id, after_key=after_key, limit=page_size)
+        if not page:
+            break
+        after_key = str(page[-1].get("_key") or page[-1].get("id") or "") or None
+        for record in page:
+            key = record.get("_key") or record.get("id")
+            if not key:
+                continue
+            if refresh_intent.expired_intent(record, pass_started_ms):
+                await _expire(record, str(key))
+                continue
+            intent_id = refresh_intent.live_intent(record, pass_started_ms)
+            if intent_id is None or is_deferred_until_later(record, pass_started_ms):
+                continue
+            touched = max(
+                _clock_or(record.get(refresh_intent.AT_FIELD), 0),
+                _clock_or(record.get("lastRepublishedAt"), 0),
+            )
+            if pass_started_ms - touched < _intent_resend_wait_ms(record, after_seconds):
+                continue
+            lanes = await _lanes()
+            if lanes is not None:
+                _, preview = record_event(record, record_key=str(key), connector_id=str(record.get("connectorId") or ""))
+                oldest = lanes.oldest_waiting_for(preview)
+                if oldest is not None and oldest <= touched + STRANDED_QUEUE_CLOCK_ALLOWANCE_MS:
+                    continue
+            if await _send(record, str(key), intent_id):
+                sent += 1
+        if after_key is None or len(page) < page_size:
+            break
+    if sent:
+        logger.info("Re-sent the Force reindex of %d record(s) whose event was lost", sent)
+    return sent
+
+
+def _clock_or(value: object, default: float) -> float:
+    return float(value) if _is_clock(value) else default  # type: ignore[arg-type]
 
 
 async def _republish_stranded_records(

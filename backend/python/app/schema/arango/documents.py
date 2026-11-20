@@ -399,6 +399,10 @@ record_schema = {
             # When (ms) a record was first handed back for a model provider's rate limit, set once and never moved:
             # ``RATE_LIMIT_MAX_WAIT_S`` of wall time since then ends the record. Cleared when the record ends.
             "rateLimitedSinceMs": {"type": ["number", "null"]},
+            # A Force reindex requested for the record and not yet served by a refresh run: its id, and when it was made
+            # (ms). Read by every record event and the intent sweep (app/modules/indexing/refresh_intent.py).
+            "refreshIntentId": {"type": ["string", "null"]},
+            "refreshIntentAtMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",

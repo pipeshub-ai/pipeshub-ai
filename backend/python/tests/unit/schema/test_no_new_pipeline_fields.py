@@ -57,6 +57,9 @@ RECORD_PROPERTIES = frozenset({
     # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message fires, so the
     # recovery scans do not republish it first. Optional, internal, and written only on that hand-back.
     "deferredUntilMs", "rateLimitedSinceMs",
+    # A Force reindex requested and not yet served: its id and time (app/modules/indexing/refresh_intent.py). Internal, optional,
+    # written only behind REFRESH_INTENT_WRITE.
+    "refreshIntentAtMs", "refreshIntentId",
 })
 
 

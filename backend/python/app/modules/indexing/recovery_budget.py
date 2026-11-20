@@ -30,14 +30,20 @@ if TYPE_CHECKING:
 class ExhaustedRecordSink(Protocol):
     """Ends a record stale recovery has given up on. Implemented by ``RecordEventHandler``."""
 
-    async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
+    async def on_recovery_exhausted(
+        self, record_id: str, *, resume_enrichment: bool, intent_id: str | None = None
+    ) -> None:
         """Mark the record failed (only its enrichment, when it is already
-        searchable) and release or advance its queued copies."""
+        searchable) and release or advance its queued copies. ``intent_id`` is the Force reindex request the recovery
+        was serving (it has its own budget); only that request is cleared with the failure."""
         ...
 
 
-def recovery_tracking_id(record_id: str, version: object) -> str:
-    return f"stale-recovery:{record_id}:{version}"
+def recovery_tracking_id(record_id: str, version: object, intent_id: str | None = None) -> str:
+    """The budget of the recoveries of one version of a record. A Force reindex request has a budget of its own: a request
+    made while a plain run was crashing must get its attempts, not inherit the ones that run used up."""
+    base = f"stale-recovery:{record_id}:{version}"
+    return f"{base}:refresh:{intent_id}" if intent_id else base
 
 
 async def recovery_exhausted(

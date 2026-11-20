@@ -1,0 +1,458 @@
+"""A Force reindex request, scenario by scenario (G-46): what is stored, who reads it, what clears it, what it must not do.
+
+The world is ``tests/support/refresh_intent_world.py`` (one record, a clock, a broker that can lose a message, the real handler,
+walk and sweeps); the numbers are the test plan's in ``design/G-46-refresh-intent.md``.
+"""
+from __future__ import annotations
+
+import contextlib
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app import indexing_main
+from app.config.constants.arangodb import EventTypes, ProgressStatus
+from app.connectors.api.router import mark_user_forced_reindex
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.services import event_service
+from app.connectors.services.event_service import EventService
+from app.connectors.services.reindex_force import forced_by_user, user_forced_intent_id
+from app.modules.indexing import refresh_intent as ri
+from app.modules.indexing.record_republish import is_parked_duplicate, record_event
+from app.modules.indexing.recovery_budget import recovery_tracking_id
+from app.services.paid_cache.locks import DELETED_TTL_MS
+from tests.support.refresh_intent_world import KEY, MINUTE_MS, ORG, World, patched
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+HOUR_MS = 60 * MINUTE_MS
+QUEUED = ProgressStatus.QUEUED.value
+COMPLETED = ProgressStatus.COMPLETED.value
+IN_PROGRESS = ProgressStatus.IN_PROGRESS.value
+FAILED = ProgressStatus.FAILED.value
+
+
+@pytest.fixture
+async def w() -> AsyncIterator[World]:
+    """A world where nothing is lost, handed back or crashed unless a test says so."""
+    world = World(1, twins=False)
+    world.R.random = lambda: 0.99          # type: ignore[method-assign]
+    with patched(world):
+        yield world
+
+
+def _events(world: World) -> list[dict]:
+    return [m["payload"] for m in world.msgs]
+
+
+async def _run_next(world: World) -> None:
+    await world.consume()
+    await world.finish(allow_crash=False)
+
+
+# ---- the helpers
+
+def test_the_life_of_a_request_is_the_paid_result_markers() -> None:
+    assert ri.INTENT_LIFE_MS == DELETED_TTL_MS
+
+
+def test_a_request_lives_up_to_24_hours_from_its_time() -> None:
+    record = {ri.ID_FIELD: "i", ri.AT_FIELD: 1_000}
+    assert ri.live_intent(record, 1_000 + DELETED_TTL_MS - 1) == "i"
+    assert ri.live_intent(record, 1_000 + DELETED_TTL_MS) is None
+    assert ri.expired_intent(record, 1_000 + DELETED_TTL_MS)
+    assert ri.live_intent({ri.ID_FIELD: "i"}, 5) is None              # no time: nothing could ever bound it
+    assert ri.live_intent({}, 5) is None and not ri.expired_intent({}, 5)
+
+
+def test_a_row_that_holds_a_request_is_never_a_parked_duplicate_and_its_event_is_the_refresh() -> None:
+    row = {"md5Checksum": "m", "virtualRecordId": "v", "version": 1, "recordName": "r", "origin": "CONNECTOR"}
+    assert is_parked_duplicate(row)
+    held = {**row, **ri.intent_fields("i1", 1_000)}
+    assert not is_parked_duplicate(held)
+    with patch("app.modules.indexing.record_republish.get_epoch_timestamp_in_ms", lambda: 2_000):
+        _, plain = record_event(row, record_key="k", connector_id="c")
+        _, refresh = record_event(held, record_key="k", connector_id="c")
+    assert "refreshPaidOutputs" not in plain and "forceReindex" not in plain
+    assert (refresh["forceReindex"], refresh["refreshPaidOutputs"], refresh["refreshIntentId"], refresh["refreshFromIntent"]) == (True, True, "i1", True)
+
+
+def test_a_request_has_a_budget_of_its_own_in_stale_recovery() -> None:
+    assert recovery_tracking_id("r", 3) == "stale-recovery:r:3"
+    assert recovery_tracking_id("r", 3, "i1") != recovery_tracking_id("r", 3)
+    assert recovery_tracking_id("r", 3, "i1") != recovery_tracking_id("r", 3, "i2")
+
+
+# ---- 4, 6: a lost hand-back, then the sweep, then the re-run
+
+async def test_a_lost_handback_is_re_sent_by_the_intent_sweep_as_the_same_refresh(w: World) -> None:
+    await w.user_force()
+    stamped = _events(w)[0][ri.PAYLOAD_ID_KEY]
+    assert w.row[ri.ID_FIELD] == stamped and w.row["indexingStatus"] == QUEUED          # stored with the status, before the publish
+    w.msgs.clear()                                                                       # the hand-back never came back
+    w.now_ms += 2 * HOUR_MS
+    await w.intent_sweep()
+    [resent] = _events(w)
+    assert (resent["forceReindex"], resent["refreshPaidOutputs"], resent[ri.PAYLOAD_ID_KEY]) == (True, True, stamped)
+    await w.consume()
+    run = w.active["run"]
+    assert run.refresh and run.intent_id == stamped and run.seen == stamped              # the same refresh: its marker is found
+    await w.finish(allow_crash=False)
+    assert w.row.get(ri.ID_FIELD) is None and (ORG, KEY, stamped) in w.cache.done
+
+
+async def test_a_plain_update_that_runs_first_runs_as_the_refresh(w: World) -> None:
+    await w.user_force()
+    w.msgs.clear()
+    await w.plain_update()
+    await w.consume()
+    run = w.active["run"]
+    assert run.refresh and w.active["payload"][ri.FROM_INTENT_KEY] is True and w.active["payload"]["refreshPaidOutputs"] is True
+    await w.finish(allow_crash=False)
+    assert w.row.get(ri.ID_FIELD) is None and w.sat == {1}
+
+
+async def test_a_publish_that_fails_leaves_the_request_on_the_record_and_the_sweep_sends_the_refresh(w: World) -> None:
+    w.R.random = lambda: 0.0                                                             # type: ignore[method-assign]  # the publish fails
+    await w.user_force()
+    w.R.random = lambda: 0.99                                                            # type: ignore[method-assign]
+    assert not w.msgs and w.row[ri.ID_FIELD] and w.row["indexingStatus"] == ProgressStatus.NOT_STARTED.value
+    w.now_ms += 2 * HOUR_MS
+    await w.intent_sweep()
+    assert _events(w)[0]["refreshPaidOutputs"] is True
+
+
+# ---- 22: a request made while the record runs
+
+async def test_a_request_made_while_a_plain_run_is_in_progress_is_handed_over_when_the_run_ends(w: World) -> None:
+    await w.plain_update()
+    await w.consume()
+    assert w.active is not None and not w.active["run"].refresh and w.row["indexingStatus"] == IN_PROGRESS
+    started = w.row.get("processingStartedAt")
+    await w.user_force()                                                                 # the walk meets a running record
+    assert w.row["indexingStatus"] == IN_PROGRESS and w.row.get("processingStartedAt") == started
+    assert not w.msgs, "a running record is not published: that would start a second pipeline"
+    asked = w.row[ri.ID_FIELD]
+    assert asked
+    await w.finish(allow_crash=False)
+    [handed] = _events(w)                                                                # no sweep needed
+    assert handed[ri.PAYLOAD_ID_KEY] == asked and handed["refreshPaidOutputs"] is True
+    assert w.row[ri.ID_FIELD] == asked                                                   # the plain run did not clear what it never saw
+    await _run_next(w)
+    assert w.row.get(ri.ID_FIELD) is None and len(w.sat) == 1 and w.reqs.keys() == w.sat
+
+
+async def test_the_walk_that_meets_a_run_that_just_ended_publishes_the_ordinary_way(w: World) -> None:
+    """The intent write precedes the status read; the run's terminal write precedes its intent read: one of them sees the other."""
+    await w.plain_update()
+    await w.consume()
+    real = w.graph.update_record_fields_for_ids
+
+    async def ends_in_between(ids: list[str], fields: dict) -> int:
+        n = await real(ids, fields)
+        w.row["indexingStatus"] = COMPLETED                                              # the run ends right after the write
+        w.active = None
+        return n
+
+    w.graph.update_record_fields_for_ids = ends_in_between                               # type: ignore[method-assign]
+    await w.user_force()
+    [event] = _events(w)
+    assert event["refreshPaidOutputs"] is True and w.row["indexingStatus"] == QUEUED
+
+
+async def test_two_events_of_one_refresh_run_once(w: World) -> None:
+    """The double send of the race above (the walk's publish and the run's hand-over): the second is a no-op."""
+    await w.plain_update()
+    await w.consume()
+    await w.user_force()
+    await w.finish(allow_crash=False)
+    [handover] = _events(w)
+    await _run_next(w)                                                                   # the first event runs
+    # the walk's own stamped event of the same request (not built from the record, so it is not demoted): a no-op now
+    again = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: handover[ri.PAYLOAD_ID_KEY]}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, again, dict(w.row), KEY, parse_now=False)
+    assert run is not None and await w.handler._refresh_already_ran(run, dict(w.row), again)
+
+
+# ---- R2-1: the life of a request that waited, and the expiry
+
+async def test_a_hand_over_restarts_the_life_and_the_resend_count_so_the_first_resend_is_an_hour_away(w: World) -> None:
+    w.row.update(republishCount=5, lastRepublishedAt=w.now_ms - 3 * HOUR_MS)             # the record waited through five stranded re-sends
+    await w.plain_update()
+    await w.consume()
+    await w.user_force()
+    w.now_ms += 20 * HOUR_MS                                                             # a long run: the request is 20 h old at its end
+    await w.finish(allow_crash=False)
+    assert w.row[ri.AT_FIELD] == w.now_ms and w.row.get("republishCount") is None        # 24 h count from the hand-over
+    w.msgs.clear()                                                                       # the hand-over message is lost
+    w.now_ms += 61 * MINUTE_MS
+    await w.intent_sweep()
+    assert len(_events(w)) == 1, "the first re-send must not wait out the stranded counter"
+
+
+async def test_an_intent_write_resets_the_resend_count(w: World) -> None:
+    w.row.update(republishCount=5, lastRepublishedAt=1)
+    await w.user_force()
+    assert w.row.get("republishCount") is None
+
+
+async def test_an_expired_request_on_a_completed_row_is_cleared_logged_and_counted(w: World, caplog: pytest.LogCaptureFixture) -> None:
+    w.row.update(ri.intent_fields("old", w.now_ms - 25 * HOUR_MS))
+    before = ri.REFRESH_INTENT_EVENTS.get("expired") if hasattr(ri.REFRESH_INTENT_EVENTS, "get") else None
+    with caplog.at_level("WARNING"):
+        await w.intent_sweep()
+    assert w.row.get(ri.ID_FIELD) is None and not w.msgs
+    assert "was not served within its life" in caplog.text
+    assert w.row.get("reason") is None                                                   # a completed row keeps its text
+    assert before is None or ri.REFRESH_INTENT_EVENTS.get("expired") == before + 1
+
+
+async def test_an_expired_request_on_a_waiting_row_says_so_in_its_reason(w: World) -> None:
+    w.row.update(ri.intent_fields("old", w.now_ms - 25 * HOUR_MS), indexingStatus=FAILED)
+    await w.intent_sweep()
+    assert w.row.get(ri.ID_FIELD) is None and w.row["reason"] == ri.REFRESH_EXPIRED_REASON
+
+
+# ---- 3, 7: what clears a request, and what must not
+
+async def test_an_older_refresh_does_not_clear_a_newer_request(w: World) -> None:
+    await w.user_force()                                                                 # request 1, its message in the broker
+    await w.consume()
+    first = w.active["run"].seen
+    await w.user_force()                                                                 # request 2 arrives while it runs
+    newer = w.row[ri.ID_FIELD]
+    assert newer != first
+    await w.finish(allow_crash=False)
+    assert w.row[ri.ID_FIELD] == newer
+    assert _events(w)[-1][ri.PAYLOAD_ID_KEY] == newer                                    # and it is handed over
+
+
+async def test_a_satisfied_event_built_from_a_request_runs_plain(w: World) -> None:
+    stale = {"recordId": KEY, "orgId": ORG, **ri.intent_flags("gone", from_intent=True)}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, stale, dict(w.row), KEY, parse_now=False)
+    assert run is not None and not run.refresh and "refreshPaidOutputs" not in stale and ri.PAYLOAD_ID_KEY not in stale
+
+
+async def test_the_users_own_stamped_message_always_runs_as_the_refresh(w: World) -> None:
+    own = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "i9"}
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, own, dict(w.row), KEY, parse_now=False)
+    assert run is not None and run.refresh and run.intent_id == "i9" and run.seen is None
+
+
+async def test_the_upgrade_of_a_plain_event_keeps_its_origin_through_a_requeue(w: World) -> None:
+    w.row.update(ri.intent_fields("i1", w.now_ms))
+    plain = {"recordId": KEY, "orgId": ORG}
+    first = await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, plain, dict(w.row), KEY, parse_now=False)
+    assert first is not None and first.refresh and plain[ri.FROM_INTENT_KEY] is True
+    requeued = dict(plain)                                                               # the consumer re-queues the mutated payload
+    w.row.update(ri.CLEARED_FIELDS)                                                      # the request has been served meanwhile
+    again = await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, requeued, dict(w.row), KEY, parse_now=False)
+    assert again is not None and not again.refresh and "refreshPaidOutputs" not in requeued
+
+
+# ---- R2-2: the backstop writes only for an event that names no request
+
+async def test_the_backstop_stores_the_request_of_an_unstamped_refresh_and_never_restores_a_cleared_one(w: World) -> None:
+    unstamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, "_delivery_id": "d-1"}
+    run = await w.handler._settle_refresh_intent(EventTypes.NEW_RECORD.value, unstamped, dict(w.row), KEY, parse_now=False)
+    assert run is not None and run.refresh and run.intent_id == "d-1" and w.row[ri.ID_FIELD] == "d-1"
+    assert unstamped[ri.PAYLOAD_ID_KEY] == "d-1"
+    w.row.update(ri.CLEARED_FIELDS)
+    stamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "d-1"}
+    await w.handler._settle_refresh_intent(EventTypes.NEW_RECORD.value, stamped, dict(w.row), KEY, parse_now=False)
+    assert w.row.get(ri.ID_FIELD) is None, "a cleared request must not be written back"
+
+
+async def test_nothing_is_written_while_the_flag_is_off(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REFRESH_INTENT_WRITE")
+    unstamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, "_delivery_id": "d-1"}
+    run = await w.handler._settle_refresh_intent(EventTypes.NEW_RECORD.value, unstamped, dict(w.row), KEY, parse_now=False)
+    assert run is not None and run.refresh and w.row.get(ri.ID_FIELD) is None
+    assert not ri.write_enabled()
+
+
+@pytest.mark.parametrize("payload", [
+    {"parseNow": True}, {"vectorDbOnly": True}, {"firstUse": True}, {"stages": ["classify"]},
+])
+async def test_a_request_applies_to_a_full_record_event_only(w: World, payload: dict) -> None:
+    """R2-6: a parse-now, a vector rebuild or a stage re-run stays plain; the request waits for a full run."""
+    w.row.update(ri.intent_fields("i1", w.now_ms))
+    event = {"recordId": KEY, "orgId": ORG, **payload}
+    parse_now = payload.get("parseNow") is True
+    run = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, event, dict(w.row), KEY, parse_now=parse_now)
+    assert run is None and "refreshPaidOutputs" not in event and w.row[ri.ID_FIELD] == "i1"
+
+
+# ---- R2-4: stale recovery gives up on one request, not on the next
+
+async def test_recovery_that_gives_up_clears_only_the_request_it_served(w: World) -> None:
+    w.row.update(ri.intent_fields("newer", w.now_ms), indexingStatus=IN_PROGRESS)
+    mangled = "_RecordEventHandler__update_document_status"
+    with patch.object(type(w.handler), mangled, AsyncMock(return_value={"virtualRecordId": "v1"})), \
+            patch.object(type(w.handler), "_trigger_next_queued_duplicate", AsyncMock()):
+        await w.handler.on_recovery_exhausted(KEY, resume_enrichment=False, intent_id="older")
+        assert w.row[ri.ID_FIELD] == "newer"
+        await w.handler.on_recovery_exhausted(KEY, resume_enrichment=False, intent_id="newer")
+    assert w.row.get(ri.ID_FIELD) is None
+
+
+# ---- R2-5, R2-7: the sweep leaves what is not its to send, and sends once
+
+async def test_the_intent_sweep_leaves_a_deferred_a_trashed_and_a_leased_record_alone(w: World) -> None:
+    w.row.update(ri.intent_fields("i1", w.now_ms - 2 * HOUR_MS))
+    w.row["deferredUntilMs"] = w.now_ms + HOUR_MS                                        # handed back for a provider's wait
+    await w.intent_sweep()
+    assert not w.msgs
+    w.row.pop("deferredUntilMs")
+    w.active = {"run": None, "payload": {}, "start": 1, "derived": False}                # a run holds the lease
+    await w.intent_sweep()
+    assert not w.msgs
+    w.active = None
+    with patch.object(indexing_main, "is_live_record", lambda _r: False):                # trashed since the scan read it
+        await w.intent_sweep()
+    assert not w.msgs
+    await w.intent_sweep()
+    assert len(w.msgs) == 1
+
+
+async def test_two_sweeps_send_one_event(w: World) -> None:
+    import asyncio
+
+    w.row.update(ri.intent_fields("i1", w.now_ms - 2 * HOUR_MS))
+    await asyncio.gather(w.intent_sweep(), w.intent_sweep())
+    assert len(w.msgs) == 1
+
+
+async def test_a_sweep_that_lost_the_claim_to_another_sends_nothing(w: World) -> None:
+    """R2-7: the claim matches the re-send time that was read, so a sweep that read it before another claimed it does not send."""
+    w.row.update(ri.intent_fields("i1", w.now_ms - 2 * HOUR_MS))
+    real = w.graph.get_document
+    reads = 0
+
+    async def another_sweep_claims_after_the_read(key: str, collection: str, **kw: object) -> dict | None:
+        nonlocal reads
+        doc = await real(key, collection, **kw)
+        reads += 1
+        if reads == 1:                                         # the re-read under the lease
+            w.row["lastRepublishedAt"] = w.now_ms               # the other sweep's claim lands right after it
+        return doc
+
+    w.graph.get_document = another_sweep_claims_after_the_read  # type: ignore[method-assign]
+    await w.intent_sweep()
+    assert not w.msgs
+
+
+async def test_a_send_that_fails_puts_the_claim_back(w: World) -> None:
+    w.row.update(ri.intent_fields("i1", w.now_ms - 2 * HOUR_MS))
+    boom = AsyncMock(side_effect=RuntimeError("broker down"))
+    with patch("tests.support.refresh_intent_world._Producer.send_event", boom):
+        await w.intent_sweep()
+    assert w.row.get("lastRepublishedAt") is None and not w.msgs
+    await w.intent_sweep()
+    assert len(w.msgs) == 1
+
+
+# ---- the walk
+
+async def test_the_walk_status_statement_carries_the_request_only_for_a_forced_walk(w: World) -> None:
+    records = [SimpleNamespace(id=KEY, indexing_status=COMPLETED, mime_type="text/html")]
+    await w.service._clear_status_before_publish(records, None)
+    assert w.row.get(ri.ID_FIELD) is None and w.row["indexingStatus"] == ProgressStatus.NOT_STARTED.value
+    await w.service._clear_status_before_publish([SimpleNamespace(id=KEY, indexing_status=COMPLETED, mime_type="text/html")], "i7")
+    assert w.row[ri.ID_FIELD] == "i7" and w.row[ri.AT_FIELD] == w.now_ms
+
+
+def test_a_forced_walk_mints_one_id_and_stamps_it_on_each_record_event() -> None:
+    assert user_forced_intent_id() is None
+    with forced_by_user(forced=True):
+        minted = user_forced_intent_id()
+        assert minted
+        record = MagicMock(virtual_record_id=None)
+        record.to_kafka_record.return_value = {"recordId": "r"}
+        payload = DataSourceEntitiesProcessor._reindex_event_payload(record, vector_db_only=False)
+    assert payload["refreshIntentId"] == minted and payload["refreshPaidOutputs"] is True
+    with forced_by_user(forced=False):
+        assert user_forced_intent_id() is None
+        record = MagicMock(virtual_record_id=None)
+        record.to_kafka_record.return_value = {}
+        assert "refreshIntentId" not in DataSourceEntitiesProcessor._reindex_event_payload(record, vector_db_only=False)
+    assert user_forced_intent_id() is None
+
+
+def test_a_single_records_force_event_is_stamped_and_a_sync_event_is_not() -> None:
+    record_events = {"topic": "record-events", "payload": {}}
+    mark_user_forced_reindex(record_events)
+    assert record_events["payload"]["refreshPaidOutputs"] is True and record_events["payload"]["refreshIntentId"]
+    sync_events = {"topic": "sync-events", "payload": {}}
+    mark_user_forced_reindex(sync_events)
+    assert sync_events["payload"] == {"force": True}
+
+
+def _walk_service(records: list[SimpleNamespace], graph_status: str) -> tuple[EventService, MagicMock, MagicMock]:
+    graph = MagicMock()
+    graph.get_records_by_status = AsyncMock(side_effect=[records, []])
+    graph.update_indexing_status_for_record_ids = AsyncMock()
+    graph.update_record_fields_for_ids = AsyncMock(return_value=1)
+    graph.get_document = AsyncMock(return_value={"indexingStatus": graph_status})
+    graph.get_typed_records_batch = AsyncMock(return_value={})
+    connector = MagicMock()
+    connector.reindex_records = AsyncMock()
+    service = EventService.__new__(EventService)
+    service.graph_provider = graph
+    service.logger = MagicMock()
+    return service, graph, connector
+
+
+@contextlib.asynccontextmanager
+async def _no_stamp(*_a: object, **_k: object) -> AsyncIterator[SimpleNamespace]:
+    yield SimpleNamespace(tripped=False)
+
+
+async def _walk(service: EventService, connector: MagicMock) -> None:
+    with patch.object(event_service, "unless_synced_since", _no_stamp):
+        await service._reindex_batches(connector, "web", "c1", ORG, None, None, 0, None, None)
+
+
+def _records() -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(id="running", is_placeholder=False, indexing_status=IN_PROGRESS, mime_type="text/html"),
+        SimpleNamespace(id="idle", is_placeholder=False, indexing_status=COMPLETED, mime_type="text/html"),
+    ]
+
+
+async def test_a_forced_walk_keeps_the_request_of_a_running_record_and_publishes_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFRESH_INTENT_WRITE", "true")
+    service, graph, connector = _walk_service(_records(), IN_PROGRESS)
+    with forced_by_user(forced=True):
+        await _walk(service, connector)
+    assert graph.get_records_by_status.await_args_list[0].kwargs["exclude_statuses"] == []
+    [(ids, fields), _] = graph.update_record_fields_for_ids.await_args_list[0].args, None
+    assert ids == ["running"] and fields[ri.ID_FIELD]
+    status_call = graph.update_indexing_status_for_record_ids.await_args_list[0]
+    assert status_call.args == (["idle"], ProgressStatus.NOT_STARTED.value) and status_call.kwargs["fields"][ri.ID_FIELD] == fields[ri.ID_FIELD]
+    assert [r.id for r in connector.reindex_records.await_args.args[0]] == ["idle"]
+
+
+async def test_a_forced_walk_publishes_a_record_whose_run_ended_in_between(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFRESH_INTENT_WRITE", "true")
+    service, _graph, connector = _walk_service(_records(), COMPLETED)
+    with forced_by_user(forced=True):
+        await _walk(service, connector)
+    assert sorted(r.id for r in connector.reindex_records.await_args.args[0]) == ["idle", "running"]
+
+
+async def test_the_walk_is_today_s_while_the_flag_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REFRESH_INTENT_WRITE", raising=False)
+    service, graph, connector = _walk_service([_records()[1]], IN_PROGRESS)
+    with forced_by_user(forced=True):
+        await _walk(service, connector)
+    assert graph.get_records_by_status.await_args_list[0].kwargs["exclude_statuses"] == [IN_PROGRESS]
+    graph.update_record_fields_for_ids.assert_not_awaited()
+    assert "fields" not in graph.update_indexing_status_for_record_ids.await_args_list[0].kwargs
+
+
