@@ -96,12 +96,12 @@ async def check_upload(data_source: CloudflareR2DataSource, bucket: str, path: P
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     key = f"pipeshub-r2-example/{uuid.uuid4().hex}/{path.name}"
 
-    uploaded = await data_source.put_object(Bucket=bucket, Key=key, Body=content, ContentType=content_type)
-    checks.report("PutObject", uploaded.success, f"{key}, {len(content)} bytes" if uploaded.success else uploaded.error)
-    if not uploaded.success:
-        return
-
+    # A failed answer can still mean R2 stored the object, so the delete runs either way.
     try:
+        uploaded = await data_source.put_object(Bucket=bucket, Key=key, Body=content, ContentType=content_type)
+        checks.report("PutObject", uploaded.success, f"{key}, {len(content)} bytes" if uploaded.success else f"{uploaded.error}; {key}")
+        if not uploaded.success:
+            return
         got = await data_source.get_object(Bucket=bucket, Key=key)
         if got.success:
             async with got.data["Body"] as body:
