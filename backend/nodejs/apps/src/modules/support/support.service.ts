@@ -16,6 +16,7 @@ import {
   newSupportReference,
   toHeaderText,
 } from './support.utils';
+import { createZipBuffer } from './support.zip';
 import {
   FeedbackKind,
   RecentErrorInput,
@@ -159,14 +160,17 @@ export class SupportService {
 
     const kindLabel = input.kind === 'issue' ? 'Feedback' : 'Feature request';
     const snippet = input.description.replace(/\s+/g, ' ').slice(0, 80);
-    const attachments = toMailAttachments(input.files);
+    const reference = newSupportReference();
+    const { attachments, attached } = await this.zipForEmail(
+      input.files,
+      `feedback-${reference}.zip`,
+    );
     const shared = {
       description: input.description,
       userName: requester.userName,
-      attachmentCount: input.files.length,
+      attachmentCount: attached ? input.files.length : 0,
       submittedAt: formatUtcDateTime(new Date()),
     };
-    const reference = newSupportReference();
 
     const outcome = await this.send({
       smtp,
@@ -220,7 +224,11 @@ export class SupportService {
 
     const issue = SUPPORT_AREAS[input.area];
     const browser = describeUserAgent(input.userAgent);
-    const attachments = toMailAttachments(input.files);
+    const zipName = `support-${reference}.zip`;
+    const { attachments, attached } = await this.zipForEmail(
+      input.files,
+      zipName,
+    );
     const issueRow = { label: 'Issue regarding', value: issue };
     const submitted = {
       reference,
@@ -253,7 +261,9 @@ export class SupportService {
               ? [
                   {
                     label: 'Attachments',
-                    value: `${String(input.files.length)} file(s) attached`,
+                    value: attached
+                      ? `${String(input.files.length)} file(s) in ${zipName}`
+                      : `${String(input.files.length)} file(s) could not be attached`,
                   },
                 ]
               : []),
@@ -348,6 +358,34 @@ export class SupportService {
     return 'failed';
   }
 
+  /** One zip rather than loose files, so support gets a single attachment. Never throws: the mail goes without it. */
+  private async zipForEmail(
+    files: SupportAttachment[],
+    zipName: string,
+  ): Promise<{
+    attachments: NonNullable<MailBody['attachments']>;
+    attached: boolean;
+  }> {
+    if (files.length === 0) return { attachments: [], attached: false };
+    try {
+      const content = await createZipBuffer(
+        files.map((file) => ({ name: file.originalname, data: file.buffer })),
+      );
+      return {
+        attachments: [
+          { filename: zipName, content, contentType: 'application/zip' },
+        ],
+        attached: true,
+      };
+    } catch (error) {
+      this.logger.warn('Support attachments could not be zipped', {
+        zipName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { attachments: [], attached: false };
+    }
+  }
+
   private async readSmtp(): Promise<SmtpConfig | null> {
     try {
       return await this.mail.getSmtpConfig();
@@ -415,15 +453,6 @@ function toGroups(sections: Record<string, SupportRow[]>): SupportRowGroup[] {
   return Object.entries(sections)
     .map(([title, rows]) => ({ title, rows }))
     .filter((group) => group.rows.length > 0);
-}
-
-function toMailAttachments(
-  files: SupportAttachment[],
-): NonNullable<MailBody['attachments']> {
-  return files.map((file) => ({
-    filename: file.originalname,
-    content: file.buffer,
-  }));
 }
 
 // Null as well as undefined: a name can be null in a record written outside the app.

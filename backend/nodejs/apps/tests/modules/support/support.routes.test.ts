@@ -23,6 +23,7 @@ import {
   createSupportRouter,
 } from '../../../src/modules/support/support.routes';
 import * as userAdmin from '../../../src/modules/user_management/services/user-admin.service';
+import { readZip } from './zip-reader';
 
 const ORG_ID = '65a000000000000000000001';
 const USER_ID = '65a000000000000000000002';
@@ -234,8 +235,16 @@ describe('Contact support and Send feedback routes', () => {
         `[Support · Connectors and sync] Acme · ${String(body.reference)}`,
       );
       expect(toSupport.attachments).to.have.length(1);
-      expect(toSupport.attachments?.[0].filename).to.equal('shot.png');
-      expect(String(toSupport.attachments?.[0].content)).to.equal('png-bytes');
+      const zipName = `support-${String(body.reference)}.zip`;
+      expect(toSupport.attachments?.[0].filename).to.equal(zipName);
+      expect(toSupport.attachments?.[0].contentType).to.equal(
+        'application/zip',
+      );
+      expect(
+        String(
+          readZip(toSupport.attachments?.[0].content as Buffer)['shot.png'],
+        ),
+      ).to.equal('png-bytes');
       const supportHtml = getEmailContent(
         toSupport.emailTemplateType,
         toSupport.templateData ?? {},
@@ -243,7 +252,7 @@ describe('Contact support and Send feedback routes', () => {
       expect(supportHtml).to.include(String(body.reference));
       expect(supportHtml).to.include(`Acme (${ORG_ID})`);
       expect(supportHtml).to.include('Chrome 141 on Windows');
-      expect(supportHtml).to.include('1 file(s) attached');
+      expect(supportHtml).to.include(`1 file(s) in ${zipName}`);
 
       expect(copy.sendEmailTo).to.deep.equal(['ada@acme.test']);
       expect(copy.replyTo).to.equal('help@pipeshub.test');
@@ -402,7 +411,12 @@ describe('Contact support and Send feedback routes', () => {
       ).to.include('New Feature request');
       expect(copy.sendEmailTo).to.deep.equal(['ada@acme.test']);
       expect(copy.subject).to.equal('We received your feature request');
-      expect(copy.attachments?.[0].filename).to.equal('app.log');
+      expect(copy.attachments?.[0].filename).to.match(
+        /^feedback-SUP-[A-Z0-9]{6}\.zip$/,
+      );
+      expect(
+        String(readZip(copy.attachments?.[0].content as Buffer)['app.log']),
+      ).to.equal('log line');
       expect(
         getEmailContent(copy.emailTemplateType, copy.templateData ?? {}),
       ).to.include('are attached to this email');
