@@ -844,7 +844,6 @@ class IdentityMixin(PgBase):
         return await self._team_view(team_id, org_id, user_key, search, (page - 1) * limit, limit, transaction,
                                      include_service_accounts=include_service_accounts)
 
-    @_soft(list)
     async def delete_team_member_edges(self, team_id: str, user_ids: list[str], transaction: str | None = None) -> list[dict]:
         rows = await self._id_rows("""/* pipeshub:graph.delete_team_member_edges */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_coll = 'users'
             AND from_id = ANY($2::text[]) AND to_coll = 'teams' AND to_id = $3 RETURNING doc, from_id, to_id""", [current_org_id(), list(user_ids), team_id], transaction, write=True)
