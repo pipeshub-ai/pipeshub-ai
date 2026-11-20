@@ -3347,7 +3347,8 @@
             "max_pages": "Dosažen limit Maximum stránek",
             "time_limit": "Vypršel časový limit; příští synchronizace naváže",
             "stalled": "Web přestal odpovídat; příští synchronizace naváže",
-            "rate_limited": "Web opakovaně žádal o méně požadavků; příští synchronizace naváže"
+            "rate_limited": "Web opakovaně žádal o méně požadavků; příští synchronizace naváže",
+            "start_not_recorded": "Synchronizace nemohla uložit svůj začátek, a proto neproběhla; příští synchronizace to zkusí znovu"
           },
           "pagesSaved": "Uložené stránky: {{count}}",
           "failed": "Neúspěšné stránky: {{count}}",

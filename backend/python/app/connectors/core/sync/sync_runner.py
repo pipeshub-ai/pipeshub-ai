@@ -28,6 +28,7 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
     note_sync_started,
 )
+from app.connectors.core.base.data_store.graph_data_store import ensure_written
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import (
@@ -122,7 +123,8 @@ async def write_app_status(
     if run_started:
         payload[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = payload["updatedAtTimestamp"]
     try:
-        await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value)
+        # The interface lets a store answer False instead of raising; that write did not land either.
+        ensure_written(await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value), f"the {status} status")
     except Exception as e:
         if raise_on_error:
             raise
@@ -861,7 +863,7 @@ async def run_sync_task(
             )
             name = getattr(getattr(connector, "connector_name", None), "value", None)
             record_service_activity("connector_service", "sync_start_not_recorded", connector=name if isinstance(name, str) else "unknown", status="failed")
-            connector.last_sync_summary = {"error": "could not record the sync start"}
+            connector.last_sync_summary = {"stopReason": "start_not_recorded"}
             start_failed = True
             raise not_recorded
         # A resync asked for before this run began is served by it. Left set, the

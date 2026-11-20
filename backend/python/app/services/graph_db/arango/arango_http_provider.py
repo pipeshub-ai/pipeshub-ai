@@ -1346,6 +1346,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 schema_by_collection[col_name] = col_schema
 
             # 1. Create all collections (node + edge)
+            apps_schema_applied = True
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
             for col in CollectionNames:
                 name = col.value
@@ -1356,16 +1357,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         name, edge=is_edge, schema=col_schema
                     ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
+                        apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
+                        continue
+                    # A create that lost the race to another process answers 409, which counts as created: that
+                    # process's schema may be older, so the schema is applied as to any existing collection.
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
-                    # Ensure schema is applied to pre-existing collections too. Not fatal here: the
-                    # indexing service, which writes the fields a newer schema adds, does not start
-                    # until the records schema is applied (ensure_pipeline_schema).
-                    if col_schema and not await self._apply_schema(name, col_schema):
-                        self.logger.error(
-                            "The schema of collection '%s' was not updated; documents carrying fields "
-                            "the previous schema does not list will be refused until it is", name,
-                        )
+                # Ensure schema is applied to pre-existing collections too. Not fatal here: the
+                # indexing service, which writes the fields a newer schema adds, does not start
+                # until the records schema is applied (ensure_pipeline_schema).
+                if col_schema and not await self._apply_schema(name, col_schema):
+                    self.logger.error(
+                        "The schema of collection '%s' was not updated; documents carrying fields "
+                        "the previous schema does not list will be refused until it is", name,
+                    )
+                    # Reported to the caller for apps: an older apps schema refuses every write to an app
+                    # document, and a sync whose start is refused does not run (`run_sync_task`).
+                    apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -1394,8 +1402,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self._ensure_departments_seed()
 
             self.start_record_schema_poll()
-            self.logger.info("✅ ArangoDB schema ensured successfully")
-            return True
+            if apps_schema_applied:
+                self.logger.info("✅ ArangoDB schema ensured successfully")
+            return apps_schema_applied
 
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
