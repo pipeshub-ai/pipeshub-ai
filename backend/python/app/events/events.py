@@ -1459,7 +1459,9 @@ class EventProcessor:
                 org_id=org_id,
             )
             return PageLimitGate(settled=True)
-        long_doc.keep_eligible = decision.keep_eligible
+        # A second decision on a gate inspection that gave no count is Proceed with the default flag: the record's
+        # keep-eligibility, decided before the inspection, stands for the late check that follows it.
+        long_doc.keep_eligible = decision.keep_eligible or inspected is not None
         long_doc.content = None  # the late check reads the inspected file, and the bytes are not kept for the whole event
         # The page count of a file that goes on to be parsed is written by the parse (``_write_page_count``,
         # ``_persist_parsing_completed``), tied to the revision it was taken from: not here.
@@ -1494,9 +1496,13 @@ class EventProcessor:
                     # The count arrives after the run marked the record IN_PROGRESS (the parser's on the parsing-service
                     # path, pdfium's on the parsed bytes in process), so what the event found is put back, and only while the record still carries the
                     # revision this run wrote. A record that moved on is left to its writer.
-                    current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
-                    if current.get("contentRev") != content_rev:
-                        pass  # the record moved on (or is gone): left to its writer
+                    # A read that fails raises, so the event is retried: it is not a record that moved on.
+                    current = await self.graph_provider.get_document(
+                        record_id, CollectionNames.RECORDS.value, raise_on_error=True
+                    ) or {}
+                    still_ours = current.get("contentRev") == content_rev
+                    if not still_ours:
+                        pass  # the record moved on (or is gone): left to its writer, and so is any marker it holds
                     elif current.get("virtualRecordId") != record.get("virtualRecordId"):
                         # This run isolated the record under a new virtual record id and stripped it from the old one's
                         # points before the count arrived: the copy it would be kept on is already gone. Refuse, and
@@ -1531,7 +1537,7 @@ class EventProcessor:
                             ),
                             late_decision,
                         )
-                    if embed_marker:
+                    if embed_marker and still_ours:
                         await self._discard_embed_marker(doc, embed_marker, org_id)
                     await notify_record_indexed(
                         connector_name=doc.get("connectorName"),

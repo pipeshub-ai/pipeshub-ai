@@ -898,6 +898,20 @@ class TestMarkRecordOutcomes:
         assert written["contentRev"] == "x:abc" and written["hasIndexedCopy"] is False
 
     @pytest.mark.asyncio
+    async def test_a_refusal_leaves_no_parse_in_progress_for_the_stale_scan(self) -> None:
+        """A refusal after the run marked the parse IN_PROGRESS is final: the parse status ends with the refusal, so the stale
+        scan (which requeues an IN_PROGRESS parse) does not take the record back."""
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "parsingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason="why")
+
+        written = self._written(gp)
+        assert written["parsingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+        assert written["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
     async def test_no_extra_fields_is_the_write_without_them(self) -> None:
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}

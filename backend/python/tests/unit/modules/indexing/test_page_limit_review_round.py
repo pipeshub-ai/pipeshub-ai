@@ -559,3 +559,79 @@ async def test_the_put_back_applies_only_while_the_virtual_record_id_is_the_one_
     assert world.graph.record["virtualRecordId"] == "v-moved"
     assert world.graph.record["indexingStatus"] == "IN_PROGRESS", "the put-back applied over a moved virtual record id"
     assert "indexingNote" not in world.graph.record
+
+
+# --- in process: the gate's count fails, the routing's recount succeeds ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared", [False, True])
+async def test_a_routing_recount_over_the_limit_keeps_a_keep_eligible_record_or_refuses_it_once_moved(shared: bool) -> None:
+    """The early count and the gate's count are unavailable, the routing's count is 600: the record had an index, so it is put
+    back (unshared) rather than un-indexed; once the run moved it off a shared id, it is refused."""
+    world = World(searchable(indexingStatus="QUEUED"))
+    world.inspected(None)
+    if shared:
+        world.gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"id": "rec-1"}, {"id": "rec-2"}])
+    world.stack.enter_context(patch.object(world.ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock))
+    world.stack.enter_context(patch.object(world.ep, "_spawn_abandoned_vrid_cleanup"))
+    with patch("app.modules.parsers.pdf.page_count.count_pdf_pages", new=_counts(Unavailable(), Unavailable(), 600)):
+        with patch("app.events.events.content_revision", return_value=REV):
+            await world.run(UPDATE)
+    record = world.graph.record
+    assert not world.indexed
+    if shared:
+        assert world.refused and record["virtualRecordId"] != VRID
+    else:
+        assert not world.refused
+        assert record["indexingStatus"] == COMPLETED and record["virtualRecordId"] == VRID
+        assert record["contentRev"] == "other" and record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
+        world.unindex.assert_not_awaited()
+
+
+# --- the late keep's re-read and marker ----------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_failed_re_read_in_the_late_keep_fails_the_event_for_a_retry() -> None:
+    world, _ = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=False)
+    original = world.gp.get_document
+    reads = 0
+
+    async def flaky(*a: object, **kw: object) -> dict:
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            assert kw.get("raise_on_error") is True
+            raise RuntimeError("graph unavailable")
+        return await original(*a, **kw)
+
+    world.gp.get_document = flaky
+    with patch("app.events.events.content_revision", return_value=REV), pytest.raises(RuntimeError):
+        await world.run(UPDATE)
+    world.notified.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("moved_on", "discards"), [(False, True), (True, False)])
+async def test_the_late_keep_discards_the_embed_marker_only_while_the_run_still_owns_the_record(
+    moved_on: bool, discards: bool
+) -> None:
+    world, _ = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=False)
+    world.stack.enter_context(patch("app.events.events.marker_of", return_value={"attempt": "a1"}))
+    discard = world.stack.enter_context(patch.object(world.ep, "_discard_embed_marker", new_callable=AsyncMock))
+    original = world.gp.get_document
+    reads = 0
+
+    async def newer(*a: object, **kw: object) -> dict:
+        nonlocal reads
+        reads += 1
+        record = dict(await original(*a, **kw))
+        if moved_on and reads > 1:
+            record.update(contentRev="r-newer")
+        return record
+
+    world.gp.get_document = newer
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
+    assert (discard.await_count == 1) is discards
