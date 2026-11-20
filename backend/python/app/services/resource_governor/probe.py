@@ -135,6 +135,35 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
     return None
 
 
+def _with_ancestors(path: Path | None, stop: Path) -> list[Path]:
+    """``path`` then the same-named file of every visible ancestor cgroup, nearest first, up to ``stop``.
+
+    A limit on an ancestor binds every process below it, so the effective limit is the tightest one on
+    the way up (``app.capacity.cgroup`` walks the same way, and the tests hold both to the same answer). Only
+    directories under the mount are visible: with just the container's own cgroup mounted this is the one
+    file. ``stop`` is the hierarchy root (the controller directory under v1).
+    """
+    if path is None:
+        return []
+    found = [path]
+    directory = path.parent
+    while directory != stop and stop in directory.parents:
+        directory = directory.parent
+        candidate = directory / path.name
+        if candidate.exists():
+            found.append(candidate)
+    return found
+
+
+def _tightest(levels: list[tuple[float, Path]]) -> tuple[float, Path] | None:
+    """The smallest limit and the file that holds it; on a tie the nearest level (the member's own)."""
+    best: tuple[float, Path] | None = None
+    for limit, file in levels:
+        if best is None or limit < best[0]:
+            best = (limit, file)
+    return best
+
+
 @functools.cache
 def memory_domain_id() -> str | None:
     """An opaque id shared by every process under this memory cgroup, and by no other.
@@ -179,21 +208,31 @@ def _cgroup_v2_memory() -> tuple[int | None, int | None]:
     supply a limit and working set together (corner case: ``memory.max ==
     "max"`` -> treated as no limit, falls through to host total).
     """
-    max_path = _resolve_cgroup_path("memory", "memory.max")
-    if max_path is None:
+    own_max = _resolve_cgroup_path("memory", "memory.max")
+    levels: list[tuple[float, Path]] = []
+    for file in _with_ancestors(own_max, _CGROUP_ROOT):
+        raw = _read_text(file)
+        if raw is None or raw == "max":
+            continue
+        try:
+            levels.append((int(raw), file))
+        except ValueError:
+            continue
+    tightest = _tightest(levels)
+    if tightest is None:
         return None, None
-    raw_max = _read_text(max_path)
-    if raw_max is None or raw_max == "max":
-        return None, None
-    try:
-        limit = int(raw_max)
-    except ValueError:
-        return None, None
+    limit, max_path = int(tightest[0]), tightest[1]
 
-    current_path = _resolve_cgroup_path("memory", "memory.current")
+    # The working set is read where the limit binds: under an ancestor's cap the siblings' memory counts too,
+    # and pairing the ancestor's limit with the member's own use would read the brake too far from the cap.
+    current_path = _resolve_cgroup_path("memory", "memory.current") if max_path == own_max else max_path.parent / "memory.current"
     current = _read_int(current_path) if current_path else None
+    if current is None and max_path != own_max:
+        max_path = own_max
+        current_path = _resolve_cgroup_path("memory", "memory.current")
+        current = _read_int(current_path) if current_path else None
 
-    stat_path = _resolve_cgroup_path("memory", "memory.stat")
+    stat_path = _resolve_cgroup_path("memory", "memory.stat") if max_path == own_max else max_path.parent / "memory.stat"
     # All page cache, not just the inactive half. The k8s "working set"
     # convention subtracts only ``inactive_file`` because it is predicting
     # OOM-kill risk and wants to be conservative. This governor is answering a
@@ -216,15 +255,26 @@ def _cgroup_v2_memory() -> tuple[int | None, int | None]:
 def _cgroup_v1_memory() -> tuple[int | None, int | None]:
     """Same "all or nothing" contract as :func:`_cgroup_v2_memory` — see its
     docstring."""
-    limit_path = _resolve_cgroup_path("memory", "memory.limit_in_bytes")
-    limit = _read_int(limit_path) if limit_path else None
-    if limit is None or limit >= _MEM_V1_NO_LIMIT_SENTINEL:
+    own_limit = _resolve_cgroup_path("memory", "memory.limit_in_bytes")
+    levels: list[tuple[float, Path]] = []
+    for file in _with_ancestors(own_limit, _CGROUP_ROOT / "memory"):
+        value = _read_int(file)
+        if value is not None and value < _MEM_V1_NO_LIMIT_SENTINEL:
+            levels.append((value, file))
+    tightest = _tightest(levels)
+    if tightest is None:
         return None, None
+    limit, limit_path = int(tightest[0]), tightest[1]
 
-    usage_path = _resolve_cgroup_path("memory", "memory.usage_in_bytes")
+    # Usage is read where the limit binds, as for v2.
+    usage_path = _resolve_cgroup_path("memory", "memory.usage_in_bytes") if limit_path == own_limit else limit_path.parent / "memory.usage_in_bytes"
     usage = _read_int(usage_path) if usage_path else None
+    if usage is None and limit_path != own_limit:
+        limit_path = own_limit
+        usage_path = _resolve_cgroup_path("memory", "memory.usage_in_bytes")
+        usage = _read_int(usage_path) if usage_path else None
 
-    stat_path = _resolve_cgroup_path("memory", "memory.stat")
+    stat_path = _resolve_cgroup_path("memory", "memory.stat") if limit_path == own_limit else limit_path.parent / "memory.stat"
     # ``total_cache`` is v1's spelling of all reclaimable page cache — see the
     # v2 path for why the whole of it is discounted, not just its inactive half.
     file_cache = _memory_stat_value(
@@ -447,9 +497,8 @@ class BaselineMemoryTracker:
 # ---------------------------------------------------------------------------
 
 
-def _cgroup_v2_cpu_quota() -> float | None:
-    path = _resolve_cgroup_path("cpu", "cpu.max")
-    text = _read_text(path) if path else None
+def _parse_cpu_max(path: Path) -> float | None:
+    text = _read_text(path)
     if not text:
         return None
     parts = text.split()
@@ -464,14 +513,30 @@ def _cgroup_v2_cpu_quota() -> float | None:
     return quota_us / period_us
 
 
+def _v2_cpu_binding() -> tuple[float, Path] | None:
+    """The tightest ``cpu.max`` quota (in CPUs) on the member's cgroup and its visible ancestors, with its file."""
+    levels = [(q, f) for f in _with_ancestors(_resolve_cgroup_path("cpu", "cpu.max"), _CGROUP_ROOT) if (q := _parse_cpu_max(f)) is not None]
+    return _tightest(levels)
+
+
+def _cgroup_v2_cpu_quota() -> float | None:
+    binding = _v2_cpu_binding()
+    return None if binding is None else binding[0]
+
+
+def _v1_cpu_binding() -> tuple[float, Path] | None:
+    """The tightest CFS quota (in CPUs) on the member's cgroup and its visible ancestors, with its quota file."""
+    levels: list[tuple[float, Path]] = []
+    for file in _with_ancestors(_resolve_cgroup_path("cpu", "cpu.cfs_quota_us"), _CGROUP_ROOT / "cpu"):
+        quota, period = _read_int(file), _read_int(file.parent / "cpu.cfs_period_us")
+        if quota is not None and period is not None and quota > 0 and period > 0:
+            levels.append((quota / period, file))
+    return _tightest(levels)
+
+
 def _cgroup_v1_cpu_quota() -> float | None:
-    quota_path = _resolve_cgroup_path("cpu", "cpu.cfs_quota_us")
-    period_path = _resolve_cgroup_path("cpu", "cpu.cfs_period_us")
-    quota = _read_int(quota_path) if quota_path else None
-    period = _read_int(period_path) if period_path else None
-    if quota is None or period is None or quota <= 0 or period <= 0:
-        return None
-    return quota / period
+    binding = _v1_cpu_binding()
+    return None if binding is None else binding[0]
 
 
 def _own_affinity_cpus() -> int | None:
@@ -565,8 +630,20 @@ def _clock_ticks_per_second() -> float:
         return 100.0  # USER_HZ is 100 on virtually every Linux distro
 
 
+def _cgroup_v2_cpu_stat_file() -> Path | None:
+    """``cpu.stat`` of the cgroup whose quota binds (an ancestor's when it is tighter than the member's), else the
+    member's: the utilisation divides by that quota, so it must count the CPU time that quota is shared by."""
+    own = _resolve_cgroup_path("cpu", "cpu.stat")
+    binding = _v2_cpu_binding()
+    if binding is not None:
+        candidate = binding[1].parent / "cpu.stat"
+        if candidate != own and candidate.exists():
+            return candidate
+    return own
+
+
 def _cgroup_v2_cpu_stat_field(field: str) -> int | None:
-    path = _resolve_cgroup_path("cpu", "cpu.stat")
+    path = _cgroup_v2_cpu_stat_file()
     text = _read_text(path) if path else None
     if not text:
         return None
@@ -581,6 +658,12 @@ def _cgroup_v2_cpu_stat_field(field: str) -> int | None:
 
 def _cgroup_v1_cpu_usage_usec() -> int | None:
     path = _resolve_cgroup_path("cpuacct", "cpuacct.usage")
+    binding = _v1_cpu_binding()
+    if binding is not None:
+        # cpu and cpuacct are mounted together on almost every v1 host: the counter next to the binding quota.
+        candidate = binding[1].parent / "cpuacct.usage"
+        if candidate.exists() and binding[1] != _resolve_cgroup_path("cpu", "cpu.cfs_quota_us"):
+            path = candidate
     nanos = _read_int(path) if path else None
     return None if nanos is None else nanos // 1000
 
