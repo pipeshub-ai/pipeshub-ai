@@ -292,6 +292,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.telemetry.backend import METRICS_BACKEND
+from app.utils import error_class
 from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
 from app.utils.logging_fields import log_event
@@ -1799,7 +1800,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self.client.execute_query(statement)
                 applied += 1
             except Exception as e:
-                self.logger.log(failure_level, "%s: %s failed: %s", what, statement, e)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=failure_level,
+                                        op="ensure_schema", step=what, statement=statement)
         self.logger.info("✅ %d of %d %s in place", applied, len(statements), what)
 
     async def _supports_existence_constraints(self) -> bool:
@@ -1834,7 +1836,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self._remove_duplicate_sync_points()
                 sync_point_duplicates_remain = await self._count_duplicate_sync_point_keys() > 0
             except Exception as e:
-                self.logger.warning(f"Sync point de-duplication failed: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="ensure_schema", step="sync_point_dedup")
             business_key_constraints = self._generate_business_key_constraints()
             if sync_point_duplicates_remain:
                 self.logger.warning(
@@ -1868,17 +1871,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             try:
                 await self.heal_taxonomy_alias_nodes()
-            except Exception:
+            except Exception as e:
                 # Not fatal: affected aliases keep missing tier 0 until the
                 # next start retries, as they did before the heal existed.
-                self.logger.warning("Taxonomy alias heal failed; will retry at next start", exc_info=True)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="ensure_schema", step="taxonomy_alias_heal")
 
             # Seed departments collection with predefined department types
             try:
                 await self._initialize_departments()
             except Exception as e:
-                self.logger.error(f"❌ Error initializing departments: {str(e)}")
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="ensure_schema", step="departments_seed")
 
             self.logger.info("✅ Neo4j schema ensured")
             return True
@@ -1900,7 +1904,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             removed = await self._remove_duplicate_stage_states(label)
             if not removed:
                 raise
-            self.logger.warning("Removed %d duplicate %s nodes to create their unique constraint", removed, label)
+            log_event(self.logger, "graph.provider.duplicates_removed", level=logging.WARNING,
+                      op="ensure_pipeline_schema", removed=removed)
             await self.client.execute_query(constraint)
         for index in _STAGE_STATE_INDEXES:
             await self.client.execute_query(index)
@@ -3875,9 +3880,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             for row in rows
                         ]
                 except Exception as e:
-                    self.logger.debug(
-                        f"Full-text node search unavailable, using scan: {str(e)}"
-                    )
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                            op="search_nodes_by_field_terms", step="fulltext_search")
 
             conditions = [
                 f"n.{field_name} IS NOT NULL",
@@ -7440,9 +7444,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 message = str(apoc_error).lower()
                 if "apoc" not in message and "unknown procedure" not in message:
                     raise
-                self.logger.warning(
-                    f"APOC unavailable ({apoc_error}); recreating {total} edge(s) in batches"
-                )
+                # An expected fallback (APOC not installed), whatever class the driver error reads as.
+                error_class.log_failure(self.logger, "graph.provider.step_failed", apoc_error, include_error_text=False, level=logging.WARNING,
+                                        op="migrate_legacy_relation_edge", step="apoc_rename")
 
             if apoc_ran:
                 # APOC returns normally on partial failure, so committedOperations
@@ -7632,7 +7636,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.rollback_transaction(txn_id)
                 except Exception as rb_err:
-                    self.logger.warning(f"Rollback failed for KB {kb_key}: {rb_err}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", rb_err, include_error_text=False,
+                                            op="migrate_legacy_kb_to_app", step="rollback", kb_id=kb_key)
             return {"success": False, "reason": str(e)}
 
     async def count_legacy_kb_record_groups(self, org_id: str) -> int:
@@ -10599,9 +10604,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             user.email, user.id, org_id, transaction=transaction
                         )
                     except Exception as migrate_err:
-                        self.logger.error(
-                            "Person adoption failed for user %s in org %s: %s", user.id, org_id, migrate_err
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", migrate_err, include_error_text=False,
+                                                op="batch_upsert_app_users", step="person_adoption")
 
                     # A guest is saved so grants to them resolve, but org membership
                     # would hand them every org-wide grant.
@@ -10748,7 +10752,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     except SchemaValidationError:
                         raise
                     except Exception as e:
-                        self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                                op="ensure_all_team_with_users", step="team_created_by")
 
                 permission_edge = {
                     "from_id": user_key,
@@ -10837,7 +10842,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 except SchemaValidationError:
                     raise
                 except Exception as e:
-                    self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="add_user_to_all_team", step="team_created_by")
 
             # 5. Create PERMISSION edge
             permission_edge = {
@@ -11141,7 +11147,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.kh_scope_mark_changed(connector_id)
                 except Exception as e:
-                    self.logger.warning(f"kh scope: could not mark {connector_id} changed after a delete: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_records_and_relations", step="kh_scope_mark_changed",
+                                            connector_id=connector_id)
 
             # Also delete from type-specific collections, including a type node
             # whose IS_OF_TYPE edge is already gone.
@@ -11157,7 +11165,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         txn_id=transaction
                     )
                 except Exception as e:
-                    self.logger.debug(f"Could not delete node from {label} for record {record_key}: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                            op="delete_records_and_relations", step="type_node_delete", record_id=record_key)
 
             return bool(rows and rows[0].get("deleted"))
 
@@ -11342,7 +11351,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 file_record = await self.get_document(record_id, CollectionNames.FILES.value, transaction)
             except Exception as e:
-                self.logger.debug(f"File record not found for record {record_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                        op="delete_record", step="file_record_read", record_id=record_id)
 
             # A mail's attachments go with it, as on ArangoDB: left behind, they stay
             # searchable with nothing left to clean up their vectors.
@@ -11374,7 +11384,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "payloads": [payload, *attachment_payloads],
                     }
             except Exception as e:
-                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_record", step="deletion_event_payload")
                 event_data = None
 
             await self._delete_records_with_their_types([*attachment_ids, record_id], transaction)
@@ -11383,7 +11394,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     await self.kh_scope_mark_changed(record["connectorId"])
                 except Exception as e:
-                    self.logger.warning(f"kh scope: could not mark {record['connectorId']} changed after a delete: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_record", step="kh_scope_mark_changed",
+                                            connector_id=record["connectorId"])
 
             return {
                 "success": True,
@@ -12004,7 +12017,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
 
             except Exception as e:
-                self.logger.error(f"❌ Failed to delete batch {batch_num}/{total_batches} from {collection}: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_delete_nodes_by_keys", step="batch_delete", collection=collection)
                 failed_batches += 1
 
         if failed_batches == 0:
@@ -12092,7 +12106,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 removed += found
             except Exception as e:
                 left = None
-                self.logger.warning(f"Sweep of what indexing wrote during delete of {connector_id} failed: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="_sweep_writes_during_delete", step="late_write_sweep", connector_id=connector_id)
             if left == 0:
                 break
             if attempt + 1 < CASCADE_ATTEMPTS:
@@ -12302,7 +12317,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 await self.kh_scope_forget(connector_id)
             except Exception as e:
-                self.logger.warning(f"kh scope: could not drop the scopes of deleted connector {connector_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_connector_instance", step="kh_scope_drop", connector_id=connector_id)
         return result
 
     async def _delete_connector_instance(
@@ -12534,27 +12550,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     and row["virtualRecordId"]
                                 )
                     except Exception as late_err:
-                        self.logger.warning(
-                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", late_err, include_error_text=False,
+                                                op="_delete_connector_instance", step="late_write_removal",
+                                                connector_id=connector_id)
                     leftover = await self._sweep_writes_during_delete(connector_id)
                     try:
                         orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                     except Exception as sweep_err:
-                        self.logger.warning(
-                            f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", sweep_err, include_error_text=False,
+                                                op="_delete_connector_instance", step="orphan_type_sweep",
+                                                connector_id=connector_id)
                     try:
                         if taxonomy_collect_success:
                             orphan_labels = await self._delete_unlinked_taxonomy_nodes(
                                 org_id, taxonomy_targets
                             )
                     except Exception as sweep_err:
-                        self.logger.warning(
-                            f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                        )
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", sweep_err, include_error_text=False,
+                                                op="_delete_connector_instance", step="orphan_taxonomy_sweep",
+                                                connector_id=connector_id)
 
                 self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
@@ -15409,7 +15423,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             raise
                         # Our transaction is committed: rolling it back is impossible, and
                         # the deleted records' events must still go out.
-                        self.logger.error(f"❌ Records deleted but their block cleanup failed: {block_error}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", block_error, include_error_text=False,
+                                                op="delete_records_recursive", step="block_cleanup")
 
                 event_payloads = []
                 try:
@@ -15426,7 +15441,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_records_recursive", step="deletion_event_payload")
                 event_data = {
                     "eventType": "deleteRecord",
                     "topic": "record-events",
@@ -16133,7 +16149,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_single_record", step="deletion_event_payload")
                 event_data = {
                     "eventType": "deleteRecord",
                     "topic": "record-events",
@@ -16706,7 +16723,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Failed to update records to {status}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
 
     async def reset_indexing_status_for_connector(
         self,
@@ -17461,7 +17478,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             )
                         }
                     except Exception as decode_error:
-                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", decode_error, include_error_text=False,
+                                                op="_create_reindex_event_payload", step="decode_file_content")
 
             # Standard payload for non-MAIL records
             return {
@@ -23283,7 +23301,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     reason = fb.reason
                 except Exception as e:
                     reason = "an error, logged above"
-                    self.logger.warning(f"kh scope listing unavailable for {app_id}, using the full query: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_knowledge_hub_connector_page_v3", step="kh_scope_listing",
+                                            connector_id=app_id)
             if scope_info is None:
                 self.logger.info("kh scope fallback app=%s sort=%s/%s: %s", app_id, sort_field, sort_dir, reason)
             else:
@@ -23310,7 +23330,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     raise
                 # The enrichment is the full query's own tail; should it fail on the scope page, answer from the
                 # full query rather than failing the request.
-                self.logger.warning(f"kh scope page enrichment failed for {app_id}, using the full query: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_knowledge_hub_connector_page_v3", step="kh_scope_page_enrichment",
+                                        connector_id=app_id)
                 use_scope = False
         split_memo: dict[str, bool] = {}
         split_access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids},
@@ -23640,7 +23662,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 await self._kh_scope_cache.get(self.client, connector_id, result["stampedAt"])
             except Exception as e:
-                self.logger.warning(f"kh scope cache warm-up failed for {connector_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="kh_scope_stamp", step="kh_scope_cache_warmup", connector_id=connector_id)
         return result
 
     async def kh_scope_reset_syncing(self) -> None:
@@ -23711,7 +23734,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 results.append(await self.kh_scope_stamp(connector_id))
             except Exception as e:
-                self.logger.warning(f"kh scope stamp failed for {connector_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="kh_scope_restamp_stale", step="kh_scope_stamp", connector_id=connector_id)
         return results
 
     async def get_knowledge_hub_breadcrumbs(
@@ -27658,7 +27682,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Mirrors get_all_agents._enrich: an MCP-projection failure must not make
                 # this single-agent lookup indistinguishable from "not found" via the
                 # outer except below — degrade to an empty list instead.
-                self.logger.warning(f"Agent MCP server enrichment failed for {agent_id}; returning agent without mcpServers: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_agent", step="mcp_server_enrichment", agent_id=agent_id)
                 mcp_projection = {}
                 # The empty list isn't the agent's: a builder that saved it would detach every server.
                 agent["mcpServersUnavailable"] = True
@@ -27987,13 +28012,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 try:
                     projection = await self._project_agents_toolsets_and_knowledge(ids, transaction, org_id)
                 except Exception as e:
-                    self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_all_agents", step="agent_enrichment")
                     projection = {}
                 mcp_unavailable = False
                 try:
                     mcp_projection = await self._project_agents_mcp_servers(ids, transaction)
                 except Exception as e:
-                    self.logger.warning(f"Agent list MCP server enrichment failed; returning agents without mcpServers: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_all_agents", step="mcp_server_enrichment")
                     mcp_projection = {}
                     mcp_unavailable = True
                 for ag in agent_list:
@@ -28801,7 +28828,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                         user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
                 except Exception as e:
-                    self.logger.warning(f"Error getting user teams: {str(e)}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="get_template", step="user_teams")
                     # Continue without teams - individual permission check will still work
 
             # Check individual user permissions on the template

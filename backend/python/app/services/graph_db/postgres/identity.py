@@ -41,6 +41,7 @@ from app.services.graph_db.user_email_identity import (
     connector_ids_of_users,
     graph_user_key,
 )
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -512,7 +513,8 @@ class IdentityMixin(PgBase):
                     except NotImplementedInPostgres:
                         pass
                     except Exception as e:
-                        self.logger.error("Person adoption failed for user %s in org %s: %s", u.id, org_node, e)
+                        error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                                op="batch_upsert_app_users", step="person_adoption")
                 member_edges = [{"from_id": u.id, "from_collection": "users", "to_id": org_node, "to_collection": "organizations", "createdAtTimestamp": u.created_at,
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
@@ -1168,7 +1170,8 @@ class IdentityMixin(PgBase):
             except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
                 raise
             except Exception as e:
-                self.logger.warning("Agent MCP server enrichment failed for %s: %s", agent_id, e)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="get_agent", step="mcp_server_enrichment", agent_id=agent_id)
                 mcp, agent["mcpServersUnavailable"] = {}, True
             agent["mcpServers"] = mcp.get(agent_id, [])
             agent["shareWithOrg"] = bool(rows[0]["shared"])
@@ -1262,14 +1265,16 @@ class IdentityMixin(PgBase):
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.warning("Agent list enrichment failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="agent_enrichment")
             proj = {}
         try:
             mcp, mcp_failed = await self._project_agents_mcp_servers(ids, transaction), False
         except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch):
             raise
         except Exception as e:
-            self.logger.warning("Agent list MCP server enrichment failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="get_all_agents", step="mcp_server_enrichment")
             mcp, mcp_failed = {}, True
         for a in window:
             got = proj.get(a["_key"], {"toolsets": [], "knowledge": []})
