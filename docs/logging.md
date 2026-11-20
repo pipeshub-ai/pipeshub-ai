@@ -542,6 +542,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   turn's. `toolset.route.failed op=load_instances` also appears on agent chat requests (`get_authenticated_toolsets`). An OAuth
   callback's failure is on the line with `outcome=failure` and the body's `error` code as `reason`; a provider's `error=` is
   `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
+  The connector OAuth callback (`connectors/api/router.py`) does the same for its token exchange (`reason=server_error`, no text:
+  the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
+  (`reason=instance_not_found`).
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
