@@ -127,7 +127,7 @@ afterEach(() => {
 
 async function openActionsTab() {
   renderInTheme(<UniversalAgentResourcesPanel />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
+  fireEvent.click(screen.getByRole('radio', { name: 'Actions' }));
   return screen.findByTestId('toolset-connect-row');
 }
 
@@ -163,7 +163,7 @@ describe('the chat’s Actions tab', () => {
     api.getAllMyToolsets.mockRejectedValue(new Error('down'));
 
     renderInTheme(<UniversalAgentResourcesPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Actions' }));
 
     expect(await screen.findByText('Slack')).toBeTruthy();
     expect(screen.queryByTestId('toolset-connect-row')).toBeNull();
@@ -253,7 +253,7 @@ describe('API actions in the chat’s Actions tab', () => {
     useChatStore.getState().setUniversalAgentStreamTools(['sl:slack.send_message']);
 
     renderInTheme(<UniversalAgentResourcesPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Actions' }));
     const row = await screen.findByTestId('api-action-connect-row');
     fireEvent.click(within(row).getByRole('button', { name: 'Connect' }));
     apiActionsApi.listInstances.mockResolvedValue([apiAction({})]);
@@ -360,7 +360,7 @@ describe('the chat’s MCP tab', () => {
       ],
     });
     renderInTheme(<UniversalAgentResourcesPanel />);
-    fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'MCP' }));
 
     const rowOf = async (name: string) => (await screen.findByText(name)).parentElement!.parentElement!;
     expect(within(await rowOf('Atlassian Rovo')).getByRole('img', { name: 'atlassian icon' })).toBeTruthy();

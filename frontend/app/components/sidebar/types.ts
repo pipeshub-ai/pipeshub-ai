@@ -8,8 +8,16 @@ import type { ReactNode } from 'react';
 export interface SidebarBaseProps {
   /** Optional fixed-height header at the top of the sidebar */
   header?: ReactNode;
+  /** Optional block under the header that stays put while the content below it scrolls */
+  pinned?: ReactNode;
   /** Main scrollable content area */
   children: ReactNode;
+  /**
+   * What the scroll area lists, for a sidebar that swaps it in place (the chat rail's main, agent and project views).
+   * Another key starts the scroll area as a new element: a different list, not the same one moved. A list shown again
+   * under its key opens where it was left.
+   */
+  contentKey?: string;
   /** Optional fixed-height footer at the bottom of the sidebar */
   footer?: ReactNode;
   /** Footer height in px, or 'auto' to fit its content. Defaults to FOOTER_HEIGHT. */

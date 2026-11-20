@@ -6,12 +6,28 @@ import type { AttachmentRef, ChatCollectionAttachment } from './types';
 
 type Aui = ReturnType<typeof useAui>;
 
+/** What the composer adds around the append; none by default. */
+export interface SendChatMessageHooks {
+  /** Runs just before the message is appended. */
+  beforeAppend?: () => void;
+  /** Extra `metadata.custom` fields of the appended user row, read as it is appended. */
+  custom?: () => Record<string, unknown>;
+  /** Runs just after the message is appended. */
+  afterAppend?: () => void;
+}
+
 /**
  * Sends a chat-mode message through the assistant runtime: the composer's one send. Makes the slot a new chat
  * needs, scoped to the agent or project in the URL, and records the collections the turn searched.
  * Returns false when nothing was sent (empty, a run still going, or a run from before a refresh still writing).
  */
-export function sendChatMessage(aui: Aui, message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]): boolean {
+export function sendChatMessage(
+  aui: Aui,
+  message: string,
+  attachments?: AttachmentRef[],
+  mentions?: MentionNode[],
+  hooks: SendChatMessageHooks = {},
+): boolean {
   if (!message.trim() && (!attachments || attachments.length === 0)) return false;
   const store = useChatStore.getState();
 
@@ -79,6 +95,7 @@ export function sendChatMessage(aui: Aui, message: string, attachments?: Attachm
   // Attachments were uploaded the moment they were added to the composer,
   // so by the time we reach here every ref is already server-assigned.
   // Forward verbatim to the runtime; no upload step at send time.
+  hooks.beforeAppend?.();
   aui.thread().append({
     role: 'user',
     content: [{ type: 'text', text: message }],
@@ -87,9 +104,11 @@ export function sendChatMessage(aui: Aui, message: string, attachments?: Attachm
         collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
         attachments: attachments && attachments.length > 0 ? attachments : undefined,
         mentionIds: mentions && mentions.length > 0 ? mentions.map((node) => node.id) : undefined,
+        ...hooks.custom?.(),
       },
     },
     startRun: true,
   });
+  hooks.afterAppend?.();
   return true;
 }

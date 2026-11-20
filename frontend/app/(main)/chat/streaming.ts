@@ -25,7 +25,7 @@ import { confirmNewChatEngine } from './new-chat-engine';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getRequestReasoningEffort, projectAgentCapabilities } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
-import { appendResumeParts } from './utils/tool-display';
+import { appendResumeParts, settledSteps, withQuestionOnAsk } from './utils/tool-display';
 import { stripAnswerMarkers } from './utils/parse-download-markers';
 import { debugLog } from './debug-logger';
 import {
@@ -37,6 +37,7 @@ import {
   threadMatchesRows,
 } from './runtime';
 import {
+  answersFor,
   hasUnansweredQuestions,
   mergeAskUserQuestionPayloads,
 } from './components/message-area/ask-user-question-card';
@@ -77,14 +78,41 @@ import {
 import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
-import { ANSWER_FAILED, ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import {
+  ANSWER_FAILED,
+  ChatStreamError,
+  streamErrorInfo,
+  type ChatStreamErrorInfo,
+  cannotRun,
+  failedRowText,
+} from './stream-error';
+import {
+  StreamError,
+  CHAT_STREAM_ERROR_MESSAGES,
+} from '@/lib/api/stream-errors';
+import {
+  readAccessNotices,
+  type AccessNotice,
+} from '@/app/components/feedback/access-notice';
+import {
+  discardCompare,
+  onPrimaryTurnStarted,
+} from './compare/compare-controller';
+import {
+  TOOLS_UNAVAILABLE_EVENT,
+  toolsUnavailableNotice,
+  type ToolsUnavailableNotice,
+} from './unavailable-tools';
+import { chatExtension } from '@/config';
+import {
+  holdQueue,
+  refusedQueuedSend,
+  requeueFirst,
+} from './utils/queued-send';
 import { DurableAdmissionError, refusedTurnText } from './harness-errors';
 import { cancelCardSend, questionSendKey, SEND_ABORTED, sendFailureOf, type SendAttempt, type SendFailure } from './card-send';
-import { StreamError } from '@/lib/api/stream-errors';
 import { useRepositoryStore } from './repository-store';
 import { useRunGatesStore } from './run-gates';
-import { readAccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
-import { discardCompare, onPrimaryTurnStarted } from './compare/compare-controller';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -119,6 +147,13 @@ function generateRunId(): string | undefined {
 function slotIsOnRun(slotId: string, streamRunId: string | null): boolean {
   const slot = useChatStore.getState().slots[slotId];
   return Boolean(slot && slot.runId === streamRunId);
+}
+
+/** The slot is on screen (the active one, or one shown beside it), so its stream flushes at the visible rate. */
+function slotIsVisible(slotId: string): boolean {
+  const { activeSlotId, slots } = useChatStore.getState();
+  const slot = slots[slotId];
+  return activeSlotId === slotId || (slot !== undefined && chatExtension.slot.isOnScreen(slot, activeSlotId));
 }
 
 /**
@@ -250,7 +285,7 @@ function followRemoteRun(slotId: string, convId: string): void {
   const slot = useChatStore.getState().slots[slotId];
   if (!slot || slot.isStreaming || slot.stopping) return;
   if (slot.convId && slot.convId !== convId) return;
-  useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true });
+  useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true, remoteRunId: null });
 }
 
 /** The assistant row a finished turn ends on, or null when the turn kept no reply (the history ends on the question). */
@@ -454,6 +489,7 @@ function stampPendingCardOnMessages(
   const stamped = prevCustom.persistedAskUserQuestion as PendingAskUserQuestion['payload'] | undefined;
   if (stamped && !repliedInChat) return messages;
   const payload = stamped ?? pending.payload;
+  const parts = prevCustom.persistedParts as MessagePart[] | undefined;
   const next = messages.slice();
   next[idx] = {
     ...row,
@@ -462,6 +498,15 @@ function stampPendingCardOnMessages(
       custom: {
         ...prevCustom,
         persistedAskUserQuestion: repliedInChat ? { ...payload, repliedInChat: true } : payload,
+        // The card typed past is a row of the trail, with the answers the run already had.
+        ...(repliedInChat && parts?.length
+          ? {
+              persistedParts: withQuestionOnAsk(parts, {
+                payload: { ...pending.payload, repliedInChat: true },
+                answers: pending.sentAnswers ?? {},
+              }),
+            }
+          : {}),
       },
     },
   };
@@ -535,6 +580,20 @@ export function editWasNotTaken(error: unknown): boolean {
     error instanceof ChatStreamError ||
     (error instanceof StreamError && error.status !== undefined)
   );
+}
+
+/**
+ * A regenerate or an edit the server turned down leaves the old answer on screen, which says nothing by itself, so the
+ * reason goes in a toast, in the server's words. A dropped connection says nothing: the run may still be going there.
+ * Nor does a 5xx: it names no reason the asker can use.
+ */
+function notifyRegenerateFailed(error: unknown, editLost: boolean): void {
+  const refused = error instanceof ChatStreamError || (error instanceof StreamError && error.status !== undefined && error.status < 500);
+  const reason = refused ? error.message : '';
+  // One toast. The server's own words win, so a refusal only an admin can lift is never told to try again; the fixed line says less than
+  // the edit's own does.
+  if (editLost && (!reason || reason === CHAT_STREAM_ERROR_MESSAGES.unavailable)) toast.error(i18n.t('chat.editNotSaved'));
+  else if (reason) toast.error(reason);
 }
 
 /**
@@ -643,17 +702,15 @@ function applyAskUserQuestionSse(
   ) {
     return;
   }
+  // A card asks its own questions, never those of the card the run asked before it: answers to that one stay with it.
+  const sent = sameRow && previous ? answersFor(toolData, sentAnswersAfterAsk(previous).sentAnswers ?? {}) : {};
   useChatStore.getState().updateSlot(slotId, {
     ...(messages && messages !== slot?.messages ? { messages } : {}),
     pendingAskUserQuestion: {
       assistantMessageId: assistantRowId,
-      payload: sameRow && previous
-        ? mergeAskUserQuestionPayloads(previous.payload, toolData)
-        : toolData,
-      answers: sameRow && previous ? previous.answers : {},
-      ...(sameRow && previous
-        ? sentAnswersAfterAsk(previous)
-        : {}),
+      payload: toolData,
+      answers: sameRow && previous ? answersFor(toolData, previous.answers) : {},
+      ...(Object.keys(sent).length > 0 ? { sentAnswers: sent } : {}),
       status: 'pending',
     },
   });
@@ -673,15 +730,21 @@ export function sendFailureOfError(error: unknown): SendFailure {
 
 function pendingAfterStreamFailure(
   pending: PendingAskUserQuestion | null | undefined,
+  error?: unknown,
 ): PendingAskUserQuestion | null {
-  if (!pending) return null;
+  if (!pending || chatExtension.stream.resumeClosesCard(error)) return null;
   return { ...pending, status: 'pending' };
 }
 
 /** A failed resume keeps the card (with its selections) instead of an error
  *  row, and the pending card hides that row's text — so the only place left
  *  to tell the user the answers never reached the model is a toast. */
-function notifyAskUserQuestionResumeFailed(detail: string): void {
+function notifyAskUserQuestionResumeFailed(detail: string, error?: unknown): void {
+  const message = chatExtension.stream.resumeFailedMessage(error);
+  if (message) {
+    toast.error(message);
+    return;
+  }
   toast.error(i18n.t('chatStream.askQuestionResumeFailed'), {
     ...(detail ? { description: detail } : {}),
   });
@@ -698,18 +761,33 @@ function withStreamingErrorMessage(
   errorText: string,
   streamError?: ChatStreamErrorInfo
 ): ThreadMessageLike[] {
-  const withError = (metadata?: ThreadMessageLike['metadata']) =>
-    streamError ? { metadata: { ...metadata, custom: { ...metadata?.custom, streamError } } } : {};
+  const failedMetadata = (metadata?: ThreadMessageLike['metadata']) => ({
+    ...metadata,
+    custom: {
+      ...metadata?.custom,
+      failed: true,
+      createdAt: new Date().toISOString(),
+      ...(streamError ? { streamError } : {}),
+    },
+  });
   const last = currentMessages[currentMessages.length - 1];
   if (last?.role === 'assistant' && getThreadMessagePlainText(last).trim() === '') {
     return [
       ...currentMessages.slice(0, -1),
-      { ...last, content: [{ type: 'text' as const, text: errorText }], ...withError(last.metadata) },
+      {
+        ...last,
+        content: [{ type: 'text' as const, text: errorText }],
+        metadata: failedMetadata(last.metadata),
+      },
     ];
   }
   return [
     ...currentMessages,
-    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }], ...withError() },
+    {
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: errorText }],
+      metadata: failedMetadata(),
+    },
   ];
 }
 
@@ -722,7 +800,9 @@ function statusMessageFromConnectedEvent(data: SSEConnectedEvent): StatusMessage
   return {
     id: 'status-connected',
     status: 'connected',
-    message: looksTechnical ? 'Connected — working on your request…' : raw,
+    // From the send to the first step or word the reply is thinking: the connection is not news to the reader, and a
+    // second wording before "Thinking…" read as the row going blank.
+    message: looksTechnical ? i18n.t('chatStream.thinkingFallback') : raw,
     timestamp: new Date().toISOString(),
   };
 }
@@ -928,6 +1008,12 @@ export function withSavedFinalFacts(live: MessagePart[], saved: MessagePart[]): 
   return live.map((part, i) => (i === at ? { ...part, ...facts } : part));
 }
 
+/** `saved` has every step of `live`: as many parts, and each of its calls. */
+function holdsParts(saved: MessagePart[], live: MessagePart[]): boolean {
+  const calls = new Set(saved.map((p) => p.toolCallId).filter(Boolean));
+  return saved.length >= live.length && live.every((p) => !p.toolCallId || calls.has(p.toolCallId));
+}
+
 /** Live trailing text is the answer (`AnswerContent`). Mark it `isFinal` so
  *  the activity timeline does not also render it after we persist `streamingParts`. */
 function withFinalAnswerMarked(parts: MessagePart[]): MessagePart[] {
@@ -942,6 +1028,23 @@ function withFinalAnswerMarked(parts: MessagePart[]): MessagePart[] {
   return parts.map((part, i) =>
     i === lastText && part.type === 'text' ? { ...part, isFinal: true } : part,
   );
+}
+
+/** `rows` with `incoming` merged in by `key`: a known row is replaced where it stands, the rest go at the end. */
+/** An older server stores no `unavailableTools`: the answer row takes the live event's instead. */
+export function stampLiveUnavailableTools(row: ThreadMessageLike, notice: ToolsUnavailableNotice): void {
+  const custom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+  if (Array.isArray(custom.unavailableTools) && custom.unavailableTools.length > 0) return;
+  Object.assign(row, { metadata: { ...row.metadata, custom: { ...custom, unavailableTools: notice.items } } });
+}
+
+export function mergeById<T>(rows: readonly T[], incoming: readonly T[], key: (row: T) => unknown): T[] {
+  const incomingByKey = new Map(incoming.map((row) => [key(row), row]));
+  const known = new Set(rows.map(key));
+  return [
+    ...rows.map((row) => (key(row) === undefined ? row : incomingByKey.get(key(row)) ?? row)),
+    ...incoming.filter((row) => key(row) === undefined || !known.has(key(row))),
+  ];
 }
 
 export async function streamMessageForSlot(
@@ -994,7 +1097,7 @@ export async function streamMessageForSlot(
   // Client-generated run identifier so a later Stop can target this exact
   // run (see `ChatApi.cancelStream` / `cancelStreamForSlot`).
   const runId = options?.runId ?? generateRunId();
-  const streamRunId = runId ?? null;
+  let streamRunId = runId ?? null;
   if (runId) request.runId = runId;
   let sendSettled = false;
   const settleSend = (outcome: SendAttempt<true>): boolean => {
@@ -1006,6 +1109,13 @@ export async function streamMessageForSlot(
   // A failure before the turn reached the server, with a card send to say it: the card is left as it was.
   const cardSaysFailure = (error: unknown): boolean =>
     !sendSettled && settleSend({ failed: sendFailureOfError(error) });
+  const session = chatExtension.stream.begin(slotId, slot, request);
+  const adoptServerRunId = (serverRunId: string | undefined) => {
+    if (!session?.adoptServerRunId || !serverRunId || serverRunId === streamRunId) return;
+    if (!slotIsOnRun(slotId, streamRunId)) return;
+    streamRunId = serverRunId;
+    useChatStore.getState().updateSlot(slotId, { runId: serverRunId });
+  };
 
   // Ephemeral empty assistant so the in-progress turn has a dedicated "last
   // assistant" message. Pairs with MessageList: only the last assistant whose
@@ -1039,6 +1149,16 @@ export async function streamMessageForSlot(
       }
     }
   }
+  // The card being answered is a row of the trail from now on, where it was asked; the run carries on under it, after
+  // the steps of the runs before it.
+  const answeredCard = resumeAskUserQuestion && lastAssistantId ? slot.pendingAskUserQuestion : null;
+  if (answeredCard) {
+    lastAssistantParts = withQuestionOnAsk(lastAssistantParts, {
+      payload: answeredCard.payload,
+      answers: answeredCard.answers,
+    });
+  }
+  lastAssistantParts = settledSteps(lastAssistantParts);
   // A card id the thread does not carry must not fall through to "newest
   // assistant row": reusing an unrelated turn overwrites the answer already
   // there. Start a fresh turn instead — misplaced at worst, not destructive.
@@ -1086,6 +1206,7 @@ export async function streamMessageForSlot(
     role: 'assistant' as const,
     id: pendingAssistantId,
     content: [{ type: 'text' as const, text: '' }],
+    ...(session?.assistantRowCustom ? { metadata: { custom: session.assistantRowCustom } } : {}),
   };
   const resumeMessages = reuseExistingAssistant
     ? baseMessages
@@ -1100,6 +1221,7 @@ export async function streamMessageForSlot(
             ? {
                 metadata: {
                   custom: {
+                    ...session?.userRowCustom,
                     filters: request.filters,
                     createdAt: new Date().toISOString(),
                     ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
@@ -1110,6 +1232,7 @@ export async function streamMessageForSlot(
             : {
                 metadata: {
                   custom: {
+                    ...session?.userRowCustom,
                     createdAt: new Date().toISOString(),
                     ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
                     ...(request.attachments?.length ? { attachments: request.attachments } : {}),
@@ -1119,10 +1242,13 @@ export async function streamMessageForSlot(
         },
         newAssistantRow,
       ];
+  // The rows this send added; a turn-only final frame's stored rows take their place.
+  const sentRows = resumeMessages.slice(messagesWithPreviousCard.length);
 
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
+    ...chatExtension.stream.startFields(),
     streamingQuestion,
     streamingContent: '',
     currentStatusMessage: null,
@@ -1135,6 +1261,7 @@ export async function streamMessageForSlot(
     lastDurableRun: null,
     routePending: true,
     streamingAssistantId: pendingAssistantId,
+    ...session?.startFields,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
     // `request.agentStreamTools` is `undefined` when every tool is
     // selected (see `buildStreamChatRequestForSlot` in runtime.ts) — must
@@ -1210,6 +1337,8 @@ export async function streamMessageForSlot(
   // built by `agui-event-handler.ts`'s `LivePartsBuilder` — piggybacks on
   // the same throttled flush as streamingContent so a burst of parts
   // updates doesn't cause its own separate wave of Zustand writes.
+  // Tools the run went on without; kept on the answer row when the stored reply does not name them itself.
+  let liveToolsNotice: ToolsUnavailableNotice | null = null;
   let latestParts: MessagePart[] = [];
 
   // Minimum-dwell scheduler for SSE status messages (see
@@ -1243,19 +1372,31 @@ export async function streamMessageForSlot(
     cancelPendingStatus();
   }
 
+  // A flush due now waits for the rest of the current task: the callbacks of one event (a tool call settling the text
+  // that streamed before it into the trail, and clearing the answer) then reach the store together.
+  let flushQueued = false;
+  /** Lands a flush still waiting for the end of the task; the run's end calls it before it clears what was streamed. */
+  function flushQueuedNow() {
+    if (!flushQueued) return;
+    flushQueued = false;
+    flushContentToStore();
+  }
   function scheduleFlush() {
     const now = Date.now();
     // Check activity on every call — adapts immediately when user switches.
-    const isActive = useChatStore.getState().activeSlotId === slotId;
+    const isActive = slotIsVisible(slotId);
     const interval = isActive
       ? activeFlushIntervalMs(accumulatedContent.length)
       : BACKGROUND_FLUSH_MS;
     if (now - lastFlushTime >= interval) {
-      // Enough time has passed — flush immediately.
+      // Enough time has passed — flush at the end of this task.
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       lastFlushTime = now;
-      flushContentToStore();
-    } else if (flushTimer === null) {
+      if (!flushQueued) {
+        flushQueued = true;
+        queueMicrotask(flushQueuedNow);
+      }
+    } else if (flushTimer === null && !flushQueued) {
       // Within the throttle window — schedule a deferred flush.
       flushTimer = setTimeout(() => {
         flushTimer = null;
@@ -1276,6 +1417,8 @@ export async function streamMessageForSlot(
         settleSend({ sent: true });
         route.onLegacyTurn?.();
       },
+      onRunId: adoptServerRunId,
+
       onConnected: (data) => {
         // Before the slot guard: a Stop already settled the slot but still needs this id to cancel.
         if (streamRunId && pendingStopConvIds.has(streamRunId)) {
@@ -1284,6 +1427,7 @@ export async function streamMessageForSlot(
           if (stopId) pendingStopConvIds.set(streamRunId, stopId);
         }
         if (!slotIsOnRun(slotId, streamRunId)) return;
+        adoptServerRunId(data?.runId);
         if (isNewConversation) {
           const raw = (data as SSEConnectedEvent | undefined)?.conversationId;
           const earlyId = typeof raw === 'string' ? raw.trim() : '';
@@ -1296,6 +1440,16 @@ export async function streamMessageForSlot(
             useChatStore.getState().connectNewConversation(slotId, earlyId, connectedTitle || null);
             debugLog.flush('connected-conv-id', { slotId, convId: earlyId });
           }
+        }
+        // The server answered that no answer follows: no thinking state.
+        if (chatExtension.stream.skipsAnswer(data as SSEConnectedEvent | undefined)) {
+          cancelPendingStatus();
+          stopIdleStatus();
+          useChatStore.getState().updateSlot(slotId, {
+            currentStatusMessage: null,
+            streamingParts: [],
+          });
+          return;
         }
         scheduleStatus(statusMessageFromConnectedEvent(data));
       },
@@ -1428,6 +1582,15 @@ export async function streamMessageForSlot(
         applyAskUserQuestionSse(slotId, data, rowId);
       },
 
+      onCustomEvent: (name, value) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
+        if (name === TOOLS_UNAVAILABLE_EVENT) {
+          liveToolsNotice = toolsUnavailableNotice(value) ?? liveToolsNotice;
+          return;
+        }
+        chatExtension.stream.onCustomEvent(slotId, name, value);
+      },
+
       onAnswerFinal: () => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
         stopIdleStatus();
@@ -1436,6 +1599,7 @@ export async function streamMessageForSlot(
       onComplete: (data) => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+        flushQueuedNow();
         latestParts = [];
         cancelPendingStatus();
         if (!data?.conversation) {
@@ -1513,12 +1677,28 @@ export async function streamMessageForSlot(
         const conv = data.conversation as { _id?: string; id?: string };
         const newConvId = conv._id || conv.id || '';
 
-        // Build finalized messages from API response
-        const historical = loadHistoricalMessages(data.conversation.messages);
-        const { unansweredAskUserQuestion } = historical;
-
         // SSE placeholder assistant id → persisted Mongo message id after complete.
         const slotBeforeComplete = useChatStore.getState().slots[slotId];
+        // A turn-only frame is merged into the stored rows already loaded; an older server sends every row.
+        const turnOnly = data.conversation.frame === 'turn';
+        // A row the frame sends again keeps what this tab's stored copy had and the frame's copy leaves out. In a
+        // shared chat the frame's rows carry no place in the thread, and a card answer that lost its place would be
+        // read before its own card the next time the rows are sorted.
+        const held = new Map((slotBeforeComplete?.rawMessages ?? []).map((m) => [m._id, m]));
+        const rows = turnOnly
+          ? mergeById(
+              slotBeforeComplete?.rawMessages ?? [],
+              data.conversation.messages.map((m) => {
+                const before = held.get(m._id);
+                return before ? { ...before, ...m } : m;
+              }),
+              (m) => m._id,
+            )
+          : data.conversation.messages;
+
+        // Build finalized messages from API response
+        const historical = loadHistoricalMessages(rows);
+        const { unansweredAskUserQuestion } = historical;
         // Settling clears `stopping`, so a user-stopped run is only knowable here.
         const wasStopped = Boolean(slotBeforeComplete?.stopping);
         const finalMessages = wasStopped && !resumeAskUserQuestion
@@ -1528,9 +1708,10 @@ export async function streamMessageForSlot(
               accumulatedContent,
               pendingCitationMaps ?? slotBeforeComplete?.streamingCitationMaps,
               pendingAssistantId,
-              trailingStoppedReplyId(data.conversation.messages),
+              trailingStoppedReplyId(rows),
             )
           : historical.messages;
+        chatExtension.stream.finalizeMessages(finalMessages, request, newConvId || slot.convId || 'new');
         const liveParts = slotBeforeComplete?.streamingParts ?? [];
         const liveFollowUp = resumeAskUserQuestion
           ? [
@@ -1547,6 +1728,7 @@ export async function streamMessageForSlot(
         const pendingBefore = slotBeforeComplete?.pendingAskUserQuestion;
         let remappedPending: PendingAskUserQuestion | undefined;
         const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
+        if (lastAsst && liveToolsNotice) stampLiveUnavailableTools(lastAsst, liveToolsNotice);
         const cardRow = findAskUserQuestionRow(finalMessages, pendingBefore);
         if (
           resumeAskUserQuestion &&
@@ -1568,7 +1750,10 @@ export async function streamMessageForSlot(
         const partsTarget = reuseExistingAssistant
           ? (cardRow ?? (resumeAskUserQuestion ? lastAsst : undefined))
           : (resumeAskUserQuestion ? lastAsst : undefined);
-        if (partsTarget && liveParts.length) {
+        const savedParts = (partsTarget?.metadata?.custom?.persistedParts ?? []) as MessagePart[];
+        // The steps the server saved for every run of the turn win when they hold all the live ones: the live copy can
+        // miss the last frames of a run that stopped on a card. An older server saved none for a resumed run.
+        if (partsTarget && liveParts.length && !holdsParts(savedParts, liveParts)) {
           const prevCustom = (partsTarget.metadata?.custom ?? {}) as Record<string, unknown>;
           const savedParts = Array.isArray(prevCustom.persistedParts) ? (prevCustom.persistedParts as MessagePart[]) : [];
           const persistedParts = withSavedApprovals(
@@ -1636,9 +1821,12 @@ export async function streamMessageForSlot(
         //      loadOlderMessagesForSlot now deduplicates before prepending, so the
         //      duplicate-ID crash that originally motivated removing this heuristic
         //      cannot occur again.
+        // A merged turn keeps the pages already loaded: the next older page starts past the stored rows held.
         const newMsgPagination = prevPagination
           ? {
-              currentPage: 1,
+              currentPage: turnOnly
+                ? Math.max(prevPagination.currentPage, Math.floor(rows.length / CONVERSATION_MESSAGES_PAGE_SIZE))
+                : 1,
               hasOlderMessages: prevPagination.hasOlderMessages || finalMessages.length >= CONVERSATION_MESSAGES_PAGE_SIZE,
               isLoadingOlder: false,
             }
@@ -1656,17 +1844,31 @@ export async function streamMessageForSlot(
             streamingParts: [],
             pendingCollections: [],
             artifacts: [],
-            messages: withSearchDegraded(finalMessages, slotBeforeComplete?.messages ?? [], {
-              // This turn's own reply is the row the history ends on. A turn stopped before any text has none (history drops the
-              // empty reply and ends on the question), and then the note belongs to no row: an earlier answer must not get it.
-              degraded: data.meta?.searchDegraded === true,
-              notices: readAccessNotices(data.meta?.accessNotices),
-              mark: data.meta?.searchDegraded === true || readAccessNotices(data.meta?.accessNotices).length > 0
-                ? (reuseExistingAssistant
-                    ? (cardRow ?? turnReply(finalMessages))
-                    : turnReply(finalMessages))
-                : null,
-            }),
+            messages: withSearchDegraded(
+              session?.completeMessages?.(slotBeforeComplete, finalMessages, { pendingAssistantId })
+                ?? (turnOnly
+                  // Rows only this tab has (a failed or stopped earlier turn) stay; this send's own rows give way.
+                  ? mergeById(
+                      (slotBeforeComplete?.messages ?? []).filter(
+                        (m) => !sentRows.includes(m) && (reuseExistingAssistant || m.id !== pendingAssistantId),
+                      ),
+                      finalMessages,
+                      (m) => m.id,
+                    )
+                  : finalMessages),
+              slotBeforeComplete?.messages ?? [],
+              {
+                // This turn's own reply is the row the history ends on. A turn stopped before any text has none (history drops the
+                // empty reply and ends on the question), and then the note belongs to no row: an earlier answer must not get it.
+                degraded: data.meta?.searchDegraded === true,
+                notices: readAccessNotices(data.meta?.accessNotices),
+                mark: data.meta?.searchDegraded === true || readAccessNotices(data.meta?.accessNotices).length > 0
+                  ? (reuseExistingAssistant
+                      ? (cardRow ?? turnReply(finalMessages))
+                      : turnReply(finalMessages))
+                  : null,
+              },
+            ),
             hasLoaded: true,
             abortController: null,
             runId: null,
@@ -1674,9 +1876,9 @@ export async function streamMessageForSlot(
             durableRun: null,
             routePending: false,
             conversationModelInfo: data.conversation.modelInfo,
-            rawMessages: data.conversation.messages,
+            rawMessages: rows,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
-            ...(isNewConversation ? { isOwner: true } : {}),
+            ...(isNewConversation ? { isOwner: true, ...chatExtension.slot.ownerFields(slotBeforeComplete) } : {}),
             pendingAskUserQuestion: (
               resumeAskUserQuestion && rowHasFollowUp && pendingBefore
                 ? {
@@ -1711,7 +1913,7 @@ export async function streamMessageForSlot(
             slotId,
             {
               id: newConvId,
-              title: data.conversation.title,
+              title: chatExtension.formatConversationTitle(data.conversation.title) ?? data.conversation.title,
               createdAt: data.conversation.createdAt,
               updatedAt: data.conversation.updatedAt,
               isShared: data.conversation.isShared,
@@ -1727,7 +1929,11 @@ export async function streamMessageForSlot(
         } else {
           const existingConvId = newConvId || slot.convId;
           if (existingConvId) {
-            currentStore.moveConversationToTop(existingConvId);
+            // The time the server saved for the answer, else the time it sent this frame: a chat someone shared with
+            // you can come without the first.
+            currentStore.moveConversationToTop(existingConvId, {
+              lastActivityAt: data.conversation.lastActivityAt ?? Date.parse(data.meta?.timestamp ?? ''),
+            });
             const listModelInfo = data.conversation.modelInfo;
             if (listModelInfo) {
               currentStore.updateConversationModelInfoInLists(
@@ -1739,6 +1945,9 @@ export async function streamMessageForSlot(
         }
 
         notifyAnswerFinishedInBackground(slotId, wasStopped);
+        const completedConvId = newConvId || slot.convId;
+        if (completedConvId) session?.onCompleted?.(completedConvId);
+        chatExtension.stream.onCompleted(request);
         debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
       },
 
@@ -1752,12 +1961,46 @@ export async function streamMessageForSlot(
         }
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         cancelPendingStatus();
+        if (
+          !resumeAskUserQuestion &&
+          !reuseRowId &&
+          session?.onRejected?.(slotId, error, { baseMessages: messagesWithPreviousCard, query, request })
+        ) {
+          debugLog.flush('stream-rejected', { slotId });
+          return;
+        }
+        // A queued question refused before its answer began goes back to the head of its queue with the reason, and
+        // leaves the thread as it was, so it is not shown twice.
+        const refused = !resumeAskUserQuestion && !reuseRowId && !isNewConversation ? refusedQueuedSend(request, error) : null;
+        if (refused) {
+          useChatStore.getState().updateSlot(slotId, {
+            isStreaming: false,
+            streamingContent: '',
+            streamingQuestion: '',
+            currentStatusMessage: null,
+            streamingCitationMaps: null,
+            streamingParts: [],
+            pendingCollections: [],
+            abortController: null,
+            runId: null,
+            stopping: false,
+            pendingAskUserQuestion: pendingAfterStreamFailure(useChatStore.getState().slots[slotId]?.pendingAskUserQuestion),
+            messages: messagesWithPreviousCard,
+          });
+          requeueFirst(slotId, refused.item, refused.reason);
+          debugLog.flush('stream-refused-queued', { slotId });
+          return;
+        }
         console.error('[streaming] Stream error for slot', slotId, error);
         const cardSays = cardSaysFailure(error);
         const slotNow = useChatStore.getState().slots[slotId];
         const pendingNow = slotNow?.pendingAskUserQuestion;
         const currentMessages = slotNow?.messages ?? [];
-        const err = refusedTurnText(error as { code?: string }) ?? (error.message || 'An error occurred. Please try again.');
+        const err =
+          refusedTurnText(error as { code?: string }) ??
+          failedRowText(error, i18n.t('chatStream.errorFallback'), chatExtension.stream.knowsErrorCode);
+        // Before the chat reads as free, or what waits would go out at once.
+        if (cannotRun(streamErrorInfo(error))) holdQueue(slotId);
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           streamingContent: '',
@@ -1771,7 +2014,7 @@ export async function streamMessageForSlot(
           stopping: false,
           durableRun: null,
           routePending: false,
-          pendingAskUserQuestion: cardSays ? (pendingNow ?? null) : pendingAfterStreamFailure(pendingNow),
+          pendingAskUserQuestion: cardSays ? (pendingNow ?? null) : pendingAfterStreamFailure(pendingNow, error),
           pendingApprovals: [],
           // A failed answer to a card leaves the card as it was, to answer again.
           messages: resumeAskUserQuestion || reuseRowId
@@ -1781,7 +2024,8 @@ export async function streamMessageForSlot(
         if (cardSays) {
           // The card's own notice says it, and retries.
         } else if (resumeAskUserQuestion) {
-          notifyAskUserQuestionResumeFailed(err);
+          session?.onResumeFailed?.(slotId, error);
+          notifyAskUserQuestionResumeFailed(err, error);
         } else if (reuseRowId) {
           notifyToolApprovalFailed(err);
         }
@@ -1839,9 +2083,7 @@ export async function streamMessageForSlot(
     const slotNow = useChatStore.getState().slots[slotId];
     const pendingNow = slotNow?.pendingAskUserQuestion;
     const currentMessages = slotNow?.messages ?? [];
-    const errorMessage = error instanceof Error
-      ? error.message
-      : i18n.t('chatStream.errorFallback');
+    const errorMessage = failedRowText(error, i18n.t('chatStream.errorFallback'), chatExtension.stream.knowsErrorCode);
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
       streamingContent: '',
@@ -1855,7 +2097,7 @@ export async function streamMessageForSlot(
       stopping: false,
       durableRun: null,
       routePending: false,
-      pendingAskUserQuestion: cardSays ? (pendingNow ?? null) : pendingAfterStreamFailure(pendingNow),
+      pendingAskUserQuestion: cardSays ? (pendingNow ?? null) : pendingAfterStreamFailure(pendingNow, error),
       pendingApprovals: [],
       messages: resumeAskUserQuestion || reuseRowId
         ? currentMessages
@@ -1864,7 +2106,7 @@ export async function streamMessageForSlot(
     if (cardSays) {
       // The card's own notice says it, and retries.
     } else if (resumeAskUserQuestion) {
-      notifyAskUserQuestionResumeFailed(errorMessage);
+      notifyAskUserQuestionResumeFailed(errorMessage, error);
     } else if (reuseRowId) {
       notifyToolApprovalFailed(errorMessage);
     }
@@ -1901,6 +2143,8 @@ export async function streamRegenerateForSlot(
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
   if (slot.remoteRunInProgress) return;
+  // Where an edit was written, which is not this slot for an answer on a slot of its own: its words go back there.
+  const editBoxSlotId = store.activeSlotId ?? slotId;
 
   // Rebuilding the primary answer leaves nothing to compare against.
   discardCompare(slotId);
@@ -1926,6 +2170,10 @@ export async function streamRegenerateForSlot(
     turnIsAskedAgain
       ? { messages: preEditMessages, pendingAskUserQuestion: preEditPending }
       : { pendingAskUserQuestion: preEditPending };
+  /** An edit the server did not take: the question goes back as it was, so the new words go back to the box. */
+  const keepRefusedEdit = (error: unknown): void => {
+    if (edit && editWasNotTaken(error)) useChatStore.getState().updateSlot(editBoxSlotId, { composerRestore: edit.query });
+  };
 
   slot.abortController?.abort();
 
@@ -1956,7 +2204,15 @@ export async function streamRegenerateForSlot(
 
   const abortController = new AbortController();
   const runId = generateRunId();
-  const streamRunId = runId ?? null;
+  let streamRunId = runId ?? null;
+  // The run the server holds can carry an id of its own (`X-Run-Id`); Stop has to name that one.
+  const adoptServerRunId = (serverRunId: string | undefined) => {
+    if (!serverRunId || serverRunId === streamRunId) return;
+    if (!slotIsOnRun(slotId, streamRunId)) return;
+    streamRunId = serverRunId;
+    useChatStore.getState().updateSlot(slotId, { runId: serverRunId });
+  };
+
   store.updateSlot(slotId, {
     // An answered card is not this run's: left in the slot it would be opened again when the run ends,
     // and the next click on it would add an answer message after the reply.
@@ -1964,6 +2220,7 @@ export async function streamRegenerateForSlot(
       ? { pendingAskUserQuestion: null }
       : {}),
     isStreaming: true,
+    ...chatExtension.stream.startFields(),
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
     streamingContent: '',
@@ -2022,15 +2279,26 @@ export async function streamRegenerateForSlot(
     cancelPendingStatus();
   }
 
+  // As in `streamMessageForSlot`: one event's callbacks reach the store together.
+  let flushQueued = false;
+  /** Lands a flush still waiting for the end of the task; the run's end calls it before it clears what was streamed. */
+  function flushQueuedNow() {
+    if (!flushQueued) return;
+    flushQueued = false;
+    flushContentToStore();
+  }
   function scheduleFlush() {
     const now = Date.now();
-    const isActive = useChatStore.getState().activeSlotId === slotId;
+    const isActive = slotIsVisible(slotId);
     const interval = isActive ? ACTIVE_FLUSH_MS : BACKGROUND_FLUSH_MS;
     if (now - lastFlushTime >= interval) {
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       lastFlushTime = now;
-      flushContentToStore();
-    } else if (flushTimer === null) {
+      if (!flushQueued) {
+        flushQueued = true;
+        queueMicrotask(flushQueuedNow);
+      }
+    } else if (flushTimer === null && !flushQueued) {
       flushTimer = setTimeout(() => {
         flushTimer = null;
         lastFlushTime = Date.now();
@@ -2044,8 +2312,10 @@ export async function streamRegenerateForSlot(
 
   const regenerateCallbacks: StreamMessageCallbacks = {
     ...turnRouteCallbacks(slotId, streamRunId),
+    onRunId: adoptServerRunId,
     onConnected: (data) => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
+      adoptServerRunId(data?.runId);
       scheduleStatus(statusMessageFromConnectedEvent(data));
     },
 
@@ -2142,6 +2412,11 @@ export async function streamRegenerateForSlot(
       );
     },
 
+    onCustomEvent: (name, value) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
+      chatExtension.stream.onCustomEvent(slotId, name, value);
+    },
+
     onAnswerFinal: () => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
       stopIdleStatus();
@@ -2154,6 +2429,9 @@ export async function streamRegenerateForSlot(
         clearTimeout(flushTimer);
         flushTimer = null;
       }
+      // What the last events streamed stays drawn while the saved answer loads: a flush left for the end of this task
+      // would otherwise land after the line below, and empty the trail of a run still on screen.
+      flushQueuedNow();
       cancelPendingStatus();
       latestParts = [];
       try {
@@ -2288,7 +2566,9 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
+      if (cannotRun(streamErrorInfo(error))) holdQueue(slotId);
       const dropped = turnIsAskedAgain && !editWasNotTaken(error);
+      keepRefusedEdit(error);
       useChatStore.getState().updateSlot(slotId, {
         ...(dropped ? {} : undoEditedQuestion()),
         isStreaming: false,
@@ -2305,6 +2585,7 @@ export async function streamRegenerateForSlot(
         stopping: false,
       });
       if (dropped) followRemoteRun(slotId, editConvId);
+      notifyRegenerateFailed(error, Boolean(edit) && !dropped);
       debugLog.flush('regenerate-error', { slotId });
     },
 
@@ -2404,6 +2685,7 @@ export async function streamRegenerateForSlot(
       console.error('[streaming] Fatal regenerate error for slot', slotId, error);
     }
     const dropped = turnIsAskedAgain && !aborted && !editWasNotTaken(error);
+    if (!aborted) keepRefusedEdit(error);
     useChatStore.getState().updateSlot(slotId, {
       ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,
@@ -2420,8 +2702,39 @@ export async function streamRegenerateForSlot(
       stopping: false,
     });
     if (dropped) followRemoteRun(slotId, editConvId);
+    // The question is back as it was: say so, or the edit looks taken and nothing happens.
+    if (!aborted) notifyRegenerateFailed(error, Boolean(edit) && !dropped);
     debugLog.flush(aborted ? 'regenerate-aborted' : 'regenerate-fatal-error', { slotId });
   }
+}
+
+/**
+ * Stops a run this tab does not stream: one that kept going on the server after a reload, whose id came with the
+ * loaded question. Exactly one cancel goes out per press; the remote-run poll reloads the turn once the server
+ * reports it settled, so the turn then reads as stopped from the server's own row. A refused or failed cancel
+ * frees the button, since nothing was stopped.
+ */
+function cancelRemoteRunForSlot(slotId: string): void {
+  const store = useChatStore.getState();
+  const slot = store.slots[slotId];
+  if (!slot || slot.isStreaming || slot.stopping || slot.remoteStopRequested) return;
+  const { convId, remoteRunId, remoteRunInProgress, threadAgentId } = slot;
+  if (!remoteRunInProgress || !remoteRunId || !convId) return;
+
+  store.updateSlot(slotId, { remoteStopRequested: true });
+  const release = (): void => {
+    const cur = useChatStore.getState().slots[slotId];
+    if (cur && cur.remoteRunId === remoteRunId) useChatStore.getState().updateSlot(slotId, { remoteStopRequested: false });
+  };
+  ChatApi.cancelStream(convId, remoteRunId, threadAgentId ?? undefined).then(
+    (result) => {
+      if (!result?.cancelled) release();
+    },
+    (err: unknown) => {
+      console.warn('[streaming] cancelStream request failed for remote run', slotId, err);
+      release();
+    },
+  );
 }
 
 /**
@@ -2457,6 +2770,10 @@ export async function streamRegenerateForSlot(
 export function cancelStreamForSlot(slotId: string): void {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
+  if (slot && !slot.isStreaming && !slot.stopping) {
+    cancelRemoteRunForSlot(slotId);
+    return;
+  }
   if (!slot || !slot.isStreaming || slot.stopping) return;
 
   const durableRun = slot.durableRun;
@@ -2654,6 +2971,7 @@ function commitLegacyStopAfterGrace(
       // treat the thread like a leftover run until the server says it settled.
       // Without an id there is nothing to poll yet, so sends wait for the cancel itself.
       remoteRunInProgress: knownConvId ? !cancel.isAcknowledged() : true,
+      remoteRunId: null,
       // A first-turn chat is still temp (`onConnected` keeps it so); the poll's reload skips temp slots.
       ...(knownConvId ? { convId: knownConvId, isTemp: false } : {}),
     });

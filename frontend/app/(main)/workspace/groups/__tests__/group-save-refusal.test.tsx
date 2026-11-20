@@ -16,35 +16,37 @@ const api = vi.hoisted(() => ({
 vi.mock('../api', () => ({ GroupsApi: api }));
 
 // The panel chrome and pickers are covered elsewhere; these tests are about the save toast.
-vi.mock('../../components', async () => {
+vi.mock('../../components', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../components')>();
   const ReactModule = await import('react');
   return {
+    ...actual,
     WorkspaceRightPanel: ({
       open,
       primaryLabel,
+      primaryDisabled,
       onPrimaryClick,
       children,
     }: {
       open: boolean;
       primaryLabel: string;
+      primaryDisabled?: boolean;
       onPrimaryClick: () => void;
       children: React.ReactNode;
     }) =>
       open ? (
         <div>
-          <button type="button" onClick={onPrimaryClick}>
+          <button type="button" disabled={primaryDisabled} onClick={onPrimaryClick}>
             {primaryLabel}
           </button>
           {children}
         </div>
       ) : null,
-    FormField: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     SearchableCheckboxDropdown: () => null,
     AvatarCell: () => null,
     PaginatedMembersList: ReactModule.forwardRef(() => null),
   };
 });
-vi.mock('../components/group-name-input', () => ({ GroupNameInput: () => null }));
 vi.mock('../../hooks/use-paginated-user-options', () => ({
   usePaginatedUserOptions: () => ({
     options: [],
@@ -91,7 +93,51 @@ afterEach(() => {
   useGroupsStore.setState({ isCreatePanelOpen: false, isDetailPanelOpen: false, isEditMode: false });
 });
 
+const duplicateNameOnField = () =>
+  httpError(400, {
+    error: {
+      code: 'HTTP_BAD_REQUEST',
+      message: 'Group already exists',
+      fieldErrors: [{ field: 'name', message: 'Group already exists', code: 'DUPLICATE_NAME' }],
+    },
+  });
+
 describe('saving a group with a name that is already taken', () => {
+  it('marks the name field and shows no toast when the server names the field (create)', async () => {
+    api.createGroup.mockRejectedValue(duplicateNameOnField());
+    useGroupsStore.setState({ isCreatePanelOpen: true, createGroupName: 'Engineering', createGroupUserIds: [] });
+    renderInTheme(<CreateGroupSidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create group' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Group already exists');
+    const name = screen.getByLabelText(/^Group name/i);
+    expect(name.getAttribute('aria-invalid')).toBe('true');
+    expect(name.getAttribute('aria-describedby')).toContain(alert.id);
+    expect(toasts()).toHaveLength(0);
+  });
+
+  it('marks the name field and shows no toast when the server names the field (rename)', async () => {
+    api.updateGroup.mockRejectedValue(duplicateNameOnField());
+    api.getGroupUsers.mockResolvedValue({ users: [], totalCount: 0 });
+    useGroupsStore.setState({
+      isDetailPanelOpen: true,
+      isEditMode: true,
+      detailGroup: { _id: 'g1', name: 'Design', type: 'custom', orgId: 'o1', users: [] } as never,
+      editGroupName: 'Engineering',
+      editAddUserIds: [],
+    });
+    renderInTheme(<GroupDetailSidebar />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save edits' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Group already exists');
+    expect(toasts()).toHaveLength(0);
+  });
+
+
   it('shows the API message when creating', async () => {
     api.createGroup.mockRejectedValue(duplicateName());
     useGroupsStore.setState({ isCreatePanelOpen: true, createGroupName: 'Engineering', createGroupUserIds: [] });
@@ -140,6 +186,22 @@ describe('saving a group with a name that is already taken', () => {
     await waitFor(() => expect(toasts()).toHaveLength(1));
     expect(toasts()[0].title).toBe('Failed to create group');
     expect(toasts()[0].description).toBeUndefined();
+  });
+
+  it('refuses a name over 100 characters before sending, the same limit as a team', () => {
+    useGroupsStore.setState({ isCreatePanelOpen: true, createGroupName: 'a'.repeat(101), createGroupUserIds: [] });
+    renderInTheme(<CreateGroupSidebar />);
+
+    expect((screen.getByRole('button', { name: 'Create group' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.blur(screen.getByLabelText(/^Group name/i));
+    expect(screen.getByRole('alert').textContent).toBe('Name must be at most 100 characters.');
+    expect(api.createGroup).not.toHaveBeenCalled();
+  });
+
+  it('does not ask for a description, as a team does not', () => {
+    useGroupsStore.setState({ isCreatePanelOpen: true, createGroupName: 'Engineering', createGroupUserIds: [] });
+    renderInTheme(<CreateGroupSidebar />);
+    expect((screen.getByRole('button', { name: 'Create group' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('leaves only 400s to the sidebars, so other errors still get the global toast', () => {

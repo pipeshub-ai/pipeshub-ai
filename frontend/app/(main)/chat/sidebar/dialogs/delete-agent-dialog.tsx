@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { Dialog, Flex, Text, TextField, Button, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { matchesConfirmationKeyword } from '@/lib/utils/validators';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -44,24 +44,18 @@ export function DeleteAgentDialog({
 
   return (
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
-      {open && (
-        <Box
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(28, 32, 36, 0.5)',
-            zIndex: 999,
-            cursor: 'pointer',
-          }}
-          onClick={() => !isDeleting && handleOpenChange(false)}
-        />
-      )}
+      {/* Radix draws the scrim; while deleting, neither it nor Escape closes the dialog. */}
       <Dialog.Content
+        onInteractOutside={(e) => {
+          if (isDeleting) e.preventDefault();
+        }}
+        onEscapeKeyDown={(e) => {
+          if (isDeleting) e.preventDefault();
+        }}
         style={{
           maxWidth: '37.5rem',
           width: '100%',
           padding: 'var(--space-5)',
-          zIndex: 1000,
         }}
       >
         <VisuallyHidden>

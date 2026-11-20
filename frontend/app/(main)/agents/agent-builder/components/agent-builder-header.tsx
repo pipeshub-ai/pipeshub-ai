@@ -17,6 +17,7 @@ import {
   DropdownMenu,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { IconMenuItem } from '@/app/components/ui/icon-menu-item';
 import { PermissionLockIcon } from '@/config';
 import { useTranslation } from 'react-i18next';
 import type { AgentVersioning } from '../../types';
@@ -87,6 +88,8 @@ export function AgentBuilderHeader(props: {
   hideShareControls?: boolean;
   /** The convert tooltip leaves out organization-wide sharing, for builds that share service agents with chosen people instead. */
   hideOrgAccess?: boolean;
+  /** Extra settings rendered under the agent name. */
+  nameFieldExtra?: React.ReactNode;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -129,6 +132,7 @@ export function AgentBuilderHeader(props: {
     hideShareControls = false,
     hideOrgAccess = false,
     sharePermissionDenied = false,
+    nameFieldExtra,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
@@ -170,7 +174,7 @@ export function AgentBuilderHeader(props: {
           variant="ghost"
           color="gray"
           size="2"
-          onClick={() => (onGoBack ? onGoBack() : router.push('/chat'))}
+          onClick={() => (onGoBack ? onGoBack() : router.push('/agents/'))}
           aria-label={t('agentBuilder.goBack')}
         >
           <MaterialIcon name="chevron_left" size={22} color="var(--olive-11)" />
@@ -207,6 +211,7 @@ export function AgentBuilderHeader(props: {
                   {agentNameError}
                 </Text>
               ) : null}
+              {nameFieldExtra}
               {creatorName ? (
                 <Flex align="center" gap="1" mt="1">
                   <Text size="1" style={{ color: 'var(--olive-11)' }}>
@@ -304,25 +309,26 @@ export function AgentBuilderHeader(props: {
                 </DropdownMenu.Item>
               ) : null}
               {showConvertInMenu ? (
-                <DropdownMenu.Item
+                <IconMenuItem
+                  icon="admin_panel_settings"
+                  textValue={convertLabel}
                   disabled={convertDisabled}
                   onClick={() => onEnableServiceAccount?.()}
                 >
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="admin_panel_settings" size={16} />
-                    <Text size="2">{convertLabel}</Text>
-                    {serviceAccountPermissionDenied && <PermissionLockIcon />}
-                  </Flex>
-                </DropdownMenu.Item>
+                  {convertLabel}
+                  {serviceAccountPermissionDenied && <PermissionLockIcon />}
+                </IconMenuItem>
               ) : null}
               {showShareInMenu && onShare ? (
-                <DropdownMenu.Item disabled={sharePermissionDenied} onClick={() => onShare()}>
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="person_add" size={16} />
-                    <Text size="2">{t('agentBuilder.share')}</Text>
-                    {sharePermissionDenied && <PermissionLockIcon />}
-                  </Flex>
-                </DropdownMenu.Item>
+                <IconMenuItem
+                  icon="ios_share"
+                  textValue={t('agentBuilder.share')}
+                  disabled={sharePermissionDenied}
+                  onClick={() => onShare()}
+                >
+                  {t('agentBuilder.share')}
+                  {sharePermissionDenied && <PermissionLockIcon />}
+                </IconMenuItem>
               ) : null}
               {showShareInMenu && !onShare ? (
                 <DropdownMenu.CheckboxItem
@@ -331,13 +337,15 @@ export function AgentBuilderHeader(props: {
                   disabled={isFlowStructureLocked || loading || isServiceAccount || sharePermissionDenied}
                 >
                   <Flex align="center" gap="2">
-                    <MaterialIcon name="groups" size={16} />
+                    <MaterialIcon name="groups" size={16} color="var(--text-secondary)" />
                     <Text size="2">{t('agentBuilder.shareWithOrg')}</Text>
                   </Flex>
                 </DropdownMenu.CheckboxItem>
               ) : null}
               {showDeleteOption ? (
-                <DropdownMenu.Item
+                <IconMenuItem
+                  icon="delete"
+                  textValue={t('chat.deleteAgent')}
                   color="red"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -346,14 +354,9 @@ export function AgentBuilderHeader(props: {
                   }}
                   disabled={deletePermissionDenied}
                 >
-                  <Flex align="center" gap="2">
-                    <MaterialIcon name="delete" size={16} color="var(--red-11)" />
-                    <Text size="2" style={{ color: 'var(--red-11)' }}>
-                      {t('chat.deleteAgent')}
-                    </Text>
-                    {deletePermissionDenied && <PermissionLockIcon />}
-                  </Flex>
-                </DropdownMenu.Item>
+                  {t('chat.deleteAgent')}
+                  {deletePermissionDenied && <PermissionLockIcon />}
+                </IconMenuItem>
               ) : null}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
@@ -370,7 +373,7 @@ export function AgentBuilderHeader(props: {
             style={{ cursor: sharePermissionDenied ? 'not-allowed' : 'pointer' }}
           >
             <Flex align="center" gap="2">
-              <MaterialIcon name="person_add" size={16} />
+              <MaterialIcon name="ios_share" size={16} />
               <Text size="2">{t('agentBuilder.share')}</Text>
               {sharePermissionDenied && <PermissionLockIcon />}
             </Flex>

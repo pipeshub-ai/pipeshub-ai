@@ -212,7 +212,7 @@ export function FolderTreeItem({
         }))
       : []),
     canEdit && !!onRename && {
-      icon: 'edit',
+      icon: 'drive_file_rename_outline',
       label: t('menu.rename'),
       onClick: handleRenameStart,
       permissionLocked: !groupPermissions.canEdit,

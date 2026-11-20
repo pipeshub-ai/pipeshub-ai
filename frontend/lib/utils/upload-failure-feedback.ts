@@ -80,6 +80,12 @@ const PRESENTATIONS: Record<UploadFailureKind, FailureKindPresentation> = {
     summaryKey: 'uploadProgress.rejectionSummary.unsupported',
     description: () => i18n.t('uploadProgress.rejectionToast.unsupportedDescription'),
   },
+  empty_file: {
+    kind: 'empty_file',
+    severity: 'info',
+    summaryKey: 'uploadProgress.rejectionSummary.empty',
+    description: () => i18n.t('uploadProgress.rejectionToast.emptyDescription'),
+  },
   duplicate_name: {
     kind: 'duplicate_name',
     severity: 'info',

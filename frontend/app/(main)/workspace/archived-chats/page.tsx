@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { touchTarget } from '@/app/components/ui/responsive';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import {
@@ -216,7 +216,8 @@ function ArchivedChatsPageContent() {
       {(!isMobile || conversationId) && (
       <Flex direction="column" style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
         {isMobile && (
-          <Flex align="center" style={{ paddingLeft: MOBILE_HAMBURGER_GUTTER_PX, height: 48, flexShrink: 0, borderBottom: '1px solid var(--olive-3)' }}>
+          <Flex align="center" gap="2" style={{ paddingInline: 'var(--space-3)', height: 48, flexShrink: 0, borderBottom: '1px solid var(--olive-3)' }}>
+            <SidebarExpandButton placement="inline" />
             <IconButton
               variant="ghost"
               color="gray"

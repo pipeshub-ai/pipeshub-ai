@@ -1,5 +1,6 @@
 'use client';
 
+import { indexingReasonFor } from '../utils/indexing-reason';
 import React, { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Flex, Box, Text, Checkbox, Button, DropdownMenu, IconButton, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -85,8 +86,9 @@ export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason =
   if (shouldHideIndexingStatusForHubRecord(item)) {
     return '';
   }
+  // List rows don't say who uploaded a file, so a reason written for the uploader reads for anyone.
   const appendReason = (base: string, reason?: string | null, showReason = true): string =>
-    withReason && showReason && reason?.trim() ? `${base} - ${reason.trim()}` : base;
+    withReason && showReason && reason?.trim() ? `${base} - ${indexingReasonFor(reason, t).trim()}` : base;
 
   if (isKnowledgeHubNode(item)) {
     // No status from API — do not imply "Queued"
@@ -241,8 +243,8 @@ export function getKbItemMenuActions(item: TableItem, t: TFunction, h: KbItemMen
   const reindexLocked = isReindexPermissionLocked(reindexNode, gp);
   return [
     { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: h.onOpen },
-    !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => h.onDownload!(item) },
-    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename, permissionLocked: editLocked },
+    !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'download', label: t('action.download'), onClick: () => h.onDownload!(item) },
+    h.onRename && canEditItem && { icon: 'drive_file_rename_outline', label: t('menu.rename'), onClick: h.onStartRename, permissionLocked: editLocked },
     ...(showReindexMenu
       ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters)).map(
           (action) => ({ ...action, permissionLocked: reindexLocked }),

@@ -26,7 +26,7 @@
  * ── i18n key → English string map (from en-US.json) ─────────────────────
  *   askUserQuestion.quickQuestionSingular  → "Quick question :"
  *   askUserQuestion.quickQuestionPlural    → "Quick questions :"
- *   askUserQuestion.questionsHeadingSingular → "Question :"
+ *   askUserQuestion.questionsHeadingSingular → "Question"
  *   askUserQuestion.submit                 → "Submit"
  *   askUserQuestion.skip                   → "Skip"
  *   askUserQuestion.next                   → "Next"

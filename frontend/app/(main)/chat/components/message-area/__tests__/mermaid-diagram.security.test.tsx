@@ -10,12 +10,14 @@ const mermaidMock = vi.hoisted(() => ({
 vi.mock('mermaid', () => ({ default: mermaidMock }));
 
 import {
+  MERMAID_CONFIG,
   MermaidDiagram,
   fitZoomPercent,
   inlineDiagramWidth,
   makeSvgResponsive,
   parseSvgNaturalSize,
   pngExportScale,
+  sanitizeRenderedSvg,
   zoomOutPercent,
 } from '../mermaid-diagram';
 
@@ -38,6 +40,71 @@ describe('MermaidDiagram security', () => {
     expect(mermaidMock.initialize).toHaveBeenCalledWith(
       expect.objectContaining({ securityLevel: 'strict' }),
     );
+  });
+
+  it('lets labels keep formatting tags only, and lets no diagram change that or the CSS', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }));
+    render(React.createElement(Theme, null, React.createElement(MermaidDiagram, { chart: 'graph TD; A-->B' })));
+    await waitFor(() => expect(mermaidMock.initialize).toHaveBeenCalled(), { timeout: 3000 });
+    const config = mermaidMock.initialize.mock.calls[0][0] as unknown as typeof MERMAID_CONFIG;
+    expect(config).toEqual(MERMAID_CONFIG);
+    expect(config.dompurifyConfig?.ALLOWED_TAGS).not.toContain('img');
+    expect(config.dompurifyConfig?.ALLOWED_ATTR).toEqual(['class']);
+    expect(config.secure).toEqual(
+      expect.arrayContaining(['securityLevel', 'dompurifyConfig', 'themeCSS', 'fontFamily', 'altFontFamily']),
+    );
+  });
+
+  it('draws the source after making it safe, and shows the drawing after cleaning it', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }));
+    mermaidMock.render.mockClear();
+    mermaidMock.render.mockImplementationOnce(async () => ({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="https://attacker.example/i.png"></image><g><text>ok</text></g></svg>',
+    }));
+    const { container } = render(
+      React.createElement(Theme, null, React.createElement(MermaidDiagram, { chart: 'flowchart TD\n  A@{ img: "https://attacker.example/i.png" }' })),
+    );
+    await waitFor(() => expect(container.querySelector('svg')).not.toBeNull(), { timeout: 3000 });
+    expect(mermaidMock.render.mock.calls[0][1]).not.toContain('attacker.example');
+    expect(container.innerHTML).not.toContain('attacker.example');
+    expect(container.textContent).toContain('ok');
+  });
+});
+
+describe('sanitizeRenderedSvg', () => {
+  const svg = (inner: string) =>
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">${inner}</svg>`;
+  const OUT = 'attacker.example';
+
+  it.each([
+    ['an <image> with an outside href', `<image href="https://${OUT}/a.png"></image>`],
+    ['an <image> with an outside xlink:href', `<image xlink:href="https://${OUT}/a.png"></image>`],
+    ['a <use> pointing outside', `<use xlink:href="https://${OUT}/s.svg#x"></use>`],
+    ['an <img> in a label', `<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><img src="https://${OUT}/l.png"></div></foreignObject>`],
+    ['a <picture> in a label', `<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><picture><source srcset="https://${OUT}/s.png"></picture></div></foreignObject>`],
+    ['an inline style url()', `<g style="background-image: url(https://${OUT}/s.png)"></g>`],
+    ['a fill url() to another document', `<rect fill="url(https://${OUT}/p.svg#g)"></rect>`],
+    ['an outside link', `<a xlink:href="https://${OUT}/l"><text>x</text></a>`],
+    ['a stylesheet url()', `<style>.n { background-image: url("https://${OUT}/c.png"); }</style>`],
+    ['a stylesheet @import', `<style>@import url(https://${OUT}/i.css); .n { fill: red; }</style>`],
+  ])('removes %s', (_label, inner) => {
+    expect(sanitizeRenderedSvg(svg(`${inner}<text>kept</text>`))).not.toContain(OUT);
+  });
+
+  it('keeps references into the drawing and its own styles', () => {
+    const out = sanitizeRenderedSvg(
+      svg(
+        '<style>#m .node rect { fill: #ECECFF; }</style>' +
+          '<defs><marker id="m-end"><path d="M0 0"></path></marker><linearGradient id="g"></linearGradient></defs>' +
+          '<path marker-end="url(#m-end)" d="M0 0 L1 1"></path><rect fill="url(#g)"></rect>' +
+          '<a xlink:href="#m-end"><text>in page</text></a>',
+      ),
+    );
+    expect(out).toContain('fill: #ECECFF');
+    expect(out).toContain('marker-end="url(#m-end)"');
+    expect(out).toContain('fill="url(#g)"');
+    expect(out).toContain('href="#m-end"');
+    expect(out).toContain('in page');
   });
 });
 

@@ -17,7 +17,8 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { fieldErrorsOf, getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { AGENT_NAME_MAX_LENGTH } from '@/app/(main)/agents/agent-name-rules';
 import { ServiceAccountConfirmDialog } from '@/app/(main)/agents/agent-builder/components/service-account-confirm-dialog';
 
 type AgentType = 'user' | 'service';
@@ -35,7 +36,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
   const [agentType, setAgentType] = useState<AgentType>('user');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [nameError, setNameError] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
 
   const [showServiceConfirm, setShowServiceConfirm] = useState(false);
   const [serviceCreating, setServiceCreating] = useState(false);
@@ -52,7 +53,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
       setAgentType('user');
       setCreating(false);
       setError(null);
-      setNameError(false);
+      setNameError(null);
       setShowServiceConfirm(false);
       setServiceCreating(false);
       setServiceError(null);
@@ -74,10 +75,14 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
 
     const trimmedName = agentName.trim();
     if (!trimmedName) {
-      setNameError(true);
+      setNameError(t('agentBuilder.nameRequired'));
       return;
     }
-    setNameError(false);
+    if (trimmedName.length > AGENT_NAME_MAX_LENGTH) {
+      setNameError(t('agentBuilder.nameTooLong', { max: AGENT_NAME_MAX_LENGTH }));
+      return;
+    }
+    setNameError(null);
     setError(null);
 
     if (agentType === 'service') {
@@ -98,13 +103,17 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         tags: [],
         shareWithOrg: false,
         isServiceAccount: false,
-      });
+      }, { suppressErrorToast: true });
       succeeded = true;
       // Keep creating=true / createRef=true while the navigation is in-flight so
       // the button stays disabled until this component unmounts.
       router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
     } catch (e: unknown) {
-      setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
+      // The sentence for the name goes on the name; any other failure is the
+      // callout. Neither is also a toast: the request suppresses it.
+      const nameReason = fieldErrorsOf(e).name;
+      if (nameReason) setNameError(nameReason);
+      else setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
     } finally {
       // Only unlock on failure — on success we stay locked until unmount.
       if (!succeeded) {
@@ -134,11 +143,17 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
         tags: [],
         shareWithOrg: true,
         isServiceAccount: true,
-      });
+      }, { suppressErrorToast: true });
       succeeded = true;
       router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
     } catch (e: unknown) {
-      setServiceError(getUserFacingErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
+      const nameReason = fieldErrorsOf(e).name;
+      if (nameReason) {
+        setShowServiceConfirm(false);
+        setNameError(nameReason);
+      } else {
+        setServiceError(getUserFacingErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
+      }
     } finally {
       if (!succeeded) {
         serviceCreateRef.current = false;
@@ -211,7 +226,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
 
             {/* Agent name field */}
             <Flex direction="column" gap="1">
-              <Text size="2" weight="medium" style={{ color: 'var(--olive-12)' }}>
+              <Text as="label" htmlFor="create-agent-name" size="2" weight="medium" style={{ color: 'var(--olive-12)' }}>
                 {t('agentBuilder.agentName')}
               </Text>
               <TextField.Root
@@ -219,7 +234,7 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
                 value={agentName}
                 onChange={(e) => {
                   setAgentName(e.target.value);
-                  if (nameError) setNameError(false);
+                  if (nameError) setNameError(null);
                   if (error) setError(null);
                 }}
                 disabled={creating}
@@ -227,11 +242,15 @@ export function CreateAgentDialog({ open, onOpenChange }: CreateAgentDialogProps
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void handleCreate();
                 }}
-                style={nameError ? { outline: '2px solid var(--red-8)' } : {}}
+                id="create-agent-name"
+                aria-required="true"
+                aria-invalid={nameError ? true : undefined}
+                aria-describedby={nameError ? 'create-agent-name-error' : undefined}
+                color={nameError ? 'red' : undefined}
               />
               {nameError && (
-                <Text size="1" style={{ color: 'var(--red-11)' }}>
-                  {t('agentBuilder.nameRequired')}
+                <Text id="create-agent-name-error" role="alert" size="1" style={{ color: 'var(--red-11)' }}>
+                  {nameError}
                 </Text>
               )}
             </Flex>

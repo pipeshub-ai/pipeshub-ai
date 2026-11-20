@@ -1,6 +1,6 @@
 /**
  * Unit tests for the agent capabilities localStorage helpers and the
- * "+" menu's PlusMenuContent (attach files + capability toggles).
+ * "+" menu (attach files + capability switches).
  */
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -136,139 +136,118 @@ describe('localStorage agent capabilities helpers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PlusMenuContent ("+" menu body — attach files + capability toggles)
+// The "+" menu (attach files + capability switches), open
 // ---------------------------------------------------------------------------
 
-describe('PlusMenuContent', () => {
-  async function importContent() {
+describe('PlusMenuButton menu', () => {
+  // The open menu lays out in a Radix ScrollArea, which observes its size.
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function importButton() {
     const mod = await import('../components/chat-panel/plus-menu-button');
-    return mod.PlusMenuContent;
+    return mod.PlusMenuButton;
   }
 
-  type ContentProps = Parameters<Awaited<ReturnType<typeof importContent>>>[0];
+  type ButtonProps = Parameters<Awaited<ReturnType<typeof importButton>>>[0];
 
-  function renderContent(props: ContentProps, Content: Awaited<ReturnType<typeof importContent>>) {
-    return render(h(Theme, null, h(Content, props)));
+  const base = {
+    activeIconColor: 'var(--emerald-a11)',
+    open: true,
+    onOpenChange: vi.fn(),
+    onAttachFiles: vi.fn(),
+    internalSearch: true,
+    webSearch: true,
+    onToggleInternalSearch: vi.fn(),
+    onToggleWebSearch: vi.fn(),
+  };
+
+  async function renderMenu(props: Partial<ButtonProps> = {}) {
+    const Button = await importButton();
+    render(h(Theme, null, h(Button, { ...base, ...props } as ButtonProps)));
   }
 
-  it('renders Attach files, Internal Search and Web Search rows', async () => {
-    const Content = await importContent();
-    renderContent(
-      {
-        onAttachFiles: vi.fn(),
-        internalSearch: true,
-        webSearch: true,
-        onToggleInternalSearch: vi.fn(),
-        onToggleWebSearch: vi.fn(),
-      },
-      Content,
-    );
-    expect(screen.getByText('Attach files')).toBeTruthy();
-    expect(screen.getByText('Internal search')).toBeTruthy();
-    expect(screen.getByText('Web search')).toBeTruthy();
+  it('renders Attach files, Internal search and Web search as menu items named by their words', async () => {
+    await renderMenu();
+    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Attach files' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Internal search' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Web search' })).toBeTruthy();
   });
 
-  it('calls onAttachFiles when the attach files row is clicked', async () => {
-    const Content = await importContent();
+  it('calls onAttachFiles when the attach files item is chosen', async () => {
     const onAttachFiles = vi.fn();
-    renderContent(
-      {
-        onAttachFiles,
-        internalSearch: true,
-        webSearch: true,
-        onToggleInternalSearch: vi.fn(),
-        onToggleWebSearch: vi.fn(),
-      },
-      Content,
-    );
-    fireEvent.click(screen.getByText('Attach files'));
+    await renderMenu({ onAttachFiles });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Attach files' }));
     expect(onAttachFiles).toHaveBeenCalled();
   });
 
-  it('disables the internal search switch when agentHasInternalSearch=false', async () => {
-    const Content = await importContent();
-    renderContent(
-      {
-        onAttachFiles: vi.fn(),
-        internalSearch: false,
-        webSearch: true,
-        onToggleInternalSearch: vi.fn(),
-        onToggleWebSearch: vi.fn(),
-        agentHasInternalSearch: false,
-      },
-      Content,
-    );
+  it('disables the internal search item and switch when agentHasInternalSearch=false', async () => {
+    await renderMenu({ internalSearch: false, agentHasInternalSearch: false });
     const internalSwitch = screen.getByRole('switch', { name: 'Internal search' }) as HTMLButtonElement;
     expect(internalSwitch.disabled).toBe(true);
+    expect(screen.getByRole('menuitem', { name: 'Internal search' }).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('a disabled capability row still says why: its tooltip opens on focus or hover', async () => {
+    await renderMenu({ internalSearch: false, agentHasInternalSearch: false });
+    const row = screen.getByRole('menuitem', { name: 'Internal search' });
+    expect(row.getAttribute('aria-disabled')).toBe('true');
+    expect((screen.getByRole('switch', { name: 'Internal search' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+
+    fireEvent.focus(row);
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toContain('Not configured on this agent');
+
+    fireEvent.blur(row);
+    fireEvent.pointerMove(row, { pointerType: 'mouse' });
+    expect((await screen.findByRole('tooltip')).textContent).toContain('Not configured on this agent');
   });
 
   it('disables the web search switch when agentHasWebSearch=false', async () => {
-    const Content = await importContent();
-    renderContent(
-      {
-        onAttachFiles: vi.fn(),
-        internalSearch: true,
-        webSearch: false,
-        onToggleInternalSearch: vi.fn(),
-        onToggleWebSearch: vi.fn(),
-        agentHasWebSearch: false,
-      },
-      Content,
-    );
+    await renderMenu({ webSearch: false, agentHasWebSearch: false });
     const webSwitch = screen.getByRole('switch', { name: 'Web search' }) as HTMLButtonElement;
     expect(webSwitch.disabled).toBe(true);
   });
 
-  it('calls onToggleInternalSearch when the enabled switch is clicked', async () => {
-    const Content = await importContent();
+  it('flips internal search once when its switch is clicked', async () => {
     const toggle = vi.fn();
-    renderContent(
-      {
-        onAttachFiles: vi.fn(),
-        internalSearch: true,
-        webSearch: true,
-        onToggleInternalSearch: toggle,
-        onToggleWebSearch: vi.fn(),
-      },
-      Content,
-    );
+    await renderMenu({ onToggleInternalSearch: toggle });
     fireEvent.click(screen.getByRole('switch', { name: 'Internal search' }));
-    expect(toggle).toHaveBeenCalled();
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(toggle).toHaveBeenCalledWith(false);
+  });
+
+  it('flips a capability from its row and keeps the menu open', async () => {
+    const toggle = vi.fn();
+    const onOpenChange = vi.fn();
+    await renderMenu({ onToggleWebSearch: toggle, onOpenChange });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Web search' }));
+    expect(toggle).toHaveBeenCalledWith(false);
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
   it('does NOT call onToggleInternalSearch when the capability is absent', async () => {
-    const Content = await importContent();
     const toggle = vi.fn();
-    renderContent(
-      {
-        onAttachFiles: vi.fn(),
-        internalSearch: false,
-        webSearch: true,
-        onToggleInternalSearch: toggle,
-        onToggleWebSearch: vi.fn(),
-        agentHasInternalSearch: false,
-      },
-      Content,
-    );
+    await renderMenu({ internalSearch: false, onToggleInternalSearch: toggle, agentHasInternalSearch: false });
     fireEvent.click(screen.getByRole('switch', { name: 'Internal search' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Internal search' }));
     expect(toggle).not.toHaveBeenCalled();
   });
 
-  it('calls onToggleWebSearch when the enabled switch is clicked', async () => {
-    const Content = await importContent();
+  it('flips web search once when its switch is clicked', async () => {
     const toggle = vi.fn();
-    renderContent(
-      {
-        onAttachFiles: vi.fn(),
-        internalSearch: true,
-        webSearch: true,
-        onToggleInternalSearch: vi.fn(),
-        onToggleWebSearch: toggle,
-      },
-      Content,
-    );
+    await renderMenu({ onToggleWebSearch: toggle });
     fireEvent.click(screen.getByRole('switch', { name: 'Web search' }));
-    expect(toggle).toHaveBeenCalled();
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the menu as a composer popover', async () => {
+    await renderMenu();
+    expect(screen.getByRole('menu').closest('[data-composer-popover]')).toBeTruthy();
   });
 });
 
@@ -300,7 +279,7 @@ describe('PlusMenuButton filter badge', () => {
     onAttachFiles: vi.fn(),
     onToggleInternalSearch: vi.fn(),
     onToggleWebSearch: vi.fn(),
-    activeIconColor: 'var(--slate-12)',
+    activeIconColor: 'var(--emerald-a11)',
     open: false,
     onOpenChange: vi.fn(),
   };

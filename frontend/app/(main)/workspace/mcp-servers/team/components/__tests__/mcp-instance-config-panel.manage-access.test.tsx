@@ -17,7 +17,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: mocks.toast }));
-vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false }));
+vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false, fieldErrorsOf: () => ({}) }));
 // Stands in for a section that saves who may use the server: it registers its save.
 vi.mock('@/config', () => ({
   isMcpInstanceReadOnly: () => false,
@@ -64,7 +64,10 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
     ) : null,
   useWorkspaceDrawerNestedModalHost: () => null,
 }));
-vi.mock('../../../../components', () => ({
+vi.mock('../../../../components', async () => ({
+  // The real hook and input: they only read the FormField context this mock leaves empty.
+  useFormValidation: (await import('../../../../components/use-form-validation')).useFormValidation,
+  LabeledTextField: (await import('../../../../components/form-field')).LabeledTextField,
   FormField: ({ label, children }: { label: string; children: React.ReactNode }) => (
     <div role="group" aria-label={label}>
       {children}

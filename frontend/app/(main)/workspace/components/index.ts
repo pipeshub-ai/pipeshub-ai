@@ -28,7 +28,8 @@ export type { StatusBadgeProps, UserStatus } from './status-badge';
 export { WorkspaceRightPanel } from './workspace-right-panel';
 export type { WorkspaceRightPanelProps } from './workspace-right-panel';
 
-export { FormField, FormFieldSelectTrigger, FormFieldTextArea, FormFieldTextField, useFormFieldControl } from './form-field';
+export { FormField, FormFieldSelectTrigger, FormFieldTextArea, FormFieldTextField, LabeledTextArea, LabeledTextField, useFormFieldControl } from './form-field';
+export { useFormValidation } from './use-form-validation';
 export type { FormFieldProps } from './form-field';
 
 export { ConfirmationDialog } from './confirmation-dialog';

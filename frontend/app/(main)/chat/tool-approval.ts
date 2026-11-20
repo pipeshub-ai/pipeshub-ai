@@ -14,6 +14,17 @@ export function isToolApprovalResumeQuery(text: string | undefined | null): bool
   return typeof text === 'string' && text.trimStart().startsWith(RESUME_PREFIX);
 }
 
+/** A restricted card's hosts; one without its reached form is dropped, and one without a readable form reads as reached. */
+function approvalHosts(value: unknown): Array<{ host: string; unicode: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const { host, unicode } = item as Record<string, unknown>;
+    if (typeof host !== 'string' || !host) return [];
+    return [{ host, unicode: typeof unicode === 'string' && unicode ? unicode : host }];
+  });
+}
+
 /** The card's details from a wire frame or a saved part; anything not shaped like them is dropped. */
 export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null {
   if (!value || typeof value !== 'object') return null;
@@ -37,6 +48,8 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
     expiresAt: raw.expiresAt,
     arguments: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null,
     ...(text('argumentsPreview') ? { argumentsPreview: text('argumentsPreview') as string } : {}),
+    // About this call's content, which no rule can approve ahead of time: never "Don't ask again".
+    ...(raw.restricted === true ? { restricted: true, canRemember: false, hosts: approvalHosts(raw.hosts) } : {}),
   };
 }
 

@@ -13,7 +13,12 @@ vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds: 
 vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: { fetchAgentConversation: h.fetchAgentConversation } }));
 vi.mock('../api', () => ({ ChatApi: { fetchConversation: h.fetchConversation } }));
 vi.mock('../project-api', () => ({ ProjectApi: {} }));
-vi.mock('@/config', () => ({ useAuthStore: { getState: () => ({ user: null }) } }));
+vi.mock('@/config', async () => {
+  const { defaultChatExtension } = await vi.importActual<typeof import('@/app/(main)/chat/chat-extension')>(
+    '@/app/(main)/chat/chat-extension',
+  );
+  return { useAuthStore: { getState: () => ({ user: null }) }, chatExtension: defaultChatExtension };
+});
 // i18next is not initialised in unit tests: `t` would answer undefined.
 vi.mock('i18next', () => ({ default: { t: (key: string) => key } }));
 vi.mock('@/lib/store/user-store', () => ({ useUserStore: { getState: () => ({ profile: h.profile }) } }));

@@ -135,6 +135,27 @@ describe('ToolApprovalCard', () => {
     );
   });
 
+  it('is answered by whoever the extension names instead of the owner, and is one line naming them for everyone else', () => {
+    chat.state.slots['slot-1'].isOwner = false;
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest readOnlyFor={null} />);
+    expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
+    cleanup();
+
+    chat.state.slots['slot-1'].isOwner = true;
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest readOnlyFor={{ name: 'Dana' }} />);
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira is waiting for Dana's approval.");
+    cleanup();
+
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest readOnlyFor={{ name: null }} />);
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira is waiting for Former member's approval.");
+    cleanup();
+
+    // An older reply's card was passed over, whoever it was put to.
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest={false} readOnlyFor={{ name: 'Dana' }} />);
+    expect(screen.getByTestId('tool-approval-card').textContent).toBe("Create an issue on Jira wasn't approved, so it didn't run.");
+  });
+
   it('says so once the request has expired', () => {
     vi.useFakeTimers();
     renderInTheme(<ToolApprovalCard approval={approval({ expiresAt: Date.now() + 1_000 })} isLatest />);
@@ -163,6 +184,55 @@ describe('ToolApprovalCard', () => {
 
     expect(screen.getByText(body)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+  });
+});
+
+describe('a restricted card: a call that would send what not everyone can open', () => {
+  const restricted = (overrides: Partial<ToolApprovalDetails> = {}) =>
+    approval({
+      serverName: 'Web',
+      toolName: 'fetch_url',
+      toolTitle: 'Fetch a page',
+      restricted: true,
+      canRemember: false,
+      hosts: [{ host: 'xn--80ak6aa92e.com', unicode: 'аррӏе.com' }],
+      arguments: { url: 'https://xn--80ak6aa92e.com/upload', body: `${'a'.repeat(300)}THE END` },
+      ...overrides,
+    });
+
+  it('says not everyone can open what it may hold, names where it goes in both spellings, and shows the whole call', () => {
+    renderInTheme(<ToolApprovalCard approval={restricted()} isLatest />);
+    expect(screen.getByTestId('tool-approval-restricted').textContent).toContain(
+      'This may include content from sources not everyone can open. Anyone who can read аррӏе.com (xn--80ak6aa92e.com) will see it.',
+    );
+    expect(screen.getByText('Goes to')).toBeTruthy();
+    expect(screen.getByText(`${'a'.repeat(300)}THE END`)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
+  });
+
+  it("never offers \"Don't ask again\", and its answer sets no rule", () => {
+    renderInTheme(<ToolApprovalCard approval={restricted({ canRemember: true })} isLatest rowId="row-1" />);
+    expect(screen.queryByRole('checkbox', { name: "Don't ask again for this tool" })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(chat.buildStreamChatRequestForSlot).toHaveBeenCalledWith('slot-1', 'Tool approval: allow', undefined, {
+      approvalId: 'ap-1',
+      decision: 'allow',
+    });
+  });
+
+  it('names its server when the call names no host, and one spelling when both read the same', () => {
+    renderInTheme(<ToolApprovalCard approval={restricted({ serverName: 'Slack', hosts: [] })} isLatest />);
+    expect(screen.getByTestId('tool-approval-restricted').textContent).toBe(
+      'This may include content from sources not everyone can open. Anyone who can read Slack will see it.',
+    );
+    cleanup();
+    renderInTheme(<ToolApprovalCard approval={restricted({ hosts: [{ host: 'example.com', unicode: 'example.com' }] })} isLatest />);
+    expect(screen.getByTestId('tool-approval-restricted').textContent).toContain('Anyone who can read example.com will see it.');
+  });
+
+  it('an ordinary card says none of it', () => {
+    renderInTheme(<ToolApprovalCard approval={approval()} isLatest />);
+    expect(screen.queryByTestId('tool-approval-restricted')).toBeNull();
   });
 });
 

@@ -3,6 +3,8 @@
 import { create } from 'zustand';
 import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import type { AttachmentRef, ChatSettings } from '@/chat/types';
+import type { ComposerSendExtra } from '@/chat/chat-extension';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -45,6 +47,13 @@ export interface PendingChatContext {
   message: string;
   /** Server-assigned refs for attachments uploaded by the widget. */
   attachments?: AttachmentRef[];
+  /**
+   * What the composer's send carried besides the text (the agents and people it `@`-mentions). The message keeps
+   * their tokens; without this the chat page sends them as text the server makes inert, and nobody is mentioned.
+   */
+  extra?: ComposerSendExtra;
+  /** Sources the message names with `@`: they scope the question, and the sent question shows them as chips. */
+  mentions?: MentionNode[];
   /** Chat settings snapshot (mode, queryMode, agentStrategy) */
   settings?: Partial<ChatSettings>;
   /** Page-specific context (collections, selected records, etc.) */

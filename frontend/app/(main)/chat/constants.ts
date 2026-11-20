@@ -1,5 +1,8 @@
 import type { QueryModeConfig } from './types';
 
+/** Fired on `window` when the agents a person can use change outside the sidebar's list (for example one created from a chat): the list reloads. */
+export const AGENTS_CHANGED_EVENT = 'pipeshub:agents-changed';
+
 // ── LLM Model Metadata Maps ──────────────────────────────────────────
 
 /**
@@ -199,20 +202,14 @@ export const SIDEBAR_CONVERSATIONS_PAGE_SIZE = 10;
 /** Number of conversations fetched per page in the More Chats infinite scroll panel. */
 export const MORE_CHATS_PAGE_SIZE = 20;
 
-/** Page size for the chat sidebar Agents panel (search + infinite scroll). */
-export const AGENTS_SIDEBAR_PAGE_SIZE = 20;
-
-/** How many agents to show in the main chat sidebar before "More agents". */
-export const MAX_VISIBLE_AGENTS_IN_SIDEBAR = 3;
-
-/** Fetch at least this many agents to decide if "More" is needed. */
-export const SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT = 20;
-
 /** Page size for GET /api/v1/projects/:id/conversations in the project-scoped sidebar. */
 export const SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE = 10;
 
 /** Page size for the initial agent sidebar conversations fetch (page 1). */
 export const SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE = 10;
+
+/** A rail's lists loaded this recently show as they are when it mounts again or the window comes back into focus. */
+export const SIDEBAR_LISTS_STALE_MS = 30_000;
 
 /** Page size for GET /api/v1/agents/:id/conversations in the More panel (infinite scroll). */
 export const AGENT_CONVERSATIONS_PAGE_SIZE = 20;
@@ -248,6 +245,14 @@ export function chatContentColumnStyle(): {
   };
 }
 
+/**
+ * The conversation's own column: the composer's edges and gutter, 16px narrower each side, so answers and questions
+ * read at 768px inside an 800px composer, as the design sets them.
+ */
+export function chatMessageColumnStyle(): ReturnType<typeof chatContentColumnStyle> {
+  return { ...chatContentColumnStyle(), maxWidth: CHAT_CONTENT_MAX_WIDTH };
+}
+
 // ── Paste-to-attachment (large clipboard text) ──────────────────────────
 // Mirrors ChatGPT/Claude's "large paste becomes an attachment" behavior —
 // see `utils/paste-attachment.ts` for the detection/conversion logic.
@@ -269,6 +274,9 @@ export const CHAT_PASTE_FILENAME_PREFIX = 'pasted-text-';
  * Chat column width in the desktop split pane: at most 60% of the viewport, so a
  * width saved on a wider screen never squeezes the preview to nothing.
  */
+/** The narrowest the chat gets beside a pane that shares its row (a file preview, the right column). */
+export const CHAT_MIN_WIDTH_PX = 280;
+
 export function clampSplitWidth(saved: number, viewport: number): number {
   return Math.min(saved, viewport * 0.6);
 }

@@ -26,6 +26,32 @@ function waiting(approval: unknown, overrides: Partial<MessagePart> = {}): Messa
   return { type: 'tool_call', toolCallId: 'c', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: approval as MessagePart['approval'], ...overrides };
 }
 
+describe('toolApprovalDetails, a restricted card', () => {
+  it('keeps its hosts, drops malformed ones, and never lets it set a rule', () => {
+    const details = toolApprovalDetails({
+      ...WIRE,
+      canRemember: true,
+      restricted: true,
+      egress: 'publish',
+      hosts: [{ host: 'xn--80ak6aa92e.com', unicode: 'аррӏе.com' }, { host: 'plain.example' }, { unicode: 'no-host' }, 'x', null],
+    });
+    expect(details).toMatchObject({
+      restricted: true,
+      canRemember: false,
+      hosts: [
+        { host: 'xn--80ak6aa92e.com', unicode: 'аррӏе.com' },
+        { host: 'plain.example', unicode: 'plain.example' },
+      ],
+    });
+  });
+
+  it('is not restricted unless the server says so', () => {
+    const details = toolApprovalDetails({ ...WIRE, restricted: 'yes', hosts: [{ host: 'a.example' }] });
+    expect(details).not.toHaveProperty('restricted');
+    expect(details).not.toHaveProperty('hosts');
+  });
+});
+
 describe('toolApprovalDetails', () => {
   it('keeps a well-formed record', () => {
     expect(toolApprovalDetails(WIRE)).toEqual({ ...WIRE, kind: null, canRemember: true });

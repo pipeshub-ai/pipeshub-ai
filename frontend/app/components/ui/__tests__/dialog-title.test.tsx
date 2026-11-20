@@ -2,8 +2,9 @@
  * R31AXEU-FU-1: a dialog named by a hidden English title reads "Complete Your Profile" to a screen reader in every
  * language while the screen says something else. DLGTITLE-1/2 read every dialog in the classic UI: each is named (a
  * Dialog.Title, the shared DialogHeading, or aria-labelledby/aria-label on its content), and no visually hidden title
- * holds words that do not go through `t()`. DLGTITLE-4..6 render the three that had one: each is named by its
- * visible, translated title.
+ * holds words that do not go through `t()`. DLGTITLE-4 and DLGTITLE-6 render the two that had one and are still
+ * there (the archive dialog of DLGTITLE-5 is gone: a chat archives without one): each is named by its visible,
+ * translated title.
  */
 import React from 'react';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -22,7 +23,6 @@ vi.mock('@/app/(main)/workspace/profile/api', () => ({
 vi.mock('@/lib/hooks/use-upload-limits', () => ({ useUploadLimits: () => ({ maxFileSizeBytes: 1 << 20, maxFileSizeMB: 1 }) }));
 
 import { FullNameDialog } from '@/app/(main)/components/full-name-dialog';
-import { ArchiveChatDialog } from '@/app/(main)/chat/sidebar/dialogs/archive-chat-dialog';
 import { ReplaceFileDialog } from '@/app/(main)/knowledge-base/components/dialogs/replace-file-dialog';
 import type { KnowledgeHubNode } from '@/app/(main)/knowledge-base/types';
 
@@ -102,14 +102,6 @@ describe('the dialogs that had a hidden English title', () => {
     expect(visibleName(screen.getByRole('dialog'))).toBe(en.fullNameDialog.title);
     expect(screen.getByRole('textbox', { name: en.fullNameDialog.label })).toBeTruthy();
     expect(screen.getByRole('button', { name: en.fullNameDialog.submit })).toBeTruthy();
-  });
-
-  it('DLGTITLE-5: the archive dialog is named by its question and described by what it archives', () => {
-    within(<ArchiveChatDialog open onOpenChange={() => {}} onConfirm={async () => {}} chatTitle="Q3 plans" />);
-    const dialog = screen.getByRole('dialog');
-    expect(visibleName(dialog)).toBe(en.chat.archiveChatTitle);
-    const description = document.getElementById(dialog.getAttribute('aria-describedby') ?? '');
-    expect(description?.textContent).toContain('Q3 plans');
   });
 
   it('DLGTITLE-6: the replace-file panel is named by its visible header', () => {

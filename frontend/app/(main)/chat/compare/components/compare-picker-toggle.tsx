@@ -6,17 +6,19 @@ import { Flex, Switch, Text } from '@radix-ui/themes';
 import { useFeatureFlagsStore, selectChatCompareEnabled } from '@/lib/store/feature-flags-store';
 import { ASSISTANT_CTX, useChatStore } from '../../store';
 import type { AvailableLlmModel, ModelOverride } from '../../types';
-import { sameModel, useCompareStore } from '../compare-store';
+import { chatOpenToOthers, sameModel, useCompareStore } from '../compare-store';
 import { MAX_COMPARE_MODELS } from '../types';
 
 /**
  * Compare is offered in the plain assistant, in any mode: flag on,
- * at least two configured models, and not in a saved agent's chat.
+ * at least two configured models, not in a saved agent's chat, and not in a
+ * chat others read.
  */
 export function useCompareAvailable(ctxKey: string): boolean {
   const flagOn = useFeatureFlagsStore(selectChatCompareEnabled);
   const modelCount = useChatStore((s) => s.settings.availableModels[ASSISTANT_CTX]?.models.length ?? 0);
-  return flagOn && ctxKey === ASSISTANT_CTX && modelCount >= MAX_COMPARE_MODELS;
+  const openToOthers = useChatStore((s) => chatOpenToOthers(s.activeSlotId ? s.slots[s.activeSlotId] : undefined));
+  return flagOn && ctxKey === ASSISTANT_CTX && modelCount >= MAX_COMPARE_MODELS && !openToOthers;
 }
 
 const toOverride = (m: AvailableLlmModel): ModelOverride => ({

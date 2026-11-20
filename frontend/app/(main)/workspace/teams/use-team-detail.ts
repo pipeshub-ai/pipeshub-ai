@@ -9,6 +9,9 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/config';
 import { useUserStore } from '@/lib/store/user-store';
 import type { CheckboxOption, PaginatedMembersListHandle } from '../components';
+import { useFormValidation } from '../components';
+import { workspaceDescriptionProblem, workspaceNameProblem } from '../name-rules';
+import { fieldErrorsOf } from '@/lib/api/api-error';
 import { usePaginatedUserOptions } from '../hooks/use-paginated-user-options';
 import { TeamsApi } from './api';
 import { useTeamsStore } from './store';
@@ -48,6 +51,16 @@ export function useTeamDetail({ onUpdateSuccess, notices }: { onUpdateSuccess?: 
     setIsSavingEdit,
     openDetailPanel,
   } = useTeamsStore();
+
+  const validation = useFormValidation<'name' | 'description'>({
+    name: workspaceNameProblem(editTeamName, t),
+    description: workspaceDescriptionProblem(editTeamDescription, t),
+  });
+  const resetValidation = validation.reset;
+  // Each edit session starts clean: nothing marked, no server answer carried over.
+  useEffect(() => {
+    resetValidation();
+  }, [isEditMode, detailTeam?.id, resetValidation]);
 
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -366,6 +379,11 @@ export function useTeamDetail({ onUpdateSuccess, notices }: { onUpdateSuccess?: 
   // Handle saving edits
   const handleSaveEdits = useCallback(async () => {
     if (!detailTeam) return;
+    // Save is disabled while a rule fails; this also guards Enter and a stale click.
+    if (!validation.isValid) {
+      validation.touchAll(['name', 'description']);
+      return;
+    }
 
     setIsSavingEdit(true);
     try {
@@ -387,7 +405,7 @@ export function useTeamDetail({ onUpdateSuccess, notices }: { onUpdateSuccess?: 
       });
 
       await TeamsApi.updateTeam(detailTeam.id, {
-        name: editTeamName.trim() || undefined,
+        name: editTeamName.trim(),
         description: editTeamDescription.trim() || undefined,
         addUserRoles: addUserRoles.length > 0 ? addUserRoles : undefined,
         removeUserIds: removeUserIds.length > 0 ? removeUserIds : undefined,
@@ -402,12 +420,15 @@ export function useTeamDetail({ onUpdateSuccess, notices }: { onUpdateSuccess?: 
       notices.saved(detailTeam.name);
       onUpdateSuccess?.();
     } catch (error) {
-      notices.saveFailed(error);
+      // A reason the server pinned to a field shows on that field, not as a toast.
+      const onField = validation.applyServerErrors(fieldErrorsOf(error), ['name', 'description']);
+      if (!onField) notices.saveFailed(error);
     } finally {
       setIsSavingEdit(false);
     }
   }, [
     detailTeam,
+    validation,
     editTeamName,
     editTeamDescription,
     editAddUserIds,
@@ -452,6 +473,7 @@ export function useTeamDetail({ onUpdateSuccess, notices }: { onUpdateSuccess?: 
 
   return {
     t,
+    validation,
     isDetailPanelOpen,
     detailTeam,
     isEditMode,

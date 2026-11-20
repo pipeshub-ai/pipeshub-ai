@@ -39,10 +39,24 @@ afterEach(() => {
 
 async function clickPreview(answer: string) {
   renderInTheme(<ChatResponse question="Q" answer={answer} />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Preview artifact' }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Preview / }));
 }
 
 describe('ChatResponse artifact preview', () => {
+  it('offers View and Download on the answer card, and View opens the streamed record', async () => {
+    kb.streamRecord.mockResolvedValue(new Blob(['a,b'], { type: 'text/csv' }));
+
+    await clickPreview(answerWith(SIGNED));
+
+    expect(screen.getByRole('button', { name: /^Download / })).toBeTruthy();
+    await waitFor(() => expect(useChatStore.getState().previewFile?.id).toBe('rec-1'));
+    expect(kb.streamRecord).toHaveBeenCalledWith('rec-1', expect.objectContaining({ version: 1 }));
+    const preview = useChatStore.getState().previewFile;
+    expect(preview).toMatchObject({ name: 'data.csv', version: 1, showDownload: true });
+    expect(preview?.url).not.toBe(SIGNED);
+    expect(typeof preview?.onVersionChange).toBe('function');
+  });
+
   it.each([
     ['a plain URL', EVIL],
     ['a URL that only looks signed', 'https://evil.example/steal.csv?X-Amz-Signature=x'],
@@ -52,14 +66,14 @@ describe('ChatResponse artifact preview', () => {
     await clickPreview(answerWith(url));
 
     await waitFor(() => expect(kb.streamRecord).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Preview artifact' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Preview / })).toBeTruthy());
     expect(useChatStore.getState().previewFile?.url).not.toBe(url);
   });
 
   it('never previews an untrusted marker URL when there is no record', async () => {
     await clickPreview(answerWith(EVIL, ''));
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Preview artifact' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Preview / })).toBeTruthy());
     expect(useChatStore.getState().previewFile?.url).not.toBe(EVIL);
   });
 

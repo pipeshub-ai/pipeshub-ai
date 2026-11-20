@@ -7,7 +7,7 @@ import { Box, Button, Callout, Checkbox, Flex, IconButton, Text, Tooltip } from 
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { TableSkeleton } from '@/app/components/data-display';
-import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar/constants';
+import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
 import { toast } from '@/lib/store/toast-store';
@@ -166,6 +166,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
   const { t } = useTranslation();
   const router = useRouter();
   const isMobile = useIsMobile();
+  const isDrawerLayout = useIsBelowDesktop();
   // The fixed-width columns need about 710px, more than a tablet leaves next to the sidebar.
   const compact = useIsBelowDesktop();
   // The cursor each page was read with: page n is cursors[n - 1], and the first page has none.
@@ -300,7 +301,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
         gap="3"
         style={{
           height: '40px',
-          padding: isMobile ? `0 var(--space-2) 0 ${MOBILE_HAMBURGER_GUTTER_PX}px` : '0 var(--space-3)',
+          padding: isDrawerLayout ? '0 var(--space-2) 0 var(--space-3)' : '0 var(--space-3)',
           borderBottom: '1px solid var(--olive-3)',
           backgroundColor: 'var(--effects-translucent)',
           backdropFilter: 'var(--frost-filter-subtle)',
@@ -308,6 +309,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
         }}
       >
         <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+          <SidebarExpandButton placement="inline" />
           <IconButton variant="ghost" size="1" color="gray" onClick={backToCollection} aria-label={t('collections.trash.back')} style={{ cursor: 'pointer' }}>
             <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />
           </IconButton>

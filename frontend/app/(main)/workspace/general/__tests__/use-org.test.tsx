@@ -4,8 +4,12 @@ import { act, cleanup, screen } from '@testing-library/react';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
-vi.mock('@/lib/api', () => ({ apiClient: api, streamSSERequest: vi.fn() }));
-vi.mock('@/config', () => ({ WorkspaceMenu: () => null }));
+vi.mock('@/lib/api', () => ({
+  apiClient: api,
+  sharedGet: (url: string) => api.get(url).then(({ data }: { data: unknown }) => data),
+  streamSSERequest: vi.fn(),
+}));
+vi.mock('@/config', () => ({ WorkspaceMenu: ({ trigger }: { trigger: React.ReactNode }) => <>{trigger}</> }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 // Radix only renders the <img> once it has loaded, which never happens in jsdom.
 vi.mock('@/app/components/ui/user-avatar', () => ({

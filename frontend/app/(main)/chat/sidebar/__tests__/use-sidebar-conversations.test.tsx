@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, renderHook } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 
 import { useChatStore } from '@/chat/store';
-import type { Conversation } from '@/chat/types';
-import { useAuthStore } from '@/config';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
-import { clearSessionCache } from '@/lib/api/session-cache';
-import { useSidebarConversations } from '../use-sidebar-conversations';
+import { useAuthStore } from '@/config';
+import { SIDEBAR_LISTS_STALE_MS } from '../../constants';
+import {
+  loadSidebarConversations,
+  refreshSidebarList,
+  resetSidebarConversationsForTests,
+  useSidebarConversations,
+} from '../use-sidebar-conversations';
 
 const fetchConversations = vi.fn();
 vi.mock('@/chat/api', () => ({
@@ -15,16 +19,6 @@ vi.mock('@/chat/api', () => ({
     fetchConversations: (...args: unknown[]) => fetchConversations(...args),
   },
 }));
-
-// The org switch refetches the flags (onSessionEnd); answer it as the server would. An unmocked request does not
-// settle under fake timers, so the flags stayed null and the list's key with them.
-vi.mock('@/lib/api/axios-instance', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/axios-instance')>();
-  return { ...actual, apiClient: { ...actual.apiClient, get: vi.fn(async () => ({ data: { featureFlags: {} } })) } };
-});
-
-// SWR's default cache binds the real setTimeout for focus events when it loads.
-const realSetTimeout = globalThis.setTimeout;
 
 const PAGINATION = {
   page: 1,
@@ -35,356 +29,475 @@ const PAGINATION = {
   hasPrevPage: false,
 };
 
-type Source = 'owned' | 'shared';
-type Options = { source: Source; excludeProjectChats?: boolean };
+const row = (id: string) =>
+  ({ id, title: `Chat ${id}`, createdAt: '', updatedAt: '', isShared: false, sharedWith: [], isOwner: true }) as never;
 
-function chat(id: string, title = id): Conversation {
-  return { id, title, createdAt: '2026-01-01', updatedAt: '2026-01-01', isShared: false, sharedWith: [] };
-}
-
-function page(...rows: Conversation[]) {
-  return { conversations: rows, source: 'owned', pagination: PAGINATION };
-}
-
-/** Answers owned with `owned`, shared with nothing. */
-function answerOwned(...owned: Conversation[]) {
-  fetchConversations.mockImplementation(async (_page: number, _limit: number, opts: Options) =>
-    opts.source === 'owned' ? page(...owned) : page(),
-  );
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
+/** A response the test answers when it wants to, so it can look at the rail while the request is out. */
+function held() {
+  let answer: (value: unknown) => void = () => {};
+  const promise = new Promise((resolve) => {
+    answer = resolve;
   });
-  return { promise, resolve, reject };
+  return { promise, answer: (conversations: unknown[]) => answer({ conversations, pagination: PAGINATION }) };
 }
 
-const ownedCalls = () =>
-  fetchConversations.mock.calls.filter(([, , opts]) => (opts as Options).source === 'owned').length;
-const ownedTitles = () => useChatStore.getState().conversations.map((c) => c.title);
-
-/** Lets fetches settle and SWR's frame-delayed revalidation run. */
-async function settle(ms = 20) {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(ms);
-  });
-}
-
-async function mount() {
-  const view = renderHook(() => useSidebarConversations());
-  await settle();
-  return view;
-}
-
-async function focusWindow() {
-  await act(async () => {
-    window.dispatchEvent(new Event('focus'));
-    await new Promise((r) => realSetTimeout(r, 10));
-  });
-  await settle();
+/** Lists that loaded `ageMs` ago, as a rail left them. */
+function listsLoaded(ids: string[], ageMs: number) {
+  useChatStore.setState({ conversations: ids.map(row), conversationsLoadedAt: Date.now() - ageMs });
 }
 
 describe('useSidebarConversations', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
     vi.clearAllMocks();
-    clearSessionCache();
+    resetSidebarConversationsForTests();
+    useChatStore.getState().reset();
     useServicesHealthStore.setState({ apiServerReachable: true });
+    // The flags are read (Projects off), as they are once the app has started.
     useFeatureFlagsStore.setState({ flags: {} } as never);
-    answerOwned(chat('a', 'A'));
+    fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
   });
 
-  afterEach(() => {
-    cleanup();
-    vi.useRealTimers();
+  afterEach(() => cleanup());
+
+  it('loads owned and shared recents when the sidebar mounts', async () => {
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
+      source: 'owned',
+      excludeProjectChats: false,
+    });
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'shared' });
   });
 
-  it('loads owned and shared recents when the sidebar mounts, without error toasts', async () => {
-    await mount();
+  it('leaves project chats out of Recents while Projects is on, since they list under their project', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as never);
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
+      source: 'owned',
+      excludeProjectChats: true,
+    });
+  });
+
+  it('marks the conversation list as failed when it cannot be loaded', async () => {
+    fetchConversations.mockRejectedValue(new Error('Request failed with status code 500'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(useChatStore.getState().conversationsError).toBeTruthy());
+    expect(useChatStore.getState().isConversationsLoading).toBe(false);
+  });
+
+  it('shows the skeleton for the first load only, and stamps when the lists arrived', async () => {
+    const owned = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? owned.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(useChatStore.getState().isConversationsLoading).toBe(true));
+    await act(async () => owned.answer([row('a')]));
+
+    expect(useChatStore.getState().isConversationsLoading).toBe(false);
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['a']);
+    expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull();
+  });
+
+  it('a rail mounted again within 30 s shows its lists as they are and asks for nothing', async () => {
+    const first = renderHook(() => useSidebarConversations());
+    await waitFor(() => expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull());
+    first.unmount();
+
+    renderHook(() => useSidebarConversations());
 
     expect(fetchConversations).toHaveBeenCalledTimes(2);
+  });
+
+  it('a rail mounted with stale lists refreshes them in the background: rows stay, no skeleton, no error toast', async () => {
+    listsLoaded(['a', 'b'], SIDEBAR_LISTS_STALE_MS + 1);
+    const owned = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? owned.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
     expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
       source: 'owned',
       excludeProjectChats: false,
       suppressErrorToast: true,
     });
-    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
-      source: 'shared',
-      suppressErrorToast: true,
-    });
-    expect(ownedTitles()).toEqual(['A']);
     expect(useChatStore.getState().isConversationsLoading).toBe(false);
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['a', 'b']);
+
+    await act(async () => owned.answer([row('c'), row('a')]));
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['c', 'a']);
   });
 
-  it('leaves project chats out of Recents while Projects is on, since they list under their project', async () => {
-    useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as never);
-    await mount();
-
-    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
-      source: 'owned',
-      excludeProjectChats: true,
-      suppressErrorToast: true,
-    });
-  });
-
-  it('waits for the feature flags, then fetches once with the right filter', async () => {
-    useFeatureFlagsStore.setState({ flags: null } as never);
-    await mount();
-    expect(fetchConversations).not.toHaveBeenCalled();
-    expect(useChatStore.getState().isConversationsLoading).toBe(true);
-
-    act(() => useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as never));
-    await settle();
-
-    expect(fetchConversations).toHaveBeenCalledTimes(2);
-    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), expect.objectContaining({
-      source: 'owned',
-      excludeProjectChats: true,
-    }));
-  });
-
-  it('fetches once on mount even after the lists were refreshed earlier in the session', async () => {
+  it('one load on mount, even when earlier changes bumped the version', async () => {
     useChatStore.setState({ conversationsVersion: 3 });
-    await mount();
 
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull());
     expect(fetchConversations).toHaveBeenCalledTimes(2);
   });
 
-  it('reuses the lists for a remount within 30 s', async () => {
-    const first = await mount();
-    first.unmount();
-    await settle(29_000);
-    await mount();
-
-    expect(fetchConversations).toHaveBeenCalledTimes(2);
-    expect(ownedTitles()).toEqual(['A']);
-  });
-
-  it('refreshes in the background after 30 s, keeping the lists on screen meanwhile', async () => {
-    const first = await mount();
-    first.unmount();
-    await settle(31_000);
-
-    const owned = deferred<ReturnType<typeof page>>();
-    fetchConversations.mockImplementation((_p: number, _l: number, opts: Options) =>
-      opts.source === 'owned' ? owned.promise : Promise.resolve(page()),
+  it('a bump while mounted refreshes once; bumps during that load run it once more, not once each', async () => {
+    renderHook(() => useSidebarConversations());
+    await waitFor(() => expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull());
+    fetchConversations.mockClear();
+    const owned = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? owned.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
     );
-    await mount();
-
-    expect(ownedCalls()).toBe(2);
-    expect(useChatStore.getState().isConversationsLoading).toBe(false);
-    expect(ownedTitles()).toEqual(['A']);
-
-    await act(async () => owned.resolve(page(chat('b', 'B'), chat('a', 'A'))));
-    await settle();
-    expect(ownedTitles()).toEqual(['B', 'A']);
-  });
-
-  it('keeps edits made since the last fetch when it remounts within the window', async () => {
-    const first = await mount();
-    act(() => useChatStore.getState().renameConversation('a', 'Renamed'));
-    first.unmount();
-    await settle(5_000);
-    await mount();
-
-    expect(fetchConversations).toHaveBeenCalledTimes(2);
-    expect(ownedTitles()).toEqual(['Renamed']);
-  });
-
-  it('refetches on tab focus once the lists are older than 30 s, not before', async () => {
-    await mount();
-    await settle(10_000);
-    await focusWindow();
-    expect(fetchConversations).toHaveBeenCalledTimes(2);
-
-    await settle(21_000);
-    answerOwned(chat('b', 'B'));
-    await focusWindow();
-    await vi.waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(4));
-    await settle();
-    expect(ownedTitles()).toEqual(['B']);
-  });
-
-  it('refetches once when the lists change while the sidebar is shown', async () => {
-    await mount();
-    answerOwned(chat('b', 'B'), chat('a', 'A'));
 
     act(() => useChatStore.getState().bumpConversationsVersion());
-    await settle();
+    act(() => useChatStore.getState().bumpConversationsVersion());
+    act(() => useChatStore.getState().bumpConversationsVersion());
+    expect(fetchConversations).toHaveBeenCalledTimes(2);
 
-    expect(fetchConversations).toHaveBeenCalledTimes(4);
-    expect(ownedTitles()).toEqual(['B', 'A']);
-  });
-
-  it('refetches on the next mount when the lists changed while the sidebar was away', async () => {
-    const first = await mount();
-    first.unmount();
-    useChatStore.getState().bumpConversationsVersion();
-    await settle(1_000);
-    await mount();
-
+    fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
+    await act(async () => owned.answer([]));
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(4));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
     expect(fetchConversations).toHaveBeenCalledTimes(4);
   });
 
-  it('keeps the newest answer when an older request lands after it', async () => {
-    const older = deferred<ReturnType<typeof page>>();
-    fetchConversations.mockImplementation((_p: number, _l: number, opts: Options) =>
-      opts.source === 'owned' ? older.promise : Promise.resolve(page()),
-    );
-    await mount();
+  it('a refresh that fails keeps the rows and says nothing', async () => {
+    listsLoaded(['a'], SIDEBAR_LISTS_STALE_MS + 1);
+    fetchConversations.mockRejectedValue(new Error('Request failed with status code 500'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    answerOwned(chat('new', 'New'));
-    act(() => useChatStore.getState().bumpConversationsVersion());
-    await settle();
-    await act(async () => older.resolve(page(chat('old', 'Old'))));
-    await settle();
+    renderHook(() => useSidebarConversations());
 
-    expect(ownedTitles()).toEqual(['New']);
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await loadSidebarConversations();
+    });
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['a']);
+    expect(useChatStore.getState().conversationsError).toBeNull();
+    expect(errors).not.toHaveBeenCalled();
   });
 
-  it('shows the list for the current Projects setting when it is switched back within the window', async () => {
-    fetchConversations.mockImplementation(async (_p: number, _l: number, opts: Options) =>
-      opts.source !== 'owned' ? page() : page(chat(opts.excludeProjectChats ? 'recents' : 'with-projects')),
-    );
-    await mount();
-    expect(ownedTitles()).toEqual(['with-projects']);
+  it('the window coming back into focus refreshes stale lists only', async () => {
+    renderHook(() => useSidebarConversations());
+    await waitFor(() => expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull());
+    fetchConversations.mockClear();
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(fetchConversations).not.toHaveBeenCalled();
+
+    useChatStore.setState({ conversationsLoadedAt: Date.now() - SIDEBAR_LISTS_STALE_MS - 1 });
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
+  });
+
+  it('a bump while no rail is mounted makes the next mount load, even within 30 s', async () => {
+    const first = renderHook(() => useSidebarConversations());
+    await waitFor(() => expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull());
+    first.unmount();
+    act(() => useChatStore.getState().bumpConversationsVersion());
+    expect(fetchConversations).toHaveBeenCalledTimes(2);
+
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(4));
+  });
+});
+
+describe('a reload: Your chats is read once, after the flags', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSidebarConversationsForTests();
+    useChatStore.getState().reset();
+    useServicesHealthStore.setState({ apiServerReachable: true });
+    useFeatureFlagsStore.setState({ flags: null } as never);
+    fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
+  });
+
+  it('reads Shared chats at once and Your chats once the flags are known, with Projects as they say', async () => {
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(1));
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'shared' });
 
     act(() => useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as never));
-    await settle();
-    expect(ownedTitles()).toEqual(['recents']);
 
-    act(() => useFeatureFlagsStore.setState({ flags: {} } as never));
-    await settle();
-
-    expect(ownedTitles()).toEqual(['with-projects']);
-    expect(fetchConversations).toHaveBeenCalledTimes(4);
-  });
-
-  it('marks the list as failed, without retrying on its own', async () => {
-    fetchConversations.mockRejectedValue(new Error('Request failed with status code 500'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    await mount();
-
-    expect(useChatStore.getState().conversationsError).toBeTruthy();
-    expect(useChatStore.getState().isConversationsLoading).toBe(false);
-
-    await settle(60_000);
+    await waitFor(() => expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull());
     expect(fetchConversations).toHaveBeenCalledTimes(2);
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'owned', excludeProjectChats: true });
   });
 
-  it('asks again at most once per focus while the server keeps failing', async () => {
-    fetchConversations.mockRejectedValue(new Error('500'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    await mount();
-    await settle(6_000);
+  it('Projects turned on later reads Your chats again', async () => {
+    useFeatureFlagsStore.setState({ flags: {} } as never);
+    renderHook(() => useSidebarConversations());
+    await waitFor(() => expect(useChatStore.getState().conversationsLoadedAt).not.toBeNull());
+    fetchConversations.mockClear();
 
-    await focusWindow();
-    await vi.waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(4));
-    await focusWindow();
-    expect(fetchConversations).toHaveBeenCalledTimes(4);
-  });
+    act(() => useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as never));
 
-  it('keeps showing the list, not "Failed to load", when a background refresh fails', async () => {
-    const first = await mount();
-    first.unmount();
-    await settle(31_000);
-    fetchConversations.mockRejectedValue(new Error('500'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    await mount();
-
-    expect(fetchConversations).toHaveBeenCalledTimes(4);
-    expect(ownedTitles()).toEqual(['A']);
-    expect(useChatStore.getState().conversationsError).toBeNull();
-    expect(useChatStore.getState().isConversationsLoading).toBe(false);
-  });
-
-  it('shows the skeleton, not an earlier failure, while the next request runs', async () => {
-    fetchConversations.mockRejectedValue(new Error('500'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const first = await mount();
-    expect(useChatStore.getState().conversationsError).toBeTruthy();
-    first.unmount();
-
-    const owned = deferred<ReturnType<typeof page>>();
-    fetchConversations.mockImplementation((_p: number, _l: number, opts: Options) =>
-      opts.source === 'owned' ? owned.promise : Promise.resolve(page()),
+    await waitFor(() =>
+      expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
+        source: 'owned',
+        excludeProjectChats: true,
+        suppressErrorToast: true,
+      }),
     );
-    await mount();
+  });
+});
 
-    expect(useChatStore.getState().conversationsError).toBeNull();
+describe('refreshSidebarList: one list, when only it can have changed', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    resetSidebarConversationsForTests();
+    useChatStore.getState().reset();
+    useServicesHealthStore.setState({ apiServerReachable: true });
+    fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
+  });
+
+  it('reads Shared chats alone, and a chat that moved there leaves Your chats', async () => {
+    listsLoaded(['a', 'b'], 0);
+    fetchConversations.mockResolvedValue({ conversations: [row('b'), row('s')], pagination: PAGINATION });
+
+    await act(async () => {
+      await refreshSidebarList('shared');
+    });
+
+    expect(fetchConversations).toHaveBeenCalledTimes(1);
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'shared', suppressErrorToast: true });
+    expect(useChatStore.getState().sharedConversations.map((c) => c.id)).toEqual(['b', 's']);
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['a']);
+  });
+
+  it('asks nothing before the rail has loaded at all', async () => {
+    await refreshSidebarList('shared');
+    expect(fetchConversations).not.toHaveBeenCalled();
+  });
+
+  it('a failed read keeps the rows', async () => {
+    listsLoaded(['a'], 0);
+    useChatStore.setState({ sharedConversations: [row('s')] });
+    fetchConversations.mockRejectedValue(new Error('500'));
+
+    await refreshSidebarList('shared');
+
+    expect(useChatStore.getState().sharedConversations.map((c) => c.id)).toEqual(['s']);
+  });
+});
+
+describe('signing out', () => {
+  const b64 = (value: unknown) => btoa(JSON.stringify(value)).replace(/=+$/, '');
+  const tokenFor = (userId: string) => `${b64({ alg: 'HS256' })}.${b64({ userId })}.sig`;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    resetSidebarConversationsForTests();
+    useChatStore.getState().reset();
+    useServicesHealthStore.setState({ apiServerReachable: true });
+    useFeatureFlagsStore.setState({ flags: {} } as never);
+    useAuthStore.setState({ accessToken: tokenFor('user-a'), isAuthenticated: true } as never);
+    fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
+    // The watch starts with the first load, as it does when a rail first loads its lists.
+    await loadSidebarConversations();
+    vi.clearAllMocks();
+    fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
+  });
+
+  afterEach(() => {
+    cleanup();
+    useAuthStore.setState({ accessToken: null, isAuthenticated: false } as never);
+  });
+
+  it('clears every rail list, so the next person never sees these titles', () => {
+    useChatStore.setState({
+      conversations: [row('a')],
+      sharedConversations: [row('s')],
+      conversationsLoadedAt: Date.now(),
+      agentConversations: [row('g')],
+      agentConversationsAgentId: 'agent-1',
+      isMoreChatsPanelOpen: true,
+      moreChatsSectionType: 'your',
+    });
+
+    act(() => useAuthStore.setState({ accessToken: null, isAuthenticated: false } as never));
+
+    const state = useChatStore.getState();
+    expect(state.conversations).toEqual([]);
+    expect(state.sharedConversations).toEqual([]);
+    expect(state.conversationsLoadedAt).toBeNull();
+    expect(state.agentConversations).toEqual([]);
+    expect(state.agentConversationsAgentId).toBeNull();
+    expect(state.isMoreChatsPanelOpen).toBe(false);
+  });
+
+  it('a token refresh for the same person keeps the lists', () => {
+    useChatStore.setState({ conversations: [row('a')], conversationsLoadedAt: Date.now() });
+
+    act(() => useAuthStore.setState({ accessToken: tokenFor('user-a') } as never));
+
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['a']);
+  });
+
+  it("the next person's rail loads their own lists, even while the last person's load is still out", async () => {
+    let answerA: (value: unknown) => void = () => {};
+    const heldA = new Promise((resolve) => (answerA = resolve));
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? heldA : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    // The last person's rail has nothing yet: its first load is the one still out.
+    useChatStore.setState({ conversationsLoadedAt: null });
+    const railA = renderHook(() => useSidebarConversations());
+    expect(fetchConversations).toHaveBeenCalledTimes(2);
+    railA.unmount();
+
+    // Signed out and someone else signed in, with no page load between (the desktop app).
+    act(() => useAuthStore.setState({ accessToken: null, isAuthenticated: false } as never));
+    act(() => useAuthStore.setState({ accessToken: tokenFor('user-b'), isAuthenticated: true } as never));
+    fetchConversations.mockImplementation(async (_p: number, _l: number, opts: { source: string }) => ({
+      conversations: opts.source === 'owned' ? [row('b1')] : [],
+      pagination: PAGINATION,
+    }));
+    renderHook(() => useSidebarConversations());
+    await act(async () => {
+      answerA({ conversations: [row('a1')], pagination: PAGINATION });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    const state = useChatStore.getState();
+    expect(fetchConversations).toHaveBeenCalledTimes(4);
+    expect(state.conversations.map((c) => c.id)).toEqual(['b1']);
+    expect(state.isConversationsLoading).toBe(false);
+  });
+
+  it("a load dropped at the change of person never runs again in place of the next person's own", async () => {
+    const ownedA = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? ownedA.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    void loadSidebarConversations();
+    act(() => useAuthStore.setState({ accessToken: tokenFor('user-b'), isAuthenticated: true } as never));
+    const ownedB = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? ownedB.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    void loadSidebarConversations();
+    // A chat changed while the next person's load was out: their lists load once more after it.
+    void loadSidebarConversations({ again: true });
+    fetchConversations.mockImplementation(async (_p: number, _l: number, opts: { source: string }) => ({
+      conversations: opts.source === 'owned' ? [row('b-new')] : [],
+      pagination: PAGINATION,
+    }));
+
+    await act(async () => {
+      ownedA.answer([row('a1')]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    await act(async () => ownedB.answer([row('b-old')]));
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(6));
+
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['b-new']);
+  });
+
+  it("a one-list refresh still out at the change of person is dropped: the next person's starts at once", async () => {
+    await loadSidebarConversations();
+    const sharedA = held();
+    fetchConversations.mockImplementation(() => sharedA.promise);
+    void refreshSidebarList('shared');
+    expect(fetchConversations).toHaveBeenCalledTimes(3);
+
+    act(() => useAuthStore.setState({ accessToken: tokenFor('user-b'), isAuthenticated: true } as never));
+    fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
+    await loadSidebarConversations();
+    const sharedB = held();
+    fetchConversations.mockImplementation(() => sharedB.promise);
+    void refreshSidebarList('shared');
+    expect(fetchConversations).toHaveBeenCalledTimes(6);
+
+    // The last person's answer lands: dropped, and the next person's refresh is still the one out.
+    await act(async () => sharedA.answer([row('a-shared')]));
+    void refreshSidebarList('shared');
+    expect(fetchConversations).toHaveBeenCalledTimes(6);
+    fetchConversations.mockResolvedValue({ conversations: [row('b-shared')], pagination: PAGINATION });
+    await act(async () => sharedB.answer([]));
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(7));
+    await waitFor(() => expect(useChatStore.getState().sharedConversations.map((c) => c.id)).toEqual(['b-shared']));
+  });
+
+  it("the last person's first load landing late leaves the next person's skeleton on", async () => {
+    const ownedA = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? ownedA.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    // The last person's rail has nothing yet: its first load is the one still out.
+    useChatStore.setState({ conversationsLoadedAt: null });
+    void loadSidebarConversations();
     expect(useChatStore.getState().isConversationsLoading).toBe(true);
 
-    await act(async () => owned.resolve(page(chat('a', 'A'))));
-    await settle();
-    expect(ownedTitles()).toEqual(['A']);
+    act(() => useAuthStore.setState({ accessToken: null, isAuthenticated: false } as never));
+    act(() => useAuthStore.setState({ accessToken: tokenFor('user-b'), isAuthenticated: true } as never));
+    const ownedB = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? ownedB.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    void loadSidebarConversations();
+    await act(async () => {
+      ownedA.answer([row('a1')]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().isConversationsLoading).toBe(true);
+
+    await act(async () => {
+      ownedB.answer([row('b1')]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['b1']);
     expect(useChatStore.getState().isConversationsLoading).toBe(false);
   });
 
-  it('shows no failure while the API server is unreachable', async () => {
-    useServicesHealthStore.setState({ apiServerReachable: false });
-    fetchConversations.mockRejectedValue(new Error('Network Error'));
-    await mount();
-
-    expect(useChatStore.getState().conversationsError).toBeNull();
-  });
-
-  it('clears the failure once a later fetch succeeds', async () => {
-    fetchConversations.mockRejectedValueOnce(new Error('500'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const first = await mount();
-    expect(useChatStore.getState().conversationsError).toBeTruthy();
-    first.unmount();
-
-    await mount();
-    expect(useChatStore.getState().conversationsError).toBeNull();
-    expect(ownedTitles()).toEqual(['A']);
-  });
-
-  it('forgets the lists at sign-out and fetches again for the next session', async () => {
-    const first = await mount();
-    first.unmount();
-    act(() => useAuthStore.getState().logout());
-
-    expect(useChatStore.getState().conversations).toEqual([]);
-    // The last session's flags are forgotten too; the next one waits for its own.
-    expect(useFeatureFlagsStore.getState().flags).toBeNull();
-    useFeatureFlagsStore.setState({ flags: {} } as never);
-    await mount();
-    expect(fetchConversations).toHaveBeenCalledTimes(4);
-  });
-
-  it('still refreshes after a write once the org was switched on this screen', async () => {
-    await mount();
-    answerOwned(chat('b', 'B'));
-    act(() => clearSessionCache({ refetch: true }));
-    await settle();
-    expect(ownedTitles()).toEqual(['B']);
-
-    answerOwned(chat('c', 'C'), chat('b', 'B'));
-    act(() => useChatStore.getState().bumpConversationsVersion());
-    await settle();
-
-    expect(fetchConversations).toHaveBeenCalledTimes(6);
-    expect(ownedTitles()).toEqual(['C', 'B']);
-  });
-
-  it('does not write a response that was in flight at sign-out', async () => {
-    const owned = deferred<ReturnType<typeof page>>();
-    fetchConversations.mockImplementation((_p: number, _l: number, opts: Options) =>
-      opts.source === 'owned' ? owned.promise : Promise.resolve(page()),
+  it('a sign-out with nobody signing in leaves no skeleton on when the last load lands', async () => {
+    const ownedA = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? ownedA.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
     );
-    const view = renderHook(() => useSidebarConversations());
-    await settle();
+    useChatStore.setState({ conversationsLoadedAt: null });
+    const loading = loadSidebarConversations();
 
-    act(() => useAuthStore.getState().logout());
-    view.unmount();
-    await act(async () => owned.resolve(page(chat('a', 'From the last user'))));
-    await settle();
+    act(() => useAuthStore.setState({ accessToken: null, isAuthenticated: false } as never));
+    await act(async () => {
+      ownedA.answer([row('a1')]);
+      await loading;
+    });
+
+    expect(useChatStore.getState().isConversationsLoading).toBe(false);
+    expect(useChatStore.getState().conversations).toEqual([]);
+  });
+
+  it('drops a load that lands after the person signed out', async () => {
+    const owned = held();
+    fetchConversations.mockImplementation((_p: number, _l: number, opts: { source: string }) =>
+      opts.source === 'owned' ? owned.promise : Promise.resolve({ conversations: [], pagination: PAGINATION }),
+    );
+    const loading = loadSidebarConversations();
+
+    act(() => useAuthStore.setState({ accessToken: tokenFor('user-b') } as never));
+    await act(async () => {
+      owned.answer([row('a')]);
+      await loading;
+    });
 
     expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useChatStore.getState().conversationsLoadedAt).toBeNull();
   });
 });

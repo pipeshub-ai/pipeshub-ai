@@ -4,10 +4,13 @@ import { useEffect, useState } from 'react';
 import { clampSplitWidth } from '../constants';
 
 /**
- * The chat pane width the user chose, capped to the current viewport so the preview keeps room.
+ * The pane width the user chose, capped to the current viewport (by default so the preview keeps room).
  * Narrowing the window only caps what is shown; widening it again restores the chosen width.
  */
-export function useSplitWidth(initialPx: () => number): [number, (px: number) => void] {
+export function useSplitWidth(
+  initialPx: () => number,
+  clamp: (px: number, viewport: number) => number = clampSplitWidth,
+): [number, (px: number) => void] {
   const [preferredPx, setPreferredPx] = useState(initialPx);
   const [viewportPx, setViewportPx] = useState(() =>
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth,
@@ -17,5 +20,5 @@ export function useSplitWidth(initialPx: () => number): [number, (px: number) =>
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
-  return [clampSplitWidth(preferredPx, viewportPx), setPreferredPx];
+  return [clamp(preferredPx, viewportPx), setPreferredPx];
 }

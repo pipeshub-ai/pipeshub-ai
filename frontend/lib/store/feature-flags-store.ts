@@ -5,6 +5,7 @@ import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { apiClient } from '@/lib/api/axios-instance';
 import { onSessionEnd } from '@/lib/api/session-cache';
+import { ErrorType, type ProcessedError } from '@/lib/api/api-error';
 
 /** The server's harness rollout decision for this org; the UI never recomputes it. */
 export interface AgentHarnessRollout {
@@ -62,6 +63,35 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 /** Bumped at session end, so a retry the last session scheduled never writes into the next one. */
 let generation = 0;
 
+/**
+ * Waits before asking again when a read got no answer at all (the connection dropped, the network changed). Until
+ * the last one fails, the flags stay unknown, so what shows them as they were last time (the rail's Projects row)
+ * does not change for a blip. An error the server answered with stands at once.
+ */
+const NO_ANSWER_RETRY_MS = [300, 1000];
+
+interface EffectiveFlagsResponse {
+  featureFlags?: unknown;
+  agentHarness?: unknown;
+  harnessReconcile?: unknown;
+  continuePrivately?: unknown;
+  engineRuns?: unknown;
+}
+
+/** One read: asked again on no answer (NO_ANSWER_RETRY_MS); a read that still fails falls back and retries later. */
+async function readFlags() {
+  for (let tries = 0; ; tries += 1) {
+    try {
+      return await apiClient.get<EffectiveFlagsResponse>(EFFECTIVE_FLAGS_URL, { suppressErrorToast: true });
+    } catch (error) {
+      const wait = NO_ANSWER_RETRY_MS[tries];
+      // Network errors only, by design: an aborted or timed-out read falls back at once, as a server error does.
+      if (wait === undefined || (error as ProcessedError | undefined)?.type !== ErrorType.NETWORK_ERROR) throw error;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+}
+
 function parseFeatureFlags(value: unknown): Record<string, boolean> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -110,16 +140,7 @@ export const useFeatureFlagsStore = create<FeatureFlagsStore>()(
             state.loading = true;
           });
           try {
-            const { data } = await apiClient.get<{
-              featureFlags?: unknown;
-              agentHarness?: unknown;
-              harnessReconcile?: unknown;
-              continuePrivately?: unknown;
-              engineRuns?: unknown;
-            }>(
-              EFFECTIVE_FLAGS_URL,
-              { suppressErrorToast: true },
-            );
+            const { data } = await readFlags();
             set((state) => {
               state.flags = parseFeatureFlags(data?.featureFlags);
               state.agentHarness = parseAgentHarnessRollout(data?.agentHarness);

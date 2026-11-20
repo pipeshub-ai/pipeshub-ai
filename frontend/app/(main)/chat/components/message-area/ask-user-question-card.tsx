@@ -130,27 +130,53 @@ export function mergeAskUserQuestionPayloads(
   };
 }
 
+/** What `a` answers `q` with: the picked labels and typed text, and `skipped` for a skipped question. */
+function answerText(q: AskUserQuestionItem, a: AskUserQuestionAnswer | undefined, skipped: string): string {
+  return (a?.selectedOptionIds ?? [])
+    .map((optId) => {
+      if (optId === NO_PREFERENCE_ID) return skipped;
+      if (optId === SOMETHING_ELSE_ID) {
+        return a?.userInputs?.[optId]?.trim() ?? '';
+      }
+      const opt = q.options.find((o) => o.id === optId);
+      const userText = a?.userInputs?.[optId]?.trim();
+      return opt?.isUserInput && userText ? userText : (opt?.label ?? optId);
+    })
+    .filter(Boolean)
+    .join(', ');
+}
+
+/** The answers among `answers` to `payload`'s own questions: another card's never answer this one. */
+export function answersFor(
+  payload: AskUserQuestionPayload,
+  answers: Record<string, AskUserQuestionAnswer>,
+): Record<string, AskUserQuestionAnswer> {
+  const ids = new Set(normalizeAskUserQuestionPayload(payload).questions.map((q) => q.uuid));
+  return Object.fromEntries(Object.entries(answers).filter(([id]) => ids.has(id)));
+}
+
+/** Each question of a card with what was answered (empty when nothing was), for the row that records the card. */
+export function answeredQuestions(
+  payload: AskUserQuestionPayload,
+  answers: Record<string, AskUserQuestionAnswer>,
+  skipped: string,
+): Array<{ uuid: string; question: string; answer: string }> {
+  const questions = normalizeAskUserQuestionPayload(payload).questions;
+  return questions.map((q) => ({
+    uuid: q.uuid,
+    question: q.question,
+    answer: answerText(q, answerForQuestion(q, answers, questions), skipped),
+  }));
+}
+
 export function buildAnswerMessage(
   payload: AskUserQuestionPayload,
   answers: Record<string, AskUserQuestionAnswer>
 ): string {
   const questions = normalizeAskUserQuestionPayload(payload).questions;
-  const lines = questions.map((q, i) => {
-    const a = answerForQuestion(q, answers, questions);
-    const parts = (a?.selectedOptionIds ?? [])
-      .map((optId) => {
-        if (optId === NO_PREFERENCE_ID) return NO_PREFERENCE_LABEL;
-        if (optId === SOMETHING_ELSE_ID) {
-          return a?.userInputs?.[optId]?.trim() ?? '';
-        }
-        const opt = q.options.find((o) => o.id === optId);
-        const userText = a?.userInputs?.[optId]?.trim();
-        return opt?.isUserInput && userText ? userText : (opt?.label ?? optId);
-      })
-      .filter(Boolean)
-      .join(', ');
-    return `${i + 1}. "${q.question}" → ${parts}`;
-  });
+  const lines = questions.map(
+    (q, i) => `${i + 1}. "${q.question}" → ${answerText(q, answerForQuestion(q, answers, questions), NO_PREFERENCE_LABEL)}`,
+  );
   return `User selections:\n${lines.join('\n')}`;
 }
 
@@ -508,6 +534,13 @@ export interface AskUserQuestionCardProps {
    * cannot be changed or sent a second time meanwhile.
    */
   sending?: boolean;
+  /**
+   * The question was put to someone else. The card shows who it waits for and every input is
+   * disabled. `name: null` is a person no longer known.
+   */
+  readOnlyFor?: { name: string | null };
+  /** Answers can be picked but not sent yet; the text says why (someone else's turn is running). */
+  submitHeld?: string;
 }
 
 export function AskUserQuestionCard({
@@ -520,10 +553,14 @@ export function AskUserQuestionCard({
   active = false,
   initialStep,
   sending = false,
+  readOnlyFor,
+  submitHeld,
 }: AskUserQuestionCardProps) {
   const { t, i18n } = useTranslation();
   const ids = useId().replace(/:/g, '');
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const locked = Boolean(readOnlyFor);
+  const held = Boolean(submitHeld);
   const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
   const questions = normalized.questions;
   // FU-2: a grounding card reads in the reader's language; its answer still sends the English it was asked in.
@@ -684,13 +721,13 @@ export function AskUserQuestionCard({
   }, []);
 
   const handleSubmit = useCallback(() => {
-    if (!stepValid || status !== 'pending') return;
+    if (locked || held || !stepValid || status !== 'pending') return;
     const msg = buildResumeMessage(normalized, answers, sentAnswers);
     onSubmit?.(msg, answers);
-  }, [stepValid, status, normalized, answers, sentAnswers, onSubmit]);
+  }, [locked, held, stepValid, status, normalized, answers, sentAnswers, onSubmit]);
 
   const handleSkip = useCallback(() => {
-    if (!currentQ || status !== 'pending') return;
+    if (locked || !currentQ || status !== 'pending' || (held && isLast)) return;
     const next = {
       ...answers,
       [currentQ.uuid]: {
@@ -706,11 +743,11 @@ export function AskUserQuestionCard({
     } else {
       setStep((s) => Math.min(s + 1, total - 1));
     }
-  }, [currentQ, status, answers, syncAnswers, isLast, normalized, sentAnswers, onSubmit, total]);
+  }, [locked, held, currentQ, status, answers, syncAnswers, isLast, normalized, sentAnswers, onSubmit, total]);
 
   // Every question still without an answer gets "[No preference]", and the card is sent.
   const handleSkipAll = useCallback(() => {
-    if (status !== 'pending') return;
+    if (locked || held || status !== 'pending') return;
     const next = { ...answers };
     for (const q of questions) {
       if (validateQuestion(q, answerForQuestion(q, next, questions), [SOMETHING_ELSE_OPTION])) continue;
@@ -718,7 +755,7 @@ export function AskUserQuestionCard({
     }
     syncAnswers(next);
     onSubmit?.(buildResumeMessage(normalized, next, sentAnswers), next);
-  }, [status, answers, questions, syncAnswers, onSubmit, normalized, sentAnswers]);
+  }, [locked, held, status, answers, questions, syncAnswers, onSubmit, normalized, sentAnswers]);
 
   const expired = status === 'pending' && isAskUserQuestionExpired(normalized);
   const closedNote = normalized.repliedInChat
@@ -737,13 +774,9 @@ export function AskUserQuestionCard({
 
   if (status === 'submitted' || status === 'persisted' || status === 'skipped' || expired) {
     const heading =
-      status === 'submitted'
-        ? questions.length === 1
-          ? t('askUserQuestion.questionsHeadingSingular')
-          : t('askUserQuestion.questionsHeadingPlural')
-        : questions.length === 1
-          ? t('askUserQuestion.questionAskedSingular')
-          : t('askUserQuestion.questionAskedPlural');
+      questions.length === 1
+        ? t('askUserQuestion.questionsHeadingSingular')
+        : t('askUserQuestion.questionsHeadingPlural');
     return (
       <Card size="2">
         <Flex direction="column" gap="3" p="4">
@@ -918,6 +951,19 @@ export function AskUserQuestionCard({
 
         </Flex>
 
+        {readOnlyFor ? (
+          <Flex align="center" gap="2" role="status" data-testid="ask-card-waiting">
+            <span aria-hidden style={{ display: 'inline-flex' }}>
+              <MaterialIcon name="hourglass_top" size={16} color="var(--text-secondary)" />
+            </span>
+            <Text size="2" color="gray">
+              {t('askUserQuestion.waitingFor', {
+                name: readOnlyFor.name || t('askUserQuestion.unknownPerson'),
+              })}
+            </Text>
+          </Flex>
+        ) : null}
+
         <Flex direction="column" gap="1">
           {currentQ.header ? (
             <Badge size="1" variant="soft" color="gray" style={{ alignSelf: 'flex-start' }}>
@@ -944,7 +990,7 @@ export function AskUserQuestionCard({
             {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-              const isDisabled = sending;
+              const isDisabled = sending || locked;
               return (
                 <Flex key={`${opt.id}-${idx}`} direction="column" gap="2">
                   <label
@@ -973,6 +1019,7 @@ export function AskUserQuestionCard({
                       }
                       maxLength={MAX_TYPED_ANSWER_CHARS}
                       rows={3}
+                      disabled={locked}
                       style={{ marginLeft: '28px' }}
                     />
                   ) : null}
@@ -990,7 +1037,7 @@ export function AskUserQuestionCard({
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-                const isDisabled = sending || (isSomethingElseSelected && !isSynthetic);
+                const isDisabled = sending || locked || (isSomethingElseSelected && !isSynthetic);
                 const radioValue = String(idx);
                 const isSelected = singleValue === radioValue;
                 return (
@@ -1023,6 +1070,7 @@ export function AskUserQuestionCard({
                         }
                         maxLength={MAX_TYPED_ANSWER_CHARS}
                         rows={3}
+                        disabled={locked}
                         style={{ marginLeft: '28px' }}
                       />
                     ) : null}
@@ -1037,9 +1085,14 @@ export function AskUserQuestionCard({
           <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0 || sending} style={{ minHeight: 44 }}>
             {t('askUserQuestion.back')}
           </Button>
+          {submitHeld ? (
+            <Text size="1" color="gray" role="status" data-testid="ask-card-held" style={{ flex: '1 1 12rem', minWidth: 0 }}>
+              {submitHeld}
+            </Text>
+          ) : null}
           <Flex gap="2" wrap="wrap">
             {total > 1 ? (
-              <Button type="button" variant="outline" color="gray" onClick={handleSkipAll} disabled={sending}>
+              <Button type="button" variant="outline" color="gray" onClick={handleSkipAll} disabled={sending || locked || held}>
                 {t('askUserQuestion.skipAll')}
               </Button>
             ) : null}
@@ -1048,7 +1101,7 @@ export function AskUserQuestionCard({
               variant="outline"
               color="gray"
               onClick={handleSkip}
-              disabled={sending}
+              disabled={sending || locked || (held && isLast)}
               style={{ minHeight: 44 }}
             >
               {t('askUserQuestion.skip')}
@@ -1057,7 +1110,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleContinue}
-                disabled={!stepValid || sending}
+                disabled={locked || !stepValid || sending}
                 style={{ minHeight: 44 }}
               >
                 {t('askUserQuestion.next')}
@@ -1066,7 +1119,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleSubmit}
-                disabled={!stepValid || sending}
+                disabled={locked || held || !stepValid || sending}
                 style={{ minHeight: 44 }}
               >
                 {t('askUserQuestion.submit')}

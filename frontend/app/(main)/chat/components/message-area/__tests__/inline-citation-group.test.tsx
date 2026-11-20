@@ -61,14 +61,35 @@ describe('InlineCitationGroup overflow', () => {
   });
 });
 
-describe('citation circle touch area', () => {
-  it('uses the circle-specific class, not the generic centred touch-hit', () => {
+describe('citation number hit area', () => {
+  it('gives each number its own named button with the pill hit area, not the 44px touch-hit', () => {
     const { container } = renderMarkers(2);
-    const circles = container.querySelectorAll('[aria-haspopup="dialog"] > span');
-    expect(circles.length).toBe(2);
-    circles.forEach((c) => {
-      expect(c.classList.contains('citation-number-circle')).toBe(true);
-      expect(c.classList.contains('touch-hit')).toBe(false);
+    const numbers = container.querySelectorAll('[aria-haspopup="dialog"]');
+    expect(numbers.length).toBe(2);
+    numbers.forEach((n, i) => {
+      expect(n.tagName).toBe('BUTTON');
+      expect(n.classList.contains('citation-pill')).toBe(true);
+      expect(n.classList.contains('touch-hit')).toBe(false);
+      expect(n.getAttribute('aria-label')).toContain(String(i + 1));
     });
+    expect(container.querySelector('a')).toBeNull();
+  });
+});
+
+describe('citation number chip', () => {
+  it('sets each number in a round 16px brand chip with a hairline edge, in a single pill and in a group', () => {
+    const single = renderMarkers(1).container;
+    const pill = single.querySelector('[data-citation-pill]') as HTMLElement;
+    expect(pill.style.paddingInline).toBe('var(--space-1)');
+    const chips = [pill.lastElementChild as HTMLElement];
+    cleanup();
+    chips.push(renderMarkers(2).container.querySelector('.citation-number-circle') as HTMLElement);
+    for (const chip of chips) {
+      expect(chip.textContent).toBe('1');
+      expect(chip.style.height).toBe('var(--space-4)');
+      expect(chip.style.borderRadius).toBe('var(--radius-thumb)');
+      expect(chip.style.border).toContain('var(--accent-a6)');
+      expect(chip.style.fontWeight).toBe('var(--font-weight-bold)');
+    }
   });
 });

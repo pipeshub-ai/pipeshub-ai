@@ -192,7 +192,7 @@ async function deleteFromSidebar(page: Page, conversationId: string): Promise<{ 
   // The row's menu button is drawn only while the row is hovered; the row's innermost container holds it.
   const item: Locator = page.locator('div, li').filter({ has: row }).last();
   await row.hover();
-  await item.getByRole('button', { name: 'More options' }).click();
+  await item.getByRole('button', { name: /^Actions for / }).click();
   await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByPlaceholder('DELETE').fill('DELETE');

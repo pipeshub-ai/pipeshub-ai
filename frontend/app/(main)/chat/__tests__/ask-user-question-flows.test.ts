@@ -360,14 +360,13 @@ describe('an agent that asks many questions in a row', () => {
     expect(questionNumbers(loaded)).toEqual(everyNumber);
   });
 
-  it('leaves only the last one open when the others were answered', () => {
+  it('leaves only the last one open, asking only that question, with the others answered on the row', () => {
     const loaded = conversation({ answered: COUNT - 1 });
 
     expect(loaded.unansweredAskUserQuestion?.assistantMessageId).toBe('b1');
-    expect(Object.keys(loaded.unansweredAskUserQuestion?.answers ?? {})).toEqual(
-      everyNumber.slice(0, -1).map((i) => `q${i}`),
-    );
-    expect(loaded.unansweredAskUserQuestion?.payload.questions).toHaveLength(COUNT);
+    expect(loaded.unansweredAskUserQuestion?.payload.questions.map((q) => q.uuid)).toEqual([`q${COUNT}`]);
+    expect(loaded.unansweredAskUserQuestion?.answers).toEqual({});
+    expect(Object.keys(answersOn(loaded, 'b1'))).toEqual(everyNumber.slice(0, -1).map((i) => `q${i}`));
   });
 
   it('closes the whole card once the last one is answered and the agent replies', () => {
@@ -393,9 +392,10 @@ describe('an agent that asks many questions in a row', () => {
     const commaAt = [5, 9];
     const loaded = conversation({ answered: COUNT - 1, commaAt });
 
-    const answers = loaded.unansweredAskUserQuestion?.answers ?? {};
+    const answers = answersOn(loaded, 'b1');
     expect(Object.values(answers).every((a) => a.selectedOptionIds.length === 1)).toBe(true);
     expect(Object.keys(answers)).toHaveLength(COUNT - 1);
+    expect(loaded.unansweredAskUserQuestion?.payload.questions).toHaveLength(1);
   });
 
   it('keeps skipped questions answered among the others', () => {
@@ -926,7 +926,7 @@ describe('joining an older page onto a loaded thread', () => {
 
       expect(result?.assistantMessageId).toBe(open.assistantMessageId);
       expect(result?.status).toBe('pending');
-      expect(Object.keys(result?.answers ?? {})).toEqual(['q-region', 'q-format']);
+      expect(Object.keys(result?.answers ?? {})).toEqual(['q-format']);
     });
 
     it('lets a picked answer win over the saved one for the same question', () => {
@@ -1034,7 +1034,7 @@ describe('a long run of rounds where each submit sends only its own answers', ()
     }
   });
 
-  it('marks everything answered so far as already sent when a card reopens', () => {
+  it('opens a new round on its own questions, the earlier answers kept on the row', () => {
     const { rows } = play({ rounds: 5 });
     const reopened = loadHistoricalMessages([
       ...rows.slice(0, -1),
@@ -1042,18 +1042,18 @@ describe('a long run of rounds where each submit sends only its own answers', ()
       bot('b6'),
     ]);
 
-    expect(Object.keys(reopened.unansweredAskUserQuestion?.sentAnswers ?? {})).toHaveLength(5 * PER_ROUND);
-    expect(Object.keys(reopened.unansweredAskUserQuestion?.answers ?? {})).toHaveLength(5 * PER_ROUND);
+    expect(reopened.unansweredAskUserQuestion?.payload.questions.map((q) => q.uuid)).toEqual(ids(6).map((n) => `q${n}`));
+    expect(reopened.unansweredAskUserQuestion?.answers).toEqual({});
+    expect(reopened.unansweredAskUserQuestion?.sentAnswers).toBeUndefined();
+    expect(Object.keys(answersOn(reopened, 'b1'))).toHaveLength(5 * PER_ROUND);
   });
 
-  it('carries a changed old answer in the round that changed it, and reloads to it', () => {
+  it('never lets a later round answer an earlier round again: its card names only its own questions', () => {
     const { sentTexts, loaded } = play({ rounds: 8, change: { atRound: 6, question: 1, optionIndex: 1 } });
 
-    expect(countLines(sentTexts[5])).toBe(PER_ROUND + 1);
-    expect(sentTexts[5]).toContain('"Random question number 1?" → Beta');
-    expect(sentTexts[4]).not.toContain('number 1?');
-    expect(answersOn(loaded, 'b1').q1.selectedOptionIds).toEqual(['q1-o1']);
-    expect(answersOn(loaded, 'b1').q2.selectedOptionIds).toEqual(['q2-o0']);
+    expect(countLines(sentTexts[5])).toBe(PER_ROUND);
+    expect(sentTexts[5]).not.toContain('number 1?');
+    expect(answersOn(loaded, 'b1').q1.selectedOptionIds).toEqual(['q1-o0']);
     expect(Object.keys(answersOn(loaded, 'b1'))).toHaveLength(8 * PER_ROUND);
   });
 
@@ -1084,5 +1084,99 @@ describe('a long run of rounds where each submit sends only its own answers', ()
 
     expect(Object.keys(answersOn(loaded, 'b1'))).toHaveLength(ROUNDS * PER_ROUND);
     expect(loaded.unansweredAskUserQuestion).toBeNull();
+  });
+});
+describe('a turn whose runs asked two cards, as its one box draws it', () => {
+  const ROW_TIME = '2026-09-18T00:00:00.000Z';
+  const askPart = (id: string, status: 'completed' | 'blocked' | 'failed' = 'completed') => ({
+    type: 'tool_call' as const, toolCallId: id, toolName: 'internaltools__ask_user_question', status,
+  });
+  const text = (content: string) => ({ type: 'text' as const, content });
+  const tool = (id: string) => ({ type: 'tool_call' as const, toolCallId: id, toolName: 'knowledgegraph__search', status: 'completed' as const });
+  const botWith = (id: string, parts: object[], content = '') =>
+    message({ _id: id, messageType: 'bot_response', content, parts, createdAt: ROW_TIME } as Partial<ConversationMessage>);
+  const docs = { ...card(ask('q-docs', 'How would you like to provide the documents?', ['Upload files', 'Give a source name'])), userIntent: 'I could not open any documents.' };
+  const source = {
+    ...card(ask('q-source', 'How can you provide the documents?', [{ id: 'name', label: 'Enter source name', isUserInput: true }, 'Upload files'])),
+    userIntent: 'I could not find the collection.',
+  };
+  const run1 = botWith('b1', [text('Listing the collection.'), tool('nav'), askPart('ask-1')]);
+  const run2 = botWith('b2', [askPart('ask-refused', 'blocked'), text('Checking the sources once more.'), tool('find'), askPart('ask-failed', 'failed'), askPart('ask-2')]);
+  const run3 = botWith('b3', [tool('list'), { type: 'text', content: 'No documents were listed.', isFinal: true }], 'No documents were listed.');
+  const turn = [
+    user('u1', 'summarize all documents'), savedCard('t1', docs), run1,
+    answerQuery('s1', '"How would you like to provide the documents?" → Give a source name'),
+    savedCard('t2', source), run2,
+    answerQuery('s2', '"How can you provide the documents?" → give whatever child files'),
+    run3,
+  ];
+  type Part = { toolCallId?: string; content?: string; toolName?: string; question?: { payload: { userIntent?: string; repliedInChat?: boolean; questions: Array<{ uuid: string }> }; answers: Record<string, { selectedOptionIds: string[]; userInputs: Record<string, string> }> } };
+  const partsOf = (loaded: Loaded) => custom(loaded, 'b1').persistedParts as Part[];
+  const asks = (loaded: Loaded) => partsOf(loaded).filter((p) => p.toolName?.includes('ask_user_question'));
+
+  it('keeps every run\'s steps on the row, in the order they ran, every ask among them', () => {
+    const loaded = loadHistoricalMessages(turn);
+
+    expect(shape(loaded)).toEqual([['user', 'u1'], ['assistant', 'b1']]);
+    expect(partsOf(loaded).map((p) => p.toolCallId ?? p.content)).toEqual([
+      'Listing the collection.', 'nav', 'ask-1',
+      'ask-refused', 'Checking the sources once more.', 'find', 'ask-failed', 'ask-2',
+      'list', 'No documents were listed.',
+    ]);
+  });
+
+  it('puts each card, with its own explanation and its own answer, on the call that showed it', () => {
+    const [first, refused, failed, second] = asks(loadHistoricalMessages(turn));
+
+    expect(first.question.payload.userIntent).toBe('I could not open any documents.');
+    expect(first.question?.payload.questions.map((q) => q.uuid)).toEqual(['q-docs']);
+    expect(first.question.answers['q-docs'].selectedOptionIds).toEqual(['q-docs-o1']);
+    expect(second.question.payload.userIntent).toBe('I could not find the collection.');
+    expect(second.question.answers['q-source'].userInputs.__something_else__).toBe('give whatever child files');
+    expect(refused.question).toBeUndefined();
+    expect(failed.question).toBeUndefined();
+  });
+
+  it('asks only the second card while it waits, with the first one answered in the box', () => {
+    const loaded = loadHistoricalMessages(turn.slice(0, 6));
+
+    expect(loaded.unansweredAskUserQuestion?.payload.questions.map((q) => q.uuid)).toEqual(['q-source']);
+    expect(loaded.unansweredAskUserQuestion?.payload.userIntent).toBe('I could not find the collection.');
+    expect(loaded.unansweredAskUserQuestion?.answers).toEqual({});
+    expect(asks(loaded)[0].question.answers['q-docs'].selectedOptionIds).toEqual(['q-docs-o1']);
+    expect(asks(loaded)[3].question).toBeUndefined();
+  });
+
+  it('records a skipped question as skipped', () => {
+    const loaded = loadHistoricalMessages([...turn.slice(0, 6), answerQuery('s2', '"How can you provide the documents?" → [No preference]'), run3]);
+
+    expect(asks(loaded)[3].question.answers['q-source'].selectedOptionIds).toEqual([SKIPPED]);
+  });
+
+  it('records a card closed by a typed reply as replied to in the chat', () => {
+    const loaded = loadHistoricalMessages([...turn.slice(0, 6), user('u2', 'never mind'), bot('b4', 'Okay.')]);
+
+    expect(asks(loaded)[3].question.payload.repliedInChat).toBe(true);
+    expect(loaded.unansweredAskUserQuestion).toBeNull();
+  });
+
+  it('counts an answer the server is still running as answered: no second Submit after a reload mid-run', () => {
+    const midRun = turn.slice(0, 4);
+
+    const reloaded = loadHistoricalMessages(
+      [...midRun.slice(0, 2), botWith('b1', [text('Listing the collection.'), tool('nav'), askPart('ask-1')], 'I could not find any documents.'), midRun[3]],
+      { runInProgress: true },
+    );
+    expect(reloaded.unansweredAskUserQuestion).toBeNull();
+    // The text the first run saved on the row is not the reply the server is writing now.
+    expect(textOf(reloaded, 'b1')).toBe('');
+    expect(asks(reloaded)[0].question.answers['q-docs'].selectedOptionIds).toEqual(['q-docs-o1']);
+    expect(custom(reloaded, 'b1').resumesOnServer).toBe(true);
+
+    // With no run going, an answer that got no reply can be sent again.
+    const stalled = loadHistoricalMessages(midRun);
+    expect(stalled.unansweredAskUserQuestion?.payload.questions.map((q) => q.uuid)).toEqual(['q-docs']);
+    expect(asks(stalled)[0].question).toBeUndefined();
+    expect(custom(stalled, 'b1').resumesOnServer).toBeUndefined();
   });
 });

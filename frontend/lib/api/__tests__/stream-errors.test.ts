@@ -82,3 +82,56 @@ describe('streamFailure', () => {
     expect(streamFailure(own, false)).toBe(own);
   });
 });
+
+describe('streamHttpError status branches (characterization)', () => {
+  const M = STREAM_ERROR_MESSAGES;
+  const cases: Array<[string, number, unknown, string, Record<string, string>?]> = [
+    ['401 session expired', 401, { error: { message: 'Token bad' } }, M.sessionExpired],
+    ['429 busy no header', 429, {}, 'PipesHub is busy right now. Please try again in a few seconds.'],
+    ['503 busy with Retry-After', 503, {}, 'PipesHub is busy right now. Please try again in 7 seconds.', { 'Retry-After': '7' }],
+    ['504 busy', 504, { message: 'upstream' }, 'PipesHub is busy right now. Please try again in a few seconds.'],
+    ['400 readable server message', 400, { message: 'Attachment is too large.' }, 'Attachment is too large.'],
+    ['409 readable server message', 409, { error: { code: 'X', message: 'Busy, try later.' } }, 'Busy, try later.'],
+    ['403 technical text -> forbidden', 403, { detail: "KeyError: 'orgId'" }, M.forbidden],
+    ['403 no body -> forbidden', 403, {}, M.forbidden],
+    ['404 no body -> unavailable', 404, {}, M.unavailable],
+    ['500 readable text is not shown', 500, { message: 'Something readable' }, M.unavailable],
+    ['502 -> unavailable', 502, {}, M.unavailable],
+  ];
+
+  it.each(cases)('%s', async (_name, status, body, message, headers) => {
+    const err = await streamHttpError(jsonResponse(status, body, headers));
+    expect(err).toBeInstanceOf(StreamError);
+    expect(err.message).toBe(message);
+    expect(err.status).toBe(status);
+  });
+
+  it('streamFailure builds an error without a status', () => {
+    expect(streamFailure(new TypeError('x'), false).status).toBeUndefined();
+  });
+});
+
+describe('streamHttpError code and details', () => {
+  it('carries code and details from a structured body on any branch', async () => {
+    const body = { error: { code: 'CONVERSATION_BUSY', message: 'Busy', details: { x: 1 } } };
+    for (const status of [401, 403, 409, 429, 500]) {
+      const err = await streamHttpError(jsonResponse(status, body));
+      expect(err.code).toBe('CONVERSATION_BUSY');
+      expect(err.details).toEqual({ x: 1 });
+    }
+  });
+
+  it('prefers top-level details', async () => {
+    const err = await streamHttpError(jsonResponse(409, { details: { t: 1 }, error: { code: 'C', details: { n: 1 } } }));
+    expect(err.details).toEqual({ t: 1 });
+  });
+
+  it('leaves code undefined for an HTML or string-error body', async () => {
+    const html = await streamHttpError(new Response('<html></html>', { status: 502 }));
+    expect(html.code).toBeUndefined();
+    expect(html.details).toBeUndefined();
+    const str = await streamHttpError(jsonResponse(400, { error: 'plain' }));
+    expect(str.code).toBeUndefined();
+    expect(str.message).toBe('plain');
+  });
+});

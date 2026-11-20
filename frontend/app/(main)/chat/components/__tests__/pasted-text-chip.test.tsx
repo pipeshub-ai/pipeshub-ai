@@ -9,6 +9,7 @@ import type { UploadedFile } from '../../types';
 // `defaultValue` so assertions don't depend on locale resource files, applying
 // the same plural selection and {{var}} interpolation i18next would.
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => {} },
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
       if (!opts) return key;
@@ -44,7 +45,6 @@ function makeFile(overrides: Partial<UploadedFile> = {}): UploadedFile {
 
 function renderChip(fileOverrides: Partial<UploadedFile> = {}, handlers: Partial<{
   onPreview: () => void;
-  onShowInTextField: () => void;
   onRemove: () => void;
   onRetry: () => void;
 }> = {}) {
@@ -52,7 +52,6 @@ function renderChip(fileOverrides: Partial<UploadedFile> = {}, handlers: Partial
   const props = {
     file,
     onPreview: vi.fn(),
-    onShowInTextField: vi.fn(),
     onRemove: vi.fn(),
     onRetry: vi.fn(),
     ...handlers,
@@ -61,27 +60,32 @@ function renderChip(fileOverrides: Partial<UploadedFile> = {}, handlers: Partial
   return { ...utils, props, file };
 }
 
+const chip = () => screen.getByRole('button', { name: /^Pasted text,/ }) as HTMLButtonElement;
+
 describe('PastedTextChip', () => {
-  it('renders the "Pasted text" label and excerpt', () => {
+  it('is one 28px chip: the "Pasted text" label and its size, lines first, with no excerpt', () => {
     renderChip();
     expect(screen.getByText('Pasted text')).toBeTruthy();
-    expect(screen.getByText('First line of the pasted content')).toBeTruthy();
-  });
-
-  it('renders the char/line count meta label when uploaded', () => {
-    renderChip();
-    expect(screen.getByText('1.2k chars · 42 lines')).toBeTruthy();
+    expect(screen.getByText('42 lines · 1.2k chars')).toBeTruthy();
+    expect(screen.queryByText('First line of the pasted content')).toBeNull();
+    expect(chip().style.height).toBe('calc(var(--space-5) + var(--space-1))');
+    expect(chip().style.border).not.toContain('dashed');
   });
 
   it('uses the singular form for a one-line paste', () => {
     renderChip({ pasteCharCount: 50, pasteLineCount: 1 });
-    expect(screen.getByText('50 chars · 1 line')).toBeTruthy();
+    expect(screen.getByText('1 line · 50 chars')).toBeTruthy();
   });
 
-  it('shows a spinner and no remove button while uploading', () => {
+  it('is named for what it is and what it does', () => {
+    renderChip();
+    expect(chip().getAttribute('aria-label')).toBe('Pasted text, 42 lines · 1.2k chars. Open to read.');
+  });
+
+  it('shows a spinner while uploading, and can still be removed', () => {
     renderChip({ status: 'uploading' });
-    expect(screen.queryByRole('button', { name: /remove pasted text/i })).toBeNull();
     expect(screen.getByRole('status')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /remove pasted text/i })).toBeTruthy();
   });
 
   it('shows the error message and a retry button on error', () => {
@@ -90,45 +94,54 @@ describe('PastedTextChip', () => {
     expect(screen.getByRole('button', { name: /retry upload/i })).toBeTruthy();
   });
 
+  it('gives the retry button a 24px box', () => {
+    renderChip({ status: 'error', errorMessage: 'oops' });
+    const retry = screen.getByRole('button', { name: /retry upload/i });
+    expect(retry.style.width).toBe('var(--space-5)');
+    expect(retry.style.height).toBe('var(--space-5)');
+    expect(retry.className).toContain('touch-hit');
+  });
+
   it('calls onRetry when the retry button is clicked', () => {
     const { props } = renderChip({ status: 'error', errorMessage: 'oops' });
     fireEvent.click(screen.getByRole('button', { name: /retry upload/i }));
     expect(props.onRetry).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onRemove when the remove button is clicked', () => {
+  it('calls onRemove from the corner remove button, which is always in the DOM', () => {
     const { props } = renderChip();
-    fireEvent.click(screen.getByRole('button', { name: /remove pasted text/i }));
+    const remove = screen.getByRole('button', { name: /remove pasted text/i });
+    fireEvent.click(remove);
     expect(props.onRemove).toHaveBeenCalledTimes(1);
+    expect(props.onPreview).not.toHaveBeenCalled();
   });
 
-  it('calls onPreview when the excerpt area is clicked (uploaded)', () => {
+  it('shows the remove button while the chip has keyboard focus', () => {
+    renderChip();
+    const remove = screen.getByRole('button', { name: /remove pasted text/i });
+    expect(remove.style.opacity).toBe('0');
+    fireEvent.focus(chip());
+    expect(remove.style.opacity).toBe('1');
+  });
+
+  it('opens the reader on click', () => {
     const { props } = renderChip();
-    fireEvent.click(screen.getByText('First line of the pasted content'));
+    fireEvent.click(chip());
     expect(props.onPreview).toHaveBeenCalledTimes(1);
   });
 
-  it('shows "Show in text field" only once uploaded, and calls the handler on click', () => {
-    const { props } = renderChip({ status: 'uploaded' });
-    const action = screen.getByRole('button', { name: /show in text field/i });
-    fireEvent.click(action);
-    expect(props.onShowInTextField).toHaveBeenCalledTimes(1);
-  });
-
-  it('exposes the excerpt area as a focusable button, disabled on error', () => {
+  it('is a focusable button, disabled on error', () => {
     renderChip();
-    const preview = screen.getByText('First line of the pasted content').closest('button');
-    expect(preview).not.toBeNull();
-    preview!.focus();
-    expect(document.activeElement).toBe(preview);
+    chip().focus();
+    expect(document.activeElement).toBe(chip());
 
     cleanup();
     renderChip({ status: 'error', errorMessage: 'Upload failed' });
-    expect(screen.getByText('First line of the pasted content').closest('button')!.disabled).toBe(true);
+    expect(chip().disabled).toBe(true);
   });
 
-  it('does not show "Show in text field" while uploading', () => {
-    renderChip({ status: 'uploading' });
+  it('has no "Show in text field" action: that lives in the reader', () => {
+    renderChip({ status: 'uploaded' });
     expect(screen.queryByRole('button', { name: /show in text field/i })).toBeNull();
   });
 });

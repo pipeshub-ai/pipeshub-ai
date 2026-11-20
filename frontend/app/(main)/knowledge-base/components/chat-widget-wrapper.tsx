@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useCallback } from 'react';
+import { useMemo, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter, usePathname } from 'next/navigation';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -9,8 +9,12 @@ import { useKnowledgeBaseStore } from '../store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import type { PendingChatContext } from '@/lib/store/pending-chat-store';
 import { ChatApi } from '@/chat/api';
+import { ASSISTANT_CTX } from '@/chat/store';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import { useNewChatComposerScope } from '@/chat/hooks/use-new-chat-composer-scope';
 import type { AttachmentRef } from '@/chat/types';
-import type { MentionNode } from '@/chat/utils/node-mentions';
+import type { ComposerSendExtra } from '@/chat/chat-extension';
+import { locateMentionNames, type MentionNode } from '@/chat/utils/node-mentions';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { toast } from '@/lib/store/toast-store';
 import { filterBarChatScope } from '../utils/filter-bar-chat-scope';
@@ -54,6 +58,13 @@ export function ChatWidgetWrapper({
   const pathname = usePathname();
   const { t } = useTranslation();
   const maxTitleChars = useIsMobile() ? MAX_PLACEHOLDER_TITLE_CHARS_MOBILE : MAX_PLACEHOLDER_TITLE_CHARS;
+  useNewChatComposerScope(null);
+
+  // The chat page loads the configured models when it opens; so does this composer, or its model chip would read
+  // "AI models" until its panel was opened. Cached and shared with the chat page. A failure shows in the panel.
+  useEffect(() => {
+    fetchModelsForContext(ASSISTANT_CTX).catch(() => {});
+  }, []);
 
   // Read selected items from KB store
   const selectedItems = useKnowledgeBaseStore((s) => s.selectedItems);
@@ -101,7 +112,7 @@ export function ChatWidgetWrapper({
   }, []);
 
   const handleSend = useCallback(
-    async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
+    async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[], extra?: ComposerSendExtra) => {
       if (!message.trim() && (!attachments || attachments.length === 0)) return false;
 
       // @ mentions, then the open node, then the open collection, then the filter bar,
@@ -147,9 +158,13 @@ export function ChatWidgetWrapper({
       const selectedRecordIds =
         selectedSet.size > 0 ? Array.from(selectedSet) : undefined;
 
+      // Of the nodes sent, those the text names are its chips; the rest were ticked in the menu.
+      const named = locateMentionNames(message, mentioned).map((span) => span.node);
       const context: PendingChatContext = {
         message,
         attachments,
+        extra,
+        ...(named.length > 0 ? { mentions: named } : {}),
         pageContext: {
           collections: collections.length > 0 ? collections : undefined,
           selectedNodes,
@@ -170,6 +185,7 @@ export function ChatWidgetWrapper({
     <ChatInput
       variant="widget"
       expandable
+      startsNewChat
       placeholder={expandedPlaceholder}
       widgetPlaceholder={widgetPlaceholder}
       onSend={handleSend}

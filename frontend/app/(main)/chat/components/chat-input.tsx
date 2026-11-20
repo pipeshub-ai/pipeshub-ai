@@ -6,7 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useComposerResizeAnimation } from '../hooks/use-composer-resize-animation';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { Spinner } from '@/app/components/ui/spinner';
-import { Flex, Box, Text, IconButton, Tooltip, Popover, VisuallyHidden } from '@radix-ui/themes';
+import { Flex, Box, Text, Button, IconButton, Tooltip, Popover, VisuallyHidden } from '@radix-ui/themes';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { ChatInputExpansionPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-expansion-panel';
@@ -20,9 +20,15 @@ import { formatQuotedSelection, parseQuotedSelection } from '@/chat/utils/quoted
 import {
   ModelSelectorPanel,
   getAppliedReasoningEffortLabel,
+  getReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
-import { SelectedCollections } from '@/chat/components/selected-collections';
-import { useCompareAvailable } from '@/chat/compare/components/compare-picker-toggle';
+import {
+  SelectedCollections,
+  useCoarsePointer,
+} from '@/chat/components/selected-collections';
+import {
+  useCompareAvailable,
+} from '@/chat/compare/components/compare-picker-toggle';
 import { useCompareStore } from '@/chat/compare/compare-store';
 import { MAX_COMPARE_MODELS } from '@/chat/compare/types';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -36,9 +42,15 @@ import {
   hasNonDefaultSearchCapabilities,
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
-import { WebSearchSetupDialog } from '@/chat/components/chat-panel/web-search-setup-dialog';
+import {
+  WebSearchSetupDialog,
+} from '@/chat/components/chat-panel/web-search-setup-dialog';
 import { useWebSearchConfigured } from '@/chat/hooks/use-web-search-configured';
-import { getQueryModeConfig } from '@/chat/constants';
+import {
+  getQueryModeConfig,
+  PROVIDER_FRIENDLY_NAMES,
+  humanizeProviderKey,
+} from '@/chat/constants';
 import {
   useChatStore,
   ctxKeyFromAgent,
@@ -82,6 +94,7 @@ import { selectIsAdmin, useUserStore } from '@/lib/store/user-store';
 import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
 import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
+import { isRemoteRunStoppable } from '@/chat/utils/remote-run';
 import { useTranslation } from 'react-i18next';
 import { chatHarnessField, conversationHarness, harnessSwitchLock, harnessSwitchOn } from '@/chat/assistant-harness';
 import { agentGateLocks, useRunGatesStore } from '@/chat/run-gates';
@@ -107,6 +120,10 @@ import { useRepositoryStore } from '@/chat/repository-store';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
 import { PastedSecretDialog, PERSONAL_CREDENTIALS_PATH } from '@/chat/components/pasted-secret-dialog';
 import { findPastedSecrets, redactPastedSecrets } from '@/chat/pasted-secrets';
+import { chatSlots } from '@/config';
+import { fetchOrgWithLogo } from '@/chat/api';
+import type { ComposerSendExtra } from '../chat-extension';
+import type { ComposerInputHandle } from './composer/composer-input.types';
 import {
   isLargePaste,
   createPastedTextFile,
@@ -121,16 +138,24 @@ import type {
   AppliedFilters,
   AttachmentRef,
 } from '@/chat/types';
-import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, buildAssistantApiFilters } from '@/chat/types';
-import type { ChatKnowledgeFilters } from '@/chat/types';
-import { MentionComposerField, type MentionParent } from '@/chat/components/mention-composer-field';
+import {
+  CHAT_ATTACHMENT_MAX_BYTES,
+  CHAT_ATTACHMENT_MAX_FILES,
+  DEFAULT_REASONING_EFFORT,
+  buildAssistantApiFilters,
+} from '@/chat/types';
+import type { ChatKnowledgeFilters, ChatSlot } from '@/chat/types';
+import { type MentionParent } from '@/chat/components/mention-composer-field';
+import type { ComposerMentionContext } from '@/chat/components/composer/composer-input.types';
+import { MENTION_SOURCES_MAX, sourcesOverCap } from '@/chat/utils/mention-groups';
+import { useQueuedSendComposer } from '@/chat/hooks/use-queued-send-composer';
 import { useSelectionPlaces } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/knowledge-tree';
 import {
   mentionMeta,
-  mergeMentionFilters,
   retainedMentions,
   stripMentionPads,
   unembedMention,
+  withSourceChips,
   type MentionNode,
 } from '@/chat/utils/node-mentions';
 import {
@@ -170,6 +195,28 @@ function chipForStoredFile(ref: AttachmentRef): UploadedFile {
 const sameFiles = (a: AttachmentRef[], b: AttachmentRef[]): boolean =>
   a.length === b.length && a.every((file) => b.some((other) => other.recordId === file.recordId));
 
+/** A past answer's scope in the form the stream request takes. */
+const appliedFiltersToApi = (af: AppliedFilters | undefined) =>
+  af
+    ? buildAssistantApiFilters({
+        apps: af.apps.map((a) => a.id),
+        kb: af.kb.map((k) => k.id),
+        recordGroups: (af.recordGroups ?? []).map((g) => g.id),
+        records: (af.records ?? []).map((r) => r.id),
+        recordsExact: (af.recordsExact ?? []).map((r) => r.id),
+      })
+    : undefined;
+
+/** Whether the reply holds a question card, whose answers Regenerate lets a person change before the re-run. */
+function replyHoldsQuestionCard(slot: Pick<ChatSlot, 'messages' | 'pendingAskUserQuestion'>, messageId: string): boolean {
+  if (slot.pendingAskUserQuestion?.assistantMessageId === messageId) return true;
+  return slot.messages.some((m) => {
+    if (m.role !== 'assistant') return false;
+    const custom = m.metadata?.custom as { messageId?: string; persistedAskUserQuestion?: unknown } | undefined;
+    return (m.id === messageId || custom?.messageId === messageId) && Boolean(custom?.persistedAskUserQuestion);
+  });
+}
+
 interface ChatInputProps {
   /**
    * Called when the user submits. `attachments` only contains the
@@ -181,6 +228,7 @@ interface ChatInputProps {
     message: string,
     attachments?: AttachmentRef[],
     mentions?: MentionNode[],
+    extra?: ComposerSendExtra,
   ) => void | boolean | Promise<void | boolean>;
   /** `@` searches node names under this parent. Omitted, search is global. */
   mentionParent?: MentionParent | null;
@@ -217,7 +265,24 @@ interface ChatInputProps {
   prefill?: { text: string; key: number } | null;
   /** Keep unsent text per conversation across reloads and navigation (main chat only). */
   persistDraft?: boolean;
+  /**
+   * The box is outside the chat page and its send starts a new chat there (a collection's widget, a project's
+   * workspace). It is not the box of the chat left open on the chat page: it never takes that chat's kept or
+   * given-back text, and never keeps its own text on that chat.
+   */
+  startsNewChat?: boolean;
+  /** Send stays (no Stop in its place) and submits go through while the chat's answer streams. */
+  sendDuringRun?: boolean;
+  /** While the chat's answer streams, a send joins the chat's queue: Send shows once the box holds something, Stop otherwise. */
+  queueDuringRun?: boolean;
+  /**
+   * With no `placeholder` given, a chat without an agent reads "Ask or search anything on <workspace>...", and
+   * "Ask about the pasted content..." while a paste waits in an empty box. Only the main chat sets it.
+   */
+  useWorkspacePlaceholder?: boolean;
 }
+
+type PasteIntent = { kind: 'files'; files: File[] } | { kind: 'text'; text: string };
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -237,19 +302,12 @@ interface SpeechInputButtonProps {
   style?: React.CSSProperties;
 }
 
+/** The stop square: an 8px outlined frame, drawn in the button's text colour. */
 function StopMark() {
   return (
-    <span
-      aria-hidden
-      style={{
-        width: 8,
-        height: 8,
-        boxSizing: 'border-box',
-        border: '1.5px solid currentColor',
-        borderRadius: 1,
-        display: 'block',
-      }}
-    />
+    <svg width={8} height={8} viewBox="0 0 8 8" aria-hidden="true" style={{ display: 'block' }}>
+      <path d="M6.66667 1.33333V6.66667H1.33333V1.33333H6.66667ZM8 0H0V8H8V0Z" fill="currentColor" />
+    </svg>
   );
 }
 
@@ -295,7 +353,8 @@ function SpeechInputButton({
           name="mic"
           size={16}
           color={
-            isDisabled ? 'var(--slate-9)' : isListening ? 'var(--red-11)' : activeIconColor
+            // Disabled, the glyph takes Radix's disabled colour from the button.
+            isDisabled ? undefined : isListening ? 'var(--red-11)' : activeIconColor
           }
         />
       </IconButton>
@@ -315,7 +374,11 @@ export function ChatInput({
   agentId,
   prefill,
   persistDraft = false,
+  startsNewChat = false,
   mentionParent,
+  sendDuringRun = false,
+  queueDuringRun = false,
+  useWorkspacePlaceholder = false,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -324,6 +387,8 @@ export function ChatInput({
   const [secretFound, setSecretFound] = useState(false);
   const [sendWithoutSecret, setSendWithoutSecret] = useState(false);
   const secretCleared = useRef(false);
+  const messageRef = useRef(message);
+  messageRef.current = message;
   const [mentions, setMentions] = useState<MentionNode[]>([]);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -336,8 +401,6 @@ export function ChatInput({
   /** Agent chat: Connectors / Collections / Actions (Figma agent input). */
   const [isAgentResourcesPanelOpen, setIsAgentResourcesPanelOpen] = useState(false);
   const [isModelPanelOpen, setIsModelPanelOpen] = useState(false);
-  const [isModelButtonHovered, setIsModelButtonHovered] = useState(false);
-  const [isAddFileButtonHovered, setIsAddFileButtonHovered] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
   /** "+" menu — Attach files & Internal Search / Web Search capability toggles. */
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
@@ -350,6 +413,9 @@ export function ChatInput({
   const [isCompactMenuOpen, setIsCompactMenuOpen] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const isMobile = useIsMobile();
+  // 44 px targets are for fingers: a narrow window driven by a mouse keeps the 32 px controls and the 94 px shell.
+  const coarse = useCoarsePointer();
+  const touch = isMobile && coarse;
   // ── Message action state (local — NOT in Zustand store) ──
   const [activeMessageAction, setActiveMessageAction] = useState<ActiveMessageAction>(null);
   const [quotedExcerpt, setQuotedExcerpt] = useState<string | null>(null);
@@ -389,7 +455,9 @@ export function ChatInput({
   });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerInputHandle>(null);
+  /** The box around the field and its /command menu: a click there keeps the menu open. */
+  const composerBoxRef = useRef<HTMLDivElement>(null);
   const chipsScrollRef = useRef<HTMLDivElement>(null);
 
   // `prefill` seeds the composer from an external suggestion chip. Keyed by
@@ -400,17 +468,21 @@ export function ChatInput({
     if (!prefill || prefill.key === lastPrefillKeyRef.current) return;
     lastPrefillKeyRef.current = prefill.key;
     setMessage(prefill.text);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, [prefill]);
 
+  // Updated only when the kept list differs: a call on every keystroke queues a render per key even when it keeps the
+  // list, and fast input (a paste, dictation) then trips React's nested-update limit. It runs on text changes alone,
+  // since two chips of one label can swap owners on each pass, and the updater keeps a chip added in the same batch.
+  const mentionsRef = useRef(mentions);
+  mentionsRef.current = mentions;
   useEffect(() => {
-    setMentions((prev) => {
-      const next = retainedMentions(message, prev);
-      if (next.length === prev.length && next.every((node, index) => node.id === prev[index]?.id)) {
-        return prev;
-      }
-      return next;
-    });
+    const kept = (list: MentionNode[]) => {
+      const next = retainedMentions(message, list);
+      return next.length === list.length && next.every((node, index) => node.id === list[index]?.id) ? list : next;
+    };
+    if (kept(mentionsRef.current) === mentionsRef.current) return;
+    setMentions(kept);
   }, [message]);
   const hasFileChips = uploadedFiles.length > 0;
   const { start: canScrollLeft, end: canScrollRight } = useScrollEdges(chipsScrollRef, hasFileChips);
@@ -439,7 +511,27 @@ export function ChatInput({
     if (!slot || slotWaitingCount(slot) === 0) return null;
     return slot.isStreaming ? 'interaction.composerWaiting' : 'interaction.composerQuestion';
   });
-  const resolvedPlaceholder = placeholder ?? (waitingForYou ? t(waitingForYou) : t('chat.askAnything'));
+  // The workspace's name, from the org request the sidebar already made (memoised: no second request).
+  const [workspaceName, setWorkspaceName] = useState<string | null>(null);
+  const wantsWorkspaceName = useWorkspacePlaceholder && placeholder === undefined && !isAgentChat;
+  useEffect(() => {
+    if (!wantsWorkspaceName) return;
+    let cancelled = false;
+    void fetchOrgWithLogo().then(({ org }) => {
+      const name = org?.shortName?.trim() || org?.registeredName?.trim() || null;
+      if (!cancelled) setWorkspaceName(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [wantsWorkspaceName]);
+  const resolvedPlaceholder =
+    placeholder ??
+    (waitingForYou
+      ? t(waitingForYou)
+      : wantsWorkspaceName && workspaceName
+        ? t('chat.askOrSearchWorkspace', { workspace: workspaceName })
+        : t('chat.askAnything'));
 
   const {
     isListening,
@@ -452,8 +544,10 @@ export function ChatInput({
     unavailableReason: speechUnavailableReason,
   } = useChatSpeechRecognition({
     lang: i18n.language,
-    onError: (error) => {
-      if (error === 'not-allowed') {
+    onError: (error, refusal) => {
+      if (refusal) {
+        toast.error(refusal);
+      } else if (error === 'not-allowed') {
         toast.error(t('chat.voiceError'));
       }
     },
@@ -527,9 +621,8 @@ export function ChatInput({
    */
   const usesScopedPanel = isAgentChat || (isProjectChat && settings.queryMode !== 'web-search');
 
-  // Shared capability wiring for the desktop "+" popover (PlusMenuButton) and
-  // the mobile "+" sheet (PlusMenuSheet) — kept in one place so the two
-  // surfaces can't drift. `isAgentChat` and `agentId` come from the same
+  // Capability wiring for the "+" menu (PlusMenuButton), the same menu at every
+  // width. `isAgentChat` and `agentId` come from the same
   // `effectiveAgentId` at the only real call site today, but `ChatInput`
   // still declares them as independent props, so a scoped chat without a
   // resolved `agentId` disables the toggles instead of silently no-op'ing.
@@ -609,7 +702,7 @@ export function ChatInput({
     agentHasWebSearch,
     webSearchNotSetUp,
   ]);
-  // Web search that is off only because nobody set it up is not a filter the user chose.
+
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
     plusMenuCapabilities.webSearch || webSearchNotSetUp,
@@ -654,6 +747,34 @@ export function ChatInput({
         modelDefault: getModelDefaultReasoningEffort(modelCtxKey, displayModel),
       })
     : null;
+  // The chip names the level the chat actually runs with ("High"), never "Default (High)".
+  const reasoningEffortLevelLabel = activeModelSupportsReasoning
+    ? getReasoningEffortLabel(
+        t,
+        reasoningEffortOverride ??
+          agentDefault ??
+          getModelDefaultReasoningEffort(modelCtxKey, displayModel) ??
+          DEFAULT_REASONING_EFFORT,
+      )
+    : null;
+  const modelProviderLabel = useMemo(() => {
+    const raw = displayModel?.modelProvider?.trim();
+    if (!raw) return null;
+    const key = Object.keys(PROVIDER_FRIENDLY_NAMES).find((k) => k.toLowerCase() === raw.toLowerCase());
+    return key ? PROVIDER_FRIENDLY_NAMES[key] : humanizeProviderKey(raw);
+  }, [displayModel?.modelProvider]);
+  const modelChipAriaLabel = !displayModel
+    ? t('chat.aiModelsTooltip')
+    : reasoningEffortLevelLabel
+      ? t('chat.modelChip.ariaLabel', { name: displayModelLabel, effort: reasoningEffortLevelLabel })
+      : t('chat.modelChip.ariaLabelNoEffort', { name: displayModelLabel });
+  const modelChipTooltip = !displayModel || !modelProviderLabel
+    ? displayModelLabel
+    : reasoningEffortLevelLabel
+      ? t('chat.modelChip.tooltip', { name: displayModelLabel, provider: modelProviderLabel, effort: reasoningEffortLevelLabel })
+      : t('chat.modelChip.tooltipNoEffort', { name: displayModelLabel, provider: modelProviderLabel });
+  const modelChipRef = useRef<HTMLButtonElement>(null);
+  const modelPanelId = `chat-model-panel-${React.useId().replace(/:/g, '')}`;
 
   // Expansion panel view mode (inline vs overlay) from store
   const expansionViewMode = useChatStore((s) => s.expansionViewMode);
@@ -661,6 +782,21 @@ export function ChatInput({
 
   // Active slot ID for regenerate/edit flows
   const activeSlotId = useChatStore((s) => s.activeSlotId);
+  // The chat whose text this box holds. The chat page's last open chat stays active after the page unmounts, until
+  // a box outside it has mounted, and that chat's unsent text is kept on it then: bound to it, such a box would
+  // show that text as its own.
+  const boxSlotId = startsNewChat ? null : activeSlotId;
+  const composerInput = chatSlots.useComposerInput({
+    composerRef,
+    message,
+    setMessage,
+    slotId: boxSlotId,
+    attachmentCount: uploadedFiles.filter((f) => f.status !== 'error').length,
+    files: { list: uploadedFiles, set: setUploadedFiles },
+  });
+  // A text given back fills only an empty box: a draft restored in the same commit (`useComposerDraft`) stays.
+  const fillEmptyComposer = useCallback((text: string) => setMessage((current) => current || text), []);
+  useQueuedSendComposer(boxSlotId, message, fillEmptyComposer);
 
   // Is the active slot currently streaming? The widget composer starts a new
   // chat, so a run left going on the chat page is not its run.
@@ -674,13 +810,25 @@ export function ChatInput({
   // True from the moment Stop is clicked until the run actually ends —
   // disables the stop button so a second click can't fire another cancel
   // POST / restart the grace timer (see `cancelStreamForSlot`).
-  const isStopping = useChatStore((s) =>
-    variant !== 'widget' && s.activeSlotId ? (s.slots[s.activeSlotId]?.stopping ?? false) : false
-  );
+  const isStopping = useChatStore((s) => {
+    const slot = variant !== 'widget' && s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    return Boolean(slot?.stopping || slot?.remoteStopRequested);
+  });
+  // A run that outlived a reload is still this person's to stop: its Stop needs the id the loaded question carries.
+  const remoteRunStoppable = useChatStore((s) => {
+    const slot = variant !== 'widget' && s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    return isRemoteRunStoppable(slot);
+  });
+  // The run holds the composer: Stop replaces Send and submits wait.
+  const runBusy = (isStreaming && !sendDuringRun) || remoteRunStoppable;
+
+  /** Whether keyboard focus sat on Stop, so it can land in the editor rather than the page if Stop goes away. */
+  const stopHadFocusRef = useRef(false);
 
   const handleStopStream = useCallback(() => {
     const sid = useChatStore.getState().activeSlotId;
-    if (!sid || useChatStore.getState().slots[sid]?.stopping) return;
+    const slot = sid ? useChatStore.getState().slots[sid] : undefined;
+    if (!sid || slot?.stopping || slot?.remoteStopRequested) return;
     cancelStreamForSlot(sid);
     toast.info(t('chat.toasts.stopStreamTitle'), {
       description: t('chat.toasts.stopStreamDescription'),
@@ -691,10 +839,9 @@ export function ChatInput({
     setExpansionViewMode(expansionViewMode === 'inline' ? 'overlay' : 'inline');
   }, [expansionViewMode, setExpansionViewMode]);
 
+  // Once open, the Collections and All records dock is the chat composer: same surface, same toolbar, apps included.
+  // Only its one-line resting state, its placeholder and the scope its question carries are its own.
   const showFullUI = variant === 'full' || isExpanded;
-  const dockGlass = variant === 'widget';
-  // The dock is already scoped to the folder it sits in; narrowing happens with @.
-  const showResourcesControl = variant !== 'widget';
   const resolvedWidgetPlaceholder = widgetPlaceholder || resolvedPlaceholder;
 
   const isSearchMode = settings.mode === 'search' && !isAgentChat;
@@ -704,6 +851,20 @@ export function ChatInput({
   // Agent and project chats narrow their own sources; there the menu only inserts mentions.
   const mentionSelection = isAgentChat || isProjectChat ? undefined : composerFilters;
   const onMentionSelectionChange = isAgentChat || isProjectChat ? undefined : variant === 'widget' ? setWidgetFilters : setFilters;
+  // An agent's or a project's own sources come first in the @ menu, where their names are known here; a search
+  // still reaches every source.
+  const mentionScopeDefaults = isAgentChat ? agentKnowledgeDefaults : isProjectChat ? projectScope.knowledgeDefaults : null;
+  const mentionContext = useMemo<ComposerMentionContext>(() => {
+    const preferredSources = mentionScopeDefaults
+      ? selectedIds(mentionScopeDefaults).flatMap((id) => {
+          const meta = collectionMetaCache[id];
+          const name = collectionNamesCache[id] || meta?.name;
+          if (!name) return [];
+          return [{ id, name, nodeType: meta?.nodeType || 'app', connector: meta?.connector ?? '', extension: meta?.extension, mimeType: meta?.mimeType }];
+        })
+      : null;
+    return { surface: variant === 'widget' ? 'widget' : 'chat', preferredSources, sourcesFirst: variant === 'widget' };
+  }, [mentionScopeDefaults, collectionMetaCache, collectionNamesCache, variant]);
   const agentResourcesCustomized =
     isAgentChat &&
     (agentKnowledgeScope !== null ||
@@ -741,6 +902,10 @@ export function ChatInput({
   /** Assistant collections overlay is active (web search never uses this chrome). */
   const assistantCollectionsOverlayActive =
     !usesScopedPanel && isCollectionsPanelOpen && settings.queryMode !== 'web-search';
+  /** This composer's own larger apps panel is showing. The view mode is shared chat state: on its own it does not say
+   *  whether this composer opened it, and it outlives the composer that set it. */
+  const ownOverlayOpen =
+    expansionViewMode === 'overlay' && (assistantCollectionsOverlayActive || (usesScopedPanel && isAgentResourcesPanelOpen));
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
   const agentStrategyToolbarColors = agentQueryToolbarConfig.colors;
@@ -947,8 +1112,7 @@ export function ChatInput({
 
   /** Runs a built-in with the same actions its buttons use (SLASH2); never sent, never steered. */
   const runBuiltinCommand = (command: BuiltinCommand, args: string, as: string = command.name) => {
-    setMessage('');
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    composerRef.current?.clear();
     const state = useChatStore.getState();
     const slot = state.activeSlotId ? state.slots[state.activeSlotId] : undefined;
     const rowKey = state.activeSlotId ?? NEW_CHAT_KEY;
@@ -1007,7 +1171,7 @@ export function ChatInput({
       }
     }
     setMessage(`/${entry.command.name} `);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   };
 
   // Build selected collections from store (roots → apps API; record groups → kb API).
@@ -1068,7 +1232,7 @@ export function ChatInput({
         : composerFilters;
     const hubApps = source?.apps ?? [];
     const groups = source?.kb ?? [];
-    // Nodes embedded with @ join the scope when the message is sent; until then they show here too.
+    // Nodes named with @ scope the message they are sent with; they show here too until then.
     const scoped = new Set(selectedIds(source ?? { apps: [], kb: [] }));
     const embedded = mentions
       .filter((node) => !scoped.has(node.id))
@@ -1151,6 +1315,26 @@ export function ChatInput({
   const showSelectedCollectionsRow =
     selectedCollections.length > 0 && !isCollectionsPanelOpen && !modeChromeOpen;
 
+  /**
+   * The apps button's dot says the sources or tools are narrowed. Sources shown as chips already say it, so the dot
+   * stays only for what has no chip: narrowed actions and MCP tools (or a narrowing that left no source).
+   */
+  const sourcesShownAsChips = selectedCollections.length > 0;
+  const scopedToolsCustomized = isAgentChat
+    ? agentStreamToolsSel !== null &&
+      agentToolCatalogLen > 0 &&
+      (agentStreamToolsSel.length === 0 || agentStreamToolsSel.length < agentToolCatalogLen)
+    : isProjectChat &&
+      projectStreamToolsSel !== null &&
+      projectToolCatalogLen > 0 &&
+      (projectStreamToolsSel.length === 0 || projectStreamToolsSel.length < projectToolCatalogLen);
+  const scopedKnowledgeCustomized = isAgentChat ? agentKnowledgeScope !== null : isProjectChat && projectKnowledgeScope !== null;
+  const showAppsButtonDot = usesScopedPanel
+    ? scopedToolsCustomized || (scopedKnowledgeCustomized && !sourcesShownAsChips)
+    : settings.queryMode === 'agent'
+      ? universalAgentStreamTools !== null || (selectedKbCount > 0 && !sourcesShownAsChips)
+      : selectedKbCount > 0 && !sourcesShownAsChips;
+
   const handleRemoveCollection = useCallback(
     (id: string) => {
       // Removing an embedded node's chip leaves its name in the text as plain words.
@@ -1195,7 +1379,8 @@ export function ChatInput({
     ]
   );
 
-  // Toolbar icon color follows the active query mode / search-view state.
+  // The compact overflow menu's glyphs follow the active query mode. The toolbar itself is the brand emerald at
+  // every width (toolbarIconColor), so a phone's +, More and mic match the desktop's.
   const activeIconColor = isSearchMode
     ? 'var(--mode-search-icon)'
     : modeColors.icon;
@@ -1274,14 +1459,31 @@ export function ChatInput({
 
   const handleShowRegenBar = useCallback((payload?: unknown) => {
     if (typeof payload !== 'object' || payload === null) return;
-    const { messageId, text, appliedFilters } = payload as { messageId: string; text?: string; appliedFilters?: AppliedFilters };
+    const { messageId, text, appliedFilters, slotId } = payload as {
+      messageId: string;
+      text?: string;
+      appliedFilters?: AppliedFilters;
+      slotId?: string;
+    };
     if (!messageId) return;
+    // Regenerate re-runs the question at once. Only a reply that holds a question card opens the bar: its answers
+    // can be changed there before the run.
+    const targetSlotId = slotId ?? useChatStore.getState().activeSlotId;
+    const targetSlot = targetSlotId ? useChatStore.getState().slots[targetSlotId] : undefined;
+    if (targetSlotId && targetSlot && !replyHoldsQuestionCard(targetSlot, messageId)) {
+      if (targetSlot.isStreaming || targetSlot.stopping) return;
+      dismissExpansionPanels();
+      useChatStore.getState().setRegenAnswers(null);
+      streamRegenerateForSlot(targetSlotId, messageId, undefined, appliedFiltersToApi(appliedFilters));
+      return;
+    }
     dismissExpansionPanels();
     setRegenModelOverride(null);
     leaveEditFiles(false);
     useChatStore.getState().setRegenAnswers(null);
     stashDraftBeforeAction();
-    setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters });
+    setActiveMessageAction({ type: 'regenerate', messageId, appliedFilters, ...(slotId ? { slotId } : {}) });
+    // Pre-fill the field so the user can see what will be regenerated (shown dimmed/disabled)
     setMessage(applyQuotedPayload(text));
   }, [applyQuotedPayload, dismissExpansionPanels, leaveEditFiles, stashDraftBeforeAction]);
 
@@ -1293,20 +1495,24 @@ export function ChatInput({
       payload === null ||
       typeof (payload as Record<string, unknown>).messageId !== 'string'
     ) return;
-    const { messageId, text, appliedFilters, attachments } = payload as {
+    const { messageId, text, appliedFilters, attachments, slotId } = payload as {
       messageId: string;
       text: string;
       appliedFilters?: AppliedFilters;
       attachments?: AttachmentRef[];
+      slotId?: string;
     };
     dismissExpansionPanels();
     setRegenModelOverride(null);
     useChatStore.getState().setRegenAnswers(null);
     enterEditFiles(attachments ?? []);
     stashDraftBeforeAction();
-    setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments });
-    setMessage(applyQuotedPayload(text));
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setActiveMessageAction({ type: 'editQuery', messageId, text, appliedFilters, attachments, ...(slotId ? { slotId } : {}) });
+    // Populate the field with the original question so the user can edit it, each source it named as its chip.
+    const restored = withSourceChips(applyQuotedPayload(text), appliedFilters);
+    setMentions(restored.mentions);
+    setMessage(restored.text);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, [applyQuotedPayload, dismissExpansionPanels, enterEditFiles, stashDraftBeforeAction]);
 
   const handleShowQuoteBar = useCallback((payload?: unknown) => {
@@ -1329,7 +1535,7 @@ export function ChatInput({
     }
     setQuotedExcerpt(excerpt);
     setQuotedExcerptTruncated(Boolean(truncated));
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, [activeMessageAction, dismissExpansionPanels, expandable, leaveEditFiles]);
 
   const handleDismissQuote = useCallback(() => {
@@ -1357,7 +1563,7 @@ export function ChatInput({
     setActiveMessageAction(null);
     setRegenModelOverride(null);
     setMessage(text);
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    setTimeout(() => composerRef.current?.focus(), 0);
   }, []);
   // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
   const regenTargetMessageId = activeMessageAction?.type === 'regenerate' ? activeMessageAction.messageId : null;
@@ -1403,15 +1609,7 @@ export function ChatInput({
     // An empty edit has no question to answer; stay in edit mode so the text can be fixed.
     if (isEdit && !nextQuery.trim()) return;
     const modelOverride = regenModelOverride ?? undefined;
-    const originalFilters = af
-      ? buildAssistantApiFilters({
-          apps: af.apps.map((a) => a.id),
-          kb: af.kb.map((k) => k.id),
-          recordGroups: (af.recordGroups ?? []).map((g) => g.id),
-          records: (af.records ?? []).map((r) => r.id),
-          recordsExact: (af.recordsExact ?? []).map((r) => r.id),
-        })
-      : undefined;
+    const originalFilters = appliedFiltersToApi(af);
     // Only what changed is sent; an unchanged edit is a plain regenerate.
     const storedFiles = isEdit ? (activeMessageAction.attachments ?? []) : [];
     const editedFiles = uploadedFiles
@@ -1429,8 +1627,10 @@ export function ChatInput({
     setQuotedExcerpt(null);
     setQuotedExcerptTruncated(false);
     setMessage('');
-    if (activeSlotId) {
-      const target = [activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
+    // An answer in an agent thread or a private thread is re-asked on its own slot, an Edit as a Regenerate.
+    const regenSlotId = activeMessageAction.slotId ?? activeSlotId;
+    if (regenSlotId) {
+      const target = [regenSlotId, activeMessageAction.messageId, modelOverride, originalFilters] as const;
       // Kept until the re-run ends, so the card shows the answers it is running with.
       const regenAnswers = useChatStore.getState().regenAnswers;
       const answers =
@@ -1447,6 +1647,8 @@ export function ChatInput({
     register('runRegenerate', () => executeMessageAction());
     return () => unregister('runRegenerate');
   }, [executeMessageAction]);
+
+  const submitRef = useRef<((e: React.SyntheticEvent) => void) | null>(null);
 
   const handleSubmit = (e: React.SyntheticEvent) => {
     e.preventDefault();
@@ -1480,7 +1682,9 @@ export function ChatInput({
       else sendToRunningTask(sid);
       return;
     }
-    if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
+    // While the answer runs, a question can still join the queue; a regenerate or edit cannot.
+    const runHolds = Boolean(liveSlot?.isStreaming && !liveSlot.stopping);
+    if ((runHolds && !sendDuringRun && !(queueDuringRun && !activeMessageAction)) || isUniversalAgentLoading) return;
     if (liveSlot?.remoteRunInProgress) {
       showRemoteRunInProgressToast();
       return;
@@ -1612,6 +1816,15 @@ export function ChatInput({
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
       const kept = retainedMentions(message, mentions);
+      if (sourcesOverCap(kept.length) > 0) {
+        toast.error(t('chat.atMenu.tooManySources', { max: MENTION_SOURCES_MAX, defaultValue: 'A message can name up to {{max}} sources.' }));
+        return;
+      }
+      const resolved = composerInput.resolveSend(message, () => submitRef.current?.(e));
+      if (!resolved) return;
+      // What the box holds as it goes: resolving may rewrite it (a typed name becomes its chip), and a send the host
+      // confirms later must not take that rewrite for more typing and leave the sent text in the box.
+      const sentBox = composerRef.current?.getValue?.().text ?? message;
       const sent = variant === 'widget'
         ? [
             ...kept,
@@ -1630,49 +1843,46 @@ export function ChatInput({
               }),
           ]
         : kept;
-      if (variant !== 'widget' && kept.length > 0) {
+      // The sources a message names scope that question only (the request adds them, see `runtime`): the chat's own
+      // selection stays as the "+" panel set it. Their names are kept so the sent question shows them as chips.
+      if (kept.length > 0) {
         const store = useChatStore.getState();
         const { names, meta } = mentionMeta(kept);
         store.setCollectionNamesCache({ ...store.collectionNamesCache, ...names });
         store.setCollectionMetaCache({ ...store.collectionMetaCache, ...meta });
-        if (isAgentChat) {
-          store.setAgentKnowledgeScope(
-            mergeMentionFilters(
-              store.agentKnowledgeScope ?? { apps: [], kb: [] },
-              kept,
-            ),
-          );
-        } else if (isProjectChat) {
-          // A project chat is scoped by its own selection, not the assistant's filters.
-          store.setProjectKnowledgeScope(mergeMentionFilters(store.projectKnowledgeScope ?? { apps: [], kb: [] }, kept));
-        } else {
-          store.setFilters(mergeMentionFilters(store.settings.filters, kept));
-        }
       }
+      const sentFiles = new Set(uploadedFiles.filter((f) => f.status === 'uploaded'));
+      // A send the host confirms later may land after the person typed on: only what was sent leaves the box.
       const clearDraft = () => {
+        const now = messageRef.current;
+        // Typed on while the send was out (the box empties as it goes): only what was sent leaves.
+        if (now !== '' && now !== message && now !== sentBox) {
+          setUploadedFiles((files) => files.filter((f) => !sentFiles.has(f)));
+          if (now.startsWith(sentBox)) composerRef.current?.setText(now.slice(sentBox.length).trimStart());
+          return;
+        }
+        setMessage('');
         setMentions([]);
         setUploadedFiles([]);
         setShowUploadArea(false);
         setQuotedExcerpt(null);
         setQuotedExcerptTruncated(false);
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-        }
+        composerRef.current?.clear();
       };
       // The text leaves the box before the send: the page may swap this composer for another while it is in flight.
       const sentText = message;
       draft.markSent();
-      const questionText = stripMentionPads(message, kept);
+      const text = stripMentionPads(resolved.text, kept);
+      const question = quotedExcerpt ? formatQuotedSelection(quotedExcerpt, text) : text;
+      const files = refs.length > 0 ? refs : undefined;
+      const nodes = sent.length > 0 ? sent : undefined;
       setMessage('');
       const putBack = () => {
         setMessage((current) => (current === '' ? sentText : current));
         draft.unmarkSent(sentText);
       };
-      const sending = onSend(
-        quotedExcerpt ? formatQuotedSelection(quotedExcerpt, questionText) : questionText,
-        refs.length > 0 ? refs : undefined,
-        sent.length > 0 ? sent : undefined,
-      );
+      // A fourth argument only when there is something extra, so a caller sees the usual three-argument call.
+      const sending = resolved.extra ? onSend(question, files, nodes, resolved.extra) : onSend(question, files, nodes);
       if (sending instanceof Promise) {
         // The host said why it refused (or failed); the text comes back, and stays the draft, for another try.
         void sending.then((ok) => (ok !== false ? clearDraft() : putBack()), putBack);
@@ -1684,22 +1894,24 @@ export function ChatInput({
     }
   };
 
+  // Before the effects below: the secret prompt's resend must run this render's handleSubmit, with the draft it
+  // left (the secret taken out), never the one before it.
+  useEffect(() => {
+    submitRef.current = handleSubmit;
+  });
+
   /** A /command sent while a task runs: sent as the next turn once that task ends. */
   const queueCommand = (slotId: string, name: string) => {
     const text = message.trim();
-    setMessage('');
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    composerRef.current?.clear();
     toast.success(t('slashCommands.queued', { name }), { description: t('slashCommands.queuedDescription') });
     void untilSlotIdle(slotId, Infinity).then(() => onSend?.(text));
   };
 
-  /** A message while a durable run streams joins that running task (T2), with its files (C-21). */
-  const submitRef = useRef(handleSubmit);
-  submitRef.current = handleSubmit;
   useEffect(() => {
     if (!sendWithoutSecret) return;
     setSendWithoutSecret(false);
-    submitRef.current({ preventDefault: () => undefined } as React.SyntheticEvent);
+    submitRef.current?.({ preventDefault: () => undefined } as React.SyntheticEvent);
   }, [sendWithoutSecret]);
   const removeSecretFromDraft = () => {
     setMessage((current) => redactPastedSecrets(current).text);
@@ -1715,16 +1927,16 @@ export function ChatInput({
     window.open(PERSONAL_CREDENTIALS_PATH, '_blank', 'noopener');
   };
 
+  /** A message while a durable run streams joins that running task (T2), with its files (C-21). */
   const sendToRunningTask = (slotId: string) => {
     const text = message.trim();
     if (uploadedFiles.some((f) => f.status === 'uploading')) return;
     const files = uploadedFiles;
     const refs = files.filter((f) => f.status === 'uploaded' && f.ref).map((f) => f.ref!);
     if (!text && refs.length === 0) return;
-    setMessage('');
+    composerRef.current?.clear();
     setUploadedFiles([]);
     setShowUploadArea(false);
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
     void steerRunningTask(slotId, text, refs).then((outcome) => {
       if (outcome.status === 'queued') {
         // UXINT-5: shown in the reply at once, queued, until the run reads it; a toast alone was gone in seconds.
@@ -2042,12 +2254,12 @@ export function ChatInput({
    * Both paths use the same gating as the attach control: enterprise search
    * (`mode === 'search'`) and web search do not accept attachments.
    */
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+  const classifyPaste = useCallback((data: DataTransfer | null | undefined): PasteIntent | null => {
     if (isRegenerateMode || isSearchMode || settings.queryMode === 'web-search') {
-      return;
+      return null;
     }
-    const items = e.clipboardData?.items;
-    if (!items) return;
+    const items = data?.items;
+    if (!data || !items) return null;
 
     const fileItems: File[] = [];
     let hasFileItem = false;
@@ -2074,30 +2286,37 @@ export function ChatInput({
       }
     }
 
-    if (fileItems.length > 0) {
-      // Stop the event here — without this, bubbling causes the handler to fire
-      // once for each ancestor that also has onPaste registered, producing
-      // duplicate chips for the same paste action.
-      e.stopPropagation();
-      // Prevent the browser from trying to render the raw image data as text.
-      e.preventDefault();
-      processFiles(fileItems, { source: 'paste' });
-      return;
-    }
+    if (fileItems.length > 0) return { kind: 'files', files: fileItems };
 
     // No file items — check whether the plain text itself is large enough
     // to collapse into an attachment. Held Shift bypasses this entirely.
-    if (hasFileItem || shiftKeyHeldRef.current) return;
-    const text = e.clipboardData?.getData('text/plain') ?? '';
-    if (!text || !isLargePaste(text)) return;
+    if (hasFileItem || shiftKeyHeldRef.current) return null;
+    const text = data.getData('text/plain') ?? '';
+    return text && isLargePaste(text) ? { kind: 'text', text } : null;
+  }, [isRegenerateMode, isSearchMode, settings.queryMode]);
 
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const intent = classifyPaste(e.clipboardData);
+    if (!intent) return;
+
+    // Stop the event here — without this, bubbling causes the handler to fire
+    // once for each ancestor that also has onPaste registered, producing
+    // duplicate chips for the same paste action. preventDefault keeps the
+    // browser from rendering raw image data (or the large text) into the field.
     e.stopPropagation();
     e.preventDefault();
+
+    if (intent.kind === 'files') {
+      processFiles(intent.files, { source: 'paste' });
+      return;
+    }
+
+    const { text } = intent;
     const file = createPastedTextFile(text, {
       ...DEFAULT_PASTE_ATTACHMENT_CONFIG,
       truncationNotice: t('chat.attachments.pasteTruncated', {
         defaultValue:
-          '\n\n[Content truncated — pasted text exceeded the maximum attachment size.]',
+          '\n\n[Content truncated: pasted text exceeded the maximum attachment size.]',
       }),
     });
     processFiles([file], {
@@ -2106,7 +2325,13 @@ export function ChatInput({
       pasteCharCount: text.length,
       pasteLineCount: text.split('\n').length,
     });
-  }, [processFiles, isRegenerateMode, isSearchMode, settings.queryMode]);
+  }, [processFiles, classifyPaste, t]);
+
+  /** The rich editor asks before inserting a paste: the container owns attachment and pasted-text chips. */
+  const shouldDeferPaste = useCallback(
+    (data: DataTransfer | null) => classifyPaste(data) !== null,
+    [classifyPaste],
+  );
 
   /**
    * "Show in text field" — moves a pasted-text chip's content back into the
@@ -2118,7 +2343,7 @@ export function ChatInput({
     void file.file.text().then((text) => {
       setMessage((prev) => (prev.trim() ? `${prev}\n\n${text}` : text));
       removeFile(file.id);
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      setTimeout(() => composerRef.current?.focus(), 0);
     });
   }, [removeFile]);
 
@@ -2179,6 +2404,24 @@ export function ChatInput({
   };
 
   const hasSendableAttachment = uploadedFiles.some((f) => f.status === 'uploaded');
+  const pastedTextFiles = uploadedFiles.filter((f) => f.source === 'paste-text');
+  const uploadedNonPasteFiles = uploadedFiles.filter((f) => f.source !== 'paste-text');
+  /** A panel shown in place of the text: the attachment rail steps aside with the text. */
+  const inlinePanelOpen =
+    (isAgentChat && isAgentStrategyPanelOpen) ||
+    isModelPanelOpen ||
+    (expansionViewMode === 'inline' &&
+      ((usesScopedPanel && isAgentResourcesPanelOpen) ||
+        (!usesScopedPanel && settings.queryMode === 'agent' && isCollectionsPanelOpen) ||
+        (hubFilterQueryMode && isCollectionsPanelOpen)));
+  // A paste waiting in an empty box is what the next question is about.
+  const fieldPlaceholder =
+    wantsWorkspaceName &&
+    !isActionMode &&
+    !message.trim() &&
+    uploadedFiles.some((f) => f.source === 'paste-text')
+      ? t('chat.askAboutPaste')
+      : resolvedPlaceholder;
   const hasContent = Boolean(message.trim()) || hasSendableAttachment || isListening || Boolean(quotedExcerpt);
   const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
   const canSubmit =
@@ -2186,11 +2429,21 @@ export function ChatInput({
     !isUniversalAgentLoading &&
     !hasUploadingAttachments &&
     !commandBlocked;
+  // Stop gives way to Send while there is a question to queue behind the running answer. A run that takes a
+  // message into it keeps Stop: the steer button sends then.
+  const showStop = runBusy && !(queueDuringRun && hasContent && activeMessageAction === null && !canSteer);
+  /** Optical pull for the toolbar's first control: its 16px glyph then sits on the text's left edge. */
+  const firstToolbarControlPull = touch ? 0 : 'calc(var(--space-1) / 4 - var(--space-2))';
 
-  // Display value combines committed text with interim speech so users see real-time feedback
-  const displayValue = interimTranscript
-    ? message + (message.length > 0 ? ' ' : '') + interimTranscript
-    : message;
+  // Send takes Stop's place in the same button, so focus normally stays put. If the button was
+  // replaced instead and focus fell to the page, it goes back to the editor.
+  useEffect(() => {
+    if (showStop || !stopHadFocusRef.current) return;
+    stopHadFocusRef.current = false;
+    if (typeof document !== 'undefined' && (document.activeElement === document.body || !document.activeElement)) {
+      composerRef.current?.focus();
+    }
+  }, [showStop]);
 
   const speechTooltip =
     speechUnavailableReason === 'stt-not-configured'
@@ -2237,9 +2490,10 @@ export function ChatInput({
   }, [modeChromeOpen, isCollectionsPanelOpen, isModelPanelOpen, showUploadArea, expansionViewMode]);
 
   // All Records dock: shrink when the click lands outside it. Draft text and
-  // applied filters stay; only the open panels close.
+  // applied filters stay; only the open panels close. Like the chat composer's own outside click, a click in the
+  // larger apps panel or in a dialog opened from a panel belongs to the composer: both are portaled outside it.
   useEffect(() => {
-    if (variant !== 'widget' || !expandable) return;
+    if (variant !== 'widget' || !expandable || ownOverlayOpen) return;
     const shrink = () => {
       setIsExpanded(false);
       setIsCollectionsPanelOpen(false);
@@ -2259,7 +2513,16 @@ export function ChatInput({
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, [variant, expandable]);
+  }, [variant, expandable, ownOverlayOpen]);
+
+  // When this composer's larger apps panel stops showing, for whatever reason (closed, collapsed, or the composer
+  // left the page), the shared view mode goes back to inline: a composer opened later must not inherit it.
+  useEffect(() => {
+    if (!ownOverlayOpen) return;
+    return () => {
+      if (useChatStore.getState().expansionViewMode === 'overlay') setExpansionViewMode('inline');
+    };
+  }, [ownOverlayOpen, setExpansionViewMode]);
 
   const handleExpand = () => {
     if (expandable && !isExpanded) {
@@ -2277,7 +2540,8 @@ export function ChatInput({
       isCollectionsPanelOpen,
       expansionViewMode,
       showUploadArea,
-      uploadedFiles.length > 0,
+      uploadedNonPasteFiles.length > 0,
+      pastedTextFiles.length > 0,
       showSelectedCollectionsRow,
       Boolean(quotedExcerpt),
     ].join('|'),
@@ -2285,8 +2549,8 @@ export function ChatInput({
 
   // Auto-focus the textarea when expanding from widget to full
   useEffect(() => {
-    if (isExpanded && variant === 'widget' && textareaRef.current) {
-      textareaRef.current.focus();
+    if (isExpanded && variant === 'widget') {
+      composerRef.current?.focus();
     }
   }, [isExpanded, variant]);
 
@@ -2321,8 +2585,8 @@ export function ChatInput({
           maxWidth: '100%',
           margin: '0 auto',
           pointerEvents: 'auto',
-          background: 'color-mix(in srgb, var(--olive-1) 42%, transparent)',
-          border: '1px solid var(--olive-3)',
+          background: 'color-mix(in srgb, var(--surface-raised) 42%, transparent)',
+          border: '1px solid var(--border-subtle)',
           backdropFilter: 'var(--frost-filter)',
           WebkitBackdropFilter: 'var(--frost-filter)',
           borderRadius: 'var(--radius-1)',
@@ -2338,7 +2602,7 @@ export function ChatInput({
           justify="between"
           gap="1"
           onClick={isMobile ? (event) => { if (event.target === event.currentTarget) handleExpand(); } : undefined}
-          style={{ height: isMobile ? TOUCH_TARGET_PX : 26 }}
+          style={{ height: touch ? TOUCH_TARGET_PX : 26 }}
         >
           {!isAgentChat && (
             <IconButton
@@ -2347,36 +2611,34 @@ export function ChatInput({
               size="2"
               onClick={handleExpand}
               aria-label={t('chat.expandComposer', { defaultValue: 'Expand composer' })}
-              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0, ...touchTarget(isMobile) }}
+              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0, ...touchTarget(touch) }}
             >
-              <MaterialIcon name="add" size={16} color="var(--neutral-11)" />
+              <MaterialIcon name="add" size={16} color="var(--text-secondary)" />
             </IconButton>
           )}
 
-          {/* Input field */}
-          <MentionComposerField
-            value={displayValue}
-            mentions={mentions}
-            onChange={setMessage}
-            onMentionsChange={setMentions}
-            onKeyDown={handleKeyDown}
-            onFocus={handleExpand}
-            placeholder={resolvedWidgetPlaceholder}
-            parent={mentionParent}
-            selection={mentionSelection}
-            mentionsOff={mentionsOff}
-            onSelectionChange={onMentionSelectionChange}
-            aria-label={resolvedWidgetPlaceholder}
-            style={{
-              flex: 1,
-              fontSize: 'var(--font-size-2)',
-              fontFamily: 'Manrope, sans-serif',
-              lineHeight: '20px',
-              minWidth: 0,
-              height: 20,
-              overflow: 'hidden',
-            }}
-          />
+          {/* Input field: the same field as expanded, one line tall, so the draft and its chips mean the same in both. */}
+          <div style={{ flex: 1, minWidth: 0, height: 20, overflow: 'hidden' }}>
+            <chatSlots.ComposerField
+              rich={composerInput.rich}
+              ref={composerRef}
+              value={message}
+              interim={interimTranscript}
+              onChange={setMessage}
+              mentions={mentions}
+              onMentionsChange={setMentions}
+              onKeyDown={handleKeyDown}
+              onFocus={handleExpand}
+              placeholder={resolvedWidgetPlaceholder}
+              ariaLabel={resolvedWidgetPlaceholder}
+              maxHeightPx={20}
+              mentionParent={mentionParent}
+              mentionSelection={mentionSelection}
+              onMentionSelectionChange={onMentionSelectionChange}
+              mentionContext={mentionContext}
+              mentionsOff={mentionsOff}
+            />
+          </div>
 
           {/* Send / Stop — same contract as full composer */}
           {canSteer && (message.trim() || hasSendableAttachment) && (
@@ -2391,12 +2653,15 @@ export function ChatInput({
               <MaterialIcon name="arrow_upward" size={ICON_SIZES.PRIMARY} color="white" />
             </IconButton>
           )}
-          {isStreaming ? (
+          {showStop ? (
+            // aria-disabled, not disabled, once Stop is pressed: a disabled button drops keyboard focus to the page.
             <IconButton
               variant="solid"
               size="2"
               onClick={handleStopStream}
-              disabled={isStopping}
+              onFocus={() => { stopHadFocusRef.current = true; }}
+              onBlur={() => { stopHadFocusRef.current = false; }}
+              aria-disabled={isStopping || undefined}
               aria-label={t('chat.stopGenerating', { defaultValue: 'Stop generating' })}
               data-testid="chat-stop-button"
               style={{
@@ -2405,19 +2670,18 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
-                ...touchTarget(isMobile),
+                ...touchTarget(touch),
                 borderRadius: 'var(--radius-2)',
-                backgroundColor: 'var(--emerald-9)',
-                color: 'white',
-                opacity: isStopping ? 0.6 : 1,
                 cursor: isStopping ? 'default' : 'pointer',
               }}
             >
               <StopMark />
             </IconButton>
           ) : (
+            // Quiet while there is nothing to send, the brand solid once there is.
             <IconButton
-              variant="solid"
+              variant={canSubmit ? 'solid' : 'ghost'}
+              color={canSubmit ? undefined : 'gray'}
               size="2"
               onClick={(event) => {
                 if (!canSubmit) {
@@ -2434,19 +2698,13 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
-                ...touchTarget(isMobile),
+                ...touchTarget(touch),
                 borderRadius: 'var(--radius-2)',
-                backgroundColor: canSubmit ? 'var(--emerald-9)' : 'transparent',
-                color: canSubmit ? 'white' : 'var(--neutral-11)',
-                opacity: 1,
                 cursor: canSubmit ? 'pointer' : 'default',
+                transition: 'background-color var(--motion-micro) var(--motion-ease)',
               }}
             >
-              <MaterialIcon
-                name="arrow_upward"
-                size={16}
-                color={canSubmit ? 'white' : 'var(--neutral-11)'}
-              />
+              <MaterialIcon name="arrow_upward" size={16} />
             </IconButton>
           )}
         </Flex>
@@ -2461,30 +2719,10 @@ export function ChatInput({
   }
 
   const composerActive =
-    !isStreaming && (isInputFocused || message.trim() || isEditMode || isListening);
-
-  const textareaLayoutStyle: React.CSSProperties = {
-    width: '100%',
-    backgroundColor: 'transparent',
-    outline: 'none',
-    border: 'none',
-    fontSize: 'var(--font-size-2)',
-    lineHeight: '20px',
-    letterSpacing: 0,
-    resize: 'none',
-    maxHeight: '160px',
-    fontFamily: 'Manrope, sans-serif',
-    height: 'auto',
-    overflow: 'auto',
-    padding: 0,
-    margin: 0,
-  };
-
-  const syncTextareaHeight = (e: React.FormEvent<HTMLTextAreaElement>) => {
-    const target = e.currentTarget;
-    target.style.height = 'auto';
-    target.style.height = `${Math.min(target.scrollHeight, 160)}px`;
-  };
+    !showStop && (isInputFocused || message.trim() || isEditMode || isListening);
+  // A panel shown in the composer reads on an opaque shell, as the design does above phone widths. Border and
+  // shadow still follow focus: a panel opening is not the reader typing.
+  const opaqueShell = composerActive || message.trim() || isListening || (!isMobile && inlinePanelOpen);
 
   return (
     <>
@@ -2496,6 +2734,8 @@ export function ChatInput({
     <Flex
       ref={containerRef}
       data-composer-shell=""
+      // Lets a popover from an extension line up with the composer card.
+      data-composer-card
       direction="column"
       align="stretch"
       onPaste={handlePaste}
@@ -2509,59 +2749,30 @@ export function ChatInput({
         boxSizing: 'border-box',
         overflow: 'hidden',
         pointerEvents: 'auto',
-        fontFamily: 'Manrope, sans-serif',
-        backdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
-        WebkitBackdropFilter:
-          dockGlass || !(composerActive || message.trim() || isListening) ? 'var(--frost-filter)' : 'none',
-        background: dockGlass
-          ? 'color-mix(in srgb, var(--olive-1) 42%, transparent)'
-          : composerActive || message.trim() || isListening
-            ? 'var(--olive-2)'
-            : 'var(--effects-translucent)',
+        fontFamily: 'var(--default-font-family)',
+        backdropFilter: opaqueShell ? 'none' : 'var(--frost-filter)',
+        WebkitBackdropFilter: opaqueShell ? 'none' : 'var(--frost-filter)',
+        background: opaqueShell ? 'var(--surface-subtle)' : 'var(--effects-translucent)',
         boxShadow:
           composerActive || message.trim() || isListening
             ? '0 12px 32px -16px rgba(0, 9, 50, 0.12), 0 12px 60px 0 rgba(0, 0, 0, 0.15)'
             : 'none',
-        transition: 'background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease',
-        // The dock sits over a table; a full-strength accent line reads heavier there than in chat.
-        border: composerActive
-          ? `1px solid ${dockGlass ? 'var(--accent-a7)' : 'var(--accent-11)'}`
-          : '1px solid var(--olive-3)',
+        transition:
+          'background-color var(--motion-micro) var(--motion-ease), border-color var(--motion-micro) var(--motion-ease), box-shadow var(--motion-micro) var(--motion-ease)',
+        border: composerActive ? '1px solid var(--accent-11)' : '1px solid var(--border-subtle)',
         borderRadius: 'var(--radius-1)',
       }}
     >
-      {/* Selected filters — same horizontal padding as the textarea/toolbar */}
-      {showSelectedCollectionsRow && (
+      {/* Uploaded Files Preview — inside the same bordered composer. Pastes ride on the chip rail instead. */}
+      {uploadedNonPasteFiles.length > 0 && (
         <Flex
           align="center"
           style={{
             width: '100%',
             minWidth: 0,
             boxSizing: 'border-box',
-            backgroundColor: dockGlass ? 'transparent' : 'var(--slate-1)',
-            borderBottom: '1px solid var(--olive-3)',
-            padding: 8,
-          }}
-        >
-          <SelectedCollections
-            collections={selectedCollections}
-            removable={!isRegenerateMode}
-            onRemove={isRegenerateMode ? undefined : handleRemoveCollection}
-          />
-        </Flex>
-      )}
-
-      {/* Uploaded Files Preview — inside the same bordered composer */}
-      {uploadedFiles.length > 0 && (
-        <Flex
-          align="center"
-          style={{
-            width: '100%',
-            minWidth: 0,
-            boxSizing: 'border-box',
-            backgroundColor: dockGlass ? 'transparent' : 'var(--slate-1)',
-            borderBottom: '1px solid var(--olive-3)',
+            backgroundColor: 'var(--surface-raised)',
+            borderBottom: '1px solid var(--border-subtle)',
             padding: 'var(--space-3) var(--space-4)',
             gap: 'var(--space-1)',
           }}
@@ -2578,12 +2789,12 @@ export function ChatInput({
                 width: 24,
                 height: 24,
                 borderRadius: '50%',
-                backgroundColor: 'var(--slate-4)',
+                backgroundColor: 'var(--fill-hover)',
                 cursor: 'pointer',
               }}
               aria-label={t('chat.scrollAttachmentsLeft')}
             >
-              <MaterialIcon name="chevron_left" size={16} color="var(--slate-11)" />
+              <MaterialIcon name="chevron_left" size={16} color="var(--text-secondary)" />
             </Box>
           )}
 
@@ -2599,28 +2810,18 @@ export function ChatInput({
             className="no-scrollbar"
           >
           <Flex gap="2" style={{ minWidth: 'max-content' }}>
-            {uploadedFiles.map((file) => (
-              file.source === 'paste-text' ? (
-                <PastedTextChip
-                  key={file.id}
-                  file={file}
-                  onPreview={() => setTextPreviewFileId(file.id)}
-                  onShowInTextField={() => handleShowInTextField(file)}
-                  onRemove={() => removeFile(file.id)}
-                  onRetry={() => retryFile(file.id)}
-                />
-              ) : (
+            {uploadedNonPasteFiles.map((file) => (
               <Box
                 key={file.id}
                 style={{
                   flexShrink: 0,
                   width: '196px',
                   padding: 'var(--space-2)',
-                  backgroundColor: 'var(--olive-a2)',
+                  backgroundColor: 'var(--surface-subtle)',
                   border:
                     file.status === 'error'
                       ? '1px solid var(--red-7)'
-                      : '1px solid var(--olive-3)',
+                      : '1px solid var(--border-subtle)',
                   borderRadius: 'var(--radius-1)',
                 }}
               >
@@ -2657,7 +2858,7 @@ export function ChatInput({
                           <Spinner
                             size={14}
                             thickness={1.5}
-                            color="var(--slate-11)"
+                            color="var(--text-secondary)"
                             ariaLabel={`Uploading ${file.name}`}
                           />
                         </Box>
@@ -2694,7 +2895,7 @@ export function ChatInput({
                           <MaterialIcon
                             name="close"
                             size={ICON_SIZES.SECONDARY}
-                            color="var(--slate-11)"
+                            color="var(--text-secondary)"
                           />
                         </IconButton>
                       </Flex>
@@ -2707,7 +2908,7 @@ export function ChatInput({
                       size="1"
                       weight="medium"
                       style={{
-                        color: 'var(--slate-12)',
+                        color: 'var(--text-primary)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap'
@@ -2718,7 +2919,7 @@ export function ChatInput({
                     <Text
                       size="1"
                       style={{
-                        color: file.status === 'error' ? 'var(--red-11)' : 'var(--slate-11)',
+                        color: file.status === 'error' ? 'var(--red-11)' : 'var(--text-secondary)',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
@@ -2734,29 +2935,8 @@ export function ChatInput({
                   </Flex>
                 </Flex>
               </Box>
-              )
             ))}
 
-            {/* Add Button */}
-            <Box
-              onClick={() => fileInputRef.current?.click()}
-              style={{
-                flexShrink: 0,
-                width: '76px',
-                border: '1px dashed var(--accent-9)',
-                borderRadius: 'var(--radius-1)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                transition: 'background-color 0.15s',
-                backgroundColor: isAddFileButtonHovered ? 'var(--accent-a2)' : 'transparent',
-              }}
-              onMouseEnter={() => setIsAddFileButtonHovered(true)}
-              onMouseLeave={() => setIsAddFileButtonHovered(false)}
-            >
-              <MaterialIcon name="add" size={24} color="var(--accent-11)" />
-            </Box>
           </Flex>
           </Box>
 
@@ -2772,12 +2952,12 @@ export function ChatInput({
                 width: 24,
                 height: 24,
                 borderRadius: '50%',
-                backgroundColor: 'var(--slate-4)',
+                backgroundColor: 'var(--fill-hover)',
                 cursor: 'pointer',
               }}
               aria-label={t('chat.scrollAttachmentsRight')}
             >
-              <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" />
+              <MaterialIcon name="chevron_right" size={16} color="var(--text-secondary)" />
             </Box>
           )}
         </Flex>
@@ -2790,8 +2970,8 @@ export function ChatInput({
             width: '100%',
             minWidth: 0,
             boxSizing: 'border-box',
-            background: 'var(--olive-1)',
-            borderBottom: '1px solid var(--olive-5)',
+            background: 'var(--surface-raised)',
+            borderBottom: '1px solid var(--border-strong)',
             padding: 'var(--space-3) var(--space-4)',
           }}
         >
@@ -2829,8 +3009,9 @@ export function ChatInput({
         minWidth: 0,
         boxSizing: 'border-box',
         position: 'relative',
-        // Bottom matches the sides so the toolbar buttons sit the same distance from both edges.
-        padding: '12px 16px 16px',
+        // 10px above and below, 16px at the sides: with the 20px text line and the 40px toolbar
+        // row the resting composer is 94px tall.
+        padding: 'calc(var(--space-2) + var(--space-1) / 2) var(--space-4)',
       }}
     >
       {pendingEngineShown || repoChipShown || gateChipsShown ? (
@@ -2909,6 +3090,27 @@ export function ChatInput({
         </Flex>
       )}
 
+      {/* Attachments ride inside the bar as the first row of the text column, 12px above the text: the selected
+          sources and pastes on one rail. */}
+      {!inlinePanelOpen && (showSelectedCollectionsRow || pastedTextFiles.length > 0) && (
+        <SelectedCollections
+          collections={showSelectedCollectionsRow ? selectedCollections : []}
+          removable={!isRegenerateMode}
+          onRemove={isRegenerateMode ? undefined : handleRemoveCollection}
+          onEmptied={() => composerRef.current?.focus()}
+        >
+          {pastedTextFiles.map((file) => (
+            <PastedTextChip
+              key={file.id}
+              file={file}
+              onPreview={() => setTextPreviewFileId(file.id)}
+              onRemove={() => removeFile(file.id)}
+              onRetry={() => retryFile(file.id)}
+            />
+          ))}
+        </SelectedCollections>
+      )}
+
       {/* Input or expansion panel (mutually exclusive) */}
       {isAgentChat && isAgentStrategyPanelOpen ? (
         <ChatInputExpansionPanel
@@ -2927,10 +3129,14 @@ export function ChatInput({
         </ChatInputExpansionPanel>
       ) : isModelPanelOpen ? (
         <ChatInputExpansionPanel
+          id={modelPanelId}
           open={isModelPanelOpen}
-          onClose={() => setIsModelPanelOpen(false)}
+          onClose={() => {
+            // Escape: the panel goes and focus goes back to the chip that opened it.
+            setIsModelPanelOpen(false);
+            modelChipRef.current?.focus();
+          }}
           height="auto"
-          maxHeight="380px"
         >
           <ModelSelectorPanel
             selectedModel={displayModel}
@@ -2955,16 +3161,24 @@ export function ChatInput({
         </ChatInputExpansionPanel>
       ) : !usesScopedPanel && settings.queryMode === 'agent' && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
+          // The apps panel is 392px tall in both tabs.
+          height="392px"
           open={isCollectionsPanelOpen}
           onClose={() => {
             setIsCollectionsPanelOpen(false);
             setExpansionViewMode('inline');
           }}
         >
-          <UniversalAgentResourcesPanel viewMode="inline" onToggleView={handleToggleView} />
+          <UniversalAgentResourcesPanel
+            viewMode="inline"
+            onToggleView={handleToggleView}
+            selection={composerFilters}
+            onSelectionChange={variant === 'widget' ? setWidgetFilters : setFilters}
+          />
         </ChatInputExpansionPanel>
       ) : hubFilterQueryMode && isCollectionsPanelOpen && expansionViewMode === 'inline' ? (
         <ChatInputExpansionPanel
+          height="392px"
           open={isCollectionsPanelOpen}
           onClose={() => {
             setIsCollectionsPanelOpen(false);
@@ -2981,29 +3195,31 @@ export function ChatInput({
       ) : ((usesScopedPanel && isAgentResourcesPanelOpen) || assistantCollectionsOverlayActive) &&
         expansionViewMode === 'overlay' ? (
         /* Render textarea underneath while overlay is open */
-        <MentionComposerField
+        <chatSlots.ComposerField
+          rich={composerInput.rich}
+          shouldDeferPaste={shouldDeferPaste}
           value={message}
-          mentions={mentions}
           onChange={setMessage}
+          mentions={mentions}
           onMentionsChange={setMentions}
           onKeyDown={handleKeyDown}
           onFocus={() => setIsInputFocused(true)}
           onBlur={() => setIsInputFocused(false)}
           placeholder={resolvedPlaceholder}
-          parent={mentionParent}
-          selection={mentionSelection}
+          ariaLabel={resolvedPlaceholder}
+          mentionParent={mentionParent}
+          mentionSelection={mentionSelection}
+          onMentionSelectionChange={onMentionSelectionChange}
+          mentionContext={mentionContext}
           mentionsOff={mentionsOff}
-          onSelectionChange={onMentionSelectionChange}
-          multiline
-          style={{ ...textareaLayoutStyle, color: 'var(--slate-11)' }}
-          onInput={syncTextareaHeight}
+          muted
         />
       ) : !showUploadArea || isActionMode ? (
         // isActionMode keeps the textarea visible even when showUploadArea is true,
         // so the user can see / edit their query during edit or regenerate flows.
         // In regenerate mode the textarea is disabled and text is rendered dimmed;
         // in edit mode it is fully editable (focused immediately on activation).
-        <Box style={{ position: 'relative', width: '100%' }}>
+        <Box ref={composerBoxRef} style={{ position: 'relative', width: '100%' }}>
           <SlashCommandMenu
             open={slashMenuOpen && !isActionMode}
             entries={slashEntries}
@@ -3011,35 +3227,34 @@ export function ChatInput({
             onHighlight={setMenuIndex}
             onSelect={selectCommand}
             onDismiss={() => setDismissedMenuText(message)}
-            inputRef={textareaRef}
+            inputRef={composerBoxRef}
             announcement={menuAnnouncement}
             reasonValues={repoReasonValues}
           />
-          <MentionComposerField
-            ref={textareaRef}
-            value={displayValue}
-            mentions={mentions}
+          <chatSlots.ComposerField
+            rich={composerInput.rich}
+            shouldDeferPaste={shouldDeferPaste}
+            ref={composerRef}
+            value={message}
+            interim={interimTranscript}
             onChange={setMessage}
+            mentions={mentions}
             onMentionsChange={setMentions}
             onKeyDown={handleKeyDown}
             onFocus={() => setIsInputFocused(true)}
             onBlur={() => setIsInputFocused(false)}
-            placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
+            placeholder={isListening ? t('chat.listening') : fieldPlaceholder}
+            ariaLabel={isListening ? t('chat.listening') : fieldPlaceholder}
             readOnly={isRegenerateMode}
-            parent={mentionParent}
-            selection={mentionSelection}
+            mentionParent={mentionParent}
+            mentionSelection={mentionSelection}
+            onMentionSelectionChange={onMentionSelectionChange}
+            mentionContext={mentionContext}
             mentionsOff={mentionsOff}
-            onSelectionChange={onMentionSelectionChange}
             listboxControls={slashMenuOpen ? SLASH_MENU_ID : undefined}
             listboxActiveDescendant={
               slashMenuOpen && slashEntries[menuIndex] ? slashOptionId(slashEntries[menuIndex].id) : undefined
             }
-            multiline
-            style={{
-              ...textareaLayoutStyle,
-              color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--neutral-12)',
-            }}
-            onInput={syncTextareaHeight}
           />
           {commandState.phase === 'args' && !isActionMode ? <CommandArgsBar state={commandState} /> : null}
           {(commandState.phase === 'builtin' || commandState.phase === 'word') && !isActionMode && !slashMenuOpen ? (
@@ -3048,8 +3263,13 @@ export function ChatInput({
         </Box>
       ) : null}
 
-      {/* Bottom controls — fixed 32px row so left/right share one baseline */}
-      <Flex align="center" justify="between" style={{ width: '100%', minWidth: 0, minHeight: 32 }}>
+      {composerInput.overlay}
+
+      {/* Bottom controls: one 40px row (the model group's height) so left/right share one baseline, phones included;
+          44px touch targets make it taller. */}
+      {/* The first control's box is pulled 7px left so its glyph, not its box, lines up with the text above.
+          Not on touch screens, where the controls grow to 44px and there is no space to hang off the edge. */}
+      <Flex align="center" justify="between" style={{ width: '100%', minWidth: 0, minHeight: 'var(--space-7)' }}>
         {/* Left side — search-view toggle (hidden for agent-scoped chats, which don't
             support the keyword-search-results view), plus the "+" attach & capabilities button. */}
         <Flex align="center" gap="1" style={{ minWidth: 0 }}>
@@ -3080,7 +3300,12 @@ export function ChatInput({
                         setMode('search');
                       }
                 }
-                style={{ ...composerIconButtonStyle, ...touchTarget(isMobile), cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{
+                  ...composerIconButtonStyle,
+                  ...touchTarget(touch),
+                  marginLeft: firstToolbarControlPull,
+                  cursor: isRegenerateMode ? 'default' : 'pointer',
+                }}
               >
                 <MaterialIcon
                   name={isSearchMode ? 'chat' : 'search'}
@@ -3133,6 +3358,8 @@ export function ChatInput({
                 disabled={isRegenerateMode}
                 activeIconColor={toolbarIconColor}
                 onAttachFiles={toggleUploadArea}
+                // Agent chats have no search toggle, so the + is the first control and takes the pull.
+                triggerStyle={{ ...touchTarget(touch), ...(isAgentChat ? { marginLeft: firstToolbarControlPull } : null) }}
                 {...plusMenuCapabilities}
                 repository={repositoryMenuEntry}
                 gates={gatesMenuEntry}
@@ -3152,9 +3379,9 @@ export function ChatInput({
                 color="gray"
                 size="2"
                 onClick={() => setIsMobileOptionsOpen(true)}
-                style={{ margin: 0, ...touchTarget(isMobile), cursor: 'pointer' }}
+                style={{ margin: 0, ...touchTarget(touch), cursor: 'pointer' }}
               >
-                <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
+                <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={toolbarIconColor} />
               </IconButton>
               <SpeechInputButton
                 tooltip={speechTooltip}
@@ -3163,9 +3390,9 @@ export function ChatInput({
                 isSupported={isSpeechSupported}
                 isDisabled={isSpeechButtonDisabled}
                 isRegenerateMode={isRegenerateMode}
-                activeIconColor={activeIconColor}
+                activeIconColor={toolbarIconColor}
                 onToggle={toggleSpeech}
-                style={touchTarget(isMobile)}
+                style={touchTarget(touch)}
               />
             </Flex>
           ) : isCompactToolbar ? (
@@ -3198,7 +3425,7 @@ export function ChatInput({
                 <Flex direction="column" gap="1">
 
                   {/* Collections / Connectors */}
-                  {showResourcesControl && settings.queryMode !== 'web-search' && (
+                  {settings.queryMode !== 'web-search' && (
                     <Flex
                       align="center"
                       gap="2"
@@ -3334,10 +3561,70 @@ export function ChatInput({
             /* Desktop: full controls */
             <>
 
-              {/* Action buttons group */}
-              <Flex align="center" gap="1">
+              {/* Model, apps and mic share one padded group, which makes the toolbar row 40px. */}
+              <Flex align="center" gap="1" p="1">
                   
-                {!showResourcesControl ? null : !usesScopedPanel && settings.queryMode !== 'web-search' ? (
+                {/* Model chip: which model answers, and at what effort. First in the cluster, so it reads as context for
+                    the controls after it. Ghost at rest, soft brand while its panel is open, the 32px toolbar height. */}
+                <Tooltip content={modelChipTooltip} side="top">
+                  <Button
+                    ref={modelChipRef}
+                    type="button"
+                    className="touch-size"
+                    variant={isModelPanelOpen ? 'soft' : 'ghost'}
+                    color={isModelPanelOpen ? undefined : 'gray'}
+                    size="2"
+                    m="0"
+                    aria-expanded={isModelPanelOpen}
+                    aria-controls={isModelPanelOpen ? modelPanelId : undefined}
+                    aria-label={modelChipAriaLabel}
+                    data-testid="chat-model-selector"
+                    onClick={() => {
+                      const next = !isModelPanelOpen;
+                      dismissExpansionPanels();
+                      setIsModelPanelOpen(next);
+                    }}
+                    style={{
+                      // Radix trims a ghost button to its content; give the toolbar box back.
+                      margin: 0,
+                      boxSizing: 'border-box',
+                      height: 'var(--base-button-height)',
+                      paddingBlock: 0,
+                      paddingInline: 'var(--space-2)',
+                      gap: 'var(--space-1)',
+                      fontWeight: 'var(--font-weight-regular)',
+                      maxWidth: reasoningEffortLevelLabel ? '220px' : '180px',
+                      flexShrink: 0,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <MaterialIcon name="memory" size={14} color={toolbarIconColor} style={{ flexShrink: 0 }} />
+                    <Text
+                      size="1"
+                      style={{
+                        color: toolbarIconColor,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        minWidth: 0,
+                        opacity: displayModel ? 1 : 0.7,
+                      }}
+                    >
+                      {displayModelLabel}
+                    </Text>
+                    {reasoningEffortLevelLabel && (
+                      <>
+                        <Text size="1" aria-hidden style={{ color: 'var(--gray-a8)', flexShrink: 0 }}>
+                          ·
+                        </Text>
+                        <Text size="1" style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                          {reasoningEffortLevelLabel}
+                        </Text>
+                      </>
+                    )}
+                  </Button>
+                </Tooltip>
+                {!usesScopedPanel && settings.queryMode !== 'web-search' ? (
                   <Tooltip
                   content={
                     settings.queryMode === 'agent'
@@ -3369,14 +3656,14 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
-                        ...touchTarget(isMobile),
+                        ...touchTarget(touch),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
-                        backgroundColor: isCollectionsPanelOpen ? 'var(--olive-3)' : undefined,
+                        backgroundColor: isCollectionsPanelOpen ? 'var(--fill-muted)' : undefined,
                       }}
                     >
                       <Box style={{ position: 'relative', display: 'inline-flex' }}>
-                        <MaterialIcon name="apps" size={16} color={isRegenerateMode ? 'var(--slate-5)' : toolbarIconColor} />
-                        {showResourcesFilterBadge && !isCollectionsPanelOpen && (
+                        <MaterialIcon name="apps" size={16} color={isRegenerateMode ? undefined : toolbarIconColor} />
+                        {showAppsButtonDot && !isCollectionsPanelOpen && (
                           <Box
                             aria-hidden
                             style={{
@@ -3428,14 +3715,14 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
-                        ...touchTarget(isMobile),
+                        ...touchTarget(touch),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
-                        backgroundColor: isAgentResourcesPanelOpen ? 'var(--olive-3)' : undefined,
+                        backgroundColor: isAgentResourcesPanelOpen ? 'var(--fill-muted)' : undefined,
                       }}
                     >
                       <Box style={{ position: 'relative', display: 'inline-flex' }}>
-                        <MaterialIcon name="apps" size={16} color={isRegenerateMode ? 'var(--slate-5)' : toolbarIconColor} />
-                        {showResourcesFilterBadge && !isAgentResourcesPanelOpen && (
+                        <MaterialIcon name="apps" size={16} color={isRegenerateMode ? undefined : toolbarIconColor} />
+                        {showAppsButtonDot && !isAgentResourcesPanelOpen && (
                           <Box
                             aria-hidden
                             style={{
@@ -3455,79 +3742,6 @@ export function ChatInput({
                     </IconButton>
                   </Tooltip>
                 ) : null}
-                {/* Model selector button — icon + current model name so the active model is always visible */}
-                <Tooltip content={t('chat.aiModelsTooltip')} side="top">
-                  <Flex
-                    asChild
-                    align="center"
-                    gap="1"
-                  >
-                  <button
-                    type="button"
-                    className="touch-size"
-                    // With the model's name shown, the name comes from the words (WCAG 2.5.3: it must hold them).
-                    aria-label={isMobile ? t('chat.aiModelsTooltip') : undefined}
-                    data-testid="chat-model-selector"
-                    onClick={() => {
-                      const next = !isModelPanelOpen;
-                      dismissExpansionPanels();
-                      setIsModelPanelOpen(next);
-                    }}
-                    style={{
-                      height: 28,
-                      padding: '0 8px',
-                      borderRadius: 'var(--radius-2)',
-                      cursor: 'pointer',
-                      backgroundColor: isModelPanelOpen
-                        ? 'var(--accent-a3)'
-                        : isModelButtonHovered
-                          ? 'var(--olive-3)'
-                          : 'transparent',
-                      transition: 'background-color 0.12s ease',
-                      border: 'none',
-                      font: 'inherit',
-                      maxWidth: isMobile ? '32px' : (reasoningEffortLabel ? '220px' : '180px'),
-                      flexShrink: 0,
-                    }}
-                    onMouseEnter={() => setIsModelButtonHovered(true)}
-                    onMouseLeave={() => setIsModelButtonHovered(false)}
-                  >
-                    <MaterialIcon name="memory" size={14} color={toolbarIconColor} />
-                    {!isMobile && (
-                      <Flex align="center" gap="1" style={{ overflow: 'hidden' }}>
-                        <VisuallyHidden>{`${t('chat.aiModelsTooltip')}: `}</VisuallyHidden>
-                        <Text
-                          size="1"
-                          weight="regular"
-                          style={{
-                            color: toolbarIconColor,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            maxWidth: reasoningEffortLabel ? '120px' : '140px',
-                            opacity: displayModel ? 1 : 0.7,
-                          }}
-                        >
-                          {displayModelLabel}
-                        </Text>
-                        {reasoningEffortLabel && (
-                          <Text
-                            size="1"
-                            weight="regular"
-                            style={{
-                              color: 'var(--neutral-a11)',
-                              whiteSpace: 'nowrap',
-                              flexShrink: 0,
-                            }}
-                          >
-                            · {reasoningEffortLabel}
-                          </Text>
-                        )}
-                      </Flex>
-                    )}
-                  </button>
-                  </Flex>
-                </Tooltip>
                 <SpeechInputButton
                   tooltip={speechTooltip}
                   ariaLabel={speechTooltip}
@@ -3556,30 +3770,32 @@ export function ChatInput({
               <MaterialIcon name="arrow_upward" size={ICON_SIZES.PRIMARY} color="white" />
             </IconButton>
           )}
-          {isStreaming ? (
+          {showStop ? (
+            // aria-disabled, not disabled, once Stop is pressed: a disabled button drops keyboard focus to the page.
             <IconButton
               className="touch-size"
               variant="solid"
               size="2"
               onClick={handleStopStream}
-              disabled={isStopping}
+              onFocus={() => { stopHadFocusRef.current = true; }}
+              onBlur={() => { stopHadFocusRef.current = false; }}
+              aria-disabled={isStopping || undefined}
               aria-label={t('chat.stopGenerating', { defaultValue: 'Stop generating' })}
               data-testid="chat-stop-button"
               style={{
                 ...composerIconButtonStyle,
-                ...touchTarget(isMobile),
-                backgroundColor: 'var(--emerald-9)',
-                color: 'white',
-                opacity: isStopping ? 0.6 : 1,
+                ...touchTarget(touch),
                 cursor: isStopping ? 'default' : 'pointer',
               }}
             >
               <StopMark />
             </IconButton>
           ) : (
+            // Soft gray while there is nothing to send, the brand solid once there is.
             <IconButton
               className="touch-size"
-              variant="solid"
+              variant={canSubmit ? 'solid' : 'soft'}
+              color={canSubmit ? undefined : 'gray'}
               size="2"
               onClick={(event) => {
                 if (!canSubmit) {
@@ -3592,19 +3808,15 @@ export function ChatInput({
               aria-label={t('chat.sendMessage')}
               style={{
                 ...composerIconButtonStyle,
-                ...touchTarget(isMobile),
-                backgroundColor: canSubmit ? 'var(--emerald-9)' : 'var(--neutral-a3)',
-                color: canSubmit ? 'white' : 'var(--neutral-11)',
-                opacity: 1,
+                ...touchTarget(touch),
                 cursor: canSubmit ? 'pointer' : 'default',
-                transition: 'background-color 120ms ease',
-              }}
+                transition: 'background-color var(--motion-micro) var(--motion-ease)',
+                // Radix draws a soft button's focus outline in --accent-8 (a pale gray here); every other variant
+                // uses the product focus ring. Point it there so the ring reads the same at rest and when sendable.
+                '--accent-8': 'var(--focus-ring)',
+              } as React.CSSProperties}
             >
-              <MaterialIcon
-                name="arrow_upward"
-                size={16}
-                color={canSubmit ? 'white' : 'var(--neutral-11)'}
-              />
+              <MaterialIcon name="arrow_upward" size={16} />
             </IconButton>
           )}
         </Flex>
@@ -3660,7 +3872,7 @@ export function ChatInput({
           onOpenChange={(open) => {
             if (!open) setTextPreviewFileId(null);
           }}
-          title={previewFile.pastePreview || previewFile.name}
+          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
           loadText={() => previewFile.file.text()}
           onShowInTextField={() => handleShowInTextField(previewFile)}
         />
@@ -3673,6 +3885,8 @@ export function ChatInput({
       onOpenChange={setIsMobileOptionsOpen}
       isAgentChat={isAgentChat}
       agentId={agentId}
+      selection={composerFilters}
+      onSelectionChange={variant === 'widget' ? setWidgetFilters : setFilters}
     />
 
     <WebSearchSetupDialog open={isWebSearchSetupOpen} onOpenChange={setIsWebSearchSetupOpen} />
@@ -3689,10 +3903,7 @@ export function ChatInput({
 
     {/* Overlay panel — collections (assistant) or agent resources (overlay mode) */}
     <ChatInputOverlayPanel
-      open={
-        expansionViewMode === 'overlay' &&
-        (assistantCollectionsOverlayActive || (usesScopedPanel && isAgentResourcesPanelOpen))
-      }
+      open={ownOverlayOpen}
       onCollapse={() => setExpansionViewMode('inline')}
     >
       {usesScopedPanel ? (
@@ -3702,7 +3913,12 @@ export function ChatInput({
           scope={isAgentChat ? 'agent' : 'project'}
         />
       ) : settings.queryMode === 'agent' ? (
-        <UniversalAgentResourcesPanel viewMode="overlay" onToggleView={handleToggleView} />
+        <UniversalAgentResourcesPanel
+          viewMode="overlay"
+          onToggleView={handleToggleView}
+          selection={composerFilters}
+          onSelectionChange={variant === 'widget' ? setWidgetFilters : setFilters}
+        />
       ) : hubFilterQueryMode ? (
         <ConnectorsCollectionsPanel
           selection={composerFilters}

@@ -6,6 +6,9 @@ import { useTranslation } from 'react-i18next';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 
+/** The beat between one conversation entrance and the next in a list. */
+const ENTRANCE_STAGGER_MS = 55;
+
 interface AskMoreProps {
   questions: string[];
   onQuestionClick: (question: string) => void;
@@ -21,12 +24,11 @@ export function AskMore({ questions, onQuestionClick }: AskMoreProps) {
     <Box>
       {/* Separator line — fades in with the first item */}
       <Box
+        className="conversation-fade-in no-rise"
         style={{
           height: '1px',
-          backgroundColor: 'var(--olive-3)',
+          backgroundColor: 'var(--fill-muted)',
           marginBottom: 'var(--space-5)',
-          opacity: 0,
-          animation: 'askMoreItemIn 200ms ease-out 0ms forwards',
         }}
       />
 
@@ -34,18 +36,16 @@ export function AskMore({ questions, onQuestionClick }: AskMoreProps) {
       <Flex
         align="center"
         gap="2"
-        style={{
-          marginBottom: 'var(--space-4)',
-          animation: 'askMoreItemIn 200ms ease-out 0ms forwards'
-        }}
+        className="conversation-fade-in"
+        style={{ marginBottom: 'var(--space-4)' }}
       >
        <LottieLoader variant="thinking" size={24} />
-        <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        <Text size="3" weight="medium" style={{ color: 'var(--text-primary)' }}>
           {t('chat.askMore')}
         </Text>
       </Flex>
 
-      {/* Question rows — each item staggers in 80ms apart */}
+      {/* Question rows: each one enters a beat after the one below it */}
       <Flex direction="column" gap="1">
         {questions.map((question, index) => (
           <Flex
@@ -55,22 +55,22 @@ export function AskMore({ questions, onQuestionClick }: AskMoreProps) {
             onClick={() => onQuestionClick(question)}
             onMouseEnter={() => setHoveredIndex(index)}
             onMouseLeave={() => setHoveredIndex(null)}
+            className="conversation-fade-in"
             style={{
-              background: hoveredIndex === index ? 'var(--olive-3)' : 'var(--olive-2)',
-              border: '1px solid var(--olive-3)',
+              background: hoveredIndex === index ? 'var(--fill-muted)' : 'var(--surface-subtle)',
+              border: '1px solid var(--border-subtle)',
               borderRadius: 'var(--radius-1)',
               padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
               cursor: 'pointer',
-              transition: 'background-color 150ms ease',
-              opacity: 0,
-              animation: `askMoreItemIn 220ms ease-out ${(questions.length - 1 - index) * 80}ms forwards`,
+              transition: 'background-color var(--motion-micro) var(--motion-ease)',
+              animationDelay: `${(questions.length - 1 - index) * ENTRANCE_STAGGER_MS}ms`,
             }}
           >
             <Text
               size="2"
               weight="medium"
               style={{
-                color: 'var(--slate-11)',
+                color: 'var(--text-secondary)',
                 flex: 1,
                 minWidth: 0,
               }}
@@ -84,27 +84,20 @@ export function AskMore({ questions, onQuestionClick }: AskMoreProps) {
               variant="soft"
               style={{
                 borderRadius: 'var(--radius-1)',
-                backgroundColor: 'var(--olive-4)',
+                backgroundColor: 'var(--fill-hover)',
                 marginLeft: 'var(--space-2)',
                 flexShrink: 0,
               }}
             >
               <ChatStarIcon
                 size={16}
-                color="var(--slate-11)"
+                color="var(--text-secondary)"
               />
             </IconButton>
           </Flex>
         ))}
       </Flex>
 
-      {/* Inline keyframes */}
-      <style>{`
-        @keyframes askMoreItemIn {
-          from { opacity: 0; transform: translateY(10px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </Box>
   );
 }

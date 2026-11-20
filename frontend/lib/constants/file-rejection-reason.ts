@@ -5,6 +5,7 @@
 export const FileRejectionReason = {
   EXCEEDS_SIZE_LIMIT: 'EXCEEDS_SIZE_LIMIT',
   UNSUPPORTED_TYPE: 'UNSUPPORTED_TYPE',
+  EMPTY_FILE: 'EMPTY_FILE',
   DUPLICATE_NAME: 'DUPLICATE_NAME',
 } as const;
 
@@ -25,6 +26,7 @@ export function parseFileRejectionReason(
 export type UploadFailureKind =
   | 'size_limit'
   | 'unsupported_type'
+  | 'empty_file'
   | 'duplicate_name'
   | 'other';
 
@@ -42,6 +44,7 @@ const REASON_KIND_TABLE: ReadonlyArray<{
 }> = [
   { reason: FileRejectionReason.EXCEEDS_SIZE_LIMIT, kind: 'size_limit' },
   { reason: FileRejectionReason.UNSUPPORTED_TYPE, kind: 'unsupported_type' },
+  { reason: FileRejectionReason.EMPTY_FILE, kind: 'empty_file' },
   { reason: FileRejectionReason.DUPLICATE_NAME, kind: 'duplicate_name' },
 ];
 

@@ -585,6 +585,8 @@ export interface RecordDetailsResponse {
     reason?: string;
     // How a COMPLETED record was indexed (e.g. only part of a large text file); not a failure.
     indexingNote?: string | null;
+    /** Who uploaded it: a failure reason written for them reads differently for anyone else. */
+    uploadedBy?: string;
     // Set while the record waits out its source's rate limit (epoch ms).
     retryNotBefore?: number | null;
     connectorName?: string;

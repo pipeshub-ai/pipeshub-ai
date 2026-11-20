@@ -280,7 +280,7 @@ test('UX erasure: delete a chat, delete the organization', async ({ page }) => {
     await showRecents(p, conversationId);
     const row = p.locator(`a[href*="conversationId=${conversationId}"]`).first();
     await row.hover();
-    await row.locator('xpath=..').getByRole('button', { name: 'More options' }).click();
+    await row.locator('xpath=..').getByRole('button', { name: /^Actions for / }).click();
     await p.getByRole('menuitem', { name: 'Delete' }).click();
     await expect(p.getByRole('dialog')).toBeVisible();
     await settle(p);

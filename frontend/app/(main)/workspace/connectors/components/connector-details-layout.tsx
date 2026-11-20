@@ -15,7 +15,7 @@ import {
   getPersonalConnectorRedirectType,
   personalConnectorHref,
 } from '../utils/admin-access-helpers';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
@@ -81,7 +81,7 @@ export function ConnectorDetailsLayout({
   onRefreshInstance,
   renderInstanceActions,
 }: ConnectorDetailsLayoutProps) {
-  const isMobile = useIsMobile();
+  const isMobile = useIsBelowDesktop();
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const connectorName = connector?.name ?? '';

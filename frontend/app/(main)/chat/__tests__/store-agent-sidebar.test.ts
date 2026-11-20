@@ -12,7 +12,6 @@ function pageOwnedAgentFields() {
     knowledgeDefaults: s.agentKnowledgeDefaults,
     scope: s.agentKnowledgeScope,
     name: s.agentContextDisplayName,
-    createdBy: s.agentContextCreatedBy,
     access: s.agentContextAccess,
   };
 }
@@ -33,7 +32,6 @@ describe('the agent sidebar and the agent fields the chat page owns', () => {
     });
     store.setAgentKnowledgeScope({ apps: [], kb: ['kb-1'] });
     store.setAgentContextDisplayName('Support Bot');
-    store.setAgentContextCreatedBy('creator-1');
     store.setAgentContextAccess({ canEdit: true } as never);
   });
 

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import React from 'react';
 import { DropdownMenu, Text, Flex, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { ShareRole } from './types';
 import { getShareRoleLabels } from './types';
 
@@ -48,6 +49,7 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
   const isNoRoles = isTeam || !!noRolesInfo;
   const noRolesTitle = noRolesInfo?.title ?? t('shareSidebar.team');
   const noRolesDescription = noRolesInfo?.description ?? t('shareSidebar.teamsNoRoles');
+  const isMobile = useIsMobile();
   const triggerLabel = isNoRoles
     ? noRolesTitle
     : effectiveLabels[role]?.label ?? (typeof role === 'string' ? role : t('shareSidebar.roles.reader.label'));
@@ -61,14 +63,15 @@ export function RoleDropdownMenu({ role, onRoleChange, onRemove, isTeam = false,
             display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
-            height: 28,
-            padding: '0 8px',
+            // A finger needs 44 px on a phone; the desktop row stays compact.
+            height: isMobile ? 44 : 28,
+            padding: isMobile ? '0 12px' : '0 8px',
             borderRadius: 'var(--radius-1)',
             backgroundColor: 'var(--slate-a4)',
             border: 'none',
             cursor: 'pointer',
             fontFamily: 'var(--default-font-family)',
-            fontSize: 11,
+            fontSize: isMobile ? 13 : 11,
             fontWeight: 400,
             lineHeight: '14px',
             letterSpacing: '0.02px',

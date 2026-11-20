@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement } from 'react';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 
 // `runtime.ts` transitively pulls in several API modules that ultimately
 // import `lib/store/auth-store.ts`, which eagerly hydrates itself from
@@ -512,22 +512,53 @@ describe('reasoning effort picker', () => {
   it("marks the default level when nothing is picked and says it is the model's own", () => {
     renderPicker({ value: null, modelDefault: 'medium' });
     expect(screen.getByRole('radio', { name: 'Medium' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'High' }).getAttribute('aria-checked')).toBe('false');
     expect(screen.getByText("Defaults to Medium, this model's own default, when not set.")).toBeTruthy();
   });
 
-  it('marks the pick over the default and says how to clear it', () => {
+  it('marks the pick over the default, says how to clear it, and a press on it passes the level on', () => {
     const onSelect = renderPicker({ value: 'high', modelDefault: 'medium' });
     expect(screen.getByRole('radio', { name: 'High' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByRole('radio', { name: 'Medium' }).getAttribute('aria-checked')).toBe('false');
     expect(screen.getByText('Click again to use the default.')).toBeTruthy();
     fireEvent.click(screen.getByRole('radio', { name: 'High' }));
     expect(onSelect).toHaveBeenCalledWith('high');
+    fireEvent.click(screen.getByRole('radio', { name: 'Low' }));
+    expect(onSelect).toHaveBeenLastCalledWith('low');
   });
 
-  it("marks the agent's default over the model's", () => {
+  it("marks the agent's default over the model's, and High with neither", () => {
     renderPicker({ value: null, agentDefault: 'low', modelDefault: 'max' });
     expect(screen.getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByText('Defaults to Low when not set.')).toBeTruthy();
+    cleanup();
+    renderPicker({ value: null });
+    expect(screen.getByRole('radio', { name: 'High' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('Defaults to High when not set.')).toBeTruthy();
+  });
+
+  it('is one radio group with one Tab stop; arrow keys move focus without picking', async () => {
+    const onSelect = renderPicker({ value: null });
+    const group = screen.getByRole('radiogroup', { name: 'Reasoning effort' });
+    const radios = screen.getAllByRole('radio');
+    expect(radios.map((r) => r.textContent)).toEqual(['Low', 'Medium', 'High', 'Max']);
+    expect(radios.every((r) => r.getAttribute('tabindex') === '-1')).toBe(true);
+    expect(group.getAttribute('tabindex')).toBe('0');
+    group.focus();
+    const high = screen.getByRole('radio', { name: 'High' });
+    expect(document.activeElement).toBe(high);
+    fireEvent.keyDown(high, { key: 'ArrowRight' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Max' })));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('is pills, not a slider', () => {
+    renderPicker({ value: null });
+    expect(screen.queryByRole('slider')).toBeNull();
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio.tagName).toBe('BUTTON');
+      expect(radio.className).toContain('rt-r-size-1');
+    }
   });
 });
 

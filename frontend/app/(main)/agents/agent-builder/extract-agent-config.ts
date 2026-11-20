@@ -25,6 +25,9 @@ function engineProfilePayload(edited: unknown, stored: unknown): Pick<AgentFormP
   return edited === null ? { engineProfile: null } : { engineProfile: stored };
 }
 
+/** The toolset `name` an agent payload carries (`Jira Data Center` -> `jiradatacenter`); the API validates it against a fixed list. */
+export const toolsetPayloadName = (toolsetName: string): string => toolsetName.toLowerCase().replace(/[^a-z0-9]/g, '');
+
 interface ToolsetDataInternal {
   name: string;
   displayName: string;
@@ -73,7 +76,7 @@ export function extractAgentConfigFromFlow(
     instanceName?: string
   ) => {
     if (!toolsetName || toolsToAdd.length === 0) return;
-    const normalizedName = toolsetName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalizedName = toolsetPayloadName(toolsetName);
     const existingIndex = instanceId
       ? toolsetsInternal.findIndex((ts) => ts.instanceId === instanceId)
       : toolsetsInternal.findIndex((ts) => ts.name === normalizedName);

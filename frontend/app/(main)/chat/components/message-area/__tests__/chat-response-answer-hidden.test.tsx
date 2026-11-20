@@ -17,7 +17,7 @@ const { streamMessageForSlot, buildRequest } = vi.hoisted(() => ({
 }));
 vi.mock('../../../streaming', () => ({ streamMessageForSlot }));
 vi.mock('../../../runtime', async (importOriginal) => ({ ...(await importOriginal<object>()), buildStreamChatRequestForSlot: buildRequest }));
-vi.mock('../render-slot', () => ({ useRenderSlotId: () => 'slot-1' }));
+vi.mock('../render-slot', async (importOriginal) => ({ ...(await importOriginal<object>()), useRenderSlotId: () => 'slot-1' }));
 
 import { ChatResponse } from '../chat-response';
 

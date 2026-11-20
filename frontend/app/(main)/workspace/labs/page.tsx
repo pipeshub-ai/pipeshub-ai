@@ -78,6 +78,9 @@ function FeatureFlagRow({
 }) {
   const { t } = useTranslation();
   const label = flag.label || flag.key;
+  const description = flag.descriptionKey
+    ? t(flag.descriptionKey, { defaultValue: flag.description, description: flag.description })
+    : flag.description;
   return (
     <Flex
       align="center"
@@ -107,7 +110,7 @@ function FeatureFlagRow({
             </Badge>
           ) : null}
         </Flex>
-        {flag.description && (
+        {description && (
           <Text
             size="1"
             style={{
@@ -118,7 +121,7 @@ function FeatureFlagRow({
               fontWeight: 300,
             }}
           >
-            {flag.description}
+            {description}
           </Text>
         )}
       </Box>

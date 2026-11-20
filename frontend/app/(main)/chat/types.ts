@@ -268,11 +268,8 @@ export function agentStrategyToApiSegment(
 }
 
 /**
- * Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field).
- * Only the current canonical segments — outgoing requests always go through
- * {@link agentStrategyToApiSegment}, which never produces the legacy
- * `verification` wire value; restoring THAT from persisted history is
- * `apply-conversation-model-info.ts`'s job, not this outgoing-request path.
+ * `chatMode` on every `/api/v1/agents/...` stream and regenerate: those routes take quick mode only, and refuse
+ * anything else with a 400. A constant, so neither a strategy nor a chat's older mode can lose a send that way.
  */
 const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
   "auto",
@@ -1383,6 +1380,8 @@ export interface SSEConnectedEvent {
    * If the backend later async-refines titles, `complete` still refreshes list/title state.
    */
   title?: string;
+  /** The run's id as the server knows it (same value as the `X-Run-Id` header), when it sends one. */
+  runId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -1623,6 +1622,11 @@ export interface MessagePart {
   notFound?: unknown;
   /** On the final `text` part (R32REPO-FU-1): what the run tried and could not do; read by `couldNotDoOf`. */
   limits?: unknown;
+  /**
+   * Set by this client, never by the server, on the ask_user_question call that showed a card, once the card is
+   * answered or replied to in the chat (`payload.repliedInChat`): the card and its answers, drawn as that call's row.
+   */
+  question?: { payload: AskUserQuestionPayload; answers?: Record<string, AskUserQuestionAnswer> };
   runId?: string;
   roleName?: string;
   parts?: MessagePart[];
@@ -1727,9 +1731,15 @@ export interface ConversationMessage {
   foreignTurn?: boolean;
   /** Copied from another conversation by a fork: its saved steps show, but it names none of that conversation's runs. */
   copied?: boolean;
-  /** The durable run that wrote this answer, when the server records it; always a run of this conversation. */
+  /**
+   * The run that wrote this row: the durable run, when the server records it (always a run of this conversation).
+   * A question still without an answer carries the id a cancel has to name.
+   */
   runId?: string;
-  /** An error answer's code (`messageType: 'error'`): shown in the reader's words (QA17-O2). */
+  /**
+   * An error answer's code (`messageType: 'error'`): shown in the reader's words (QA17-O2). On a refusal, for its
+   * asker only.
+   */
   errorCode?: string;
   /** With errorCode `mcp_tool_withdrawn`: the labels of the servers the words name (WP-84). */
   errorServers?: string[];
@@ -1747,6 +1757,8 @@ export interface ConversationMessage {
   limits?: unknown;
   /** The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed. */
   answerHidden?: { redacted: true; reason: 'no_longer_accessible' | 'access_check_unavailable' };
+  /** Tools the person asking had not connected; the answer went on without them. Parsed before use. */
+  unavailableTools?: unknown;
 }
 
 /**
@@ -1775,6 +1787,8 @@ export interface ConversationCompleteData {
   __v: number;
   projectId?: string;
   projectVisibility?: 'private' | 'project';
+  /** `'turn'`: `messages` holds only this turn's rows, to merge by id into the rows already loaded. */
+  frame?: 'turn';
 }
 
 export interface SSECompleteEvent {
@@ -1925,6 +1939,13 @@ export interface ToolApprovalDetails {
   /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
   arguments?: Record<string, unknown> | null;
   argumentsPreview?: string;
+  /**
+   * The call would send what this run read, and not everyone can open all of it: the card shows the whole call and
+   * where it goes, and no answer to it becomes a rule.
+   */
+  restricted?: boolean;
+  /** On a restricted card: each host the call names, as it is reached and as it reads. */
+  hosts?: Array<{ host: string; unicode: string }>;
 }
 
 /**
@@ -1932,9 +1953,8 @@ export interface ToolApprovalDetails {
  *
  * `isScopedAgent` distinguishes the two very different consumers of Agent
  * `QueryMode`: a conversation scoped to a specific custom Agent (`agentId`
- * set) still needs the `agent:<strategy>` wire value — its endpoint
- * (`agent.py`) unwraps that via {@link streamChatModeToAgentApiChatMode} to
- * drive `PipesHubAgentFactory`'s loop selection. The *main* chat's Agent
+ * set) gets the `agent:<strategy>` value here, which its routes are sent as
+ * that strategy ({@link streamChatModeToAgentApiChatMode}). The *main* chat's Agent
  * mode (no `agentId` — "Universal Agent Mode") has no such strategy
  * concept server-side (`chat_modes/policy.py`'s `AGENT_POLICY` decides
  * internal-search vs web-search vs both from the query itself), so it must
@@ -1993,8 +2013,22 @@ export interface AvailableLlmModel {
  */
 export type ActiveMessageAction =
   | null
-  | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
-  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters; attachments?: AttachmentRef[] };
+  | {
+      type: 'regenerate';
+      messageId: string;
+      appliedFilters?: AppliedFilters;
+      /** The answer's slot, when it is not the active one. */
+      slotId?: string;
+    }
+  | {
+      type: 'editQuery';
+      messageId: string;
+      text: string;
+      appliedFilters?: AppliedFilters;
+      attachments?: AttachmentRef[];
+      /** The answer's slot, when it is not the active one (an agent thread's, or a private one's). */
+      slotId?: string;
+    };
 
 // ── Multi-Chat Slot Types ──
 
@@ -2051,6 +2085,13 @@ export interface ChatSlot {
    * tab's connection dropped (refresh, closed tab). Drives `startRemoteRunPoll`.
    */
   remoteRunInProgress: boolean;
+  /**
+   * The run to cancel while `remoteRunInProgress` holds for a run this person started: the id on the question the
+   * server has not answered yet. `null` when it is not theirs to stop or the chat is followed another way.
+   */
+  remoteRunId: string | null;
+  /** Stop was pressed for the remote run: one cancel went out, and the button waits for the server's answer. */
+  remoteStopRequested: boolean;
 
   /** Messages in assistant-ui ThreadMessageLike[] format. */
   messages: ThreadMessageLike[];
@@ -2189,11 +2230,32 @@ export interface ChatSlot {
    * last share/unshare answer. `null` when not known.
    */
   sharedWith: SharedWithEntry[] | null;
+  /** Whether the conversation is open to its project's members, from the loaded detail; absent when not known. */
+  projectVisibility?: 'private' | 'project' | null;
   /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.
    */
   conversationModelInfo?: ModelInfo;
+  /** Questions waiting their turn, first in first out (`utils/queued-send.ts`); absent or empty when nothing waits. */
+  queue?: QueuedSend[];
+  /** Text to give back to the composer (an edited queued question, a refused send); the composer takes it and clears it. */
+  composerRestore?: string | null;
+  /** The composer holds text: a queued question is edited only into an empty box. */
+  composerHasText?: boolean;
+}
+
+/** A question waiting its turn in a chat's queue while the chat is busy. */
+export interface QueuedSend {
+  query: string;
+  attachments?: AttachmentRef[];
+  /** The question's id in the queue; it goes out as the message's client id where the request has one. */
+  clientMessageId: string;
+  queuedAt: number;
+  /** The server refused it when its turn came: the queue waits here until it is retried, edited or removed. */
+  failed?: string;
+  /** Sources the question names with `@`: they scope it when it goes. */
+  mentionIds?: string[];
 }
 
 // ── Search types ──────────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 // Axios instance with interceptors
 export { apiClient, default as apiClientDefault } from './axios-instance';
+export { sharedGet } from './shared-get';
 
 // SWR fetchers
 export { axiosFetcher, publicFetcher, configuredFetcher } from './fetcher';
@@ -13,6 +14,8 @@ export {
   processError,
   ErrorType,
   isProcessedError,
+  hasFieldErrors,
+  fieldErrorsOf,
   isRequestCancelledError,
   isSearchNoAccessibleDocumentsNotFound,
   SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS,

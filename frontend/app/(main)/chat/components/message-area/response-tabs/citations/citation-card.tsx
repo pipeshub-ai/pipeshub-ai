@@ -103,8 +103,8 @@ export function ReferenceCard({
     <Flex
       direction="column"
       style={{
-        backgroundColor: 'var(--olive-2)',
-        border: '1px solid var(--olive-3)',
+        backgroundColor: 'var(--surface-subtle)',
+        border: '1px solid var(--border-subtle)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-4)',
         gap: 'var(--space-6)',
@@ -126,7 +126,7 @@ export function ReferenceCard({
             <Text
               size="2"
               style={{
-                color: 'var(--slate-a11)',
+                color: 'var(--text-secondary)',
                 lineHeight: 'var(--line-height-2)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -148,7 +148,7 @@ export function ReferenceCard({
                 <Badge
                   size="2"
                   variant="soft"
-                  style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)', flexShrink: 0 }}
+                  style={{ fontWeight: 500, backgroundColor: 'var(--fill-ghost-hover)', color: 'var(--text-secondary)', flexShrink: 0 }}
                 >
                   {syncLabel}
                 </Badge>
@@ -159,7 +159,7 @@ export function ReferenceCard({
                   variant="outline"
                   color="gray"
                   onClick={handleOpenInSource}
-                  style={{ cursor: 'pointer', border: '0px solid var(--slate-a7)', color: 'var(--slate-11)', flexShrink: 0 }}
+                  style={{ cursor: 'pointer', border: '0px solid var(--gray-a7)', color: 'var(--text-secondary)', flexShrink: 0 }}
                 >
                   {openInLabel}
                 </Button>
@@ -189,7 +189,7 @@ export function ReferenceCard({
               size="3"
               weight="medium"
               style={{
-                color: 'var(--slate-12)',
+                color: 'var(--text-primary)',
                 lineHeight: 'var(--line-height-3)',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -211,7 +211,7 @@ export function ReferenceCard({
               <Text
                 size="2"
                 style={{
-                  color: 'var(--slate-12)',
+                  color: 'var(--text-primary)',
                   lineHeight: 'var(--line-height-2)',
                   display: '-webkit-box',
                   WebkitLineClamp: 4,
@@ -280,7 +280,7 @@ export function ReferenceCard({
                     size="2"
                     variant="soft"
                     color="gray"
-                    style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
+                    style={{ fontWeight: 500, backgroundColor: 'var(--fill-ghost-hover)', color: 'var(--text-secondary)' }}
                   >
                     {t('filePreview.page', { number: p })}
                   </Badge>
@@ -291,7 +291,7 @@ export function ReferenceCard({
                     size="2"
                     variant="soft"
                     color="gray"
-                    style={{ fontWeight: 500, backgroundColor: 'var(--slate-a3)', color: 'var(--slate-a11)' }}
+                    style={{ fontWeight: 500, backgroundColor: 'var(--fill-ghost-hover)', color: 'var(--text-secondary)' }}
                   >
                     {t('filePreview.paragraph', { number: b })}
                   </Badge>

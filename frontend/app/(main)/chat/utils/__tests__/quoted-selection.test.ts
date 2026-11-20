@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  QUOTED_SELECTION_FOOTER,
   QUOTED_SELECTION_MAX_CHARS,
   clipQuotedSelection,
   conversationTitleFromQuery,
@@ -24,6 +25,16 @@ describe('quoted-selection', () => {
       excerpt: null,
       question: 'What changed in Q3?',
     });
+  });
+
+  it('escapes three quotes inside an excerpt, so the excerpt ends where the composer closed it', () => {
+    const excerpt = 'def plan():\n"""\nThe deck\n"""\n\nreturn 1';
+    const stored = formatQuotedSelection(excerpt, 'Is this right?');
+    expect(stored.split(QUOTED_SELECTION_FOOTER)).toHaveLength(2);
+    expect(stored).not.toContain('\n"""\n\nreturn');
+    const parsed = parseQuotedSelection(stored);
+    expect(parsed.question).toBe('Is this right?');
+    expect(parsed.excerpt?.replace(/\u2060/g, '')).toBe(excerpt);
   });
 
   it('stores an excerpt with no follow-up question', () => {

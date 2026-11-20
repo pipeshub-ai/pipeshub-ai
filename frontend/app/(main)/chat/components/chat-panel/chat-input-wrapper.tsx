@@ -24,6 +24,10 @@ import { JobAskFloat } from '../job-ask/job-ask-float';
 import { sendChatMessage } from '../../send-chat-message';
 import { i18n } from '@/lib/i18n';
 import { readAccessNotices } from '@/app/components/feedback/access-notice';
+import { chatSlots } from '@/config';
+import type { ComposerSendExtra } from '../../chat-extension';
+import { queueSend, shouldQueueSend } from '../../utils/queued-send';
+import { QueueList } from './queue-list';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -44,6 +48,9 @@ export function ChatInputWrapper() {
   const aui = useAui();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
+  const composerSend = chatSlots.useComposerSend({ isAgentChat, agentId: effectiveAgentId ?? null });
+  const queueSends = composerSend.queueSends !== false;
+  const openSlotId = useChatStore((s) => s.activeSlotId);
 
   useEffect(() => {
     if (effectiveAgentId) {
@@ -171,10 +178,15 @@ export function ChatInputWrapper() {
     [effectiveAgentId],
   );
 
-  const handleSend = async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
+  const handleSend = async (
+    message: string,
+    attachments?: AttachmentRef[],
+    mentions?: MentionNode[],
+    extra?: ComposerSendExtra,
+  ) => {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
-    const store = useChatStore.getState();
+    let store = useChatStore.getState();
 
     // Search mode: direct API call, no slots/runtime (disabled for agent-scoped chat)
     // Attachments are not supported in search mode — silently ignored.
@@ -183,21 +195,50 @@ export function ChatInputWrapper() {
       return;
     }
 
-    sendChatMessage(aui, message, attachments, mentions);
+    const intercepted = composerSend.intercept(message, attachments, extra, mentions);
+    const handled = intercepted && (await intercepted);
+    // `false` tells the composer to keep the draft.
+    if (handled === 'keep') return false;
+    if (handled) return;
+    // The extension may have waited (a confirm dialog): decide on the chat as it is now.
+    store = useChatStore.getState();
+
+    // ── Chat mode ──
+    // A question asked while the answer runs, or behind questions already
+    // waiting, joins the queue above the box; a full queue keeps it in the box.
+    const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
+    if (queueSends && store.activeSlotId && shouldQueueSend(active)) {
+      const mentionIds = mentions && mentions.length > 0 ? mentions.map((node) => node.id) : undefined;
+      return queueSend(store.activeSlotId, { query: message, attachments, ...(mentionIds ? { mentionIds } : {}) }) ? undefined : false;
+    }
+    // Nothing sent (a run still going, or one from before a refresh still writing): `false` keeps the
+    // refused text in the composer.
+    const sent = sendChatMessage(aui, message, attachments, mentions, {
+      beforeAppend: () => composerSend.beforeAppend(extra),
+      custom: () => composerSend.messageCustom(extra),
+      afterAppend: () => composerSend.afterAppend(),
+    });
+    return sent ? undefined : false;
   };
 
   return (
     <>
       <JobAskFloat />
       <InteractionWaitingBar />
+      {composerSend.accessories}
+      <QueueList slotId={openSlotId} />
       <ChatInput
         onSend={handleSend}
+        placeholder={composerSend.placeholder}
+        sendDuringRun={composerSend.sendDuringRun}
+        queueDuringRun={queueSends}
         onUploadFile={handleUploadFile}
         onDeleteFile={handleDeleteFile}
         isAgentChat={isAgentChat}
         agentId={effectiveAgentId}
         prefill={prefill}
         persistDraft
+        useWorkspacePlaceholder
       />
     </>
   );

@@ -7,7 +7,7 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
-vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false }));
+vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false, fieldErrorsOf: () => ({}) }));
 vi.mock('@/config', () => ({
   isMcpInstanceReadOnly: () => false,
   McpInheritedCallout: () => null,
@@ -42,6 +42,9 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
 vi.mock('../../../../components', async () => ({
   // The real wrapper: the panel's fields read the mocked FormField's ids through it.
   FormFieldTextField: (await vi.importActual<typeof import('../../../../components/form-field')>('../../../../components/form-field')).FormFieldTextField,
+  // The real hook and input: they only read the FormField context this mock leaves empty.
+  useFormValidation: (await import('../../../../components/use-form-validation')).useFormValidation,
+  LabeledTextField: (await import('../../../../components/form-field')).LabeledTextField,
   FormField: ({ label, children }: { label: string; children: React.ReactNode }) => (
     <div role="group" aria-label={label}>
       {children}

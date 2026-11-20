@@ -47,11 +47,19 @@ export function previewQuotedSelection(
   return `${oneLine.slice(0, maxChars).trimEnd()}…`;
 }
 
+/**
+ * Three quotes inside an excerpt (a selected code block's docstring) would read as the mark that closes it: a word
+ * joiner goes before the third, which shows nothing, so the excerpt always ends where the composer closed it.
+ */
+export function escapeQuoteMarks(excerpt: string): string {
+  return excerpt.replace(/"""/g, '""\u2060"');
+}
+
 export function formatQuotedSelection(excerpt: string, question: string): string {
   const { text } = clipQuotedSelection(excerpt);
   const asked = question.trim();
   if (!text) return asked;
-  return `${QUOTED_SELECTION_HEADER}${text}${QUOTED_SELECTION_FOOTER}${asked}`;
+  return `${QUOTED_SELECTION_HEADER}${escapeQuoteMarks(text)}${QUOTED_SELECTION_FOOTER}${asked}`;
 }
 
 export function parseQuotedSelection(content: string): {
