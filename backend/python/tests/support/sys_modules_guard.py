@@ -170,7 +170,9 @@ def pytest_make_collect_report(collector: pytest.Collector) -> Generator[None, p
         with sys_modules_unchanged(f"importing {collector.nodeid}"):
             report = yield
     except ModulesChangedError as error:  # raising from a hook wrapper is an INTERNALERROR; fail the file instead
-        report.outcome, report.longrepr, report.result = "failed", str(error), []
+        # An import that also raised keeps its traceback, so the developer still sees why the import stopped.
+        longrepr = f"{report.longrepr}\n\n{error}" if report.failed else str(error)
+        report.outcome, report.longrepr, report.result = "failed", longrepr, []
     return report
 
 

@@ -225,6 +225,39 @@ async def test_stage_states_of_revisions_no_record_is_on(world: _World) -> None:
     assert await world.graph.stage_states_delete_unheld_revisions([], updated_before_ms=cutoff) == 0
 
 
+@pytest.mark.parametrize("status", ["FAILED", "NOT_STARTED"])
+async def test_a_record_that_never_served_an_indexed_copy_holds_only_its_own_revision(world: _World, status: str) -> None:
+    """The bound: a record that stays FAILED, AUTO_INDEX_OFF or NOT_STARTED without ever being indexed keeps no other revision's states."""
+    now = get_epoch_timestamp_in_ms()
+    old, cutoff = now - 48 * HOUR_MS, now - 24 * HOUR_MS
+    vrid = world.vrid("never")
+    record_id = await world.record("never", vrid, "r2")
+    await world.graph.update_node(record_id, CollectionNames.RECORDS.value, {"indexingStatus": status, "hasIndexedCopy": False})
+    await world.state(vrid, "r1", "classify", old)
+    world.vrids.append(vrid)
+    assert await world.graph.stage_states_unheld_revisions([vrid], updated_before_ms=cutoff) == [(vrid, "r1")]
+
+
+@pytest.mark.parametrize("status", ["IN_PROGRESS", "FAILED", "QUEUED"])
+async def test_the_stage_states_of_a_served_copy_stay_held_while_its_replacement_has_not_committed(world: _World, status: str) -> None:
+    """A record whose replacement copy failed (or is still running) names the old vrid with the revision of the attempt: the states
+    of the old revision are still the served copy's, so no revision of that vrid is unheld; once it is COMPLETED again the rule is the
+    content revision's, as it was."""
+    now = get_epoch_timestamp_in_ms()
+    old, cutoff = now - 48 * HOUR_MS, now - 24 * HOUR_MS
+    vrid = world.vrid("replacing")
+    record_id = await world.record("replacing", vrid, "r2")  # r2: the failed attempt's revision; the served copy was r1
+    await world.graph.update_node(record_id, CollectionNames.RECORDS.value, {"indexingStatus": status, "hasIndexedCopy": True})
+    await world.state(vrid, "r1", "classify", old)
+    await world.state(vrid, "r3", "classify", old)
+    world.vrids.append(vrid)
+    assert await world.graph.stage_states_unheld_revisions([vrid], updated_before_ms=cutoff) == []
+    assert await world.graph.stage_states_delete_unheld_revisions([(vrid, "r1"), (vrid, "r3")], updated_before_ms=cutoff) == 0
+    assert await world.revs_with_states(vrid) == {"r1", "r3"}
+    await world.graph.update_node(record_id, CollectionNames.RECORDS.value, {"indexingStatus": ProgressStatus.COMPLETED.value})
+    assert await world.graph.stage_states_unheld_revisions([vrid], updated_before_ms=cutoff) == [(vrid, "r1"), (vrid, "r3")]
+
+
 async def test_the_sweep_against_the_graph(world: _World) -> None:
     """The sweep end to end on a real graph, with a fake store: trash skips, holders keep."""
     now = get_epoch_timestamp_in_ms()

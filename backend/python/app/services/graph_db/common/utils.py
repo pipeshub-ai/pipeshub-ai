@@ -534,6 +534,7 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "propsGen",
     "propsSrc",
     "propsVer",
+    "pendingVirtualRecordId",
     "embedVrid",
     "embedRev",
     "embedKey",

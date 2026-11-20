@@ -19,9 +19,11 @@ from app.services.graph_db.arango.record_schema_guard import (
 )
 
 # Change the rule -> this hash changes -> bump RECORD_SCHEMA_GENERATION, then update the pair below.
-# Generation 3 is claimed by the open change that keeps a record's old copy searchable until its re-index commits; this change adds
-# `incarnationId` and takes the next number, so the two cannot both land on 3.
-PINNED = {4: "8afab6876d44a99ac9812366b1c6998a8cc18a9de5874a98e348e4dc9ce0f5f1"}
+PINNED = {
+    2: "53cf2c2c1dd02fc6616e59bc8d67814a25887b4debf7f26399178514fa03b829",
+    3: "f3f0ab23062f1b5875c4788e74cfd6da94c6a617e8195eb4a69918890ff962b6",  # + pendingVirtualRecordId
+    4: "60c1e0bcc2e165a2bcf22475e35d007e8da4d7f2e91923aa0fd3aa2f889ce776",  # + incarnationId
+}
 
 
 def _hash(schema: dict) -> str:

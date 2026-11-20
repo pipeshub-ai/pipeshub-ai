@@ -48,7 +48,7 @@ from app.modules.code_graph.build_state import (
     claimed_build_already_ran,
     request_is_stale,
 )
-from app.modules.indexing import replay_set
+from app.modules.indexing import keep_old_copy, replay_set
 from app.modules.indexing.connector_off_events import (
     HELD_FOR_DELETE_DELAY_S,
     SAME_BYTES_GIVE_UP_LABEL,
@@ -821,6 +821,21 @@ class RecordEventHandler(BaseEventService):
         if not access:
             return _PARSE_NOW_NO_ACCESS, False
         return None
+
+    async def _release_pending_copy(self, record_id: str, org_id: str | None) -> None:
+        """A record failed for good: the replacement copy it was writing is released (it kept serving its old one).
+
+        The FAILED write already made that copy unheld for every sweep; this removes the field and deletes the copy through the
+        holder-checked paths. A failure is logged: the orphan sweep reclaims the copy."""
+        orchestrator = getattr(getattr(self.event_processor, "processor", None), "sink_orchestrator", None)
+        swap = getattr(orchestrator, "swap", None)
+        if swap is None or not org_id:
+            return
+        attempt = keep_old_copy.current_swap(record_id)
+        try:
+            await swap.release_failed(record_id, org_id, attempt.new_vrid if attempt is not None else None)
+        except Exception as exc:
+            self.logger.warning("Replacement copy of record %s not released: %s", record_id, type(exc).__name__)
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -3078,7 +3093,9 @@ class RecordEventHandler(BaseEventService):
                         raise
                     if record is not None and not store_only:
                         virtual_record_id = record.get("virtualRecordId")
-                        
+                        if keep_old_copy.pending_of(record):
+                            await self._release_pending_copy(record_id, RecordContext.from_graph_document(record).org_id)
+
                         # Decide duplicate handling based on error type
                         if (last_exception and 
                             MessageErrorClassifier.classify_by_exception(last_exception)
