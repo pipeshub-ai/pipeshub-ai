@@ -10,6 +10,7 @@ import {
   retrieveOpenAIModel,
 } from '../controller/openai_models.controller';
 import { AiModelsConfigRepository } from '../services/aiModelsConfig.repository';
+import type { AIModelsConfig } from '../types/ai-models.types';
 
 /**
  * OpenAI-compatible catalog. Mounted at ``/v1`` and ``/api/v1`` so a client
@@ -22,7 +23,10 @@ export function createOpenAIModelsRouter(container: Container): Router {
     'KeyValueStoreService',
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  const read = () => new AiModelsConfigRepository(keyValueStoreService).read();
+  // An edition that reads the models config another way binds its own reader.
+  const read = container.isBound('AiModelsReader')
+    ? container.get<() => Promise<AIModelsConfig | null>>('AiModelsReader')
+    : () => new AiModelsConfigRepository(keyValueStoreService).read();
   const guards = [
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
