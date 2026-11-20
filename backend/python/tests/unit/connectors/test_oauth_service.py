@@ -1014,6 +1014,15 @@ class TestExchangeCodeForToken:
         with pytest.raises(ValueError, match="missing required 'access_token'"):
             await provider.exchange_code_for_token("code")
 
+    @pytest.mark.asyncio
+    async def test_exchange_missing_access_token_is_tagged_for_the_refresh_lines(self, mock_config_service) -> None:
+        provider = OAuthProvider(_make_oauth_config(), mock_config_service, "/path")
+        provider._make_token_request = AsyncMock(return_value={"token_type": "Bearer"})
+
+        with pytest.raises(oauth_service.TokenResponseError) as raised:
+            await provider.exchange_code_for_token("code")
+        assert isinstance(raised.value, ValueError)  # callers that catch ValueError are unchanged
+
 
 # ---------------------------------------------------------------------------
 # OAuthProvider.refresh_access_token()
@@ -1022,6 +1031,22 @@ class TestExchangeCodeForToken:
 
 class TestRefreshAccessToken:
     """Tests for refresh_access_token()."""
+
+    @pytest.mark.parametrize("token_response_path", [None, "authed_user"], ids=["top_level", "nested_path"])
+    @pytest.mark.parametrize("body", [{"token_type": "bearer"}, [{"access_token": "in-a-list"}]], ids=["no_access_token", "json_list"])
+    @pytest.mark.asyncio
+    async def test_a_success_answer_without_an_access_token_is_a_tagged_token_response_error(
+        self, mock_config_service, body: object, token_response_path: str | None,
+    ) -> None:
+        provider = OAuthProvider(
+            _make_oauth_config(token_response_path=token_response_path), mock_config_service, "/path",
+        )
+        provider._make_token_request = AsyncMock(return_value=body)
+
+        with pytest.raises(oauth_service.TokenResponseError, match="missing required 'access_token'") as raised:
+            await provider.refresh_access_token("old-refresh")
+        assert raised.value.refresh_reason == "no_access_token"
+        mock_config_service.set_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_basic_refresh(self, mock_config_service):
