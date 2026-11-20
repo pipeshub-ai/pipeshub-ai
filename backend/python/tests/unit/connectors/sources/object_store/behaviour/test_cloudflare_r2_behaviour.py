@@ -199,6 +199,22 @@ class TestTokens:
         assert "arn:aws" not in str(refused.value)
 
     @pytest.mark.asyncio
+    async def test_every_selected_bucket_the_token_cannot_read_is_named(self, connector, source, monkeypatch) -> None:
+        connector.bucket_name = None
+        source.add_bucket("other")
+        source.denied.update({BUCKET, "other"})
+        monkeypatch.setattr(
+            "app.connectors.sources.s3.base_connector.included_names", lambda filters, key: [BUCKET, "other"]
+        )
+
+        with pytest.raises(ConnectorInitError) as refused:
+            await connector.test_connection_and_access()
+
+        assert f"bucket '{BUCKET}'" in str(refused.value)
+        assert "bucket 'other'" in str(refused.value)
+        assert "arn:aws" not in str(refused.value)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("code", ["SignatureDoesNotMatch", "InvalidAccessKeyId"])
     async def test_a_wrong_key_is_not_told_to_change_the_token_permissions(self, connector, source, code) -> None:
         """R2 answered SignatureDoesNotMatch with a 403 when a real run used a wrong secret."""

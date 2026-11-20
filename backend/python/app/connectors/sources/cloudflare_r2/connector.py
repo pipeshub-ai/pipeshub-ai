@@ -39,6 +39,18 @@ from app.sources.external.cloudflare_r2.cloudflare_r2 import CloudflareR2DataSou
 CLOUDFLARE_DASHBOARD_URL = "https://dash.cloudflare.com"
 
 _TOKEN_HINT = "Check that the R2 API token can list buckets and read objects. An Admin Read only token can do both."
+_AWS_POLICY_HINT = " The key needs "
+
+
+def _reworded_for_r2(problem: str | None) -> str | None:
+    """One access problem with the base class's hint, an AWS IAM policy an R2 token does not have, replaced."""
+    if not problem or _AWS_POLICY_HINT not in problem:
+        return problem
+    reason = problem.split(_AWS_POLICY_HINT, 1)[0]
+    # R2 answers 403 to a wrong key too, and that reason already says which field to fix.
+    if "SignatureDoesNotMatch" in reason or "InvalidAccessKeyId" in reason:
+        return reason
+    return f"{reason} {_TOKEN_HINT}"
 
 
 @ConnectorBuilder("Cloudflare R2")\
@@ -187,13 +199,14 @@ class CloudflareR2Connector(S3CompatibleBaseConnector):
         # R2 signs for "auto" whatever location a bucket reports, so asking would only spend a request.
         return R2_REGION
 
+    async def _bucket_access_problem(self, bucket_name: str, prefix: str = "") -> str | None:
+        return _reworded_for_r2(await super()._bucket_access_problem(bucket_name, prefix))
+
     async def _access_problem(self) -> str | None:
-        problem = await super()._access_problem()
-        # The base class words its hint as an AWS IAM policy, which an R2 token does not have.
-        if problem and " The key needs " in problem:
-            reason = problem.split(" The key needs ", 1)[0]
-            # R2 answers 403 to a wrong key too, and that reason already says which field to fix.
-            return reason if "SignatureDoesNotMatch" in reason or "InvalidAccessKeyId" in reason else f"{reason} {_TOKEN_HINT}"
+        problem = _reworded_for_r2(await super()._access_problem())
+        # Every unreadable bucket brings the hint; say it once, after all of them.
+        if problem and _TOKEN_HINT in problem:
+            return f"{problem.replace(f' {_TOKEN_HINT}', '')} {_TOKEN_HINT}"
         return problem
 
     @classmethod
