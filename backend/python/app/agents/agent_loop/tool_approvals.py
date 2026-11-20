@@ -93,7 +93,7 @@ _MAX_CARD_ARGUMENT_CHARS = 8_000
 # The stopped turn is kept (`parked_turn`) until the card can no longer be answered.
 TURN_TTL_SECONDS = APPROVAL_TTL_SECONDS + 600
 # How the result of a call that stopped on a card starts (its row, and its result in the history).
-WAITING_PREFIX = "Waiting for your approval to run"
+WAITING_PREFIX = parked_turn.WAITING_PREFIX
 
 Rule = Literal["allow", "ask", "block"]
 Decision = Literal["allow", "deny"]
@@ -147,6 +147,8 @@ class PendingCall(MCPCamelModel):
     tool_call_id: str = ""
     # Asked on a restricted card: its answer never becomes a rule.
     restricted: bool = False
+    # Asked in a sub-agent's run: the call's row is nested in its parent's reply, so no history holds the call.
+    nested: bool = False
     created_at: float
     expires_at: float
 
@@ -158,6 +160,9 @@ class ToolApprovalAnswer(MCPCamelModel):
     decision: Decision
     # "Don't ask again for this tool": the answer becomes the person's rule for it.
     remember: bool = False
+    # The history row that held the card, as the app's server found it when it bound the answer; the call runs only
+    # while the history it sent still gives the model that row.
+    card_row_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class Outcome(MCPCamelModel):
@@ -170,6 +175,8 @@ class Outcome(MCPCamelModel):
     preview: str = ""
     summary: Optional[str] = None
     ran: bool = False
+    # Why an allowed call didn't run, when the card says so: the person no longer has access to the turn it was in.
+    reason: Optional[Literal["access_lost"]] = None
 
 
 def enabled(source: Source = "mcp") -> bool:
@@ -473,8 +480,17 @@ def _target(context: "AgentContext", path: str) -> Optional[ApprovalTarget]:
     return target if target is not None and enabled("toolset") else None
 
 
-def _identity(target: ApprovalTarget) -> tuple[str, str, str]:
-    return target.source, target.instance_id, target.tool_name
+@dataclass(frozen=True)
+class _ApprovedCall:
+    """The call on the card this request answers, while the answer runs it: the tool's path and the
+    arguments the person saw."""
+
+    tool_path: str
+    arguments: str
+
+
+def _arguments_key(arguments: object) -> str:
+    return json.dumps(arguments, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
 
 
 def call_target(context: "AgentContext", tool_path: str, tool: "Tool | None", name: str) -> ApprovalTarget:
@@ -493,9 +509,16 @@ def call_target(context: "AgentContext", tool_path: str, tool: "Tool | None", na
     )
 
 
-def is_approved_call(context: "AgentContext", target: ApprovalTarget) -> bool:
-    """The call a person just approved on its card, run as they saw it."""
-    return context.tool_state.get(_APPROVED_CALL) == _identity(target)
+def is_approved_call(context: "AgentContext", ctx: "ToolCallContext") -> bool:
+    """Whether `ctx` is the call a person just approved on its card, as they saw it: the same tool
+    with the same arguments, while their answer runs it. A later call, or one whose arguments changed
+    on the way to the tool, is judged as if no card had been answered."""
+    approved = context.tool_state.get(_APPROVED_CALL)
+    return (
+        isinstance(approved, _ApprovedCall)
+        and ctx.tool_path == approved.tool_path
+        and _arguments_key(ctx.tool_input) == approved.arguments
+    )
 
 
 @dataclass
@@ -619,8 +642,7 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             kind=target.kind,
             source=target.defaults or target.source,
             watched=watched(context),
-            approved_call=bool(context.tool_state.get(KERNEL_ASKS))
-            or context.tool_state.get(_APPROVED_CALL) == _identity(target),
+            approved_call=bool(context.tool_state.get(KERNEL_ASKS)) or is_approved_call(context, ctx),
             enabled_on_project=context.project_tools_selected,
         )
         if verdict.rule == "block":
@@ -653,6 +675,14 @@ async def _ask(
     restricted: Optional[dict[str, Any]] = None,
 ) -> None:
     tool_name, server = target.tool_name, target.owner
+    if context.tool_state.get(_APPROVED_CALL) is not None:
+        # Only the approved call runs while its answer runs it; held again here, it isn't what the card showed.
+        ctx.deny(
+            f"{tool_name} on {server} wasn't run: it changed after the user approved it. "
+            "If it's still needed, call the tool again to ask the user for this one.",
+            code="approved_call_changed",
+        )
+        return
     if context.tool_state.get(_PENDING_IN_RUN):
         # The model reads this when the answer to the other card resumes the turn: it must ask again
         # then, or the action is silently dropped.
@@ -669,7 +699,8 @@ async def _ask(
         conversation_id=context.conversation_id or "", source=target.source, personal=target.personal,
         instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
-        restricted=restricted is not None, created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
+        restricted=restricted is not None, nested=ctx.scope is not None and ctx.scope.turn.run.identity.parent_run_id is not None,
+        created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
     # Taken before the write is awaited: calls in one wave run concurrently.
     context.tool_state[_PENDING_IN_RUN] = pending.approval_id
@@ -770,7 +801,9 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
         names = await parked_turn.restore(context, history, call_id=settled.call_id)
         if names:
             _show_tools(ctx.scope, names)
+        await _answer_after_others(context, history, settled.call_id)
         await _bind(history, settled, ctx.scope.goal)
+        parked_turn.carried_on(context, len(await history.messages()))
         await next_fn()
 
     return _middleware
@@ -806,9 +839,45 @@ class _Settled:
     arguments: dict[str, Any]
     result: str
     is_error: bool
+    # How the card was answered (`Outcome.answer`), and why an allowed call didn't run (`Outcome.reason`), when it
+    # was; whether it was a restricted card, whose arguments and result may hold what the run read; whether a
+    # sub-agent asked (`PendingCall.nested`); and whether this request's history still gives the model the turn.
+    answer: str = ""
+    restricted: bool = False
+    nested: bool = False
+    reason: Optional[str] = None
+    carried: bool = True
+
+    def unshown(self) -> str:
+        """The outcome without the call's arguments or what it returned, for a history that no longer
+        carries the turn the call was in."""
+        if self.answer != "allowed" or self.reason is not None:
+            return self.result
+        if self.is_error:
+            return ("The user approved the action on their card, but it didn't complete. Its details aren't shown "
+                    "here: the reply it was in is no longer in this conversation's history.")
+        return ("The user approved the action on their card, and it ran. Its details aren't shown here: the reply "
+                "it was in is no longer in this conversation's history.")
 
 
 _NOT_RUN_REASON = {"expired": "expired", "declined": "declined"}
+
+
+def _turn_carried(context: "AgentContext", answer: ToolApprovalAnswer, pending: PendingCall) -> bool:
+    """Whether the history the app's server sent with the answer still gives the model the turn the card stopped:
+    the row that held the card (`card_row_id`), sealed with its id as every row given to the model is. With no row
+    named, the call's own result in that history; a sub-agent's call, whose row is nested in its parent's reply,
+    can only be checked by its row."""
+    rows = [row for row in context.previous_conversations or () if isinstance(row, dict)]
+    if answer.card_row_id is not None:
+        return any(row.get("_ref") == answer.card_row_id for row in rows)
+    if pending.nested:
+        return True
+    return any(
+        isinstance(result, dict) and result.get("tool_id") == pending.tool_call_id
+        for row in rows if row.get("role") == "bot_response"
+        for result in row.get("tool_results") or ()
+    )
 
 
 def _log_answered(
@@ -861,17 +930,26 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             return _Settled(call_id, tool_name, pending.arguments, (
                 f"The user already answered the approval for {pending.tool_name} on {pending.server_name}; "
                 "it may still be running. Don't run it again."
-            ), True)
+            ), True, restricted=pending.restricted, nested=pending.nested)
         _log_answered(answer, pending, "already_answered", call_id=call_id, tool=tool_name, outcome=outcome)
         await _show(run, call_id, tool_name, pending, target, outcome)
-        return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
+        return _Settled(
+            call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed",
+            answer=outcome.answer, restricted=pending.restricted, nested=pending.nested, reason=outcome.reason,
+            carried=_turn_carried(context, answer, pending),
+        )
     tool, server = pending.tool_name, pending.server_name
     outcome: Optional[Outcome] = None
     remembered: Optional[str] = None
+    # Approving a card grants no access the person has since lost: decided with the claim, so the refusal is the
+    # card's settled outcome and no later answer runs the call.
+    carried = _turn_carried(context, answer, pending)
     if claim.status == "expired":
         decision = "expired"
     elif answer.decision == "deny":
         decision = "declined"
+    elif not carried:
+        decision = "access_lost"
     else:
         decision = "approved" if target is not None else "unavailable"
     try:
@@ -891,6 +969,13 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             )
             if remember:
                 remembered = await _remember(context, pending, "block")
+        elif not carried:
+            outcome = Outcome(
+                answer="allowed", status="blocked", reason="access_lost",
+                preview="Didn't run: you no longer have access to something it used.",
+                result=f"The user approved {tool} on {server}, but it didn't run, because they no longer have access "
+                "to something it used. Tell them it didn't run and why, and don't call it again.",
+            )
         elif target is None:
             outcome = Outcome(
                 answer="allowed", status="blocked", preview="This tool is no longer available.",
@@ -914,13 +999,18 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
         )
         if claim.status == "claimed":
             await _keep_outcome(context.config_service, pending.approval_id, kept)
-    if outcome.answer != "allowed" or target is None:
+    if outcome.answer != "allowed" or target is None or outcome.reason is not None:
         # Not run: the parked call's one `tool_call.end` (the executor logs it when it runs).
         log_tool_call_end(
-            outcome="skipped", reason=_NOT_RUN_REASON.get(outcome.answer, "unavailable"), tool=tool_name, tool_call_id=call_id,
+            outcome="skipped", reason=outcome.reason or _NOT_RUN_REASON.get(outcome.answer, "unavailable"),
+            tool=tool_name, tool_call_id=call_id,
         )
         await _show(run, call_id, tool_name, pending, target, outcome)
-    return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
+    return _Settled(
+        call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed",
+        answer=outcome.answer, restricted=pending.restricted, nested=pending.nested, reason=outcome.reason,
+        carried=carried,
+    )
 
 
 async def _saved(save: Any, rule: Rule) -> str:  # noqa: ANN401
@@ -1008,6 +1098,11 @@ def _start_payload(call_id: str, tool_name: str, pending: PendingCall, target: O
 async def _show(run: Any, call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget], outcome: Outcome) -> None:  # noqa: ANN401
     """The stopped call's row, settled: the same id, so it replaces the card's row in the reply."""
     start = _start_payload(call_id, tool_name, pending, target, outcome.answer)
+    if outcome.reason is not None:
+        # The card says why it didn't run. A call refused for lost access shows none of its arguments: they may
+        # hold what the person can no longer read.
+        start.update(args={}, approval_reason=outcome.reason)
+        start.pop("args_summary", None)
     if outcome.ran:
         # Kept on the reply's part: regenerating that reply could run the action again.
         start["approved"] = True
@@ -1036,7 +1131,7 @@ async def _run(context: "AgentContext", run: Any, target: ApprovalTarget, pendin
 
     call = ToolCall(id=call_id, name=name, arguments=pending.arguments)
     await _emit(run, EventType.TOOL_CALL_START, {**_start_payload(call_id, name, pending, target, "allowed"), "approved": True})
-    context.tool_state[_APPROVED_CALL] = _identity(target)
+    context.tool_state[_APPROVED_CALL] = _ApprovedCall(target.tool.path, _arguments_key(pending.arguments))
     try:
         result = await ToolExecutor(run.runtime.tool_registry, run.runtime.hooks).call_tool(
             call, session_id=run.session_id, on_denied=_on_denied,
@@ -1091,35 +1186,71 @@ def _quietly(fn: Any, *args: Any) -> Any:  # noqa: ANN401
         return None
 
 
-async def _bind(history: "ContextManager", settled: _Settled, goal: Any) -> None:  # noqa: ANN401
-    """Makes the outcome the stopped call's result in the conversation the model reads. The turn's
-    closing words ("Waiting for your approval…") go: the result follows the call. A call the history
-    doesn't have (a sub-agent's, whose row is nested) is added after it, with its result. Call ids
-    are unique in the history, so the call is looked for in all of it: adding one that is already
-    there would repeat its id, which providers refuse."""
-    messages = list(await history.messages())
-    while messages and isinstance(messages[-1], AssistantMessage) and not messages[-1].tool_calls:
-        messages.pop()
-    if settled.call_id:
-        candidates = range(len(messages) - 1, -1, -1)
+def _stopped_index(messages: list[Any], call_id: str) -> Optional[int]:
+    """Where the stopped call's result is. Call ids are unique in the history, so it is looked for in
+    all of it; without an id, in the last turn, by its waiting words."""
+    if call_id:
+        candidates: range = range(len(messages) - 1, -1, -1)
     else:
         turn_start = max((i for i, m in enumerate(messages) if isinstance(m, UserMessage)), default=0)
         candidates = range(turn_start, len(messages))
-    index = next((
-        i for i in candidates
-        if isinstance(messages[i], ToolMessage) and _is_stopped_call(messages[i], settled.call_id)
-    ), None)
+    return next((i for i in candidates if isinstance(messages[i], ToolMessage) and _is_stopped_call(messages[i], call_id)), None)
+
+
+async def _answer_after_others(context: "AgentContext", history: "ContextManager", call_id: str) -> None:
+    """When other people wrote after the turn that stopped (a room), the person's answer to its card
+    follows their rows as the person's own words for this request: the request then ends on the
+    person's message, never on someone else's reply, and the stopped turn stays where it is."""
+    messages = list(await history.messages())
+    index = _stopped_index(messages, call_id)
+    if index is not None:
+        newest = not any(isinstance(m, UserMessage) and not m.injected for m in messages[index + 1:])
+    else:
+        newest = bool(messages) and parked_turn.closes_a_stopped_turn(messages[-1])
+    if not newest and isinstance(context.query, str) and context.query.strip():
+        await history.add(UserMessage(content=context.query.strip()))
+
+
+def _drop_closing_words(messages: list[Any], index: int) -> None:
+    """The stopped turn's closing words ("Waiting for your approval…") go: the result follows the
+    call. They follow the turn's last result; whatever comes after them, another person's turn
+    included, stays."""
+    end = index + 1
+    while end < len(messages) and isinstance(messages[end], ToolMessage):
+        end += 1
+    stop = end
+    while stop < len(messages) and parked_turn.closes_a_stopped_turn(messages[stop]):
+        stop += 1
+    del messages[end:stop]
+
+
+async def _bind(history: "ContextManager", settled: _Settled, goal: Any) -> None:  # noqa: ANN401
+    """Makes the outcome the stopped call's result in the conversation the model reads, in place, and
+    drops the turn's closing words. A sub-agent's call, whose row is nested, is added at the end with
+    its result: adding one that is already there would repeat its id, which providers refuse. Any
+    other call the history doesn't have was in a turn the history no longer carries, and a call asked
+    on a restricted card may hold what the run read: either is told as its outcome alone."""
+    messages = list(await history.messages())
+    index = _stopped_index(messages, settled.call_id)
     if index is not None:
         messages[index] = ToolMessage(
             content=settled.result, tool_call_id=messages[index].tool_call_id, is_error=settled.is_error,
         )
-    elif settled.call_id:
-        messages.append(AssistantMessage(
-            content=[], tool_calls=[ToolCall(id=settled.call_id, name=settled.tool, arguments=settled.arguments)],
-        ))
-        messages.append(ToolMessage(content=settled.result, tool_call_id=settled.call_id, is_error=settled.is_error))
+        _drop_closing_words(messages, index)
     else:
-        goal.constraints.append(settled.result)
+        while messages and parked_turn.closes_a_stopped_turn(messages[-1]):
+            messages.pop()
+        if settled.call_id and settled.nested and settled.carried and not settled.restricted:
+            messages.append(AssistantMessage(
+                content=[], tool_calls=[ToolCall(id=settled.call_id, name=settled.tool, arguments=settled.arguments)],
+            ))
+            messages.append(ToolMessage(content=settled.result, tool_call_id=settled.call_id, is_error=settled.is_error))
+        elif settled.call_id:
+            # Node blanked or removed the reply, or the model may not be given the call: what came of it, and
+            # nothing of the call itself.
+            goal.constraints.append(settled.unshown())
+        else:
+            goal.constraints.append(settled.result)
     await history.clear()
     for message in messages:
         await history.add(message)

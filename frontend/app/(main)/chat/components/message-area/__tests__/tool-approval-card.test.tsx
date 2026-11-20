@@ -354,6 +354,21 @@ describe('ChatResponse with a call waiting for approval', () => {
     expect(screen.getByTestId('tool-approval-receipts').textContent).toBe("You allowed Create an issue, but it didn't runJira");
   });
 
+  it('says why an approved call refused for lost access did not run', () => {
+    const refused = [
+      {
+        type: 'tool_call' as const, toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'blocked' as const,
+        approvalAnswer: 'allowed' as const, approvalReason: 'access_lost' as const, approval: approval(),
+      },
+      { type: 'text' as const, content: "It didn't run.", isFinal: true },
+    ];
+    renderInTheme(<ChatResponse question="Q" answer="It didn't run." persistedParts={refused} isLastMessage />);
+
+    expect(screen.getByTestId('tool-approval-receipts').textContent).toBe(
+      "This didn't run because you no longer have access to something it used.Jira",
+    );
+  });
+
   it('offers no Regenerate on a reply that carried on from an answered card', () => {
     const declined = [
       { type: 'tool_call' as const, toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'blocked' as const, approvalAnswer: 'declined' as const },

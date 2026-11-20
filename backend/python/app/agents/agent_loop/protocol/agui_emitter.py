@@ -56,6 +56,8 @@ MESSAGE_DISCARDED_EVENT_NAME = "message_discarded"
 
 # How a call that waited for approval was settled (`tool_approvals.Outcome.answer`).
 _APPROVAL_ANSWERS = ("allowed", "declined", "expired")
+# Why an allowed call didn't run (`tool_approvals.Outcome.reason`), which the card says.
+_APPROVAL_REASONS = ("access_lost",)
 
 
 class AGUIEventEmitter(EventEmitter):
@@ -146,6 +148,8 @@ class AGUIEventEmitter(EventEmitter):
                 start_kwargs["approved"] = True
             if payload.get("approval_answer") in _APPROVAL_ANSWERS:
                 start_kwargs["approvalAnswer"] = payload["approval_answer"]
+            if payload.get("approval_reason") in _APPROVAL_REASONS:
+                start_kwargs["approvalReason"] = payload["approval_reason"]
             args = payload.get("args", {})
             return [
                 frame(AGUIEventType.TOOL_CALL_START, **start_kwargs),

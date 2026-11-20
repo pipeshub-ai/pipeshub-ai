@@ -1,5 +1,5 @@
 import { toolDisplayName } from '../workspace/mcp-servers/tool-rules';
-import type { MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
+import type { ApprovalStubStatus, MessagePart, ToolApprovalDecision, ToolApprovalDetails } from './types';
 
 const MAX_VALUE_CHARS = 300;
 // How the app's answer to a card starts (Python `TOOL_APPROVAL_RESUME_PREFIX`).
@@ -81,8 +81,11 @@ export interface SettledToolApproval {
   key: string;
   tool: string;
   server: string;
-  /** `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). */
-  answer: NonNullable<MessagePart['approvalAnswer']> | 'allowedNotRun';
+  /**
+   * `allowedNotRun`: allowed, but stopped before it ran (a Deny set since, or the tool is gone). `accessLost`: allowed,
+   * and not run because the person no longer has access to the turn it was in.
+   */
+  answer: NonNullable<MessagePart['approvalAnswer']> | 'allowedNotRun' | 'accessLost';
 }
 
 /** The cards this reply answered, in order, at any depth. */
@@ -96,7 +99,12 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
           key: part.toolCallId ?? String(settled.length),
           tool: details ? approvalToolLabel(details) : part.displayName || toolDisplayName(part.toolName ?? ''),
           server: details?.serverName ?? '',
-          answer: part.approvalAnswer === 'allowed' && part.status === 'blocked' ? 'allowedNotRun' : part.approvalAnswer,
+          answer:
+            part.approvalReason === 'access_lost'
+              ? 'accessLost'
+              : part.approvalAnswer === 'allowed' && part.status === 'blocked'
+                ? 'allowedNotRun'
+                : part.approvalAnswer,
         });
       }
       walk(part.parts);
@@ -104,6 +112,28 @@ export function settledToolApprovals(parts: MessagePart[] | undefined): SettledT
   };
   walk(parts);
   return settled;
+}
+
+const STUB_STATUSES: ReadonlySet<string> = new Set<ApprovalStubStatus>(['approved', 'not_run', 'denied', 'expired']);
+
+/** Whether `status` is one a stub of someone else's card says once the card no longer waits. */
+export const isApprovalStubStatus = (status: string | undefined): status is ApprovalStubStatus =>
+  status !== undefined && STUB_STATUSES.has(status);
+
+/**
+ * How someone else's approval card stands once it no longer waits, from the stub the server's reader view gives in
+ * its place: approved (it ran), approved but not run, declined, or expired. A card that still waits is
+ * `findToolApproval`'s.
+ */
+export function findApprovalStub(
+  parts: MessagePart[] | undefined,
+): { status: ApprovalStubStatus; details: ToolApprovalDetails } | null {
+  for (const part of parts ?? []) {
+    if (part.type !== 'tool_call' || part.stub !== true || !isApprovalStubStatus(part.status)) continue;
+    const details = toolApprovalDetails(part.approval);
+    if (details) return { status: part.status, details };
+  }
+  return null;
 }
 
 // The server's closing words for a turn that stopped on a card (Python `tool_approvals._WAITING`).

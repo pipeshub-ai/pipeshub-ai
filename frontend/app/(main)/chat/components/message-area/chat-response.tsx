@@ -70,11 +70,12 @@ import { ErrorNextStep } from './error-next-step';
 import { ConnectToolsCard } from './connect-tools-card';
 import { UnavailableToolsNotice } from './unavailable-tools-notice';
 import { McpSignInCard } from './mcp-sign-in-card';
-import { ToolApprovalCard, ToolApprovalReceipts } from './tool-approval-card';
+import { ToolApprovalCard, ToolApprovalReceipts, ToolApprovalStubNotice } from './tool-approval-card';
 import { FloatedAskPointer } from '../job-ask/floated-ask-pointer';
 import { floatsGroup, pointerKey, useFloatedAsks } from '../job-ask/job-asks';
 import {
   answeredToolApproval,
+  findApprovalStub,
   findToolApproval,
   hasApprovedCall,
   settledToolApprovals,
@@ -680,11 +681,16 @@ export const ChatResponse = React.memo(function ChatResponse({
     [effectiveParts, isStreaming],
   );
   const approvalReceipts = useMemo(() => settledToolApprovals(effectiveParts), [effectiveParts]);
+  // Someone else's card once it no longer waits, as the server says it stands.
+  const approvalStub = useMemo(
+    () => (isStreaming ? null : findApprovalStub(effectiveParts)),
+    [effectiveParts, isStreaming],
+  );
   // "Waiting for your approval…" closes a reply that stopped on a card. The card says it while it
   // waits; once answered, the reply carries on in this row, and until its new text streams in the
   // row still holds those words. They are never the answer.
   const hasApprovalCard = useMemo(
-    () => findToolApproval(effectiveParts) !== null || approvalReceipts.length > 0,
+    () => findToolApproval(effectiveParts) !== null || approvalReceipts.length > 0 || findApprovalStub(effectiveParts) !== null,
     [effectiveParts, approvalReceipts],
   );
   // ANSWER-CONTRACT-FU-2: the subject was not found; the chat words that above the answer, which then starts after
@@ -1286,6 +1292,11 @@ export const ChatResponse = React.memo(function ChatResponse({
                   rowId={rowId}
                   readOnlyFor={ext.approvalCardReadOnlyFor}
                 />
+              </Box>
+            )}
+            {!toolApproval && approvalStub && !questionPending && (
+              <Box mt="3">
+                <ToolApprovalStubNotice status={approvalStub.status} name={ext.approvalCardReadOnlyFor?.name ?? null} />
               </Box>
             )}
 

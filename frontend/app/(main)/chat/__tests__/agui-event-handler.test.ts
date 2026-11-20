@@ -941,6 +941,17 @@ describe('createAGUIEventHandler — live agent-activity parts timeline', () => 
     expect(part.approval).toMatchObject({ approvalId: 'ap-1', serverName: 'Jira', arguments: { title: 'Bug' } });
   });
 
+  it("keeps why an approved call didn't run, so the card can say so", () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'c1', toolCallName: 'mcp_jira_create_issue', approvalAnswer: 'allowed', approvalReason: 'access_lost' }));
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'c2', toolCallName: 'jira_search', approvalReason: 'made_up' }));
+
+    const parts = spies.onParts.mock.calls.at(-1)?.[0];
+    expect(parts.map((p: { approvalReason?: string }) => p.approvalReason)).toEqual(['access_lost', undefined]);
+  });
+
   it('marks the call a person approved', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);

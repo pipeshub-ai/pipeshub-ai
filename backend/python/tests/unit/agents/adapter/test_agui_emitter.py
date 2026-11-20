@@ -207,6 +207,21 @@ class TestToolCallTranslation:
         assert starts[0]["approved"] is True
         assert "approved" not in starts[1]
 
+    async def test_a_call_refused_for_lost_access_says_why_on_its_start(self) -> None:
+        """So the asker's card can say why the call they approved didn't run."""
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "x", "args": {}, "tool_call_id": "c1", "approval_answer": "allowed", "approval_reason": "access_lost",
+        }))
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "y", "args": {}, "tool_call_id": "c2", "approval_reason": "made_up",
+        }))
+
+        starts = [c.args[0]["data"] for c in sink.write.await_args_list if c.args[0]["event"] == "TOOL_CALL_START"]
+        assert starts[0]["approvalReason"] == "access_lost"
+        assert "approvalReason" not in starts[1]
+
     async def test_tool_call_start_forwards_args_summary(self) -> None:
         emitter, sink = _make_emitter()
 

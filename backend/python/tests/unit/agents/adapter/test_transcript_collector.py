@@ -193,6 +193,22 @@ class TestToolCallParts:
         assert collector.parts[0]["approved"] is True
         assert "approved" not in collector.parts[1]
 
+    async def test_why_an_approved_call_didnt_run_is_kept_on_its_part(self) -> None:
+        """So the card still says it after a reload."""
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "mcp_jira_create_issue", "args": {}, "tool_call_id": "c1", "approval_answer": "allowed",
+            "approval_reason": "access_lost",
+        }))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "jira_search", "args": {}, "tool_call_id": "c2", "approval_reason": "made_up",
+        }))
+
+        assert collector.parts[0]["approvalReason"] == "access_lost"
+        assert "approvalReason" not in collector.parts[1]
+
     async def test_result_preview_is_truncated(self) -> None:
         collector = TranscriptCollector()
 

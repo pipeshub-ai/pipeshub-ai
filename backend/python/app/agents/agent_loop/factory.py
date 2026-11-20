@@ -1528,6 +1528,8 @@ async def history_messages(
         history.append(UserMessage(content=omitted_note(plan.omitted), injected=True))
     tool_results_at: dict[str, int] = {}
     after_answer = False
+    # Who asked for the newest reply (`askedByRef`): an approval answer folds only into its own person's turn.
+    last_reply_by: Any = None
     unanswered = 0
     # Tracked by row rather than read off the last message: a room's notes, quotes and shared
     # answers replay as user messages too, and none of them is a question left without an answer.
@@ -1536,9 +1538,13 @@ async def history_messages(
         whole = index in plan.whole
         for position, turn in enumerate(exchanges[index] if whole else reduce_exchange(exchanges[index])):
             if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
-                _drop_closing_text(history)
                 after_answer = True
-                continue
+                if last_reply_by == turn.get("authorRef"):
+                    _drop_closing_text(history)
+                    continue
+                # Someone else wrote after the turn it answers: their rows stay, the turn's closing words go
+                # where they are (`_append_turn`), and this answer is the person's words between their rows and
+                # the reply that carries the turn on.
             messages = _convert_conversation_turn(turn, renderer=renderer)
             if messages and _opens_a_new_question(turn) and question_open:
                 history.append(AssistantMessage(content=UNANSWERED_ANSWER))
@@ -1547,6 +1553,8 @@ async def history_messages(
                 attachments.attach(messages[0], index, turn, whole=whole and position == 0)
             _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
             after_answer = after_answer and turn.get("role") != "bot_response"
+            if turn.get("role") == "bot_response":
+                last_reply_by = turn.get("askedByRef")
             if messages and turn.get("role") in ("user_query", "bot_response"):
                 question_open = turn.get("role") == "user_query"
 
@@ -1683,6 +1691,8 @@ def _append_turn(history: list[Message], messages: list[Message], tool_results_a
         return isinstance(earlier, ToolMessage) and isinstance(earlier.content, str) and earlier.content.startswith(WAITING_PREFIX)
 
     repeated = {m.tool_call_id for m in messages if isinstance(m, ToolMessage) and _foldable(m.tool_call_id)}
+    for call_id in repeated:
+        _fold_away_closing_words(history, tool_results_at[call_id], tool_results_at)
     for message in messages:
         kept = message
         if isinstance(message, ToolMessage) and message.tool_call_id in repeated:
@@ -1696,6 +1706,24 @@ def _append_turn(history: list[Message], messages: list[Message], tool_results_a
         if isinstance(kept, ToolMessage) and kept.tool_call_id:
             tool_results_at[kept.tool_call_id] = len(history)
         history.append(kept)
+
+
+def _fold_away_closing_words(history: list[Message], result_at: int, tool_results_at: dict[str, int]) -> None:
+    """The closing words of the turn whose waiting result is at `result_at`, still there when other
+    people's rows followed that turn: they go, and those rows stay. The results recorded after them
+    move up by as many places, so `tool_results_at` still points at each."""
+    start = result_at + 1
+    while start < len(history) and isinstance(history[start], ToolMessage):
+        start += 1
+    stop = start
+    while stop < len(history) and parked_turn.closes_a_stopped_turn(history[stop]):
+        stop += 1
+    if stop == start:
+        return
+    del history[start:stop]
+    for call_id, at in tool_results_at.items():
+        if at >= stop:
+            tool_results_at[call_id] = at - (stop - start)
 
 
 _NO_PREFERENCE = "[No preference]"

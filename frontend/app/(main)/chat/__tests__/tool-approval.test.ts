@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   answeredToolApproval,
   approvalArgumentLines,
+  findApprovalStub,
   findToolApproval,
   hasApprovedCall,
   isToolApprovalResumeQuery,
@@ -185,5 +186,27 @@ describe('a card the fork settled as expired', () => {
     expect(settledToolApprovals(forked())).toEqual([
       { key: 'c', tool: 'Create an issue', server: 'Jira', answer: 'expired' },
     ]);
+  });
+});
+
+describe('findApprovalStub', () => {
+  const stub = (status: string, over: Record<string, unknown> = {}) =>
+    ({ type: 'tool_call', toolCallId: 'c1', stub: true, status, approval: WIRE, ...over }) as unknown as MessagePart;
+
+  it.each(['approved', 'not_run', 'denied', 'expired'] as const)('reads how a %s card of someone else stands', (status) => {
+    expect(findApprovalStub([{ type: 'text', content: 'hi' }, stub(status)])).toEqual({ status, details: expect.objectContaining({ toolName: 'create_issue', serverName: 'Jira' }) });
+  });
+
+  it('is nothing for a card that still waits (the waiting card draws it), or a call that is not a stub', () => {
+    expect(findApprovalStub([stub('awaiting_approval')])).toBeNull();
+    expect(findApprovalStub([stub('approved', { stub: undefined })])).toBeNull();
+    expect(findApprovalStub([stub('made_up')])).toBeNull();
+  });
+});
+
+describe('settledToolApprovals, an approved call refused for lost access', () => {
+  it('says why it did not run', () => {
+    const refused = { type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'blocked', approvalAnswer: 'allowed', approvalReason: 'access_lost', approval: WIRE } as MessagePart;
+    expect(settledToolApprovals([refused]).map((s) => s.answer)).toEqual(['accessLost']);
   });
 });

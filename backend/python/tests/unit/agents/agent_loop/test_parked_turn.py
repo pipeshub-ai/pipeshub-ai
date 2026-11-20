@@ -165,8 +165,25 @@ async def test_one_record_answers_an_approval_and_a_question_from_the_same_run()
 
     assert store.values[_KEY]["callIds"] == ["c1", "q1"]
     assert store.ttls[_KEY] == parked_turn.QUESTION_TTL_SECONDS
+    copy_of_the_turn = [
+        UserMessage(content=_QUESTION),
+        AssistantMessage(content="", tool_calls=[_CREATE, _ask("q1")]),
+        ToolMessage(content="Waiting for your approval to run createConfluencePage on Atlassian.", tool_call_id="c1"),
+        ToolMessage(content="Asked 1 question", tool_call_id="q1"),
+    ]
     for call_id in ("c1", "q1"):
-        assert await parked_turn.restore(_context(store), await _history(UserMessage(content=_QUESTION)), call_id=call_id) == []
+        assert await parked_turn.restore(_context(store), await _history(*copy_of_the_turn), call_id=call_id) == []
+
+
+async def test_a_turn_the_history_no_longer_carries_is_never_put_back() -> None:
+    """Its reply was removed, or blanked because the person can't read what it used any more: the
+    kept turn would bring that back."""
+    store = _Store()
+    await _keep_question(store)
+    blanked = await _history(UserMessage(content=_QUESTION), AssistantMessage(content="This answer used content you can no longer access."))
+
+    assert await parked_turn.restore(_context(store), blanked, call_id="q1") is None
+    assert not any(isinstance(m, ToolMessage) for m in await blanked.messages())
 
 
 async def test_a_long_result_is_kept_cut() -> None:

@@ -1527,6 +1527,11 @@ export interface CodeTaskHandoff {
   /** The engine kind; absent from a server that did not name it. */
   engine?: string;
 }
+/** A step's status in a run's transcript. */
+export type ToolCallPartStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
+
+/** How someone else's approval card stands once it no longer waits, on the stub the server gives in its place (`stub`). */
+export type ApprovalStubStatus = 'approved' | 'not_run' | 'denied' | 'expired';
 
 export interface MessagePart {
   /** `user_input`: a message the user sent while the run worked, where the run took it. */
@@ -1589,8 +1594,8 @@ export interface MessagePart {
   args?: string;
   /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
   argsSummary?: string;
-  /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`. */
-  status?: "running" | "completed" | "failed" | "blocked" | "awaiting_approval" | ApprovalPartStatus;
+  /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`; a stub of someone else's card: `approved`, `not_run`, `denied` or `expired`. */
+  status?: ToolCallPartStatus | ApprovalStubStatus | ApprovalPartStatus;
   resultPreview?: string;
   /** A failed call's `ToolErrorCode` (ERR-UX): the card words it; the detail never reaches the part. */
   errorCode?: string;
@@ -1608,6 +1613,14 @@ export interface MessagePart {
   approved?: boolean;
   /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** Why an allowed call didn't run, which its card says (Python `tool_approvals.Outcome.reason`). */
+  approvalReason?: 'access_lost';
+  /**
+   * Set by the server's reader view on someone else's approval card, which reaches everyone but its asker as this
+   * stub of the call: no arguments or result, an `approval` with only what the line about the card names, and a
+   * `status` saying how the card stands. Drawn as that line (`findToolApproval`, `findApprovalStub`), never as a step.
+   */
+  stub?: boolean;
   /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
   servers?: McpSignInServer[];
   /** On the final `text` part: the limit that cut the run's work short (BUDGETEND). */

@@ -8,7 +8,7 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
 import { approvalArgumentLines, approvalToolLabel, toolApprovalResumeQuery, type SettledToolApproval } from '../../tool-approval';
-import type { ToolApprovalDecision, ToolApprovalDetails } from '../../types';
+import type { ApprovalStubStatus, ToolApprovalDecision, ToolApprovalDetails } from '../../types';
 import { answerSlotIdNow, useAnswerSlotId, useScopedSlotId } from './answer-slot-scope';
 
 /** Whole minutes left (rounded up), re-read every half minute; 0 once the request has expired. */
@@ -53,7 +53,9 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
   const expired = minutesLeft === 0;
 
   if (expired || !isLatest || !canSend) {
-    const notice = expired ? 'expired' : readOnlyFor ? (isLatest ? 'waitingFor' : 'passed') : canSend ? 'passed' : 'waiting';
+    // Someone else's card: "Ask again" is its asker's to do.
+    const expiredNotice = readOnlyFor ? 'requestExpired' : 'expired';
+    const notice = expired ? expiredNotice : readOnlyFor ? (isLatest ? 'waitingFor' : 'passed') : canSend ? 'passed' : 'waiting';
     const name = readOnlyFor?.name || t('askUserQuestion.unknownPerson');
     return (
       <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--text-secondary)' }}>
@@ -214,9 +216,29 @@ export function ToolApprovalCard({ approval, isLatest, rowId, readOnlyFor }: Too
 const RECEIPT_ICON: Record<SettledToolApproval['answer'], { name: string; color: string }> = {
   allowed: { name: 'check_circle', color: 'var(--green-11)' },
   allowedNotRun: { name: 'block', color: 'var(--amber-11)' },
+  accessLost: { name: 'block', color: 'var(--amber-11)' },
   declined: { name: 'block', color: 'var(--slate-11)' },
   expired: { name: 'timer_off', color: 'var(--slate-11)' },
 };
+
+const STUB_NOTICE: Record<ApprovalStubStatus, { key: string; icon: string }> = {
+  approved: { key: 'approvedBy', icon: 'check_circle' },
+  not_run: { key: 'approvedNotRun', icon: 'block' },
+  denied: { key: 'declinedBy', icon: 'block' },
+  expired: { key: 'requestExpired', icon: 'timer_off' },
+};
+
+/** Someone else's approval card once it no longer waits, from the server's stub of it: one line, as their waiting card is. */
+export function ToolApprovalStubNotice({ status, name }: { status: ApprovalStubStatus; name: string | null }) {
+  const { t } = useTranslation();
+  const notice = STUB_NOTICE[status];
+  return (
+    <Flex data-testid="tool-approval-card" align="start" gap="2" style={{ color: 'var(--text-secondary)' }}>
+      <MaterialIcon name={notice.icon} size={16} color="var(--text-secondary)" style={{ marginTop: 3 }} />
+      <Text size="2">{t(`chat.toolApproval.notice.${notice.key}`, { name: name || t('askUserQuestion.unknownPerson') })}</Text>
+    </Flex>
+  );
+}
 
 /** What was answered on this reply's cards, one line each, so the answer reads in order even
  * with the activity folded away. */

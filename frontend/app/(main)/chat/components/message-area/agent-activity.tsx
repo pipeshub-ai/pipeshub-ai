@@ -114,15 +114,17 @@ interface AgentActivityTimelineProps {
  * `ChatResponse`). */
 export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean {
   if (!parts) return false;
+  // A stub of someone else's approval card is a line about the card, never a step of their run.
   return parts.some(
     (part) =>
-      part.type === 'tool_call' ||
-      part.type === 'reasoning' ||
-      part.type === 'sub_agent' ||
-      part.type === 'user_input' ||
-      part.type === 'slash_command' ||
-      part.type === 'approval' ||
-      part.type === 'engine_task',
+      !part.stub &&
+      (part.type === 'tool_call' ||
+        part.type === 'reasoning' ||
+        part.type === 'sub_agent' ||
+        part.type === 'user_input' ||
+        part.type === 'slash_command' ||
+        part.type === 'approval' ||
+        part.type === 'engine_task'),
   );
 }
 
@@ -153,6 +155,8 @@ function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePar
     if (part.type === 'reasoning') return !!part.content?.trim();
     // The reply's sign-in card, drawn under the answer (`McpSignInCard`).
     if (part.type === 'mcp_sign_in') return false;
+    // Someone else's approval card, drawn as its line (`ToolApprovalCard`, `ToolApprovalStubNotice`).
+    if (part.stub) return false;
     // A question is a row once it is answered; a refused or failed ask showed nothing, and a waiting one is its card.
     if (part.type === 'tool_call' && isAskUserQuestionTool(part.toolName)) return shownQuestionOf(part) !== null;
     if (part.type !== 'text') return true;

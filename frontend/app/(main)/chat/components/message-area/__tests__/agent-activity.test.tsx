@@ -960,6 +960,10 @@ describe('hasMultiStepActivity', () => {
     expect(hasMultiStepActivity([{ type: 'text', content: 'hello' }])).toBe(false);
   });
 
+  it("is false for a stub of someone else's approval card: it is a line about the card, not a step of their run", () => {
+    expect(hasMultiStepActivity([{ type: 'tool_call', toolCallId: 'c1', stub: true, status: 'approved' }, { type: 'text', content: 'hi' }])).toBe(false);
+  });
+
   it('is true when a tool_call, reasoning, or sub_agent part is present', () => {
     expect(hasMultiStepActivity([{ type: 'tool_call', toolCallId: 'c1', toolName: 't' }])).toBe(true);
     expect(hasMultiStepActivity([{ type: 'reasoning', content: 'thinking' }])).toBe(true);
@@ -968,6 +972,12 @@ describe('hasMultiStepActivity', () => {
 });
 
 describe('getVisibleRootParts', () => {
+  it("leaves out a stub of someone else's approval card", () => {
+    const stub = { type: 'tool_call', toolCallId: 'c1', stub: true, status: 'awaiting_approval' } as never;
+    const step = { type: 'tool_call', toolCallId: 'c2', toolName: 'jira_search', status: 'completed' } as never;
+    expect(getVisibleRootParts([stub, step], false)).toEqual([step]);
+  });
+
   it('a text part with no words is no step: Stop before the first word leaves one open', () => {
     const blank = { type: 'text', content: '', settled: true } as never;
     const spaces = { type: 'text', content: '  \n', settled: true } as never;

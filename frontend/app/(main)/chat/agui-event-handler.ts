@@ -536,6 +536,9 @@ class LivePartsBuilder {
     if (data.approvalAnswer === 'allowed' || data.approvalAnswer === 'declined' || data.approvalAnswer === 'expired') {
       part.approvalAnswer = data.approvalAnswer;
     }
+    if (data.approvalReason === 'access_lost') {
+      part.approvalReason = 'access_lost';
+    }
     this.containerFor(runId).push(part);
     this.openToolCalls.set(toolCallId, part);
   }

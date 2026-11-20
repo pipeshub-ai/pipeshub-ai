@@ -16,6 +16,7 @@ import pytest
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
+from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     ToolCall,
@@ -421,6 +422,9 @@ async def _gate(context: Any, adapter: MCPToolAdapter, **arguments: Any) -> Tool
     return ctx
 
 
+_ROOT_RUN = RunContext(role_name="assistant", model="m")
+
+
 class TestTheGate:
     async def test_a_read_only_tool_runs(self) -> None:
         ctx = await _gate(_context(), _adapter(read_only=True), q="x")
@@ -453,12 +457,20 @@ class TestTheGate:
         assert "canAlwaysAllow" not in details and "companyAlwaysAsk" not in details
         assert details["expiresAt"] > time.time() * 1000
 
-    async def test_the_saved_call_keeps_the_models_id_for_it(self) -> None:
+    @pytest.mark.parametrize("identity,nested", [
+        (_ROOT_RUN, False), (_ROOT_RUN.child("researcher"), True),
+    ])
+    async def test_the_saved_call_keeps_the_models_id_for_it_and_whether_a_sub_agent_asked(
+        self, identity: RunContext, nested: bool,
+    ) -> None:
         store, adapter = _Store(), _adapter(read_only=False)
         context = _context(store)
         context.tool_state.setdefault(approvals.TOOLS_BY_PATH, {})[adapter.path] = adapter
         ctx = _gate_ctx(adapter, title="Bug")
-        ctx.scope = SimpleNamespace(call=ToolCall(id="toolu_1", name=adapter.name, arguments={"title": "Bug"}))  # type: ignore[assignment]
+        ctx.scope = SimpleNamespace(  # type: ignore[assignment]
+            call=ToolCall(id="toolu_1", name=adapter.name, arguments={"title": "Bug"}),
+            turn=SimpleNamespace(run=SimpleNamespace(identity=identity)),
+        )
 
         async def _next() -> None:
             return None
@@ -466,6 +478,8 @@ class TestTheGate:
         await approvals.approval_gate(context)(ctx, _next)
         (saved,) = store.pending()
         assert saved["toolCallId"] == "toolu_1"
+        # A sub-agent's call sits nested in its parent's reply, where no history holds it.
+        assert saved["nested"] is nested
 
     async def test_only_one_call_waits_per_request(self) -> None:
         context = _context()
@@ -1019,6 +1033,8 @@ class TestAnsweringTheCard:
         """A sub-agent's call: its row is nested, so the root's history doesn't hold it."""
         store, mcp = _Store(), _Server()
         approval_id = await _ask(store, mcp)
+        (saved,) = store.pending()
+        saved["nested"] = True
 
         answered = await _answer(store, mcp, approval_id, "allow", history=_stopped_turn(with_call=False))
 
@@ -1026,6 +1042,22 @@ class TestAnsweringTheCard:
         assert isinstance(first_step[-2], AssistantMessage) and [c.id for c in first_step[-2].tool_calls] == ["c1"]
         assert first_step[-1].content == "created Login is broken"
         assert not any(isinstance(m, AssistantMessage) and _WAITING in (m.text or "") for m in first_step)
+
+    async def test_a_call_of_a_turn_the_history_no_longer_carries_doesnt_run(self) -> None:
+        """Not a sub-agent's: the reply it was in is gone from the history (blanked or removed). Approving the card
+        grants no access the person has since lost, so the call doesn't run, and the model is told why, with nothing
+        of the call itself."""
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+
+        answered = await _answer(store, mcp, approval_id, "allow", history=_stopped_turn(with_call=False))
+
+        assert mcp.calls == []
+        first_step = answered.sent[0]
+        assert not any(isinstance(m, AssistantMessage) and m.tool_calls for m in first_step)
+        assert not any("Login is broken" in str(m.content) for m in first_step)
+        assert any("no longer have access to something it used" in c for c in answered.goal.constraints)
+        assert answered.events.of(EventType.TOOL_CALL_START, "c1")[0]["approval_reason"] == "access_lost"
 
 
 _LOOKED_UP = "The issue tracker's project for this is PIPE, id 4242."

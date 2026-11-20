@@ -184,6 +184,8 @@ class MessagePart(TypedDict, total=False):
     approved: bool
     # How a call that waited for approval was settled: allowed, declined or expired.
     approvalAnswer: Literal["allowed", "declined", "expired"]
+    # Why an allowed call didn't run, which the card says (`tool_approvals.Outcome.reason`).
+    approvalReason: Literal["access_lost"]
     runId: str
     roleName: str
     parts: list["MessagePart"]
@@ -435,6 +437,8 @@ class TranscriptCollector(EventEmitter):
                 part["approved"] = True
             if payload.get("approval_answer") in ("allowed", "declined", "expired"):
                 part["approvalAnswer"] = payload["approval_answer"]
+            if payload.get("approval_reason") == "access_lost":
+                part["approvalReason"] = "access_lost"
             self._container_for(run_id).append(part)
             self._open_tool_calls[tool_call_id] = part
             return
