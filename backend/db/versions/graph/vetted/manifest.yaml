@@ -602,3 +602,59 @@ functions:
             ORDER BY coalesce(n.doc->>'origin' = p_upload AND n.doc->>'connectorName' = p_kb, false) DESC, n.id COLLATE ucs_basic LIMIT p_per_doc)
           UNION ALL (SELECT 'files.path'::text, f.id, NULL::text, NULL::text, NULL::text FROM graph.nodes f
             WHERE f.org_id = v_org AND f.coll = 'files' AND f.doc->>'path' = 'storage://' || d.e ORDER BY f.id COLLATE ucs_basic LIMIT 1)) x;
+
+# ---- records by web address, and the Jira sites of the org's tickets (graph_0017) -------------------------------------------------------------
+# Same reason as above: a plain statement read every record of the org to match an address. Each address is probed on its own (one probe per distinct
+# address, as records_by_virtual_id does), so a call with many addresses cannot plan a scan of the org.
+
+  # Every record of the org whose webUrl is one of the addresses (index nodes_record_weburl, keyed by md5 of the address). The callers apply their own
+  # filters (live, link records, the record's orgId) to the rows; an address holds a record, the attachments sharing its address and a link record per connector.
+  # At most 10,000 records per address (the hard limit a vetted read has), in no order: a caller that gets 10,000 for an address reads the addresses
+  # with its plain statement instead, in the same statement (lookups.py), so no answer depends on which 10,000 came back.
+  - name: graph.records_by_weburl
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_urls, type: "text[]", max_items: 1000, item_not_null: true, item_length: [0, 100000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT m.id, m.doc FROM (SELECT DISTINCT u FROM unnest(p_urls) u) k
+        CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n
+          WHERE n.org_id = v_org AND n.coll = 'records' AND md5(n.doc->>'webUrl') = md5(k.u) AND n.doc->>'webUrl' = k.u LIMIT 10000) m;
+
+  # The distinct sites (the address before its last /browse/) of the live TICKET records of the given connector names whose orgId is p_owner, ordered,
+  # up to p_limit (NULL: all). One probe of nodes_record_ticket_site per site and connector name: each step finds the next md5 of a site (a skip scan).
+  # The regular expression spells its slashes [/] (the same match), and live is the text test of isDeleted, as the index predicate is written: no cast here.
+  # Each probe orders by the connector name too: it is the probe's own but not a constant, and without it the index order does not give the site's,
+  # so the plan sorted every ticket of the connector under the LIMIT.
+  - name: graph.ticket_sites
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_owner, type: text, length: [1, 200]}
+      - {name: p_connector_names, type: "text[]", max_items: 100, item_not_null: true, item_length: [1, 200]}
+      - {name: p_limit, type: int, nullable: true, range: [0, 1000000]}
+    returns: "TABLE (site_url text)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY WITH RECURSIVE s(c, h, site) AS (
+          SELECT k.c, f.h, f.site FROM (SELECT DISTINCT c FROM unnest(p_connector_names) c) k
+            CROSS JOIN LATERAL (SELECT md5((regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1]) AS h, (regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1] AS site
+              FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' LIKE '%/browse/%'
+                AND coalesce(n.doc->>'isDeleted', '') <> 'true' AND n.doc->>'connectorName' = k.c AND n.doc->>'orgId' = p_owner
+              ORDER BY n.doc->>'connectorName', 1 LIMIT 1) f
+          UNION ALL
+          SELECT s.c, f.h, f.site FROM s
+            CROSS JOIN LATERAL (SELECT md5((regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1]) AS h, (regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1] AS site
+              FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' LIKE '%/browse/%'
+                AND coalesce(n.doc->>'isDeleted', '') <> 'true' AND n.doc->>'connectorName' = s.c AND n.doc->>'orgId' = p_owner
+                AND md5((regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1]) > s.h
+              ORDER BY n.doc->>'connectorName', 1 LIMIT 1) f)
+        SELECT DISTINCT s.site FROM s WHERE s.site <> '' ORDER BY s.site LIMIT p_limit;
