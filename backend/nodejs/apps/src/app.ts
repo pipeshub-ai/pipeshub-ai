@@ -57,6 +57,8 @@ import {
   createOrgAuthConfigRouter,
   MailServiceContainer,
   createMailServiceRouter,
+  createSupportRouter,
+  createFeedbackRouter,
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
@@ -823,6 +825,17 @@ export class Application {
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
+    );
+
+    // Contact support and Send feedback. Imported from `./config`: an edition
+    // can serve its own version of either form.
+    this.app.use(
+      '/api/v1/support',
+      createSupportRouter(this.mailServiceContainer),
+    );
+    this.app.use(
+      '/api/v1/feedback',
+      createFeedbackRouter(this.mailServiceContainer),
     );
 
     // crawling manager routes

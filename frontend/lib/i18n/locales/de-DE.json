@@ -2334,7 +2334,8 @@
         "security": "Sicherheit",
         "personal": "Persönlich",
         "people": "Personen",
-        "developerSettings": "Entwicklereinstellungen"
+        "developerSettings": "Entwicklereinstellungen",
+        "help": "Hilfe"
       },
       "nav": {
         "general": "Allgemein",
@@ -6280,5 +6281,158 @@
       "copyDetails": "Details für einen Admin kopieren",
       "copied": "Details kopiert"
     }
+  },
+  "support": {
+    "menuLabel": "Support kontaktieren",
+    "title": "Support kontaktieren",
+    "steps": {
+      "area": "Bereich",
+      "details": "Details"
+    },
+    "close": "Schließen",
+    "cancel": "Abbrechen",
+    "back": "Zurück",
+    "continue": "Weiter",
+    "send": "Anfrage senden",
+    "sending": "Wird gesendet…",
+    "changeArea": "Bereich ändern",
+    "change": "Ändern",
+    "issueOther": "Sonstiges (nicht aufgeführt)",
+    "areaStep": {
+      "title": "Wobei brauchen Sie Hilfe?",
+      "subtitle": "Wählen Sie den Bereich, der am besten zu Ihrem Problem passt.",
+      "suggested": "Vorgeschlagen",
+      "suggestion": "In {{area}} ist um {{time}} ein Fehler aufgetreten, deshalb schlagen wir diesen Bereich vor.",
+      "idea": "Eher eine Idee? Feedback senden"
+    },
+    "areas": {
+      "connectors": {
+        "label": "Konnektoren und Synchronisierung",
+        "hint": "Apps verbinden, Synchronisierungsfehler oder fehlende Daten"
+      },
+      "chat": {
+        "label": "Chat und Suche",
+        "hint": "Antworten, Quellenangaben oder Suchergebnisse"
+      },
+      "agents": {
+        "label": "Agenten und Aktionen",
+        "hint": "Agenten erstellen, ausführen oder teilen"
+      },
+      "files": {
+        "label": "Dateien und Sammlungen",
+        "hint": "Uploads, Ordner oder Dateivorschauen"
+      },
+      "access": {
+        "label": "Anmeldung und Zugriff",
+        "hint": "Anmelden, Passwörter oder Single Sign-On"
+      },
+      "people": {
+        "label": "Personen und Berechtigungen",
+        "hint": "Benutzer einladen, Rollen oder Gruppen"
+      },
+      "other": {
+        "label": "Etwas anderes",
+        "hint": "Alles, was hier nicht aufgeführt ist"
+      }
+    },
+    "details": {
+      "descriptionLabel": "Was ist passiert?",
+      "descriptionPlaceholder": "Was wollten Sie tun, und was ist stattdessen passiert?",
+      "descriptionMin_one": "Mindestens {{count}} Zeichen.",
+      "descriptionMin_other": "Mindestens {{count}} Zeichen.",
+      "descriptionMax_one": "Sie haben das Limit von {{count}} Zeichen erreicht.",
+      "descriptionMax_other": "Sie haben das Limit von {{count}} Zeichen erreicht.",
+      "attach": "Screenshot anhängen",
+      "removeFile": "{{name}} entfernen",
+      "fileUnsupported": "{{name}}: Dieser Dateityp wird nicht unterstützt.",
+      "fileTooLarge": "{{name}} ist größer als 5 MB.",
+      "tooManyFiles": "Sie können bis zu 5 Dateien anhängen.",
+      "filesTotalTooLarge": "Dateien dürfen zusammen höchstens 8 MB groß sein.",
+      "smtpTitle": "E-Mail ist für diesen Workspace nicht eingerichtet",
+      "smtpBody": "Wir geben Ihnen eine Nachricht, die Sie aus Ihrer eigenen E-Mail-App an {{email}} senden können.",
+      "smtpAdmin": "Um Anfragen direkt zu senden, konfigurieren Sie SMTP in den Workspace-Einstellungen.",
+      "smtpMember": "Um Anfragen direkt zu senden, bitten Sie Ihren Administrator, SMTP zu konfigurieren.",
+      "includeErrors_one": "{{count}} aktuellen Fehler einbeziehen",
+      "includeErrors_other": "{{count}} aktuelle Fehler einbeziehen",
+      "errorLine": "{{area}}: Fehler {{status}} um {{time}}",
+      "errorLineUnknown": "Fehler {{status}} um {{time}}",
+      "sentWith": "Wird mit Ihrer Anfrage gesendet: {{list}}.",
+      "sentParts": {
+        "workspace": "Ihr Workspace",
+        "identity": "Ihr Name und Ihre E-Mail-Adresse",
+        "browser": "Ihr Browser",
+        "errors": "aktuelle Fehler"
+      },
+      "viewDetails": "Details anzeigen",
+      "hideDetails": "Details ausblenden",
+      "rows": {
+        "issue": "Anliegen zu",
+        "workspace": "Workspace",
+        "signedInAs": "Angemeldet als",
+        "browser": "Browser",
+        "recentErrors": "Aktuelle Fehler"
+      }
+    },
+    "blocked": {
+      "area": "Wählen Sie einen Bereich, um fortzufahren.",
+      "description": "„Was ist passiert?“ braucht mindestens {{min}} Zeichen (noch {{left}})."
+    },
+    "result": {
+      "sentTitle": "Anfrage gesendet",
+      "sentBody": "Unser Support-Team hat Ihre Anfrage erhalten. Wir haben Ihnen eine Kopie gesendet, und Antworten kommen in Ihr Postfach.",
+      "pendingTitle": "Wird noch gesendet",
+      "pendingBody": "Die E-Mail an {{email}} dauert länger als üblich. Wenn Sie keine Antwort erhalten, kontaktieren Sie uns mit dieser Referenz.",
+      "referenceLabel": "Ihre Referenz",
+      "copyReference": "Referenz kopieren",
+      "quote": "Nennen Sie diese Referenz, wenn Sie uns erneut zu diesem Thema kontaktieren.",
+      "done": "Fertig"
+    },
+    "email": {
+      "title": "Aus Ihrer E-Mail-App senden",
+      "noSmtp": "E-Mail ist hier nicht eingerichtet, daher wurde Anfrage {{reference}} nicht gesendet. Senden Sie diese Nachricht aus Ihrer eigenen E-Mail-App, damit sie den Support erreicht.",
+      "failed": "Wir konnten Anfrage {{reference}} nicht per E-Mail senden. Senden Sie diese Nachricht aus Ihrer eigenen E-Mail-App, damit sie den Support erreicht.",
+      "limit": "Sie haben in der letzten Stunde mehrere Anfragen gesendet. Senden Sie diese bitte aus Ihrer E-Mail-App.",
+      "unsaved": "Wir konnten Ihre Anfrage nicht senden. Senden Sie diese Nachricht aus Ihrer eigenen E-Mail-App, damit sie den Support erreicht.",
+      "to": "An",
+      "subject": "Betreff",
+      "copy": "Nachricht kopieren",
+      "copied": "Kopiert",
+      "open": "E-Mail-App öffnen",
+      "shortened": "Ihre E-Mail-App erhält eine gekürzte Fassung. Mit „Nachricht kopieren“ erhalten Sie den vollständigen Text.",
+      "attachFiles_one": "Ihre {{count}} Datei ist nicht Teil dieser Nachricht. Hängen Sie sie in Ihrer E-Mail-App an.",
+      "attachFiles_other": "Ihre {{count}} Dateien sind nicht Teil dieser Nachricht. Hängen Sie sie in Ihrer E-Mail-App an.",
+      "copyFallback": "Automatisches Kopieren nicht möglich. Die Nachricht ist markiert; drücken Sie Strg+C (⌘C auf dem Mac)."
+    },
+    "errors": {
+      "load": "Support-Optionen konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "send": "Ihre Anfrage konnte nicht gesendet werden. Bitte versuchen Sie es erneut.",
+      "emailInstead": "Stattdessen per E-Mail senden"
+    }
+  },
+  "feedback": {
+    "menuLabel": "Feedback senden",
+    "title": "Feedback senden",
+    "subtitle": "Sagen Sie uns, was gut funktioniert, was nicht und was Sie sich wünschen.",
+    "kindIssue": "Allgemeines Feedback",
+    "kindFeedback": "Feature-Anfrage",
+    "descriptionPlaceholder": "Was ist passiert, oder was sollen wir verbessern?",
+    "addFiles": "Dateien hinzufügen",
+    "removeFile": "Entfernen",
+    "fileHint": "Optional. Bis zu 5 Dateien, je 5 MB. Bilder, PDF, Text oder CSV.",
+    "cancel": "Abbrechen",
+    "submit": "Senden",
+    "needReply": "Brauchen Sie eine Antwort? Support kontaktieren",
+    "success": "Danke, wir haben Ihr Feedback erhalten.",
+    "submitError": "Senden fehlgeschlagen. Bitte versuchen Sie es erneut.",
+    "descriptionTooShort": "Bitte etwas mehr Details (mindestens 10 Zeichen).",
+    "invalidType": "Dieser Dateityp wird nicht unterstützt.",
+    "fileTooLarge": "Jede Datei darf höchstens 5 MB groß sein.",
+    "tooManyFiles": "Sie können höchstens 5 Dateien anhängen.",
+    "smtpNotConfigured": "SMTP ist nicht konfiguriert",
+    "smtpNotConfiguredAdmin": "Konfigurieren Sie zuerst SMTP und senden Sie dann Feedback.",
+    "smtpConfigureAction": "SMTP konfigurieren",
+    "smtpNotConfiguredMember": "Bitten Sie Ihren Administrator, zuerst SMTP zu konfigurieren, und versuchen Sie es erneut.",
+    "filesTotalTooLarge": "Dateien dürfen zusammen höchstens 8 MB groß sein."
   }
 }
