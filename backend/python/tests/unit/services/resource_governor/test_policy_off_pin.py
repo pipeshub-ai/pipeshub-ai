@@ -29,6 +29,7 @@ EDITED = {
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
         # Read-only admission explain: a rule tag on the returned state, no change to any limit.
         "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
+        "_feedback_for", "assign:_SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
         "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
     },
     "memory_budget.py": {
