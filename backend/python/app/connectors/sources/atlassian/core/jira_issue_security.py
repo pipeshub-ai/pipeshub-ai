@@ -118,6 +118,8 @@ class IssueSecurityContext:
     level_readers: dict[str, frozenset[tuple[str, str]] | None] | None = None
     # Group id -> the members a reindex read for its levels, None when the read failed (``_reindex_level_readers``).
     reindex_groups: dict[str, list[Any] | None] = field(default_factory=dict)
+    # Project role or lead (``<key>_<role id>``, ``<key>_projectLead``) -> its members a reindex read, None when not read.
+    reindex_roles: dict[str, list[Any] | None] = field(default_factory=dict)
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""

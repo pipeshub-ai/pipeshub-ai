@@ -4128,53 +4128,8 @@ class JiraConnector(BaseConnector):
                         source_updated_at=None,
                     )
 
-                    member_users: list[AppUser] = []
-                    unreadable_group: Optional[str] = None
-
-                    for actor in actors:
-                        actor_type = actor.get("type", "")
-
-                        if actor_type == ROLE_ACTOR_TYPE_USER:
-                            actor_user = actor.get("actorUser", {})
-                            account_id = actor_user.get("accountId")
-                            email = actor_user.get("emailAddress")
-
-                            user = None
-                            if account_id:
-                                user = user_by_account_id.get(account_id)
-                            if not user and email:
-                                user = user_by_email.get(email.lower())
-
-                            if user:
-                                member_users.append(user)
-                            else:
-                                self.logger.debug(
-                                    f"  {project_key}/{role_name}: User not found - "
-                                    f"accountId={account_id}, email={email}"
-                                )
-
-                        elif actor_type == ROLE_ACTOR_TYPE_GROUP:
-                            group_name = actor.get("name") or actor.get("displayName")
-                            group_id = actor.get("groupId") or self._group_ids_by_name.get(group_name or "")
-
-                            group_members: Optional[list[AppUser]] = []
-                            if group_id and group_id in groups_members_map:
-                                group_members = groups_members_map[group_id]
-                            else:
-                                self.logger.debug(
-                                    f"  {project_key}/{role_name}: Group actor '{group_name}' "
-                                    f"(id: {group_id}) not found in synced groups"
-                                )
-
-                            if group_members is None:
-                                unreadable_group = group_name or group_id
-                                break
-
-                            self.logger.debug(
-                                f"  {project_key}/{role_name}: Group actor '{group_name}' (id: {group_id}) "
-                                f"found {len(group_members)} members"
-                            )
-                            member_users.extend(group_members)
+                    member_users, unreadable_group = self._role_actor_members(
+                        f"{project_key}/{role_name}", actors, user_by_email, user_by_account_id, groups_members_map)
 
                     if unreadable_group:
                         # Saving the role now would drop that group's members from it. The group
@@ -4204,6 +4159,48 @@ class JiraConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
             self._note_unread(None)
             return project_key, project_roles, True
+
+    def _role_actor_group_id(self, actor: dict[str, Any]) -> Optional[str]:
+        """A group actor's id: ``actorGroup.groupId``, where Get project role for project documents it ("As a group's name can
+        change, use of `groupId` is recommended to identify the group.",
+        https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-roles/), else one given beside it or the
+        id its name resolves to."""
+        group = actor.get("actorGroup") if isinstance(actor.get("actorGroup"), dict) else {}
+        name = actor.get("name") or actor.get("displayName")
+        return group.get("groupId") or actor.get("groupId") or self._group_ids_by_name.get(name or "")
+
+    def _role_actor_members(
+        self, where: str, actors: list[dict[str, Any]], user_by_email: dict[str, AppUser],
+        user_by_account_id: dict[str, AppUser], groups_members_map: dict[str, Optional[list[AppUser]]],
+    ) -> tuple[list[AppUser], Optional[str]]:
+        """A project role's members from its actors: users by account, then email; groups from ``groups_members_map``.
+        Returns ``(members, the first group whose members were not read)``; with a group named, the members are partial."""
+        member_users: list[AppUser] = []
+        for actor in actors:
+            actor_type = actor.get("type", "")
+            if actor_type == ROLE_ACTOR_TYPE_USER:
+                actor_user = actor.get("actorUser", {})
+                account_id = actor_user.get("accountId")
+                email = actor_user.get("emailAddress")
+                user = user_by_account_id.get(account_id) if account_id else None
+                if not user and email:
+                    user = user_by_email.get(email.lower())
+                if user:
+                    member_users.append(user)
+                else:
+                    self.logger.debug(f"  {where}: User not found - accountId={account_id}, email={email}")
+            elif actor_type == ROLE_ACTOR_TYPE_GROUP:
+                group_name = actor.get("name") or actor.get("displayName")
+                group_id = self._role_actor_group_id(actor)
+                group_members: Optional[list[AppUser]] = []
+                if group_id and group_id in groups_members_map:
+                    group_members = groups_members_map[group_id]
+                else:
+                    self.logger.debug(f"  {where}: Group actor '{group_name}' (id: {group_id}) not found in synced groups")
+                if group_members is None:
+                    return member_users, group_name or group_id
+                member_users.extend(group_members)
+        return member_users, None
 
     async def _sync_project_roles(
         self,
@@ -5221,10 +5218,11 @@ class JiraConnector(BaseConnector):
 
         Only the level of the issue being reindexed, and only while Browse names people on each issue: level readers are read
         by nothing else (``_reads_alone``, which returns at once without such holders), so any other read changes no access.
-        The groups the level names are read again, at most ``REINDEX_GROUP_READS`` per project, each once per reindex, from
-        the accounts a sync would hold (``_member_directory``). A role or a project lead, one not read in full, or one past
-        the cap is unknown: its level grants no one alone (``LEVEL_MEMBERS_UNREAD``), and the issue waits for the next sync.
-        The sync's member maps are left as they are."""
+        The groups, project roles and project lead the level names are read again, each once per reindex, from the accounts
+        a sync would hold (``_member_directory``) and as the sync resolves them (``_role_actor_members``, the lead's account),
+        groups at most ``REINDEX_GROUP_READS`` per project. One not read in full, or a group past the cap (a role's too), is
+        unknown: its level grants no one alone (``LEVEL_MEMBERS_UNREAD``), and the issue waits for the next sync. The sync's
+        member maps are left as they are."""
         if not security.browse_holders or level_id not in security.members_by_level:
             return
         if security.level_readers is None:
@@ -5238,19 +5236,65 @@ class JiraConnector(BaseConnector):
             security.level_readers[level_id] = None
             return
         users = {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **synced}
-        groups = security.reindex_groups
         for grant in grants:
-            group_id = str(grant.external_id)
-            if (grant.entity_type != EntityType.GROUP or group_id in groups or len(groups) >= REINDEX_GROUP_READS
-                    or group_id.startswith(_UNRESOLVED_GROUP)):
-                continue
+            if grant.entity_type == EntityType.GROUP:
+                await self._reindex_group_members(security, str(grant.external_id), users)
+            elif grant.entity_type == EntityType.ROLE and str(grant.external_id) not in security.reindex_roles:
+                security.reindex_roles[str(grant.external_id)] = await self._reindex_role_members(
+                    security, project_key, str(grant.external_id), users)
+        security.level_readers[level_id] = level_readers(grants, security.reindex_groups, security.reindex_roles)
+
+    async def _reindex_group_members(
+        self, security: IssueSecurityContext, group_id: str, users: dict[str, AppUser],
+    ) -> list[AppUser] | None:
+        """A group's members for a reindex, read once (``reindex_groups``). None when not read in full or past the cap."""
+        groups = security.reindex_groups
+        if group_id not in groups:
+            if len(groups) >= REINDEX_GROUP_READS or group_id.startswith(_UNRESOLVED_GROUP):
+                return None
             try:
                 ids, ok = await self._fetch_group_members(group_id, group_id, note=False)
             except Exception as e:
                 self.logger.warning(f"Could not read the members of group {group_id} for a reindex: {e}")
                 ok = False
             groups[group_id] = [users[i] for i in ids if i in users] if ok else None
-        security.level_readers[level_id] = level_readers(grants, groups, {})
+        return groups[group_id]
+
+    async def _reindex_role_members(
+        self, security: IssueSecurityContext, project_key: str, role_id: str, users: dict[str, AppUser],
+    ) -> list[AppUser] | None:
+        """The members of a level's role (``<key>_<role id>``) or project lead (``<key>_projectLead``) for a reindex, as
+        ``_fetch_project_roles`` and ``_sync_project_lead_roles`` read them. None when not read in full. Get project: "the
+        project description, issue types, and project lead are included in all responses by default"; Get project role for
+        project returns "a project role's details and actors associated with the project"
+        (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-projects/, .../api-group-project-roles/)."""
+        try:
+            if role_id == f"{project_key}_projectLead":
+                response = await self._call_with_retry(
+                    lambda ds: ds.get_project(projectIdOrKey=project_key, expand="lead"), ctx=f"lead of project {project_key}")
+                body = response.json() if response.status == HttpStatusCode.OK.value else None
+                if not isinstance(body, dict):
+                    return None
+                lead = body.get("lead") if isinstance(body.get("lead"), dict) else {}
+                return [users[lead["accountId"]]] if lead.get("accountId") in users else []
+            response = await self._call_with_retry(
+                lambda ds: ds.get_project_role(
+                    projectIdOrKey=project_key, id=int(role_id.removeprefix(f"{project_key}_")), excludeInactiveUsers=True),
+                ctx=f"role {role_id} for a reindex")
+            body = response.json() if response.status == HttpStatusCode.OK.value else None
+            actors = body.get("actors") if isinstance(body, dict) else None
+            if not isinstance(actors, list):
+                return None
+            actor_groups = {gid: await self._reindex_group_members(security, gid, users) for actor in actors
+                            if isinstance(actor, dict) and actor.get("type") == ROLE_ACTOR_TYPE_GROUP
+                            and (gid := self._role_actor_group_id(actor))}
+            members, unread = self._role_actor_members(
+                f"{project_key}/{role_id}", [a for a in actors if isinstance(a, dict)],
+                {u.email.lower(): u for u in users.values() if u.email}, users, actor_groups)
+            return None if unread else members
+        except Exception as e:
+            self.logger.warning(f"Could not read the members of {role_id} for a reindex: {e}")
+            return None
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,

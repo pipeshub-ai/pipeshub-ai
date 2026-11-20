@@ -881,10 +881,11 @@ class TestAReindexReadsOnlyTheGroupsItsIssuesNeed:
     and only when Browse names people on each issue. Every other read is cost with no effect on access."""
 
     @staticmethod
-    def _reindex(issue: dict, browse: list | None) -> tuple[JiraConnector, list[str], dict]:
-        """Level 10102 holds group-1 (the reporter acc-1 alone); 10103 holds group-big, whose 10,000 members include
+    def _reindex(issue: dict, browse: list | None, level_a: list | None = None) -> tuple[JiraConnector, list[str], dict]:
+        """Level 10102 holds group-1 (the reporter acc-1 alone), or ``level_a``; 10103 holds group-big, whose 10,000 members include
         acc-1. Returns the connector, the group of every /group/member page it asks for, and the project's checkpoint."""
-        values = [{"issueSecurityLevelId": "10102", "holder": {"type": "group", "value": "group-1"}},
+        values = [*({"issueSecurityLevelId": "10102", "holder": h}
+                    for h in (level_a or [{"type": "group", "value": "group-1"}])),
                   {"issueSecurityLevelId": "10103", "holder": {"type": "group", "value": "group-big"}}]
         sizes = {"group-1": 1, "group-big": BIG_GROUP}
         pages: list[str] = []
@@ -968,6 +969,97 @@ class TestAReindexReadsOnlyTheGroupsItsIssuesNeed:
         if browse == []:
             record, perms = out
             assert (record.access_rule, record.access_group_external_id, perms) == (AccessRule.STRICT, "level:p-1:10103", [])
+
+
+class TestAReindexResolvesProjectRolesAndLeads:
+    """A level's project role and project lead holders, which the sync expands from the roles and leads it read: a reindex
+    reads them too, once each, so a reporter Browse names who is in the level through one reads the issue alone."""
+
+    LEAD = [{"type": "projectLead"}]
+    ROLE = [{"type": "projectRole", "parameter": "10002", "projectRole": {"id": "10002", "name": "Developers"}}]
+
+    @staticmethod
+    async def _run(level_a: list, *, lead: dict | None = None, actors: list | None = None, status: int = 200,
+             issues: int = 1) -> tuple[JiraConnector, list, list[str], dict]:
+        c, pages, point = TestAReindexReadsOnlyTheGroupsItsIssuesNeed._reindex(
+            TestReindexAppliesTheLevel.LEVELED, [{"type": "reporter"}], level_a)
+        c.data_source.get_project = AsyncMock(return_value=_resp(status, {"key": "PROJ", "lead": lead}))
+        c.data_source.get_project_role = AsyncMock(return_value=_resp(status, {"id": 10002, "actors": actors or []}))
+        cache: dict = {}
+        out = [await c._check_and_fetch_updated_issue(_stored_ticket(id=f"rid-{n}"), {"acc-1": _users()[0]}, cache)
+               for n in range(issues)]
+        return c, out, pages, point
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_the_level_names_as_project_lead_reads_it_after_a_reindex(self) -> None:
+        c, ((record, perms), _), _, point = await self._run(self.LEAD, lead={"accountId": "acc-1"}, issues=2)
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == []
+        assert c.data_source.get_project.await_count == 1  # once per reindex, whatever the number of issues
+
+    @pytest.mark.asyncio
+    async def test_another_lead_gives_the_reporter_nothing_and_the_issue_is_settled(self) -> None:
+        _, ((record, perms),), _, point = await self._run(self.LEAD, lead={"accountId": "acc-2"})
+        assert (record.access_rule, perms) == (AccessRule.STRICT, [])
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("level_a", [LEAD, ROLE])
+    async def test_a_lead_or_role_read_that_fails_grants_nobody_and_queues_the_issue(self, level_a: list) -> None:
+        _, ((record, perms),), _, point = await self._run(level_a, lead={"accountId": "acc-1"},
+                                                     actors=[{"type": "atlassian-user-role-actor",
+                                                              "actorUser": {"accountId": "acc-1"}}], status=503)
+        assert (record.access_rule, perms, record.source_updated_at) == (AccessRule.STRICT, [], 1)
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_in_the_level_s_role_as_a_user_reads_it(self) -> None:
+        c, ((record, perms), _), _, _ = await self._run(
+            self.ROLE, actors=[{"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}}], issues=2)
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert c.data_source.get_project_role.await_args.kwargs == {
+            "projectIdOrKey": "PROJ", "id": 10002, "excludeInactiveUsers": True}
+        assert c.data_source.get_project_role.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_in_the_level_s_role_through_a_group_reads_it(self) -> None:
+        """The role's group is read now, through the reindex's group cache, by the id ``actorGroup`` documents."""
+        _, ((record, perms),), pages, point = await self._run(self.ROLE, actors=[{
+            "type": "atlassian-group-role-actor", "displayName": "big", "actorGroup": {"groupId": "group-big"}}])
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert pages == ["group-big"] * (BIG_GROUP // 50)
+
+    @pytest.mark.asyncio
+    async def test_a_role_group_past_the_cap_leaves_the_role_unknown(self) -> None:
+        """Never read as a role without that group's members: the reporter gets no grant and the next sync decides."""
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.REINDEX_GROUP_READS", 0):
+            _, ((record, perms),), pages, point = await self._run(self.ROLE, actors=[{
+                "type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-big"}}])
+        assert (pages, record.access_rule, perms) == ([], AccessRule.STRICT, [])
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("level_a", [LEAD, ROLE])
+    async def test_the_reindex_reads_what_the_sync_would(self, level_a: list) -> None:
+        """The readers a reindex reads equal those the sync derives from the same lead and role members."""
+        c, _, _, _ = await self._run(level_a, lead={"accountId": "acc-1"},
+                               actors=[{"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}}])
+        security = await c._load_issue_security("PROJ", cached=False)
+        security.browse_holders = [{"type": "reporter"}]
+        await c._reindex_level_readers(security, "PROJ", {"acc-1": _users()[0]}, "10102")
+        c._role_members = {"PROJ_projectLead": [_users()[0]], "PROJ_10002": [_users()[0]]}
+        assert security.level_readers["10102"] == c._level_readers(security, "PROJ", {"acc-1": _users()[0]})["10102"]
+        assert security.level_readers["10102"]
+
+
+def test_a_role_group_actor_is_found_by_the_documented_actor_group_id() -> None:
+    c = _connector()
+    members, unread = c._role_actor_members("PROJ/Developers", [
+        {"type": "atlassian-group-role-actor", "displayName": "Devs", "actorGroup": {"groupId": "group-1", "name": "devs"}}],
+        {}, {}, {"group-1": [_users()[0]]})
+    assert ([u.source_user_id for u in members], unread) == (["acc-1"], None)
+    assert c._role_actor_members("x", [{"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "g"}}],
+                                 {}, {}, {"g": None})[1] == "g"
 
 
 @pytest.mark.parametrize("browse", [[], None])
