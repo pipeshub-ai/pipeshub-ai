@@ -405,6 +405,19 @@ def test_a_test_module_that_stubs_at_import_is_a_collection_error(tmp_path: Path
     assert "importing test_wired.py left sys.modules changed for 1 importable module(s): f59b_wired (stub)" in run.stdout
 
 
+def test_a_test_module_that_stubs_and_then_raises_at_import_keeps_its_traceback(tmp_path: Path) -> None:
+    run = _run_pytest(tmp_path, """
+        import sys, types
+
+        sys.modules["f59b_wired"] = types.ModuleType("f59b_wired")
+        raise RuntimeError("the import's own failure")
+    """)
+
+    assert run.returncode == 2, run.stdout[-3000:]
+    assert "RuntimeError: the import's own failure" in run.stdout
+    assert "importing test_wired.py left sys.modules changed for 1 importable module(s): f59b_wired (stub)" in run.stdout
+
+
 def test_stubs_that_are_put_back_pass(tmp_path: Path) -> None:
     run = _run_pytest(tmp_path, """
         import sys, types

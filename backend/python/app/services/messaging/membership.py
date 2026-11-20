@@ -1,7 +1,7 @@
 """Which members of the indexing consumer groups follow the stored-write protocol.
 
 An indexing pod that writes the stored record by compare-and-set names its Kafka ``client_id`` and
-its Redis consumer with ``/sp3`` (``storage_protocol``). A live member without it is an older pod
+its Redis consumer with ``/sp4`` (``storage_protocol``). A live member without it is an older pod
 whose in-place writes do not invalidate a servable run first. This module finds such members and
 publishes the result, so that:
 
@@ -95,12 +95,17 @@ class MembershipResult:
     untagged: list[str] = field(default_factory=list)
     groups_checked: list[str] = field(default_factory=list)
     groups_expected: list[str] = field(default_factory=list)
+    #: Untagged members with idle consumers counted as live (``None``: not measured, which fails closed for the swap check).
+    untagged_any: list[str] | None = None
 
     def entry(self) -> dict[str, Any]:
-        return {
+        entry = {
             "checkedAt": self.checked_at, "untagged": self.untagged,
             "groupsChecked": self.groups_checked, "groupsExpected": self.groups_expected,
         }
+        if self.untagged_any is not None:
+            entry["untaggedAny"] = self.untagged_any
+        return entry
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,21 @@ def evaluate(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) ->
     return MembershipVerdict(True)
 
 
+def evaluate_strict(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) -> MembershipVerdict:
+    """:func:`evaluate`, with idle consumers counted as live, for the checks that guard a deletion. An entry that did not
+    measure that (an older writer) proves nothing, so the verdict is stale."""
+    fresh = [
+        e for e in entries
+        if isinstance(e, dict) and isinstance(e.get("checkedAt"), (int, float)) and now_ms - e["checkedAt"] <= stale_ms
+    ]
+    if any(not isinstance(e.get("untaggedAny"), list) for e in fresh):
+        return MembershipVerdict(False, (), "stale")
+    any_untagged = sorted({n for e in fresh for n in _names(e.get("untaggedAny"))})
+    if any_untagged:
+        return MembershipVerdict(False, tuple(any_untagged), "untagged")
+    return evaluate(entries, now_ms, stale_ms)
+
+
 async def kafka_untagged(admin_factory: Callable[[], Any], groups: list[str]) -> list[str]:
     """Client ids of live members of *groups* without the tag.
 
@@ -179,9 +199,13 @@ async def kafka_untagged(admin_factory: Callable[[], Any], groups: list[str]) ->
     return sorted(set(names))
 
 
-async def redis_untagged(redis: Any, group_streams: dict[str, list[str]]) -> list[str]:  # noqa: ANN401
+async def redis_untagged(
+    redis: Any, group_streams: dict[str, list[str]], *, idle_live_ms: int | None = REDIS_IDLE_LIVE_MS  # noqa: ANN401
+) -> list[str]:
     """Names of live consumers without the tag. A consumer is live when it has entries pending,
-    or was idle for less than ten minutes (a parked blocking read shows a small idle time)."""
+    or was idle for less than ten minutes (a parked blocking read shows a small idle time).
+    ``idle_live_ms=None`` counts every consumer of the group as live, however long it has been idle: an idle older
+    pod can still hold a sweep lease and run its sweeps."""
     names: set[str] = set()
     for group, streams in group_streams.items():
         for stream in streams:
@@ -199,7 +223,7 @@ async def redis_untagged(redis: Any, group_streams: dict[str, list[str]]) -> lis
                 idle = int(consumer.get("idle", consumer.get(b"idle", 0)))
                 if is_tagged(name):
                     continue
-                if pending > 0 or idle < REDIS_IDLE_LIVE_MS:
+                if pending > 0 or idle_live_ms is None or idle < idle_live_ms:
                     names.add(name)
     return sorted(names)
 
@@ -220,12 +244,14 @@ class MembershipPublisher:
         *,
         holder: str | None = None,
         is_leader: Callable[[], Awaitable[bool]] | None = None,
+        check_any: Callable[[dict[str, list[str]]], Awaitable[list[str]]] | None = None,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         groups: Callable[[], dict[str, list[str]]] = groups_to_check,
         expected: Callable[[], dict[str, list[str]]] = expected_groups,
     ) -> None:
         self.logger = logger
         self._check = check
+        self._check_any = check_any
         self._put = put
         self.holder = holder or uuid4().hex[:12]
         self._is_leader = is_leader
@@ -250,7 +276,13 @@ class MembershipPublisher:
         except Exception as exc:
             self.logger.warning("Indexing membership check failed: %s: %s", type(exc).__name__, exc)
             return None
-        result = MembershipResult(started, sorted(set(untagged)), sorted(groups), expected)
+        untagged_any = None
+        if self._check_any is not None:
+            try:
+                untagged_any = sorted(set(await self._check_any(groups)))
+            except Exception as exc:
+                self.logger.warning("Indexing membership check (idle members included) failed: %s: %s", type(exc).__name__, exc)
+        result = MembershipResult(started, sorted(set(untagged)), sorted(groups), expected, untagged_any)
         await self._put(f"{MEMBERSHIP_DIRECTORY}{self.holder}", result.entry(), ENTRY_TTL_SECONDS)
         if result.untagged:
             self.logger.warning(
@@ -285,17 +317,25 @@ class MembershipReader:
         self._now_ms = now_ms
         self._monotonic = monotonic
         self._cached: tuple[float, MembershipVerdict] | None = None
+        self._strict = MembershipVerdict(False, (), "stale")
 
     async def verdict(self) -> MembershipVerdict:
         now = self._monotonic()
         if self._cached is not None and now - self._cached[0] < READER_CACHE_SECONDS:
             return self._cached[1]
         try:
-            verdict = evaluate(await self._read(), self._now_ms())
+            entries = await self._read()
+            verdict = evaluate(entries, self._now_ms())
+            self._strict = evaluate_strict(entries, self._now_ms())
         except Exception:
-            verdict = MembershipVerdict(False, (), "stale")
+            verdict = self._strict = MembershipVerdict(False, (), "stale")
         self._cached = (now, verdict)
         return verdict
+
+    async def strict_verdict(self) -> MembershipVerdict:
+        """The verdict with idle consumers counted as live (see :func:`evaluate_strict`), cached with :meth:`verdict`."""
+        await self.verdict()
+        return self._strict
 
 
 async def read_entries_from_config(config_service: Any) -> list[Any]:  # noqa: ANN401
