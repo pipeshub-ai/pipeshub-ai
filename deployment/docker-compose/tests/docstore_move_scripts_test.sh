@@ -453,6 +453,14 @@ run_script "$MIGRATE" --offline
 check_eq "a missing env file exits 1" "$RC" 1
 check_eq "before docker is called" "$(steps)" ""
 
+echo "== online: MongoDB gets a start period before 'up --wait' gives up on it =="
+# `up --wait mongodb` stops at the first `unhealthy`, and the base check marks it so after 5 x 5 s, while a large volume still opens;
+# the override's own healthcheck (it replaces the base one) keeps the test and adds the grace period.
+RS="$(cat "$COMPOSE_DIR/docker-compose.mongo-replica-set.yml")"
+check "the replica-set override has its own healthcheck" "$RS" "healthcheck:"
+check "with the base test" "$RS" "db.adminCommand('ping')"
+check "and a start period" "$RS" "start_period: 300s"
+
 echo
 P=$(wc -l <"$PASS_FILE" | tr -d ' '); F=$(wc -l <"$FAIL_FILE" | tr -d ' ')
 echo "passed: $P, failed: $F"
