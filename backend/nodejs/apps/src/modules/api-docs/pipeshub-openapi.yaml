@@ -4755,13 +4755,30 @@ components:
         - knowledgeLimit
       properties:
         knowledgeLimit:
+          # The same shape as KnowledgeLimit, written out because OpenAPI 3.0
+          # does not carry `nullable` into an allOf/$ref branch, so a composed
+          # schema would refuse the documented `null`.
           description: |
-            What the token may see from now on, or `null` for everything its
-            owner can see (including sources added later).
+            What the token may see from now on, the same shape as
+            `KnowledgeLimit`, or `null` for everything its owner can see
+            (including sources added later). Sent, it must name at least one
+            id and at most 50 in all.
           type: object
           nullable: true
-          allOf:
-            - $ref: '#/components/schemas/KnowledgeLimit'
+          additionalProperties: false
+          properties:
+            apps:
+              type: array
+              items: { type: string, format: uuid }
+              description: Whole connectors and collections.
+            recordGroups:
+              type: array
+              items: { type: string, format: uuid }
+              description: Record groups (a drive, space or project), with the groups nested in them.
+            records:
+              type: array
+              items: { type: string, format: uuid }
+              description: Folders or records, with everything under them.
     UpdatePatKnowledgeLimitResponse:
       type: object
       description: Response body for `PATCH /personal-access-tokens/{tokenId}` (`updateKnowledgeLimit`).

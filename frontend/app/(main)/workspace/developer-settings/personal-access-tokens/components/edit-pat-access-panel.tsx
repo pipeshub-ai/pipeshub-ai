@@ -15,6 +15,7 @@ import {
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
 import { useToastStore } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { PatApi } from '../api';
 import type { PatListItem } from '../types';
@@ -32,26 +33,41 @@ export interface EditPatAccessPanelProps {
   onOpenChange: (open: boolean) => void;
   /** Called with the token as the server now has it, after a save or an undo. */
   onSaved: (token: PatListItem) => void;
+  /** Re-reads the tokens from the server, for when a change's outcome is unknown. */
+  onReload: () => Promise<void>;
 }
+
+/** The server answered and refused, so the stored limit is unchanged. */
+const isRefusal = (error: unknown): boolean =>
+  isProcessedError(error) &&
+  error.statusCode !== undefined &&
+  error.statusCode >= 400 &&
+  error.statusCode < 500;
 
 /**
  * Changes what an existing personal access token can see. The token and its
  * secret stay the same, so nothing that uses it needs updating.
  */
-export function EditPatAccessPanel({ token, onOpenChange, onSaved }: EditPatAccessPanelProps) {
+export function EditPatAccessPanel({ token, onOpenChange, onSaved, onReload }: EditPatAccessPanelProps) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const [value, setValue] = useState<KnowledgeLimitValue>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Re-seed whenever another token is opened.
   const tokenId = token?.id;
-  // A save that finishes after the user moved on must not close what they opened next.
-  const openTokenId = useRef(tokenId);
-  openTokenId.current = tokenId;
+  // Each opening is its own session: a save that finishes after the panel was
+  // closed or moved to another token must not close what is open now, even
+  // when it is the same token opened again.
+  const session = useRef(0);
+  useEffect(() => {
+    session.current += 1;
+  }, [tokenId]);
+  // Re-seed on another token, and when the server reports a new limit for this
+  // one (an Undo or a reload), so the panel never shows a stale choice.
+  const storedKey = JSON.stringify(token?.knowledgeLimit ?? null);
   useEffect(() => {
     setValue(selectionFromLimit(token?.knowledgeLimit));
-  }, [tokenId]);
+  }, [tokenId, storedKey]);
 
   const next = knowledgeLimitForApi(value);
   const changed = token !== null && !sameKnowledgeLimit(next, token.knowledgeLimit);
@@ -65,6 +81,18 @@ export function EditPatAccessPanel({ token, onOpenChange, onSaved }: EditPatAcce
     [t]
   );
 
+  // No answer (network, timeout, 5xx) means the change may have landed. Show
+  // the token as the server has it instead of claiming nothing changed.
+  const reportUnknown = useCallback(async () => {
+    await onReload().catch(() => undefined);
+    addToast({
+      variant: 'error',
+      title: t('workspace.personalAccessTokens.access.unknownTitle'),
+      description: t('workspace.personalAccessTokens.access.unknownDescription'),
+      duration: 8000,
+    });
+  }, [addToast, onReload, t]);
+
   const undo = useCallback(
     async (target: PatListItem) => {
       try {
@@ -76,25 +104,30 @@ export function EditPatAccessPanel({ token, onOpenChange, onSaved }: EditPatAcce
           description: describe(restored.name, restored.knowledgeLimit),
           duration: 3000,
         });
-      } catch {
-        addToast({
-          variant: 'error',
-          title: t('workspace.personalAccessTokens.access.undoErrorTitle'),
-          duration: 5000,
-        });
+      } catch (error) {
+        if (isRefusal(error)) {
+          addToast({
+            variant: 'error',
+            title: t('workspace.personalAccessTokens.access.undoErrorTitle'),
+            duration: 5000,
+          });
+        } else {
+          await reportUnknown();
+        }
       }
     },
-    [addToast, describe, onSaved, t]
+    [addToast, describe, onSaved, reportUnknown, t]
   );
 
   const handleSave = useCallback(async () => {
     if (!token || !changed || !valid) return;
     const before = token;
+    const mine = session.current;
     setIsSaving(true);
     try {
       const { token: updated } = await PatApi.updateKnowledgeLimit(token.id, next ?? null);
       onSaved(updated);
-      if (openTokenId.current === before.id) onOpenChange(false);
+      if (session.current === mine) onOpenChange(false);
       addToast({
         variant: 'success',
         title: t('workspace.personalAccessTokens.access.savedTitle'),
@@ -105,17 +138,21 @@ export function EditPatAccessPanel({ token, onOpenChange, onSaved }: EditPatAcce
           onClick: () => void undo(before),
         },
       });
-    } catch {
-      addToast({
-        variant: 'error',
-        title: t('workspace.personalAccessTokens.access.errorTitle'),
-        description: t('workspace.personalAccessTokens.access.errorDescription'),
-        duration: 5000,
-      });
+    } catch (error) {
+      if (isRefusal(error)) {
+        addToast({
+          variant: 'error',
+          title: t('workspace.personalAccessTokens.access.errorTitle'),
+          description: t('workspace.personalAccessTokens.access.errorDescription'),
+          duration: 5000,
+        });
+      } else {
+        await reportUnknown();
+      }
     } finally {
       setIsSaving(false);
     }
-  }, [token, changed, valid, next, onSaved, onOpenChange, addToast, t, describe, undo]);
+  }, [token, changed, valid, next, onSaved, onOpenChange, addToast, t, describe, undo, reportUnknown]);
 
   return (
     <WorkspaceRightPanel

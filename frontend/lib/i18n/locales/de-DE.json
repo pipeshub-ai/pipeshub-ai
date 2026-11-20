@@ -4585,6 +4585,8 @@
         "undoErrorTitle": "Die Änderung konnte nicht rückgängig gemacht werden. Öffne „Zugriff ändern“, um sie erneut festzulegen.",
         "errorTitle": "Zugriff konnte nicht geändert werden",
         "errorDescription": "Es wurde nichts geändert. Versuche es erneut.",
+        "unknownTitle": "Änderung konnte nicht bestätigt werden",
+        "unknownDescription": "Sie wurde möglicherweise gespeichert. Prüfen Sie den hier angezeigten Zugriff, bevor Sie es erneut versuchen.",
         "rowAction": "Zugriff ändern",
         "rowActionAria": "Ändern, was {{name}} sehen kann",
         "rowActionTooltip": "Zugriff ändern: festlegen, was dieses Token sehen kann"

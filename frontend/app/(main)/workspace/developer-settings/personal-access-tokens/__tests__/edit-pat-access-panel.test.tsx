@@ -5,6 +5,7 @@ import { en } from '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import { Theme } from '@radix-ui/themes';
 import { useToastStore } from '@/lib/store/toast-store';
+import { ErrorType, type ProcessedError } from '@/lib/api/api-error';
 import type { PatListItem } from '../types';
 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -31,14 +32,27 @@ const token: PatListItem = {
 const everything = () => document.getElementById('pat-access-knowledge-limit-everything') as HTMLInputElement;
 const only = () => document.getElementById('pat-access-knowledge-limit-only') as HTMLInputElement;
 const save = () => screen.getByRole('button', { name: text.save }) as HTMLButtonElement;
-const lastToast = () => useToastStore.getState().toasts.at(-1);
+// The store puts the newest toast first.
+const lastToast = () => useToastStore.getState().toasts[0];
 
 function open(t: PatListItem = token) {
   const onSaved = vi.fn();
   const onOpenChange = vi.fn();
-  renderInTheme(<EditPatAccessPanel token={t} onOpenChange={onOpenChange} onSaved={onSaved} />);
-  return { onSaved, onOpenChange };
+  const onReload = vi.fn().mockResolvedValue(undefined);
+  const view = renderInTheme(
+    <EditPatAccessPanel token={t} onOpenChange={onOpenChange} onSaved={onSaved} onReload={onReload} />
+  );
+  const show = (next: PatListItem | null) =>
+    view.rerender(
+      <Theme>
+        <EditPatAccessPanel token={next} onOpenChange={onOpenChange} onSaved={onSaved} onReload={onReload} />
+      </Theme>
+    );
+  return { onSaved, onOpenChange, onReload, show };
 }
+
+const refused: ProcessedError = { type: ErrorType.VALIDATION_ERROR, statusCode: 400, message: 'bad' };
+const noAnswer: ProcessedError = { type: ErrorType.NETWORK_ERROR, message: 'Network error.' };
 
 describe('Changing what a personal access token can see', () => {
   beforeEach(() => {
@@ -100,20 +114,11 @@ describe('Changing what a personal access token can see', () => {
   it('does not close another token the user opened while a save was still going', async () => {
     let finish: (value: { token: PatListItem }) => void = () => {};
     updateKnowledgeLimit.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
-    const onSaved = vi.fn();
-    const onOpenChange = vi.fn();
-    const { rerender } = renderInTheme(
-      <EditPatAccessPanel token={token} onOpenChange={onOpenChange} onSaved={onSaved} />
-    );
+    const { onSaved, onOpenChange, show } = open();
 
     fireEvent.click(everything());
     fireEvent.click(save());
-    const other: PatListItem = { ...token, id: 't9', name: 'Other token' };
-    rerender(
-      <Theme>
-        <EditPatAccessPanel token={other} onOpenChange={onOpenChange} onSaved={onSaved} />
-      </Theme>
-    );
+    show({ ...token, id: 't9', name: 'Other token' });
     await act(async () => {
       finish({ token: { ...token, knowledgeLimit: undefined } });
     });
@@ -122,16 +127,74 @@ describe('Changing what a personal access token can see', () => {
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
-  it('keeps the panel open and says so when the change fails', async () => {
-    updateKnowledgeLimit.mockRejectedValue(new Error('boom'));
-    const { onSaved, onOpenChange } = open();
+  it('does not close the same token reopened while its earlier save was still going', async () => {
+    let finish: (value: { token: PatListItem }) => void = () => {};
+    updateKnowledgeLimit.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const { onOpenChange, show } = open();
+
+    fireEvent.click(everything());
+    fireEvent.click(save());
+    show(null);
+    show(token);
+    await act(async () => {
+      finish({ token: { ...token, knowledgeLimit: undefined } });
+    });
+
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("follows the token's access when the server reports a new one while open", () => {
+    const { show } = open();
+    expect(only().checked).toBe(true);
+
+    show({ ...token, knowledgeLimit: undefined });
+
+    expect(everything().checked).toBe(true);
+    expect(save().disabled).toBe(true);
+  });
+
+  it('keeps the panel open and says nothing changed when the server refuses', async () => {
+    updateKnowledgeLimit.mockRejectedValue(refused);
+    const { onSaved, onOpenChange, onReload } = open();
 
     fireEvent.click(everything());
     fireEvent.click(save());
 
     await waitFor(() => expect(lastToast()?.variant).toBe('error'));
     expect(lastToast()?.title).toBe(text.errorTitle);
+    expect(lastToast()?.description).toBe(text.errorDescription);
     expect(onSaved).not.toHaveBeenCalled();
+    expect(onReload).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("reloads the token and does not claim nothing changed when no answer came back", async () => {
+    updateKnowledgeLimit.mockRejectedValue(noAnswer);
+    const { onOpenChange, onReload } = open();
+
+    fireEvent.click(everything());
+    fireEvent.click(save());
+
+    await waitFor(() => expect(onReload).toHaveBeenCalled());
+    await waitFor(() => expect(lastToast()?.title).toBe(text.unknownTitle));
+    expect(lastToast()?.description).toBe(text.unknownDescription);
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it('reloads the token when an Undo gets no answer', async () => {
+    updateKnowledgeLimit
+      .mockResolvedValueOnce({ token: { ...token, knowledgeLimit: undefined } })
+      .mockRejectedValueOnce(noAnswer);
+    const { onReload } = open();
+
+    fireEvent.click(everything());
+    fireEvent.click(save());
+    await waitFor(() => expect(lastToast()?.action).toBeTruthy());
+    await act(async () => {
+      lastToast()?.action?.onClick?.();
+    });
+
+    await waitFor(() => expect(onReload).toHaveBeenCalled());
+    await waitFor(() => expect(lastToast()?.title).toBe(text.unknownTitle));
   });
 });

@@ -53,7 +53,10 @@ function PersonalAccessTokensPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [revokeTarget, setRevokeTarget] = useState<PatListItem | null>(null);
-  const [accessTarget, setAccessTarget] = useState<PatListItem | null>(null);
+  // The id, not a copy of the row: the open panel then follows every update to
+  // the list (a save, an Undo or a reload) instead of showing a stale limit.
+  const [accessTargetId, setAccessTargetId] = useState<string | null>(null);
+  const accessTarget = tokens.find((tok) => tok.id === accessTargetId) ?? null;
   const [isRevoking, setIsRevoking] = useState(false);
 
   const fetchTokens = useCallback(async () => {
@@ -72,6 +75,12 @@ function PersonalAccessTokensPageContent() {
       setIsLoading(false);
     }
   }, [t]);
+
+  // A quiet re-read that keeps the list on screen, for when a change's outcome is unknown.
+  const reloadTokens = useCallback(async () => {
+    const data = await PatApi.listTokens();
+    setTokens(data.tokens ?? []);
+  }, []);
 
   useEffect(() => {
     if (!isProfileInitialized) return;
@@ -261,7 +270,7 @@ function PersonalAccessTokensPageContent() {
                         color="gray"
                         size="2"
                         aria-label={t('workspace.personalAccessTokens.access.rowActionAria', { name: token.name })}
-                        onClick={() => setAccessTarget(token)}
+                        onClick={() => setAccessTargetId(token.id)}
                         style={{ cursor: 'pointer', minHeight: 44 }}
                       >
                         {t('workspace.personalAccessTokens.access.rowAction')}
@@ -346,7 +355,7 @@ function PersonalAccessTokensPageContent() {
                         aria-label={t('workspace.personalAccessTokens.access.rowActionAria', {
                           name: token.name,
                         })}
-                        onClick={() => setAccessTarget(token)}
+                        onClick={() => setAccessTargetId(token.id)}
                         style={{ cursor: 'pointer' }}
                       >
                         <MaterialIcon name="tune" size={18} color="var(--slate-11)" />
@@ -380,9 +389,10 @@ function PersonalAccessTokensPageContent() {
       <EditPatAccessPanel
         token={accessTarget}
         onOpenChange={(open) => {
-          if (!open) setAccessTarget(null);
+          if (!open) setAccessTargetId(null);
         }}
         onSaved={handleAccessSaved}
+        onReload={reloadTokens}
       />
 
       <CreatePatPanel

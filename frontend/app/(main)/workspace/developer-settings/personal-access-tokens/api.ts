@@ -55,7 +55,9 @@ export const PatApi = {
   ): Promise<UpdatePatKnowledgeLimitResponse> {
     const { data } = await apiClient.patch<UpdatePatKnowledgeLimitResponse>(
       `${BASE_URL}/${id}`,
-      { knowledgeLimit }
+      { knowledgeLimit },
+      // The access panel words its own error, including when the outcome is unknown.
+      { suppressErrorToast: true }
     );
     return data;
   },

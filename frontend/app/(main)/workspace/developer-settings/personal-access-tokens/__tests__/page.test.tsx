@@ -1,7 +1,8 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { en } from '@/lib/__tests__/test-i18n';
+import { useToastStore } from '@/lib/store/toast-store';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -66,6 +67,37 @@ describe('personal access tokens page', () => {
     await waitFor(() => expect(updateKnowledgeLimit).toHaveBeenCalledWith('t2', null));
     await waitFor(() => expect(screen.queryByText('Can see: 1 picked item')).toBeNull());
     expect(screen.getAllByText('Can see: everything you can')).toHaveLength(2);
+  });
+
+  it('shows the restored access in a reopened panel after Undo', async () => {
+    installBrowserShims();
+    const ci = {
+      id: 't2', name: 'CI token', scopes: ['kb:read'], createdAt: '2026-01-01', expiresAt: '2026-06-01',
+      knowledgeLimit: { apps: ['a1'], recordGroups: [], records: [] },
+    };
+    useToastStore.setState({ toasts: [] });
+    updateKnowledgeLimit.mockReset();
+    updateKnowledgeLimit
+      .mockResolvedValueOnce({ token: { ...ci, knowledgeLimit: undefined } })
+      .mockResolvedValueOnce({ token: ci });
+    renderInTheme(<PersonalAccessTokensPage />);
+    await screen.findByText('CI token');
+    const radio = (choice: string) =>
+      document.getElementById(`pat-access-knowledge-limit-${choice}`) as HTMLInputElement;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change what CI token can see' }));
+    fireEvent.click(radio('everything'));
+    fireEvent.click(screen.getByRole('button', { name: access.save }));
+    await waitFor(() => expect(useToastStore.getState().toasts.at(-1)?.action).toBeTruthy());
+    const undo = useToastStore.getState().toasts.at(-1)?.action;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change what CI token can see' }));
+    await waitFor(() => expect(radio('everything').checked).toBe(true));
+    await act(async () => {
+      undo?.onClick?.();
+    });
+
+    await waitFor(() => expect(radio('only').checked).toBe(true));
   });
 
   it('tells you a new token\'s access can be changed later', async () => {

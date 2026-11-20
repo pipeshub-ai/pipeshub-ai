@@ -2331,6 +2331,8 @@
         "undoErrorTitle": "Změnu se nepodařilo vrátit. Otevřete Změnit přístup a nastavte ji znovu.",
         "errorTitle": "Přístup se nepodařilo změnit",
         "errorDescription": "Nic se nezměnilo. Zkuste to znovu.",
+        "unknownTitle": "Změnu se nepodařilo potvrdit",
+        "unknownDescription": "Možná byla uložena. Než to zkusíte znovu, zkontrolujte zde zobrazený přístup.",
         "rowAction": "Změnit přístup",
         "rowActionAria": "Změnit, co {{name}} uvidí",
         "rowActionTooltip": "Změnit přístup: vyberte, co tento token uvidí"

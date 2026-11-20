@@ -4628,6 +4628,8 @@
         "undoErrorTitle": "No se pudo deshacer el cambio. Abre Cambiar acceso para volver a configurarlo.",
         "errorTitle": "No se pudo cambiar el acceso",
         "errorDescription": "No se cambió nada. Inténtalo de nuevo.",
+        "unknownTitle": "No se pudo confirmar el cambio",
+        "unknownDescription": "Es posible que se haya guardado. Comprueba el acceso que se muestra aquí antes de volver a intentarlo.",
         "rowAction": "Cambiar acceso",
         "rowActionAria": "Cambiar qué puede ver {{name}}",
         "rowActionTooltip": "Cambiar acceso: elige qué puede ver este token"

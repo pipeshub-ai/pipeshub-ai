@@ -2217,6 +2217,8 @@
         "undoErrorTitle": "无法撤销更改。请打开“更改访问权限”重新设置。",
         "errorTitle": "无法更改访问权限",
         "errorDescription": "未做任何更改。请重试。",
+        "unknownTitle": "无法确认更改",
+        "unknownDescription": "更改可能已保存。请先检查此处显示的访问范围，再重试。",
         "rowAction": "更改访问权限",
         "rowActionAria": "更改 {{name}} 可以查看的内容",
         "rowActionTooltip": "更改访问权限：选择此令牌可以查看的内容"

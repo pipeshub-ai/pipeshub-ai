@@ -2217,6 +2217,8 @@
         "undoErrorTitle": "無法復原變更。請開啟「變更存取權」重新設定。",
         "errorTitle": "無法變更存取權",
         "errorDescription": "沒有任何變更。請再試一次。",
+        "unknownTitle": "無法確認變更",
+        "unknownDescription": "變更可能已儲存。請先檢查此處顯示的存取範圍，再重試。",
         "rowAction": "變更存取權",
         "rowActionAria": "變更 {{name}} 可以檢視的內容",
         "rowActionTooltip": "變更存取權：選擇此權杖可以檢視的內容"
