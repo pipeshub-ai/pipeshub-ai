@@ -215,6 +215,22 @@ NER_TIMEOUT = 900
 NER_POLL = 10
 
 
+def _links(mcp_base_url: str, mcp_access_token: str, entity: dict, record_id: str) -> bool:
+    """Whether the entity's records, every page of them, include ``record_id``."""
+    args = {"action": "records", "entity_id": entity["entityId"], "entity_type": entity["entityType"], "limit": 50}
+    for _ in range(20):
+        result = call_mcp_tool(mcp_base_url, mcp_access_token, ENTITIES, args)
+        if result.is_error:
+            return False
+        if record_id in result.text:
+            return True
+        cursor = re.search(r'cursor="([^"]+)"', result.text)
+        if not cursor:
+            return False
+        args = {**args, "cursor": cursor.group(1)}
+    return False
+
+
 @pytest.fixture(scope="module")
 def ner_document(
     capabilities: dict[str, bool], kb_client, ai_models_configured, mcp_base_url: str, mcp_access_token: str,
@@ -248,11 +264,12 @@ def ner_document(
             })
             if not result.is_error:
                 hits = [h for h in result.json().get("results") or [] if "zentrova" in str(h.get("name", "")).lower()]
-                if hits:
-                    found = hits[0]
+                # An earlier run may have left the entity: it counts only once this run's record is linked to it.
+                found = next((h for h in hits if _links(mcp_base_url, mcp_access_token, h, record_id)), {})
+                if found:
                     break
             time.sleep(NER_POLL)
-        assert found, f"no named entity for Zentrova Robotics within {NER_TIMEOUT}s (record {record_id})"
+        assert found, f"Zentrova Robotics not linked to record {record_id} within {NER_TIMEOUT}s"
         yield {"kb_id": kb_id, "record_id": record_id, "token": token, "entity_id": found["entityId"],
                "entity_type": found["entityType"]}
     finally:

@@ -425,7 +425,7 @@ describe('MCP Controller — handleMCPRequest', () => {
     // The code tools ask /code-graph/repos; answer that with no repo so only entity tools mount.
     const answer = (caps: unknown, capsStatus = 200) =>
       fetchStub.callsFake(async (url: string) =>
-        /\/code-graph\/repos$/.test(String(url)) ? json({ repos: [] }) : json(caps, capsStatus))
+        /\/code-graph\/repos$/.test(url) ? json({ repos: [] }) : json(caps, capsStatus))
     const capsCalls = () => fetchStub.getCalls().filter((c) => /\/search\/entities\/capabilities$/.test(String(c.args[0])))
 
     beforeEach(() => {
@@ -1680,7 +1680,9 @@ describe('MCP Controller — handleMCPRequest', () => {
         policyRes({ disabledTools: [...CODE_GRAPH_TOOL_NAMES] }),
         createMockNext(),
       )
-      expect(fetchStub.getCalls().some((c) => /\/code-graph\/repos$/.test(String(c.args[0])))).to.equal(false)
+      const fetched = (input: string | URL | Request): string =>
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      expect(fetchStub.getCalls().some((c) => /\/code-graph\/repos$/.test(fetched(c.args[0])))).to.equal(false)
     })
 
     describe('with the real @pipeshub-ai/mcp package', () => {

@@ -142,6 +142,13 @@ describe('MCP entity tools', () => {
       for (const key of ['amount_min', 'date_from', 'mentions', 'match', 'query']) expect(all[key], key).to.not.equal(undefined)
     })
 
+    it('takes no more names than the query service looks up', () => {
+      const schema = z.object(register().get(FIND_RECORDS_TOOL)!.config.inputSchema)
+      const names = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `n${i}` }))
+      expect(schema.safeParse({ action: 'by_entities', mentions: names(5) }).success).to.equal(true)
+      expect(schema.safeParse({ action: 'by_entities', mentions: names(6) }).success).to.equal(false)
+    })
+
     it('describes only the actions served', () => {
       const d = register(DEPLOYMENTS[0].caps).get(FIND_RECORDS_TOOL)!.config.description as string
       expect(d).to.include("a person's tickets")

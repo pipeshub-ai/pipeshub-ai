@@ -25709,6 +25709,8 @@ components:
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 64
           description: Record types to keep, e.g. FILE, MAIL, TICKET.
         limit:
           type: integer
@@ -25732,12 +25734,16 @@ components:
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 256
           description: Every id `POST /search/entities` returned for the one entity.
         kinds:
           type: array
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 64
           description: Kinds to list, e.g. person, organization, product. Emails and phones are listed only when named here.
         limit:
           type: integer
@@ -25760,6 +25766,8 @@ components:
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 32
             enum: [assignee, reporter, creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved]
           description: Roles to keep; every role when omitted.
         recordTypes:
@@ -25767,6 +25775,8 @@ components:
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 64
         limit:
           type: integer
           minimum: 1
@@ -25779,13 +25789,18 @@ components:
       additionalProperties: false
     RecordsByValueRequest:
       type: object
-      description: Request body for `POST /search/records/by-value`. Give at least one bound.
+      description: >-
+        Request body for `POST /search/records/by-value`. Give at least one constraint: `entityIds`, `name`,
+        `kinds`, a date, an amount or `currency`, a quantity or `dimension`, or a percentage. `currency` alone
+        finds any amount in that currency.
       properties:
         kinds:
           type: array
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 64
           description: Value kinds, e.g. date, currency, percentage, dimension.
         name:
           type: string
@@ -25797,13 +25812,17 @@ components:
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 256
           description: Entity ids from `POST /search/entities` the records must mention.
         dateFrom:
           type: string
+          minLength: 1
           maxLength: 64
           description: Earliest date mentioned, ISO 8601.
         dateTo:
           type: string
+          minLength: 1
           maxLength: 64
           description: Latest date mentioned, ISO 8601.
         amountMin:
@@ -25812,6 +25831,7 @@ components:
           type: number
         currency:
           type: string
+          minLength: 1
           maxLength: 16
           description: ISO 4217 code, e.g. USD.
         quantityMin:
@@ -25821,6 +25841,7 @@ components:
           type: number
         dimension:
           type: string
+          minLength: 1
           maxLength: 64
           description: The quantity's dimension, e.g. time, length, mass, data.
         percentMin:
@@ -25833,11 +25854,15 @@ components:
           maxItems: 20
           items:
             type: string
+            minLength: 1
+            maxLength: 64
         sourceIds:
           type: array
           maxItems: 50
           items:
             type: string
+            minLength: 1
+            maxLength: 256
           description: App or knowledge base ids to look in.
         limit:
           type: integer
@@ -25857,7 +25882,7 @@ components:
         mentions:
           type: array
           minItems: 1
-          maxItems: 10
+          maxItems: 5
           items:
             type: object
             required: [name]
@@ -25868,6 +25893,7 @@ components:
                 maxLength: 200
               kind:
                 type: string
+                minLength: 1
                 maxLength: 64
                 description: person, organization, product, event, location, ... when known.
             additionalProperties: false
@@ -78867,7 +78893,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntityToolListing'
         '400':
-          description: The request is invalid, for example no value bound, or an inverted range.
+          description: The request is invalid, for example no constraint at all, or an inverted range.
           content:
             application/json:
               schema:

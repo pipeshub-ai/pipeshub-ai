@@ -103,6 +103,8 @@ const RECORD_ENTITY_TYPES = [
   'organization',
 ] as const;
 const NAMED_ENTITY_TYPE = 'named_entity';
+// The query service's linking.mentions.MAX_MENTIONS: names past it would not be looked up.
+const MAX_MENTIONS = 5;
 // The query service's people.ROLE_EDGES.
 const PERSON_ROLES = [
   'assignee',
@@ -728,7 +730,7 @@ function registerFindRecords(
         }),
       )
       .min(1)
-      .max(10)
+      .max(MAX_MENTIONS)
       .optional()
       .describe(
         'by_entities: the names to look up, e.g. [{"name": "Acme Robotics", "kind": "organization"}].',

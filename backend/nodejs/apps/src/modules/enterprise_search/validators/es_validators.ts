@@ -1496,7 +1496,8 @@ export const enterpriseSearchRecordsByEntitiesSchema = z.object({
         }),
       )
       .min(1, { message: 'At least one name is required' })
-      .max(10),
+      // The AI service looks up at most 5 names (linking.mentions.MAX_MENTIONS).
+      .max(5),
     match: z.enum(['any', 'all']).optional(),
     query: z.string().max(1000).optional(),
     limit: pageLimit,

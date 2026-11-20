@@ -453,3 +453,49 @@ def test_every_route_is_published_with_its_method_and_the_search_scopes() -> Non
 
 def test_the_capabilities_answer_names_what_capabilities_of_reports() -> None:
     assert set(et.capabilities_of(_state())) == set(et.EntityCapabilities.model_fields)
+
+
+async def test_a_value_lookup_runs_bound_to_the_signed_in_caller() -> None:
+    """Its name check may call a model; unbound, that call would go out as the service."""
+    from contextlib import asynccontextmanager
+
+    seen: dict = {}
+
+    @asynccontextmanager
+    async def scope(principal: object, workload: object, **_: object):  # noqa: ANN202
+        seen["principal"], seen["workload"] = principal, workload
+        seen["inside"] = True
+        yield
+        seen["inside"] = False
+
+    async def op(*_: object, **__: object) -> tuple[bool, str]:
+        seen["op_inside"] = seen.get("inside")
+        return True, "ok"
+
+    with _with_state(_state()), patch.object(et, "call_scope", scope), \
+         patch.object(et, "principal_from_request_user", MagicMock(return_value="caller")), \
+         patch.object(et, "execute_find_records_by_value", op):
+        await et.records_by_value(_request(), et.ValueRecordsQuery(name="Acme", amountMin=1), MagicMock())
+    assert seen["op_inside"] is True
+    assert seen["principal"] == "caller"
+    assert seen["workload"] == et.Workload.SEARCH
+
+
+async def test_a_name_lookup_that_timed_out_is_a_503() -> None:
+    from app.agents.actions.knowledge_graph.ops.values import NAME_TOO_SLOW_MSG
+
+    with _with_state(_state()), patch.object(et, "execute_find_records_by_value", AsyncMock(return_value=(False, NAME_TOO_SLOW_MSG))), \
+         pytest.raises(HTTPException) as exc:
+        await et.records_by_value(_request(), et.ValueRecordsQuery(name="Acme"), MagicMock())
+    assert exc.value.status_code == 503
+
+
+def test_the_route_takes_no_more_names_than_the_linker_looks_up() -> None:
+    """parse_mentions keeps the first MAX_MENTIONS: a request with more would be
+    answered for fewer names, and match="all" for a different intersection."""
+    from app.modules.named_entities.linking.mentions import MAX_MENTIONS
+
+    assert et.MAX_MENTIONS == MAX_MENTIONS
+    et.EntityRecordsSearchQuery(mentions=[et.Mention(name=f"n{i}") for i in range(MAX_MENTIONS)], match="all")
+    with pytest.raises(ValueError):
+        et.EntityRecordsSearchQuery(mentions=[et.Mention(name=f"n{i}") for i in range(MAX_MENTIONS + 1)], match="all")

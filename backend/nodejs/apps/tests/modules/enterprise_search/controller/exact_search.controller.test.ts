@@ -232,7 +232,7 @@ describe('entity tool routes', () => {
       expect(error).to.equal(undefined)
       expect(res.statusCode).to.equal(200)
       expect(calls[0].method).to.equal('POST')
-      expect(String(calls[0].uri)).to.equal(`http://ai:8000/api/v1/search/${path}`)
+      expect(calls[0].uri).to.equal(`http://ai:8000/api/v1/search/${path}`)
       expect(JSON.parse(String(calls[0].body))).to.deep.equal(body)
     })
   }
@@ -246,7 +246,7 @@ describe('entity tool routes', () => {
     expect(res.payload).to.deep.equal({ recordsByPerson: true })
     expect(calls[0].method).to.equal('GET')
     expect(calls[0].body).to.equal(undefined)
-    expect(String(calls[0].uri)).to.equal('http://ai:8000/api/v1/search/entities/capabilities')
+    expect(calls[0].uri).to.equal('http://ai:8000/api/v1/search/entities/capabilities')
   })
 
   it('passes a lookup the deployment does not serve on as an error, not an empty answer', async () => {
@@ -286,6 +286,7 @@ describe('entity tool routes', () => {
     expect(ok(enterpriseSearchRecordsByValueSchema, { amountMin: 'lots' })).to.equal(false)
     expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: [] })).to.equal(false)
     expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: [{ name: 'Acme' }], match: 'some' })).to.equal(false)
-    expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: Array(11).fill({ name: 'a' }) })).to.equal(false)
+    expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: Array(5).fill({ name: 'a' }) })).to.equal(true)
+    expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: Array(6).fill({ name: 'a' }) })).to.equal(false)
   })
 })

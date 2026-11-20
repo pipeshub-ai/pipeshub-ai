@@ -56,7 +56,10 @@ from app.agents.actions.knowledge_graph.ops.entity_search import (
     render_preamble,
 )
 from app.agents.actions.knowledge_graph.ops.people import execute_find_records_by_person
-from app.agents.actions.knowledge_graph.ops.values import execute_find_records_by_value
+from app.agents.actions.knowledge_graph.ops.values import (
+    NAME_TOO_SLOW_MSG,
+    execute_find_records_by_value,
+)
 from app.agents.agent_loop.entity_search_tool import (
     ENTITY_SEARCH_OFFERED_STATE_KEY,
     NAMED_ENTITIES_ENABLED_STATE_KEY,
@@ -80,7 +83,7 @@ from app.api.routes.search import (
     _retrieve_fetch_limit,
 )
 from app.modules.named_entities.domain.config import load_named_entity_config
-from app.modules.named_entities.linking.mentions import parse_mentions
+from app.modules.named_entities.linking.mentions import MAX_MENTIONS, parse_mentions
 from app.modules.named_entities.linking.records import readable_records
 from app.modules.retrieval.entity_permissions import (
     SEARCHABLE_ENTITY_TYPES,
@@ -108,10 +111,10 @@ _RETRYABLE = frozenset({
     LOOKUP_FAILED_MSG,
     TOO_SLOW_MSG,
     CO_MENTIONS_TOO_SLOW_MSG,
+    NAME_TOO_SLOW_MSG,
     "Knowledge graph tool state not initialized.",
     "Graph provider not available.",
 })
-MAX_MENTIONS = 10
 DEFAULT_PASSAGES = 10
 MAX_PASSAGES = 50
 
@@ -282,16 +285,22 @@ async def records_by_value(
     a quantity or a percentage, however the record writes it."""
     state = await _entity_state(request, graph_provider)
     _require(capabilities_of(state)["recordsByValue"], NAMED_ENTITIES_DISABLED_MSG)
-    return _text(await execute_find_records_by_value(
-        state,
-        kinds=body.kinds, name=body.name, entity_ids=body.entityIds,
-        date_from=body.dateFrom, date_to=body.dateTo,
-        amount_min=body.amountMin, amount_max=body.amountMax, currency=body.currency,
-        quantity_min=body.quantityMin, quantity_max=body.quantityMax, dimension=body.dimension,
-        percent_min=body.percentMin, percent_max=body.percentMax,
-        record_types=body.recordTypes, source_ids=body.sourceIds,
-        limit=body.limit, cursor=body.cursor,
-    ))
+    # A name that is not an exact match goes through one model check: bound to the caller, as a chat turn is.
+    async with call_scope(
+        principal_from_request_user(request.state.user), Workload.SEARCH,
+        config_service=state["config_service"], container=request.app.container,
+    ):
+        result = await execute_find_records_by_value(
+            state,
+            kinds=body.kinds, name=body.name, entity_ids=body.entityIds,
+            date_from=body.dateFrom, date_to=body.dateTo,
+            amount_min=body.amountMin, amount_max=body.amountMax, currency=body.currency,
+            quantity_min=body.quantityMin, quantity_max=body.quantityMax, dimension=body.dimension,
+            percent_min=body.percentMin, percent_max=body.percentMax,
+            record_types=body.recordTypes, source_ids=body.sourceIds,
+            limit=body.limit, cursor=body.cursor,
+        )
+    return _text(result)
 
 
 # ---------------------------------------------------------------------------
