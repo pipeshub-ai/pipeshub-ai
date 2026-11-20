@@ -175,3 +175,27 @@ async def test_a_connector_clear_names_the_time_it_read(w: World) -> None:
     w.graph.update_node_fields_if_match = hand_over_before_the_clear                       # type: ignore[method-assign]
     await w.intent_sweep()
     assert moved["done"] and w.row.get(ri.ID_FIELD) == "A"
+
+
+@pytest.mark.parametrize("skew_ms", [0, -5_000, -65_000, -300_000, 5_000])
+async def test_a_request_made_during_a_run_over_the_life_is_handed_over_whatever_the_walks_clock(w: World, skew_ms: int) -> None:
+    """No request at the run's start; one is made during a run of more than 24 h, stamped by a walk host whose clock is ``skew_ms`` off
+    (behind, it reads as older than the run's start). It is a request the run had not seen, so it is handed over, never dropped."""
+    await w.plain_update()
+    await w.consume()
+    assert w.active is not None and w.active["run"].id_at_start is None
+    started = w.now_ms
+    w.now_ms += 25 * HOUR_MS                                                               # the run outlasts the life
+    w.row.update(ri.intent_fields("mid", started + skew_ms - 1_000))                       # stamped before the run's start on a slow host
+    await w.finish(allow_crash=False)
+    handed = [m for m in w.msgs if (m["payload"] or {}).get(ri.PAYLOAD_ID_KEY) == "mid"]
+    assert len(handed) == 1 and w.row[ri.ID_FIELD] == "mid", (skew_ms, w.row, w.msgs)
+
+
+async def test_a_request_that_was_already_there_expired_at_the_runs_start_is_not_handed_over(w: World) -> None:
+    w.row.update(ri.intent_fields("old", w.now_ms - 26 * HOUR_MS))
+    w.msgs.append({"event_type": EventTypes.UPDATE_RECORD.value, "payload": {"recordId": KEY, "orgId": ORG, "version": 1}})
+    await w.consume(allow_loss=False)
+    assert w.active is not None and w.active["run"].id_at_start == "old"
+    await w.finish(allow_crash=False)
+    assert not [m for m in w.msgs if (m["payload"] or {}).get(ri.PAYLOAD_ID_KEY) == "old"]

@@ -138,10 +138,11 @@ class _Cache:
 
 
 class World:
-    def __init__(self, seed: int, *, twins: bool, steps: int = 40) -> None:
+    def __init__(self, seed: int, *, twins: bool, steps: int = 40, walk_skew_ms: int | None = None) -> None:
         self.R = random.Random(seed)
         #: The walk's host and the indexing host do not share a clock: what the walk stamps on a request is its own, up to minutes off.
-        self.walk_skew_ms = self.R.choice([0, 0, 5_000, -5_000, 65_000, -65_000, 300_000])
+        drawn = self.R.choice([0, 0, 5_000, -5_000, 65_000, -65_000, 300_000])
+        self.walk_skew_ms = drawn if walk_skew_ms is None else walk_skew_ms
         #: Some worlds move in seconds (a run is shorter than the skew), others in minutes.
         self.fast = self.R.random() < 0.5
         self.twins = twins
@@ -159,6 +160,7 @@ class World:
         self.reqs: dict[int, int] = {}
         self.sat: set[int] = set()
         self.notes: Counter[str] = Counter()
+        self.ran_ids: set[str] = set()                           # request ids whose refresh ended
         self.cache = _Cache()
         self.handler = RecordEventHandler.__new__(RecordEventHandler)
         self.handler.logger = GRAPH_LOG
@@ -216,6 +218,7 @@ class World:
         payload = {
             "recordId": KEY, "orgId": ORG, "version": 1, "virtualRecordId": "v1", "forceReindex": True,
             "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: intent_id,
+            "_at": self.walk_clock(),                                    # the walk host's stamp (the wall-time control reads it)
             "_event_id": f"e{k}", "_delivery_id": f"d{k}",
         }
         self.msgs.append({"event_type": EventTypes.REINDEX_RECORD.value, "payload": payload})
@@ -263,7 +266,7 @@ class World:
             await self.handler._clear_intent(KEY, run.intent_id)
             for key in (ri.PAYLOAD_ID_KEY, ri.FROM_INTENT_KEY, "forceReindex", "refreshPaidOutputs"):
                 payload.pop(key, None)
-            run = RefreshRun(seen=None, intent_id=None, refresh=False, started_ms=run.started_ms)
+            run = RefreshRun(seen=None, intent_id=None, refresh=False, id_at_start=run.id_at_start)
         derived = bool(msg.get("derived")) or bool(run is not None and run.refresh and not was_refresh)
         if run is not None and run.refresh:
             if self.R.random() < 0.15:                       # a hand-back before the refresh branch
@@ -291,9 +294,14 @@ class World:
             return
         run = active["run"]
         if run is not None and run.refresh:
-            unsatisfied = self.unsatisfied_before(active["start"])
-            if active["derived"] and not unsatisfied:
+            # A refresh is of the request it runs under and the earlier ones: one made after that request is not covered by it (the
+            # token's reuse of what the first attempt stored is of the earlier request), so it is not credited.
+            token_k = int(run.intent_id[1:]) if run.intent_id and run.intent_id[1:].isdigit() else None
+            unsatisfied = [k for k in self.unsatisfied_before(active["start"]) if token_k is not None and k <= token_k]
+            repeat = run.intent_id in self.ran_ids                    # a second refresh of one request, whatever else is waiting
+            if (active["derived"] and not unsatisfied) or repeat:
                 self.notes["spurious_any"] += 1
+            self.ran_ids.add(run.intent_id)
             self.sat.update(unsatisfied)
         self.row["indexingStatus"] = ProgressStatus.COMPLETED.value
         if run is not None:
@@ -372,8 +380,8 @@ def patched(world: World) -> Iterator[None]:
         yield
 
 
-async def run_world(seed: int, *, twins: bool, steps: int = 40) -> tuple[bool, Counter[str]]:
-    """One random world."""
-    world = World(seed, twins=twins, steps=steps)
+async def run_world(seed: int, *, twins: bool, steps: int = 40, walk_skew_ms: int | None = None) -> tuple[bool, Counter[str]]:
+    """One random world (``walk_skew_ms`` fixes the walk host's clock offset; by default it is drawn)."""
+    world = World(seed, twins=twins, steps=steps, walk_skew_ms=walk_skew_ms)
     with patched(world):
         return await world.drive()

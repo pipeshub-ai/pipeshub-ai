@@ -102,7 +102,10 @@ async def test_a_lost_handback_is_re_sent_by_the_intent_sweep_as_the_same_refres
     await w.user_force()
     stamped = _events(w)[0][ri.PAYLOAD_ID_KEY]
     assert w.row[ri.ID_FIELD] == stamped and w.row["indexingStatus"] == QUEUED          # stored with the status, before the publish
-    w.msgs.clear()                                                                       # the hand-back never came back
+    w.R.random = lambda: 0.1                                                             # type: ignore[method-assign]  # the delivery is handed back, and the hand-back is lost
+    await w.consume()
+    w.R.random = lambda: 0.99                                                            # type: ignore[method-assign]
+    assert w.notes["pre_branch_handback"] == 1 and w.notes["lost"] == 0 and not w.msgs and w.active is None
     w.now_ms += 2 * HOUR_MS
     await w.intent_sweep()
     [resent] = _events(w)
@@ -141,9 +144,9 @@ async def test_a_request_made_while_a_plain_run_is_in_progress_is_handed_over_wh
     await w.plain_update()
     await w.consume()
     assert w.active is not None and not w.active["run"].refresh and w.row["indexingStatus"] == IN_PROGRESS
-    started = w.row.get("processingStartedAt")
+    started = w.row["processingStartedAt"] = w.now_ms - 12_345                           # a concrete start the walk must not touch
     await w.user_force()                                                                 # the walk meets a running record
-    assert w.row["indexingStatus"] == IN_PROGRESS and w.row.get("processingStartedAt") == started
+    assert w.row["indexingStatus"] == IN_PROGRESS and w.row["processingStartedAt"] == started
     assert not w.msgs, "a running record is not published: that would start a second pipeline"
     asked = w.row[ri.ID_FIELD]
     assert asked
@@ -443,7 +446,8 @@ async def test_the_walk_status_statement_carries_the_request_only_for_a_forced_w
     assert w.row[ri.ID_FIELD] == "i7" and w.row[ri.AT_FIELD] == w.now_ms
 
 
-def test_a_forced_walk_mints_one_id_and_stamps_it_on_each_record_event() -> None:
+def test_a_forced_walk_mints_one_id_and_stamps_it_on_each_record_event_only_while_the_writes_are_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFRESH_INTENT_WRITE", "true")
     assert user_forced_intent_id() is None
     with forced_by_user(forced=True):
         minted = user_forced_intent_id()
@@ -458,15 +462,28 @@ def test_a_forced_walk_mints_one_id_and_stamps_it_on_each_record_event() -> None
         record.to_kafka_record.return_value = {}
         assert "refreshIntentId" not in DataSourceEntitiesProcessor._reindex_event_payload(record, vector_db_only=False)
     assert user_forced_intent_id() is None
+    # Writes off: the id stays out of the payload (an older worker keys a refresh's purge on the delivery id, and the retry of a
+    # stamped event must key it the same way in every worker), while the refresh itself is still asked for.
+    monkeypatch.delenv("REFRESH_INTENT_WRITE")
+    with forced_by_user(forced=True):
+        record = MagicMock(virtual_record_id=None)
+        record.to_kafka_record.return_value = {"recordId": "r"}
+        off = DataSourceEntitiesProcessor._reindex_event_payload(record, vector_db_only=False)
+    assert "refreshIntentId" not in off and off["refreshPaidOutputs"] is True
 
 
-def test_a_single_records_force_event_is_stamped_and_a_sync_event_is_not() -> None:
+def test_a_single_records_force_event_is_stamped_only_while_the_writes_are_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFRESH_INTENT_WRITE", "true")
     record_events = {"topic": "record-events", "payload": {}}
     mark_user_forced_reindex(record_events)
     assert record_events["payload"]["refreshPaidOutputs"] is True and record_events["payload"]["refreshIntentId"]
     sync_events = {"topic": "sync-events", "payload": {}}
     mark_user_forced_reindex(sync_events)
     assert sync_events["payload"] == {"force": True}
+    monkeypatch.delenv("REFRESH_INTENT_WRITE")
+    off = {"topic": "record-events", "payload": {}}
+    mark_user_forced_reindex(off)
+    assert off["payload"]["refreshPaidOutputs"] is True and "refreshIntentId" not in off["payload"]
 
 
 def _walk_service(records: list[SimpleNamespace], graph_status: str) -> tuple[EventService, MagicMock, MagicMock]:
@@ -775,3 +792,59 @@ async def test_the_connector_of_the_row_as_it_is_now_decides_whether_a_request_e
     w.graph.get_document = moved_to_an_active_connector                                    # type: ignore[method-assign]
     await w.intent_sweep()
     assert w.row[ri.ID_FIELD] == "A"
+
+
+async def test_an_expired_request_that_was_already_served_is_cleared_without_an_expiry(w: World, caplog: pytest.LogCaptureFixture) -> None:
+    w.row.update(ri.intent_fields("A", w.now_ms - 25 * HOUR_MS), indexingStatus=FAILED, reason="the file could not be read")
+    w.row[ri.DONE_ID_FIELD] = "A"
+    counted = _Counted()
+    with patch.object(ri, "REFRESH_INTENT_EVENTS", counted), caplog.at_level("WARNING"):
+        await w.intent_sweep()
+    assert ri.ID_FIELD not in w.row and w.row["reason"] == "the file could not be read"
+    assert counted.events == [] and "was not served within its life" not in caplog.text
+
+
+async def test_the_sweep_claims_nothing_for_a_connector_turned_off_since_it_was_cached(w: World) -> None:
+    w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS))
+    real = w.graph.get_document
+    reads = 0
+
+    async def connector_goes_off_before_the_claim(key: str, collection: str, **kw: object) -> dict | None:
+        nonlocal reads
+        if collection == "apps":
+            reads += 1
+            if reads >= 2:
+                w.graph.docs["c1"] = {"_key": "c1", "isActive": False}
+        return await real(key, collection, **kw)
+
+    w.graph.get_document = connector_goes_off_before_the_claim                              # type: ignore[method-assign]
+    await w.intent_sweep()
+    assert not w.msgs and w.row.get("lastRepublishedAt") is None, "no claim and no enqueue for a connector that is off"
+
+
+async def test_a_send_cancelled_at_the_boundary_puts_the_claim_back_and_re_raises(w: World) -> None:
+    import asyncio
+
+    w.row.update(ri.intent_fields("A", w.now_ms - 2 * HOUR_MS), republishCount=2)
+    before = w.row.get("lastRepublishedAt")
+    with patch("tests.support.refresh_intent_world._Producer.send_event", AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await w.intent_sweep()
+    assert w.row.get("lastRepublishedAt") == before and w.row.get("republishCount") == 2 and w.row[ri.ID_FIELD] == "A"
+    await w.intent_sweep()
+    assert len(w.msgs) == 1                                                                  # the next pass sends it, with the same id
+
+
+async def test_an_adopted_update_handed_back_still_does_its_own_work_when_the_refresh_is_done(w: World) -> None:
+    """An independent update adopts the live request and is handed back; on its retry the refresh is already done: the update goes on."""
+    w.row.update(ri.intent_fields("A", w.now_ms))
+    update = {"recordId": KEY, "orgId": ORG}
+    first = await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, update, dict(w.row), KEY, parse_now=False)
+    assert first.adopted and update[ri.ADOPTED_KEY] is True
+    requeued = dict(update)                                                                  # the hand-back keeps the mutated payload
+    w.row[ri.DONE_ID_FIELD] = "A"                                                            # the refresh finished meanwhile
+    again = await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, requeued, dict(w.row), KEY, parse_now=False)
+    assert again.adopted and await w.handler._refresh_state(again, dict(w.row), requeued) == "done"
+    sent_for_the_refresh_only = {"recordId": KEY, "orgId": ORG, **ri.intent_flags("A", from_intent=True)}
+    other = await w.handler._settle_refresh_intent(EventTypes.REINDEX_RECORD.value, sent_for_the_refresh_only, dict(w.row), KEY, parse_now=False)
+    assert not other.adopted

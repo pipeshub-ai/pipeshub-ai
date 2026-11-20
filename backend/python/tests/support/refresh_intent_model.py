@@ -39,6 +39,7 @@ def run(
     reqs = {}  # k -> time requested
     sat = set()
     spurious = 0
+    ran: set = set()  # request ids whose refresh ended: a second refresh of one is a re-buy
     notes = Counter()
 
     def tick() -> int:
@@ -56,7 +57,7 @@ def run(
             )
             k = tick()
             reqs[k] = k  # the request still counts it must be served
-            if variant in ("fix3", "fix3m", "final", "timed") and (
+            if variant in ("fix3", "fix3m", "final", "timed", "noswitch") and (
                 rec["intent"] is None or rec["intent"][1] < k
             ):
                 rec["intent"] = (k, k + skew)  # intent-only write: no status change, no event
@@ -65,7 +66,7 @@ def run(
         reqs[k] = k
         # walk: NOT_STARTED before publish (event_service.py:1611-1614)
         rec["status"] = "NOT_STARTED"
-        if variant in ("publish", "fix", "fix2", "fix3", "fix3m", "final", "timed") and (
+        if variant in ("publish", "fix", "fix2", "fix3", "fix3m", "final", "timed", "noswitch") and (
             rec["intent"] is None or rec["intent"][1] < k
         ):
             rec["intent"] = (k, k + skew)
@@ -93,7 +94,7 @@ def run(
         # update_queued_duplicates_status: every QUEUED same-md5 copy -> COMPLETED, no handler run
         if rec["status"] == "QUEUED" and not active:
             if (
-                variant in ("fix", "fix2", "fix3", "fix3m", "final", "timed")
+                variant in ("fix", "fix2", "fix3", "fix3m", "final", "timed", "noswitch")
                 and rec["intent"] is not None
             ):
                 return
@@ -121,7 +122,7 @@ def run(
         m = msgs.pop(0)
         refresh, rid = m["refresh"], m["id"]
         if (
-            variant in ("fix2", "fix3", "fix3m", "final", "timed")
+            variant in ("fix2", "fix3", "fix3m", "final", "timed", "noswitch")
             and m.get("src") == "intent"
             and (rec["intent"] is None or rec["intent"][0] != rid)
         ):
@@ -131,12 +132,21 @@ def run(
             )  # a re-sent intent that is no longer stored was already satisfied
             notes["stale_resend_demoted"] += 1
         if (
-            variant in ("fix", "fix2", "fix3", "fix3m", "final", "timed")
+            variant in ("fix", "fix2", "fix3", "fix3m", "final", "timed", "noswitch")
             and not refresh
             and rec["intent"] is not None
         ):
             refresh, rid = True, rec["intent"][0]  # handler reads the intent
             m = dict(m, src="intent", upgraded=True)
+        if (
+            variant != "noswitch"
+            and variant in ("fix3", "fix3m", "final", "timed")
+            and refresh
+            and m.get("src") != "intent"
+            and rec["intent"] is not None
+            and rec["intent"][0] != rid
+        ):
+            rid = rec["intent"][0]  # an older request's event that meets a newer one runs as the newer one (the handler's switch)
         if variant == "timed" and refresh and rec["intent"] is not None and rec["done_t"] is not None and rec["done_t"] >= rec["intent"][1]:
             rec["intent"] = None            # the control: "served" decided by comparing two hosts' times; the request never runs
             return
@@ -191,9 +201,12 @@ def run(
             notes["crash"] += 1
             return
         if a["refresh"]:
-            u = unsatisfied_before(a["start"])
-            if not u and not a.get("orig"):
+            # A refresh is of the request it runs under and the earlier ones: a request made after that one is not covered by it
+            # (its token's reuse of what the first attempt stored is of the earlier request).
+            u = [k for k in unsatisfied_before(a["start"]) if isinstance(a["id"], int) and k <= a["id"]]
+            if (not u and not a.get("orig")) or (a["id"] in ran and not a.get("orig")):
                 notes["spurious_any"] += 1
+            ran.add(a["id"])
             if not u and a["src"] == "intent":
                 spurious += 1
                 if TRACE:
@@ -213,7 +226,7 @@ def run(
         if TRACE:
             print("  finish", a, "intent", rec["intent"])
         if (
-            variant in ("fix3", "fix3m", "final", "timed")
+            variant in ("fix3", "fix3m", "final", "timed", "noswitch")
             and rec["intent"] is not None
             and rec["intent"][0] != a["seen"]
         ):
@@ -223,7 +236,7 @@ def run(
             notes["followup"] += 1
         if rec["intent"] is not None:
             if (
-                variant in ("fix2", "fix3", "fix3m", "final", "timed")
+                variant in ("fix2", "fix3", "fix3m", "final", "timed", "noswitch")
                 and a["refresh"]
                 and rec["intent"][0] == a["seen"]
             ):
@@ -259,7 +272,7 @@ def run(
 
     def stranded_sweep() -> None:
         if (
-            variant in ("fix2", "fix3", "fix3m", "final", "timed")
+            variant in ("fix2", "fix3", "fix3m", "final", "timed", "noswitch")
             and rec["intent"] is not None
             and not active
             and not msgs

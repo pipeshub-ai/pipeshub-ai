@@ -2820,8 +2820,10 @@ def mark_user_forced_reindex(event_data: dict) -> None:
     if event_data.get("topic") == "record-events":
         payload["forceReindex"] = True
         payload["refreshPaidOutputs"] = True
-        # The refresh's identity: stored on the record before the publish (below) and copied by every re-send.
-        payload["refreshIntentId"] = uuid4().hex
+        # The refresh's identity: stored on the record before the publish (below) and copied by every re-send. Only while the writes are
+        # on: the consumer keys a refresh's purge on it, and an older worker keys that on the delivery id.
+        if refresh_intent.write_enabled():
+            payload["refreshIntentId"] = uuid4().hex
     else:
         payload["force"] = True
 

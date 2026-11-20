@@ -107,9 +107,10 @@ def _intent_sweep_gated_by_status() -> Iterator[None]:
 def _clear_whatever_is_stored() -> Iterator[None]:
     real = ri.clear_intent
 
-    async def clear(graph, record_id, intent_id, extra=None):  # noqa: ANN202
+    async def clear(graph, record_id, intent_id, extra=None, **kw):  # noqa: ANN202
         stored = (await graph.get_document(record_id, "records")) or {}
-        return await real(graph, record_id, stored.get(ri.ID_FIELD) if intent_id else None, extra)
+        # Only the id it passes differs: the clear's whole signature is kept, so a failure here is a wrong clear, not a broken call.
+        return await real(graph, record_id, stored.get(ri.ID_FIELD) if intent_id else None, extra, **kw)
 
     with patch.object(ri, "clear_intent", clear):
         yield
@@ -145,7 +146,6 @@ def _served_by_wall_time() -> Iterator[None]:
     """The control for the clock-skew class: "served" decided by comparing the request's time (stamped by the walk's host) with the time
     the indexing host recorded at completion, instead of by identity."""
     real_clear = ri.clear_intent
-    clock = {"now": 0}
 
     async def clear(graph, record_id, intent_id, extra=None, **kw):  # noqa: ANN202
         from app.services.messaging.kafka.handlers import record as record_module
@@ -159,8 +159,8 @@ def _served_by_wall_time() -> Iterator[None]:
 
     async def state(self, run, record, payload):  # noqa: ANN202
         done = (record or {}).get("doneAtMs")
-        at = (record or {}).get(ri.AT_FIELD) or clock["now"]
-        return "done" if done is not None and run.refresh and done >= (payload.get("_at") or at) else "open"
+        at = payload.get("_at")                      # the request's time as the walk's host stamped it
+        return "done" if done is not None and run.refresh and at is not None and done >= at else "open"
 
     with patch.object(ri, "clear_intent", clear), patch.object(ri, "served", served), patch.object(RecordEventHandler, "_refresh_state", state):
         yield
@@ -185,3 +185,17 @@ def test_each_mutant_fails_the_drive(name: str) -> None:
         dropped, spurious = _tally(twins=True)
         dropped2, spurious2 = _tally(twins=False)
     assert dropped + spurious + dropped2 + spurious2 > 0, f"the drive does not notice: {name}"
+
+
+def test_the_wall_time_control_is_quiet_when_the_clocks_agree_and_trips_when_they_do_not() -> None:
+    """The control fails only because of skew: with synchronized clocks its ordering holds, with the walk host off it drops requests."""
+    async def tally(skew: int) -> int:
+        dropped = 0
+        for s in range(SEEDS[0], SEEDS[0] + WORLDS):
+            drop, _ = await world.run_world(s, twins=False, walk_skew_ms=skew)
+            dropped += bool(drop)
+        return dropped
+
+    with _served_by_wall_time():
+        assert asyncio.run(tally(0)) == 0
+        assert asyncio.run(tally(-5_000)) > 0

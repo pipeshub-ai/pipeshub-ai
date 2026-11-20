@@ -47,3 +47,9 @@ def test_deciding_served_by_the_times_of_two_hosts_drops_requests() -> None:
     dropped = _tally("timed", SEEDS[0], twins=False)[0]
     assert dropped > 50
     assert _tally("final", SEEDS[0], twins=False) == (0, 0, 0)
+
+
+def test_a_refresh_that_does_not_switch_to_the_newer_request_leaves_it_unserved() -> None:
+    """An older request's event that meets a newer stored request must run as the newer one; a run that keeps the older token covers
+    only the older request (its reuse of what the first attempt stored is of that request), so the newer one drops."""
+    assert _tally("noswitch", SEEDS[0], twins=False)[0] > 20

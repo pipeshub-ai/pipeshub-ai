@@ -352,6 +352,7 @@ async def test_a_delivery_for_a_record_whose_connector_is_off_or_gone_ends_the_r
     handler.event_processor.on_event = AsyncMock(side_effect=AssertionError("must not run"))
     await _drive(handler, _refresh(is_final_failure=False))
     assert ri.ID_FIELD not in record
+    assert ri.DONE_ID_FIELD not in record, "no refresh ran: nothing is recorded as done on the record either"
     assert (ORG, "r1", "A") not in env.done
 
 

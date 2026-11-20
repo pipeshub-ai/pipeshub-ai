@@ -90,7 +90,7 @@ async def test_a_forced_knowledge_base_file_stores_its_request_before_the_publis
 async def test_a_forced_knowledge_base_file_stores_nothing_while_the_flag_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     gp, payload, order = await _forced_route({"depth": 0, "force": True}, monkeypatch, write=False)
     gp.update_record_fields_for_ids.assert_not_awaited()
-    assert payload["refreshIntentId"] and order == ["publish"]           # the id still names the refresh for its purge and marker
+    assert "refreshIntentId" not in payload and order == ["publish"]       # no id while the writes are off: an older worker keys the purge on the delivery id
 
 
 async def test_a_plain_knowledge_base_reindex_stores_nothing(monkeypatch: pytest.MonkeyPatch) -> None:

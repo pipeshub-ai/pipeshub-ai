@@ -1729,6 +1729,13 @@ async def _republish_refresh_intents(
                     or ProgressStatus.IN_PROGRESS.value in (fresh.get("indexingStatus"), fresh.get("extractionStatus"))
                 ):
                     return
+                if refresh_intent.served(fresh):
+                    # Already served (a clear that did not land): it is not an expiry, so no count, no log of a refresh that never ran,
+                    # and no reason written.
+                    await refresh_intent.clear_intent(
+                        graph_provider, key, held[0], expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                    )
+                    return
                 updates: dict[str, Any] = {}
                 if fresh.get("indexingStatus") != ProgressStatus.COMPLETED.value and fresh.get("reason") != CONNECTOR_OFF:
                     # Not over CONNECTOR_OFF: the stranded scan finds a row parked while its connector was off by that reason.
@@ -1813,6 +1820,11 @@ async def _republish_refresh_intents(
                     or refresh_intent.live_intent(fresh, now_ms) != intent_id or not _due(fresh, now_ms)
                 ):
                     return False
+                if fresh.get("origin") == OriginTypes.CONNECTOR.value and fresh.get("connectorId"):
+                    # The connector of the row as it is now, read here and not taken from the pass's cache: a connector turned off since
+                    # must not get a claim and an enqueue that the delivery guard cannot take back. Unreadable counts as not eligible.
+                    if await _read_connector(str(fresh["connectorId"])) is not True:
+                        return False
                 republishes = int(fresh.get("republishCount") or 0) if _is_clock(fresh.get("lastRepublishedAt")) else 0
                 # Claimed before the send, and only if nobody changed the request or claimed since the read (a compare-and-set on the
                 # id, the request's time and the last send).
@@ -1830,13 +1842,16 @@ async def _republish_refresh_intents(
                     await run_coordination(
                         producer.send_event(topic=Topic.RECORD_EVENTS.value, event_type=event_type, payload=payload, key=str(key))
                     )
-                except Exception:
+                except BaseException:
+                    # Any end of the send that is not an acceptance (a failure, or a shutdown that cancels the sweep): the claim is put
+                    # back, conditionally, so the next pass does not wait out a backoff for a send that did not happen; a cancellation is
+                    # re-raised. The request keeps its id on any later send, so a delivery whose acceptance was uncertain is deduplicated.
                     with contextlib.suppress(Exception):
-                        await graph_provider.update_node_fields_if_match(
+                        await asyncio.shield(graph_provider.update_node_fields_if_match(
                             key, CollectionNames.RECORDS.value,
                             {"lastRepublishedAt": fresh.get("lastRepublishedAt"), "republishCount": fresh.get("republishCount")},
                             {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": now_ms},
-                        )
+                        ))
                     raise
                 refresh_intent.REFRESH_INTENT_EVENTS.inc("resent")
                 return True

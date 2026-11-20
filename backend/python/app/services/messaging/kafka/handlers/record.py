@@ -230,7 +230,7 @@ _FULL_RECORD_EVENTS = frozenset({
     EventTypes.REINDEX_RECORD.value,
 })
 _INTENT_PAYLOAD_KEYS = (
-    "forceReindex", "refreshPaidOutputs", refresh_intent.PAYLOAD_ID_KEY, refresh_intent.FROM_INTENT_KEY,
+    "forceReindex", "refreshPaidOutputs", refresh_intent.PAYLOAD_ID_KEY, refresh_intent.FROM_INTENT_KEY, refresh_intent.ADOPTED_KEY,
 )
 
 
@@ -244,17 +244,18 @@ class RefreshRun:
     request turned into a refresh.
     """
 
-    __slots__ = ("adopted", "intent_id", "refresh", "seen", "started_ms", "superseded")
+    __slots__ = ("adopted", "id_at_start", "intent_id", "refresh", "seen", "superseded")
 
     def __init__(
-        self, *, seen: str | None, intent_id: str | None, refresh: bool, started_ms: int = 0,
-        superseded: tuple[str, ...] = (), adopted: bool = False,
+        self, *, seen: str | None, intent_id: str | None, refresh: bool,
+        superseded: tuple[str, ...] = (), adopted: bool = False, id_at_start: str | None = None,
     ) -> None:
+        #: The id of the request the record held when the run began, expired or not (None for none): a request with another id was made
+        #: while the run was in progress. Identity, never a comparison of the walk host's time with this host's.
+        self.id_at_start = id_at_start
         self.seen = seen
         self.intent_id = intent_id
         self.refresh = refresh
-        #: When the run began: a request made after this was made while it ran, however long it ran.
-        self.started_ms = started_ms
         self.superseded = superseded
         self.adopted = adopted
 
@@ -2069,11 +2070,12 @@ class RecordEventHandler(BaseEventService):
             stamped = stored
         if stored is not None and not paid_cache_run.refresh_requested(payload):
             payload.update(refresh_intent.intent_flags(stored, from_intent=True))
+            payload[refresh_intent.ADOPTED_KEY] = True       # rides every hand-back: the update's own work stays owed
             stamped = stored
         refresh = paid_cache_run.refresh_requested(payload)
         return RefreshRun(
-            seen=stored if refresh else None, intent_id=stamped if refresh else None, refresh=refresh, started_ms=now_ms,
-            superseded=superseded, adopted=refresh and not sent_as_refresh,
+            seen=stored if refresh else None, intent_id=stamped if refresh else None, refresh=refresh,
+            superseded=superseded, adopted=refresh and (not sent_as_refresh or payload.get(refresh_intent.ADOPTED_KEY) is True), id_at_start=(refresh_intent.stored_intent(record) or (None,))[0],
         )
 
     async def _store_intent(self, record_id: str, record: dict, intent_id: str, now_ms: int) -> str | None:
@@ -2142,7 +2144,7 @@ class RecordEventHandler(BaseEventService):
                 await cache.mark_refresh_done(str(org_id), record_id, run.intent_id)
             row = await graph.get_document(record_id, CollectionNames.RECORDS.value)
             now_ms = get_epoch_timestamp_in_ms()
-            waiting = refresh_intent.waiting_intent(row, now_ms, run.started_ms) if row is not None and is_live_record(row) else None
+            waiting = refresh_intent.waiting_intent(row, now_ms, run.id_at_start) if row is not None and is_live_record(row) else None
             if waiting is None or waiting == run.seen or self.producer is None:
                 return
             await self._hand_over_refresh(record_id, row or {}, waiting, now_ms)
@@ -2661,7 +2663,9 @@ class RecordEventHandler(BaseEventService):
                     # An independent update that adopted the request: its own work is still owed, so it goes on as a plain one.
                     for key in _INTENT_PAYLOAD_KEYS:
                         payload.pop(key, None)
-                    refresh_run = RefreshRun(seen=None, intent_id=None, refresh=False, started_ms=refresh_run.started_ms)
+                    refresh_run = RefreshRun(
+                        seen=None, intent_id=None, refresh=False, id_at_start=refresh_run.id_at_start,
+                    )
                 else:
                     # A second event of a refresh that has run: nothing is left to do for it.
                     note(outcome="skipped", reason="refresh_already_ran")

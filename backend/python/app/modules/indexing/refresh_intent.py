@@ -31,6 +31,8 @@ DONE_ID_FIELD = "refreshDoneId"
 #: Set on an event that was built from, or upgraded by, a stored intent (not the user's own message). Such an event
 #: whose id is no longer the stored one was satisfied meanwhile and runs plain.
 FROM_INTENT_KEY = "refreshFromIntent"
+#: Set on a plain update that a stored request turned into a refresh: its own work is still owed, whatever the request's state is later.
+ADOPTED_KEY = "refreshAdopted"
 #: The payload key that names the refresh: the walk stamps it, the republishers copy it from the record.
 PAYLOAD_ID_KEY = "refreshIntentId"
 
@@ -80,14 +82,18 @@ def live_intent(record: Mapping[str, Any] | None, now_ms: int) -> str | None:
     return held[0] if now_ms - held[1] < INTENT_LIFE_MS else None
 
 
-def waiting_intent(record: Mapping[str, Any] | None, now_ms: int, run_started_ms: int) -> str | None:
-    """The request a run that has just ended should hand over: a live one, or one made while the run was in progress even if
-    the run outlasted its life (a record held by a run does not age out under it)."""
+def waiting_intent(record: Mapping[str, Any] | None, now_ms: int, id_at_start: str | None) -> str | None:
+    """The request a run that has just ended should hand over: a live one, or one the run had not seen when it began, even if the run
+    outlasted its life (a record held by a run does not age out under it).
+
+    "Had not seen" is by identity: the id the record held when the run started (None for none) is what the run recorded, and any other
+    id is a request made while it ran. No time of the walk's host is compared with one of the indexing host's.
+    """
     live = live_intent(record, now_ms)
     if live is not None:
         return live
     held = stored_intent(record)
-    return held[0] if held is not None and held[1] is not None and held[1] >= run_started_ms else None
+    return held[0] if held is not None and held[0] != id_at_start else None
 
 
 def served(record: Mapping[str, Any] | None) -> bool:
