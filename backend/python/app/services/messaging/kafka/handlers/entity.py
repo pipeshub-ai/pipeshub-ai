@@ -745,6 +745,7 @@ class EntityEventService(BaseEventService):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
                 await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
                 await self._remove_api_toolset_data(payload["orgId"], payload["userId"])
+                await self._remove_personal_oauth_apps(org_id, user_id)
             return True
 
         except SchemaValidationError:
@@ -782,6 +783,20 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"Removed {removed} personal toolset instance(s) for deleted {owner_kind} {user_id or org_id}")
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="remove_personal_toolsets", target_user_id=user_id)
+
+    async def _remove_personal_oauth_apps(self, org_id: str, user_id: str) -> None:
+        """A deleted user's own connector OAuth apps: no one else may use them, so their client
+        secrets go. Unlike the steps above, a failure is raised: the event is redelivered and the
+        client secrets do not stay behind. Every step before this one is safe to run again."""
+        from app.connectors.api.connector_resolvers import resolve_config_service
+        from app.utils.oauth_config import remove_personal_oauth_apps
+
+        try:
+            await remove_personal_oauth_apps(resolve_config_service(self.app_container, org_id), org_id, user_id)
+        except Exception as e:
+            error_class.log_failure(self.logger, "entity_event.step_failed", e, step="remove_personal_oauth_apps", target_user_id=user_id)
+            raise
+        self.logger.info("Removed the deleted user's personal OAuth apps")
 
     async def _remove_api_toolset_data(self, org_id: str, user_id: str | None = None) -> None:
         """A deleted org's API toolsets, or a deleted user's credentials for them. The graph

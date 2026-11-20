@@ -35,10 +35,13 @@ import {
   personalConnectorHref,
 } from '../../utils/admin-access-helpers';
 import { useTranslation } from 'react-i18next';
+import { useCanEditLinkedOAuthApp, useCanEnterOAuthClient } from './use-can-enter-oauth-client';
 
 export function AuthenticateTab() {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isAdmin = useUserStore(selectIsAdmin);
+  const mayEnterOAuthClient = useCanEnterOAuthClient();
+  const mayEditLinkedOAuthApp = useCanEditLinkedOAuthApp();
   const revealedOAuthAppId = useConnectorsStore((s) => s.revealedOAuthAppId);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
@@ -94,8 +97,14 @@ export function AuthenticateTab() {
     [connectorSchema, selectedAuthType]
   );
   const { linkedOAuthAppId, oauthFieldVisibility } = useMemo(
-    () => resolveOAuthFieldVisibility(formData.auth, connectorConfig, isCreateMode, isAdmin, disableCredentialEditWhenLinked),
-    [formData.auth, connectorConfig, isCreateMode, isAdmin, disableCredentialEditWhenLinked]
+    () => resolveOAuthFieldVisibility(
+        formData.auth,
+        connectorConfig,
+        isCreateMode,
+        { mayEditLinkedOAuthApp, mayEnterOAuthClient },
+        disableCredentialEditWhenLinked
+      ),
+    [formData.auth, connectorConfig, isCreateMode, mayEditLinkedOAuthApp, mayEnterOAuthClient, disableCredentialEditWhenLinked]
   );
 
   const authFieldsForForm = useMemo(() => {
@@ -251,7 +260,11 @@ export function AuthenticateTab() {
   const isCheckingConnection = connectionCheck.status === 'checking';
   // Locked while a check runs, so what gets saved is what was tested.
   const authFieldsDisabled =
-    (isProfileInitialized && !isCreateMode && isAdmin === false) || isCheckingConnection;
+    // A person may change the OAuth client of their own personal connector: it is their own app.
+    (isProfileInitialized &&
+      !isCreateMode &&
+      (selectedAuthType === 'OAUTH' ? mayEnterOAuthClient === false : isAdmin === false)) ||
+    isCheckingConnection;
 
   const redirectPath =
     (authConfig?.schemas?.[selectedAuthType] as { redirectUri?: string } | undefined)?.redirectUri ||
@@ -374,10 +387,10 @@ export function AuthenticateTab() {
           <OAuthAppSelector />
           <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
             {isCreateMode
-              ? isAdmin === true
+              ? mayEnterOAuthClient === true
                 ? t('workspace.connectors.authTab.oauthCreateHelperAdmin')
                 : t('workspace.connectors.authTab.oauthCreateHelperNonAdmin')
-              : isAdmin === true
+              : mayEnterOAuthClient === true
                 ? t('workspace.connectors.authTab.oauthEditHelperAdmin')
                 : t('workspace.connectors.authTab.oauthEditHelperNonAdmin')}
           </Text>
@@ -394,12 +407,12 @@ export function AuthenticateTab() {
 
   const credentialsSubtext = (() => {
     if (isOAuthType(selectedAuthType) && isProfileInitialized) {
-      if (isAdmin === true) {
+      if (mayEnterOAuthClient === true) {
         return t('workspace.connectors.authTab.oauthCredentialsSubtextAdmin', {
           name: panelConnector.name,
         });
       }
-      if (isAdmin === false || isAdmin === null) {
+      if (mayEnterOAuthClient === false || mayEnterOAuthClient === null) {
         return t('workspace.connectors.authTab.oauthCredentialsSubtextNonAdmin');
       }
     }

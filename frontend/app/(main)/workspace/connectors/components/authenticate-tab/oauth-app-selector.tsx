@@ -14,6 +14,7 @@ import { ConnectorsApi } from '../../api';
 import { useConnectorsStore, type ConnectorOAuthAppListRow } from '../../store';
 import { OAUTH_FORM_WANTS_NEW_REGISTRATION, oauthCredentialFormDiffersFromBaseline, resolveLinkedOAuthAppId } from '../../utils/auth-helpers';
 import { resolveAuthFields } from './helpers';
+import { useCanEnterOAuthClient, usePanelConnectorScope } from './use-can-enter-oauth-client';
 
 const MANUAL_VALUE = '__manual__';
 
@@ -46,6 +47,10 @@ export function OAuthAppSelector() {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  // Admins hydrate and reveal a saved app's values; entering a new client is also open to anyone
+  // on their own personal connector, where it becomes their own app.
+  const mayEnterOAuthClient = useCanEnterOAuthClient();
+  const isPersonalConnector = usePanelConnectorScope() === 'personal';
 
   const connectorSchema = useConnectorsStore((s) => s.connectorSchema);
   const panelConnector = useConnectorsStore((s) => s.panelConnector);
@@ -115,7 +120,9 @@ export function OAuthAppSelector() {
     ConnectorsApi.listOAuthConfigs(connectorType, 1, 100)
       .then((res) => {
         if (cancelled) return;
-        const apps = (res.oauthConfigs ?? []) as ConnectorOAuthAppListRow[];
+        const rows = (res.oauthConfigs ?? []) as ConnectorOAuthAppListRow[];
+        // A person's own app links only to their personal connectors.
+        const apps = isPersonalConnector ? rows : rows.filter((row) => !row.personal);
         finishOAuthAppsListFetch(connectorType, { ok: true, apps });
       })
       .catch(() => {
@@ -134,6 +141,7 @@ export function OAuthAppSelector() {
   }, [
     selectedAuthType,
     connectorType,
+    isPersonalConnector,
     clearOAuthAppsListState,
     beginOAuthAppsListFetch,
     finishOAuthAppsListFetch,
@@ -290,7 +298,7 @@ export function OAuthAppSelector() {
     (savedOAuthAppId !== currentLinkedOAuthAppId || oauthCredentialsDirty);
 
   /** New OAuth registration: no `oauthConfigId` (Create new, or empty list with implicit new app). */
-  const showNewOAuthAppName = isAdmin === true && !selectedIdTrimmed;
+  const showNewOAuthAppName = mayEnterOAuthClient === true && !selectedIdTrimmed;
 
   /**
    * Default OAuth registration name from the connector product type (e.g. "Jira", "Slack") so the
@@ -298,7 +306,7 @@ export function OAuthAppSelector() {
    * Covers both "no saved apps yet" and "Create new" chosen from the dropdown while other apps exist.
    */
   useEffect(() => {
-    if (selectedAuthType !== 'OAUTH' || isAdmin !== true) return;
+    if (selectedAuthType !== 'OAUTH' || mayEnterOAuthClient !== true) return;
     if (selectedIdTrimmed) return;
     if (loading || fetchError) return;
     const inst = panelConnector?.type?.trim() || '';
@@ -309,7 +317,7 @@ export function OAuthAppSelector() {
     }
   }, [
     selectedAuthType,
-    isAdmin,
+    mayEnterOAuthClient,
     selectedIdTrimmed,
     loading,
     fetchError,
@@ -334,14 +342,14 @@ export function OAuthAppSelector() {
     loading ||
     oauthApps.length > 0 ||
     showUnlistedRegistrationItem ||
-    (isAdmin === true && isExistingConnector && !fetchError);
+    (mayEnterOAuthClient === true && isExistingConnector && !fetchError);
 
   const radixValue = useMemo(() => {
     if (selectedAuthType !== 'OAUTH') return undefined;
     if (selectedIdTrimmed) return selectedIdTrimmed;
-    if (isAdmin === true) return MANUAL_VALUE;
+    if (mayEnterOAuthClient === true) return MANUAL_VALUE;
     return undefined;
-  }, [selectedAuthType, selectedIdTrimmed, isAdmin]);
+  }, [selectedAuthType, selectedIdTrimmed, mayEnterOAuthClient]);
 
   const handleValueChange = (value: string) => {
     setAuthFormValue('oauthInstanceName', '');
@@ -352,6 +360,9 @@ export function OAuthAppSelector() {
       return;
     }
     setAuthFormValue(OAUTH_FORM_WANTS_NEW_REGISTRATION, undefined);
+    // A client typed for a new app must not ride along with the saved one: sent with it, it
+    // would change that app or make another one.
+    clearOAuthCredentialFields();
     setAuthFormValue('oauthConfigId', value);
     const app = oauthApps.find((a) => a._id === value);
     if (app?.config && typeof app.config === 'object') {
@@ -379,17 +390,17 @@ export function OAuthAppSelector() {
     !loading && !fetchError && oauthApps.length === 0
       ? (() => {
           if (showUnlistedRegistrationItem) {
-            if (isAdmin === true) {
+            if (mayEnterOAuthClient === true) {
               return isExistingConnector
                 ? 'This instance is linked to an OAuth registration that does not appear in the list. Choose another saved app below or keep the current link.'
                 : 'This instance is linked to an OAuth registration that does not appear in the list. Choose another app below, use Create new, or keep the current link.';
             }
             return 'This instance is linked to an OAuth registration that does not appear in the list. You can switch once your administrator adds more saved apps.';
           }
-          if (isProfileInitialized && isAdmin === false) {
+          if (isProfileInitialized && mayEnterOAuthClient === false) {
             return 'No OAuth apps are registered yet. Ask an administrator to add one in workspace connector settings.';
           }
-          if (isAdmin === true) {
+          if (mayEnterOAuthClient === true) {
             return null;
           }
           return 'Enter OAuth client credentials below, or pick a saved app once one is available.';
@@ -437,7 +448,7 @@ export function OAuthAppSelector() {
                 alignItems: 'center',
               }}
               placeholder={
-                isAdmin === true
+                mayEnterOAuthClient === true
                   ? 'Select OAuth app or create new…'
                   : 'Select an OAuth app (required)…'
               }
@@ -447,12 +458,14 @@ export function OAuthAppSelector() {
               style={{ zIndex: 10000 }}
               container={panelBodyPortal ?? undefined}
             >
-              {isAdmin === true ? (
+              {mayEnterOAuthClient === true ? (
                 <Select.Item value={MANUAL_VALUE}>Create new OAuth app</Select.Item>
               ) : null}
               {oauthApps.map((app) => (
                 <Select.Item key={app._id} value={app._id}>
-                  {rowLabel(app)}
+                  {app.personal
+                    ? t('workspace.connectors.authTab.oauthAppYours', { name: rowLabel(app) })
+                    : rowLabel(app)}
                 </Select.Item>
               ))}
               {showUnlistedRegistrationItem ? (
@@ -505,7 +518,9 @@ export function OAuthAppSelector() {
             />
           </FormField>
           <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
-            {t('workspace.connectors.authTab.oauthAppNameHelper')}
+            {isPersonalConnector
+              ? t('workspace.connectors.authTab.oauthAppNameHelperPersonal')
+              : t('workspace.connectors.authTab.oauthAppNameHelper')}
           </Text>
         </Flex>
       ) : null}

@@ -63,6 +63,8 @@ interface ConnectorCatalogLayoutProps {
   extraTabCounts?: Record<string, number>;
   /** Custom content for a tab, replacing the default connector card grid. */
   tabContent?: React.ReactNode;
+  /** Optional content under the connector grid (e.g. an Enterprise Edition notice). */
+  footer?: React.ReactNode;
 }
 
 // ========================================
@@ -88,6 +90,7 @@ export function ConnectorCatalogLayout({
   setupPermissionDenied = false,
   onCardClick,
   isLoading = false,
+  footer,
   extraTabCounts,
   tabContent,
 }: ConnectorCatalogLayoutProps) {
@@ -295,6 +298,7 @@ export function ConnectorCatalogLayout({
           ))}
         </Grid>
       )}
+      {footer}
     </Flex>
   );
 }
