@@ -10,7 +10,7 @@ Env vars:
     PIPESHUB_BASE_URL            default http://localhost:3000
     PIPESHUB_TEST_USER_EMAIL     required
     PIPESHUB_TEST_USER_PASSWORD  required
-    TEST_AZURE_OPENAI_*          read by helper/ai_models_setup.py
+    TEST_AI_MODEL_PROVIDER, TEST_OPENAI_*, TEST_AZURE_OPENAI_*  read by helper/ai_models_setup.py
     SDK_SEED_INDEX_TIMEOUT       default 420 (seconds)
 """
 

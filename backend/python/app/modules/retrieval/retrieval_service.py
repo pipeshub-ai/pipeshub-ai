@@ -4,8 +4,7 @@ import logging
 import math
 import os
 import time
-import traceback
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -125,7 +124,8 @@ from app.utils.chat_helpers import (
     valid_group_labels,
 )
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
-from app.utils.embedding_retry import await_with_retry
+from app.utils.embedding_retry import await_with_retry, is_quota_exhausted
+from app.utils.error_class import log_failure
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
@@ -141,6 +141,9 @@ MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 DEFAULT_SEARCH_LIMIT = 20
 
 _RETRIEVAL_EMBED_MAX_RETRIES = 3
+# All a hit is read for (`_point_to_result`, `point_record_id`); the membership
+# arrays beside them are only filtered on, and converting them cost CPU per hit.
+_SEARCH_PAYLOAD_FIELDS = ["page_content", "metadata"]
 
 # Caps concurrent per-collection queries during search fan-out. One under the
 # default SingleCollectionStrategy; a multi-collection strategy must not turn
@@ -265,6 +268,15 @@ class _RecordIdSearch:
 _SHADOW_SCOPE_FILTER: contextvars.ContextVar[Any] = contextvars.ContextVar("acl_shadow_scope_filter", default=None)
 
 
+def _served(plan: "_QueryPlan", scope_connector_ids: Collection[str] | None) -> bool:
+    """Whether the real search went through the serving plan's filter: it carried one and, for a request limited to some connectors, the filter
+    decides at least one of them (a request that reaches only connectors on the classic check was not filtered, so its comparison stays valid)."""
+    flt = plan.scope_filter
+    if flt is None:
+        return False
+    return scope_connector_ids is None or bool(set(scope_connector_ids) & set(flt.current))
+
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -340,6 +352,12 @@ _SEARCH_INDEX_FAILURE_MESSAGES = {
     SearchFailureKind.TIMEOUT: SEARCH_INDEX_TIMEOUT_MESSAGE,
     SearchFailureKind.UNAVAILABLE: SEARCH_INDEX_UNREACHABLE_MESSAGE,
 }
+# The embedding provider refused the query because its account has no credit left (OpenAI's insufficient_quota, a 429
+# that no retry fixes). Allowlisted by the Node gateway like the messages above.
+EMBEDDING_OUT_OF_CREDIT_MESSAGE = (
+    "Search can't run because the embedding model's provider account is out of credit. "
+    "An admin can add credit with the provider, or choose another embedding model in Workspace > AI Models."
+)
 # Some collections answered and some failed (timed out, or any other error):
 # the results stand, with this said.
 SEARCH_INCOMPLETE_MESSAGE = (
@@ -505,7 +523,7 @@ class RetrievalService:
         self.collection_registry = collection_registry
         # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
         self._shadow = self._build_shadow(graph_provider)
-        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE=scopes); None in every other mode.
+        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE scopes, or shadow for a connector an admin switched); None in legacy.
         self._planner = self._build_planner(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
@@ -567,7 +585,7 @@ class RetrievalService:
             return set(found.records_by_vrid)
 
         try:
-            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check)
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check, served=_served(plan, scope_connector_ids))
         except Exception as exc:  # the shadow must never cost a search
             self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 
@@ -792,7 +810,7 @@ class RetrievalService:
             # None overrides it -- and HybridSearchRequest is a plain dataclass,
             # so the None survived all the way to `req.limit * 2` in
             # qdrant/utils.py and took the whole search down with a TypeError
-            # that the except below logged as "Filtered search failed",
+            # that the except below logged as `search.failed`,
             # returning an empty result set. The turn then answered with no
             # retrieved context and no visible error.
             if limit is None:
@@ -841,10 +859,7 @@ class RetrievalService:
                     # the scope and try that once.
                     narrow_access_memo.forget(memo_key)
                     remembered = False
-                    self.logger.warning(
-                        "record list unreadable for remembered scope (user=%s org=%s); "
-                        "trying the container search: %s", user_id, org_id, exc,
-                    )
+                    log_failure(self.logger, "search.remembered_scope_unreadable", exc, include_error_text=False)
                     containers, accessible_virtual_id_to_record_id, user = (
                         await self._resolve_search_scope(user_id, org_id, filters, time_range)
                     )
@@ -863,9 +878,7 @@ class RetrievalService:
                         await self._resolve_search_scope(user_id, org_id, filters, time_range)
                     )
             except PermissionVerificationUnavailableError as exc:
-                self.logger.warning(
-                    "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
-                )
+                log_failure(self.logger, "search.access_unreadable", exc, include_error_text=False)
                 return self._create_empty_response(
                     PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
                 )
@@ -1012,20 +1025,13 @@ class RetrievalService:
                             # Nothing was admitted to keep: report the failure as
                             # the record-id path would, never as "no match".
                             if isinstance(exc, PermissionVerificationUnavailableError):
-                                self.logger.warning(
-                                    "Could not read what user %s may access in org %s: %s",
-                                    user_id, org_id, exc,
-                                )
+                                log_failure(self.logger, "search.access_unreadable", exc, include_error_text=False)
                                 return self._create_empty_response(
                                     PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
                                     Status.PERMISSION_CHECK_UNAVAILABLE,
                                 )
                             raise
-                        self.logger.warning(
-                            "record-id search after a container shortfall failed "
-                            "(user=%s org=%s); keeping the container results: %s",
-                            user_id, org_id, exc,
-                        )
+                        log_failure(self.logger, "search.record_id_retry_failed", exc, include_error_text=False)
                         replacement = None
                         plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
                     if replacement is None:
@@ -1077,10 +1083,8 @@ class RetrievalService:
                         if not isinstance(result, dict)
                         or (result.get("metadata") or {}).get("virtualRecordId") not in denied
                     ]
-                except Exception:
-                    self.logger.exception(
-                        "Permission check of search hits failed (user=%s org=%s)", user_id, org_id,
-                    )
+                except Exception as exc:
+                    log_failure(self.logger, "search.hit_check_failed", exc, include_error_text=False)
                     return self._create_empty_response(
                         "Could not verify document permissions right now. "
                         "Please retry shortly.",
@@ -1296,7 +1300,7 @@ class RetrievalService:
             files_map = {}
             mails_map = {}
 
-            async def _fetch_by_ids(record_ids: list[str], collection: str, label: str) -> dict:
+            async def _fetch_by_ids(record_ids: list[str], collection: str) -> dict:
                 """One query per collection instead of one per chunk.
 
                 The id lists are appended per search result, so a record matched
@@ -1314,9 +1318,9 @@ class RetrievalService:
                             )
                             or []
                         )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to batch fetch {label}, per-id fallback: {str(e)}"
+                except Exception as exc:
+                    log_failure(
+                        self.logger, "search.batch_fetch_failed", exc, include_error_text=False, collection=collection,
                     )
                     nodes = []
 
@@ -1352,12 +1356,12 @@ class RetrievalService:
 
             async def fetch_files() -> dict:
                 return await _fetch_by_ids(
-                    file_record_ids_to_fetch, CollectionNames.FILES.value, "files"
+                    file_record_ids_to_fetch, CollectionNames.FILES.value
                 )
 
             async def fetch_mails() -> dict:
                 return await _fetch_by_ids(
-                    mail_record_ids_to_fetch, CollectionNames.MAILS.value, "mails"
+                    mail_record_ids_to_fetch, CollectionNames.MAILS.value
                 )
 
             async def fetch_locations() -> dict[str, str]:
@@ -1603,7 +1607,10 @@ class RetrievalService:
             self.logger.error("Filtered search failed with a ValueError: %s", e, exc_info=True)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
         except Exception as e:
-            self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
+            # A refused query embedding lands here too, its text the provider's body.
+            log_failure(self.logger, "search.failed", e, include_error_text=False)
+            if is_quota_exhausted(e):
+                return self._create_empty_response(EMBEDDING_OUT_OF_CREDIT_MESSAGE, Status.EMBEDDING_OUT_OF_CREDIT)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _diversity_candidates(
@@ -1670,7 +1677,7 @@ class RetrievalService:
                     found = await by_record_ids(depth, candidate_plan)
                     hits, accessible = found.results, found.accessible
         except Exception as exc:
-            self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
+            log_failure(self.logger, "search.diversity_read_failed", exc, include_error_text=False)
             return [], {}
         # These hits can join the response, so a partial search behind them is the response's too.
         plan.degraded = plan.degraded or candidate_plan.degraded
@@ -1707,11 +1714,11 @@ class RetrievalService:
                         exclude_app_ids=await self._excluded_demo_apps(user_id, org_id),
                     )
                 match = await resolver.match(org_id, raw, within=list(dict.fromkeys(accessible.values())))
-        except EntityFilterUnavailableError:
-            self.logger.warning("Named-entity filter lookup failed for org %s", org_id, exc_info=True)
+        except EntityFilterUnavailableError as exc:
+            log_failure(self.logger, "search.entity_filter_unavailable", exc, include_error_text=False)
             return None, self._create_empty_response(ENTITY_FILTER_UNAVAILABLE_MESSAGE, Status.ERROR)
         except PermissionVerificationUnavailableError as exc:
-            self.logger.warning("Could not read what user %s may access in org %s: %s", user_id, org_id, exc)
+            log_failure(self.logger, "search.access_unreadable", exc, include_error_text=False)
             return None, self._create_empty_response(PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE)
         if match.error:
             return None, self._create_empty_response(match.error, Status.INVALID_FILTER)
@@ -1754,7 +1761,7 @@ class RetrievalService:
         except SelectionNotReadyError:
             return self._create_empty_response(SELECTION_NOT_READY_MESSAGE, Status.SELECTION_NOT_READY)
         except PermissionVerificationUnavailableError as exc:
-            self.logger.warning("Could not resolve the selection of user %s in org %s: %s", user_id, org_id, exc)
+            log_failure(self.logger, "search.selection_unreadable", exc, include_error_text=False)
             return self._create_empty_response(
                 PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
             )
@@ -2201,10 +2208,9 @@ class RetrievalService:
                 # with a full workspace that nothing matched.
                 attempt_degraded = True
                 accessible = {}
-                self.logger.error(
-                    "container_search: verification unavailable for %d vrids "
-                    "(user=%s org=%s): %s",
-                    len(returned_vids), user_id, org_id, exc,
+                log_failure(
+                    self.logger, "container_search.verification_unavailable", exc,
+                    include_error_text=False, vrid_count=len(returned_vids),
                 )
             surviving = sum(
                 1
@@ -2576,7 +2582,7 @@ class RetrievalService:
         except PermissionVerificationUnavailableError:
             raise
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
 
     async def _notice_app_ids(
         self, containers: "AccessibleContainers | None", user: dict[str, Any] | None, org_id: str, filters: dict[str, Any] | None,
@@ -2594,7 +2600,7 @@ class RetrievalService:
         try:
             gated = frozenset((await self.graph_provider.get_knowledge_hub_access_v3(user_key, org_id)).get("gated_app_ids") or ())
         except Exception as exc:
-            self.logger.warning("connector gate unreadable for access notices (user=%s): %s", user_key, exc)
+            log_failure(self.logger, "search.notice_gate_failed", exc, include_error_text=False)
             return frozenset()
         scoped = requested_scope_ids(filters)
         return gated if scoped is None else gated & frozenset(scoped)
@@ -2620,7 +2626,7 @@ class RetrievalService:
             )
         except Exception as exc:
             # Unreadable setting: search as before rather than fail the search.
-            self.logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
+            log_failure(self.logger, "search.demo_setting_failed", exc, include_error_text=False)
             return frozenset()
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
@@ -2645,7 +2651,7 @@ class RetrievalService:
         try:
             user_data = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
         except Exception as exc:
-            raise PermissionVerificationUnavailableError(str(exc)) from exc
+            raise PermissionVerificationUnavailableError() from exc
         if user_data is None:
             # Not cached: a user created a moment later must be found.
             return None
@@ -2680,12 +2686,8 @@ class RetrievalService:
             names = await self.graph_provider.get_accessible_connector_types(
                 user_id, org_id
             )
-        except Exception as e:
-            self.logger.warning(
-                "Could not resolve accessible connector types; searching every "
-                "managed collection instead: %s",
-                e,
-            )
+        except Exception as exc:
+            log_failure(self.logger, "search.connector_types_unreadable", exc, include_error_text=False)
             return None
         return names or None
 
@@ -2817,6 +2819,7 @@ class RetrievalService:
                 limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
                 scope_filter=_SHADOW_SCOPE_FILTER.get() or (plan.scope_filter if plan is not None else None),
+                with_payload=_SEARCH_PAYLOAD_FIELDS,
             )
             for query, dense_embedding, sparse_embedding in zip(
                 queries, dense_query_embeddings, sparse_query_embeddings
@@ -2979,6 +2982,9 @@ class RetrievalService:
             Status.PERMISSION_CHECK_UNAVAILABLE: 503,  # graph could not adjudicate
             Status.INVALID_FILTER: 422,  # the gateway passes the message through on a 422
             Status.SEARCH_INDEX_UNAVAILABLE: 503,  # vector store timed out or unreachable
+            # 503 so every caller that reads a failed search by its status code keeps doing so, and the gateway
+            # passes the message through.
+            Status.EMBEDDING_OUT_OF_CREDIT: 503,
             Status.SELECTION_TOO_LARGE: 422,
             Status.SELECTION_NOT_READY: 422,
             Status.SELECTION_EMPTY: 404,

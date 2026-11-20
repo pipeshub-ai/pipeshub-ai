@@ -3,7 +3,7 @@
 import json
 import logging
 from collections.abc import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,8 @@ from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
+    apply_issue_access,
+    plan_level_reread,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
@@ -66,6 +68,13 @@ class TestUsernames:
         users = {"carol-key": _user("carol-key", "carol@example.com")}
         resolved = connector._users_with_usernames(users)
         assert resolved["carol"].email == "carol@example.com" and resolved["carol-key"] is users["carol-key"]
+
+    def test_a_username_that_is_a_listed_accounts_key_is_no_alias(self) -> None:
+        """Alice was renamed to alice.old and kept "alice" as her key; a newer account took the username "alice"."""
+        connector = _connector()
+        connector._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.old": "alice"}
+        users = {"JIRAUSER10100": _user("JIRAUSER10100", "new-alice@example.com")}
+        assert "alice" not in connector._users_with_usernames(users)
 
 
 class TestStoredGrantsKept:
@@ -174,6 +183,61 @@ class TestParentGate:
         with pytest.raises(Exception, match="parent issue 5"):
             await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
 
+    @pytest.mark.parametrize(
+        ("knowledge", "holders", "own_level", "parent_level", "files"),
+        [
+            pytest.param(SchemeKnowledge.PRESENT, [{"type": "reporter"}], None, None, False, id="neither has a level"),
+            pytest.param(SchemeKnowledge.PRESENT, [{"type": "reporter"}], None, "20", True, id="the parent has a level"),
+            pytest.param(SchemeKnowledge.PRESENT, [{"type": "reporter"}], "20", None, True, id="it has a level"),
+            pytest.param(SchemeKnowledge.PRESENT, [], None, None, True, id="no per-issue holder"),
+            pytest.param(SchemeKnowledge.PRESENT, None, None, None, True, id="holders unread, a new sub-task"),
+            pytest.param(SchemeKnowledge.NONE, [{"type": "reporter"}], None, None, False, id="no scheme"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], None, None, False,
+                         id="scheme unread, neither has a level"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], None, "20", True,
+                         id="scheme unread, the parent has a level"),
+            pytest.param(SchemeKnowledge.UNKNOWN, [{"type": "reporter"}], "absent", None, True,
+                         id="its level not returned"),
+        ],
+    )
+    async def test_a_sub_task_leaves_its_parent_only_where_a_holder_may_read_it_alone(
+        self, knowledge: SchemeKnowledge, holders: list | None, own_level: str | None, parent_level: str | None,
+        files: bool,
+    ) -> None:
+        """Then it hangs off its project with its own holders' grants, which on the parent would reach the parent's readers."""
+        connector = _connector()
+        parent = {"id": "5", "fields": {"project": {"id": "10", "key": "P"},
+                                        "security": {"id": parent_level} if parent_level else None}}
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=parent)))
+        # A level naming the same people on every issue: one naming the sub-task's own people takes it off its parent.
+        security = IssueSecurityContext(knowledge=knowledge, members_readable=True, browse_holders=holders,
+                                        members_by_level={"20": [{"type": "group", "parameter": "g"}]})
+        fields = {"project": {"id": "10", "key": "P"}, "security": {"id": own_level} if own_level else None}
+        if own_level == "absent":
+            del fields["security"]
+        assert await connector._files_under_parent(fields, "5", security, is_subtask=True) is files
+
+    @pytest.mark.parametrize(("stored_parent", "files"), [(None, False), ("5", True)])
+    async def test_a_stored_sub_task_stays_where_it_was_filed_while_the_holders_are_unread(
+        self, stored_parent: str | None, files: bool,
+    ) -> None:
+        connector = _connector()
+        connector._get_issue_with_retry = AsyncMock()
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, browse_holders=None)
+        fields = {"project": {"id": "10", "key": "P"}, "security": None}
+        assert await connector._files_under_parent(
+            fields, "5", security, stored_parent=stored_parent, stored=True, is_subtask=True) is files
+        connector._get_issue_with_retry.assert_not_awaited()
+
+    async def test_a_parent_read_refused_with_403_is_a_failed_read_not_a_hidden_parent(self) -> None:
+        """GET /rest/api/2/issue/{id} documents 404 for an issue that is missing or hidden from the caller, and no
+        403 (https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-issue/)."""
+        connector = _connector()
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=403))
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True)
+        with pytest.raises(Exception, match="parent issue 5"):
+            await connector._files_under_parent({"project": {"id": "10"}}, "5", security)
+
     async def test_a_parent_the_account_cannot_see_is_not_a_parent(self) -> None:
         connector = _connector()
         connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=404))
@@ -250,6 +314,117 @@ class TestParentKeyLookup:
         assert connector._issue_id_to_key_cache["8"] == "P-8"
 
 
+class _KeptSyncPoints:
+    def __init__(self) -> None:
+        self.points: dict[str, dict] = {}
+
+    async def read_sync_point(self, key: str) -> dict:
+        return dict(self.points.get(key, {}))
+
+    async def update_sync_point(self, key: str, data: dict) -> None:
+        self.points[key] = dict(data)
+
+
+HOUR_MS = 60 * 60 * 1000
+
+
+async def _roles_at(points: _KeptSyncPoints, now_ms: int, *, roles: dict | None) -> JiraDataCenterConnector:
+    connector = _connector()
+    connector.issues_sync_point = points
+    connector.notify = AsyncMock()
+    connector._app_roles_forbidden, connector._app_roles_mapping = roles is None, roles or {}
+    with patch("app.connectors.sources.atlassian.jira_data_center.connector.get_epoch_timestamp_in_ms",
+               return_value=now_ms):
+        await connector._read_level_roles()
+    return connector
+
+
+class TestRolesKeptForLevels:
+    """applicationrole answers 403 to an account that is not an administrator: the last role list read is applied for
+    a bounded time, so a level's other holders still follow Jira on the issues' copies."""
+    ROLES = {"jira-software": [{"groupId": "g-1"}]}
+    LEVEL = [{"type": "applicationRole", "parameter": "jira-software"},
+             {"type": "group", "value": "g-2"}, {"type": "group", "value": "g-3"}]
+
+    @staticmethod
+    def _copy(connector: JiraDataCenterConnector, members: list, stored: dict) -> tuple[tuple, list[str]]:
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": members})
+        plan = plan_level_reread(security, stored, is_new_project=False, app_roles_mapping=connector._level_roles)
+        grants, _ = apply_issue_access(_ticket(), {"security": {"id": "1"}}, is_subtask=False, project_key="P",
+                                       context=security, app_roles_mapping=connector._level_roles)
+        return plan[:2], sorted(g.external_id for g in grants)
+
+    def _stored(self) -> dict:
+        security = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": self.LEVEL})
+        return security.level_fingerprints(self.ROLES)
+
+    @pytest.mark.asyncio
+    async def test_a_holder_removed_while_the_roles_are_refused_is_removed_and_the_roles_groups_stay(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, HOUR_MS, roles=None)
+        plan, grants = self._copy(connector, self.LEVEL[:2], self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-1", "g-2"])
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_the_roles_groups_are_dropped(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        plan, grants = self._copy(connector, self.LEVEL, self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-2", "g-3"])
+        connector.notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_role_group_change_during_the_refusal_does_not_outlast_the_bound(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        assert (await _roles_at(points, 23 * HOUR_MS, roles=None))._level_roles == self.ROLES
+        assert (await _roles_at(points, 25 * HOUR_MS, roles=None))._level_roles == {}
+
+    @pytest.mark.asyncio
+    async def test_past_the_bound_an_unread_role_list_drops_the_roles_groups(self) -> None:
+        points = _KeptSyncPoints()
+        await _roles_at(points, 0, roles=self.ROLES)
+        connector = await _roles_at(points, 25 * HOUR_MS, roles=None)
+        connector._app_roles_forbidden, connector._app_roles_unread = False, True
+        await connector._read_level_roles()
+        plan, grants = self._copy(connector, self.LEVEL[:2], self._stored())
+        assert (plan, grants) == (("levels", ["1"]), ["g-2"])
+
+
+class TestIssuesNamingNewAccounts:
+    @pytest.mark.parametrize(("status", "whole_project"), [(400, True), (503, None)])
+    async def test_a_refused_jql_reads_the_whole_project_and_a_failed_one_fails_the_walk(
+        self, status: int, whole_project: bool | None,
+    ) -> None:
+        from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
+
+        connector = _connector()
+        connector._dc_name_to_source_id = {"carol": "carol-key", "bob": "bob-key"}
+        connector._accounts_to_hand = {"carol-key"}
+        clauses: list[str] = []
+
+        async def search(*_: object, extra_jql: str, **__: object) -> AsyncIterator[tuple[list, bool, None]]:
+            clauses.append(extra_jql)
+            raise JiraReadError(status, "no")
+            yield
+
+        connector._fetch_issues_batched = search
+        connector._update_project_sync_checkpoint = AsyncMock()
+        holders = [{"type": "assignee"}, {"type": "userCustomField", "parameter": "customfield_20000"},
+                   {"type": "groupCustomField", "parameter": "customfield_20001"}]
+        if whole_project is None:
+            with pytest.raises(JiraReadError):
+                await connector._reread_issues_naming("P", "10", [], {}, holders)
+        else:
+            assert await connector._reread_issues_naming("P", "10", [], {}, holders) is True
+            assert connector._reread_whole_project is True
+            # Marked before the whole-project read that replaces the refused one, which may fail too.
+            connector._update_project_sync_checkpoint.assert_awaited_once_with("P", browse_holders="?")
+        assert clauses == ['(assignee in ("carol") OR cf[20000] in ("carol"))']
+
+
 class TestWithdrawnAccounts:
     """An account the complete active-user list no longer shows loses the connector and its own grants; an
     issue's level grants name only listed accounts; an account listed again has the leveled issues read again."""
@@ -289,6 +464,29 @@ class TestWithdrawnAccounts:
         await c._withdraw_unlisted_app_users([_user("kept", "k@x.com"), _user("moved-new", "m@x.com")])
         c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
         assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
+
+    async def test_an_account_without_product_access_is_withdrawn_with_its_grants(self) -> None:
+        """Still on the active user list, but in no product group: like an unlisted account it loses the connector and
+        its own grants, and no longer counts as linked this sync, where a list cut short would grant it again."""
+        c = _connector()
+        stored = self._stored(c)
+        c._licensed_keys = {"kept", "moved"}
+        await c._withdraw_ineligible_app_users(stored[1:])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [stored[0]], drop_grants=True)
+        assert c._stored_app_users == stored[1:], "the withdrawn no longer count as linked this sync"
+
+    async def test_an_account_with_a_hidden_email_and_no_product_access_is_withdrawn_and_never_admitted(self) -> None:
+        """frank and gina both have a hidden email; only gina has product access. The empty email they share keeps
+        nobody: frank is withdrawn, so the directory never holds him and no re-read is queued for him."""
+        c = _connector()
+        frank, gina = _user("frank-key", ""), _user("gina-key", "")
+        c._stored_app_users = [frank, gina]
+        c._listed_user_keys = c._seen_user_keys = {"frank-key", "gina-key"}
+        c._licensed_keys = {"gina-key"}
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        await c._withdraw_ineligible_app_users([])
+        c.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with("c", [frank], drop_grants=True)
+        assert [u.source_user_id for u in c._directory_extra()] == ["gina-key"]
 
     @pytest.mark.parametrize("flag", ["_user_bulk_incomplete", "_user_bulk_refused"])
     async def test_a_deactivated_row_from_the_search_fallback_or_a_refused_list_withdraws_nobody(self, flag: str) -> None:
@@ -544,8 +742,43 @@ class TestWithdrawnAccounts:
         c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
         c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
         assert await c._note_people_to_reread({"carol-key"}) == {"carol-key"}
-        assert store["people_reread"] == {"accounts": '["carol-key"]'}
+        assert store["people_reread"] == {"accounts": '["carol-key"]', "generation": 1, "base": 0}
         assert await c._note_people_to_reread(set()) == {"carol-key"}
+        assert c._people_generation == 1, "a sync that admits no one is no new work"
+
+    async def test_an_account_admitted_again_while_still_queued_is_a_new_generation(self) -> None:
+        """carol was queued, then withdrawn (her grants dropped) and listed again before the queue emptied: a project
+        that covered the earlier generation, and missed this sync, must still read its issues again for her."""
+        c = _connector()
+        store: dict = {"people_reread": {"accounts": '["carol-key"]', "generation": 4}}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        await c._note_people_to_reread({"carol-key"})
+        assert c._people_generation == 5 and store["people_reread"]["generation"] == 5
+
+    async def test_a_queue_saved_before_generations_is_owed_to_every_project(self) -> None:
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(return_value={"accounts": '["carol-key"]'})
+        await c._note_people_to_reread(set())
+        assert c._people_generation == 1  # above a project's missing people_read (0)
+
+    @pytest.mark.parametrize("shown", [True, False], ids=["listed_again", "still_missing"])
+    async def test_a_linked_account_the_list_missed_is_read_again_once_a_list_shows_it(self, shown: bool) -> None:
+        """frank was missing from the user list (the search fallback), so he resolved by key alone and a level naming
+        him by username did not reach him. A later list shows him: his username resolves, so the issues are read again."""
+        c = _connector()
+        store: dict = {"admitted_without_email": {"accounts": "[]", "key_only": '["frank-key"]'}}
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda k: store.get(k))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda k, v: store.__setitem__(k, v))
+        c._stored_app_users = [_user("frank-key", "frank@example.com")]
+        c._user_bulk_incomplete = not shown
+        c._listed_user_keys = c._seen_user_keys = {"alice-key"} | ({"frank-key"} if shown else set())
+        pending = await c._note_newly_listed([_user("alice-key", "alice@example.com")])
+        assert ("frank-key" in pending) is shown
+        assert json.loads(store["admitted_without_email"]["key_only"]) == ([] if shown else ["frank-key"])
 
     async def test_a_failed_read_of_the_synced_users_skips_the_stub_sweep(self) -> None:
         c = _connector()
@@ -562,6 +795,7 @@ class TestWithdrawnAccounts:
         order: list = []
         listed = [_user("alice-key", "a@x.com"), _user("carol-key", "c@x.com")]
         c._fetch_users = AsyncMock(return_value=listed)
+        c._eligible_users = AsyncMock(side_effect=lambda users: users)  # both have Jira product access
         c._stored_app_users = [listed[0]]
         c._note_people_to_reread = AsyncMock(side_effect=lambda ids: order.append(("note", sorted(ids))))
         c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=lambda _u: order.append(("link",)))
@@ -658,6 +892,18 @@ class TestLevelsJiraLeavesOut:
             await connector._parent_level("5")
         assert "5" not in connector._parent_levels
 
+    @pytest.mark.parametrize(("answer", "unsettled"), [({"total": 1}, {"1"}), ({}, {"1"}), ({"total": 0}, set())],
+                             ids=["matches but no list", "nothing", "no match"])
+    async def test_an_answer_without_an_issues_list_settles_only_a_zero_match(self, answer, unsettled) -> None:
+        """SearchResultsBean declares issues but does not require it: a zero total is an answer (none of them has no
+        level, so the key stays missing and the issue closed); anything else without the list is not."""
+        connector = _connector()
+        connector._search_issues_with_retry = AsyncMock(
+            return_value=MagicMock(status=200, json=MagicMock(return_value=answer)))
+        issue = {"id": "1", "fields": {}}
+        assert await connector._null_levels_jira_left_out([issue]) == unsettled
+        assert "security" not in issue["fields"]
+
     async def test_nothing_is_asked_when_every_issue_carries_the_key(self) -> None:
         connector = _connector()
         connector._search_issues_with_retry = AsyncMock()
@@ -720,6 +966,28 @@ class TestSecuredSubtasks:
         """Jira gives a sub-task its parent's level, so a null is a payload behind it, never read wider than the parent."""
         assert (await self._placed("7")).parent_external_record_id == "1"
 
+
+
+class TestGroupsAreKeyedByName:
+    """Data Center names a group by its name alone (``/groups/picker`` lists ``name``, ``html`` and ``labels``; members
+    are read by ``groupname``). A picker row that also carries an id equal to another group's name must not put its
+    members under that other group."""
+
+    async def test_a_group_whose_id_is_another_groups_name_does_not_take_its_members(self) -> None:
+        c = _connector()
+        c.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={
+            "groups": [{"name": "beta"}, {"name": "alpha", "groupId": "beta"}], "total": 2})))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        alice, bob = _user("alice-key", "alice@x.com"), _user("bob-key", "bob@x.com")
+        c._fetch_group_members = AsyncMock(side_effect=lambda _gid, name: {"beta": ["bob-key"], "alpha": ["alice-key"]}[name])
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        result = await c._sync_user_groups([alice, bob])
+        assert result.members == {"beta": [bob], "alpha": [alice]}
+        written = {g.source_user_group_id: m for (g, m), in (call.args[0] for call in
+                                                           c.data_entities_processor.on_new_user_groups.await_args_list)}
+        assert written == {"beta": [bob], "alpha": [alice]}
 
 
 class TestStoredNoLevelIssuesHealOnce:

@@ -188,10 +188,6 @@ SERIES: dict[str, SeriesSpec] = {
     "pipeshub_parse_documents_total": _c(("outcome",), "Parsed documents by outcome.", allowed={"outcome": _DOCUMENT_OUTCOMES}),
     "pipeshub_stage_schema_guard": _g(("state",), "max", "Stage write-mode guard state.", allowed={"state": _GUARD_STATES}),
     # Fleet: from the load state the evaluator keeps; absent when there is none.
-    "pipeshub_queue_pending": _g(("queue", "class"), "max", "Messages pending.", fleet=True),
-    "pipeshub_queue_in_flight": _g(("queue", "class"), "max", "Messages in flight.", fleet=True),
-    "pipeshub_queue_oldest_age_seconds": _g(("queue", "class"), "max", "Age of the oldest message.", fleet=True),
-    "pipeshub_queue_pending_cost_units": _g(("queue", "class"), "max", "Pending cost units.", fleet=True),
     "pipeshub_load_state": _g(
         ("kind", "state"), "max", "Load episode state.", fleet=True,
         allowed={"kind": _EPISODE_KINDS, "state": _EPISODE_STATES},
@@ -217,7 +213,6 @@ CLOSED_LABELS: dict[str, frozenset[str]] = {
          "spend_stopped", "spend_degraded", "jobs_paused", "provider_hold", "oom", "restart", "unavailable"}
     ),
     "window": frozenset({"avg10", "avg60"}),
-    "queue": frozenset({"record-events", "parse"}),
     "engine": frozenset({"docling", "cpu", "vlm"}),
     "outcome": frozenset({"ok", "failed", "retried", "abandoned_shutdown", "stale", "skipped", "completed",
                           "partial", "off", "sequential_fallback"}),

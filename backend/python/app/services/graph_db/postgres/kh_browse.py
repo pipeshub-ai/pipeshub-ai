@@ -37,6 +37,7 @@ from app.services.graph_db.postgres.kh_listing import (
     _node_type,
     capped_counts,
     chain_tops_apply,
+    class_sets,
     filtered_out,
     head,
     where_of,
@@ -100,7 +101,7 @@ class KhBrowseMixin(PgBase):
         async def unit(tx: Tx) -> dict[str, Any] | str:
             """Everything up to the page, in one read: the listing state, the breadcrumbs' trail, the children of a node held whole, and the access check's answer for the start,
             its ancestors and the children the classes do not decide."""
-            app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, held, by_class=by_class)
+            app_sk, app_doc, hidden, served, _ = await head(tx, org, aid, held, by_class=False)
             if app_sk is None:      # a connector the viewer may browse that holds nodes kg has not finished copying: not ready, as the flat listing says
                 return "not_ready"
             # a start of this connector that kg holds and no group above hides (else the browse's 404)
@@ -127,12 +128,15 @@ class KhBrowseMixin(PgBase):
             if len(links) <= kgl.LINKS_MAX and (at_app or not start["hide_children"]):
                 got = await tx.fetch(kgl.children_held_sql(where, links_param), *p.values)
                 rows = None if got[0]["n"] > BROWSE_MEMORY_MAX else [r for r in got if r["sk"] is not None]
+            ancestors = [r for sk, r in (trail[4] if trail else {}).items() if sk != start["sk"] and r["kind"] != 1]
+            # a node held whole is decided by the classes of the rows it reads (its arrows add their children's: ``cover_children``); a wider one by every class of the connector
+            only = None if rows is None else sorted({r["class_id"] for r in [*rows, *([] if at_app else [start]), *ancestors] if r["class_id"] is not None})
+            sets = await class_sets(tx, org, app_sk, held, only) if served and by_class else None
             gs = set(granted)
             ok, left = self._kh_class_split(rows or [], sets, gs)
             # the children the classes do not decide are asked here only when they are few; otherwise (kg does not serve the connector, or it is mid-sync) they are asked a page at a time
             windowed = rows is not None and (sets is None or len(left) > UNDECIDED_MAX)
             # one question to the check: the start, its ancestors (which the breadcrumbs name) and those children
-            ancestors = [r for sk, r in (trail[4] if trail else {}).items() if sk != start["sk"] and r["kind"] != 1]
             ok2, left2 = self._kh_class_split([*([] if at_app else [start]), *ancestors], sets, gs)
             ok |= ok2
             ids = [r["id"] for r in [*left2, *([] if windowed else left)]]
@@ -517,11 +521,13 @@ async def _chain_nodes(tx: Tx, org: str, rows: list[Any]) -> dict[int, dict[str,
         (hier if lk["kind"] == 1 else groups)[lk["child_sk"]].append(lk["parent_sk"])
     refs = sorted({s for d in (hier, groups) for v in d.values() for s in v})
     keys = {r["sk"]: (r["coll"], r["id"]) for r in await tx.fetch(KEYS, org, refs)} if refs else {}
-    deleted = {r["sk"]: r["deleted"] for r in await tx.fetch(kgl.CHAIN_BY_SK, org, [s for s in refs if keys.get(s, (0,))[0] == 2])} if refs else {}
+    group_rows = await tx.fetch(kgl.CHAIN_BY_SK, org, [s for s in refs if keys.get(s, (0,))[0] == 2]) if refs else []
+    deleted = {r["sk"]: r["deleted"] for r in group_rows}
+    unlisted = {r["sk"] for r in group_rows if r["alien"]}      # a group that carries access only is no parent a browse opens
     out = {}
     for r in rows:
         own = hier[r["sk"]] if r["kind"] == 2 else groups[r["sk"]]
-        out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys],
+        out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys and s not in unlisted],
                         "own": [(keys[s][1], bool(deleted.get(s))) for s in dict.fromkeys(own) if s in keys and keys[s][0] == 2 and s != r["sk"]]}
     return out
 

@@ -950,6 +950,41 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(JSON.stringify(rows[2])).to.not.contain(SECRET)
   })
 
+  // As web search stores them: the page address is also the citation's recordId.
+  const PAGE = 'https://news.example.com/markets'
+  const LINK = `${PAGE}#:~:text=stocks`
+  const webSearchCitation = () => ({
+    citationId: { _id: 'cw', content: 'page text', metadata: { recordId: PAGE, webUrl: LINK, origin: 'WEB_SEARCH', connector: 'WEB', recordType: 'WEBPAGE' } },
+  })
+
+  it('a web search citation is checked by its address, not as a record, and keeps the answer', async () => {
+    const asked = stubAccess([], [PAGE])
+    stubConversation([{ messageType: 'bot_response', content: 'Market week', citations: [webSearchCitation()] }])
+    const [m] = await fetchRows(OWNER)
+    expect(m.content).to.equal('Market week')
+    expect(m.answerHidden).to.equal(undefined)
+    expect(asked.flat()).to.not.include(PAGE)
+    // The page address is checked; the link with its text fragment is only shown.
+    expect(askedUrls).to.include(PAGE)
+    expect(askedUrls).to.not.include(LINK)
+  })
+
+  it('a shared viewer sees a web search citation of a public page, not a placeholder', async () => {
+    stubAccess([], [PAGE])
+    stubPeerConversation([{ messageType: 'bot_response', content: 'Market week', citations: [webSearchCitation()] }])
+    const m = await fetchConversation(VIEWER)
+    expect(m.citations[0].citationData.metadata.webUrl).to.equal(LINK)
+  })
+
+  it('a web search citation at the address of a record the reader cannot read still hides the answer', async () => {
+    // Only the fragment link is unmatched: the page address is where an unreadable record is stored.
+    stubAccess([], [LINK])
+    stubConversation([{ messageType: 'bot_response', content: SECRET, citations: [webSearchCitation()] }])
+    const [m] = await fetchRows(OWNER)
+    expect(m.answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(m)).to.not.contain(SECRET)
+  })
+
   it('a web-search answer whose link matches no record stays visible', async () => {
     stubAccess([], ['https://example.com/page'])
     stubConversation([{ messageType: 'bot_response', content: 'From the web', citations: [], referenceData: [{ name: 'Example', webUrl: 'https://example.com/page' }] }])

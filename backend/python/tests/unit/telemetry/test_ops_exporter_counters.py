@@ -241,19 +241,19 @@ def test_without_proc_a_late_file_of_a_vanished_pid_is_folded_once(tmp_path: Pat
 
 
 def test_a_fleet_series_in_a_process_snapshot_is_refused(tmp_path: Path) -> None:
-    _write(tmp_path, 1, {"pipeshub_queue_pending": [[["parse", "small"], 9]]})
+    _write(tmp_path, 1, {"pipeshub_load_state": [[["saturation", "ok"], 9]]})
     collector = ox.SignalCollector(tmp_path, cache_ttl=0, clock=lambda: 1000.0, is_alive=lambda *_: True)
-    assert "pipeshub_queue_pending" not in _text(collector)
+    assert "pipeshub_load_state" not in _text(collector)
     fleet = ox.SignalCollector(tmp_path, cache_ttl=0, clock=lambda: 1000.0, is_alive=lambda *_: True,
-                               fleet_source=lambda: [("pipeshub_queue_pending", ("parse", "small"), 2.0)])
-    lines = [ln for ln in _text(fleet).splitlines() if ln.startswith("pipeshub_queue_pending")]
+                               fleet_source=lambda: [("pipeshub_load_state", ("saturation", "ok"), 2.0)])
+    lines = [ln for ln in _text(fleet).splitlines() if ln.startswith("pipeshub_load_state")]
     assert len(lines) == 1 and lines[0].endswith(" 2.0")  # the fleet source's value; the process's 9 never shows
 
 
 def test_a_fleet_series_from_a_dead_process_is_not_carried(tmp_path: Path) -> None:
-    _write(tmp_path, 1, {"pipeshub_queue_pending": [[["parse", "small"], 9]]})
+    _write(tmp_path, 1, {"pipeshub_load_state": [[["saturation", "ok"], 9]]})
     collector = ox.SignalCollector(tmp_path, cache_ttl=0, clock=lambda: 1000.0, is_alive=lambda *_: False)
-    assert "pipeshub_queue_pending" not in _text(collector)
+    assert "pipeshub_load_state" not in _text(collector)
 
 
 # -- retire() against a scan: a process is folded once -------------------------------------

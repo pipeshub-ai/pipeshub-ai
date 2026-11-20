@@ -20,6 +20,7 @@ from app.services.vector_db.models import (
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.redis_vector import RedisVectorService, _check_version
+from tests.support.redis_schema import with_schema
 
 # ---------------------------------------------------------------------------
 # Version check helper
@@ -76,7 +77,7 @@ def mock_redis_client() -> AsyncMock:
 
 @pytest.fixture
 def service(redis_config: RedisVectorConfig, mock_redis_client: AsyncMock) -> RedisVectorService:
-    svc = RedisVectorService(redis_config)
+    svc = with_schema(RedisVectorService(redis_config))
     svc.client = mock_redis_client
     return svc
 
@@ -103,7 +104,7 @@ class TestRedisHealthCheck:
 
     @pytest.mark.asyncio
     async def test_unhealthy_when_not_connected(self, redis_config) -> None:
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         svc.client = None
         result = await svc.health_check()
         assert result.status == HealthStatus.UNHEALTHY
@@ -499,7 +500,7 @@ def _make_redis_service() -> RedisVectorService:
     svc.client.ping = AsyncMock()
     svc._dense_dtype = "FLOAT16"
     svc._collection_configs = {}
-    return svc
+    return with_schema(svc)
 
 
 class TestRedisDeletePointsEmptyFilter:
@@ -841,7 +842,7 @@ class TestConnectionLifecycle:
     async def test_connect_success(self, redis_config, mock_redis_client) -> None:
         """connect() establishes connection through the connection provider
         and verifies it with ping."""
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         mock_provider = MagicMock()
         mock_provider.create_client = MagicMock(return_value=mock_redis_client)
         with patch(
@@ -856,7 +857,7 @@ class TestConnectionLifecycle:
     @pytest.mark.asyncio
     async def test_connect_failure_raises(self, redis_config) -> None:
         """connect() raises exception on connection failure."""
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         mock_client = AsyncMock()
         mock_client.ping = AsyncMock(side_effect=ConnectionError("Cannot reach Redis"))
 
@@ -883,7 +884,7 @@ class TestConnectionLifecycle:
     @pytest.mark.asyncio
     async def test_disconnect_without_client(self, redis_config) -> None:
         """disconnect() handles None client gracefully."""
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         svc.client = None
 
         await svc.disconnect()  # Should not raise
@@ -927,7 +928,7 @@ class TestPerLoopClients:
     """A redis.asyncio pool binds to one loop, so each loop gets its own client."""
 
     def test_each_loop_gets_its_own_client_with_the_same_options(self, redis_config) -> None:
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         provider = _per_loop_provider()
         a, b = asyncio.new_event_loop(), asyncio.new_event_loop()
         try:
@@ -949,7 +950,7 @@ class TestPerLoopClients:
             b.close()
 
     def test_disconnect_closes_each_client_on_its_owning_loop(self, redis_config) -> None:
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
         owner = asyncio.new_event_loop()
         thread = threading.Thread(target=owner.run_forever, daemon=True)
         thread.start()
@@ -976,7 +977,7 @@ class TestPerLoopClients:
         client.ping = AsyncMock(side_effect=ConnectionError("down"))
         provider = MagicMock()
         provider.create_client = MagicMock(return_value=client)
-        svc = RedisVectorService(redis_config)
+        svc = with_schema(RedisVectorService(redis_config))
 
         with patch(_GET_PROVIDER, return_value=provider), pytest.raises(ConnectionError):
             await svc.connect()
@@ -1031,7 +1032,7 @@ class TestKeysMatchingFilter:
     @staticmethod
     def _filter() -> FilterExpression:
         from app.services.vector_db.models import FieldCondition, FilterExpression
-        return FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
+        return FilterExpression(must=[FieldCondition(key="metadata.orgId", value="org1")])
 
     @pytest.mark.asyncio
     async def test_reads_through_a_cursor_until_it_ends(self, service, mock_redis_client) -> None:
@@ -1232,7 +1233,7 @@ class TestRedisFailuresAreLoud:
         mock_redis_client.delete = AsyncMock()
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="aborted after"):
             await service.delete_points("records", filter_expr)
@@ -1279,7 +1280,7 @@ class TestRedisFailuresAreLoud:
         pipeline.execute = AsyncMock(return_value=[Exception("OOM")])
 
         filter_expr = FilterExpression(
-            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="virtualRecordId", value="vr-1")]
+            must=[FieldCondition(key="metadata.orgId", value="o1"), FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
         with pytest.raises(RuntimeError, match="failed HSET"):
             await service.set_payload("records", {"connectorIds": ["c1"]}, filter_expr)

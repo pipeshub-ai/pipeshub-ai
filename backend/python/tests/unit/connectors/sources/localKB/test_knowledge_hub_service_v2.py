@@ -626,19 +626,24 @@ def _sorted_listing(names: list[str]) -> tuple[list[dict], Callable[..., Awaitab
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("skip_rows", [0, 1000], ids=["page_reads", "large_reads"])
 @pytest.mark.parametrize("limit", [1, 3, 7])
-async def test_numbered_pages_cover_the_listing_once_in_order(service, provider, limit) -> None:
+async def test_numbered_pages_cover_the_listing_once_in_order(service, provider, limit, skip_rows) -> None:
     rows, listing = _sorted_listing([f"Name {n % 5} {n}" for n in range(20)])
     provider.get_knowledge_hub_root_nodes_v2.side_effect = listing
+    provider.kh_skip_rows = skip_rows
     seen: list[str] = []
     for page in range(1, 20 // limit + 3):
         provider.get_knowledge_hub_root_nodes_v2.reset_mock()
         result = await service.get_nodes(user_id="u1", org_id="o1", page=page, limit=limit, sort_by="name",
                                          sort_order="asc")
         assert result.success is True
-        # One keyset step per page up to this one, stopping where the listing ends.
-        last_page = -(-len(rows) // limit)
-        assert provider.get_knowledge_hub_root_nodes_v2.await_count == min(page, last_page)
+        # A backend that reads a page at a time takes one keyset step per page up to this one; one that takes large reads, the rows before the page in
+        # one read and then the page from where they end. Neither reads past the end of the listing.
+        if skip_rows:
+            assert provider.get_knowledge_hub_root_nodes_v2.await_count == (2 if 0 < (page - 1) * limit < len(rows) else 1)
+        else:
+            assert provider.get_knowledge_hub_root_nodes_v2.await_count == min(page, -(-len(rows) // limit))
         expected = rows[(page - 1) * limit:page * limit]
         assert [i.id for i in result.items] == [r["id"] for r in expected]
         assert result.pagination.totalItems == len(rows)
@@ -1052,3 +1057,41 @@ async def test_an_origin_sort_reaches_the_folder_query(service, provider) -> Non
     assert result.success is True
     kwargs = provider.get_knowledge_hub_connector_page_v3.call_args.kwargs
     assert (kwargs["sort_field"], kwargs["sort_dir"]) == ("origin", "DESC")
+
+
+@pytest.mark.asyncio
+async def test_a_browse_total_older_than_five_minutes_is_counted_again_without_the_boundary(service, provider, monkeypatch) -> None:
+    """The page's own query counts only the rows past its boundary, so an aged total is asked for again from the start of the folder."""
+    import app.utils.kh_cursor as kh_cursor
+    from app.connectors.sources.localKB.handlers import knowledge_hub_service as khs
+
+    clock = [1_000_000_000_000]
+    monkeypatch.setattr(kh_cursor.time, "time", lambda: clock[0] / 1000)
+    monkeypatch.setattr(khs.time, "time", lambda: clock[0] / 1000)
+    browse = {"user_id": "u1", "org_id": "o1", "parent_id": "p1", "parent_type": "recordGroup", "limit": 1}
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([row("r1", "Record")], total=5, has_more=True, scope=admitted_scope())
+    first = await service.get_nodes(**browse)
+
+    clock[0] += 299_000
+    recent = await service.get_nodes(**browse, cursor=first.pagination.nextCursor)
+    assert recent.pagination.totalItems == 5
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["include_total"] is False
+
+    clock[0] += 2_000
+    provider.get_knowledge_hub_connector_page_v3.reset_mock()
+    provider.get_knowledge_hub_connector_page_v3.side_effect = lambda **kw: page_of(
+        [row("r2", "Second")], total=2 if kw["after"] is None else 1, has_more=kw["after"] is None, scope=admitted_scope())
+    aged = await service.get_nodes(**browse, cursor=first.pagination.nextCursor)
+    assert aged.pagination.totalItems == 2, "the whole folder, as the viewer may read it now"
+    whole = provider.get_knowledge_hub_connector_page_v3.call_args_list[-1].kwargs
+    assert (whole["after"], whole["include_total"]) == (None, True)
+
+
+def test_only_postgresql_reads_the_rows_before_a_numbered_page_in_large_reads() -> None:
+    """Neo4j's and ArangoDB's page reads hold every row they keep in memory against a pool (a 1,000-row read ran Neo4j's transaction pool out of memory):
+    they read a page at a time. PostgreSQL's cost is per read, not per row."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider
+    assert (Neo4jProvider.kh_skip_rows, ArangoHTTPProvider.kh_skip_rows) == (0, 0)
+    assert PostgresGraphProvider.kh_skip_rows >= 1000

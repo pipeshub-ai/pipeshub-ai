@@ -28,3 +28,4 @@ async def store() -> AsyncIterator[NodePaidResultStore]:
 def _repurge_chain_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests drive the delayed re-purge, which is published only when the operator turns it on."""
     monkeypatch.setenv("PAID_RESULT_REPURGE_CHAIN", "true")
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")

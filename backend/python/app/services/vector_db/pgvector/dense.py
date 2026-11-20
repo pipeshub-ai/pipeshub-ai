@@ -12,7 +12,7 @@ Recall comes from placement and tiering, not from a probe of each answer:
 
 The membership filter is :mod:`visibility`'s, shared with the lexical leg; the SQL of the exact tiers asks for the groups first, the
 vector index asks per row. Parameters are fixed: ``$1`` org, ``$2`` collection, ``$3`` space, ``$4`` query, ``$5``-``$9`` the scope,
-``$10`` the number of rows, ``$11`` the rerank depth, then the scope's extra conditions.
+``$10`` the number of rows, ``$11`` the rerank depth, ``$12`` the arms as membership keys, then the scope's extra conditions.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 ADMISSION_CLASS = 7370           # advisory-lock class of the admission slots (registered in kernel.lock_keys by retrieval_0001)
 _OPERATORS = {"cosine": "OPERATOR(ext.<=>)", "dot": "OPERATOR(ext.<#>)", "l2": "OPERATOR(ext.<->)"}
-_SCOPE_TYPES = "_s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int)"      # types every parameter, used or not
+_SCOPE_TYPES = "_s AS (SELECT $4::ext.halfvec, $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::int, $11::int, $12::text[])"      # types every parameter, used or not
 # Two forms of "not tombstoned". The hashed subplan is built once per statement and is the cheaper one (the per-row probe cost 29 % of an
 # exact scan when there are no tombstones), but PostgreSQL hashes it only while the set fits work_mem; past that it becomes a list scan
 # per candidate row (minutes). So: the hashed form only up to ``tombstone_hash_max`` tombstones, with work_mem raised for it; above that,
@@ -145,8 +145,9 @@ class Query:
         return _ALIVE_ANTI if self.anti else _ALIVE_HASHED
 
     def args(self, rows: int, depth: int = 0) -> tuple[object, ...]:
-        """The parameters ``$1`` to ``$11`` and the scope's extra conditions after them."""
-        return (self.org, self.collection_id, self.space_id, self.vector, *self.scope.args(), rows, depth, *self.scope.extra_sql()[1])
+        """The parameters ``$1`` to ``$12`` and the scope's extra conditions after them."""
+        return (self.org, self.collection_id, self.space_id, self.vector, *self.scope.args(), rows, depth, self.scope.keys(),
+                *self.scope.extra_sql()[1])
 
 
 @dataclass(frozen=True)

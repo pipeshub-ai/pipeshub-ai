@@ -714,11 +714,16 @@ export const KnowledgeBaseApi = {
   async reindexItem(
     recordId: string,
     depth: number = 0,
-    statusFilters?: string[]
+    statusFilters?: string[],
+    // A user's Force reindex: every stored result is bypassed and paid for again.
+    force?: boolean
   ) {
-    const body: { depth: number; statusFilters?: string[] } = { depth };
+    const body: { depth: number; statusFilters?: string[]; force?: boolean } = { depth };
     if (statusFilters?.length) {
       body.statusFilters = statusFilters;
+    }
+    if (force) {
+      body.force = true;
     }
     const { data } = await apiClient.post<Record<string, unknown>>(
       `${BASE_URL}/reindex/record/${recordId}`,

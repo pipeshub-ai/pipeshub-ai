@@ -236,16 +236,28 @@ class CoreMixin(PgBase):
         hot = _hot(collection, filters)
         fields = [_field(k) for k in keys]
         try:
-            async def read(tx: Tx) -> list:
-                # a full page may be only the first: the plain statement then reads every match in the one statement (one snapshot)
-                rows = await _hot_rows(tx, hot, fields, vals, "", _HOT_PAGE, null_absent=True) if hot else []
-                if hot and len(rows) < _HOT_PAGE:
-                    return rows
+            async def read(tx: Tx, *, paged: bool) -> list:
+                # Every page of the vetted read after the last id, so more matches than a page are still read by the key's index (the plain
+                # statement reads every document of the collection in the org). Paged reads run in one repeatable-read unit: one snapshot, as
+                # the one statement had. In a caller's transaction, and after an id the function refuses, the plain statement reads them all.
+                rows: list = []
+                after = ""
+                while hot and len(after) <= 200:
+                    page = await _hot_rows(tx, hot, fields, vals, after, _HOT_PAGE, null_absent=True)
+                    rows += page
+                    if len(page) < _HOT_PAGE:
+                        return rows
+                    if not paged:
+                        break
+                    after = page[-1]["node_id"]
                 return await tx.fetch("""/* pipeshub:graph.get_nodes_by_filters */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
                     AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) f(k, v)
                         WHERE CASE WHEN f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)""",
                                       org, collection, fields, vals)
-            rows = await self._q(read, transaction)
+            if hot and not transaction:
+                rows = await self._db.run(lambda tx: read(tx, paged=True), isolation="repeatable_read")
+            else:
+                rows = await self._q(lambda tx: read(tx, paged=False), transaction)
         except Exception:
             if raise_on_error:
                 raise
@@ -275,7 +287,7 @@ class CoreMixin(PgBase):
         return [self._shape(_doc(r["doc"]), collection, return_fields) for r in rows]
 
     async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, *,
-                                          clock_at_most: float | None = None) -> bool:
+                                          clock_at_most: float | None = None, unset: Sequence[str] = ()) -> bool:
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
         org = current_org_id()
@@ -286,14 +298,15 @@ class CoreMixin(PgBase):
             # the lock does not re-check against the row it then updates, and the UPDATE reads its clock before it waits; either way a write would
             # apply on a row that no longer matches.
             await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
-            return await tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
+            return await tx.fetchval("""/* pipeshub:graph.update_node_fields_if_match */ WITH u AS (UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each((n.doc || $4::jsonb) - $7::text[]) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE org_id = $1 AND coll = $2 AND id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_each($5::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value
                 AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL))
                 AND ($6::float8 IS NULL OR extract(epoch FROM clock_timestamp()) <= $6::float8) RETURNING 1) SELECT count(*) FROM u""",
-                                     org, collection, key, _j(upd), _j(expected), clock_at_most)
+                                     org, collection, key, _j(upd), _j(expected), clock_at_most, list(unset))
         return bool(await self._q(go, transaction, write=True))
 
-    async def update_node_fields_if(self, key: str, collection: str, updates: dict, conditions: Sequence[Cond], transaction: str | None = None) -> bool:
+    async def update_node_fields_if(self, key: str, collection: str, updates: dict, conditions: Sequence[Cond], transaction: str | None = None, *,
+                                    unset: Sequence[str] = ()) -> bool:
         """``update_node_fields_if_match`` with the operators of ``Cond``, each as ``conditions.holds`` reads it: an absent or null field passes
         every operator but ``eq``; ``null_or_le`` passes only a stored number (a boolean or a string is never "not newer")."""
         check_conditions(conditions)
@@ -307,12 +320,13 @@ class CoreMixin(PgBase):
             # does not re-check against the row it then updates, so two writers holding the same counter would both apply.
             await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
             return await tx.fetchval("""/* pipeshub:graph.update_node_fields_if */ WITH u AS (UPDATE graph.nodes n
-            SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb)
+            SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each((n.doc || $4::jsonb) - $6::text[]) AS _nv WHERE _nv.value <> 'null'::jsonb)
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS c(f text, op text, v jsonb) WHERE NOT CASE
-                WHEN coalesce(n.doc->c.f, 'null'::jsonb) = 'null'::jsonb THEN c.op <> 'eq'
+                WHEN coalesce(n.doc->c.f, 'null'::jsonb) = 'null'::jsonb THEN c.op NOT IN ('eq', 'one_of')
                 WHEN c.op IN ('eq', 'null_or_eq') THEN n.doc->c.f = c.v
+                WHEN c.op = 'one_of' THEN jsonb_typeof(n.doc->c.f) = 'string' AND c.v ? (n.doc->>c.f)
                 WHEN c.op = 'null_or_le' THEN jsonb_typeof(n.doc->c.f) = 'number' AND (n.doc->c.f)::numeric <= c.v::numeric
-                ELSE false END) RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd), conds)
+                ELSE false END) RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd), conds, list(unset))
         return bool(await self._q(go, transaction, write=True))
 
     async def set_record_properties(self, key: str, *, values: dict[str, Any], previous_names: Collection[str], controls: dict[str, Any],

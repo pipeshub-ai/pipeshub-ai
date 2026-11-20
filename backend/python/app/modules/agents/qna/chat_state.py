@@ -394,11 +394,16 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
         configuration = resolved_config.get("configuration", {})
         if provider:
             others = resolved_config.get("providers")
+            from app.web.config import image_settings
+
             return {
                 "provider": provider,
                 "configuration": configuration if isinstance(configuration, dict) else {},
                 # The other stored providers: search fallbacks and page readers (`app.web.config`).
                 "providers": [p for p in others if isinstance(p, dict)] if isinstance(others, list) else [],
+                # "Send images to LLM": agent runs build their tools from this dict, not from the
+                # resolved config chat mode keeps, so without it they never send images.
+                "settings": image_settings(resolved_config.get("settings")),
             }
 
 

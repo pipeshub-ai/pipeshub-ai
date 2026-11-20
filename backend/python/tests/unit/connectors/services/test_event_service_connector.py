@@ -573,8 +573,8 @@ class TestEnsureConnector:
     async def test_exception(self, service):
         service.graph_provider.get_document = AsyncMock(side_effect=Exception("db fail"))
         with patch.object(service, "_get_connector", return_value=None):
-            result = await service._ensure_connector("gmail", "conn1")
-            assert result is None
+            with pytest.raises(Exception, match="db fail"):
+                await service._ensure_connector("gmail", "conn1")
 
 
 class TestGetOrInitConnector:
@@ -722,9 +722,12 @@ class TestHandleInit:
              patch("app.connectors.services.event_service.dispose_connector",
                    new_callable=AsyncMock) as dispose:
             mock_factory.create_connector = AsyncMock(return_value=mock_conn)
-            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+            if init.side_effect is None:
+                assert await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"}) is False
+            else:
+                with pytest.raises(OSError):
+                    await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
 
-        assert result is False
         dispose.assert_awaited_once_with(mock_conn)
 
     @pytest.mark.asyncio
@@ -750,9 +753,9 @@ class TestHandleInit:
              patch("app.connectors.services.event_service.dispose_connector",
                    new_callable=AsyncMock) as dispose:
             mock_factory.create_connector = AsyncMock(return_value=mock_conn)
-            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+            with pytest.raises(RuntimeError, match="cache"):
+                await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
 
-        assert result is False
         if inserted:
             dispose.assert_not_awaited()
         else:
@@ -1159,7 +1162,7 @@ class TestRunSyncTask:
         assert written[-1] == AppStatus.IDLE.value
 
     @pytest.mark.asyncio
-    async def test_status_write_failure_is_not_fatal(self):
+    async def test_an_unrecorded_start_stops_the_run(self):
         from app.connectors.core.sync.sync_runner import run_sync_task
 
         gp, logger = AsyncMock(), MagicMock()
@@ -1167,9 +1170,10 @@ class TestRunSyncTask:
         conn = AsyncMock()
         conn.run_sync = AsyncMock()
 
-        # A status write is bookkeeping; losing it must not fail the sync.
-        await run_sync_task(conn, "c1", gp, logger)
-        conn.run_sync.assert_awaited_once()
+        # A reindex sees a sync by its start time, so a run whose start is not recorded must not write.
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), pytest.raises(RuntimeError):
+            await run_sync_task(conn, "c1", gp, logger)
+        conn.run_sync.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cancellation_still_writes_idle(self):
@@ -1240,8 +1244,8 @@ class TestRunSyncTask:
 class TestHandleReindex:
     @pytest.mark.asyncio
     async def test_missing_org_id(self, service):
-        result = await service._handle_reindex("gmail", {"connectorId": "c1"})
-        assert result is False
+        with pytest.raises(NonRetryableError):
+            await service._handle_reindex("gmail", {"connectorId": "c1"})
 
     @pytest.mark.asyncio
     async def test_missing_connector_id(self, service):

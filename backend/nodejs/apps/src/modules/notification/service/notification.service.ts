@@ -7,6 +7,7 @@ import { classifyError } from '../../../libs/utils/error-class';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TYPES } from '../../../libs/types/container.types';
 import { findSessionRefusal } from '../../../libs/utils/user-session.utils';
+import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 
 interface CustomSocketData {
   userId: string;
@@ -349,6 +350,15 @@ export class NotificationService {
    * Returns true if sent immediately, false if queued or failed.
    */
   sendToUser(userId: string, event: string, data: any): boolean {
+    // A scheduled notification is never pushed and never queued for an offline user: a client sees it through its own
+    // list or stats, at or after `visibleAt`. Nothing delivers it later.
+    if (
+      event === 'newNotification' &&
+      isNotYetVisible((data as { visibleAt?: unknown } | undefined)?.visibleAt)
+    ) {
+      this.logger.debug('Scheduled notification not pushed', { userId, event });
+      return false;
+    }
     if (!this.io) {
       this.logger.warn('Socket.IO server not initialized, notification not sent', {
         userId,

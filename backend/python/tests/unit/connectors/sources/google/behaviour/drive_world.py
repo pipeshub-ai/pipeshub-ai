@@ -15,7 +15,8 @@ masks are honoured, so a connector only gets the fields it asked for.
 
 Knobs a test can turn: ``page_size`` (small by default, so every listing pages),
 ``empty_page_at`` (Drive may return an empty page that still has a next token),
-per-file ``perm_access`` ("all", "empty" or "forbidden") for permissions.list, and
+per-file ``perm_access`` ("all", "empty", "forbidden", or "sharers": the list for an owner or writer, 403 for
+anyone else) for permissions.list, and
 the HTTP layer's ``fail(...)`` for quota errors and outages.
 """
 
@@ -289,6 +290,8 @@ class DriveWorld:
         role = self.direct_role(meta["id"], email) or self.member_role(meta["id"], email)
         capabilities = dict(meta.get("capabilities") or {})
         capabilities["canEdit"] = role in ("owner", "organizer", "fileOrganizer", "writer")
+        # Who may change sharing (https://developers.google.com/workspace/drive/api/guides/ref-roles).
+        capabilities.setdefault("canShare", role in ("owner", "organizer", "fileOrganizer", "writer"))
         capabilities["canDownload"] = role is not None
         meta["capabilities"] = capabilities
         # Real Drive omits a parent the caller cannot open (an item shared on its own). Opt-in:
@@ -383,7 +386,11 @@ class DriveWorld:
         while pending:
             member = pending.pop()
             for group, data in self.groups.items():
-                if member in data["members"] and group not in found:
+                # A CUSTOMER member holds every user of the account's domain.
+                holds_domain = any(m.startswith("customer:") for m in data["members"]) and (
+                    member.rpartition("@")[2] == self.domain
+                )
+                if (member in data["members"] or holds_domain) and group not in found:
                     found.add(group)
                     pending.append(group)
         return found
@@ -484,6 +491,7 @@ class DriveWorld:
         r("GET", f"{ADMIN_API}/users/([^/]+)", self._admin_user)
         r("GET", f"{ADMIN_API}/groups", self._admin_groups)
         r("GET", f"{ADMIN_API}/groups/([^/]+)/members", self._admin_members)
+        r("GET", f"{ADMIN_API}/groups/([^/]+)", self._admin_group)
         r("GET", f"{ADMIN_API}/customer/([^/]+)/domains", self._admin_domains)
 
     def _caller(self, req: ApiRequest) -> str:
@@ -623,7 +631,10 @@ class DriveWorld:
             return google_error(404, "notFound")
         state = self.files[resource_id]
         role = self.direct_role(resource_id, email) or self.member_role(resource_id, email)
-        access = state.perm_access or ("all" if role in ("owner", "organizer", "fileOrganizer", "writer") else ("empty" if state.meta.get("driveId") else "all"))
+        sharer = role in ("owner", "organizer", "fileOrganizer", "writer")
+        access = state.perm_access or ("all" if sharer else ("empty" if state.meta.get("driveId") else "all"))
+        if access == "sharers":
+            access = "all" if sharer else "forbidden"
         if access == "forbidden":
             return google_error(403, "insufficientFilePermissions", "The user does not have sufficient permissions for this file.")
         if access == "empty":
@@ -786,6 +797,12 @@ class DriveWorld:
             })
         return {"domains": domains}
 
+    def _admin_group(self, req: ApiRequest) -> object:
+        if denied := self._admin_guard(req):
+            return denied
+        group = self.groups.get(req.path.split("/groups/")[1].split("/")[0])
+        return google_error(404, "notFound") if group is None else {"id": group["id"], "email": group["email"], "name": group["name"]}
+
     def _admin_members(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):
             return denied
@@ -800,7 +817,10 @@ class DriveWorld:
             # Like the directory, members of nested groups are listed alongside the direct ones.
             for email in emails:
                 emails.extend(m for m in self.groups.get(email, {}).get("members", []) if m not in emails)
+        # "customer:<id>" stands for a CUSTOMER member, every user of a domain, which carries no email
+        # (https://developers.google.com/workspace/admin/directory/reference/rest/v1/members).
         members = [
+            {"id": m.split(":", 1)[1], "type": "CUSTOMER", "role": "MEMBER"} if m.startswith("customer:") else
             {"id": self.users[m].user_id if m in self.users else f"ext-{m}", "email": m, "type": "GROUP" if m in self.groups else "USER", "role": "MEMBER"}
             for m in emails
         ]

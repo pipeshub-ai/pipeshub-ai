@@ -1298,7 +1298,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="auth-code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True
@@ -1383,7 +1383,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="auth-code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True
@@ -1594,7 +1594,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
         assert result["success"] is False
         assert "oauth_error=server_error" in result["redirect_url"]
@@ -1631,7 +1631,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": mock_startup}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", mock_startup.startup_service):
             result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True

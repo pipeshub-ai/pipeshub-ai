@@ -3913,20 +3913,29 @@ describe('AG-UI Protocol', () => {
       expect(res.write.called).to.be.false
     })
 
-    it('should fall back to the raw payload when RUN_FINISHED has no result field', () => {
+    it('should forward, not capture, a RUN_FINISHED that has no result field', () => {
       const res = createMockResponse()
-      const payload = { type: 'RUN_FINISHED', answer: 'direct' }
-      const chunk = Buffer.from(`event: RUN_FINISHED\ndata: ${JSON.stringify(payload)}\n\n`)
-      let capturedData: any = null
+      const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', answer: 'direct' })}\n\n`
+      const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(
-        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
-      )
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
-      expect(capturedData).to.deep.equal(payload)
+      expect(onComplete.called).to.be.false
+      expect(res.write.calledOnceWithExactly(text)).to.be.true
     })
 
-    it('should forward RUN_FINISHED when its data fails to parse', () => {
+    it("should forward, not capture, a sub-agent's RUN_FINISHED even when it carries a result", () => {
+      const res = createMockResponse()
+      const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', runId: 'child', parentRunId: 'root', result: { answer: 'x' } })}\n\n`
+      const onComplete = sinon.stub()
+
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
+
+      expect(onComplete.called).to.be.false
+      expect(res.write.calledOnceWithExactly(text)).to.be.true
+    })
+
+    it('should neither capture nor forward a RUN_FINISHED whose data fails to parse', () => {
       const res = createMockResponse()
       const chunk = Buffer.from('event: RUN_FINISHED\ndata: {invalid json}\n\n')
       const onComplete = sinon.stub()
@@ -3934,7 +3943,7 @@ describe('AG-UI Protocol', () => {
       handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
-      expect(res.write.calledOnce).to.be.true
+      expect(res.write.called).to.be.false
     })
 
     it('should replace the message with the error and forward RUN_ERROR', () => {

@@ -225,7 +225,11 @@ def _resolve_live_spec(spec: LiveProviderSpec) -> Optional[tuple[str, str, Dict[
 # key is in the repository's integration-test environment - and take one out
 # when the workflow stops passing it, or the nightly starts demanding a key
 # nobody is paying for.
-_PROVIDERS_CI_MUST_COVER = frozenset({_PROVIDER_AZURE_OPENAI})
+def _providers_ci_must_cover() -> frozenset[str]:
+    """The provider TEST_AI_MODEL_PROVIDER names (the workflows default it to
+    openAI). CI passes every provider's key, so the choice lives in that one
+    variable rather than in which secrets a job happens to receive."""
+    return frozenset({_env("TEST_AI_MODEL_PROVIDER") or _PROVIDER_OPENAI})
 
 
 def _spec_for_a_live_provider() -> LiveProviderSpec:
@@ -234,12 +238,16 @@ def _spec_for_a_live_provider() -> LiveProviderSpec:
     Some tests need *a* live provider to reach a backend path - an unknown model
     key, a model type that does not match the route. Which provider is
     incidental, so pinning them to OpenAI tied them to a key the run may no
-    longer carry. The run's own provider is preferred; failing that, the first
-    one that resolves; failing that, the provider the run was meant to cover, so
-    the usual skip-or-fail decision is what reports it.
+    longer carry. A run that names its provider (TEST_AI_MODEL_PROVIDER, as CI
+    always does) gets that one, so a missing key fails rather than another
+    provider's (possibly dead) key being tried. Otherwise the first that
+    resolves; failing that, the provider the run was meant to cover, so the
+    usual skip-or-fail decision is what reports it.
     """
     specs = _live_provider_specs()
-    preferred = [s for s in specs if s.provider_id in _PROVIDERS_CI_MUST_COVER]
+    preferred = [s for s in specs if s.provider_id in _providers_ci_must_cover()]
+    if _env("TEST_AI_MODEL_PROVIDER") and preferred:
+        return preferred[0]
     for spec in [*preferred, *specs]:
         if _resolve_live_spec(spec) is not None:
             return spec
@@ -247,13 +255,19 @@ def _spec_for_a_live_provider() -> LiveProviderSpec:
 
 
 def _skip_if_no_live_credentials(spec: LiveProviderSpec) -> tuple[str, str, Dict[str, Any]]:
+    # A run that names its provider uses only that one: the other provider's key
+    # is passed too (so switching is one variable), but may belong to an account
+    # nobody is paying for.
+    forced = _env("TEST_AI_MODEL_PROVIDER")
+    if forced and spec.provider_id != forced:
+        pytest.skip(f"{spec.provider_id}: this run's provider is {forced} (TEST_AI_MODEL_PROVIDER)")
     resolved = _resolve_live_spec(spec)
     if resolved is None:
         missing = [spec.api_key_env, *spec.required_env]
         source_unavailable(
             f"{spec.provider_id}: no live credentials{spec.skip_reason_extra}",
             secrets=missing,
-            required=secrets_required() and spec.provider_id in _PROVIDERS_CI_MUST_COVER,
+            required=secrets_required() and spec.provider_id in _providers_ci_must_cover(),
         )
     _, model, configuration = resolved
     return spec.provider_id, model, configuration
@@ -600,6 +614,9 @@ class TestAddAIModelProviderAzureFields(AIModelsTestBase):
     """Azure OpenAI requires endpoint, apiKey, deploymentName per registry."""
 
     def test_azure_missing_deployment_rejected_at_health_check(self) -> None:
+        forced = _env("TEST_AI_MODEL_PROVIDER")
+        if forced and forced != _PROVIDER_AZURE_OPENAI:
+            pytest.skip(f"{_PROVIDER_AZURE_OPENAI}: this run's provider is {forced} (TEST_AI_MODEL_PROVIDER)")
         api_key = _env("TEST_AZURE_OPENAI_API_KEY")
         endpoint = _env("TEST_AZURE_OPENAI_ENDPOINT")
         if not api_key or not endpoint:

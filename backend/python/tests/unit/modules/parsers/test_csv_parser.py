@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.modules.parsers.csv.csv_parser import CSVParser
+from tests.support.table_model import keyed_answer
 
 
 @pytest.fixture
@@ -997,15 +998,14 @@ class TestGetRowsText:
     @pytest.mark.asyncio
     async def test_single_batch(self, parser):
         """Single batch of rows processed."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
-        mock_response = MagicMock()
-        mock_response.descriptions = ["Alice is 30 years old.", "Bob is 25 years old."]
+        async def answer(_llm, messages, *_a, **_k) -> object:
+            return keyed_answer(messages, ["Alice is 30 years old.", "Bob is 25 years old."])
 
         with patch(
-            "app.modules.parsers.csv.csv_parser.invoke_with_row_descriptions_and_reflection",
-            new_callable=AsyncMock,
-            return_value=mock_response,
+            "app.utils.table_enrichment.invoke_with_structured_output_and_reflection",
+            side_effect=answer,
         ):
             mock_llm = AsyncMock()
             rows = [{"Name": "Alice", "Age": 30}, {"Name": "Bob", "Age": 25}]
@@ -1016,18 +1016,16 @@ class TestGetRowsText:
     @pytest.mark.asyncio
     async def test_multiple_batches(self, parser):
         """Rows split into multiple batches."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         call_count = [0]
 
-        async def mock_invoke(llm, messages, expected_count):
+        async def mock_invoke(llm, messages, schema, *_args, **_kwargs):
             call_count[0] += 1
-            response = MagicMock()
-            response.descriptions = [f"Row {i}" for i in range(expected_count)]
-            return response
+            return keyed_answer(messages, lambda i, _row: f"Row {i}")
 
         with patch(
-            "app.modules.parsers.csv.csv_parser.invoke_with_row_descriptions_and_reflection",
+            "app.utils.table_enrichment.invoke_with_structured_output_and_reflection",
             side_effect=mock_invoke,
         ):
             mock_llm = AsyncMock()
@@ -1042,7 +1040,7 @@ class TestGetRowsText:
         from unittest.mock import AsyncMock, patch
 
         with patch(
-            "app.modules.parsers.csv.csv_parser.invoke_with_row_descriptions_and_reflection",
+            "app.utils.table_enrichment.invoke_with_structured_output_and_reflection",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -1487,7 +1485,7 @@ class TestGetBlocksFromCsvDeep:
 
         get_rows_calls = []
 
-        async def mock_get_rows_text(llm, rows, summary, batch_size=50):
+        async def mock_get_rows_text(llm, rows, summary, batch_size=50, **_kwargs):
             get_rows_calls.append(len(rows))
             return [f"text{i}" for i in range(len(rows))]
 
@@ -1495,7 +1493,15 @@ class TestGetBlocksFromCsvDeep:
             with patch.object(parser, "get_table_summary", new_callable=AsyncMock, return_value="S"):
                 with patch.object(parser, "get_rows_text", side_effect=mock_get_rows_text):
                     with patch.dict("os.environ", {"MAX_TABLE_ROWS_FOR_LLM": "4"}):
-                        result = await parser.get_blocks_from_csv_with_multiple_tables(tables, AsyncMock())
+                        import logging
+
+                        from app.utils.indexing_metrics import track_indexing_enrichment
+
+                        with track_indexing_enrichment(logging.getLogger("t")) as counters:
+                            result = await parser.get_blocks_from_csv_with_multiple_tables(tables, AsyncMock())
+                        # The second table (3 rows) is over the cutoff: counted apart, not degraded
+                        assert counters.rows_over_row_budget == 3
+                        assert counters.degraded_rows == 0
                         # Total 6 blocks across 2 tables
                         assert len(result.blocks) == 6
                         # First table (3 rows) is under threshold, so LLM is used

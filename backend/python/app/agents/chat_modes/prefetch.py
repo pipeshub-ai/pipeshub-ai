@@ -62,6 +62,7 @@ _FILTER_REFUSED_STATUS_CODE = 422
 _SEARCH_FAILED_STATUSES = frozenset({
     Status.ERROR.value,
     Status.SEARCH_INDEX_UNAVAILABLE.value,
+    Status.EMBEDDING_OUT_OF_CREDIT.value,
     Status.PERMISSION_CHECK_UNAVAILABLE.value,
     Status.VECTOR_DB_NOT_READY.value,
 })

@@ -96,22 +96,28 @@ class RecordsMixin(PgBase):
         except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.error("Get record by external ID failed: %s", e)
             raise GraphQueryError(f"Could not look up record {external_id}: {e}") from e
 
-    async def get_record_by_id(self, record_id: str, transaction: str | None = None) -> Any:  # noqa: ANN401
-        """The typed record (with its type document); None when absent or when it will not build, as the Neo4j provider answers."""
+    async def get_record_by_id(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        """The typed record (with its type document); None when absent or when it will not build, as the Neo4j provider answers.
+        ``raise_on_error`` propagates a failed read instead of answering None."""
         org = current_org_id()
         try:
             r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_record_by_id */ SELECT r.doc AS rec, ty.doc AS typ FROM graph.nodes r
                 LEFT JOIN LATERAL (SELECT t.doc FROM graph.edges e JOIN graph.nodes t ON t.org_id = e.org_id AND t.coll = e.to_coll AND t.id = e.to_id
                     WHERE e.org_id = r.org_id AND e.coll = 'isOfType' AND e.from_coll = 'records' AND e.from_id = r.id LIMIT 1) ty ON true
                 WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2""", org, record_id), transaction)
-            if not r:
-                return None
-            return typed_record(_rec(r["rec"]), _arango(_doc(r["typ"]), "") if r["typ"] else None)
         except Exception as e:
-            self.logger.error("Failed to retrieve record for id %s: %s", record_id, e)
+            if raise_on_error:  # raised before logging, as get_record_by_external_id: the caller that handles it logs it once
+                raise
+            self.logger.error("Failed to retrieve record for id %s: %s", record_id, type(e).__name__)
+            return None
+        if not r:
+            return None
+        try:
+            return typed_record(_rec(r["rec"]), _arango(_doc(r["typ"]), "") if r["typ"] else None)
+        except Exception as e:  # the builder's error quotes the whole type document
+            self.logger.error("Failed to build record %s: %s", record_id, type(e).__name__)
             return None
 
     async def get_records_by_virtual_record_id(self, virtual_record_id: str, accessible_record_ids: list[str] | None = None, transaction: str | None = None,
@@ -121,7 +127,7 @@ class RecordsMixin(PgBase):
         org = current_org_id()
         try:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_records_by_virtual_record_id */ SELECT n.id FROM graph.nodes n
-                WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = $2
+                WHERE n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = $2 OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = $2 AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED')))
                 AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2))
                 AND ($3::text[] IS NULL OR n.id = ANY($3::text[]))""",
                                                       org, virtual_record_id, list(accessible_record_ids) if accessible_record_ids is not None else None, _vis(visibility)),
@@ -241,8 +247,9 @@ class RecordsMixin(PgBase):
         wanted = _uniq(virtual_record_ids)
         if not wanted:
             return set()
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_ids_in_use */ SELECT DISTINCT n.doc->>'virtualRecordId' AS v FROM graph.nodes n
-            WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY($2::text[])
+        # One row per matched id: a record that holds a vrid through its pending field is reported under that id, not under its committed one.
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_ids_in_use */ SELECT DISTINCT w.v FROM unnest($2::text[]) AS w(v)
+            JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = w.v OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = w.v AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED')))
             AND ($3::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($3::int = 2))""", org, wanted, _vis(visibility)), transaction)
         return {r["v"] for r in rows}
 
@@ -252,10 +259,10 @@ class RecordsMixin(PgBase):
         wanted = _uniq(virtual_record_ids)
         if not wanted or org_id != org:
             return {}
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_holders */ SELECT n.doc->>'virtualRecordId' AS v, jsonb_build_object('id', n.id,
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_virtual_record_holders */ SELECT w.v AS v, jsonb_build_object('id', n.id,
               'connectorId', n.doc->'connectorId', 'connectorName', n.doc->'connectorName', 'recordGroupId', n.doc->'recordGroupId', 'recordName', n.doc->'recordName',
               'webUrl', n.doc->'webUrl', 'contentRev', n.doc->'contentRev', 'isDeleted', coalesce(n.doc->'isDeleted' = 'true'::jsonb, false)) AS h
-            FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY($2::text[]) ORDER BY n.id""", org, wanted), transaction)
+            FROM unnest($2::text[]) AS w(v) JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'virtualRecordId' = w.v OR (n.doc ? 'pendingVirtualRecordId' AND n.doc->>'pendingVirtualRecordId' = w.v AND n.doc->>'indexingStatus' IN ('IN_PROGRESS', 'QUEUED', 'NOT_STARTED'))) ORDER BY n.id""", org, wanted), transaction)
         holders: dict[str, list[dict]] = {}
         for r in rows:
             holders.setdefault(r["v"], []).append(_doc(r["h"]))
@@ -436,7 +443,6 @@ class RecordsMixin(PgBase):
         try:
             await self._q(go, transaction, write=True)
         except Exception:
-            self.logger.exception("Upsert sync point failed")
             raise
         return True
 

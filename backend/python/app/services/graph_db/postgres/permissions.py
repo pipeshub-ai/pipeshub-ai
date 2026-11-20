@@ -25,7 +25,9 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.identity import _AGENT_CAN, _soft
+from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
+from app.services.graph_db.postgres.kh_listing import UNDECIDED_MAX, class_sets
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -307,6 +309,26 @@ class PermissionsMixin(PgBase):
               AND p.to_coll IN ('records', 'recordGroups', 'groups', 'roles')
               AND n.org_id = p.org_id AND n.coll = p.to_coll AND n.id = p.to_id AND n.doc->>'connectorId' = $3
             RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), user_id, connector_id), transaction, write=True) or 0
+
+    async def remove_unlinked_user_access_to_connector(self, connector_id: str, transaction: str | None = None) -> int:
+        """Every user's own PERMISSION edges to the connector's records, record groups, user groups and roles go when the user has no
+        userAppRelation edge to the connector, checked in the same statement. Returns how many went."""
+        return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.remove_unlinked_user_access_to_connector */ WITH gone AS (
+            DELETE FROM graph.edges p USING graph.nodes n
+            WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users'
+              AND p.to_coll IN ('records', 'recordGroups', 'groups', 'roles')
+              AND n.org_id = p.org_id AND n.coll = p.to_coll AND n.id = p.to_id AND n.doc->>'connectorId' = $2
+              AND NOT EXISTS (SELECT 1 FROM graph.edges l WHERE l.org_id = p.org_id AND l.coll = 'userAppRelation'
+                              AND l.from_coll = 'users' AND l.from_id = p.from_id AND l.to_coll = 'apps' AND l.to_id = $2)
+            RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), connector_id), transaction, write=True) or 0
+
+    async def get_user_granted_records(self, connector_id: str, user_id: str, transaction: str | None = None) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on; grants held by a group, a team or the organization are not included."""
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_granted_records */ SELECT DISTINCT n.id, n.doc->>'externalRecordId' AS ext,
+            n.doc->>'recordType' AS rtype FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = 'records' AND n.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'records'
+              AND n.doc->>'connectorId' = $3""", current_org_id(), user_id, connector_id), transaction)
+        return [{"id": r["id"], "externalRecordId": r["ext"], "recordType": r["rtype"]} for r in rows]
 
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
@@ -693,7 +715,7 @@ class PermissionsMixin(PgBase):
                   AND m.coll IN ('departments', 'categories', 'subcategories1', 'subcategories2', 'subcategories3', 'topics', 'languages')""", org, record_id)
             return best, meta
         best, meta = await self._q(go, transaction)
-        extra = await self.get_document(record_id, type_coll, transaction) if type_coll else None
+        extra = await self.get_document(record_id, type_coll, transaction, raise_on_error=True) if type_coll else None
         email, connector_name = (user or {}).get("email"), record.get("connectorName")
         if extra and extra.get("webUrl"):
             extra["webUrl"] = substitute_user_email(extra["webUrl"], email, connector_name)
@@ -706,7 +728,7 @@ class PermissionsMixin(PgBase):
                          "migrated": ed.get("migratedFrom") is not None}
             labels[m["mcoll"]].append(item)
         kb_info = None
-        app = await self.get_document(record.get("connectorId"), "apps", transaction) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
+        app = await self.get_document(record.get("connectorId"), "apps", transaction, raise_on_error=True) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
         if app and app.get("type") == _KB_TYPE and await self.get_user_kb_permission(app["id"], user_key, transaction=transaction):
             kb_info = {"id": app["id"], "name": app.get("name"), "orgId": org}
         role, source = best if best else ("READER", "CONNECTOR")      # a connector item carries no role; what the check admitted is read access
@@ -777,7 +799,11 @@ class PermissionsMixin(PgBase):
                       AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
                     ORDER BY r.id""".replace("{cols}", _CANDIDATE_COLUMNS), org, wide, kbs, *scope)) if wide or kbs else []
                 have = {r["id"] for r in rows}
-                reached, below = await access_sql.reachable_records(tx, org, access, sorted(level)) if level else (set(), {})
+                by_class, walked_apps = await _kg_admitted(tx, org, sorted(level), access)
+                reached, below = await access_sql.reachable_records(tx, org, access, walked_apps) if walked_apps else (set(), {})
+                for a, (sure, undecided) in by_class.items():
+                    below[a] = sure      # admitted by its class in this snapshot: what the access check answers for it
+                    reached |= sure | undecided
                 # shortcut: the set path reads a whole app (every child, every membership), so it runs only for an app that more than a chunk of the
                 # candidates come from and that is at most twice the size of them; a narrow search of a big app keeps the per-record check. Upgrade: a count
                 # per app that does not scan its index.
@@ -812,7 +838,8 @@ class PermissionsMixin(PgBase):
                     "/* pipeshub:graph.accessible_members */ SELECT from_id, to_id FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo' AND from_coll = 'records'"
                     " AND to_coll = 'apps' AND to_id = ANY($2::text[])", org, whole)} if whole else set()
                 return sorted(rows, key=lambda r: r["id"]), below, members
-            kept, below, members = await self._q(candidates, None)
+            # one snapshot: what kg admits by class is read with the currency check that lets it answer
+            kept, below, members = await self._db.run(candidates, isolation="repeatable_read", custom_plan=True, jobs=current_or_system().kind == "system")
             # What the arms of the access check admit in a set (a member of a collection or of an app that opens everything; a record the walk down from
             # its own app takes) is admitted here; the rest, which only a grant, a declared group or a seed can open, is checked one chunk at a time.
             ok = {c["id"] for c in kept if c["plain"] and ((c["id"], c["app"]) in members or c["id"] in below.get(c["app"], ()))}
@@ -830,3 +857,32 @@ class PermissionsMixin(PgBase):
             if raise_on_error:
                 raise
             return {}
+
+
+# The records of a connector kg serves that a viewer's classes admit (as kg.listing.count_sql reads them): stamped, not hidden, of no class kg cannot vouch for ($3), and of
+# a class the viewer's grants meet with no grant of the record's own ($4) or one that needs the record's own grant ($5, $6).
+_KG_ADMITTED = f"""/* pipeshub:kg.accessible_records */ SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND r.kind = 3 AND {kgl.LIVE} AND {kgl.DECIDED}
+    AND NOT r.class_id = ANY($3::bigint[]) AND (r.class_id = ANY($4::bigint[]) OR (r.class_id = ANY($5::bigint[]) AND r.id = ANY($6::text[])))"""
+
+
+async def _kg_admitted(tx: Tx, org: str, apps: list[str], access: dict[str, Any]) -> tuple[dict[str, tuple[set[str], set[str]]], list[str]]:
+    """For each record-level connector kg serves in this snapshot: the records its classes admit, and the few rows no class decides (the access check's). Every other
+    connector, and one with more undecided rows or classes than a listing evaluates, is left to the walk (the second value)."""
+    if not kg_read.enabled() or current_or_system().kind == "system":
+        return {}, apps
+    held = {g for ids in access["by_connector"].values() for g in ids}
+    out: dict[str, tuple[set[str], set[str]]] = {}
+    rest: list[str] = []
+    for a in apps:
+        sk = await tx.fetchval(kgl.APP_KEY, org, a) if await kg_read.serves(tx, org, a) else None
+        sets = await class_sets(tx, org, sk, held) if sk is not None else None
+        unvouched = sorted(sets["unvouched"]) if sets is not None else []
+        q = kgl.Params([org, sk, UNDECIDED_MAX + 1])
+        undecided = [r["id"] for r in await tx.fetch(kgl.undecided_sql("", q.add(unvouched)), *q.values)] if sets is not None else None
+        if undecided is None or len(undecided) > UNDECIDED_MAX:
+            rest.append(a)
+            continue
+        own = sorted(access["by_connector"].get(a) or [])
+        admitted = await tx.fetch(_KG_ADMITTED, org, sk, unvouched, sorted(sets["plain"]), sorted(sets["own"]), own)
+        out[a] = ({r["id"] for r in admitted}, set(undecided))
+    return out, rest

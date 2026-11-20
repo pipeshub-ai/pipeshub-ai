@@ -3134,7 +3134,7 @@ class TestPeopleWhoLostAccess:
         await connector._sync_users()
         await connector._withdraw_people_without_access()
 
-        processor.withdraw_app_user_access.assert_awaited_once_with("conn-1", [disabled, removed])
+        processor.withdraw_app_user_access.assert_awaited_once_with("conn-1", [disabled, removed], drop_grants=True)
 
     @pytest.mark.asyncio
     async def test_an_address_an_enabled_account_also_uses_keeps_access(

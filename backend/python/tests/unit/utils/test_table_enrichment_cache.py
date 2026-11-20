@@ -13,7 +13,8 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.prompt_template import (
     CSVHeaderDetection,
     ExcelHeaderDetection,
-    RowDescriptions,
+    KeyedRowDescription,
+    KeyedRowDescriptions,
     TableEnrichment,
     TableHeaders,
 )
@@ -21,6 +22,7 @@ from app.services.paid_cache.access import set_ambient_cache
 from app.services.paid_cache.cache import PaidResultCache
 from app.utils import table_enrichment
 from tests.support.paid_cache import CountingModel, MemoryResultStore, record_in_flight
+from tests.support.table_model import keyed_rows
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -46,12 +48,13 @@ class _Calls:
 
 
 def _patch_first_call(monkeypatch: pytest.MonkeyPatch, calls: _Calls, *, count: int = 3, **extra: Any) -> None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
-    async def fake(llm: object, messages: list, model: type, field: str, expected: int, *_a: object) -> TableEnrichment:
+    async def fake(llm: object, messages: list, model: type, *_a: object, **_k: object) -> TableEnrichment:
         calls.n += 1
         return TableEnrichment(summary="Parts", headers=["name", "qty"], header_row_count=0,
-                               descriptions=["d"] * count, **extra)
+                               descriptions=[KeyedRowDescription(key=key, description="d") for key, _row in keyed_rows(messages)[:count]],
+                               **extra)
 
-    monkeypatch.setattr(table_enrichment, "invoke_with_count_validation_and_reflection", fake)
+    monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", fake)
 
 
 async def test_a_tables_first_call_is_reused_by_a_retry(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,7 +87,7 @@ async def test_another_tables_rows_or_another_record_pay_for_their_own(
 
 async def test_a_degraded_answer_is_not_stored(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _Calls()
-    _patch_first_call(monkeypatch, calls, count=1)      # fewer descriptions than rows: the count check fails
+    _patch_first_call(monkeypatch, calls, count=1)      # fewer descriptions than rows: the answer is incomplete
     llm = CountingModel("indexing")
     with record_in_flight(ORG, REC):
         await table_enrichment.enrich_table_grid(llm, GRID, logger=LOG, known_header_row_count=1)
@@ -101,7 +104,7 @@ async def test_a_failed_call_is_not_stored_and_is_paid_again(store: MemoryResult
         attempts.n += 1
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr(table_enrichment, "invoke_with_count_validation_and_reflection", failing)
+    monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", failing)
     llm = CountingModel("indexing")
     with record_in_flight(ORG, REC):
         for _ in range(2):
@@ -114,9 +117,11 @@ async def test_a_failed_call_is_not_stored_and_is_paid_again(store: MemoryResult
 async def test_row_batches_are_cached_one_by_one(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _Calls()
 
-    async def rows(llm: object, messages: list, model: type) -> RowDescriptions:
+    async def rows(llm: object, messages: list, model: type, *_a: object, **_k: object) -> KeyedRowDescriptions:
         calls.n += 1
-        return RowDescriptions(descriptions=["row"] * (len(messages[-1].content.split("\n")) and 2))
+        return KeyedRowDescriptions(descriptions=[
+            KeyedRowDescription(key=key, description="row") for key, _row in keyed_rows(messages)
+        ])
 
     monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", rows)
     llm = CountingModel("indexing")
@@ -209,9 +214,11 @@ async def test_a_stored_value_that_no_longer_decodes_is_a_miss_that_is_replaced(
 
     calls = _Calls()
 
-    async def rows(llm: object, messages: list, model: type) -> RowDescriptions:
+    async def rows(llm: object, messages: list, model: type, *_a: object, **_k: object) -> KeyedRowDescriptions:
         calls.n += 1
-        return RowDescriptions(descriptions=["row one", "row two"])
+        return KeyedRowDescriptions(descriptions=[
+            KeyedRowDescription(key=key, description=f"row {n}") for n, (key, _row) in enumerate(keyed_rows(messages), 1)
+        ])
 
     monkeypatch.setattr(table_enrichment, "invoke_with_structured_output_and_reflection", rows)
     llm = CountingModel("indexing")
@@ -227,7 +234,8 @@ async def test_a_stored_value_that_no_longer_decodes_is_a_miss_that_is_replaced(
 
     assert calls.n == 2                      # the bad object was a miss, paid once, and replaced
     assert second == third
-    assert json.loads(store.files[(ORG, REC, path)][0])["value"]["descriptions"] == ["row one", "row two"]
+    stored = json.loads(store.files[(ORG, REC, path)][0])["value"]["descriptions"]
+    assert [d["description"] for d in stored] == ["row 1", "row 2"] and all("key" in d for d in stored)
 
 
 async def test_csv_header_detection_and_generation_are_cached(store: MemoryResultStore, monkeypatch: pytest.MonkeyPatch) -> None:

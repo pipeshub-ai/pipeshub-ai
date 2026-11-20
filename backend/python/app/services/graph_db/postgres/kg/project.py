@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Rows with a value a kg writer refuses (a node written without it, a grant left out), and their connector taken off the readers", ["coll"])
+TRASH_HELD = "/* pipeshub:kg.trash_held */ SELECT sk, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 
 
 @dataclass
@@ -207,6 +208,7 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     st.apps = locked - {""}
     st.wide = org_wide
     leaf_only: set[Key] = set()
+    logged_apps = {k for k in focus if k[0] == "apps"}
     if expand_neighbours:
         focus = await _expanded(tx, org, focus)
         while True:
@@ -254,12 +256,16 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
         raise NeedLocks(set(), wide=True)
     st.focus = len(every)
-    st.keys = set(focus)
+    st.keys = {k for k in focus if k[0] != "apps" or k in logged_apps}       # an app only the expansion brought in is not restamped (below): a change of its own waits for its own projection
     cur_links, cur_grants, cur_closure = await current(tx, org, d)
 
     if d.records:
         await w.records_upsert([{"sk": sk, **cols} for sk, cols in sorted(d.records.items())])
         await w.listing_set([(sk, c["coll"], c["id"], c["kind"], c["folder"], c["hide_children"], c["alien"], c["name_sort"]) for sk, c in sorted(d.records.items())])
+        # Only the rows whose trash columns change: a live record (both NULL) is no further tuple to write, nor a statement for the counters' trigger.
+        held = {r["sk"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch(TRASH_HELD, org, sorted(d.records))}
+        await w.trash_set([(sk, c["coll"], c["id"], c["kind"], c["deleted_ms"], c["delete_batch"]) for sk, c in sorted(d.records.items())
+                           if held.get(sk, (None, None)) != (c["deleted_ms"], c["delete_batch"])])
         st.records = len(d.records)
     if d.gone:
         st.records_deleted = await w.records_delete(sorted(d.gone))
@@ -302,7 +308,10 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
         await w.closure_set(new_c)
     st.closure = len(drop_c) + len(new_c)
     if stamps:      # after the structural rows: a stamp reads the rows of its parents and groups from kg. ``stamps=False`` is the backfill, which restamps a connector whole once it has copied it.
-        st.stamps = await stamp(tx, org, {k for k in focus if k[0] in RECORD_COLLS}, also=leaf_only, locked=locked, org_wide=org_wide)
+        # An app among the seeds is restamped whole. One that only the expansion brought in (a principal linked to it or granted on it is in the focus, as for any membership)
+        # changed no stamp: no stamp reads who links to an app, and what records' stamps do read of their app (its facts) is compared whenever one of them is stamped.
+        seeds = {k for k in focus if k[0] in RECORD_COLLS and (k[0] != "apps" or k in logged_apps)}
+        st.stamps = await stamp(tx, org, seeds, also=leaf_only, locked=locked, org_wide=org_wide)
     return st
 
 

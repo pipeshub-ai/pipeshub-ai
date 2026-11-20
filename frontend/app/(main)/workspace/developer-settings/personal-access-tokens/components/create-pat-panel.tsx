@@ -19,6 +19,7 @@ import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { PatApi } from '../api';
 import type { PatExpiryOption, PatScopeItem } from '../types';
 import { defaultPatScopes } from '../default-scopes';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 // ========================================
 // Constants
@@ -294,10 +295,10 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
                 {t('workspace.personalAccessTokens.create.tokenLabel')}
               </Text>
               <Flex align="center" gap="2" style={{ width: '100%' }}>
-                <TextField.Root
+                <SecretTextField
                   size="2"
                   readOnly
-                  type={showToken ? 'text' : 'password'}
+                  masked={!showToken}
                   value={createdToken.accessToken}
                   style={{ flex: 1, minWidth: 0, ...CREDENTIAL_MONO }}
                 />

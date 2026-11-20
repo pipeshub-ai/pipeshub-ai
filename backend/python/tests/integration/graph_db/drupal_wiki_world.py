@@ -37,6 +37,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.drupal_wiki.connector import DrupalWikiConnector
 from app.models.entities import (
     AppUser,
+    AppUserGroup,
     RecordGroup,
     RecordGroupType,
     RecordType,
@@ -277,6 +278,41 @@ async def a_disabled_reader_loses_every_space_until_enabled_again(world: DrupalW
     world.wiki.users[2]["status"] = "ENABLED"
     await world.sync()
     await world.check("bob enabled again")
+
+
+async def a_reader_enabled_again_gets_only_what_the_wiki_shows_now(world: DrupalWorld) -> None:
+    """A withdrawn person's own grants go with the connector: a membership of a group the wiki deleted (the group pass
+    leaves it in place) and a grant an earlier sync left on a page no run writes again. Kept, they would come back
+    with the link when the person is enabled again, whatever the wiki shows them then."""
+    world.wiki.pages[SUB_PAGE]["modified"] = 500  # older than its space's checkpoint: kept as stored, not written again
+    await world.sync()
+    sub_page = await world.processor.get_record_by_external_id(world.connector_id, f"page:{SUB_PAGE}")
+    bob = next(u for u in await world.processor.get_all_app_users(world.connector_id) if u.email == BOB)
+    await world.processor.on_new_user_groups([(AppUserGroup(
+        app_name=Connectors.DRUPAL_WIKI, connector_id=world.connector_id, org_id=world.org_id,
+        source_user_group_id="7", name="Deleted group"), [bob])])
+    async with world.processor.data_store_provider.transaction() as tx:
+        group = await tx.get_user_group_by_external_id(connector_id=world.connector_id, external_id="7")
+        await tx.batch_create_edges([Permission(type=PermissionType.READ, entity_type=EntityType.USER).to_arango_permission(
+            bob.id, CollectionNames.USERS.value, sub_page.id, CollectionNames.RECORDS.value,
+        )], collection=CollectionNames.PERMISSION.value)
+
+    async def held() -> dict[str, bool]:
+        async with world.processor.data_store_provider.transaction() as tx:
+            return {name: await tx.get_edge(bob.id, CollectionNames.USERS.value, to, collection,
+                                            CollectionNames.PERMISSION.value, raise_on_error=True) is not None
+                    for name, to, collection in (("group", group.id, CollectionNames.GROUPS.value),
+                                                 ("page", sub_page.id, CollectionNames.RECORDS.value))}
+
+    assert await held() == {"group": True, "page": True}, "control: bob holds both"
+    world.wiki.users[2]["status"] = "DISABLED"
+    await world.sync()
+    await world.check("bob disabled")
+    assert await held() == {"group": False, "page": False}, "bob's own grants must go with the connector"
+    world.wiki.users[2]["status"] = "ENABLED"
+    await world.sync()
+    await world.check("bob enabled again")
+    assert await held() == {"group": False, "page": False}, "only what the wiki shows comes back"
 
 
 async def a_deleted_page_goes_on_the_next_sync(world: DrupalWorld) -> None:

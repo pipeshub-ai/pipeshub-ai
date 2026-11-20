@@ -22,11 +22,14 @@ payload.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.core.messages import ImagePart, TextPart
 from app.agent_loop_lib.core.types import Source
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agents.actions.util.tool_summaries import parse_json_maybe
+from app.agents.agent_loop.image_parts import admitted_image_parts
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
 from app.utils.tool_handlers import ToolHandlerRegistry
 from app.web.tools.views import web_view
@@ -34,6 +37,7 @@ from app.web.tools.views import web_view
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool
 
+    from app.agent_loop_lib.core.messages import Part
     from app.agent_loop_lib.core.types import ToolResult
     from app.agents.agent_loop.context import AgentContext
 
@@ -94,6 +98,9 @@ _WEB_TOOL_SHORT_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+ImageLoader = Callable[[list[str]], Awaitable[list[str | None]]]
+
+
 class WebToolAdapter(PipesHubStructuredToolAdapter):
     """Wraps the dynamic `web_search`/`fetch_url` `StructuredTool`s so their
     output is rendered through `ToolHandlerRegistry.format_message` before
@@ -105,15 +112,25 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
         app_name: str,
         tool_name: str,
         context: "AgentContext",
+        *,
+        image_loader: "ImageLoader | None" = None,
+        max_images: int = 0,
     ) -> None:
+        """``image_loader`` (``fetch_url`` only, when an admin has web images turned on) reads
+        up to ``max_images`` of a page's images as ``data:`` URIs; each failed one is None."""
         super().__init__(structured_tool, app_name, tool_name)
         self._context = context
+        self._image_loader = image_loader
+        self._max_images = max_images
         # The card's view of each call, by the text the call returned: by the time the loop asks
         # for a view, the result holds the text sent to the model, not the tool's payload.
         self._views: dict[str, dict[str, Any]] = {}
 
     def result_view(self, args: dict[str, Any], result: "ToolResult") -> dict[str, Any] | None:
         content = result.content
+        if isinstance(content, list):
+            # A page sent with its images: the view is keyed by the page's text.
+            content = next((part.text for part in content if isinstance(part, TextPart)), None)
         return self._views.pop(content, None) if isinstance(content, str) else None
 
     @property
@@ -150,10 +167,6 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
         records = handler.extract_records(payload, org_id=self._context.org_id)
         accumulate_web_records(tool_state, records)
 
-        # Images are dropped here (not yet supported): agent_loop_lib's
-        # `ToolMessage.content` is str-only, so an image block would need a
-        # PRE_MODEL hook to re-inject it as an `ImagePart` — out of scope
-        # for restoring text citations (see plan's "Images deferred" note).
         text_parts = [
             block["text"]
             for block in formatted_blocks
@@ -164,7 +177,34 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
 
         sources = [Source(url=rec.get("url"), title=rec.get("title")) for rec in records if rec.get("url")]
         text = "\n".join(text_parts)
+        images = await self._page_images(payload)
+        if any(isinstance(part, ImagePart) for part in images):
+            data: str | list[Part] = [TextPart(text=text), *images]
+        else:
+            # Every image refused (or none sent): one string, with the reasons.
+            data = "\n".join([text, *(part.text for part in images if isinstance(part, TextPart))])
         view = web_view(payload)
         if view is not None:
-            self._views[text] = view
-        return ToolOutput(success=True, data=text, sources=sources)
+            # `result_view` finds the card by the returned string, or a list's first text part.
+            self._views[data if isinstance(data, str) else text] = view
+        return ToolOutput(success=True, data=data, sources=sources)
+
+    async def _page_images(self, payload: dict[str, Any]) -> list["Part"]:
+        """The page's first images as parts after the image admission check, for a model that
+        reads images. None for a model that does not: the page's text already describes them,
+        and a note per image would say nothing the model asked about."""
+        if self._image_loader is None or self._max_images <= 0 or not self._context.is_multimodal_llm:
+            return []
+        urls = [
+            image["url"] for image in payload.get("images") or []
+            if isinstance(image, dict) and isinstance(image.get("url"), str)
+        ][: self._max_images]
+        if not urls:
+            return []
+        try:
+            uris = [uri for uri in await self._image_loader(urls) if uri]
+        except Exception:
+            logger.warning("WebToolAdapter: page images could not be read for %s", self.name, exc_info=True)
+            return []
+        # Already decoded in full as they were read (`fetch_image_data_uri`).
+        return await admitted_image_parts(uris, self._context, source="on the page", verified=True) if uris else []

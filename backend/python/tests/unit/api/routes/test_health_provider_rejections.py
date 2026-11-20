@@ -59,7 +59,8 @@ async def test_a_rejected_key_is_a_400_that_names_the_model_and_provider() -> No
     assert resp.status_code == 400
     assert body["message"] == (
         "The API key for Team GPT was rejected by Azure OpenAI. "
-        "Check the key in Workspace > AI Models, then try again."
+        "Check the key in Workspace > AI Models, then try again. "
+        'Azure OpenAI said: "Access denied"'
     )
     assert body["details"]["error_code"] == "auth_error"
 

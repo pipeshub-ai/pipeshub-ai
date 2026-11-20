@@ -1806,6 +1806,23 @@ describe('Knowledge Base Controller', () => {
       }
     })
 
+    it('forwards force: true to the connector service, and force: false when the request has none', async () => {
+      const handler = reindexRecord(createMockAppConfig())
+      const bodies: any[] = []
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
+        bodies.push(typeof this.body === 'string' ? JSON.parse(this.body) : this.body)
+        return { statusCode: 200, data: { message: 'ok' } } as any
+      })
+
+      for (const body of [{ depth: 0, force: true }, { depth: 0 }]) {
+        await handler(createMockRequest({ params: { recordId: 'r1' }, body }), createMockResponse(), createMockNext())
+      }
+
+      expect(bodies).to.have.length(2)
+      expect(bodies[0].force).to.equal(true)
+      expect(bodies[1].force).to.equal(false)
+    })
+
     it('should reindex with force flag', async () => {
       const handler = reindexRecord(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({

@@ -317,7 +317,7 @@ export class OAuthProviderController {
       );
 
       // A metadata document client is stored only now, once the person has consented.
-      await client.store();
+      await client.store({ orgId: user.orgId, userId: user.userId });
 
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(

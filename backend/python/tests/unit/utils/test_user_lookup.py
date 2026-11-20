@@ -24,9 +24,12 @@ from app.core.org_context import OrgContext, bind
 from app.utils import user_lookup
 from app.utils.user_lookup import (
     USER_NODE_ENSURE_PATH,
+    check_record_access_or_503,
     connectors_user_node_ensurer,
     get_caller_user,
+    get_document_or_503,
     get_org_or_503,
+    get_record_or_503,
     get_user_or_503,
 )
 from app.utils.user_messages import DATABASE_UNREACHABLE
@@ -212,6 +215,77 @@ class TestGetOrgOr503:
         graph = AsyncMock()
         graph.get_document = AsyncMock(return_value=None)
         assert await get_org_or_503(graph, "org-1") is None
+
+
+class TestGetDocumentOr503:
+    async def test_a_failed_read_is_503(self) -> None:
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(side_effect=_document_read_fails)
+        with pytest.raises(HTTPException) as exc:
+            await get_document_or_503(graph, "conn-1", CollectionNames.APPS.value)
+        _assert_outage(exc.value)
+        assert isinstance(exc.value.__cause__, RuntimeError)
+        graph.get_document.assert_awaited_once_with("conn-1", CollectionNames.APPS.value, raise_on_error=True)
+
+    async def test_a_missing_document_is_none(self) -> None:
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value=None)
+        assert await get_document_or_503(graph, "conn-1", CollectionNames.APPS.value) is None
+
+    async def test_a_document_is_returned_as_read(self) -> None:
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value={"_key": "conn-1"})
+        assert await get_document_or_503(graph, "conn-1", CollectionNames.APPS.value) == {"_key": "conn-1"}
+
+
+async def _record_read_fails(record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> None:
+    if raise_on_error:
+        raise RuntimeError(f"connection refused reading {record_id}")
+
+
+class TestGetRecordOr503:
+    async def test_a_failed_read_is_503(self) -> None:
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(side_effect=_record_read_fails)
+        with pytest.raises(HTTPException) as exc:
+            await get_record_or_503(graph, "rec-1")
+        _assert_outage(exc.value)
+        assert isinstance(exc.value.__cause__, RuntimeError)
+        graph.get_record_by_id.assert_awaited_once_with("rec-1", raise_on_error=True)
+
+    async def test_a_missing_record_is_none(self) -> None:
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(return_value=None)
+        assert await get_record_or_503(graph, "rec-1") is None
+
+    async def test_a_record_is_returned_as_read(self) -> None:
+        record = MagicMock()
+        graph = AsyncMock()
+        graph.get_record_by_id = AsyncMock(return_value=record)
+        assert await get_record_or_503(graph, "rec-1") is record
+
+
+class TestCheckRecordAccessOr503:
+    async def test_a_failed_check_is_503(self) -> None:
+        graph = AsyncMock()
+        failure = ConnectionError("graph down")
+        graph.check_record_access_with_details = AsyncMock(side_effect=failure)
+        with pytest.raises(HTTPException) as exc:
+            await check_record_access_or_503(graph, "user-1", "org-1", "rec-1")
+        _assert_outage(exc.value)
+        assert exc.value.__cause__ is failure
+        graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+
+    async def test_no_access_is_none(self) -> None:
+        graph = AsyncMock()
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        assert await check_record_access_or_503(graph, "user-1", "org-1", "rec-1") is None
+
+    async def test_the_details_are_returned_as_read(self) -> None:
+        details = {"record": {"id": "rec-1"}}
+        graph = AsyncMock()
+        graph.check_record_access_with_details = AsyncMock(return_value=details)
+        assert await check_record_access_or_503(graph, "user-1", "org-1", "rec-1") is details
 
 
 def _team_request() -> MagicMock:

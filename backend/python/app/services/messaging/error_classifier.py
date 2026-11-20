@@ -193,8 +193,8 @@ def format_exception_chain(exc: Exception) -> str:
 
 def is_source_refusal(exc: BaseException | None) -> bool:
     """Whether ``exc`` is a source refusing the item (the stream route's
-    ``SOURCE_REFUSAL_HEADER`` answer): an expected per-record outcome, logged as a
-    warning without a traceback, not a fault in PipesHub."""
+    ``SOURCE_REFUSAL_HEADER`` answer): an expected per-record outcome, not a fault in
+    PipesHub. The record's ``index.end`` says ``reason=source_refused`` at WARNING."""
     if exc is None:
         return False
     # The refusal must be what the chain ends in: a refusal re-raised from another
@@ -216,8 +216,8 @@ def is_record_deleted(exc: BaseException | None) -> bool:
 
 def is_expected_outcome(exc: BaseException | None) -> bool:
     """Whether ``exc`` ends a record the way nobody needs to act on (the source
-    refused it, or it was deleted while it was being indexed): logged once below
-    error level by the handler, not as a fault."""
+    refused it, or it was deleted while it was being indexed): written once, on the
+    record's ``index.end``, below error level, not as a fault."""
     return is_source_refusal(exc) or is_record_deleted(exc) or bool(getattr(exc, "expected_outcome", False))
 
 
@@ -442,6 +442,17 @@ class MessageErrorClassifier:
             if isinstance(cause, UnicodeDecodeError):
                 return MessageErrorType.TERMINAL
             cause = cause.__cause__
+
+        # 0f. A provider account that is out of credit answers 429 like a rate
+        # limit (OpenAI's insufficient_quota), but no redelivery refills it: the
+        # record fails with that reason instead of spending its retries.
+        try:
+            from app.utils.embedding_retry import is_quota_exhausted
+
+            if is_quota_exhausted(exc):
+                return MessageErrorType.TERMINAL
+        except ImportError:
+            pass
 
         # 1. Check for HTTP status code in exception
         status_code = extract_status_code(root_exc)
