@@ -1041,6 +1041,46 @@ describe('UserGroupController', () => {
       expect(responseArg.pagination).to.deep.include({ page: 1, totalCount: 1 });
     });
 
+    for (const [hide, shown] of [['true', false], ['false', true]] as const) {
+      it(`group members ${shown ? 'keep' : 'lose'} their email when HIDE_EMAIL is ${hide}`, async () => {
+        const saved = process.env.HIDE_EMAIL;
+        process.env.HIDE_EMAIL = hide;
+        try {
+          req.params.groupId = 'g1';
+          req.query = { page: '1', limit: '25' };
+          const userId1 = new mongoose.Types.ObjectId();
+          sinon.stub(UserGroups, 'findOne').returns({
+            lean: sinon.stub().returns({ exec: sinon.stub().resolves({ _id: 'g1', users: [userId1] }) }),
+          } as any);
+          sinon.stub(Users, 'find').returns({
+            select: sinon.stub().returns({
+              skip: sinon.stub().returns({
+                limit: sinon.stub().returns({
+                  lean: sinon.stub().returns({
+                    exec: sinon.stub().resolves([{ _id: userId1, fullName: 'Alice', email: 'alice@test.com' }]),
+                  }),
+                }),
+              }),
+            }),
+          } as any);
+          sinon.stub(Users, 'countDocuments').resolves(1);
+          sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+          sinon.stub(UserDisplayPicture, 'find').returns({
+            lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+          } as any);
+
+          await controller.getUsersInGroup(req, res);
+
+          const [user] = res.json.firstCall.args[0].users;
+          expect(user.fullName).to.equal('Alice');
+          expect(Object.prototype.hasOwnProperty.call(user, 'email')).to.equal(shown);
+        } finally {
+          if (saved === undefined) delete process.env.HIDE_EMAIL;
+          else process.env.HIDE_EMAIL = saved;
+        }
+      });
+    }
+
     // This page carries each member's id, name and address, so a service
     // account here is fully identifiable — and its id binds an agent to it.
     it('leaves service accounts out for a member, count included', async () => {
