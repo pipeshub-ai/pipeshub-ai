@@ -193,4 +193,11 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="miro" name="Miro" />)).toBe('miro icon');
     expect(logo(<McpServerIcon typeId={null} name="Miro" />)).toBe('miro icon');
   });
+
+  it("shows Instantly's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="instantly" name="Instantly" />)).toBe('instantly icon');
+    expect(logo(<McpServerIcon typeId={null} name="Instantly MCP" />)).toBe('instantly icon');
+    expect(logoPath(<McpServerIcon typeId="instantly" name="Instantly" />)).toBe('/icons/connectors/instantly.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Instantly MCP" />)).toBe('/icons/connectors/instantly.svg');
+  });
 });
