@@ -1072,21 +1072,36 @@ adds what is specific to its role after it.
 {{- end }}
 
 {{/*
-.value times ten to the power .exp ("9", "+009", "-3"), as a float. Leading
-zeros in the exponent are allowed, as both Kubernetes and Neo4j allow them.
-The loop is bounded: an exponent above 30 fails the render with .what, and
-one below -30 is zero for any value a size can take.
+.value ("8", "8.5", ".5") times ten to the power .exp ("9", "+009", "-3"), as a
+float. Leading zeros in the exponent are allowed, as both Kubernetes and Neo4j
+allow them. The value is first written as 0.<digits> x 10^m, so the bounds
+apply to the number's size, not to the exponent as written:
+"85899345920000000000000000000000000000000e-31" is 8Gi. A number of 1e31 or
+more fails the render with .what, one below 1e-30 is zero, and the loop runs
+at most 31 times.
 */}}
 {{- define "pipeshub-ai.timesPow10" -}}
-{{- $digits := regexReplaceAll "^0+" (trimPrefix "-" (trimPrefix "+" (toString .exp))) "" | default "0" -}}
-{{- if gt (len $digits) 2 }}{{ $digits = "99" }}{{ end -}}
-{{- $exp := atoi $digits -}}
-{{- $v := float64 .value -}}
-{{- if hasPrefix "-" (toString .exp) -}}
-{{- if gt $exp 30 }}{{ $v = 0.0 }}{{ else }}{{ range until $exp }}{{ $v = divf $v 10 }}{{ end }}{{ end -}}
+{{- $expText := toString .exp -}}
+{{- $expDigits := regexReplaceAll "^0+" (trimPrefix "-" (trimPrefix "+" $expText)) "" | default "0" -}}
+{{- if gt (len $expDigits) 4 }}{{ $expDigits = "9999" }}{{ end -}}
+{{- $exp := atoi $expDigits -}}
+{{- if hasPrefix "-" $expText }}{{ $exp = sub 0 $exp }}{{ end -}}
+{{- $parts := splitList "." (toString .value) -}}
+{{- $whole := first $parts -}}
+{{- $all := join "" $parts -}}
+{{- $significant := regexReplaceAll "^0+" $all "" -}}
+{{- $v := 0.0 -}}
+{{- if $significant -}}
+{{- $m := add $exp (sub (len $whole) (sub (len $all) (len $significant))) -}}
+{{- if gt $m 31 }}{{ fail .what }}{{ end -}}
+{{- if ge $m -29 -}}
+{{- $v = float64 (printf "0.%s" (trunc 17 $significant)) -}}
+{{- if lt $m 0 -}}
+{{- range until (int (sub 0 $m)) }}{{ $v = divf $v 10 }}{{ end -}}
 {{- else -}}
-{{- if gt $exp 30 }}{{ fail .what }}{{ end -}}
-{{- range until $exp }}{{ $v = mulf $v 10 }}{{ end -}}
+{{- range until (int $m) }}{{ $v = mulf $v 10 }}{{ end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- $v -}}
 {{- end -}}

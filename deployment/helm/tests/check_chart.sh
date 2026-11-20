@@ -390,6 +390,7 @@ REFUSED=(
   "neo4j starting heap with a plus-signed exponent|NEO4J_server_memory_heap_initial__size \"3E+9\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3E+9"
   "neo4j starting heap above Long.MAX_VALUE bytes|NEO4J_server_memory_heap_initial__size \"1E19\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=1E19"
   "neo4j memory limit exponent past the bound|neo4j.resources.limits.memory \"8e31\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8e31"
+  "neo4j memory limit past the bound through its significand|neo4j.resources.limits.memory \"80000000000e21\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=80000000000e21"
 )
 for entry in "${REFUSED[@]}"; do
   IFS='|' read -r name message rest <<<"$entry"
@@ -428,6 +429,8 @@ NEO4J_MEMORY=(
   "unsigned exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e9"
   "signed exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e+9"
   "zero-padded signed exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e+009"
+  "8Gi as a long significand and a negative exponent|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=85899345920000000000000000000000000000000e-31"
+  "8Gi written with leading zeros and a fraction|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=0000.0000000000085899345920e+21"
   "starting heap with neo4j's uppercase exponent|3E9,4096m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3E9"
   "starting heap with an exponent and a unit|5E3m,5000m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5E3m"
   "starting heap with a negative exponent|5242880000E-3k,5120m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5242880000E-3k"
