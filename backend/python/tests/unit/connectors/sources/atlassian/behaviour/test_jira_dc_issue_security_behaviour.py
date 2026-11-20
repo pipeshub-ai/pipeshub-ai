@@ -1472,3 +1472,160 @@ class TestWithdrawnAccounts:
         assert connector._user_read_unfinished is True
         assert [u.source_user_id for u in db.withdrawn_users] == ["carol-key"]
         assert "carol-key" not in {u.source_user_id for u in await db.get_all_app_users("jira-dc-1")}
+
+
+def browse_reporter_and_lead(jira: AtlassianApiStub) -> None:
+    """Browse names the project lead (alice) and each issue's reporter: a reporter reads only their own issues."""
+    jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "reporter"}},
+    ]})
+
+
+def serve_devs(jira: AtlassianApiStub, members: list[str] | int) -> None:
+    """The members of ``devs`` (a list of keys), or the status its member read fails with."""
+    def answer(request: httpx.Request) -> httpx.Response:
+        if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+            return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
+        if isinstance(members, int):
+            return json_response({"errorMessages": ["busy"]}, status=members)
+        return json_response({"values": [{"key": k} for k in members], "isLast": True})
+
+    jira.on("GET", f"{API}/group/member", answer)
+
+
+def serve_version(jira: AtlassianApiStub, version: tuple[int, ...]) -> None:
+    """The server's version; before 10.3.13 and on 10.4 to 10.7 the users are listed by ``/user/search`` alone."""
+    jira.on("GET", f"{API}/serverInfo", {"version": ".".join(map(str, version)), "versionNumbers": list(version)})
+    everyone = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                user("carol-key", "carol", "carol@example.com")]
+    jira.on("GET", f"{API}/user/search", lambda request: json_response(
+        everyone if AtlassianApiStub.query(request).get("username") == "." and AtlassianApiStub.query(request).get(
+            "startAt", "0") == "0" else []))
+
+
+def own_readers(db: JiraRecordsDb, external_id: str) -> set[str]:
+    return {p.email or p.external_id for p in db.record_permissions.get(external_id, [])}
+
+
+class TestABrowseNamedReporterInTheLevelThroughItsMembers:
+    """Jira shows a leveled issue to someone the project's Browse names on it (its reporter) whom the level holds, here
+    through a group: "Reporter" can hold Browse Projects, and a level's members may be "Groups"
+    (https://confluence.atlassian.com/adminjiraserver/managing-project-permissions-938847145.html,
+    https://confluence.atlassian.com/adminjiraserver/configuring-issue-level-security-938847117.html). carol reports
+    ENG-2 and is in devs, which the level holds; bob reports ENG-3 and is not."""
+
+    @staticmethod
+    async def _site(jira, db, store, jql_search, version: tuple[int, ...] = (11, 3, 13)):
+        stub_site(jira, jql_search)
+        serve_version(jira, version)
+        browse_reporter_and_lead(jira)
+        serve_devs(jira, ["alice-key", "carol-key"])
+        serve_scheme(jira, {SECRET: [DEVS]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"),
+                       sec_issue("3", "ENG-3", level=SECRET, reporter="bob"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        return connector
+
+    @pytest.mark.parametrize("version", [(10, 2, 0), (10, 7, 4), (11, 3, 13)], ids=["10.2", "10.7", "11.3"])
+    async def test_the_reporter_in_the_levels_group_reads_it_on_every_supported_version(
+        self, jira, db, store, jql_search, version,
+    ) -> None:
+        await self._site(jira, db, store, jql_search, version)
+        assert (db.records["2"].access_rule, own_readers(db, "2")) == (AccessRule.OPEN, {"carol@example.com"})
+        assert (db.records["3"].access_rule, own_readers(db, "3")) == (AccessRule.STRICT, set())
+        assert db.records["2"].access_group_external_id == f"level:10000:{SECRET}"
+
+    async def test_on_a_version_not_supported_no_one_new_is_linked_so_no_one_reads_it_alone(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        await self._site(jira, db, store, jql_search, (9, 12, 0))
+        assert own_readers(db, "2") == set() and hidden_from_project(db.records["2"])
+
+    async def test_out_of_the_group_the_reporter_loses_it_though_the_issue_did_not_change(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        connector = await self._site(jira, db, store, jql_search)
+        serve_devs(jira, ["alice-key"])
+        await sync(connector, jql_search, recent=[])
+        assert (db.records["2"].access_rule, own_readers(db, "2")) == (AccessRule.STRICT, set())
+        assert readers(db, "2") == {("GROUP", "devs")}
+
+    async def test_a_group_whose_read_fails_grants_nobody_on_its_own_until_it_is_read(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        """Jira took carol out of devs, and this read of devs fails: the members the last read saw do not open the issue
+        to her (the graph keeps the group's stored members). Read again, the issue is re-read once more."""
+        connector = await self._site(jira, db, store, jql_search)
+        serve_devs(jira, 503)
+        await sync(connector, jql_search, recent=[])
+        assert (db.records["2"].access_rule, own_readers(db, "2")) == (AccessRule.STRICT, set())
+
+        serve_devs(jira, ["alice-key", "carol-key"])
+        await sync(connector, jql_search, recent=[])
+        assert (db.records["2"].access_rule, own_readers(db, "2")) == (AccessRule.OPEN, {"carol@example.com"})
+
+    async def test_a_role_and_the_project_lead_hold_their_members_the_same_way(self, jira, db, store, jql_search) -> None:
+        """carol is a Developers actor; alice leads ENG and reports ENG-4."""
+        stub_site(jira, jql_search)
+        browse_reporter_and_lead(jira)
+        serve_devs(jira, ["alice-key", "carol-key"])
+        serve_scheme(jira, {SECRET: [holder("projectRole", parameter="10002", projectRole={"id": "10002", "name": "Developers"})],
+                            TEAM: [holder("projectLead")]})
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol"),
+                       sec_issue("3", "ENG-3", level=SECRET, reporter="bob"),
+                       sec_issue("4", "ENG-4", level=TEAM, reporter="alice"))
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=list(jql_search.source.values()))
+        assert own_readers(db, "2") == {"carol@example.com"} and own_readers(db, "3") == set()
+        assert own_readers(db, "4") == {"alice@example.com"}
+
+    async def _reindex_changed_eng2(self, connector, db, jira) -> TicketRecord:
+        """ENG-2 changed at the source since the sync stored it, and is reindexed with no sync in between."""
+        jira.on("GET", f"{API}/issue/2", sec_issue("2", "ENG-2", level=SECRET, reporter="carol", updated=ts(2)))
+        db.record_batches.clear()
+        await connector.reindex_records([db.records["2"]])
+        return {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
+
+    async def test_a_reindex_reads_the_group_again_so_a_reporter_jira_took_out_gets_no_grant(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        connector = await self._site(jira, db, store, jql_search)
+        serve_devs(jira, ["alice-key"])
+        written = await self._reindex_changed_eng2(connector, db, jira)
+        assert (written.access_rule, own_readers(db, "2")) == (AccessRule.STRICT, set())
+        assert "carol-key" in {u.source_user_id for u in connector._group_members["devs"]}, "the sync's map is left alone"
+
+    async def test_a_reindex_opens_it_to_the_reporter_the_group_holds_now(self, jira, db, store, jql_search) -> None:
+        connector = await self._site(jira, db, store, jql_search)
+        written = await self._reindex_changed_eng2(connector, db, jira)
+        assert (written.access_rule, own_readers(db, "2")) == (AccessRule.OPEN, {"carol@example.com"})
+        assert written.source_updated_at == connector._parse_jira_timestamp(ts(2))
+        assert "reindex_retry" not in store.values_for("project_ENG")
+
+    async def test_a_reindex_that_cannot_read_the_group_writes_no_grant_and_the_next_sync_reads_it_first(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        connector = await self._site(jira, db, store, jql_search)
+        serve_devs(jira, 503)
+        written = await self._reindex_changed_eng2(connector, db, jira)
+        assert (written.access_rule, own_readers(db, "2")) == (AccessRule.STRICT, set())
+        assert written.source_updated_at == connector._parse_jira_timestamp(ts(1)), "the stored timestamp stays"
+        assert list(json.loads(store.values_for("project_ENG")["reindex_retry"])) == ["2"]
+
+        # Not in the incremental search, and the level digests match: only the retry list brings it back.
+        serve_devs(jira, ["alice-key", "carol-key"])
+        jql_search.put(sec_issue("2", "ENG-2", level=SECRET, reporter="carol", updated=ts(2)))
+        await sync(connector, jql_search, recent=[])
+        assert any("id in (2)" in q for q in jql_search.jql)
+        assert (db.records["2"].access_rule, own_readers(db, "2")) == (AccessRule.OPEN, {"carol@example.com"})
+        assert json.loads(store.values_for("project_ENG")["reindex_retry"]) == {}
+
+    async def test_a_reindex_of_a_level_holding_a_role_waits_for_the_sync(self, jira, db, store, jql_search) -> None:
+        """A role's members are read by the sync only: the reindex grants no one through it and queues the issue."""
+        connector = await self._site(jira, db, store, jql_search)
+        serve_scheme(jira, {SECRET: [holder("projectRole", parameter="10002", projectRole={"id": "10002", "name": "Developers"})]})
+        written = await self._reindex_changed_eng2(connector, db, jira)
+        assert own_readers(db, "2") == set() and written.access_rule == AccessRule.STRICT
+        assert list(json.loads(store.values_for("project_ENG")["reindex_retry"])) == ["2"]

@@ -77,6 +77,7 @@ from app.connectors.sources.atlassian.core.html_utils import (
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     BROWSE_ISSUE_HOLDER_TYPES,
     HOLDER_USER,
+    LEVEL_MEMBERS_UNREAD,
     ROLE_LIST_MAX_AGE_MS,
     UNREADABLE_REASONS,
     IssueSecurityContext,
@@ -92,6 +93,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     index_members,
     level_group_external_id,
     level_group_grants,
+    level_readers,
     level_reads_alike,
     levels_after_walk,
     plan_level_reread,
@@ -180,6 +182,31 @@ def _stored_map(value: object) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+_RETRY_LIST_LOCKS: dict[str, asyncio.Lock] = {}
+# Groups a reindex reads again per project to apply its issues' levels (``_reindex_level_readers``).
+REINDEX_GROUP_READS: int = 20
+
+
+def _retry_list_lock(connector_id: str) -> asyncio.Lock:
+    """Serializes the read-modify-write of a connector's project checkpoints in this process, so a reindex's retry
+    entry and a sync's write cannot overwrite each other."""
+    return _RETRY_LIST_LOCKS.setdefault(connector_id, asyncio.Lock())
+
+
+def _retry_requests(stored: object) -> dict[str, str]:
+    """The issues a reindex queued for the next sync (a project checkpoint's ``reindex_retry``), each with its request."""
+    try:
+        found = json.loads(stored or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in found.items()} if isinstance(found, dict) else {}
+
+
+def _listed(members: list[AppUser], listed: dict[str, AppUser]) -> list[AppUser]:
+    """The members a group or role write holds: those the user list read this time (``_member_directory``)."""
+    return [m for m in members if m.source_user_id in listed]
 
 
 def _browse_holders_of(answer: object) -> list[dict[str, Any]] | None:
@@ -637,6 +664,10 @@ class JiraDataCenterConnector(BaseConnector):
         self._app_roles_mapping: dict[str, list[dict[str, Any]]] = {}
         # The role list security levels apply: the one read this sync, or the last one kept (``roles_for_levels``).
         self._level_roles: dict[str, list[dict[str, Any]]] = {}
+        # Members of each group (by name) and role (``<key>_<role id>``, ``<key>_projectLead``) read in full by the last
+        # group and role read, so a level's members are known (``level_readers``). One not read then is unknown.
+        self._group_members: dict[str, list[AppUser]] = {}
+        self._role_members: dict[str, list[AppUser]] = {}
         # Issues of the project being synced that failed to build, this run.
         self._issue_build_failures: int = 0
         # A level's user holder went ungranted while the user list was cut short, this project (the marker is saved).
@@ -1146,6 +1177,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.warning(
                     "Keeping the stored members of every project role: the group list could not be read in full"
                 )
+                self._role_members = {}  # no role read this sync: a level's role members are unknown
             else:
                 await self._sync_project_roles(
                     project_keys_for_roles,
@@ -1374,6 +1406,9 @@ class JiraDataCenterConnector(BaseConnector):
         no_level_read: str | None = None,
         people_read: int | None = None,
         given_up_retried: int | None = None,
+        *,
+        add_retry: str | None = None,
+        ack_retry: dict[str, str] | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1390,31 +1425,44 @@ class JiraDataCenterConnector(BaseConnector):
             no_level_read: ``NO_LEVEL_READ`` once every stored issue was read with ``level IS EMPTY``
             people_read: the people re-read generation the project's last clean walk and stub sweep covered
             given_up_retried: the people re-read generation whose walk retried the issues given up on
+            add_retry: an issue a reindex wrote without its level's members, queued for the next sync (``reindex_retry``)
+            ack_retry: the queued issues a sync read, each with the request it read; one queued again since stays
         """
         sync_point_key = f"project_{project_key}"
 
-        # Read existing to preserve values not being updated
-        existing = await self._get_project_sync_checkpoint(project_key)
+        async with _retry_list_lock(self.connector_id):
+            # Read existing to preserve values not being updated
+            existing = await self._get_project_sync_checkpoint(project_key)
 
-        sync_point_data = {
-            "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
-            "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated")
-        }
-        # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
-        for field, value in (("failed_issue_attempts", failed_issue_attempts), ("given_up_issues", given_up_issues)):
-            stored = value if value is not None else _stored_map(existing.get(field))
-            if stored or existing.get(field):
-                sync_point_data[field] = json.dumps(stored, sort_keys=True)
-        # Kept as JSON text: a sync point holds primitives only.
-        for field, text in (
-            ("security_levels", security_levels), ("child_parents", child_parents), ("browse_holders", browse_holders),
-            ("no_level_read", no_level_read), ("people_read", people_read), ("given_up_retried", given_up_retried),
-        ):
-            stored_text = text if text is not None else existing.get(field)
-            if stored_text is not None:
-                sync_point_data[field] = stored_text
+            sync_point_data = {
+                "last_sync_time": last_sync_time if last_sync_time is not None else existing.get("last_sync_time"),
+                "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated")
+            }
+            # Written even when empty: Neo4j merges sync point fields, so an omitted field would keep its old value.
+            for field, value in (("failed_issue_attempts", failed_issue_attempts), ("given_up_issues", given_up_issues)):
+                stored = value if value is not None else _stored_map(existing.get(field))
+                if stored or existing.get(field):
+                    sync_point_data[field] = json.dumps(stored, sort_keys=True)
+            # Issues a reindex queued, each with the request it was queued by: a sync removes one only for the request
+            # its read covered, so a request made after that read stays.
+            requests = _retry_requests(existing.get("reindex_retry"))
+            if add_retry is not None:
+                requests[add_retry] = uuid4().hex
+            for issue_id, request in (ack_retry or {}).items():
+                if requests.get(issue_id) == request:
+                    del requests[issue_id]
+            if requests or existing.get("reindex_retry"):
+                sync_point_data["reindex_retry"] = json.dumps(requests, sort_keys=True)
+            # Kept as JSON text: a sync point holds primitives only.
+            for field, text in (
+                ("security_levels", security_levels), ("child_parents", child_parents), ("browse_holders", browse_holders),
+                ("no_level_read", no_level_read), ("people_read", people_read), ("given_up_retried", given_up_retried),
+            ):
+                stored_text = text if text is not None else existing.get(field)
+                if stored_text is not None:
+                    sync_point_data[field] = stored_text
 
-        await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
+            await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def _handle_issue_deletions(self, global_last_sync_time: Optional[int]) -> None:
         """Reconcile deleted issues via ``GET /rest/auditing/1.0/events`` (separate sync checkpoint)."""
@@ -2636,6 +2684,8 @@ class JiraDataCenterConnector(BaseConnector):
         (saving only upserts those groups, so the ones past the limit keep what is
         stored) and comes back marked ``cut_off``.
         """
+        # A group this read leaves unread is unknown to level readers, though the graph keeps its stored members.
+        self._group_members = {}
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
 
@@ -2649,8 +2699,8 @@ class JiraDataCenterConnector(BaseConnector):
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
 
-            # Create user_key -> AppUser lookup for efficient matching
-            user_by_key = {user.source_user_id: user for user in jira_users if user.source_user_id}
+            # user_key -> AppUser, with the listed accounts whose email is hidden (``_member_directory``)
+            listed, user_by_key = self._member_directory(jira_users)
 
             user_groups_batch = []
             # Group name -> members, for role actor lookup (``_normalize_jira_dc_group_row``: the name is the group's id)
@@ -2708,7 +2758,7 @@ class JiraDataCenterConnector(BaseConnector):
                     groups_members_map[group_name] = app_users
 
                     # Add group to batch (with or without members)
-                    user_groups_batch.append((user_group, app_users))
+                    user_groups_batch.append((user_group, _listed(app_users, listed)))
 
                     if app_users:
                         self.logger.debug(f"Group {group_name}: {len(app_users)} members")
@@ -2722,6 +2772,8 @@ class JiraDataCenterConnector(BaseConnector):
                     if group.get("name"):
                         groups_members_map[group["name"]] = None
                     continue
+
+            self._group_members = {k: v for k, v in groups_members_map.items() if v is not None}
 
             if self._user_read_unfinished:
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
@@ -2821,13 +2873,14 @@ class JiraDataCenterConnector(BaseConnector):
             self._note_unread(None)
             return None
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> Optional[list[str]]:
+    async def _fetch_group_members(self, group_id: str, group_name: str, *, note: bool = True) -> Optional[list[str]]:
         """
         Fetch group members via Data Center ``GET /rest/api/2/group/member``.
 
         Returns list of user keys (accountId/key/name) which are always present
         in the response regardless of email visibility settings, or None when a
-        page of members could not be read.
+        page of members could not be read. ``note`` False leaves a failure out of the
+        sync's bookkeeping (``_note_unread``): a read outside a sync keeps nothing stored.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2862,7 +2915,8 @@ class JiraDataCenterConnector(BaseConnector):
                         group_name,
                         response.text()[:500],
                     )
-                    self._note_unread(response.status, ("user_group", group_id))
+                    if note:
+                        self._note_unread(response.status, ("user_group", group_id))
                     return None
 
                 payload = response.json()
@@ -2876,7 +2930,8 @@ class JiraDataCenterConnector(BaseConnector):
                     # Not a page: the members are unknown, not none (read as the end, the members read so far
                     # would pass for all of them).
                     self.logger.warning("Group %s answered a member page that is not a page", group_name)
-                    self._note_unread(None)
+                    if note:
+                        self._note_unread(None)
                     return None
 
                 if not batch_members:
@@ -2887,7 +2942,8 @@ class JiraDataCenterConnector(BaseConnector):
                     if not (member.get("accountId") or member.get("key") or member.get("name")):
                         # A member we cannot name: skipping it would read the list as complete without them.
                         self.logger.warning("Group %s answered a member without a key or name", group_name)
-                        self._note_unread(None)
+                        if note:
+                            self._note_unread(None)
                         return None
                     user_key = self._account_key(member)
                     if user_key:  # none: a username the user list did not show, so no synced account
@@ -2903,7 +2959,8 @@ class JiraDataCenterConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error("❌ Error fetching members for group %s: %s", group_name, e)
-                self._note_unread(None)
+                if note:
+                    self._note_unread(None)
                 return None
 
         return member_keys
@@ -2961,15 +3018,12 @@ class JiraDataCenterConnector(BaseConnector):
 
         if groups_members_map is None:
             groups_members_map = {}
+        self._role_members = {}  # a role this read leaves unread is unknown to level readers (``_group_members``)
 
         self.logger.info(f"🔐 Syncing project roles for {len(project_keys)} projects (DC GET /rest/api/2/project/.../role)...")
 
-        # accountId -> AppUser lookup
-        user_by_account_id: dict[str, AppUser] = {
-            user.source_user_id: user
-            for user in jira_users
-            if user.source_user_id
-        }
+        # key -> AppUser, with the listed accounts whose email is hidden (``_member_directory``)
+        listed, user_by_account_id = self._member_directory(jira_users)
 
         roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
         total_roles = 0
@@ -3119,6 +3173,8 @@ class JiraDataCenterConnector(BaseConnector):
                             continue
 
                         roles_to_sync.append((app_role, member_users))
+                        # The members read, before a short user read keeps a role's stored ones in the graph.
+                        self._role_members[app_role.source_role_id] = member_users
                         total_roles += 1
                         total_members += len(member_users)
 
@@ -3164,7 +3220,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
-            await self.data_entities_processor.on_new_app_roles(roles_to_sync)
+            await self.data_entities_processor.on_new_app_roles([(role, _listed(m, listed)) for role, m in roles_to_sync])
             self.logger.info(
                 f"✅ Synced {total_roles} project roles with {total_members} direct user members"
             )
@@ -3180,12 +3236,8 @@ class JiraDataCenterConnector(BaseConnector):
         Sync project lead as AppRole for each project.
         """
 
-        # Build accountId -> AppUser lookup
-        user_by_account_id: dict[str, AppUser] = {
-            user.source_user_id: user
-            for user in jira_users
-            if user.source_user_id
-        }
+        # key -> AppUser, with the listed accounts whose email is hidden (``_member_directory``)
+        listed, user_by_account_id = self._member_directory(jira_users)
 
         lead_roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
         # Lead role id -> (project key, project id) for leads the short user list did not have.
@@ -3250,12 +3302,16 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
 
+        # A lead not read (its project failed, or the short user list lacks them) is unknown to level readers.
+        self._role_members = {k: v for k, v in self._role_members.items() if not k.endswith("_projectLead")}
+        self._role_members.update({role.source_role_id: members for role, members in lead_roles_to_sync
+                                   if role.source_role_id not in unresolved_leads})
         if unresolved_leads:
             lead_roles_to_sync = await self._without_unresolved_stored_leads(lead_roles_to_sync, unresolved_leads)
 
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
-            await self.data_entities_processor.on_new_app_roles(lead_roles_to_sync)
+            await self.data_entities_processor.on_new_app_roles([(role, _listed(m, listed)) for role, m in lead_roles_to_sync])
         else:
             self.logger.info("No project leads to sync")
 
@@ -3674,6 +3730,10 @@ class JiraDataCenterConnector(BaseConnector):
         # synced before levels were applied has no digest, which reads every leveled issue again once.
         security = await self._attach_browse_holders(await self._load_issue_security(project_key), project_key)
         self._issue_security[project_id] = security
+        # As an issue's own grants (``_build_issue_records``): the synced directory and the linked accounts.
+        directory = self._grant_directory(self._users_with_usernames(
+            {u.source_user_id: u for u in [*self._linked_not_read(), *jira_users] if u.source_user_id}))
+        security.level_readers = self._level_readers(security, project_key, directory)
         self._issue_build_failures = 0
         self._holders_unresolved = False
         self._reread_whole_project = False
@@ -3729,10 +3789,7 @@ class JiraDataCenterConnector(BaseConnector):
             # before an issue takes its access from it. Every sync, so a full sync keeps them.
             await self._write_level_groups(
                 project_id, project_key, security,
-                [*security.members_by_level, *closed_level_groups(stored_levels, levels_to_save)],
-                # As an issue's own grants (``_build_issue_records``): the synced directory and the linked accounts.
-                self._grant_directory(self._users_with_usernames(
-                    {u.source_user_id: u for u in [*self._linked_not_read(), *jira_users] if u.source_user_id})),
+                [*security.members_by_level, *closed_level_groups(stored_levels, levels_to_save)], directory,
             )
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
         if security.defer_checkpoint or (unreadable and reread):
@@ -3743,6 +3800,8 @@ class JiraDataCenterConnector(BaseConnector):
                 await self._record_security_levels(project_key, retry, force=True)
         if _stored_map((project_sync_data or {}).get("child_parents")):
             await self._settle_children(project_key, project_id, jira_users, {"new_count": 0, "updated_count": 0}, {})
+        if requested := _retry_requests((project_sync_data or {}).get("reindex_retry")):
+            await self._retry_reindex_requests(project_key, project_id, jira_users, requested)
 
         def checkpoint_at(last_seen: int | None) -> int | None:
             # A failed issue keeps the checkpoint at its own updated time so the next search finds it again.
@@ -3946,6 +4005,54 @@ class JiraDataCenterConnector(BaseConnector):
         if groups:
             await self.data_entities_processor.on_new_record_groups(groups)
 
+    def _level_readers(
+        self, security: IssueSecurityContext, project_key: str, users: dict[str, AppUser],
+    ) -> dict[str, frozenset[tuple[str, str]] | None]:
+        """Each level's readers through its same-on-every-issue holders, from the members last read. A group is named by
+        its name, the key the members are held by (``_normalize_jira_dc_group_row``)."""
+        out: dict[str, frozenset[tuple[str, str]] | None] = {}
+        for level_id, holders in security.members_by_level.items():
+            grants, skipped = level_group_grants(
+                holders, project_key=project_key, user_by_id=users, app_roles_mapping=self._level_roles)
+            # A user holder outside the directory reads nothing, so it leaves the others known; any other holder skipped
+            # (an unmapped application role) may hold anyone.
+            out[level_id] = None if set(skipped) - {HOLDER_USER} else level_readers(
+                grants, self._group_members, self._role_members)
+        return out
+
+    async def _reindex_level_readers(
+        self, security: IssueSecurityContext, project_key: str, synced: dict[str, AppUser],
+    ) -> dict[str, frozenset[tuple[str, str]] | None]:
+        """``_level_readers`` for a reindex, from members read now: the sync's are as old as the last sync, and a person Jira
+        removed since must not read an issue alone through them. The groups the levels name are read again, at most
+        ``REINDEX_GROUP_READS`` per project, from the accounts a sync would hold (``_member_directory``). A role or a project
+        lead, one not read in full, or one past the cap is unknown: its level grants no one alone (``LEVEL_MEMBERS_UNREAD``),
+        and the issue waits for the next sync. The sync's member maps are left as they are."""
+        users = {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **synced}
+        groups: dict[str, list[AppUser]] = {}
+        tried: set[str] = set()
+        out: dict[str, frozenset[tuple[str, str]] | None] = {}
+        for level_id, holders in security.members_by_level.items():
+            grants, skipped = level_group_grants(
+                holders, project_key=project_key, user_by_id=self._grant_directory(synced), app_roles_mapping=self._level_roles)
+            if set(skipped) - {HOLDER_USER}:
+                out[level_id] = None
+                continue
+            for grant in grants:
+                name = str(grant.external_id)
+                if grant.entity_type != EntityType.GROUP or name in tried or len(tried) >= REINDEX_GROUP_READS:
+                    continue
+                tried.add(name)
+                try:
+                    keys = await self._fetch_group_members(name, name, note=False)
+                except Exception as e:
+                    self.logger.warning(f"Could not read the members of group {name} for a reindex: {e}")
+                    keys = None
+                if keys is not None:
+                    groups[name] = [users[k] for k in keys if k in users]
+            out[level_id] = level_readers(grants, groups, {})
+        return out
+
     async def _ensure_level_group(
         self, project_id: str, project_key: str, security: IssueSecurityContext, level_id: str | None,
         user_by_account_id: dict[str, AppUser],
@@ -3961,6 +4068,43 @@ class JiraDataCenterConnector(BaseConnector):
         if not skipped and level_id:
             await self._write_level_groups(project_id, project_key, security, [level_id], user_by_account_id)
         return skipped
+
+    async def _retry_in_next_sync(self, project_key: str, issue_id: str) -> None:
+        """Queue an issue written outside a sync for the next sync, which reads it first (``_retry_reindex_requests``)."""
+        await self._update_project_sync_checkpoint(project_key, add_retry=issue_id)
+
+    async def _retry_reindex_requests(
+        self, project_key: str, project_id: str, users: list[AppUser], requested: dict[str, str],
+    ) -> None:
+        """Read first the issues a reindex wrote without its level's members, whatever the date filters, and take off the
+        list the requests read. An issue that fails to build leaves every request for the next sync."""
+        ids = sorted(i for i in requested if i.isdigit())
+        failures_before = self._issue_build_failures
+        for start in range(0, len(ids), CHILD_REREAD_CHUNK):
+            await self._read_issues_by_id(
+                project_key, project_id, users, {"new_count": 0, "updated_count": 0}, ids[start:start + CHILD_REREAD_CHUNK])
+        if self._issue_build_failures == failures_before:
+            await self._update_project_sync_checkpoint(project_key, ack_retry=requested)
+
+    async def _read_issues_by_id(
+        self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int], ids: list[str],
+    ) -> None:
+        """Rebuild the stored issues ``ids`` names. Jira refuses a whole ``id in (...)`` query (400) that names an id it no
+        longer knows (as ``_null_levels_jira_left_out`` reads it), so a refused chunk is read one id at a time, and an id
+        refused alone is gone: its deletion arrives through the audit log."""
+        try:
+            async for batch, _more, _ts in self._fetch_issues_batched(
+                project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
+                extra_jql=f"id in ({', '.join(ids)})",
+            ):
+                if batch:
+                    await self._process_new_records(batch, project_key, stats)
+        except JiraReadError as e:
+            if e.status != HttpStatusCode.BAD_REQUEST.value:
+                raise
+            if len(ids) > 1:
+                for one in ids:
+                    await self._read_issues_by_id(project_key, project_id, users, stats, [one])
 
     async def _mark_levels_to_retry(self, project_key: str) -> None:
         """``_save_levels_retry``, logging a failure instead of raising it."""
@@ -5215,12 +5359,22 @@ class JiraDataCenterConnector(BaseConnector):
         key = self._account_key(ref)
         return user_by_key.get(key) if key else None
 
+    def _listed_without_email(self) -> list[AppUser]:
+        """The linked accounts the active-user list shows whose email is hidden, left out of the directory a sync builds
+        (it keeps a cached account only with an email), so held by account."""
+        return [u for u in self._stored_app_users if u.source_user_id and not u.email and u.source_user_id in self._listed_user_keys]
+
     def _directory_extra(self) -> list[AppUser]:
         """The linked accounts an issue's people also resolve against: on a user list not read in full, those it did not
-        show (the last complete state); and those the active-user list shows whose email is hidden, left out of the
-        directory a sync builds (it keeps a cached account only with an email), so held by account."""
-        return [*self._linked_not_read(),
-                *(u for u in self._stored_app_users if u.source_user_id and not u.email and u.source_user_id in self._listed_user_keys)]
+        show (the last complete state); and ``_listed_without_email``."""
+        return [*self._linked_not_read(), *self._listed_without_email()]
+
+    def _member_directory(self, jira_users: list[AppUser]) -> tuple[dict[str, AppUser], dict[str, AppUser]]:
+        """``(listed, members)``: the accounts the user list read this time, which group and role writes hold, and those plus
+        ``_listed_without_email``, which level readers also hold, by account. Not the linked accounts a list cut short did
+        not show: a group read says nothing of them."""
+        listed = {user.source_user_id: user for user in jira_users if user.source_user_id}
+        return listed, {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **listed}
 
     def _grant_directory(self, users: dict[str, AppUser]) -> dict[str, AppUser]:
         """The accounts an issue's people resolve against: the synced directory and the linked accounts
@@ -7307,6 +7461,7 @@ class JiraDataCenterConnector(BaseConnector):
                 security = await self._attach_browse_holders(
                     await self._load_issue_security(project_ref, cached=False), project_ref, fresh=True,
                 )
+                security.level_readers = await self._reindex_level_readers(security, project.get("key") or project_ref, synced_users)
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
             if security is not None and security.enforce and security.knowledge == SchemeKnowledge.PRESENT and (
@@ -7384,6 +7539,10 @@ class JiraDataCenterConnector(BaseConnector):
                 project_id=project_id if project_id and project_id == issue_record.external_record_group_id else None,
             )
             permissions = self._directory_grants(permissions, synced_users)
+            # The level's members are not known now (a group not read, a role or project lead): written without a grant
+            # through them, never wider, and read again by the next sync.
+            members_pending = LEVEL_MEMBERS_UNREAD in skipped_holders
+            skipped_holders = [h for h in skipped_holders if h != LEVEL_MEMBERS_UNREAD]
             if settled and not skipped_holders and issue_record.access_group_external_id:
                 skipped_holders = await self._ensure_level_group(
                     project_id, project.get("key") or project_ref, security, read_security_level(fields)[1],
@@ -7411,9 +7570,12 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 return None
 
-            if security is not None and security.enforce and security.browse_holders is None:
-                # Written without its holders' grants: the stored timestamp stays, so a sync whose search returns the
-                # issue reads it as changed and grants them; a project re-read (the `?` mark, when it was saved) too.
+            if members_pending:
+                await self._retry_in_next_sync(str(project.get("key") or project_ref), str(issue_id))
+            if (security is not None and security.enforce and security.browse_holders is None) or members_pending:
+                # Written without its holders' grants (or a level member's): the stored timestamp stays, so a sync whose
+                # search returns the issue reads it as changed and grants them; a project re-read (the `?` mark, when it
+                # was saved) or the retry list too.
                 issue_record.source_updated_at = getattr(record, "source_updated_at", None) or 0
             return (issue_record, permissions)
 

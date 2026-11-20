@@ -1,5 +1,6 @@
 """Jira Data Center issue security: the parts of the connector that are not a whole sync."""
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -12,11 +13,13 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
     apply_issue_access,
+    apply_issue_access_settled,
     plan_level_reread,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     NO_LEVEL_READ,
+    GroupPickerPage,
     JiraDataCenterConnector,
 )
 from app.connectors.sources.atlassian.jira_data_center_personal.connector import (
@@ -1035,6 +1038,18 @@ class TestGroupsAreKeyedByName:
         written = {g.source_user_group_id: m for (g, m), in (call.args[0] for call in
                                                            c.data_entities_processor.on_new_user_groups.await_args_list)}
         assert written == {"beta": [bob], "alpha": [alice]}
+        # A level holding "beta", whose reporter is alice: alice is not in beta, so she does not read it alone.
+        assert c._group_members == {"beta": [bob], "alpha": [alice]}
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+                                       members_by_level={"1": [{"type": "group", "parameter": "beta", "value": "beta"}]},
+                                       browse_holders=[{"type": "reporter"}])
+        users = {"alice-key": alice, "bob-key": bob}
+        context.level_readers = c._level_readers(context, "P", users)
+        record = _ticket()
+        grants, skipped, _ = apply_issue_access_settled(
+            record, {"security": {"id": "1"}, "reporter": {"key": "alice-key"}}, is_subtask=False, project_key="P",
+            context=context, user_by_account_id=users, project_id="10")
+        assert (record.access_rule, grants, skipped) == (AccessRule.STRICT, [], [])
 
 
 class TestStoredNoLevelIssuesHealOnce:
@@ -1083,3 +1098,103 @@ class TestStoredNoLevelIssuesHealOnce:
         reread, update = await self._sync({}, pass_fails=True)
         reread.assert_awaited_once()
         assert not self._marked(update)
+
+
+class TestTheRetryListKeepsWhatAReindexAdds:
+    """An issue a reindex queues for the next sync survives any overlapping write; a sync removes a queued issue only for
+    the request its read covered, so one queued again after that read stays."""
+
+    @staticmethod
+    def _store(c: JiraDataCenterConnector, requests: dict | None = None) -> dict:
+        """A checkpoint store that yields between a read and a write, as a real one may."""
+        point: dict = {"reindex_retry": json.dumps(requests or {})}
+
+        async def read(_key: str) -> dict:
+            await asyncio.sleep(0)
+            return dict(point)
+
+        async def write(_key: str, data: dict) -> None:
+            await asyncio.sleep(0)
+            point.update(data)
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=read)
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=write)
+        return point
+
+    @staticmethod
+    def _queued(point: dict) -> list[str]:
+        return sorted(json.loads(point["reindex_retry"]))
+
+    async def test_a_sync_write_after_a_reindex_add_keeps_the_issue(self) -> None:
+        c = _connector()
+        point = self._store(c)
+        await c._retry_in_next_sync("P", "9")
+        await c._update_project_sync_checkpoint("P", last_issue_updated=10)
+        assert self._queued(point) == ["9"]
+
+    async def test_overlapping_writes_keep_every_issue(self) -> None:
+        c = _connector()
+        point = self._store(c)
+        await asyncio.gather(c._retry_in_next_sync("P", "7"), c._retry_in_next_sync("P", "8"),
+                             c._update_project_sync_checkpoint("P", last_issue_updated=10))
+        assert self._queued(point) == ["7", "8"]
+
+    async def test_a_sync_removes_only_the_requests_it_read_and_one_queued_again_stays(self) -> None:
+        c = _connector()
+        point = self._store(c, {"3": "r3", "9": "r9"})
+        read = {"3": "r3", "9": "r9"}
+        await c._retry_in_next_sync("P", "9")  # queued again after the sync read it: a newer request
+        await c._update_project_sync_checkpoint("P", ack_retry=read)
+        assert self._queued(point) == ["9"]
+
+    async def test_the_retry_pass_reads_its_issues_without_date_filters_and_splits_a_refused_query(self) -> None:
+        """Jira refuses an ``id in (...)`` naming an issue it no longer knows (400): each id is read alone, and the gone
+        one is left to the audit log. The requests read are taken off the list."""
+        c = _connector()
+        point = self._store(c, {"5": "r5", "6": "r6"})
+        asked: list = []
+
+        async def fetch(*_a: object, extra_jql: str = "", stored_only: bool = False, **_kw: object) -> AsyncIterator:
+            asked.append((extra_jql, stored_only))
+            if extra_jql == "id in (5, 6)" or extra_jql == "id in (6)":
+                raise JiraReadError(400, "An issue with key '6' does not exist")
+            yield [], False, None
+        c._fetch_issues_batched = fetch
+        await c._retry_reindex_requests("P", "10", [], {"5": "r5", "6": "r6"})
+        assert asked == [("id in (5, 6)", True), ("id in (5)", True), ("id in (6)", True)]
+        assert self._queued(point) == []
+
+    async def test_a_retry_that_fails_to_build_keeps_every_request(self) -> None:
+        c = _connector()
+        point = self._store(c, {"5": "r5"})
+
+        async def fetch(*_a: object, **_kw: object) -> AsyncIterator:
+            c._issue_build_failures += 1
+            yield [], False, None
+        c._fetch_issues_batched = fetch
+        await c._retry_reindex_requests("P", "10", [], {"5": "r5"})
+        assert self._queued(point) == ["5"]
+
+
+class TestAHiddenEmailGroupMemberReadsByAccount:
+    async def test_a_reporter_whose_email_is_hidden_reads_it_alone_by_account(self) -> None:
+        """carol is listed with a hidden email (linked, stored without one) and is in the level's group: granted by account."""
+        c = _connector()
+        carol, alice = _user("carol-key", ""), _user("alice-key", "alice@x.com")
+        c._stored_app_users, c._listed_user_keys = [carol], {"carol-key", "alice-key"}
+        c._fetch_groups = AsyncMock(return_value=GroupPickerPage([{"name": "devs", "groupId": "devs"}]))
+        c._fetch_group_members = AsyncMock(return_value=["carol-key"])
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        await c._sync_user_groups([alice])
+        assert c.data_entities_processor.on_new_user_groups.await_args.args[0][0][1] == []  # the graph holds the listed
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+                                       members_by_level={"1": [{"type": "group", "parameter": "devs", "value": "devs"}]},
+                                       browse_holders=[{"type": "reporter"}])
+        users = c._grant_directory({"alice-key": alice})
+        context.level_readers = c._level_readers(context, "P", users)
+        record = _ticket()
+        grants, _, _ = apply_issue_access_settled(
+            record, {"security": {"id": "1"}, "reporter": {"key": "carol-key"}}, is_subtask=False, project_key="P",
+            context=context, user_by_account_id=users, project_id="10")
+        assert (record.access_rule, [(g.email, g.external_id) for g in c._directory_grants(grants, {"alice-key": alice})]) \
+            == (AccessRule.OPEN, [(None, "carol-key")])
