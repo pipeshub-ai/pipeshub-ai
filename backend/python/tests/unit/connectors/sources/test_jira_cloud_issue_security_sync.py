@@ -3983,6 +3983,20 @@ class TestAGroupPickerOnALeveledIssue:
             assert "groupCustomField" in skipped
             assert (LEVEL_MEMBERS_UNREAD in skipped) == bool(browse)  # someone Browse names may be in it: unread
 
+    @pytest.mark.asyncio
+    async def test_a_multi_picker_with_an_entry_named_only_by_name_still_holds_its_groups_named_by_id(self) -> None:
+        """One entry names g-pick by id (the reporter is in it), the other only by name. The group named by id goes to the
+        record group of picked groups and the reporter reads the issue alone; the other grants nobody and is reported."""
+        c = _connector()
+        record, perms, _ = await _build(c, _picked_issue([PICKED, {"name": "orphans"}]), _picker_context({"g-pick": [_users()[0]]}))
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert record.access_group_external_id == picker_group_external_id(PROJECT_ID, "10102", {"g-pick"})
+        ctx = _picker_context({"g-pick": [_users()[0]]})
+        _, skipped, _ = apply_issue_access_settled(
+            _stored_ticket(), _picked_issue([PICKED, {"name": "orphans"}])["fields"], is_subtask=False, project_key="PROJ",
+            context=ctx, user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+        assert "groupCustomField" in skipped
+
     def test_data_center_names_its_groups_by_name(self) -> None:
         """On Data Center a group's name is its id (its groups are keyed by name), so a picker entry naming one grants it."""
         ctx = _picker_context(None)

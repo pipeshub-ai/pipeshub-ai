@@ -1018,10 +1018,12 @@ def apply_issue_access_settled(
     record.rewrite_permissions = True
     if grouped:
         record.access_group_external_id = level_group_external_id(project_id, level_id)
-        picked, picked_unknown = field_group_ids(context.members_by_level.get(level_id, []), fields or {},
-                                                 names_are_ids=context.group_names_are_ids)
+        # An entry not named by id grants nobody (``_entry_group_id``) and is reported unresolved; the groups named by id
+        # still go to the record group below, so a person Browse names who is in one of them reads the issue alone.
+        picked, _ = field_group_ids(context.members_by_level.get(level_id, []), fields or {},
+                                    names_are_ids=context.group_names_are_ids)
         # Only where the caller tracks group members (``group_members``) and so writes that record group.
-        if context.browse_holders and context.group_members is not None and picked and not picked_unknown \
+        if context.browse_holders and context.group_members is not None and picked \
                 and not getattr(record, "is_placeholder", False):
             # The picked groups' members read the issue with the project, and someone Browse names on it may read it alone
             # through them: on the issue a group grant would need the project too (STRICT) or admit all its members alone
