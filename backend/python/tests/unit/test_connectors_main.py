@@ -1603,6 +1603,8 @@ class TestAuthenticateRequestsThroughStarlette:
 
 # ---------------------------------------------------------------------------
 # health_check (connector)
+
+
 # ---------------------------------------------------------------------------
 class TestConnectorHealthCheck:
     """Tests for health_check() endpoint."""
@@ -2244,6 +2246,98 @@ class TestVectorDbMemoryCheck:
         assert response.status_code == 403
         assert json.loads(response.body) == {"detail": "Admin access required"}
         provider.memory_report.assert_not_awaited()
+
+    @staticmethod
+    def _admin_request(provider: MagicMock) -> MagicMock:
+        from types import SimpleNamespace
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace(_vector_db_health_provider=provider)
+        request.state = SimpleNamespace(user={"role": "admin"})
+        return request
+
+    @pytest.mark.asyncio
+    async def test_report_is_reused_within_the_ttl(self) -> None:
+        """It reads every collection (about 12s loaded), so a reload does not recompute it."""
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+
+        first = await vector_db_memory_check(request)
+        second = await vector_db_memory_check(request)
+
+        assert json.loads(first.body) == json.loads(second.body) == {"status": "unsupported"}
+        provider.memory_report.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_report_is_recomputed_after_the_ttl(self) -> None:
+        import app.connectors_main as cm
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+
+        # Stored at 1000; the second call reads the clock past the TTL, then stores again.
+        later = 1000.0 + cm.VECTOR_DB_MEMORY_REPORT_TTL_SEC + 1
+        with patch("app.connectors_main.time.monotonic", side_effect=[1000.0, later, later]):
+            await cm.vector_db_memory_check(request)
+            await cm.vector_db_memory_check(request)
+
+        assert provider.memory_report.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_failure_is_not_cached(self) -> None:
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=[RuntimeError("qdrant busy"), None])
+        request = self._admin_request(provider)
+
+        failed = await vector_db_memory_check(request)
+        retried = await vector_db_memory_check(request)
+
+        assert failed.status_code == 503
+        assert json.loads(retried.body) == {"status": "unsupported"}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_share_one_report(self) -> None:
+        from app.connectors_main import vector_db_memory_check
+
+        release = asyncio.Event()
+
+        async def slow_report() -> None:
+            await release.wait()
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=slow_report)
+        request = self._admin_request(provider)
+
+        both = asyncio.gather(vector_db_memory_check(request), vector_db_memory_check(request))
+        await asyncio.sleep(0)
+        release.set()
+        first, second = await both
+
+        assert first.status_code == second.status_code == 200
+        provider.memory_report.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_is_refused_even_with_a_cached_report(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+        await vector_db_memory_check(request)
+
+        request.state = SimpleNamespace(user={"role": "member"})
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 403
 
 
 class TestGraphDbHealthNeo4jUnhealthy:
