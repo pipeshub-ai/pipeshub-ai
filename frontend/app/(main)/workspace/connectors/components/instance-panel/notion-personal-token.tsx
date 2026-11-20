@@ -6,6 +6,8 @@ import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Heading, Link, Text, TextField } from '@radix-ui/themes';
 import { selectIsAdmin, useUserStore } from '@/lib/store/user-store';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
+import { useWorkspaceDrawerNestedModalHost } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { ConnectorsApi } from '../../api';
 import type { NotionPersonalTokenState } from '../../types';
 
@@ -56,6 +58,8 @@ export function NotionPersonalToken({ connectorId, connectorName }: { connectorI
   );
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const modalHost = useWorkspaceDrawerNestedModalHost(confirmRemove);
 
   const change = async (call: () => Promise<NotionPersonalTokenState>) => {
     setBusy(true);
@@ -132,7 +136,12 @@ export function NotionPersonalToken({ connectorId, connectorName }: { connectorI
                         color="red"
                         style={{ minHeight: 44 }}
                         disabled={busy}
-                        onClick={() => void change(() => ConnectorsApi.unlinkNotionPersonalToken(connectorId))}
+                        onClick={() =>
+                          // A FAILED entry holds no token any more: clearing its note loses nothing.
+                          entry.status === 'LINKED'
+                            ? setConfirmRemove(true)
+                            : void change(() => ConnectorsApi.unlinkNotionPersonalToken(connectorId))
+                        }
                       >
                         {k('remove')}
                       </Button>
@@ -161,6 +170,19 @@ export function NotionPersonalToken({ connectorId, connectorName }: { connectorI
             </Flex>
           )}
         </Flex>
+        <ConfirmationDialog
+          container={modalHost}
+          open={confirmRemove}
+          onOpenChange={setConfirmRemove}
+          title={k('removeTitle')}
+          message={k('removeMessage')}
+          confirmLabel={k('remove')}
+          confirmLoadingLabel={k('remove')}
+          isLoading={busy}
+          onConfirm={() =>
+            void change(() => ConnectorsApi.unlinkNotionPersonalToken(connectorId)).then(() => setConfirmRemove(false))
+          }
+        />
       </section>
     </Box>
   );

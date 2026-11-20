@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { SWRConfig } from 'swr';
 import '@/lib/__tests__/test-i18n';
 
@@ -78,15 +78,25 @@ describe('NotionPersonalToken: a member', () => {
     expect(screen.getByText(/Not linked/)).toBeTruthy();
   });
 
-  it('removes a linked token', async () => {
+  it('asks before removing a linked token, keeps it on cancel and removes it on confirm', async () => {
     api.getNotionPersonalToken.mockResolvedValue({ status: 'LINKED', linkedAt: Date.UTC(2026, 10, 1) });
     api.unlinkNotionPersonalToken.mockResolvedValue({ status: 'NOT_LINKED' });
     renderPanel();
     await screen.findByText(/^Linked on /);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    let dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText(/revoke it in Notion's developer portal/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(api.unlinkNotionPersonalToken).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    dialog = await screen.findByRole('alertdialog', { name: 'Remove your Notion token?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
 
     await screen.findByText(/Not linked/);
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(api.unlinkNotionPersonalToken).toHaveBeenCalledWith('notion-1');
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
   });
@@ -98,6 +108,19 @@ describe('NotionPersonalToken: a member', () => {
       (await screen.findByTestId('notion-token-status')).textContent
     ).toBe('Stopped working: Notion no longer accepts the token. Link a new token.');
     expect(screen.getByRole('button', { name: 'Link' })).toBeTruthy();
+  });
+
+  it('clears a token that stopped working without asking, since none is left to lose', async () => {
+    api.getNotionPersonalToken.mockResolvedValue({ status: 'FAILED', reason: 'Notion no longer accepts the token' });
+    api.unlinkNotionPersonalToken.mockResolvedValue({ status: 'NOT_LINKED' });
+    renderPanel();
+    await screen.findByText(/^Stopped working/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await screen.findByText(/Not linked/);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(api.unlinkNotionPersonalToken).toHaveBeenCalledWith('notion-1');
   });
 
   it('does not ask for the list of who linked a token', async () => {

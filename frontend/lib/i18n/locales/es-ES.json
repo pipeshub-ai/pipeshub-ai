@@ -3542,6 +3542,8 @@
         "link": "Vincular",
         "replace": "Reemplazar",
         "remove": "Quitar",
+        "removeTitle": "¿Quitar tu token de Notion?",
+        "removeMessage": "PipesHub borra su copia de tu token y, a partir de la próxima sincronización del conector, dejas de ver las páginas de Notion que abría. El token sigue funcionando en Notion hasta que lo revoques en el portal para desarrolladores de Notion.",
         "nextSync": "Los cambios se aplican en la próxima sincronización del conector.",
         "linkedUsers": "Quién vinculó un token",
         "nobodyLinked": "Nadie ha vinculado un token todavía.",

@@ -3648,6 +3648,8 @@
         "link": "連結",
         "replace": "取代",
         "remove": "移除",
+        "removeTitle": "移除你的 Notion 權杖？",
+        "removeMessage": "PipesHub 會刪除它保存的權杖副本，從連接器下次同步起，你將不再看到該權杖能開啟的 Notion 頁面。在你於 Notion 開發者入口網站中撤銷之前，該權杖在 Notion 中仍然有效。",
         "nextSync": "變更會在連接器下次同步時生效。",
         "linkedUsers": "誰連結了權杖",
         "nobodyLinked": "尚未有人連結權杖。",

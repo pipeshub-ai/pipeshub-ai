@@ -3648,6 +3648,8 @@
         "link": "연결",
         "replace": "교체",
         "remove": "제거",
+        "removeTitle": "Notion 토큰을 제거할까요?",
+        "removeMessage": "PipesHub는 저장해 둔 토큰 사본을 삭제하며, 커넥터의 다음 동기화부터 이 토큰으로 열리던 Notion 페이지가 더 이상 보이지 않습니다. 토큰 자체는 Notion 개발자 포털에서 취소할 때까지 Notion에서 계속 작동합니다.",
         "nextSync": "변경 사항은 커넥터의 다음 동기화 때 적용됩니다.",
         "linkedUsers": "토큰을 연결한 사용자",
         "nobodyLinked": "아직 토큰을 연결한 사용자가 없습니다.",

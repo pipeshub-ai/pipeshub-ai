@@ -3772,6 +3772,8 @@
         "link": "Propojit",
         "replace": "Nahradit",
         "remove": "Odebrat",
+        "removeTitle": "Odebrat váš token Notion?",
+        "removeMessage": "PipesHub smaže svou kopii vašeho tokenu a od příští synchronizace konektoru už neuvidíte stránky Notion, které otevíral. V Notion token funguje dál, dokud ho nezrušíte ve vývojářském portálu Notion.",
         "nextSync": "Změny se projeví při příští synchronizaci konektoru.",
         "linkedUsers": "Kdo propojil token",
         "nobodyLinked": "Token zatím nikdo nepropojil.",

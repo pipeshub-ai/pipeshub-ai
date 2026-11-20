@@ -3648,6 +3648,8 @@
         "link": "关联",
         "replace": "替换",
         "remove": "移除",
+        "removeTitle": "移除你的 Notion 令牌？",
+        "removeMessage": "PipesHub 会删除它保存的令牌副本，从连接器下次同步起，你将不再看到该令牌能打开的 Notion 页面。在你于 Notion 开发者门户中撤销之前，该令牌在 Notion 中仍然有效。",
         "nextSync": "更改将在连接器下次同步时生效。",
         "linkedUsers": "谁关联了令牌",
         "nobodyLinked": "还没有人关联令牌。",

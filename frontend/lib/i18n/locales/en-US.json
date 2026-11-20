@@ -3668,6 +3668,8 @@
         "link": "Link",
         "replace": "Replace",
         "remove": "Remove",
+        "removeTitle": "Remove your Notion token?",
+        "removeMessage": "PipesHub deletes its copy of your token, and by the connector's next sync you no longer see the Notion pages it opened. The token still works in Notion until you revoke it in Notion's developer portal.",
         "nextSync": "Changes apply at the connector's next sync.",
         "linkedUsers": "Who linked a token",
         "nobodyLinked": "Nobody has linked a token yet.",
