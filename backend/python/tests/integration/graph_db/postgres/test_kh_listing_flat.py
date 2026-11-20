@@ -76,6 +76,37 @@ async def test_a_connector_listed_while_kg_does_not_serve_it_lists_the_same_rows
     assert served == walked == [f"r{i:04d}" for i in range(7)] and first["total"] == again["total"] == 7
 
 
+@pytest.mark.parametrize("hidden", [False, True], ids=["plain", "walked"])
+async def test_a_first_page_that_reads_its_whole_listing_counts_its_total_from_it_without_a_second_read(pg_db, monkeypatch, hidden) -> None:
+    """300 records, 15 readable. A search that matches ten names reads its whole listing in the page's first window: the total (5, of the readable ones) and the counts are the
+    rows the window admitted, and the connector is not read again to count them (a rare word was read whole twice, once to find its rows and once to count them). A listing that
+    does not end in the page's windows (no search), and a page after a boundary, still count by the count. ``walked``: a matching readable record no class decides (a restamp hides
+    it) is in the total as the access check admits it, in the window as in the count."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 300, readable=15)
+    if hidden:
+        await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND id = 'r0012' AND coll = 3", org)
+    counted: list[bool] = []
+    real = kh_listing.KhListingMixin._kh_flat_exact
+
+    async def spy(self, *a, **kw) -> object:
+        counted.append(True)
+        return await real(self, *a, **kw)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_flat_exact", spy)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, filters={"search_query": "r001"})
+    matched = [f"r{i:04d}" for i in range(10, 15)]
+    assert [r["id"] for r in page["rows"]] == matched and page["total"] == 5 and page["counts"] == {"record": 5} and not page.get("totalCapped")
+    assert not counted
+    with ctx(org):
+        whole = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=3)
+    assert whole["total"] == 15 and len(counted) == 1
+    after = {k: whole["rows"][-1][k] for k in ("nullRank", "sortKey", "id")}
+    with ctx(org):
+        later = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, after=after, filters={"search_query": "r001"})
+    assert [r["id"] for r in later["rows"]] == matched and later["total"] == 5 and len(counted) == 2
+
+
 async def test_a_connector_with_no_copy_is_refused(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
