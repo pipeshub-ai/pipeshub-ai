@@ -54,6 +54,37 @@ replaced: the start stops and says so, because the database already uses those p
 services' ports are kept from run to run while free. The web port never moves once the database exists (the API's address is
 stored in its settings), so if another program has taken it the start fails with `port_in_use`.
 
+## Building the bundle
+
+```
+deployment/native/bundle.sh <out>/pipeshub-native --archive <out>/pipeshub-native-<platform>.tar.gz
+deployment/native/smoke.sh <out>/pipeshub-native      # start for real into a fresh data folder, health, stop, start again, stop, nothing left
+```
+
+`bundle.sh` runs three steps, each of which can also run on its own:
+
+- `build-pg.sh <bundle>/pg`: OpenSSL (3.5 LTS) built from source into `pg/lib`, then PostgreSQL 18 `--with-ssl=openssl
+  --without-icu --without-readline --disable-rpath`, then pgvector and pg_textsearch against that tree, built for any CPU of the
+  architecture (`OPTFLAGS=""`; on x86-64 an AVX instruction may appear only in a function chosen at run time after a CPU check,
+  which `objdump` verifies). Libraries are found relative to each file (`$ORIGIN/../lib`, `@loader_path/../lib`). A self-check runs
+  initdb, starts the server from a copy in another folder, creates every extension, computes a vector distance and searches an
+  HNSW index. Needs a C compiler, make, perl, flex and bison.
+- `build-py.sh <bundle>`: Python 3.12 from python-build-standalone (`uv python install`), CPU-only PyTorch, the backend's and
+  the schema tools' dependencies, and the source, with bytecode compiled at build time.
+- `build-node.sh <bundle>`: the Node runtime, the API built and pruned to production dependencies, and the web UI as a static export.
+
+Every source is pinned in `versions.env`. Each tarball is checked against its SHA-256 before it is unpacked: the published
+checksums for PostgreSQL, OpenSSL and Node, and the tag archive's for pgvector and pg_textsearch. Python comes from uv, which
+checks the download itself.
+
+CI (`.github/workflows/native-bundle.yml`) builds Linux x64 inside `manylinux_2_28` (glibc 2.28, so RHEL 8, Debian 10, Ubuntu 18.10
+and later) and macOS arm64, runs the smoke test on both, and uploads the archives. macOS binaries carry an ad hoc signature only
+(`codesign -s -`; Apple silicon runs nothing unsigned). Signing with a Developer ID and notarising are a separate release step.
+
+Measured on Linux x64: 5.7 GB unpacked (5.1 GB of file contents), of which 4.6 GB is Python (PyTorch, docling and the connector
+SDKs); 1.7 GB as `.tar.gz`, 1.2 GB as `.tar.zst` (level 19). The first indexing run downloads the embedding model into the data
+folder (about 2.5 GB there with the default model).
+
 ## Tests
 
 `cd deployment/native/launcher && npm test` (Linux or macOS, Node 24.12 or later, `python3` and `pgrep` on `PATH`; no npm
