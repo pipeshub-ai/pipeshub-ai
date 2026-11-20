@@ -64,6 +64,7 @@ import {
 import {
   ANSWER_LOST,
   ANSWER_UNCONFIRMED,
+  beforeDeadline,
   newReadable,
   readableRecordIds,
   redactMessagesFor,
@@ -1462,6 +1463,8 @@ class Judge {
     if (wanted.size === 0) return;
     const orgId = this.reader.orgId;
     const readId = idOf(this.opts.session?._id);
+    // The turns are read within the read's one deadline: a turn the store has not given by then is not read.
+    const deadline = this.opts.known?.deadline ?? Date.now() + timeoutMs;
     const bySession = new Map<
       string,
       Array<{ id: string; row: ReaderRow; seq: number }>
@@ -1509,7 +1512,10 @@ class Judge {
         );
         try {
           const rows = [
-            ...(await this.deps.rowsUpTo(orgId, sessionId, top, limit)),
+            ...(await beforeDeadline(
+              deadline,
+              this.deps.rowsUpTo(orgId, sessionId, top, limit),
+            )),
           ].reverse();
           const shown = await this.deps.perRecordView(
             this.reader,

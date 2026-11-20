@@ -86,10 +86,10 @@ const WEB_SEARCH_ORIGIN = 'WEB_SEARCH';
 /** `metadata.origin` of a file of a public repository a run fetched: stored as a web page is. */
 const REPOSITORY_ORIGIN = 'REPOSITORY';
 
-/** The read's one deadline passed before every chunk of its check answered. */
+/** The read's one deadline passed before every chunk of its check, or a turn it reads from the store, answered. */
 class AccessCheckDeadline extends Error {
   constructor() {
-    super('the access check ran past its deadline');
+    super('the read ran past its deadline');
     this.name = 'AccessCheckDeadline';
   }
 }
@@ -129,8 +129,11 @@ const inParallel = async <T, R>(
   return results;
 };
 
-/** `work`, or `AccessCheckDeadline` once `deadline` (epoch ms) has passed, whichever comes first. */
-const beforeDeadline = async <T>(
+/**
+ * `work`, or `AccessCheckDeadline` once `deadline` (epoch ms) has passed, whichever comes first. A store read is held
+ * to it too: one that is not connected holds a read until its own timeout (Mongoose's, 10 s), far past any read's.
+ */
+export const beforeDeadline = async <T>(
   deadline: number,
   work: Promise<T>,
 ): Promise<T> => {
@@ -899,6 +902,8 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
 /** Rows read per step, and steps allowed, when a turn's start is read back (as a page's are, `redactPageFor`). */
 const TURN_READ_ROWS = 50;
 const TURN_READ_STEPS = 10;
+/** How long a read that names no deadline of its own waits for the turns it reads: as long as a read's access check. */
+const TURN_READ_TIMEOUT_MS = 2_500;
 
 /** Rows of a chat before a place in it, newest first. */
 export type RowsBefore = (
@@ -926,7 +931,15 @@ export interface TurnViewOptions {
   rowsBefore?: RowsBefore;
   /** The store's places of rows that don't carry theirs, by default. */
   placesOf?: PlacesOf;
+  /**
+   * The read's one deadline (epoch ms), which the turns it reads from the store are held to: `known`'s, by default,
+   * else `TURN_READ_TIMEOUT_MS` from now. A turn not read by then is not read.
+   */
+  deadline?: number;
 }
+
+const turnReadDeadline = (opts: TurnViewOptions): number =>
+  opts.deadline ?? opts.known?.deadline ?? Date.now() + TURN_READ_TIMEOUT_MS;
 
 const storedRowsBefore =
   (orgId: string): RowsBefore =>
@@ -963,6 +976,25 @@ const seqOf = (m: object): number | undefined => {
 };
 
 /**
+ * The rows of the turn before place `seq`, from the question that opened it, oldest first, when `given` holds a row at
+ * every place down to that question (or to the chat's first place); undefined when it leaves one out.
+ */
+function provenTurnBefore(
+  seq: number,
+  given: ReadonlyMap<number, ViewerMessage>,
+): ViewerMessage[] | undefined {
+  const proven: ViewerMessage[] = [];
+  for (let at = seq - 1; at >= 0; at -= 1) {
+    const row = given.get(at);
+    // A place `given` has no row for may hold one it left out (a page of changed rows holds only those).
+    if (row === undefined) return undefined;
+    proven.unshift(row);
+    if (startsTurn(row) || at === 0) return proven;
+  }
+  return undefined;
+}
+
+/**
  * The rows of an answer's turn before it, from the question that opened the turn, oldest first: proven from `given`
  * when it holds a row at every place down to that question, else read back through the store. Undefined when the
  * start can't be read; the rows of a chat's first turn when no question comes before the answer.
@@ -972,15 +1004,8 @@ async function turnBefore(
   given: ReadonlyMap<number, ViewerMessage>,
   read: (beforeSeq: number) => Promise<ViewerMessage[]>,
 ): Promise<ViewerMessage[] | undefined> {
-  const proven: ViewerMessage[] = [];
-  for (let at = seq - 1; at >= 0; at -= 1) {
-    const row = given.get(at);
-    // A place `given` has no row for may hold one it left out (a feed page holds only changed rows): read it.
-    if (row === undefined) break;
-    proven.unshift(row);
-    if (startsTurn(row)) return proven;
-    if (at === 0) return proven;
-  }
+  const proven = provenTurnBefore(seq, given);
+  if (proven !== undefined) return proven;
   const rows: ViewerMessage[] = [];
   let before = seq;
   for (let step = 0; step < TURN_READ_STEPS; step += 1) {
@@ -1019,7 +1044,10 @@ export const redactWithTurns = async <M extends object>(
 ): Promise<M[]> => {
   const msgs = rows as unknown as ViewerMessage[];
   if (msgs.length === 0) return rows;
-  const readBack = opts.rowsBefore ?? storedRowsBefore(viewer.orgId);
+  const deadline = turnReadDeadline(opts);
+  const stored = opts.rowsBefore ?? storedRowsBefore(viewer.orgId);
+  const readBack: RowsBefore = (sessionId, beforeSeq, limit) =>
+    beforeDeadline(deadline, stored(sessionId, beforeSeq, limit));
   const fresh = (m: ViewerMessage): boolean => opts.fresh?.(m) === true;
   const sessionOf = (m: ViewerMessage): string | undefined =>
     idOfValue((m as { sessionId?: unknown }).sessionId) ?? opts.sessionId;
@@ -1163,7 +1191,10 @@ export const redactWithTurns = async <M extends object>(
     const id = idOfValue(first._id);
     if (id === undefined) return undefined;
     const place = (
-      await (opts.placesOf ?? storedPlacesOf(viewer.orgId))([id])
+      await beforeDeadline(
+        deadline,
+        (opts.placesOf ?? storedPlacesOf(viewer.orgId))([id]),
+      )
     ).get(id);
     if (place?.sessionId !== sessionId) return undefined;
     return turnBefore(place.seq, new Map(), (beforeSeq) =>
@@ -1173,17 +1204,29 @@ export const redactWithTurns = async <M extends object>(
 };
 
 /**
+ * Whether the reader check judges `m` with other rows of its turn: an answer or error with the question that opened
+ * it, a card with its run's answer, a reply to a card with the card. A question that opens a turn, a note, a system
+ * line, feedback and a shared copy are each judged alone.
+ */
+const judgedWithTurn = (m: ViewerMessage): boolean =>
+  isAnswer(m) ||
+  m.messageType === 'tool_call' ||
+  (m.messageType === 'user_query' && !startsTurn(m));
+
+/**
  * `rows` of one chat in chat order, with the rest of each turn they cut read through the store. The reader check
  * finds a card's answer, and an answer's question, among the rows it is given and by their order; a page of changed
  * rows may hold a card or an answer without the rest of its turn, and holds them in the order they
- * changed. A page that is the whole chat (`whole`) needs no read; otherwise each group of nearby rows takes one read
- * of the turns around it. A turn longer than that stays cut, and the check then hides its card from all but its asker.
+ * changed. A page that is the whole chat (`whole`) needs no read. Otherwise each group of nearby rows takes one read of
+ * the turns around it, unless the page answers for every row of the group: each is judged alone, or is an answer whose
+ * turn the page holds from its question. A turn longer than the read, or not read by the read's `deadline`, stays
+ * cut, and the check then hides its card from all but its asker.
  */
 export async function withWholeTurns<M extends object>(
   rows: M[],
   sessionId: string,
   orgId: string,
-  opts: { whole?: boolean; rowsBefore?: RowsBefore } = {},
+  opts: { whole?: boolean; rowsBefore?: RowsBefore; deadline?: number } = {},
 ): Promise<M[]> {
   const place = (m: M): number | undefined => seqOf(m);
   const placed = rows.filter((m) => place(m) !== undefined);
@@ -1194,23 +1237,41 @@ export async function withWholeTurns<M extends object>(
   if (opts.whole === true || sorted.length === 0)
     return [...sorted, ...unplaced];
   const read = opts.rowsBefore ?? storedRowsBefore(orgId);
+  const deadline = opts.deadline ?? Date.now() + TURN_READ_TIMEOUT_MS;
   const bySeq = new Map<number, M>(sorted.map((m) => [place(m) as number, m]));
-  const clusters: Array<[number, number]> = [];
+  const given = bySeq as unknown as ReadonlyMap<number, ViewerMessage>;
+  const cutsItsTurn = (m: M): boolean => {
+    const row = m as unknown as ViewerMessage;
+    return (
+      judgedWithTurn(row) &&
+      !(
+        isAnswer(row) &&
+        provenTurnBefore(place(m) as number, given) !== undefined
+      )
+    );
+  };
+  const clusters: Array<{ lo: number; hi: number; cut: boolean }> = [];
   for (const m of sorted) {
     const at = place(m) as number;
     const last = clusters[clusters.length - 1];
-    if (last && at - last[1] <= TURN_READ_ROWS) last[1] = at;
-    else clusters.push([at, at]);
+    if (last && at - last.hi <= TURN_READ_ROWS) {
+      last.hi = at;
+      last.cut = last.cut || cutsItsTurn(m);
+    } else clusters.push({ lo: at, hi: at, cut: cutsItsTurn(m) });
   }
   const extra = new Map<number, M>();
-  for (const [lo, hi] of clusters) {
+  for (const { lo, hi, cut } of clusters) {
+    if (!cut) continue;
     let window: ViewerMessage[];
     try {
       // Newest first from past the group: its rows, and a read's worth on each side of it.
-      window = await read(
-        sessionId,
-        hi + TURN_READ_ROWS + 1,
-        hi - lo + 1 + 2 * TURN_READ_ROWS,
+      window = await beforeDeadline(
+        deadline,
+        read(
+          sessionId,
+          hi + TURN_READ_ROWS + 1,
+          hi - lo + 1 + 2 * TURN_READ_ROWS,
+        ),
       );
     } catch (error) {
       logger.warn('Could not read the turns a page cuts; they stay cut', {
@@ -1266,16 +1327,22 @@ export const storedAnswerShown = async (
   ownerOf: (message: ViewerMessage) => string | undefined,
   opts: TurnViewOptions = {},
 ): Promise<boolean> => {
+  // One deadline for the answer's read and its turn's.
+  const deadline = turnReadDeadline(opts);
   try {
-    const [row] = await (opts.rowsBefore ?? storedRowsBefore(viewer.orgId))(
-      sessionId,
-      seq + 1,
-      1,
+    const [row] = await beforeDeadline(
+      deadline,
+      (opts.rowsBefore ?? storedRowsBefore(viewer.orgId))(
+        sessionId,
+        seq + 1,
+        1,
+      ),
     );
     if (row === undefined || seqOf(row) !== seq || !isAnswer(row)) return false;
     return await shownWithTurn(appConfig, viewer, row, ownerOf, {
       ...opts,
       sessionId,
+      deadline,
     });
   } catch (error) {
     logger.warn(

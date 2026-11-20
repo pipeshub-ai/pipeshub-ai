@@ -1758,6 +1758,16 @@ describe('the reader check: who may see an answer', () => {
       expect(await verdict(CAROL, inThread, failing({ chats: async () => new Map() }), thread), 'the room is gone').to.equal('hidden')
     })
 
+    it('a turn the store has not read by the read’s deadline leaves the answer unchecked, at the deadline', async () => {
+      const old = legacy('Old: R says the launch moved.', [R])
+      const fresh = builtOn(old, IVY)
+      const w = legacyWorld([old, fresh], { rowsUpTo: () => new Promise(() => undefined) })
+      const started = Date.now()
+      const verdicts = await visibleRows(reader(CAROL), session, [fresh], { deps: w.deps, member: true, timeoutMs: 50 })
+      expect(verdicts.get(String(fresh._id))?.verdict).to.equal('unchecked')
+      expect(Date.now() - started).to.be.lessThan(1_000)
+    })
+
     it('never through the old view: a row written under the rules, a full parent, or one labelled since', async () => {
       const late = legacy('Late: written by an older build after the room took on the rules.', [], { createdAt: T2 })
       const onLate = builtOn(late)

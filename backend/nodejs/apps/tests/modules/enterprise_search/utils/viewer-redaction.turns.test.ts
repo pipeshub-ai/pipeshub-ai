@@ -4,6 +4,7 @@ import {
   newReadable,
   redactMessagesFor,
   redactWithTurns,
+  storedAnswerShown,
   viewerOf,
   withWholeTurns,
   type Readable,
@@ -59,12 +60,20 @@ const answer = (seq: number, over: Record<string, unknown> = {}): ViewerMessage 
 })
 const plain = (seq: number): ViewerMessage & Record<string, unknown> =>
   question(seq, { content: 'What is 2 + 2?', appliedFilters: { apps: [], kb: [] } })
+const note = (seq: number): ViewerMessage & Record<string, unknown> =>
+  ({ _id: `n${seq}`, sessionId: ROOM, seq, messageType: 'note', content: 'See you at three.', authorUserId: CAROL })
+const line = (seq: number): ViewerMessage & Record<string, unknown> =>
+  ({ _id: `s${seq}`, sessionId: ROOM, seq, messageType: 'system', content: '', authorUserId: DANA })
 
 /** A store holding `rows`: rows before a place, newest first, as the repository reads them. */
 const store = (rows: Array<ViewerMessage & Record<string, unknown>>) =>
   sinon.stub().callsFake(async (_sid: string, beforeSeq: number, limit: number) =>
     rows.filter((r) => (r.seq as number) < beforeSeq).sort((a, b) => (b.seq as number) - (a.seq as number)).slice(0, limit),
   )
+/** A store that never answers, as a database that is not connected holds a read. */
+const silent = () => sinon.stub().returns(new Promise(() => undefined))
+/** Well inside the 10 s a database that is not there holds a read, and far past a 50 ms deadline. */
+const BOUND_MS = 1_000
 
 const hiddenOf = (m: object | undefined) => (m as { answerHidden?: unknown } | undefined)?.answerHidden
 
@@ -136,6 +145,15 @@ describe('the per-record view judges an answer with its whole turn', () => {
       const [out] = await redactWithTurns(appConfig, viewerOf(CAROL, ORG), [answer(601)], ownerOf, { known: knownFor(CAROL), rowsBefore: store(long) })
       expect(hiddenOf(out)).to.deep.equal(UNCONFIRMED)
     })
+
+    it('a turn the store has not answered by the read’s deadline leaves its answer unconfirmed, at the deadline', async () => {
+      const known = knownFor(CAROL)
+      const started = Date.now()
+      known.deadline = started + 50
+      const [out] = await redactWithTurns(appConfig, viewerOf(CAROL, ORG), [answer(2)], ownerOf, { known, rowsBefore: silent() })
+      expect(hiddenOf(out)).to.deep.equal(UNCONFIRMED)
+      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
+    })
   })
 
   describe('redactWithTurns, a frame (one run of the chat, rows with no place)', () => {
@@ -171,6 +189,26 @@ describe('the per-record view judges an answer with its whole turn', () => {
       expect(hiddenOf(out[0])).to.deep.equal(UNCONFIRMED)
       expect(hiddenOf(out[1])).to.equal(undefined)
     })
+
+    it('a first turn the store has not placed by the read’s deadline is unread: its answer is unconfirmed, at the deadline', async () => {
+      const known = knownFor(CAROL)
+      const started = Date.now()
+      known.deadline = started + 50
+      const placesOf = sinon.stub().returns(new Promise(() => undefined))
+      const [out] = await redactWithTurns(appConfig, viewerOf(CAROL, ORG), [bare(answer(2))], ownerOf, { known, sessionId: ROOM, rowsBefore: store([question(1)]), placesOf })
+      expect(hiddenOf(out)).to.deep.equal(UNCONFIRMED)
+      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
+    })
+  })
+
+  describe('storedAnswerShown', () => {
+    it('an answer the store has not read by the read’s deadline is not shown', async () => {
+      const known = knownFor(CAROL)
+      const started = Date.now()
+      known.deadline = started + 50
+      expect(await storedAnswerShown(appConfig, viewerOf(CAROL, ORG), ROOM, 2, ownerOf, { known, rowsBefore: silent() })).to.equal(false)
+      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
+    })
   })
 
   describe('withWholeTurns: what the reader check is given of a page', () => {
@@ -195,6 +233,41 @@ describe('the per-record view judges an answer with its whole turn', () => {
       const out = await withWholeTurns([answer(2), question(1)], ROOM, ORG, { whole: true, rowsBefore })
       expect(ids(out)).to.deep.equal(['q1', 'a2'])
       expect(rowsBefore.called).to.equal(false)
+    })
+
+    it('asks the store nothing for a page whose rows are each judged alone: questions, notes, system lines', async () => {
+      const rowsBefore = store([plain(1), answer(2), plain(3), note(4), line(5)])
+      const out = await withWholeTurns([line(5), plain(3), note(4)], ROOM, ORG, { rowsBefore })
+      expect(ids(out)).to.deep.equal(['q3', 'n4', 's5'])
+      expect(rowsBefore.called).to.equal(false)
+    })
+
+    it('asks the store nothing for a page that holds an answer’s turn from its question', async () => {
+      const rowsBefore = store([plain(1), answer(2), question(3), answer(4)])
+      const out = await withWholeTurns([answer(4), question(3)], ROOM, ORG, { rowsBefore })
+      expect(ids(out)).to.deep.equal(['q3', 'a4'])
+      expect(rowsBefore.called).to.equal(false)
+    })
+
+    it('reads the question of an answer the page holds without it (control)', async () => {
+      const rowsBefore = store([plain(1), answer(2), question(3), answer(4)])
+      const out = await withWholeTurns([answer(4)], ROOM, ORG, { rowsBefore })
+      expect(ids(out)).to.deep.equal(['q3', 'a4'])
+      expect(rowsBefore.calledOnce).to.equal(true)
+    })
+
+    it('a reply to a card is read with the card the page leaves out', async () => {
+      const reply = question(5, { _id: 'r5', content: 'Tool approval: yes' })
+      const rowsBefore = store([question(3), card(4), reply, answer(6)])
+      const out = await withWholeTurns([reply], ROOM, ORG, { rowsBefore })
+      expect(ids(out)).to.deep.equal(['q3', 'c4', 'r5', 'a6'])
+    })
+
+    it('gives up a read the store has not answered by the read’s deadline: the page stays as it came, in chat order', async () => {
+      const started = Date.now()
+      const out = await withWholeTurns([card(4), question(3)], ROOM, ORG, { rowsBefore: silent(), deadline: started + 50 })
+      expect(ids(out)).to.deep.equal(['q3', 'c4'])
+      expect(Date.now() - started).to.be.lessThan(BOUND_MS)
     })
   })
 })
