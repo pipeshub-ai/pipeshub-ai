@@ -129,6 +129,7 @@ from app.connectors.core.base.connector.stream_purpose import streaming_for_inde
 from app.connectors.core.base.error.stream_errors import not_downloadable, to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
+    OAuthStateError,
     OAuthToken,
 )
 from app.connectors.core.constants import (
@@ -7251,7 +7252,7 @@ async def handle_oauth_callback(
     connector_registry = request.app.state.connector_registry
 
     settings_base_path = await _get_settings_base_path(graph_provider)
-    connector_id = None  # For error handling
+    authorized_connector_id = None  # set once the caller passed the checks: only their sign-in may be marked failed
     base_url = await resolve_oauth_base_url(
         resolve_config_service(container, request.state.user.get("orgId")), base_url
     )
@@ -7361,6 +7362,7 @@ async def handle_oauth_callback(
         # Bound only after the checks above (stricter than the toolset callback): a state naming a connector the
         # caller may not use never puts its id on a line.
         bind_request_log_fields(request, connector_id=connector_id, connector_type=connector_type)
+        authorized_connector_id = connector_id
 
         # Get configuration
         config_path = _get_config_path_for_instance(connector_id)
@@ -7491,15 +7493,15 @@ async def handle_oauth_callback(
         # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
         mark_request_failure(request, e, reason="server_error", include_error_text=False)
 
-        # Update instance authentication status on error
-        if connector_id:
+        # A refused caller, or a callback for another sign-in, leaves the connector as it was.
+        if authorized_connector_id and not isinstance(e, OAuthStateError):
             try:
                 updates = {
                     "isAuthenticated": False,
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms()
                 }
                 await connector_registry.update_connector_instance(
-                    connector_id=connector_id,
+                    connector_id=authorized_connector_id,
                     updates=updates,
                     user_id=user_id,
                     org_id=org_id,
