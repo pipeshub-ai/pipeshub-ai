@@ -4011,3 +4011,19 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
                    else self._group_sync(points, short_user_read=True, unread=unread))
         writes = c.data_entities_processor.on_new_app_roles if kind == "role" else c.data_entities_processor.on_new_user_groups
         assert writes.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_reindex_reads_no_add_on_group_of_a_role_and_leaves_the_cap_to_the_level_s_groups() -> None:
+    """The sync never reads an ``atlassian-addons`` group (app accounts), so a reindex does not either: with room for one
+    group, the role's add-on group must not take it from the group the role really needs."""
+    c, pages, point = TestAReindexReadsOnlyTheGroupsItsIssuesNeed._reindex(
+        TestReindexAppliesTheLevel.LEVELED, [{"type": "reporter"}], TestAReindexResolvesProjectRolesAndLeads.ROLE)
+    c.data_source.get_project_role = AsyncMock(return_value=_resp(200, {"id": 10002, "actors": [
+        {"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-addons", "name": "atlassian-addons-admin"}},
+        {"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-1", "name": "devs"}}]}))
+    with patch("app.connectors.sources.atlassian.jira_cloud.connector.REINDEX_GROUP_READS", 1):
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+    assert pages == ["group-1"]
+    assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+    assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == []
