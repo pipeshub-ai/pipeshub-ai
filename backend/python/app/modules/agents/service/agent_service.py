@@ -532,9 +532,9 @@ class AgentService:
             )
             logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
 
-        # Build response
+        # Build response. The agent's org is the caller's own: it is stored for the lookups bound to it, not sent back.
         response_agent = {
-            **agent,
+            **{field: value for field, value in agent.items() if field != "orgId"},
             "toolsets": created_toolsets,
             "mcpServers": created_mcp_servers,
             "knowledge": created_knowledge,

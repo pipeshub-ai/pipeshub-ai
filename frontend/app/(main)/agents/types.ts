@@ -478,7 +478,7 @@ export interface AgentConversationDetailApi {
   forkedFrom?: ForkOrigin;
   forks?: ForkChild[];
   access: { isOwner: boolean; accessLevel: string };
-  /** The project the chat is in, and whether the project's members may read it. */
+  /** The project the conversation belongs to, and whether the project's members may read it. */
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   /** Optional: present when the API returns paginated messages. */

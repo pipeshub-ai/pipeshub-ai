@@ -30,5 +30,17 @@ async def test_new_agent_carries_its_org_and_no_edition_fields() -> None:
     assert not {"handle", "createdVia", "sourceConversationId", "sourceMessageId"} & stored.keys()
 
 
+async def test_the_create_response_does_not_send_back_the_agents_org() -> None:
+    graph = InMemoryGraph()
+
+    created = await AgentService(graph, FakeConfigService(), logging.getLogger("test")).create(  # type: ignore[arg-type]
+        ALICE, AgentSpec.model_validate({"name": "Offer drafter"}),
+    )
+
+    assert "orgId" not in created.agent
+    assert created.agent["_key"] == created.agent_key
+    assert graph.nodes[AGENTS][created.agent_key]["orgId"] == "org-1"
+
+
 def test_unique_violation_is_not_an_http_error() -> None:
     assert not issubclass(UniqueConstraintViolation, HTTPException)
