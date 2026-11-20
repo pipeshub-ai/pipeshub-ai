@@ -221,7 +221,8 @@ class FakeBoxApi(BaseAdapter):
             case ["users", "me"]:
                 return self._json(request, {"type": "user", "id": SERVICE_ACCOUNT_ID, "login": "svc@boxdevedition.com", "name": "PipesHub"})
             case ["users"]:
-                return self._json(request, self._offset_page(list(self.users.values()), q))
+                users = list(self.users.values())
+                return self._json(request, self._marker_page(users, q) if q.get("usemarker", "").lower() == "true" else self._offset_page(users, q))
             case ["users", user_id]:
                 user = self.users.get(user_id)
                 return self._json(request, user) if user else self._error(request, 404, "not_found")
@@ -407,6 +408,7 @@ class FakeBoxRecordsDb:
         self.deleted_groups: list[str] = []
         self.deleted_records: list[str] = []
         self.removed_access: list[tuple[str, str]] = []
+        self.withdrawn: list[tuple[str, bool]] = []
         self.record_batches: list[list[Any]] = []
         self.reindexed: list[Any] = []
         self.fail_lookup_for: set[str] = set()
@@ -489,8 +491,20 @@ class FakeBoxRecordsDb:
             stored = self.app_users.get(user.email.lower())
             self.app_users[user.email.lower()] = user.model_copy(update={"id": stored.id}) if stored else user
 
-    async def get_all_app_users(self, connector_id: str) -> list[Any]:
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        self._check("get_all_app_users")
         return list(self.app_users.values())
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any], *, drop_grants: bool = False) -> None:
+        """Like the real processor: the link goes, and with ``drop_grants`` the user's own grants too."""
+        self._check("withdraw_app_user_access")
+        for user in users:
+            self.withdrawn.append((user.email, drop_grants))
+            self.app_users.pop(user.email.lower(), None)
+            if drop_grants:
+                for stored in self.permissions.values():
+                    for key in [k for k, p in stored.items() if p.entity_type.value == "USER" and p.email == user.email]:
+                        stored.pop(key)
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> AppUser | None:
         return next((u for u in self.app_users.values() if u.source_user_id == source_user_id), None)

@@ -268,7 +268,7 @@ class TestSharingAndPermissions:
         await connector.run_sync()
         assert db.records["fold-t"].external_record_group_id == ALICE
         checkpoints.sync_points.clear()
-        box_api.fail("GET", "/2.0/users", 503, times=5, query={"offset": "1000"})
+        box_api.fail("GET", "/2.0/users", 503, times=5, query={"marker": "1000"})
         if fresh_connector:
             connector = await ready_connector(db, checkpoints)
 
@@ -294,7 +294,7 @@ class TestSharingAndPermissions:
              "accessible_by": {"type": "user", "id": BOB, "login": BOB_EMAIL}},
         )
         checkpoints.sync_points.clear()
-        box_api.fail("GET", "/2.0/users", 503, times=5, query={"offset": "1000"})
+        box_api.fail("GET", "/2.0/users", 503, times=5, query={"marker": "1000"})
         connector = await ready_connector(db, checkpoints)
 
         await connector.run_sync()

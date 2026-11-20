@@ -466,6 +466,38 @@ async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the
     assert targets == {"records/elsewhere", f"teams/all_{w.org}"}
 
 
+async def test_a_withdrawn_member_no_longer_reads_what_the_connector_shares_with_the_organization(w: World) -> None:
+    """A record shared with the whole organization (a Box company link) reaches the connector's linked members only:
+    a member whose source account left (withdrawn with their grants) reads it no more, a linked one still does, and
+    linking the member again gives it back. tests/integration/graph_db/test_box_departed_accounts_real_backends.py
+    runs the same through the Box connector on Neo4j and ArangoDB."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    await member(w, "m", userId="um", email="m@x.com")
+    await member(w, "k", userId="uk", email="k@x.com")
+    await w.nodes("records", rec("company"))
+    await w.edge("permission", ("organizations", w.org), ("records", "company"), type="ORG", role="READER")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("m@x.com", "m"), app_user("k@x.com", "k")])
+    assert await w.allowed("m", "company") == {"company"}
+
+    await processor.withdraw_app_user_access(APP, [SimpleNamespace(id="m")], drop_grants=True)
+    assert await w.allowed("m", "company") == set()
+    assert await w.allowed("k", "company") == {"company"}
+
+    await processor.on_new_app_users([app_user("m@x.com", "m")])
+    assert await w.allowed("m", "company") == {"company"}
+
+
 async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_unlinked_users(w: World) -> None:
     """``open_app_to_org_team``: an org user the connector does not link loses the grants still naming them before
     the All team passes the gate (they would read through it otherwise); a linked user keeps theirs; a grant left
