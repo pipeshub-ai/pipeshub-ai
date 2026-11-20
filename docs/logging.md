@@ -658,8 +658,8 @@ sign-in belongs to; MCP: `mcp_server_id` and `owner_id`), `provider` (the connec
 `provider`), and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
-rejected our client, a token URL that cannot be sent to, a 2xx answer with no token, or a token whose `created_at` or
-`expires_in` cannot be parsed, `reason=malformed_token`) is ERROR with a stack once per credential
+rejected our client, a token URL that cannot be sent to, a 2xx answer with no token, or a token field that cannot be
+parsed, `reason=malformed_token`: `created_at` or `expires_in` for connectors and toolsets, any token field for MCP) is ERROR with a stack once per credential
 per hour and DEBUG in between. A 2xx answer whose `error` is a dead-grant code (`invalid_grant`, `bad_refresh_token`, ...) is
 `auth_expired`, like the same code on a 400: the user signs in again. A 2xx answer whose `error` says the provider is busy or down is `unavailable`, `rate_limited` or `upstream_5xx`,
 and a programming error raised while handling one stays `internal`. `trigger` is set by the refresh
