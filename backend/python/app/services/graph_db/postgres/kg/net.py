@@ -371,6 +371,7 @@ class VerifyState:
     since: float | None = None
     flagged: bool = False
     mark: int = 0                  # the connector's write count when the scan began (read under its lock, see _begin)
+    turn: float = 0.0              # when it last had a pass: the passes go round the connectors whose turn has come, so a large scan in progress does not hold the others back
 
 
 async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
@@ -434,10 +435,12 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 logger.error("kg connector %s of org %s has not completed a verify in %d intervals", app, org, OVERDUE_INTERVALS)
     OVERDUE.set(org, value=overdue)
     OLDER.set(org, value=older)
-    turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now), key=lambda a: states[(org, a)].due)[:VERIFY_PER_PASS]
+    turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now),
+                  key=lambda a: (states[(org, a)].turn, states[(org, a)].due))[:VERIFY_PER_PASS]
     completed = 0
     for app in turn:
         st = states[(org, app)]
+        st.turn = time.monotonic()
         deadline = time.monotonic() + VERIFY_BUDGET_S
         while True:
             if st.cursor is not None and locks.written(org, app) != st.mark:

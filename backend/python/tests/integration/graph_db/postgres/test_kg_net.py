@@ -233,6 +233,28 @@ async def test_a_connector_too_large_for_one_pass_is_verified_over_several_from_
     assert passes > 4 and seen_pages == sorted(seen_pages) and len(set(seen_pages)) > 3      # a cursor that moved forward and was kept between passes
 
 
+async def test_a_large_verify_in_progress_does_not_hold_back_another_connector_whose_turn_has_come(pg_db, no_jitter, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, extra=12, apps=1)                             # drv: 15 records, verified over several passes; drv0: one record
+    await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'app0-r'", org)              # a drift in the small connector
+    monkeypatch.setattr(verify_mod, "PAGE", 3)
+    monkeypatch.setattr(net, "VERIFY_BUDGET_S", 0.0)                           # one page a pass
+    monkeypatch.setattr(net, "VERIFY_PER_PASS", 1)
+    states: dict = {}
+    await net.verify_due(pg_db, org, states)
+    assert states[(org, "drv")].cursor is not None                             # the large one went first and is in progress
+    await net.verify_due(pg_db, org, states)
+    assert await _mode_of(pg_db, org, "drv0") == "legacy"                      # the next pass is the small one's: caught while the large scan waits its turn
+    assert states[(org, "drv")].cursor is not None and await _mode(p, org) == "enforce"
+
+
+async def _mode_of(db, org: str, app: str) -> str | None:
+    async def go(tx) -> str | None:
+        return await tx.fetchval("SELECT s.mode FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1 WHERE s.org_id = $1 AND k.id = $2", org, app)
+    with ctx(org):
+        return await db.run(go)
+
+
 async def test_a_verify_that_does_not_finish_in_its_intervals_is_logged_and_raised_not_demoted(pg_db, no_jitter, monkeypatch, caplog) -> None:
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org, extra=6)
