@@ -1344,6 +1344,13 @@ export class StorageController {
       ) {
         throw new BadRequestError('This mode does not apply to this path');
       }
+      if (bump && !(await adapter.conditionalCapabilities()).bump) {
+        // The URL that brought the request was signed by a replica that honoured it: this store does not, and the key
+        // lock alone does not make the compare-then-write safe here. Refused before anything is written.
+        throw new BadRequestError(
+          'This store does not support a conditional bump',
+        );
+      }
       try {
         if (bump) {
           const ifMatch: unknown = req.query.ifMatch;
@@ -1513,6 +1520,15 @@ export class StorageController {
       // (a caller that listed no ETag, or a store that honours none).
       const caps = await adapter.conditionalCapabilities();
       const guarded: { key: string; etag: string; path: string }[] = [];
+      if (etags !== undefined && Object.keys(etags).length > 0) {
+        // A request that names versions is never turned into a plain delete: a replica whose probe said no (or could
+        // not tell) answers 503, and the sweep tries again.
+        if (!caps.conditionalDelete) {
+          throw new ServiceUnavailableError(
+            'This store cannot delete by version right now; try again',
+          );
+        }
+      }
       if (caps.conditionalDelete && etags !== undefined) {
         for (const p of paths) {
           const etag = etags[p];
@@ -1674,8 +1690,15 @@ export class StorageController {
     before: number,
   ): Promise<void> {
     let after: string | undefined;
-    const conditional = (await adapter.conditionalCapabilities())
-      .conditionalDelete;
+    const capabilities = await adapter.conditionalCapabilities();
+    if (capabilities.inconclusive === true) {
+      // The probe could not tell (a transient failure): purging unconditionally now could delete a result written
+      // after the listing, so the purge is retried by its caller.
+      throw new ServiceUnavailableError(
+        'The store could not say whether it deletes by version; try again',
+      );
+    }
+    const conditional = capabilities.conditionalDelete;
     for (;;) {
       const page = await adapter.listObjects(`${root}/`, {
         after,

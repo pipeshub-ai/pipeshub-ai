@@ -110,6 +110,43 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(Date.now() - started).to.be.greaterThan(60)
     })
 
+    it('two writers that both find a dead owner\'s lock enter one at a time, and the second never moves the first\'s fresh lock', async () => {
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('one'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const name = `.${createHash('sha1').update(path.basename(key(1))).digest('hex')}.lock`
+      fs.writeFileSync(path.join(dir, name), JSON.stringify({ token: 'x', pid: 2147483646, host: os.hostname() }))
+      let inside = 0
+      let most = 0
+      const real = (a as any).writeFileAtomically.bind(a)
+      sinon.stub(a as any, 'writeFileAtomically').callsFake(async (...args: unknown[]) => {
+        inside += 1
+        most = Math.max(most, inside)
+        await new Promise((resolve) => setTimeout(resolve, 15))
+        try { return await real(...args) } finally { inside -= 1 }
+      })
+      await Promise.all(Array.from({ length: 8 }, (_, i) => a.writeObject(key(1), Buffer.from(`w${i}`))))
+      expect(most, 'two writers held the key at once').to.equal(1)
+    })
+
+    it('an I/O failure while reclaiming a lock is a failure of the call, not a wait that never ends', async () => {
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('one'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const name = `.${createHash('sha1').update(path.basename(key(1))).digest('hex')}.lock`
+      fs.writeFileSync(path.join(dir, name), JSON.stringify({ token: 'x', pid: 2147483646, host: os.hostname() }))
+      const real = fsp.rename.bind(fsp)
+      sinon.stub(fsp, 'rename').callsFake((async (from: string, to: string) => {
+        if (from.endsWith('.lock')) throw Object.assign(new Error('EIO'), { code: 'EIO' })
+        return real(from, to)
+      }) as never)
+      const started = Date.now()
+      let thrown: unknown
+      try { await a.writeObject(key(1), Buffer.from('x')) } catch (e) { thrown = e }
+      expect(thrown).to.be.instanceOf(StorageUploadError)
+      expect(Date.now() - started).to.be.lessThan(3000)
+    })
+
     it('a holder that lost its lease does not delete: the file stays and is reported changed', async () => {
       const a = adapter()
       await a.writeObject(key(1), Buffer.from('one'))
@@ -305,12 +342,20 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
 
     it('an outage that outlasts the retries answers "none" for that call only; the next call, after it, gets the real answer', async () => {
       const a = flaky({ puts: 100 })
-      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
       ;(globalThis.fetch as sinon.SinonStub).restore()
       const b = bucket('honours')
       ;(a as any).s3 = b.s3
       sinon.stub(globalThis, 'fetch').callsFake(b.fetchStub as any)
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
+    })
+
+    it('callers arriving while a probe retries share it: one attempt in flight, not one each', async () => {
+      const a = flaky({ puts: 1 })
+      const up = sinon.spy((a as any).s3, 'upload')
+      const [x, y, z] = await Promise.all([a.conditionalCapabilities(), a.conditionalCapabilities(), a.conditionalCapabilities()])
+      for (const r of [x, y, z]) expect(r).to.deep.equal({ conditionalDelete: true, bump: true })
+      expect(up.callCount, 'a probe per caller').to.equal(2)
     })
 
     it('a definitive refusal (403) is remembered as "none", not retried', async () => {
@@ -331,7 +376,7 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       ;(a as any).s3 = { ...b.s3, upload: (p: any) => { calls += 1; return calls === 1 ? fail(503, 'SlowDown') : b.s3.upload(p) } }
       sinon.stub(a, 'signObjectUrl').callsFake(async (_k: string, o: any) => ({ url: 'http://s3/put', headers: { 'If-Match': `"${o.ifMatch}"` } }))
       sinon.stub(globalThis, 'fetch').callsFake(b.fetchStub as any)
-      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
     })
 
@@ -374,6 +419,20 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       const r = await container(del, exists).deleteObjectsIfMatch([{ key: key(1), etag: 'e1' }])
       expect(r.changed).to.deep.equal([])
       expect(exists.callCount).to.equal(1)
+    })
+
+    it('a delete refused for a snapshot (409) or a lease (412 with another code) is a failure, not a changed object', async () => {
+      for (const reason of [
+        Object.assign(new Error('snapshots'), { statusCode: 409, code: 'SnapshotsPresent' }),
+        Object.assign(new Error('lease'), { statusCode: 412, details: { errorCode: 'LeaseIdMissing' } }),
+      ]) {
+        let thrown: unknown
+        try { await container(sinon.stub().rejects(reason)).deleteObjectsIfMatch([{ key: key(1), etag: 'e1' }]) } catch (e) { thrown = e }
+        expect(thrown, reason.message).to.be.instanceOf(StorageUploadError)
+      }
+      const exists = sinon.stub().resolves(true)
+      const r = await container(sinon.stub().rejects(Object.assign(new Error('c'), { statusCode: 412, details: { errorCode: 'ConditionNotMet' } })), exists).deleteObjectsIfMatch([{ key: key(1), etag: 'e1' }])
+      expect(r.changed).to.deep.equal([key(1)])
     })
 
     it('any other failure of a conditional delete is raised after the rest were tried', async () => {

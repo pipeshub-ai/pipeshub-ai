@@ -716,8 +716,20 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         settled.forEach((outcome, idx) => {
           if (outcome.status === 'fulfilled') return;
           const failedKey = slice[idx]?.key ?? '';
-          const status = (outcome.reason as { statusCode?: number }).statusCode;
-          if (status === 412 || status === 409) refused.push(idx);
+          const reason = outcome.reason as {
+            statusCode?: number;
+            code?: string;
+            details?: { errorCode?: string };
+          };
+          const status = reason.statusCode;
+          const errorCode = reason.details?.errorCode ?? reason.code;
+          // Only a refused condition is "changed". A snapshot that blocks the delete (409), a lease (412 with another
+          // code) or anything else is a failure to retry, never a skip.
+          if (
+            status === 412 &&
+            (errorCode === undefined || errorCode === 'ConditionNotMet')
+          )
+            refused.push(idx);
           else if (status !== 404) {
             failures.push(
               `${failedKey}: ${

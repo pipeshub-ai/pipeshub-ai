@@ -11,6 +11,7 @@ import express from 'express'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
 import { StorageServiceAdapter } from '../../../../src/modules/storage/adapter/base-storage.adapter'
+import LocalStorageAdapter from '../../../../src/modules/storage/providers/local-storage.provider'
 import { StorageController } from '../../../../src/modules/storage/controllers/storage.controller'
 import { endpoint as ENDPOINTS_KEY, storageEtcdPaths } from '../../../../src/modules/storage/constants/constants'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
@@ -96,6 +97,9 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
   beforeEach(async () => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'paid-results-http-home-'))
     sinon.stub(os, 'homedir').returns(home)
+    // A recognised local file system whatever the host's: the conditional operations are on unless a test says otherwise.
+    LocalStorageAdapter.clearCapabilityMemo()
+    sinon.stub(fsp, 'statfs').resolves({ type: 0xef53 } as never)
 
     backend = new FakeBackend()
     await backend.start()
@@ -702,12 +706,58 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     })
 
     it('a file system that is not a known local one honours nothing conditional, and says so', async () => {
-      sinon.stub(fsp, 'statfs').resolves({ type: 0x6969 } as never) // NFS
+      LocalStorageAdapter.clearCapabilityMemo()
+      ;(fsp.statfs as sinon.SinonStub).resolves({ type: 0x6969 } as never) // NFS
       await store(page('a'), 'x')
       const listed = await call('GET', `/internal/paid-results/${REC}`)
       expect(listed.body.capabilities).to.deep.equal([])
       const refused = await presign([{ path: page('a'), mode: 'bump', etag: 'abc' }])
       expect(refused.status).to.equal(400)
+    })
+
+    it('on a store that cannot delete by version a request naming versions is refused (503), never turned into a plain delete', async () => {
+      await store(page('a'), 'one')
+      const etag = (await list())[0]!.etag!
+      LocalStorageAdapter.clearCapabilityMemo()
+      ;(fsp.statfs as sinon.SinonStub).resolves({ type: 0x6969 } as never)
+      const r = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')], etags: { [page('a')]: etag } })
+      expect(r.status).to.equal(503)
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('a'))])
+      // a request that names no versions is the plain delete, as before
+      expect((await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')] })).status).to.equal(200)
+    })
+
+    it('the file route refuses a bump on a store that does not honour it, before any write', async () => {
+      await store(page('a'), 'one')
+      const etag = (await list())[0]!.etag!
+      const res = await fetch(`${baseUrl}/internal/paid-results/${REC}/files/${page('a')}?bump=1&ifMatch=${etag}`, {
+        method: 'PUT',
+        headers: { authorization: `Bearer ${token(ORG_A)}`, 'content-type': 'application/octet-stream' },
+        body: Buffer.from('replaced'),
+      })
+      expect(res.status).to.equal(200) // honoured here
+      await res.text()
+      LocalStorageAdapter.clearCapabilityMemo()
+      ;(fsp.statfs as sinon.SinonStub).resolves({ type: 0x6969 } as never)
+      const etag2 = (await list())[0]!.etag
+      const refused = await fetch(`${baseUrl}/internal/paid-results/${REC}/files/${page('a')}?bump=1&ifMatch=${etag2 ?? 'x'}`, {
+        method: 'PUT',
+        headers: { authorization: `Bearer ${token(ORG_A)}`, 'content-type': 'application/octet-stream' },
+        body: Buffer.from('again'),
+      })
+      expect(refused.status).to.equal(400)
+      await refused.text()
+      expect((await read(page('a'))).text).to.equal('replaced')
+    })
+
+    it('a cutoff purge is refused (503) while the probe cannot tell, and deletes nothing', async () => {
+      await store(page('a'), 'one')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      sinon.stub(StorageServiceAdapter.prototype, 'conditionalCapabilities').resolves({ conditionalDelete: false, bump: false, inconclusive: true })
+      const r = await call('DELETE', `/internal/paid-results/${REC}?before=${(cut.body as { cutoff: number }).cutoff + 1000}`)
+      expect(r.status).to.equal(503)
+      expect(filesOnDisk().filter((f) => f.includes('ocr_page'))).to.have.length(1)
     })
 
     it('deletes an object whose etag is the listed one and keeps one that changed, naming it in `changed`', async () => {

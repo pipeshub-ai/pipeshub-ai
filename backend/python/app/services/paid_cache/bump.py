@@ -268,6 +268,12 @@ class BumpQueue:
 
         await asyncio.gather(*(check(o, r, items) for (o, r), items in written.items()))
 
+    def _honours(self, org_id: str, capability: str) -> bool:
+        per_org = getattr(self._store, "honours", None)
+        if per_org is not None:
+            return bool(per_org(org_id, capability))
+        return bool(getattr(self._store, "supports_bump" if capability == "bump" else "supports_conditional_delete", False))
+
     async def _marker(self, org_id: str, record_id: str) -> tuple[bool, int | None]:
         try:
             return True, await self._store.refresh_marker_ms(org_id, record_id)
@@ -276,7 +282,7 @@ class BumpQueue:
             return False, None
 
     async def _write_record(self, org_id: str, record_id: str, entries: list[BumpEntry]) -> list[tuple[BumpEntry, bytes]]:
-        if not self._store.supports_bump:
+        if not self._honours(org_id, "bump"):
             for _ in entries:
                 self._count("unsupported")
             return []
@@ -383,6 +389,11 @@ class BumpQueue:
         fenced = await self._store.fenced(org_id, record_id)
         for entry, data in written:
             if readable and not fenced and not _refreshed_since(marker, entry.origin_ms):
+                continue
+            if not self._honours(org_id, "conditionalDelete"):
+                # Removing the object again would be an unconditional delete that could take a refresh's newer result: it
+                # is left, and the next reuse refuses it by its ``originMs`` and the marker (``cache.py``).
+                self._count("undo_unavailable")
                 continue
             try:
                 current = await self._store.get_versioned(org_id, record_id, entry.path)

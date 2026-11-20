@@ -166,14 +166,20 @@ async def sweep_record(
         ]
         # Each delete names the version of the listing it is made from (what a bump changes).
         etags = {path: second[path].etag for path in doomed if second[path].etag}
-        if doomed and not (etags and getattr(store, "supports_conditional_delete", True)):
-            # No version to name (a store that honours no conditional delete, or an earlier storage service): the
-            # window is what lies between the last look and the delete, so look once more right before it.
+        honours = getattr(store, "honours", None)
+        if not (honours(org_id, "conditionalDelete") if honours is not None else getattr(store, "supports_conditional_delete", True)):
+            etags = {}
+        # A path the delete cannot name a version for (no ETag listed, or a store that honours no conditional delete) is
+        # looked at once more right before the delete: the window is what lies between that look and the delete.
+        unguarded = [path for path in doomed if path not in etags]
+        if unguarded:
             latest = {f.path: f for f in await store.list_files(org_id, record_id)}
-            doomed = [
-                path for path in doomed
+            stays = {
+                path for path in unguarded
                 if path in latest and latest[path].last_modified_ms == second[path].last_modified_ms
-            ]
+                and latest[path].etag == second[path].etag
+            }
+            doomed = [path for path in doomed if path in etags or path in stays]
     changed: list[str] = []
     if doomed:
         result = await (store.delete_files(org_id, record_id, doomed, etags) if etags else store.delete_files(org_id, record_id, doomed))

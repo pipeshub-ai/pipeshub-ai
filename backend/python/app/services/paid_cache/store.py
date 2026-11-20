@@ -197,6 +197,9 @@ class NodePaidResultStore:
         #: What the storage service said it honours (``conditionalDelete``, ``bump``) in its last reply. A reply that
         #: names none (a service of an earlier release) means none; nothing is latched, the next reply decides.
         self.capabilities: frozenset[str] = frozenset()
+        #: The same, per org: a storage service answers for the target of the request (an org's own store), and a reply
+        #: for one org says nothing about another's.
+        self._caps_by_org: dict[str, frozenset[str]] = {}
         # Reuses the artifact client's reply handling and its URL transfer helpers.
         self._artifacts = NodeArtifactStore(blob_storage, self.logger)
 
@@ -230,11 +233,17 @@ class NodePaidResultStore:
                 )
             raise
 
-    def _note_capabilities(self, body: Mapping[str, Any]) -> None:
+    def _note_capabilities(self, org_id: str, body: Mapping[str, Any]) -> None:
         caps = body.get("capabilities")
-        self.capabilities = (
-            frozenset(c for c in caps if isinstance(c, str)) if isinstance(caps, list) else frozenset()
-        )
+        known = frozenset(c for c in caps if isinstance(c, str)) if isinstance(caps, list) else frozenset()
+        self.capabilities = known
+        if len(self._caps_by_org) > 4096:
+            self._caps_by_org.clear()
+        self._caps_by_org[org_id] = known
+
+    def honours(self, org_id: str, capability: str) -> bool:
+        """Whether the storage behind ``org_id`` said, in its last reply for that org, that it honours ``capability``."""
+        return capability in self._caps_by_org.get(org_id, frozenset())
 
     @property
     def supports_bump(self) -> bool:
@@ -260,7 +269,7 @@ class NodePaidResultStore:
                     {"path": p, "mode": m, **({"etag": etags[p, m]} if (p, m) in etags else {})} for p, m in chunk
                 ]},
             )
-            self._note_capabilities(body)
+            self._note_capabilities(org_id, body)
             answered = body.get("files")
             if not isinstance(answered, list):
                 raise PaidResultStoreError("presign answered no files")
@@ -288,7 +297,7 @@ class NodePaidResultStore:
         while True:
             params = {k: v for k, v in (("prefix", prefix), ("after", after)) if v}
             body = await self._call(org_id, "GET", route, params=params)
-            self._note_capabilities(body)
+            self._note_capabilities(org_id, body)
             objects = body.get("objects")
             if not isinstance(objects, list):
                 raise PaidResultStoreError("listing answered no objects")
@@ -313,7 +322,7 @@ class NodePaidResultStore:
         the paths the service kept because the object changed since it was listed."""
         route = Routes.STORAGE_PAID_RESULTS_DELETE.value.format(recordId=record_id)
         changed: list[str] = []
-        conditional = bool(etags) and "conditionalDelete" in self.capabilities
+        conditional = bool(etags) and self.honours(org_id, "conditionalDelete")
         for start in range(0, len(paths), MAX_FILES_PER_CALL):
             chunk = list(paths[start:start + MAX_FILES_PER_CALL])
             request: dict[str, Any] = {"paths": chunk}

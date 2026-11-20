@@ -810,31 +810,36 @@ class AmazonS3Adapter implements StorageServiceInterface {
    */
   async conditionalCapabilities(): Promise<ConditionalCapabilities> {
     const memoKey = `${process.env.AWS_ENDPOINT_URL_S3 ?? ''}|${this.bucketName}`;
-    const known = CONDITIONAL_MEMO.get(memoKey);
-    if (known !== undefined) {
-      const answer = await known;
-      if (answer !== null) return answer;
-      CONDITIONAL_MEMO.delete(memoKey);
+    // One resolution (the probe and its retries with backoff) is shared by every caller that arrives meanwhile, and
+    // only a definitive answer stays: a transient failure (a 5xx, SlowDown, a timeout) answers "inconclusive" for those
+    // callers and is asked again at the next call.
+    let pending = CONDITIONAL_MEMO.get(memoKey);
+    if (pending === undefined) {
+      const resolution = this.resolveConditionalSupport();
+      pending = resolution;
+      CONDITIONAL_MEMO.set(memoKey, resolution);
+      void resolution.then((answer) => {
+        if (answer === null && CONDITIONAL_MEMO.get(memoKey) === resolution)
+          CONDITIONAL_MEMO.delete(memoKey);
+      });
     }
-    // A transient failure (a 5xx, SlowDown, a timeout) is retried with backoff and never remembered: only a
-    // definitive answer is. Callers arriving meanwhile share the attempt in flight.
-    const delays = this.probeBackoffMs;
+    const answer = await pending;
+    if (answer === null) {
+      return { conditionalDelete: false, bump: false, inconclusive: true };
+    }
+    return answer;
+  }
+
+  private async resolveConditionalSupport(): Promise<ConditionalCapabilities | null> {
     let answer: ConditionalCapabilities | null;
     for (let attempt = 0; ; attempt += 1) {
-      const asked = this.probeConditionalSupport();
-      CONDITIONAL_MEMO.set(memoKey, asked);
-      answer = await asked;
+      answer = await this.probeConditionalSupport();
       if (answer !== null) break;
-      if (CONDITIONAL_MEMO.get(memoKey) === asked)
-        CONDITIONAL_MEMO.delete(memoKey);
-      const delay = delays[attempt];
+      const delay = this.probeBackoffMs[attempt];
       if (delay === undefined) break;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    if (answer === null) {
-      return { conditionalDelete: false, bump: false };
-    }
-    if (!answer.conditionalDelete || !answer.bump) {
+    if (answer !== null && (!answer.conditionalDelete || !answer.bump)) {
       this.logger.warn(
         'The object store does not honour conditional paid-result writes; falling back to unconditional sweeps',
         { conditionalDelete: answer.conditionalDelete, bump: answer.bump },

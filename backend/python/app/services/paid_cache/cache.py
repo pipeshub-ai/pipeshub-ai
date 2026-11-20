@@ -244,6 +244,15 @@ class _FencedStore:
         # A store that says nothing (a test fake) is taken to honour what it lists: it lists no ETag unless it does.
         return bool(getattr(self._inner, "supports_conditional_delete", True))
 
+    def honours(self, org_id: str, capability: str) -> bool:
+        """What the storage behind the org honours; a store that says nothing per org falls back to its overall flags."""
+        per_org = getattr(self._inner, "honours", None)
+        if per_org is not None:
+            return bool(per_org(org_id, capability))
+        if capability == "bump":
+            return bool(getattr(self._inner, "supports_bump", False))
+        return bool(getattr(self._inner, "supports_conditional_delete", True))
+
     async def presign(self, org_id: str, record_id: str, files: Sequence[Any]) -> Mapping[tuple[str, str], Any]:
         return await self._inner.presign(org_id, record_id, files)  # type: ignore[attr-defined,no-any-return]
 
@@ -289,9 +298,9 @@ class PaidResultCache:
         #: Callers of one key on one event loop attach to the first one's computation. The indexing service runs
         #: more than one loop, and a future cannot be awaited from another loop, so the loop is part of the key.
         self._inflight: dict[tuple[int, str], asyncio.Future[Any]] = {}
-        self._bumps: BumpQueue | None = None
-        #: (org, record) -> (read at, the refresh marker's store time or None): see ``_predates_refresh``.
-        self._markers: dict[tuple[str, str], tuple[float, int | None]] = {}
+        self._bumps: dict[int, BumpQueue] = {}
+        #: (org, record) -> (read at, a refresh marker's store time that rejected an object): see ``_predates_refresh``.
+        self._markers: dict[tuple[str, str], tuple[float, int]] = {}
 
     @property
     def store(self) -> ResultStore:
@@ -299,10 +308,14 @@ class PaidResultCache:
 
     @property
     def bumps(self) -> BumpQueue:
-        """The queue of reuse bumps (``bump.py``), made on first use."""
-        if self._bumps is None:
-            self._bumps = BumpQueue(self._store, self.logger)  # type: ignore[arg-type]
-        return self._bumps
+        """The queue of reuse bumps (``bump.py``) of the running event loop, made on first use."""
+        # One queue (and worker) per event loop: the indexing service runs more than one, and a queue's worker and
+        # counters belong to the loop that drains it. The byte and entry caps are per queue.
+        loop = id(asyncio.get_running_loop())
+        queue = self._bumps.get(loop)
+        if queue is None:
+            queue = self._bumps[loop] = BumpQueue(self._store, self.logger)  # type: ignore[arg-type]
+        return queue
 
     def _bump_after_hit(
         self, key: CacheKey, path: str, hit: "VersionedBytes | None", scope: RunScope | None, *, noted: bool,
@@ -310,7 +323,7 @@ class PaidResultCache:
     ) -> None:
         """Queues the version refresh of a reused object that could be swept (see ``bump.py``). Never raises."""
         try:
-            if hit is None or not writes_enabled() or not getattr(self._store, "supports_bump", False):
+            if hit is None or not writes_enabled() or not self._store.honours(key.org_id, "bump"):  # type: ignore[attr-defined]
                 return
             if not hit.etag or hit.last_modified_ms is None:
                 return
@@ -741,8 +754,10 @@ class PaidResultCache:
         ``report`` is False for the lookups after the first of one call, which would say the same thing again.
         """
         got: VersionedBytes | None = None
+        if hit_out is not None:
+            hit_out.clear()          # what an earlier lookup of this call saw is not what a bump may be built on
         try:
-            if hit_out is not None and getattr(self._store, "supports_bump", False):
+            if hit_out is not None and self._store.honours(key.org_id, "bump"):  # type: ignore[attr-defined]
                 # The version and write time travel with the bytes: what a bump of this hit needs.
                 got = await self._store.get_versioned(key.org_id, key.record_id, path)  # type: ignore[attr-defined]
                 raw = None if got is None else got.data
@@ -759,8 +774,6 @@ class PaidResultCache:
             # (a stop between the bump and its check): it is replaced like an unreadable one, never reused.
             self._count(key, "predates_refresh")
             return False, None, True
-        if found and got is not None and hit_out is not None:
-            hit_out.append(got)
         if found and validate is not None:
             try:
                 validate(value)
@@ -770,6 +783,8 @@ class PaidResultCache:
                     self._unreadable(key, f"the stored value no longer decodes ({type(exc).__name__})")
         elif not found and report:
             self._unreadable(key, "the stored object is not a whole result of this kind")
+        if found and got is not None and hit_out is not None:
+            hit_out.append(got)          # only a version the caller accepted can be bumped or restored
         if not found and report:
             self._count(key, "error")
         return found, value, not found
@@ -784,20 +799,23 @@ class PaidResultCache:
         if read is None:
             return False
         name = (key.org_id, key.record_id)
-        cached = self._markers.get(name)
         now = time.monotonic()
-        if cached is not None and now - cached[0] < MARKER_CACHE_S:
-            marker = cached[1]
-        else:
-            try:
-                marker = await read(key.org_id, key.record_id)
-            except Exception as exc:
-                self.logger.debug("Paid-result refresh marker unreadable (%s)", type(exc).__name__)
-                return True
+        cached = self._markers.get(name)
+        # A marker only moves later: one read that already rejects an object rejects it (and every older one) for good. A
+        # read that did not reject is never reused, since a refresh may have begun since.
+        if cached is not None and now - cached[0] < MARKER_CACHE_S and cached[1] // 1000 >= origin // 1000:
+            return True
+        try:
+            marker = await read(key.org_id, key.record_id)
+        except Exception as exc:
+            self.logger.debug("Paid-result refresh marker unreadable (%s)", type(exc).__name__)
+            return True
+        rejects = marker is not None and marker // 1000 >= origin // 1000
+        if rejects and marker is not None:
             if len(self._markers) > 4096:
                 self._markers.clear()
             self._markers[name] = (now, marker)
-        return marker is not None and marker // 1000 >= origin // 1000
+        return rejects
 
     def _unreadable(self, key: CacheKey, why: str) -> None:
         # Logged once per key: the compute that follows replaces the object, so the next lookup hits.

@@ -564,3 +564,134 @@ async def test_protection_lost_to_a_full_queue_is_counted_and_logged(caplog: pyt
     assert outcomes.count("dropped") == 4
     warnings = [r for r in caplog.records if "behind" in r.getMessage()]
     assert len(warnings) == 1 and "dropped=1" in warnings[0].getMessage(), "logged once, then rate limited, with counts"
+
+
+# -- review round: capabilities per org, mixed batches, validated hits, marker reads, strict cleanup --------------------
+
+async def test_a_reply_for_another_org_does_not_change_what_this_orgs_storage_honours(storage: FakePaidResultStorage) -> None:
+    store = _store(storage)
+    await store.presign("org-a", REC, [(K, "get")])
+    storage.capabilities = None                                    # another org's storage: nothing conditional
+    await store.presign("org-b", REC, [(K, "get")])
+    assert store.honours("org-a", "conditionalDelete") and store.honours("org-a", "bump")
+    assert not store.honours("org-b", "conditionalDelete")
+    storage.capabilities = ("conditionalDelete", "bump")
+    storage._write(storage.key("org-a", REC, K), OLD)
+    await store.delete_files("org-a", REC, [K], {K: "x"})
+    assert storage.delete_bodies[-1].get("etags") == {K: "x"}, "the guard was stripped by a reply about another org"
+
+
+async def test_a_path_with_no_listed_version_is_looked_at_again_even_when_others_have_one() -> None:
+    """Mixed batch: one object is guarded by its ETag, the other cannot be; the second is re-listed before the delete."""
+    from tests.support.versioned_store import VersionedStore
+
+    store = VersionedStore(stamp_ms=1, now_ms=1_700_000_000_000)
+    k1, k2 = f"ocr_page/{11:064x}.json", f"ocr_page/{12:064x}.json"
+    for k in (k1, k2):
+        store.write(ORG, REC, k, OLD, age_ms=3 * HOUR)
+    for rev, n in (("r2", 2), ("r3", 3)):
+        run = RunScope(ORG, REC, rev, "parse", clock=lambda: store.now_ms / 1000)
+        other = f"ocr_page/{n:064x}.json"
+        store.write(ORG, REC, other, b"{}")
+        await run.note(store, other, opens=True)  # type: ignore[arg-type]
+        await run.finish(store)  # type: ignore[arg-type]
+        store.now_ms += 1000
+    store.now_ms += GRACE_MS
+    real_list = store.list_files
+    calls = 0
+
+    async def list_without_k2_etag(o: str, r: str, prefix: str = "") -> list:
+        nonlocal calls
+        calls += 1
+        if calls == 3:                                              # the look right before the delete: k2 was re-written
+            store.now_ms += 5
+            store.write(ORG, REC, k2, touched_bytes(OLD, 1) or b"")
+        return [type(f)(f.path, f.size, f.last_modified_ms, None if f.path == k2 else f.etag) for f in await real_list(o, r, prefix)]
+
+    store.list_files = list_without_k2_etag  # type: ignore[method-assign]
+    await sweep_record(store, ORG, REC, now_ms=store.now_ms)  # type: ignore[arg-type]
+    assert (ORG, REC, k2) in store.files, "an object with no listed version was deleted without a last look"
+    assert (ORG, REC, k1) not in store.files
+
+
+async def test_only_a_version_the_caller_accepted_is_kept_for_a_bump(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+    from tests.support.versioned_store import VersionedStore
+
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    store = VersionedStore(stamp_ms=1)
+    store.write(ORG, REC, key.relative_path(), _encode(key, "rejected"))
+    cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
+    cache._store.honours = lambda *_a: True  # type: ignore[method-assign,attr-defined]
+    hit: list = []
+
+    def reject(_value: object) -> None:
+        raise ValueError("no longer decodes")
+
+    found, _value, _unusable = await cache._lookup(key, key.relative_path(), reject, hit_out=hit)
+    assert not found and hit == [], "the bytes the caller rejected were kept as what a bump or a restore may write"
+
+
+async def test_a_marker_read_that_did_not_reject_is_never_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+    from app.services.paid_cache.run import begin_run, clear_run
+    from tests.support.paid_cache import record_in_flight
+    from tests.support.versioned_store import VersionedStore
+
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    store = VersionedStore(stamp_ms=1000)
+    origin = store.now_ms - 10_000
+    store.write(ORG, REC, key.relative_path(), touched_bytes(_encode(key, "text"), 1, origin_ms=origin) or b"")
+    cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
+    cache.bumps._autostart = False
+    try:
+        with record_in_flight(ORG, REC):
+            begin_run(ORG, REC, "rev1", "parse")
+            paid = AsyncMock(return_value="recomputed")
+            assert await cache.get_or_compute(key, paid) == "text"          # no refresh yet: reused, marker read as absent
+            paid.assert_not_called()
+            store.now_ms += 5_000
+            store.begin_refresh(ORG, REC)                                   # a refresh begins right after
+            assert await cache.get_or_compute(key, paid) == "recomputed", "an earlier 'no refresh' read was reused"
+    finally:
+        clear_run()
+
+
+async def test_a_bump_is_not_undone_by_an_unconditional_delete_on_a_store_without_conditional_delete() -> None:
+    from tests.support.versioned_store import VersionedStore
+
+    store = VersionedStore(stamp_ms=1, conditional_delete=False)
+    store.write(ORG, REC, K, OLD)
+    got = await store.get_versioned(ORG, REC, K)
+    assert got is not None and got.etag
+    deleted: list = []
+    real = store.delete_files
+
+    async def spy(*a: object, **kw: object) -> list[str]:
+        deleted.append(a)
+        return await real(*a, **kw)  # type: ignore[arg-type]
+
+    store.delete_files = spy  # type: ignore[method-assign]
+    original = store.bump_to
+
+    async def bump_then_refresh(entry: object, data: bytes) -> tuple[str, str | None]:
+        result = await original(entry, data)
+        store.begin_refresh(ORG, REC)                   # a refresh begins after the write: the check would remove it
+        return result
+
+    store.bump_to = bump_then_refresh  # type: ignore[method-assign]
+
+    async def no_wait(_s: float) -> None:
+        return None
+
+    queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
+    queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None))
+    await queue.drain_once()
+    assert deleted == [], "a delete that cannot name the version was sent"

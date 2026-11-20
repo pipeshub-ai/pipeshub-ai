@@ -34,6 +34,8 @@ import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
 const KEY_LOCK_LEASE_MS = 5 * 60 * 1000;
 const KEY_LOCK_WAIT_MS = 15_000;
 const KEY_LOCK_POLL_MS = 10;
+/** A reclaim guard older than this was left by a contender that stopped. */
+const KEY_LOCK_GUARD_STALE_MS = 10_000;
 
 /**
  * File-system types (`statfs.type`) on which the lock file, the descriptor `fstat` and the rename-over are coherent
@@ -743,29 +745,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
       } catch (error) {
         const code = (error as { code?: string }).code;
         if (code !== 'EEXIST') throw error;
-        try {
-          if (await this.lockIsAbandoned(lockPath)) {
-            const stale = path.join(
-              path.dirname(lockPath),
-              `${path.basename(lockPath)}.stale-${randomUUID()}`,
-            );
-            try {
-              await fs.rename(lockPath, stale);
-              await fs.rm(stale, { force: true });
-            } catch {
-              // another taker won the rename
-            }
-            continue;
-          }
-        } catch (statError) {
-          if ((statError as { code?: string }).code === 'ENOENT') continue;
-          throw statError;
-        }
         if (Date.now() > deadline) {
           throw new StorageUploadError(
             'The object is locked by another writer; try again',
           );
         }
+        if (await this.reclaimAbandonedLock(lockPath)) continue;
         await new Promise((resolve) => setTimeout(resolve, KEY_LOCK_POLL_MS));
       }
     }
@@ -783,6 +768,50 @@ class LocalStorageAdapter implements StorageServiceInterface {
       return await body(stillHeld);
     } finally {
       if (await stillHeld()) await fs.rm(lockPath, { force: true });
+    }
+  }
+
+  /**
+   * Removes an abandoned lock, through a guard file only one contender can hold: it re-reads the lock under the guard,
+   * so a contender that inspected a dead owner's lock cannot move a successor's fresh one. True when the lock was
+   * removed (the caller tries to take it); false when it is held, or another contender is reclaiming it.
+   */
+  private async reclaimAbandonedLock(lockPath: string): Promise<boolean> {
+    const guardPath = `${lockPath}.reclaim`;
+    let guard: FileHandle;
+    try {
+      guard = await fs.open(guardPath, 'wx', 0o600);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'EEXIST') {
+        // A guard left by a contender that stopped: older than a few seconds, it is removed.
+        try {
+          const st = await fs.stat(guardPath);
+          if (Date.now() - st.mtimeMs > KEY_LOCK_GUARD_STALE_MS) {
+            await fs.rm(guardPath, { force: true });
+          }
+        } catch {
+          // gone already
+        }
+        return false;
+      }
+      if (code === 'ENOENT') return false;
+      throw error;
+    }
+    try {
+      await guard.close();
+      if (!(await this.lockIsAbandoned(lockPath))) return false;
+      const stale = `${lockPath}.stale-${randomUUID()}`;
+      try {
+        await fs.rename(lockPath, stale);
+      } catch (error) {
+        if ((error as { code?: string }).code === 'ENOENT') return true;
+        throw error;
+      }
+      await fs.rm(stale, { force: true });
+      return true;
+    } finally {
+      await fs.rm(guardPath, { force: true }).catch(() => undefined);
     }
   }
 
