@@ -46,7 +46,7 @@ LEVEL_BY_CLASS: dict[str, int] = {
 # An OAuth client registration (ours) that the provider rejects, not a user's grant.
 _CLIENT_REJECTED_CODES = frozenset({"invalid_client", "unauthorized_client", "incorrect_client_credentials"})
 _LLM_NOT_CONFIGURED = "LLM_NOT_CONFIGURED"  # LLMNotConfiguredError.code; app.utils.llm is too heavy to import here
-_OUR_BUGS = (KeyError, AttributeError, TypeError, NameError, AssertionError)
+OUR_BUGS = (KeyError, AttributeError, TypeError, NameError, AssertionError)  # our programming errors: they stop a classifier's walk
 _STATUS_CLASS = {
     401: "auth_expired", 403: "forbidden", 404: "not_found", 410: "not_found", 408: "timeout",
     409: "conflict", 429: "rate_limited", 503: "unavailable", 504: "timeout",
@@ -167,7 +167,7 @@ def _classify_link(link: BaseException) -> str | None:
     if isinstance(link, (TimeoutError, *_types("httpx", "TimeoutException"), *_types("aiohttp", "ServerTimeoutError"),
                          *_types("openai", "APITimeoutError"))):
         return "timeout"
-    if isinstance(link, (*_OUR_BUGS, *_types("pydantic", "ValidationError"))):
+    if isinstance(link, (*OUR_BUGS, *_types("pydantic", "ValidationError"))):
         return "internal"
     # Our own HTTPException 5xx wraps our own failure: keep walking, it is not an upstream answer.
     if (

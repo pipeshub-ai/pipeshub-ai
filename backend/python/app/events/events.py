@@ -34,7 +34,9 @@ from app.events.dedup import (
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
     IndexingError,
+    PasswordProtectedError,
     ProcessingError,
     RecordDeletedError,
 )
@@ -85,6 +87,7 @@ from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
+from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
@@ -561,6 +564,7 @@ class EventProcessor:
         # call per page: when Docling is not used or cannot read the file, the
         # local layout parser reads it instead.
         use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+        docling_unavailable: DoclingUnavailableError | None = None
         if use_pdfplumber:
             self.logger.debug("Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
@@ -599,6 +603,8 @@ class EventProcessor:
                     self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
                     status=exc.status_code, include_error_text=False,
                 )
+                if isinstance(exc, DoclingUnavailableError):
+                    docling_unavailable = exc
             else:
                 if not docling_failed:
                     return
@@ -613,17 +619,34 @@ class EventProcessor:
                 # The processor already wrote index.parse_fallback for this sentinel.
                 self.logger.debug("Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
-        async for event in self.processor.process_pdf_with_pdf_plumber(
-            recordName=record_name,
-            recordId=record_id,
-            pdf_binary=pdf_binary,
-            virtual_record_id=virtual_record_id,
-            event_type=event_type,
-            prev_virtual_record_id=prev_virtual_record_id,
-        ):
-            if event.event == IndexingEvent.PARSING_COMPLETE:
-                pdf_binary = inspected = None
-            yield event
+        parsed = False
+        retry: DoclingUnavailableError | None = None
+        try:
+            async for event in self.processor.process_pdf_with_pdf_plumber(
+                recordName=record_name,
+                recordId=record_id,
+                pdf_binary=pdf_binary,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                if event.event == IndexingEvent.PARSING_COMPLETE:
+                    parsed = True
+                    pdf_binary = inspected = None
+                yield event
+        except DocumentProcessingError as layout_exc:
+            if (
+                docling_unavailable is None
+                or parsed
+                or isinstance(layout_exc, PasswordProtectedError)
+                or worker_gave_up_on(layout_exc)
+            ):
+                raise
+            retry = docling_unavailable
+        if retry is not None:
+            # Docling may read what PdfPlumber could not: retry once it serves again, not a verdict on the file.
+            # Raised outside the handler, so the layout error is not its __context__ for the classifier to read.
+            raise retry
 
     @staticmethod
     def _reads_as_code_file(

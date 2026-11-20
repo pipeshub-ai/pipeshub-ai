@@ -253,7 +253,7 @@ async def refresh_access_token(
 
     token_data = await _post_token_request(token_url, data, allow_private=allow_private, headers=headers)
     if "access_token" not in token_data:
-        raise MCPOAuthError("OAuth refresh response missing access_token")
+        raise MCPOAuthError("OAuth refresh response missing access_token", refresh_reason="no_access_token")
 
     return OAuthTokens(
         access_token=token_data["access_token"],
