@@ -1761,3 +1761,30 @@ def test_an_online_build_never_runs_a_plain_build_on_a_leaf_that_holds_rows(db):
     assert any(re.match(r"CREATE INDEX CONCURRENTLY rt_1_rt_k ON (public\.)?rt_1 ", s) for s in seen), seen
     with connect(cluster, name) as c:
         assert c.execute("SELECT bool_and(i.indisvalid) FROM pg_partition_tree('public.rt_k') t JOIN pg_index i ON i.indexrelid = t.relid").fetchone()[0]
+
+
+def test_an_invalid_index_on_an_empty_leaf_is_rebuilt_not_kept(db):
+    """A stopped CONCURRENTLY build leaves the leaf's index invalid; the leaf may be empty (zero bytes) by the next run. The plain build of an empty
+    leaf would find the name taken and keep the invalid index: it is dropped and built again instead, and the tree ends valid."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    from db.lib import ddl
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+        c.execute("INSERT INTO public.rt VALUES (1), (1)")
+        with pytest.raises(psycopg.errors.UniqueViolation):          # a concurrent build that failed: left behind, invalid
+            c.execute("CREATE UNIQUE INDEX CONCURRENTLY rt_1_rt_k ON public.rt_1 (k)")
+        c.execute("TRUNCATE public.rt_1")
+        assert c.execute("SELECT pg_relation_size('public.rt_1'), indisvalid FROM pg_index WHERE indexrelid = 'public.rt_1_rt_k'::regclass").fetchone() == (0, False)
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as c:
+            ddl.ensure_partitioned_index(c, "public.rt", "rt_k", "k", blocking=False)
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*), bool_and(i.indisvalid), bool_and(NOT i.indisunique) FROM pg_partition_tree('public.rt_k') t "
+                         "JOIN pg_index i ON i.indexrelid = t.relid").fetchone() == (2, True, True)
