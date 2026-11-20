@@ -33,6 +33,7 @@ def _point(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, membership: str) -> 
     for module, root_name, self_name in ((cgroup, "CGROUP_ROOT", "PROC_SELF_CGROUP"), (probe, "_CGROUP_ROOT", "_PROC_SELF_CGROUP")):
         monkeypatch.setattr(module, root_name, root)
         monkeypatch.setattr(module, self_name, tmp_path / "self_cgroup")
+    monkeypatch.setattr(probe.sys, "platform", "linux")  # the Linux reads, whatever host the suite runs on
     return root
 
 
@@ -170,7 +171,6 @@ def test_v1_no_limit_on_any_level_is_still_no_limit(tmp_path: Path, monkeypatch:
 
 
 def _sampler(monkeypatch: pytest.MonkeyPatch, now: list[float]) -> probe.SystemResourceProbe:
-    monkeypatch.setattr(probe.sys, "platform", "linux")
     monkeypatch.setattr(probe, "_affinity_cpu_count", lambda: 4)
     return probe.SystemResourceProbe(clock=lambda: now[0])
 
