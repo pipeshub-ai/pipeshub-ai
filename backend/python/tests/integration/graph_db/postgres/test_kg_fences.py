@@ -156,6 +156,46 @@ async def test_a_user_whose_node_goes_with_its_edges_left_hides_what_its_grant_r
         assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
 
 
+async def ungranted_folder(p, pg_db, org: str) -> None:
+    """``fat`` with the user's grant on F taken away and a grant to F from the team t9 written before t9 exists: nothing grants F, and kg agrees."""
+    await fat(p, org)
+    await delete_edge(p, org, ("users", "u1"), ("records", "F"), "permission", type="USER")
+    await add_edge(p, org, ("teams", "t9"), ("records", "F"), "permission", type="TEAM", role="READER")
+    await drain_org(pg_db, org)
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_grant_a_principal_copy_wrote_does_not_stand_for_the_projection_of_the_node_it_is_on(pg_db) -> None:
+    """t9 appears and the copy of the organisation's principals runs before the drain: it writes t9's grant on F without projecting F. When the drain then projects t9, the grant
+    row agrees with t9, yet F was never projected with t9 there: F (granted now) and the records below it must still be restamped, and nothing outdated may be visible meanwhile."""
+    p, org = prov(pg_db), new_org()
+    await ungranted_folder(p, pg_db, org)
+    await update_node(p, org, "teams", "t9", orgId=org)
+    assert await bf.backfill_scope(pg_db, org, None) > 0
+    await drain_org(pg_db, org)
+    assert await no_stale_visible(p, pg_db, org) >= {f"r{i:02d}" for i in range(12)}
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_principal_that_goes_before_a_copy_of_the_principals_still_hides_what_its_grant_reached(pg_db) -> None:
+    """The mirror: t9 alone grants F, then t9's node goes (its edges stay) and the principal copy runs before the drain. Nothing outdated may stay visible: F and the records
+    below it are no longer granted."""
+    p, org = prov(pg_db), new_org()
+    await ungranted_folder(p, pg_db, org)
+    await update_node(p, org, "teams", "t9", orgId=org)
+    await drain_org(pg_db, org)
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await dry_diffs(p, org, "app1") == []
+    await drop_only("teams", "t9")(p, org)
+    await bf.backfill_scope(pg_db, org, None)
+    await drain_org(pg_db, org)
+    assert await no_stale_visible(p, pg_db, org) >= {f"r{i:02d}" for i in range(12)}
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
 async def test_a_change_that_fits_is_restamped_in_the_writers_unit_and_hides_nothing(pg_db, monkeypatch) -> None:
     monkeypatch.setenv("PG_KG_INLINE_MAX", "100")
     p, org = prov(pg_db), new_org()

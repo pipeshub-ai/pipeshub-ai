@@ -327,6 +327,15 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if new_g:
         await w.grants_set(new_g)
     st.grants = len(drop_g) + len(new_g)
+    # A grant row that came or went on a node this unit does not derive (the copy of a principal, which reads no neighbours) was not written by that node's projection, so it
+    # is no proof for _grant_ends_out_of_date that the node saw the principal: the node is logged for its own projection, and its connector waits for it.
+    unseen = {k[1] for k in drop_g} | {k[1] for k in d.grants if k not in cur_grants}
+    unseen -= {snap.sk[k] for k in every if k in snap.sk}
+    if unseen:
+        await tx.execute("""/* pipeshub:kg.log_grant_nodes */ INSERT INTO kg.graph_changes (org_id, app_id, ends)
+            SELECT r.org_id, COALESCE(a.id, ''), array_agg(r.coll::text || ':' || r.id ORDER BY r.coll, r.id) FROM kg.records r
+            LEFT JOIN kg.node_keys a ON a.org_id = r.org_id AND a.sk = r.app_sk AND a.coll = 1 WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[]) GROUP BY r.org_id, COALESCE(a.id, '')""",
+                         org, sorted(unseen))
     drop_c = sorted(k for k in cur_closure if k not in d.closure)
     if drop_c:
         await w.closure_delete(drop_c)
