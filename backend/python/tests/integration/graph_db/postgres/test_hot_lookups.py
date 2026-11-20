@@ -174,10 +174,12 @@ async def test_the_pages_of_a_lookup_read_one_snapshot(world, monkeypatch) -> No
         rows = await real(*args, **kw)
         pages.append(len(rows))
         if len(pages) == 1:          # another session commits a match past the cursor before the second page is read
-            con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+            con = await asyncpg.connect(os.environ["PG_CORE_URL"])          # the service login the fixture already needs, as the app uses it
             try:
-                await con.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'blocks', 'zzzz', $2::jsonb)", a.org,
-                                  json.dumps({"id": "zzzz", "orgId": a.org, "recordId": "r1", "connectorId": "c1"}))
+                async with con.transaction():
+                    await con.execute("SELECT set_config('role', 'pipeshub_connectors', true), set_config('app.org_id', $1, true)", a.org)
+                    await con.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'blocks', 'zzzz', $2::jsonb)", a.org,
+                                      json.dumps({"id": "zzzz", "orgId": a.org, "recordId": "r1", "connectorId": "c1"}))
             finally:
                 await con.close()
         return rows
