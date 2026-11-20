@@ -96,11 +96,24 @@ async def test_the_cap_is_the_sequence_never_a_row_count_and_a_full_window_answe
     assert read.ids == ("r0", "r1", "r2")
 
 
+async def _timed_append(pg: PgWindowStore, org: str, rid: str) -> float:
+    t = time.perf_counter()
+    assert (await pg.open_or_append(org, 5, "zz", "e", rid, NOW)).state == APPENDED
+    return (time.perf_counter() - t) * 1000
+
+
 async def test_an_append_into_a_window_of_50k_rows_stays_fast_under_the_lock(stores, uid) -> None:
-    """R2-3: counting rows under the window lock cost 75 ms at 50k rows (RLS enforced). Nothing counts now."""
+    """R2-3: counting rows under the window lock cost 75 ms at 50k rows (RLS enforced). Nothing counts now.
+
+    The append into a window of 50k rows is timed against appends into an empty window, alternately in the same run, and the two
+    medians are compared: a runner that is slow slows both, a cost that grows with the window slows only the first (75 ms against 2 ms). A
+    few stalled appends (one measured 46 ms against a 2 ms median) move the tail but not a median of 200, so the tail only has
+    to stay below a generous bound.
+    """
     pg = stores[0]
-    org = f"org-{uid}"
+    org, small = f"org-{uid}", f"org-{uid}-small"
     await _publish(pg, org)
+    await _publish(pg, small)
     base = f"state:rpw:{{{org}}}:5"
     async with (await pg._state.rt.db()).runtime_uow(write=True) as tx:
         await tx.execute(
@@ -112,13 +125,17 @@ async def test_an_append_into_a_window_of_50k_rows_stays_fast_under_the_lock(sto
             "INSERT INTO platform.kv_entries (key, value, expires_at, updated_at) VALUES ($1, convert_to('50000', 'UTF8'), now() + interval '1 hour', now())",
             base + ":n",
         )
-    spans = []
-    for i in range(200):
-        t = time.perf_counter()
-        assert (await pg.open_or_append(org, 5, "zz", "e", f"late{i}", NOW)).state == APPENDED
-        spans.append((time.perf_counter() - t) * 1000)
-    spans.sort()
-    assert spans[int(len(spans) * 0.99) - 1] < 20, f"p99 {spans[int(len(spans) * 0.99) - 1]:.1f} ms, median {statistics.median(spans):.1f} ms"
+    for i in range(20):                                                             # warm the connection and the plans
+        await _timed_append(pg, small, f"warm{i}")
+        await _timed_append(pg, org, f"warm{i}")
+    empty, big = [], []
+    for i in range(200):                                                            # alternating, so both see the same load
+        empty.append(await _timed_append(pg, small, f"late{i}"))
+        big.append(await _timed_append(pg, org, f"late{i}"))
+    median, baseline, p99 = statistics.median(big), statistics.median(empty), sorted(big)[int(len(big) * 0.99) - 1]
+    detail = f"median {median:.1f} ms against {baseline:.1f} ms in an empty window, p99 {p99:.1f} ms"
+    assert median < 3 * baseline + 5, detail                                        # the cost does not follow the window's size
+    assert p99 < 250, detail                                                        # a stalled runner, not a held lock
 
 
 async def test_repair_sees_only_the_orgs_open_windows_and_a_done_window_leaves_the_set(stores, uid) -> None:
