@@ -169,6 +169,14 @@ const BSON_TYPES: Record<string, (value: unknown) => boolean> = {
   objectId: isObjectId,
 }
 
+/** A value's BSON type, as the server names it in its errors. */
+const bsonTypeName = (value: unknown): string => {
+  if (value === null) return 'null'
+  if (typeof value === 'number') return Number.isInteger(value) ? 'int' : 'double'
+  if (typeof value === 'boolean') return 'bool'
+  return Object.entries(BSON_TYPES).find(([, is]) => is(value))?.[0] ?? typeof value
+}
+
 const LOGICAL_KEYS = new Set(['$and', '$or', '$nor', '$expr'])
 
 const satisfiesElemMatch = (element: unknown, sub: Filter): boolean => {
@@ -295,7 +303,11 @@ export const matchesFilter = (doc: Doc, filter: Filter): boolean =>
   Object.entries(filter).every(([key, condition]) => {
     if (key === '$or') return (condition as Filter[]).some((f) => matchesFilter(doc, f))
     if (key === '$and') return (condition as Filter[]).every((f) => matchesFilter(doc, f))
-    if (key === '$nor') return !(condition as Filter[]).some((f) => matchesFilter(doc, f))
+    if (key === '$nor') {
+      // The server refuses an empty `$nor` outright; matching everything would hide that.
+      if (!Array.isArray(condition) || condition.length === 0) throw new Error('$nor argument must be a non-empty array')
+      return !(condition as Filter[]).some((f) => matchesFilter(doc, f))
+    }
     if (key === '$expr') return isTruthy(evalExpr(condition, doc))
     if (key.startsWith('$')) throw new Error(`The in-memory store does not understand ${key}`)
     const path = key.split('.')
@@ -450,6 +462,51 @@ const arrayFilterIdentifier = (filter: Filter): string | undefined => {
   return key.split('.')[0]
 }
 
+/** Every top-level field name an array filter names, through `$or`, `$and` and `$nor` too. */
+const arrayFilterNames = (filter: Filter): string[] =>
+  Object.entries(filter).flatMap(([key, condition]) =>
+    key.startsWith('$') ? (Array.isArray(condition) ? condition.flatMap((f) => arrayFilterNames(f as Filter)) : []) : [key.split('.')[0] as string],
+  )
+
+/** The `$[identifier]`s of an update, each with the first path that uses it. */
+const filteredIdentifiers = (update: Doc | Doc[]): Map<string, string> => {
+  const used = new Map<string, string>()
+  if (Array.isArray(update)) return used
+  for (const [key, value] of Object.entries(update)) {
+    for (const path of key.startsWith('$') ? Object.keys(isPlainObject(value) ? value : {}) : [key]) {
+      for (const match of path.matchAll(/\$\[([^\]]+)\]/g)) if (!used.has(match[1] as string)) used.set(match[1] as string, path)
+    }
+  }
+  return used
+}
+
+/**
+ * The server checks `arrayFilters` when it parses the update, before it reads a document, so a bad one fails even when
+ * nothing matches: one top-level field name per filter, alphanumeric from a lowercase letter, one filter per
+ * identifier, each filter used by the update, and each identifier the update uses filtered.
+ */
+const assertArrayFilters = (update: Doc | Doc[], arrayFilters: Filter[] | undefined): void => {
+  const used = filteredIdentifiers(update)
+  const named = new Set<string>()
+  for (const filter of arrayFilters ?? []) {
+    const names = [...new Set(arrayFilterNames(filter))]
+    if (names.length === 0) throw new Error('Cannot use an expression without a top-level field name in arrayFilters')
+    if (names.length > 1) {
+      throw new Error(`Error parsing array filter :: caused by :: Expected a single top-level field name, found ${names.map((n) => `'${n}'`).join(' and ')}`)
+    }
+    const name = names[0] as string
+    if (!/^[a-z][a-zA-Z0-9]*$/.test(name)) {
+      throw new Error(`Error parsing array filter :: caused by :: The top-level field name must be an alphanumeric string beginning with a lowercase letter, found '${name}'`)
+    }
+    if (named.has(name)) throw new Error(`Found multiple array filters with the same top-level field name ${name}`)
+    named.add(name)
+    if (!used.has(name)) throw new Error(`The array filter for identifier '${name}' was not used in the update`)
+  }
+  for (const [identifier, path] of used) {
+    if (!named.has(identifier)) throw new Error(`No array filter found for identifier '${identifier}' in path '${path}'`)
+  }
+}
+
 /** The index the plain positional `$` stands for: the first element the query's predicate on that array matched. */
 const positionalIndex = (doc: Doc, filter: Filter | undefined, arrayPath: string): number => {
   const items = pathValue(doc, arrayPath)
@@ -552,7 +609,16 @@ const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc | Doc[], ctx: Upd
   each(update.$unset as Doc | undefined, (path) => doc.set(path, undefined))
   each(update.$inc as Doc | undefined, (path, value) => doc.set(path, Number(doc.get(path) ?? 0) + Number(value)))
   each(update.$push as Doc | undefined, (path, value) => {
+    const current = pathValue(plain(doc), path)
+    if (current !== undefined && !Array.isArray(current)) {
+      throw new Error(`The field '${path}' must be an array but is of type ${bsonTypeName(current)} in document {_id: ${String(doc.get('_id'))}}`)
+    }
     const modifiers = isPlainObject(value) && Array.isArray(value.$each) ? value : undefined
+    for (const modifier of Object.keys(modifiers ?? {})) {
+      if (modifier !== '$each' && modifier !== '$slice') {
+        throw new Error(`The in-memory store does not understand ${modifier} in $push; extend applyUpdate before relying on it`)
+      }
+    }
     const next = [...currentArray(path), ...(modifiers ? (modifiers.$each as unknown[]) : [value])]
     const slice = modifiers?.$slice
     doc.set(path, typeof slice === 'number' ? (slice < 0 ? next.slice(slice) : next.slice(0, slice)) : next)
@@ -746,6 +812,7 @@ export class InMemoryChatStore {
     const asUpdated = (doc: SessionDoc | MessageDoc | undefined, filter: Filter, update: Doc, options: UpdateOptions): FakeQuery<unknown> => {
       assertSessionUsable(options)
       assertNoUpsert(options)
+      assertArrayFilters(update, options?.arrayFilters)
       // Mongoose returns the pre-update document unless the caller asks for `new: true` or `returnDocument: 'after'`.
       const returnsBefore = !(options?.new === true || options?.returnDocument === 'after')
       const before = doc ? plain(doc) : undefined
@@ -767,6 +834,7 @@ export class InMemoryChatStore {
         assertNoUpsert(options)
         return withSession(
           new FakeQuery<UpdateResult>(() => {
+            assertArrayFilters(update, options?.arrayFilters)
             const matched = many ? find(filter) : find(filter).slice(0, 1)
             let modifiedCount = 0
             for (const doc of matched) {

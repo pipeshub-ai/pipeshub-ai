@@ -126,6 +126,18 @@ describe('chat test harness: the in-memory store only keeps what was really save
         'The in-memory store does not understand $expr.function',
       )
     })
+
+    it('$nor matches what fails every expression, a missing field included; an empty $nor is refused', () => {
+      // Manual: $nor ("selects the documents that fail all the query expressions", those without the field included)
+      expect(matchesFilter({ a: 1 }, { $nor: [{ a: 2 }, { b: 3 }] })).to.equal(true)
+      expect(matchesFilter({}, { $nor: [{ a: 2 }] })).to.equal(true)
+      expect(matchesFilter({ a: 1, b: 3 }, { $nor: [{ a: 2 }, { b: 3 }] })).to.equal(false)
+      // As an ask's guard reads it: no element of this person for this version.
+      const asks = { asks: [{ by: U1, ver: 'v1' }, { by: U2, ver: 'v2' }] }
+      expect(matchesFilter(asks, { $nor: [{ asks: { $elemMatch: { by: U1, ver: 'v1' } } }] })).to.equal(false)
+      expect(matchesFilter(asks, { $nor: [{ asks: { $elemMatch: { by: U1, ver: 'v2' } } }] })).to.equal(true)
+      expect(() => matchesFilter({ a: 1 }, { $nor: [] })).to.throw('$nor argument must be a non-empty array')
+    })
   })
 
   describe('update operators and stubs follow the MongoDB manual', () => {
@@ -175,6 +187,114 @@ describe('chat test harness: the in-memory store only keeps what was really save
 
       const levels = (session.toObject().sharedWith as Array<{ accessLevel: string }>).map((e) => e.accessLevel)
       expect(levels).to.deep.equal(['write', 'read'])
+    })
+
+    it('arrayFilters are checked before any document is read: one name per filter, from a lowercase letter, one filter per identifier, each used', async () => {
+      // Manual: $[<identifier>] ("must begin with a lowercase letter and contain only alphanumeric characters"); the
+      // server also refuses a filter the update does not use and two filters for one identifier
+      const { session } = seed({ sharedWith: [{ userId: oid(), accessLevel: 'write' }] })
+      const outcome = (update: Record<string, unknown>, arrayFilters?: Array<Record<string, unknown>>, _id: unknown = session._id): Promise<string> =>
+        ChatSession.updateOne({ _id }, update, arrayFilters ? { arrayFilters } : undefined).then(
+          () => 'written',
+          (e: Error) => e.message,
+        )
+      const byFilter = { $set: { 'sharedWith.$[p].accessLevel': 'read' } }
+      const byIndex = { $set: { 'sharedWith.0.accessLevel': 'read' } }
+      expect(await outcome(byIndex, [{ 'p.accessLevel': 'write' }])).to.equal("The array filter for identifier 'p' was not used in the update")
+      expect(await outcome(byFilter, [{ 'p.accessLevel': 'write' }, { 'p.userId': oid() }])).to.equal('Found multiple array filters with the same top-level field name p')
+      expect(await outcome({ $set: { 'sharedWith.$[P].accessLevel': 'read' } }, [{ 'P.accessLevel': 'write' }])).to.contain(
+        "must be an alphanumeric string beginning with a lowercase letter, found 'P'",
+      )
+      expect(await outcome({ $set: { 'sharedWith.$[p_1].accessLevel': 'read' } }, [{ 'p_1.accessLevel': 'write' }])).to.contain("found 'p_1'")
+      expect(await outcome({ $set: { 'sharedWith.$[p].accessLevel': 'read', 'sharedWith.$[q].userId': oid() } }, [{ 'p.accessLevel': 'write', 'q.accessLevel': 'read' }])).to.contain(
+        "Expected a single top-level field name, found 'p' and 'q'",
+      )
+      expect(await outcome(byFilter)).to.equal("No array filter found for identifier 'p' in path 'sharedWith.$[p].accessLevel'")
+      // Refused the same when no document matches, and by findOneAndUpdate too.
+      expect(await outcome(byIndex, [{ 'p.accessLevel': 'write' }], oid())).to.equal("The array filter for identifier 'p' was not used in the update")
+      expect(() => ChatSession.findOneAndUpdate({ _id: session._id }, byIndex, { arrayFilters: [{ 'p.accessLevel': 'write' }] })).to.throw('was not used in the update')
+      expect(await outcome(byFilter, [{ 'p.accessLevel': 'write' }])).to.equal('written')
+    })
+
+    it('$[identifier] fails on a document without the array, changes nothing when no element matches, and takes $in and $or', async () => {
+      // Manual: $[<identifier>] (the array must exist in the document; array filters take query operators)
+      const [U1, U2, U3] = [oid(), oid(), oid()]
+      const { session } = seed({
+        sharedWith: [
+          { userId: U1, accessLevel: 'write' },
+          { userId: U2, accessLevel: 'write' },
+          { userId: U3, accessLevel: 'write' },
+        ],
+      })
+      const levels = () => (session.toObject().sharedWith as Array<{ accessLevel: string }>).map((e) => e.accessLevel)
+      const toRead = { $set: { 'sharedWith.$[p].accessLevel': 'read' } }
+      expect(await ChatSession.updateOne({ _id: session._id }, toRead, { arrayFilters: [{ 'p.userId': oid() }] })).to.deep.equal({
+        acknowledged: true,
+        matchedCount: 1,
+        modifiedCount: 0,
+      })
+      await ChatSession.updateOne({ _id: session._id }, toRead, { arrayFilters: [{ 'p.userId': { $in: [U1, U3] } }] })
+      expect(levels()).to.deep.equal(['read', 'write', 'read'])
+      await ChatSession.updateOne({ _id: session._id }, toRead, { arrayFilters: [{ $or: [{ 'p.userId': U2 }, { 'p.accessLevel': 'none' }] }] })
+      expect(levels()).to.deep.equal(['read', 'read', 'read'])
+      const missing = await ChatSession.updateOne({ _id: session._id }, { $set: { 'nothing.$[p].x': 1 } }, { arrayFilters: [{ 'p.x': 0 }] }).then(
+        () => 'written',
+        (e: Error) => e.message,
+      )
+      expect(missing).to.equal("The path 'nothing' must exist in the document in order to apply array updates")
+    })
+
+    it('$push appends one element, makes the array where the field is absent, and fails on a field that is not an array', async () => {
+      // Manual: $push ("If the field is absent in the document to update, $push adds the array field with the value as
+      // its element"; "If the field is not an array, the operation will fail")
+      const U1 = oid()
+      const { session } = seed({ title: 'not a list' })
+      await ChatSession.updateOne({ _id: session._id }, { $unset: { sharedWith: 1 } })
+      expect(session.toObject().sharedWith).to.equal(undefined)
+      await ChatSession.updateOne({ _id: session._id }, { $push: { sharedWith: { userId: U1, accessLevel: 'read' } } })
+      expect((session.toObject().sharedWith as Array<{ accessLevel: string }>).map((e) => e.accessLevel)).to.deep.equal(['read'])
+      const outcome = (update: Record<string, unknown>): Promise<string> =>
+        ChatSession.updateOne({ _id: session._id }, update).then(
+          () => 'written',
+          (e: Error) => e.message,
+        )
+      expect(await outcome({ $push: { title: 'x' } })).to.match(/^The field 'title' must be an array but is of type string/)
+      session.set('title', null)
+      expect(await outcome({ $push: { title: 'x' } })).to.match(/^The field 'title' must be an array but is of type null/)
+    })
+
+    it('a $push guarded by $nor adds one element, and a repeat the guard rules out matches nothing', async () => {
+      // Manual: updateOne() applies its update only to a document its filter matches; an ask is added this way, once per person
+      const U1 = oid()
+      const { store, session } = seed()
+      const ask = () =>
+        ChatSession.updateOne(
+          { _id: session._id, $nor: [{ sharedWith: { $elemMatch: { userId: U1 } } }] },
+          { $push: { sharedWith: { userId: U1, accessLevel: 'read' } } },
+        )
+      expect(await ask()).to.deep.equal({ acknowledged: true, matchedCount: 1, modifiedCount: 1 })
+      expect(await ask()).to.deep.equal({ acknowledged: true, matchedCount: 0, modifiedCount: 0 })
+      expect((session.toObject().sharedWith as unknown[]).length).to.equal(1)
+      expect(store.writes).to.deep.equal(['chatSession.updateOne'])
+    })
+
+    it('$push with $each and $slice keeps the newest elements; $sort and $position are refused, not ignored', async () => {
+      // Manual: $push modifiers ($each, $slice, $sort, $position); this store implements $each and $slice
+      const [U1, U2, U3] = [oid(), oid(), oid()]
+      const { session } = seed({ sharedWith: [{ userId: U1, accessLevel: 'read' }] })
+      const pushed = [
+        { userId: U2, accessLevel: 'read' },
+        { userId: U3, accessLevel: 'write' },
+      ]
+      await ChatSession.updateOne({ _id: session._id }, { $push: { sharedWith: { $each: pushed, $slice: -2 } } })
+      expect((session.toObject().sharedWith as Array<{ userId: unknown }>).map((e) => String(e.userId))).to.deep.equal([String(U2), String(U3)])
+      for (const modifier of ['$sort', '$position']) {
+        const outcome = await ChatSession.updateOne({ _id: session._id }, { $push: { sharedWith: { $each: [], [modifier]: 1 } } }).then(
+          () => 'written',
+          (e: Error) => e.message,
+        )
+        expect(outcome).to.contain(`does not understand ${modifier} in $push`)
+      }
     })
 
     it('$[] updates every element and plain $ updates the element the query matched', async () => {
@@ -259,7 +379,7 @@ describe('chat test harness: the in-memory store only keeps what was really save
     it('operators the store does not understand throw instead of passing', async () => {
       // Manual: the server rejects or evaluates these; the harness must never silently ignore them
       const { session } = seed()
-      expect(() => matchesFilter({ a: 1 }, { $nor: [{ a: 2 }] })).to.throw('does not understand $nor')
+      expect(() => matchesFilter({ a: 1 }, { a: { $not: { $gt: 2 } } })).to.throw('does not understand $not')
       expect(() => matchesFilter({ a: 1 }, { $where: 'true' })).to.throw('does not understand $where')
       expect(() => matchesFilter({ a: 1 }, { a: { $mod: [2, 1] } })).to.throw('does not understand $mod')
       let error: unknown
