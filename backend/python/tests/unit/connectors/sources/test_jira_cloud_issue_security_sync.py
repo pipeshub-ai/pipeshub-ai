@@ -3889,6 +3889,7 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
             assert self._written(c) == {}, "a transient failure keeps the stored members"
         c = await self._role_sync(points)
         assert self._written(c) == {"PROJ_10002": ["acc-1"]}  # the stored members are not kept: only those read now
+        assert [n.kwargs["title"] for n in c.notify.await_args_list if "removed the stored members" in n.kwargs["title"]]
         assert "PROJ_10002" not in c._role_members  # its level readers stay unknown, so leveled issues wait
 
     @pytest.mark.asyncio
@@ -3899,7 +3900,7 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
         c = _connector()
         c.issues_sync_point, c.notify = points, AsyncMock()
         c.data_entities_processor.on_new_app_roles = AsyncMock()
-        assert await c._unread_streaks("role", set(), {"PROJ_10002"}) == set()
+        assert await c._unread_streaks("role", set(), {"PROJ_10002"}) == {}
         c = await self._role_sync(points)
         assert self._written(c) == {}, "one failure after a full read is transient again"
 
@@ -3908,7 +3909,7 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
         c = _connector()
         c._user_read_unfinished = short_user_read
         c._has_stored_access = AsyncMock(return_value=True)
-        c.issues_sync_point = points
+        c.issues_sync_point, c.notify = points, AsyncMock()
         c.data_entities_processor.on_new_user_groups = AsyncMock()
         c._fetch_groups = AsyncMock(return_value=([{"groupId": "group-1", "name": "devs"}], False))
         c._fetch_group_members = AsyncMock(return_value=([], False) if unread else (["acc-1"], True))
@@ -3925,13 +3926,18 @@ class TestALastingUnreadReadStopsKeepingStoredMembers:
         ((group, members),) = c.data_entities_processor.on_new_user_groups.await_args.args[0]
         assert (group.source_user_group_id, members) == ("group-1", [])
         assert "group-1" not in c._group_members  # unknown to level readers, not "no members"
+        (notice,) = c.notify.await_args_list  # the owner is told on the sync that closes it
+        assert "devs" in notice.kwargs["message"] and "5 syncs in a row" in notice.kwargs["message"]
+        c = await self._group_sync(points)
+        assert c.data_entities_processor.on_new_user_groups.await_count == 1 and c.notify.await_count == 0, \
+            "still closed on the next unread sync, and told once"
 
     @pytest.mark.asyncio
     async def test_a_count_that_cannot_be_saved_closes_nothing_and_the_sync_goes_on(self) -> None:
         c = _connector()
         c.issues_sync_point = MagicMock()
         c.issues_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
-        assert await c._unread_streaks("role", {"PROJ_10002"}, set()) == set()
+        assert await c._unread_streaks("role", {"PROJ_10002"}, set()) == {}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("kind", ["role", "user_group"])

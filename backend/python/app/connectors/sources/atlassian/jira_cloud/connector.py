@@ -3876,8 +3876,9 @@ class JiraConnector(BaseConnector):
             unread = {group_id: (user_group, group_name) for group_id, group_name, user_group, app_users in
                       (r for r in results if r is not None) if group_id and app_users is None}
             closed_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
-            for group_id in await self._unread_streaks(
-                    "user_group", set(unread), {k for k, v in groups_members_map.items() if v is not None}):
+            closing = await self._unread_streaks(
+                "user_group", set(unread), {k for k, v in groups_members_map.items() if v is not None})
+            for group_id in closing:
                 user_group, group_name = unread[group_id]
                 self.logger.error(
                     f"Group {group_name}: its members could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} syncs in a row; "
@@ -3892,6 +3893,10 @@ class JiraConnector(BaseConnector):
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
             # After the short-read filter: the stored members it would keep are what the bound drops.
             user_groups_batch.extend(closed_groups)
+            await self._notify_unread_closed(
+                "groups", [group.name for group, _ in closed_groups
+                           if closing.get(group.source_user_group_id) == UNREAD_SYNCS_BEFORE_CLOSE],
+                NotificationType.CONNECTOR_GROUP_SYNC_ERROR)
 
             # One transaction per group, as the Confluence connector writes them: a large
             # site's groups in a single transaction (one user lookup per membership) outlive
@@ -4187,9 +4192,10 @@ class JiraConnector(BaseConnector):
             self._note_unread(None)
             return project_key, project_roles, True
 
-    async def _unread_streaks(self, kind: str, unread: set[str], read: set[str]) -> set[str]:
+    async def _unread_streaks(self, kind: str, unread: set[str], read: set[str]) -> dict[str, int]:
         """Count, per ``kind`` (``user_group`` or ``role``), the syncs in a row that left each one unread, saved across
-        syncs; one read in full starts again at none. Returns those unread for ``UNREAD_SYNCS_BEFORE_CLOSE`` syncs or more:
+        syncs; one read in full starts again at none. Returns those unread for ``UNREAD_SYNCS_BEFORE_CLOSE`` syncs or more,
+        with their count:
         a transient failure keeps the stored members, a lasting one does not. When the count cannot be read or saved,
         nothing is closed this sync and the group and role sync goes on."""
         try:
@@ -4207,8 +4213,24 @@ class JiraConnector(BaseConnector):
                     UNREAD_STREAKS_KEY, {**state, kind: json.dumps(now, sort_keys=True)})
         except Exception as e:
             self.logger.warning(f"Could not count the syncs that left a {kind} unread: {e}")
-            return set()
-        return {k for k in unread if now[k] >= UNREAD_SYNCS_BEFORE_CLOSE}
+            return {}
+        return {k: now[k] for k in unread if now[k] >= UNREAD_SYNCS_BEFORE_CLOSE}
+
+    async def _notify_unread_closed(self, what: str, names: list[str], notification_type: NotificationType) -> None:
+        """Tell the connector's owner, on the sync that first closes them, which groups or roles lost their stored members."""
+        if not names:
+            return
+        preview = ", ".join(sorted(names)[:10]) + (f", and {len(names) - 10} more" if len(names) > 10 else "")
+        await self.notify(
+            type=notification_type,
+            severity=NotificationSeverity.WARNING,
+            title=self._notification_title(f"removed the stored members of {what} it could not read"),
+            message=(
+                f"Jira {what} whose members could not be read for {UNREAD_SYNCS_BEFORE_CLOSE} syncs in a row: {preview}. "
+                "Their stored members were removed, so no one Jira removed from them keeps access through them. Their "
+                "members are written again on the next sync that reads them in full."
+            ),
+        )
 
     def _role_actor_group_id(self, actor: dict[str, Any]) -> Optional[str]:
         """A group actor's id: ``actorGroup.groupId``, where Get project role for project documents it ("As a group's name can
@@ -4345,6 +4367,9 @@ class JiraConnector(BaseConnector):
             roles_to_sync = await self._without_stored_members("role", roles_to_sync)
         # After the short-read filter: the stored members it would keep are what the bound drops.
         roles_to_sync.extend(closed_roles)
+        await self._notify_unread_closed(
+            "project roles", [role.name for role, _ in closed_roles if closed.get(role.source_role_id) == UNREAD_SYNCS_BEFORE_CLOSE],
+            NotificationType.CONNECTOR_ROLE_SYNC_ERROR)
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
