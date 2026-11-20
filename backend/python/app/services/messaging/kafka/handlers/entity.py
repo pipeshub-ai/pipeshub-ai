@@ -588,11 +588,13 @@ class EntityEventService(BaseEventService):
                 # The start moves the start time (seen by a reindex that began before). The mark, rewritten while the pass runs, is
                 # what a reindex that begins meanwhile, in any process, takes for a running sync. It is not cleared at the end: a
                 # pass in another process may share it, so it goes stale instead. A pass whose mark is not written does not run on.
+                # A write gets a quarter of the TTL, as does the wait between writes: the next mark lands at most 3/4 of the
+                # TTL after the last one's time, before it expires. A write that misses its deadline stops the pass.
                 async def mark(*keys: str) -> None:
                     now = get_epoch_timestamp_in_ms()
-                    ensure_written(await self.graph_provider.batch_upsert_nodes(
+                    ensure_written(await asyncio.wait_for(self.graph_provider.batch_upsert_nodes(
                         [{"id": connector_id, **dict.fromkeys(keys, now)}], CollectionNames.APPS.value,
-                    ), "the user-link pass mark")
+                    ), USER_LINK_MARK_TTL_MS / 4000), "the user-link pass mark")
 
                 note_sync_started(connector_id)
                 await mark(ConnectorStateKeys.LAST_SYNC_STARTED_AT, ConnectorStateKeys.USER_LINK_STARTED_AT)

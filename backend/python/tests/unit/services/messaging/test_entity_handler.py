@@ -1986,6 +1986,36 @@ class TestUserAddedConnectorLink:
         assert stopped.is_set() and svc.graph_provider.batch_upsert_nodes.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_a_pass_whose_mark_rewrite_stalls_stops_before_the_mark_expires(self, no_debounce: None) -> None:
+        """A rewrite that hangs (a stalled store) would leave the last mark to expire while the pass runs on unseen: each
+        write has a quarter of the TTL, so the pass stops before the mark it holds is older than the TTL."""
+        stopped = asyncio.Event()
+
+        async def link() -> None:
+            try:
+                await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                stopped.set()
+                raise
+
+        async def write(nodes: list, collection: str) -> bool:
+            if written:
+                await asyncio.sleep(2)      # the rewrite never answers in time
+            written.append(nodes[0])
+            return True
+
+        written: list[dict] = []
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=write)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        assert loop.time() - began < 0.04       # the start, 10 ms of waiting, 10 ms for the rewrite: within the 40 ms TTL
+        assert stopped.is_set() and len(written) == 1
+
+    @pytest.mark.asyncio
     async def test_a_pass_that_fails_partway_writes_nothing_after_it(self, no_debounce: None) -> None:
         c = _connector(link=AsyncMock(side_effect=RuntimeError("source down")))
         svc = _link_service({"c1": c})

@@ -210,7 +210,7 @@ async def unless_synced_since(graph_provider: IGraphDBProvider, connector_id: st
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
     # A running user-link pass, in any process, rewrites its mark every USER_LINK_MARK_TTL_MS / 4; a mark that is not older
     # than the TTL may be one, whatever ran since. A pass that ended or crashed stops counting once its mark is that old.
-    # shortcut: the mark is the pass's clock and the age this process's; clocks more than 3/4 of the TTL apart can hide a
+    # shortcut: the mark is the pass's clock and the age this process's; clocks more than 1/4 of the TTL apart can hide a
     # running pass. Stamp the mark with the store's own time if hosts can drift that far.
     link_mark = app.get(ConnectorStateKeys.USER_LINK_STARTED_AT) if app else None
     running = (
