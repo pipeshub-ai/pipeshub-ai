@@ -39,7 +39,11 @@ def test_importing_litellm_in_a_worker_opens_no_connection() -> None:
         """
         import socket
 
+        attempts = []
+
         def refuse(*args, **kwargs):
+            # Recorded first: litellm catches the exception of a failed fetch and falls back to its shipped copy.
+            attempts.append(args[:2])
             raise AssertionError(f"network connection attempted: {args[:2]}")
 
         socket.socket.connect = refuse
@@ -49,6 +53,7 @@ def test_importing_litellm_in_a_worker_opens_no_connection() -> None:
         import litellm
 
         assert litellm.model_cost, "no price map"
+        assert not attempts, f"network connection attempted: {attempts}"
         """
     )
     result = subprocess.run(
