@@ -16,7 +16,8 @@ INDEXES = [
 
 
 def upgrade():
-    # Built inside the upgrade's one transaction, as graph_0013 does. No release wrote a source account before this revision, so each leaf is empty.
+    # Built inside the upgrade's one transaction, as graph_0013 does. No release wrote a source account before this revision, so neither index
+    # gets a row, but each build still reads its whole leaf while the leaf's writers wait.
     for name, cols, where in INDEXES:
         ensure_partitioned_index(op.get_bind(), "graph.nodes", name, cols, where=where, blocking=True)
 
