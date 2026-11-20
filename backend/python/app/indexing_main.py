@@ -1820,11 +1820,13 @@ async def _republish_refresh_intents(
                     or refresh_intent.live_intent(fresh, now_ms) != intent_id or not _due(fresh, now_ms)
                 ):
                     return False
-                if fresh.get("origin") == OriginTypes.CONNECTOR.value and fresh.get("connectorId"):
-                    # The connector of the row as it is now, read here and not taken from the pass's cache: a connector turned off since
-                    # must not get a claim and an enqueue that the delivery guard cannot take back. Unreadable counts as not eligible.
-                    if await _read_connector(str(fresh["connectorId"])) is not True:
-                        return False
+                # The connector of the row as it is now, read here and not taken from the pass's cache: a connector turned off since
+                # must not get a claim and an enqueue that the delivery guard cannot take back. Unreadable counts as not eligible.
+                if (
+                    fresh.get("origin") == OriginTypes.CONNECTOR.value and fresh.get("connectorId")
+                    and await _read_connector(str(fresh["connectorId"])) is not True
+                ):
+                    return False
                 republishes = int(fresh.get("republishCount") or 0) if _is_clock(fresh.get("lastRepublishedAt")) else 0
                 # Claimed before the send, and only if nobody changed the request or claimed since the read (a compare-and-set on the
                 # id, the request's time and the last send).
