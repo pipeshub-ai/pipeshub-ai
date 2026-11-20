@@ -82,7 +82,7 @@ class JiraRecordsDb(FakeRecordsDb):
         for role, members in roles:
             self.app_roles[role.source_role_id] = list(members)
 
-    def _keep_stored_group(self, record: Any) -> None:
+    def _keep_stored_group(self, record: Record) -> None:
         """A record written with no level group named keeps the stored one, as the processor does (None)."""
         old = self.records.get(record.external_record_id)
         if getattr(record, "access_group_external_id", None) is None and old is not None:
@@ -93,7 +93,9 @@ class JiraRecordsDb(FakeRecordsDb):
             self._keep_stored_group(record)
         await super().on_new_records(records_with_permissions)
 
-    async def on_record_content_update(self, record: Any, permissions: Any = None, *, content_changed: bool = True) -> None:
+    async def on_record_content_update(
+        self, record: Record, permissions: list[Any] | None = None, *, content_changed: bool = True,
+    ) -> None:
         self._keep_stored_group(record)
         await super().on_record_content_update(record, permissions, content_changed=content_changed)
 

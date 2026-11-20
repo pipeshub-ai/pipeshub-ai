@@ -1516,7 +1516,10 @@ class TestABrowseNamedReporterInTheLevelThroughItsMembers:
     ENG-2 and is in devs, which the level holds; bob reports ENG-3 and is not."""
 
     @staticmethod
-    async def _site(jira, db, store, jql_search, version: tuple[int, ...] = (11, 3, 13)):
+    async def _site(
+        jira: AtlassianApiStub, db: JiraRecordsDb, store: FakeCheckpointStore, jql_search: SecuredSearch,
+        version: tuple[int, ...] = (11, 3, 13),
+    ) -> JiraDataCenterConnector:
         stub_site(jira, jql_search)
         serve_version(jira, version)
         browse_reporter_and_lead(jira)
