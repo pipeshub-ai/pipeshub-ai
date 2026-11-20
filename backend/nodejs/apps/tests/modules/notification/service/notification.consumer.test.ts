@@ -8,6 +8,7 @@ import { setNotificationRepository } from '../../../../src/libs/repositories/not
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { GatewayTimeoutError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
+import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
 import * as NotificationSchema from '../../../../src/modules/notification/schema/notification.schema';
 import * as RecipientResolver from '../../../../src/modules/notification/utils/notification-recipient.resolver';
 import * as PayloadResolver from '../../../../src/modules/notification/utils/notification-payload.resolver';
@@ -278,6 +279,35 @@ describe('notification/service/notification.consumer', () => {
         await outcome;
         expect(seen).to.equal(orgId);
         expect(handler.calledOnce).to.be.true;
+      });
+
+      describe('a supplied _id', () => {
+        const other = new mongoose.Types.ObjectId().toString();
+        const refusedCount = async () =>
+          Number(/notification_event_refused_total\{reason="id_with_many_recipients"\} (\d+)/.exec(await metricsBackend.serialize())?.[1] ?? 0);
+        it('refuses an event with an _id and several recipients: logged, counted, nothing written, marked handled', async () => {
+          mockConsumer.isConnected.returns(true);
+          sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user), new mongoose.Types.ObjectId(other)]);
+          const insertMany = sinon.stub().resolves([]);
+          setNotificationRepository({ insertMany } as never);
+          const before = await refusedCount();
+          const handler = sinon.stub().resolves();
+          await consumer.consume(handler);
+          await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
+          expect(insertMany.called).to.be.false;
+          expect(mockNotificationService.sendToUser.called).to.be.false;
+          expect(mockLogger.error.calledOnce).to.be.true;
+          expect(mockLogger.error.firstCall.args[1].error).to.equal('Notification event refused');
+          expect(handler.calledOnce).to.be.true;
+          expect(await refusedCount()).to.equal(before + 1);
+        });
+
+        it('keeps the _id for one recipient', async () => {
+          const insertMany = sinon.stub().resolves([]);
+          const { outcome } = await run(insertMany, { ...event, _id: 'fixed-id' });
+          await outcome;
+          expect(insertMany.firstCall.args[0].map((d: any) => d._id)).to.deep.equal(['fixed-id']);
+        });
       });
 
       describe('scheduled notifications (visibleAt ahead)', () => {

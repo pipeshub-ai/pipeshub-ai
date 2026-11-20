@@ -535,7 +535,7 @@ async def test_a_chunk_of_asked_ids_is_read_without_compiling_the_statement(laye
     assert ("JIT" in bare) == available, bare.get("JIT")      # the forcing works: the profile is what keeps it off
 
 
-async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monkeypatch) -> None:
+async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(pg_required: None, monkeypatch) -> None:
     """PROFILE (sorts and bitmap scans off, short lock and statement limits) is the read's own: after a read that succeeds and one that fails, run as a unit of its own or in a
     savepoint of a longer transaction, the settings are back in that transaction and in the next one on the same pooled connection."""
     monkeypatch.setenv("PG_POOL_MAX", "1")                       # one connection: every unit below runs on it

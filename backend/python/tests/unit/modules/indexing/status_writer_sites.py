@@ -33,6 +33,7 @@ CLASSES = {QUEUE, STATUS_VAR, ATTEMPT_START, FAILED, CAS, START, SINK_END, NO_RU
 SITES: dict[tuple[str, str, str], str] = {
     ("events/events.py", "EventProcessor._persist_parsing_completed", "update_node_if_unchanged"): NO_RUN_FIELDS,
     ("events/events.py", "EventProcessor._write_page_count", "update_node_fields_if_match"): NO_RUN_FIELDS,
+    ("events/events.py", "EventProcessor._restore_indexed_fields", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("events/events.py", "EventProcessor._restore_identity_after_failed_attach", "update_node"): NO_RUN_FIELDS,
     ("events/events.py", "EventProcessor._reuse_finished_duplicate", "update_record_fields"): NO_RUN_FIELDS,
     ("events/processor.py", "Processor.process_image", "update_node"): NO_RUN_FIELDS,

@@ -1,9 +1,10 @@
 """Which AI providers a run is held to, and which it may skip.
 
-Three of the four live providers have no key in the integration workflow, so
-holding the nightly to them would only produce permanent red. Azure OpenAI has
-one, so a run that was meant to cover it must fail rather than skip when the
-key is gone — a rotated key otherwise reads as a passing run.
+The workflows pass both OpenAI's and Azure OpenAI's keys and name one of them in
+the repository variable TEST_AI_MODEL_PROVIDER (openAI when unset). The named
+provider must fail rather than skip when its key is gone — a rotated key
+otherwise reads as a passing run — and every other provider skips, even with a
+key set, because that key may belong to an account nobody is paying for.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+
+import yaml
 
 import pytest
 
@@ -46,6 +49,7 @@ def _spec_for(provider_id: str):
 
 def _clear_keys(monkeypatch) -> None:
     for name in (
+        "TEST_AI_MODEL_PROVIDER",
         "TEST_OPENAI_API_KEY", "OPENAI_API_KEY", "TEST_GROQ_API_KEY",
         "TEST_GEMINI_API_KEY", "TEST_AZURE_OPENAI_API_KEY",
         "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
@@ -53,28 +57,58 @@ def _clear_keys(monkeypatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_a_missing_azure_key_fails_a_run_meant_to_cover_it(monkeypatch) -> None:
+def _set_azure(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_AZURE_OPENAI_API_KEY", "k")
+    monkeypatch.setenv("TEST_AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("TEST_AZURE_OPENAI_DEPLOYMENT_NAME", "d")
+
+
+@pytest.mark.parametrize(
+    ("run_provider", "key"),
+    [(None, "TEST_OPENAI_API_KEY"), ("openAI", "TEST_OPENAI_API_KEY"),
+     ("azureOpenAI", "TEST_AZURE_OPENAI_API_KEY")],
+)
+def test_a_missing_key_for_the_run_s_provider_fails_the_run(monkeypatch, run_provider, key) -> None:
+    """The provider TEST_AI_MODEL_PROVIDER names (OpenAI when unset) must not skip."""
     suite = _suite()
     _clear_keys(monkeypatch)
     monkeypatch.setenv(REQUIRE_ENV, "1")
+    if run_provider:
+        monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", run_provider)
+    provider = run_provider or suite._PROVIDER_OPENAI
 
     with pytest.raises(BaseException) as caught:
-        suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_AZURE_OPENAI))
+        suite._skip_if_no_live_credentials(_spec_for(provider))
 
     assert caught.typename == "Failed"
-    assert "TEST_AZURE_OPENAI_API_KEY" in str(caught.value)
+    assert key in str(caught.value)
 
 
-def test_a_provider_the_run_no_longer_funds_only_skips(monkeypatch) -> None:
-    """OpenAI's key is gone, so the nightly must not still demand it."""
+@pytest.mark.parametrize(("run_provider", "other"), [("openAI", "azureOpenAI"), ("azureOpenAI", "openAI")])
+def test_the_other_provider_skips_even_with_its_key_set(monkeypatch, run_provider, other) -> None:
+    """Both providers' keys are passed; only the named one may be used."""
     suite = _suite()
     _clear_keys(monkeypatch)
+    _set_azure(monkeypatch)
+    monkeypatch.setenv("TEST_OPENAI_API_KEY", "k")
     monkeypatch.setenv(REQUIRE_ENV, "1")
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", run_provider)
 
     with pytest.raises(BaseException) as caught:
-        suite._skip_if_no_live_credentials(_spec_for(suite._PROVIDER_OPENAI))
+        suite._skip_if_no_live_credentials(_spec_for(other))
 
     assert caught.typename == "Skipped"
+
+
+def test_a_named_provider_without_its_key_is_not_swapped_for_another(monkeypatch) -> None:
+    """The spec for "any live provider" is the named one even when only the other
+    provider's key is set, so the missing key fails instead of being skipped."""
+    suite = _suite()
+    _clear_keys(monkeypatch)
+    _set_azure(monkeypatch)
+    monkeypatch.setenv("TEST_AI_MODEL_PROVIDER", "openAI")
+
+    assert suite._spec_for_a_live_provider().provider_id == suite._PROVIDER_OPENAI
 
 
 def test_a_provider_with_no_key_in_ci_still_skips(monkeypatch) -> None:
@@ -93,26 +127,65 @@ def test_an_ordinary_run_skips_every_provider(monkeypatch) -> None:
     _clear_keys(monkeypatch)
     monkeypatch.delenv(REQUIRE_ENV, raising=False)
 
-    for provider in (suite._PROVIDER_AZURE_OPENAI, suite._PROVIDER_GROQ):
+    for provider in (suite._PROVIDER_OPENAI, suite._PROVIDER_AZURE_OPENAI, suite._PROVIDER_GROQ):
         with pytest.raises(BaseException) as caught:
             suite._skip_if_no_live_credentials(_spec_for(provider))
         assert caught.typename == "Skipped"
 
 
-def test_no_workflow_still_passes_the_unfunded_openai_key() -> None:
-    """The skip-or-fail rule only decides what happens when a key is absent.
+_PROVIDER_FROM_VARIABLE = "${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}"
+# gpt-5.4-nano (the helper's local default) skipped tools in the agent tests.
+_OPENAI_MODEL_FROM_VARIABLE = "${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}"
 
-    While a workflow still passed TEST_OPENAI_API_KEY, every live OpenAI spec
-    went on running and posting to the key with no credits. Unsetting the
-    variable in a test cannot catch that, because the test controls its own
-    environment and CI does not; the workflows are the thing to assert on.
+
+def _env_blocks(doc: dict):
+    """Every env mapping in a workflow (top level, each job, each step), with the
+    mappings it inherits from."""
+    top = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+    if top:
+        yield "env", top, {}
+    for job_name, job in (doc.get("jobs") or {}).items():
+        job_env = job.get("env") if isinstance(job.get("env"), dict) else {}
+        if job_env:
+            yield job_name, job_env, top
+        for step in job.get("steps") or []:
+            if isinstance(step.get("env"), dict):
+                yield f"{job_name}/{step.get('name', '?')}", step["env"], {**top, **job_env}
+
+
+def test_switching_provider_is_one_repository_variable() -> None:
+    """Every job that names an AI provider takes it from the repository variable
+    and gets both providers' keys, so switching needs no workflow change.
+
+    The Ollama workflow runs a local model and is the one exception.
     """
     workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
-    passing_it = sorted(
-        path.name
-        for path in workflows.glob("*.yml")
-        if "TEST_OPENAI_API_KEY: ${{ secrets." in path.read_text()
-    )
-    assert passing_it == [], (
-        "these jobs still hand the tests the OpenAI key: " + ", ".join(passing_it)
-    )
+    problems, checked = [], 0
+    for path in sorted(workflows.glob("*.yml")):
+        if path.name == "integration-tests-ollama.yml":
+            continue
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for where, env, inherited in _env_blocks(doc):
+            # Checked on every mapping: a step can override a job's provider on its own.
+            if "EVAL_PROVIDER" in env:
+                problems.append(f"{path.name} {where}: EVAL_PROVIDER overrides the run's provider")
+            if "TEST_AI_MODEL_PROVIDER" not in env:
+                # A key with no provider named sends the helpers back to Azure-first.
+                if {"TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY"} & env.keys() and (
+                    "TEST_AI_MODEL_PROVIDER" not in inherited
+                ):
+                    problems.append(f"{path.name} {where}: passes an AI key without TEST_AI_MODEL_PROVIDER")
+                continue
+            checked += 1
+            if env["TEST_AI_MODEL_PROVIDER"] != _PROVIDER_FROM_VARIABLE:
+                problems.append(f"{path.name} {where}: TEST_AI_MODEL_PROVIDER is {env['TEST_AI_MODEL_PROVIDER']!r}")
+            for key in (
+                "TEST_OPENAI_API_KEY", "TEST_AZURE_OPENAI_API_KEY",
+                "TEST_AZURE_OPENAI_ENDPOINT", "TEST_AZURE_OPENAI_DEPLOYMENT_NAME",
+            ):
+                if key not in env:
+                    problems.append(f"{path.name} {where}: does not pass {key}")
+            if env.get("TEST_OPENAI_LLM_MODEL") != _OPENAI_MODEL_FROM_VARIABLE:
+                problems.append(f"{path.name} {where}: TEST_OPENAI_LLM_MODEL is {env.get('TEST_OPENAI_LLM_MODEL')!r}")
+    assert checked, "no workflow sets TEST_AI_MODEL_PROVIDER"
+    assert problems == [], "\n".join(problems)

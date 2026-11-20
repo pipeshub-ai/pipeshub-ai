@@ -127,6 +127,7 @@ from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
+from app.services.paid_cache import repurge_window
 from app.services.paid_cache import run as paid_cache_run
 from app.services.paid_cache.cache import RefreshPurgeInProgress
 from app.services.paid_cache.refresh_handback import RefreshPurgeHeld
@@ -2089,11 +2090,45 @@ class RecordEventHandler(BaseEventService):
                         details={"payload_keys": sorted(payload.keys())},
                     )
                 # A storage failure raises, so the broker redelivers until the purge succeeds.
-                await paid_cache_access.paid_cache_for(self.config_service, self.logger).purge_record(purge_org, purge_record_id)
-                # A hop of the chain: it purged, and now publishes the next (signed when it is published).
-                await schedule_next_hop(self.producer, purge_org, payload, loop=self._producer_loop)
+                paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
+                await paid_cache.purge_record(purge_org, purge_record_id)
+                # A hop of the chain: it purged, and now publishes the next (signed when it is published). The
+                # first hop of a record hands its later hops to the org's window when coalescing is on; any
+                # doubt leaves them to the record's own chain.
+                if not (
+                    payload.get("hop") == 1
+                    and repurge_window.coalesce_enabled()
+                    and await repurge_window.coalesce_successor(
+                        self.producer, purge_org, payload, store=await repurge_window.window_store_for(paid_cache),
+                        loop=self._producer_loop,
+                    )
+                ):
+                    await schedule_next_hop(self.producer, purge_org, payload, loop=self._producer_loop)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=purge_record_id))
+                return
+
+            if event_type == EventTypes.PURGE_PAID_RESULTS_BATCH.value:
+                # The coalesced hops of the delayed purge (paid_cache/repurge_window.py). Not behind the flag: a
+                # seal or page hop already on the topic always runs. The org is the signed envelope's.
+                batch_org = current_org_id()
+                paid_cache = paid_cache_access.paid_cache_for(self.config_service, self.logger)
+                try:
+                    if payload.get("phase") == repurge_window.PHASE_SEAL:
+                        await repurge_window.handle_seal(
+                            self.producer, batch_org, payload, store=await repurge_window.window_store_for(paid_cache),
+                            loop=self._producer_loop,
+                        )
+                    elif payload.get("phase") == repurge_window.PHASE_HOP:
+                        await repurge_window.handle_page_hop(
+                            self.producer, batch_org, payload, purge=paid_cache.purge_record, loop=self._producer_loop,
+                        )
+                    else:
+                        raise repurge_window.BatchPayloadError("purgePaidResultsBatch has no known phase")
+                except repurge_window.BatchPayloadError as exc:
+                    raise ProcessingError(str(exc), details={"payload_keys": sorted(payload.keys())}) from exc
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=batch_org))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=batch_org))
                 return
 
             if event_type == EventTypes.DELETE_STORED_DOCUMENTS.value:

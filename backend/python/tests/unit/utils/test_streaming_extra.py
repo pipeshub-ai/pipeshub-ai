@@ -1000,34 +1000,33 @@ class TestOpikConfigureImportFailure:
         import importlib
         import sys
 
-        monkeypatch.setenv("OPIK_API_KEY", "test-key")
-        monkeypatch.setenv("OPIK_WORKSPACE", "test-ws")
-
         opik_mod = types.ModuleType("opik")
         integrations = types.ModuleType("opik.integrations")
         langchain_int = types.ModuleType("opik.integrations.langchain")
 
+        attempts = []
+
         def _failing_opik_tracer(*args, **kwargs):
+            attempts.append(1)
             raise RuntimeError("opik unavailable")
 
         langchain_int.OpikTracer = _failing_opik_tracer
 
-        sys.modules["opik"] = opik_mod
-        sys.modules["opik.integrations"] = integrations
-        sys.modules["opik.integrations.langchain"] = langchain_int
-
+        import app.utils.opik as opik_helpers
         import app.utils.streaming as sm
 
-        importlib.reload(sm)
-        assert sm.opik_tracer is None
-
-        monkeypatch.delenv("OPIK_API_KEY", raising=False)
-        monkeypatch.delenv("OPIK_WORKSPACE", raising=False)
-        for key in (
-            "opik",
-            "opik.integrations",
-            "opik.integrations.langchain",
-        ):
-            sys.modules.pop(key, None)
+        # A context, not monkeypatch.undo(): undo would also revert what conftest's autouse fixtures patched.
+        with monkeypatch.context() as m:
+            m.setenv("OPIK_API_KEY", "test-key")
+            m.setenv("OPIK_WORKSPACE", "test-ws")
+            m.setitem(sys.modules, "opik", opik_mod)
+            m.setitem(sys.modules, "opik.integrations", integrations)
+            m.setitem(sys.modules, "opik.integrations.langchain", langchain_int)
+            importlib.reload(opik_helpers)  # app.utils.opik builds the tracer; streaming only re-reads it
+            importlib.reload(sm)
+            assert attempts == [1]
+            assert opik_helpers.get_opik_tracer() is None
+            assert sm.opik_tracer is None
+        importlib.reload(opik_helpers)
         importlib.reload(sm)
 

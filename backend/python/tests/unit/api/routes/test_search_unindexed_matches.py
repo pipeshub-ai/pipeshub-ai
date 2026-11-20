@@ -26,12 +26,8 @@ from app.modules.retrieval.selection_scope import SelectionScope
 from app.modules.retrieval.title_hits import UnindexedMatch
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.not_indexed import not_indexed_note
-from tests.support.provider_errors import (
-    MARK,
-    assert_text_free,
-    failure_line,
-    openai_error,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error
 
 ROUTE = "app.api.routes.search"
 
@@ -312,8 +308,8 @@ async def test_a_failed_name_lookup_is_one_text_free_line(caplog: pytest.LogCapt
         )
 
     assert found is None
-    failure_line(caplog.records, "title_lookup.failed", error_class, level)
+    failure_line(caplog.records, "title_lookup.failed", error_class, level, *SENTINELS)
     if level == logging.ERROR:
         (line,) = [r for r in caplog.records if r.getMessage() == "title_lookup.failed"]
         assert "Traceback" in line.exc_text and "KeyError: <message omitted>" in line.exc_text
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)

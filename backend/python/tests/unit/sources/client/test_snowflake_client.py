@@ -2,23 +2,14 @@
 
 import json
 import logging
-import sys
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
-# Install a mock 'snowflake.connector' module BEFORE importing the source
-# module, because it does ``import snowflake.connector`` at module level and
-# sets the reference to None on ImportError.
-_mock_snowflake_pkg = MagicMock()
-_mock_snowflake_connector = MagicMock()
-_mock_snowflake_pkg.connector = _mock_snowflake_connector
-sys.modules.setdefault("snowflake", _mock_snowflake_pkg)
-sys.modules["snowflake.connector"] = _mock_snowflake_connector
-
-from app.sources.client.snowflake.snowflake import (  # noqa: E402
+import app.sources.client.snowflake.snowflake as _sf_mod
+from app.sources.client.snowflake.snowflake import (
     DEFAULT_TIMEOUT_S,
     AuthType,
     SnowflakeClient,
@@ -31,11 +22,15 @@ from app.sources.client.snowflake.snowflake import (  # noqa: E402
     parse_connection_settings,
 )
 
-import app.sources.client.snowflake.snowflake as _sf_mod  # noqa: E402
+from app.utils.logger import RedactingFormatter
 
-from app.utils.logger import RedactingFormatter  # noqa: E402
+_mock_snowflake_connector = MagicMock()
 
-_sf_mod.snowflake_connector = _mock_snowflake_connector
+
+@pytest.fixture(autouse=True)
+def _mock_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The client module's own `snowflake_connector` name, not sys.modules: a sys.modules stub is what every later import gets.
+    monkeypatch.setattr(_sf_mod, "snowflake_connector", _mock_snowflake_connector)
 
 
 # ---------------------------------------------------------------------------

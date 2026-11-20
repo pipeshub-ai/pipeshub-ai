@@ -46,6 +46,7 @@ from app.utils.citations import (
     rewrite_request_refs,
     sub_in_order,
 )
+from app.web.own_files import hide_storage_signatures
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
@@ -303,9 +304,13 @@ class TranscriptCollector(EventEmitter):
 
     def _durable(self, text: str, tool_call_id: str, cap: int | None = None) -> str:
         """`text` with this request's citation refs replaced by their URLs,
-        within `cap` characters and never ending inside a URL."""
+        within `cap` characters and never ending inside a URL.
+
+        A signed storage link loses its signature: the stored step outlives the link's purpose,
+        and later turns read the step's summary, not this copy."""
         text, expanded, unresolved = self._rewrite_refs(text)
         self._log_rewrites(expanded, unresolved, tool_call_id)
+        text = hide_storage_signatures(text)
         if cap is None or len(text) <= cap:
             return text
         return _head_outside_url(text, cap - 1) + "…"
@@ -320,7 +325,7 @@ class TranscriptCollector(EventEmitter):
                 text, expanded, unresolved = self._rewrite_refs(value)
                 counts[0] += expanded
                 counts[1] += unresolved
-                return text
+                return hide_storage_signatures(text)
             if isinstance(value, dict):
                 return {key: _walk(item) for key, item in value.items()}
             if isinstance(value, list):
@@ -375,7 +380,7 @@ class TranscriptCollector(EventEmitter):
                 part["displayName"] = display_name
             args_summary = payload.get("args_summary")
             if isinstance(args_summary, str):
-                part["argsSummary"] = args_summary
+                part["argsSummary"] = hide_storage_signatures(args_summary)
             if payload.get("approved") is True:
                 part["approved"] = True
             if payload.get("approval_answer") in ("allowed", "declined", "expired"):
