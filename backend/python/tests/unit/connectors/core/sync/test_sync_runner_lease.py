@@ -61,7 +61,7 @@ class TestStartStatusWrite:
     @pytest.mark.asyncio
     async def test_a_failed_start_write_is_retried_so_the_connector_stops_being_served(self) -> None:
         gp = _graph_provider()
-        gp.batch_upsert_nodes = AsyncMock(side_effect=[RuntimeError("blip"), RuntimeError("blip"), None, None])
+        gp.batch_upsert_nodes = AsyncMock(side_effect=[RuntimeError("blip"), RuntimeError("blip"), True, True])
         with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()):
             await run_sync_task(_connector(), "c1", gp, logging.getLogger("t"))
         assert gp.batch_upsert_nodes.await_count == 3 and gp.batch_upsert_nodes.await_args_list[2].args[0][0]["status"] == AppStatus.SYNCING.value
@@ -87,6 +87,18 @@ class TestStartStatusWrite:
         assert str(raised.value.__cause__) == "rejected"
         assert counted.call_args.args[:2] == ("connector_service", "sync_start_not_recorded")
         assert connector.last_sync_summary == {"stopReason": "start_not_recorded"}      # the connector page shows it
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [False, None])
+    async def test_a_start_write_the_store_answers_without_saving_is_not_recorded(self, answer: object) -> None:
+        """The interface lets a store answer False (or None) instead of raising; that start did not land either."""
+        gp = _graph_provider()
+        gp.batch_upsert_nodes = AsyncMock(return_value=answer)
+        run_sync = AsyncMock()
+        with patch("app.connectors.core.sync.sync_runner.asyncio.sleep", new=AsyncMock()), pytest.raises(SyncStartNotRecorded):
+            await run_sync_task(_connector(run_sync), "c1", gp, logging.getLogger("t"))
+        run_sync.assert_not_awaited()
+        assert gp.batch_upsert_nodes.await_count == 3
 
     @pytest.mark.asyncio
     async def test_a_run_whose_start_is_not_recorded_does_not_reissue_a_pending_resync(self) -> None:
@@ -115,7 +127,7 @@ class TestReleaseOrdering:
         order: list[str] = []
         gp = _graph_provider()
         gp.batch_upsert_nodes = AsyncMock(
-            side_effect=lambda *a, **k: order.append(f"status:{a[0][0]['status']}")
+            side_effect=lambda *a, **k: order.append(f"status:{a[0][0]['status']}") or True
         )
         gp.update_node = AsyncMock(
             side_effect=lambda *a, **k: order.append(f"status:{a[2]['status']}")

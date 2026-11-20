@@ -28,6 +28,7 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
     note_sync_started,
 )
+from app.connectors.core.base.data_store.graph_data_store import ensure_written
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import (
@@ -122,7 +123,8 @@ async def write_app_status(
     if run_started:
         payload[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = payload["updatedAtTimestamp"]
     try:
-        await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value)
+        # The interface lets a store answer False instead of raising; that write did not land either.
+        ensure_written(await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value), f"the {status} status")
     except Exception as e:
         if raise_on_error:
             raise
