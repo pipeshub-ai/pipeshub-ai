@@ -857,7 +857,7 @@ KV_MATRIX = [
     ("query", "/migrations/node_relation_v1", True, False), ("query", "/services/smtp", False, False),
     ("query", "/services/toolset-instancesx", True, False),
     ("query", "/services/sandbox/alerts/org/o1/critical", True, True),                  # the sandbox alert cooldown claims (platform_0011)
-    ("connectors", "/services/sandbox/alerts/org/o1/critical", True, False), ("indexing", "/services/sandbox/alerts/org/o1/critical", True, False),
+    ("connectors", "/services/sandbox/alerts/org/o1/critical", True, False), ("indexing", "/services/sandbox/alerts/org/o1/critical", False, False),
     ("indexing", "/services/secretKeys", True, False), ("indexing", "/services/aiModels", True, False),
     ("indexing", "/services/platform/settings", True, False), ("indexing", "/migrations/kh_listing_state_v1", True, False),
     ("indexing", "/services/connectors/c1/metadataSchemas/latest", True, False),
