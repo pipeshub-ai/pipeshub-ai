@@ -1046,8 +1046,11 @@ still has the `contentRev` and virtual record id the decision read; other status
 record with neither `COMPLETED` nor the indexed-copy flag counts as having an index only when both its stored content and
 its vectors exist.
 
-A file that has no index of its own and no count is decided after the parse: on the in-process pipeline by the whole-file
-inspection, with the parsing service by the page count the service returns, before anything is persisted or indexed. A lane
+A file with no count from the early count is decided from the whole-file inspection; when that has none either (a file only pdfium
+can open), on the in-process pipeline pdfium counts the bytes that are parsed, and with the parsing service the page count the
+service returns decides, in both cases before anything is persisted or indexed. A keep at that point puts back what the event
+found only while the record holds the same revision and virtual record id, and refuses otherwise. A file no counter can count
+is still indexed. A lane
 admission timeout during the count is `Unavailable`. While the count is unknown and nothing is kept, deduplication reuses
 only a twin with a recorded `pageCount` of 1 to 500 and no page-limit note.
 

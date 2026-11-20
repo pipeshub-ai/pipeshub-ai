@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -207,6 +208,23 @@ class PageLimitGate:
     """Run after the whole-file inspection when the early count could not decide; True when it refused the file."""
     inspected: InspectedPdf | None = None
     """The whole-file inspection, when the gate had to take it (a record with an index to protect and no page count)."""
+
+
+async def _with_page_count(inspected: InspectedPdf, label: str) -> InspectedPdf:
+    """``inspected`` with its page count filled in by pdfium when the inspection had none.
+
+    The inspection reads a file only pdfium can open without a count; pdfium counts the very bytes that will be parsed
+    (its rewrite when the file was repaired). Left as it was when that count cannot be taken either.
+    """
+    if inspected.page_count is not None:
+        return inspected
+    from app.modules.parsers.pdf.page_count import count_pdf_pages
+
+    try:
+        counted = await count_pdf_pages(inspected.content, label=label)
+    except PasswordProtectedError:
+        return inspected
+    return dataclasses.replace(inspected, page_count=counted) if isinstance(counted, int) else inspected
 
 
 class EventProcessor:
@@ -586,9 +604,13 @@ class EventProcessor:
         is not run on it (the caller decided on it).
         """
         self.logger.debug("Checking if PDF needs OCR processing")
-        already_decided = inspected is not None
+        already_decided = inspected is not None and isinstance(inspected.page_count, int)
         if inspected is None:
             inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
+        if not already_decided and after_inspection is not None:
+            # A file only pdfium can open has no count from the inspection: take it from pdfium, so the page limit
+            # decides before anything is persisted or indexed.
+            inspected = await _with_page_count(inspected, record_name)
         if not already_decided and after_inspection is not None and await after_inspection(inspected):
             # The check refused the file: it has written the status and taken back the index.
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1404,7 +1426,10 @@ class EventProcessor:
             # The count could not be taken and the record has an index to protect. The whole-file inspection decides
             # now, before the record or its virtual record id is written: a keep then leaves everything as it was, and a
             # file within the limit goes on to be indexed from this same inspection.
-            inspected = await inspect_untrusted_pdf(content, label=doc.get("recordName") or record_id)
+            inspected = await _with_page_count(
+                await inspect_untrusted_pdf(content, label=doc.get("recordName") or record_id),
+                doc.get("recordName") or record_id,
+            )
             decision = await check_page_limit(
                 LongDocument(
                     record_id=record_id,
@@ -1458,7 +1483,7 @@ class EventProcessor:
                     md5=md5,
                     force_reindex=long_doc.force_reindex,
                     inspected=inspected,
-                    keep_eligible=long_doc.keep_eligible and service,
+                    keep_eligible=long_doc.keep_eligible,
                     host=self,
                 )
                 late_decision = await check_page_limit(late)
@@ -1466,8 +1491,8 @@ class EventProcessor:
                     await apply_refuse(late, late_decision)
                     return True
                 if isinstance(late_decision, Keep):
-                    # Only the parsing-service path reaches this: the parser's count arrives after the run marked the
-                    # record IN_PROGRESS, so what the event found is put back, and only while the record still carries the
+                    # The count arrives after the run marked the record IN_PROGRESS (the parser's on the parsing-service
+                    # path, pdfium's on the parsed bytes in process), so what the event found is put back, and only while the record still carries the
                     # revision this run wrote. A record that moved on is left to its writer.
                     current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
                     if current.get("contentRev") != content_rev:

@@ -467,3 +467,95 @@ async def test_an_event_with_no_org_anywhere_fails_instead_of_deciding_under_an_
     assert not world.refused
     blob.get_actual_content_path.assert_not_awaited()
     world.unindex.assert_not_awaited()
+
+
+# --- a file only pdfium can open: the count comes from pdfium on the bytes that are parsed ----------------------------------
+
+
+def _counts(*outcomes: object) -> AsyncMock:
+    return AsyncMock(side_effect=list(outcomes))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("early", [Unreadable(), Unavailable()])
+async def test_a_keep_eligible_file_only_pdfium_can_open_is_kept_when_pdfium_counts_it_over_the_limit(early: object) -> None:
+    world = World(searchable(indexingStatus="QUEUED", pageCount=700))
+    world.inspected(None)  # no count from the inspection
+    with patch("app.modules.parsers.pdf.page_count.count_pdf_pages", new=_counts(early, 600)):
+        await world.run(UPDATE)
+    assert not world.indexed and not world.refused
+    assert world.graph.record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
+    assert world.graph.record["indexingStatus"] == COMPLETED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("early", [Unreadable(), Unavailable()])
+async def test_a_new_file_only_pdfium_can_open_is_refused_before_it_is_parsed_when_pdfium_counts_it_over_the_limit(
+    early: object,
+) -> None:
+    world = World({"indexingStatus": "QUEUED"})
+    world.inspected(None)
+    with patch("app.modules.parsers.pdf.page_count.count_pdf_pages", new=_counts(early, 600)):
+        await world.run()
+    assert world.refused and not world.indexed
+    world.unindex.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_file_only_pdfium_can_open_within_the_limit_is_indexed_with_that_count() -> None:
+    world = World({"indexingStatus": "QUEUED"})
+    world.inspected(None)
+    with patch("app.modules.parsers.pdf.page_count.count_pdf_pages", new=_counts(Unreadable(), 500)):
+        await world.run()
+    assert world.indexed and not world.refused
+    assert world.graph.record["pageCount"] == 500
+
+
+@pytest.mark.asyncio
+async def test_the_late_check_on_an_inspection_with_no_count_still_only_proceeds() -> None:
+    from app.modules.indexing.page_limit import LongDocument, Proceed, check_page_limit
+
+    doc = LongDocument(
+        record_id="rec-1", snapshot=searchable(indexingStatus="QUEUED"), org_id="org-1", content=None,
+        content_rev=REV, md5=None, inspected=InspectedPdf(b"", False, False, None), keep_eligible=True,
+    )
+    assert isinstance(await check_page_limit(doc), Proceed)
+
+
+# --- the service-path keep's re-read and put-back conditions ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_moved_on_in_both_revision_and_virtual_record_id_is_left_alone() -> None:
+    """The re-read's revision check comes first: a newer revision is its writer's, not a refusal."""
+    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=False)
+    original = world.gp.get_document
+    reads = 0
+
+    async def newer(*a: object, **kw: object) -> dict:
+        nonlocal reads
+        reads += 1
+        record = dict(await original(*a, **kw))
+        if reads > 1:  # the event's own read comes first; the keep's re-read finds the record moved on
+            record.update(contentRev="r-newer", virtualRecordId="v-other")
+        return record
+
+    world.gp.get_document = newer
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
+    assert not world.refused
+    world.unindex.assert_not_awaited()
+    assert "indexingNote" not in world.graph.record
+    assert world.graph.record.get("indexingStatus") != "FILE_TYPE_NOT_SUPPORTED"
+
+
+@pytest.mark.asyncio
+async def test_the_put_back_applies_only_while_the_virtual_record_id_is_the_one_read() -> None:
+    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=False)
+    # Fires on the put-back, the only status write here: the id moves after the re-read and before the write.
+    world.graph.cas_hook = lambda g: g.record.update(virtualRecordId="v-moved")
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
+    assert world.graph.record["virtualRecordId"] == "v-moved"
+    assert world.graph.record["indexingStatus"] == "IN_PROGRESS", "the put-back applied over a moved virtual record id"
+    assert "indexingNote" not in world.graph.record
