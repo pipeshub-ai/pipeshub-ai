@@ -17,6 +17,9 @@ import pytest
 
 import app.services.graph_db.postgres.access as access_module
 import app.services.graph_db.postgres.permissions as permissions_module
+from app.services.graph_db.postgres.kg import read as kg_read
+from app.services.graph_db.postgres.kg import restamp
+from app.services.graph_db.postgres.kg.drainer import drain_org
 
 from .test_access import World, _org
 from .test_access import w as w
@@ -260,3 +263,72 @@ async def test_the_search_scope_of_connectors_kg_serves_is_read_from_their_class
     promoted = await check(w, pg_db, seed, n=40, users=("uid-u1", "uid-u2", "uid-u3", "uid-nobody"), promote=True)
     assert promoted, "the world was not promoted: the test proves nothing"
     assert LVL not in walked and LVL2 not in walked, walked
+
+
+async def walk_scopes(w: World, recs: dict[str, dict], users: tuple[str, ...], monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, str]]:
+    """Each user's oracle with kg switched off: the graph's own answer."""
+    monkeypatch.setenv("PG_KG_READ", "0")
+    try:
+        return {uid: await oracle(w, uid, recs) for uid in users}
+    finally:
+        monkeypatch.delenv("PG_KG_READ")
+
+
+async def served(pg_db, org: str) -> set[str]:
+    async def go(tx: object) -> set[str]:
+        return {a for a in (WIDE, LVL, LVL2, SHUT, KB, KB2) if await kg_read.serves(tx, org, a)}
+    return await pg_db.run(go)
+
+
+MEMBERS = ("uid-u1", "uid-u2", "uid-u3", "uid-nobody")
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("seed", range(4))
+async def test_a_membership_added_and_removed_while_kg_serves_restamps_nothing_and_ends_with_the_walks_answer(
+        w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int) -> None:
+    """A membership is a closure row: no record's class names who is in a group. Even with a restamp threshold of 3, a user with grants on records and on the connectors
+    joins and leaves a group that is granted records, and kg keeps serving every connector it served, with nothing queued, and answers what the graph answers."""
+    monkeypatch.setenv("PG_KG_INLINE_MAX", "3")
+    recs = await build(w, random.Random(seed), w.org, n=40)
+    await extras(w, random.Random(seed), recs)
+    assert (await flip(pg_db, w.org))[0], "the world was not promoted: the test proves nothing"
+    before = await served(pg_db, w.org)
+    assert LVL in before
+    for change in (w.p.batch_create_edges, w.p.batch_delete_edges):
+        await change([{"from_collection": "users", "from_id": "u1", "to_collection": "groups", "to_id": "g1", "type": "USER", "role": "READER"}], "permission")
+        await drain_org(pg_db, w.org)
+        assert await pg_db.run(lambda tx: restamp.pending(tx, w.org)) == [], change.__name__
+        assert await served(pg_db, w.org) == before, change.__name__
+        want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
+        for uid in MEMBERS:
+            assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], (change.__name__, uid)
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("seed", range(4))
+async def test_a_read_while_a_restamp_is_under_way_never_admits_what_the_graph_denies(w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int) -> None:
+    """Changes that do outdate stamps (a record group narrowed, a connector that opened everything to its members closed) and a membership taken away land together; the queued restamp runs one small
+    batch at a time, and after every batch each user's scope is exactly the graph's: what the restamp has not reached yet is never answered from its outdated stamp."""
+    monkeypatch.setenv("PG_KG_INLINE_MAX", "3")
+    recs = await build(w, random.Random(seed), w.org, n=40)
+    await extras(w, random.Random(seed), recs)
+    assert (await flip(pg_db, w.org))[0], "the world was not promoted: the test proves nothing"
+    await w.nodes("recordGroups", {"_key": f"{LVL}-g0", "accessRule": "RESTRICTED"})
+    await w.nodes("apps", {"_key": WIDE, "permissionModel": None})          # it opened everything to its members; now only grants do
+    await w.p.batch_delete_edges([{"from_collection": "users", "from_id": "u2", "to_collection": "groups", "to_id": "g1", "type": "USER"}], "permission")
+    await drain_org(pg_db, w.org)
+    want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
+    steps = 0
+    while job := await restamp.claim(pg_db, w.org, "w1"):
+        done = False
+        while not done:
+            for uid in MEMBERS:
+                got = await w.p.get_accessible_virtual_record_ids(uid, w.org)
+                assert set(got.items()) <= set(want[uid].items()), (steps, uid, sorted(set(got.items()) - set(want[uid].items()))[:6])
+            done, job = await restamp.run_batch(pg_db, w.org, job, "w1", batch=2)
+            steps += 1
+    assert steps > 2, steps
+    assert await pg_db.run(lambda tx: restamp.pending(tx, w.org)) == []
+    for uid in MEMBERS:
+        assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], uid

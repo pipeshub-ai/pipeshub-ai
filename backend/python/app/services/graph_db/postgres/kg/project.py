@@ -27,7 +27,9 @@ from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
     COLL_CODE,
     MAX_ID,
+    PRINCIPALS,
     RECORD_COLLS,
+    UAR,
     Derived,
     Key,
     app_id_of,
@@ -83,8 +85,8 @@ async def expand(tx: Tx, org: str, focus: set[Key]) -> set[Key]:
     sks = await load_sks(tx, org, keys)
     held = await held_keys(tx, org, {k for k in keys if k[0] in RECORD_COLLS})
     # A node whose existence changed for the rows that depend on it. A key is no proof that the dependents saw the node (any projection that meets a node gives it one, and a node
-    # that was gone and comes back keeps it), so a record counts as present for them once kg holds its row, and a principal, which the change capture logs only when it is inserted
-    # or deleted, is always a change.
+    # that was gone and comes back keeps it), so a record counts as present for them once kg holds its row. A principal is logged for a membership as well as when it is inserted or
+    # deleted, so the log does not say which: it counts as a change, and the records it is granted on are only taken when their grant rows say otherwise (_grant_ends_out_of_date).
     flipped = {k for k in keys if k[0] not in RECORD_COLLS or ((k in nodes) != (k in held) and (k in nodes or k in held or k in sks))}
     out = set(focus)
     gone_apps = sorted(sks[k] for k in flipped if k[0] == "apps" and k not in nodes)
@@ -117,14 +119,40 @@ async def expand(tx: Tx, org: str, focus: set[Key]) -> set[Key]:
         rows += await tx.fetch("""/* pipeshub:kg.expand_accounts */ SELECT e.coll, e.from_coll, e.from_id, e.to_coll, e.to_id,
               jsonb_strip_nulls(jsonb_build_object('type', e.doc->'type', 'role', e.doc->'role', 'relationshipType', e.doc->'relationshipType', 'connectorId', e.doc->'connectorId')) AS doc
             FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.to_id = ANY($2::text[])""", org, accounts)
+    grants: list[tuple[Key, Key, str]] = []
     for r in rows:
         f, t = (r["from_coll"], r["from_id"]), (r["to_coll"], r["to_id"])
-        for end in edge_ends(r["coll"], f, t, _doc(r["doc"])):               # the end whose rows depend on the edge, when the other end appeared or went
-            if (t if end == f else f) in flipped:
+        doc = _doc(r["doc"])
+        for end in edge_ends(r["coll"], f, t, doc):                              # the end whose rows depend on the edge, when the other end appeared or went
+            other = t if end == f else f
+            if other not in flipped:
+                continue
+            if other[0] in PRINCIPALS and end[0] in RECORD_COLLS and r["coll"] in ("permission", "userAppRelation"):
+                grants.append((other, end, UAR if r["coll"] == "userAppRelation" else str(doc.get("type") or "")))
+            else:
                 out.add(end)
         if r["coll"] == "authenticatedAs" and t in keys:                         # a source account changed: its users
             out.add(f)
-    return out
+    return out | await _grant_ends_out_of_date(tx, org, grants, nodes)
+
+
+async def _grant_ends_out_of_date(tx: Tx, org: str, grants: list[tuple[Key, Key, str]], nodes: dict[Key, dict]) -> set[Key]:
+    """Of the records, groups and apps a principal of the focus holds a grant or a user-app link on, those whose kg rows were not derived with the principal as it is now: kg holds the
+    grant row exactly when the principal existed at the end's last projection (derive), so a row that agrees with the graph proves the end saw it. A principal is logged for a
+    membership too, and taking it as appeared or gone would restamp every record it is granted on and every connector it is a member of (an app as a seed is the whole connector)."""
+    if not grants:
+        return set()
+    ends = {e for _, e, _ in grants}
+    sk_of = await load_sks(tx, org, {p for p, _, _ in grants} | ends)
+    held = await held_keys(tx, org, ends)
+    ask = sorted({(sk_of[p], sk_of[e], g) for p, e, g in grants if p in sk_of and e in sk_of})
+    have: set[tuple[int, int, str]] = set()
+    for i in range(0, len(ask), 5000):
+        part = ask[i:i + 5000]
+        have |= {(r["principal_sk"], r["node_sk"], r["gtype"]) for r in await tx.fetch("""/* pipeshub:kg.grants_held */ SELECT m.principal_sk, m.node_sk, m.gtype FROM kg.scope_members m
+            JOIN unnest($2::bigint[], $3::bigint[], $4::text[]) AS k(p, n, g) ON m.principal_sk = k.p AND m.node_sk = k.n AND m.gtype = k.g WHERE m.org_id = $1""",
+            org, [x[0] for x in part], [x[1] for x in part], [x[2] for x in part])}
+    return {e for p, e, g in grants if e not in held or (p in nodes) != ((sk_of.get(p), sk_of.get(e), g) in have)}
 
 
 async def _expanded(tx: Tx, org: str, seeds: set[Key], known: set[Key] | None = None) -> set[Key]:

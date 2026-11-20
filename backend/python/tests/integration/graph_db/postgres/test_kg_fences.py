@@ -19,9 +19,9 @@ from app.services.graph_db.postgres.kg.writers import KgWriter
 
 from .pg_support import new_org
 from .test_kg_backfill import run_in, shadowed
-from .test_kg_derivation import ctx, edge, prov
-from .test_kg_projection import add_edge, delete_node, update_node
-from .test_kg_projection_races import OPS, world2
+from .test_kg_derivation import ctx, edge, held, prov
+from .test_kg_projection import add_edge, delete_edge, delete_node, update_node
+from .test_kg_projection_races import OPS, drop_only, world2
 from .test_kg_stamps import dry_diffs, held_scopes, held_stamps
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
@@ -125,6 +125,35 @@ async def test_the_access_list_of_a_hidden_record_is_hidden_with_it_and_only_the
     assert await hidden_scopes() == {"r00", "r01"} and await hidden_scopes() == (await hidden_ids(p, org)) & set(await held_scopes(p, org))
     await restamp.run_jobs(pg_db, org, "w1", batch=5)
     assert await hidden_scopes() == set() and await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_membership_change_hides_nothing_and_queues_nothing(pg_db) -> None:
+    """No stamp names who is in a group: a user who joins or leaves one changes the closure only, even a user with a grant above twelve records and a membership of the connector."""
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "grp", "orgId": org}], "groups")
+    await drain_org(pg_db, org)
+    for change, member in ((add_edge, True), (delete_edge, False)):
+        await change(p, org, ("users", "u1"), ("groups", "grp"), "permission", type="USER")
+        await drain_org(pg_db, org)
+        assert await jobs(pg_db, org) == [] and await marks(p, org) == 0, change.__name__
+        assert (("u1", "grp", "-") in (await held(p, org))["closure"]) is member
+        assert await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_user_whose_node_goes_with_its_edges_left_hides_what_its_grant_reached_until_restamped(pg_db) -> None:
+    """The other side of the membership rule: the user's existence did change, so the folder it alone was granted is no longer granted and the records below it are outdated."""
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    await drain_org(pg_db, org)
+    for change in (drop_only("users", "u1"), lambda p, o: update_node(p, o, "users", "u1", orgId=o, email="u@example.com")):
+        await change(p, org)
+        await drain_org(pg_db, org)
+        assert await jobs(pg_db, org) != []
+        assert await no_stale_visible(p, pg_db, org) >= {f"r{i:02d}" for i in range(12)}
+        await restamp.run_jobs(pg_db, org, "w1", batch=5)
+        assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
 
 
 async def test_a_change_that_fits_is_restamped_in_the_writers_unit_and_hides_nothing(pg_db, monkeypatch) -> None:
