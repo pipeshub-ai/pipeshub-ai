@@ -74,6 +74,10 @@ class PaidResultStoreError(Exception):
     """A storage reply this client cannot use. Never carries a signed URL."""
 
 
+class PurgeCutoffNoMarker(PaidResultStoreError):
+    """The purge cutoff came from a storage service that writes no refresh marker (an earlier release)."""
+
+
 @dataclass(frozen=True, slots=True)
 class ListedFile:
     path: str
@@ -183,6 +187,9 @@ PURGE_BATCH_ROUTE = _BatchRoute()
 
 
 class NodePaidResultStore:
+    #: This client can ask that a purge cutoff came with the refresh marker written (see ``purge_cutoff``).
+    supports_cutoff_marker = True
+
     def __init__(self, blob_storage: "BlobStorage", logger: logging.Logger | None = None) -> None:
         self._blob_storage = blob_storage
         self.logger = logger or logging.getLogger(__name__)
@@ -411,8 +418,12 @@ class NodePaidResultStore:
         await asyncio.gather(*(one(rid) for rid in chunk))
         return outcomes
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
         """The object store's own current time (ms), as the cutoff of a purge: no caller's clock decides what goes.
+
+        ``require_marker``: the reply must say the service wrote the refresh marker before it took the cutoff
+        (``marker: true``); one from an earlier release does not, and raises ``PurgeCutoffNoMarker``: a bump of this
+        record could then carry a result past the purge, so a refresh must not go on with that cutoff.
 
         ``None`` when the storage service has no such route (one of an earlier release): that says nothing about the
         cache, so the routes are not switched off, and the caller purges without a cutoff.
@@ -429,6 +440,8 @@ class NodePaidResultStore:
                     "handed back while paid-result writes are on; update the storage service", exc.status,
                 )
             return None
+        if require_marker and body.get("marker") is not True:
+            raise PurgeCutoffNoMarker("the storage service took the cutoff without writing the refresh marker")
         return int(body["cutoff"])
 
     async def purge_org(self, org_id: str) -> None:

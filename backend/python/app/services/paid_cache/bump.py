@@ -50,6 +50,14 @@ POST_CHECK_DELAY_S = 2.5
 MAX_OBJECT_BYTES = 2 * 1024 * 1024
 BYTES_PER_HOUR = 512 * 1024 * 1024
 CONCURRENCY = 8
+#: What the bump adds to an envelope (``touchedMs``, ``originMs``), counted against the byte budget.
+TOUCH_OVERHEAD = 96
+#: Records handled at once. A batch writes for every record, waits ``POST_CHECK_DELAY_S`` once, then checks every
+#: record's marker: a cycle is about 2.5 s plus the uploads, so one process sustains roughly ``QUEUE_MAX`` entries per
+#: cycle (about 100 per second) however many records they span.
+RECORD_CONCURRENCY = 8
+#: Lost protection (a full queue, a stale entry, the byte budget) is logged at most this often, with the counts since.
+LOSS_LOG_EVERY_S = 60.0
 
 BUMP_TOTAL = METRICS_BACKEND.counter(
     "pipeshub_paid_bump_total", "Reuse bumps of stored paid results by outcome", ["outcome"],
@@ -91,9 +99,11 @@ class BumpEntry:
         return time.monotonic() - self.started > lock_limits.stage_deadline_s()
 
 
-def touched_bytes(data: bytes, now_ms: int) -> bytes | None:
+def touched_bytes(data: bytes, now_ms: int, origin_ms: int | None = None) -> bytes | None:
     """The same envelope with ``touchedMs`` set to a value no earlier than any previous one (so the bytes, hence the
-    ETag, always change); None when the object is not a JSON object."""
+    ETag, always change); None when the object is not a JSON object. ``originMs`` records when the object was first
+    written by the store (the earliest value wins): a reader that finds a refresh began at or after it knows the result
+    predates that refresh, whatever became of the check that follows the write (``cache.py``)."""
     try:
         body = json.loads(data)
     except ValueError:
@@ -103,6 +113,9 @@ def touched_bytes(data: bytes, now_ms: int) -> bytes | None:
     previous = body.get("touchedMs")
     floor = previous + 1 if isinstance(previous, int) and not isinstance(previous, bool) else 0
     body["touchedMs"] = max(now_ms, floor)
+    if origin_ms is not None:
+        earlier = body.get("originMs")
+        body["originMs"] = min(origin_ms, earlier) if isinstance(earlier, int) and not isinstance(earlier, bool) else origin_ms
     return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
@@ -128,6 +141,9 @@ class BumpQueue:
         self._recent: OrderedDict[tuple[str, str, str], float] = OrderedDict()
         self._uploaded: deque[tuple[float, int]] = deque()
         self._worker: asyncio.Task[None] | None = None
+        self._lost: dict[str, int] = {}
+        self._last_loss_log = 0.0
+        self._last_write = 0.0
         self._idle = asyncio.Event()
         self._idle.set()
 
@@ -142,16 +158,16 @@ class BumpQueue:
         seen = self._recent.get(key)
         if seen is not None and now - seen < LRU_WINDOW_S:
             return self._count("recent")
-        if len(self._queue) >= QUEUE_MAX or self._queued_bytes + len(entry.data) > QUEUE_BYTES_MAX:
-            return self._count("dropped")
-        if self._uploaded_last_hour(now) + self._queued_bytes + len(entry.data) > BYTES_PER_HOUR:
-            return self._count("over_budget")
+        if len(self._queue) >= QUEUE_MAX or self._queued_bytes + len(entry.data) + TOUCH_OVERHEAD > QUEUE_BYTES_MAX:
+            return self._lose("dropped")
+        if self._uploaded_last_hour(now) + self._queued_bytes + len(entry.data) + TOUCH_OVERHEAD > BYTES_PER_HOUR:
+            return self._lose("over_budget")
         self._recent[key] = now
         self._recent.move_to_end(key)
         while len(self._recent) > 4096:
             self._recent.popitem(last=False)
         self._queue.append(entry)
-        self._queued_bytes += len(entry.data)
+        self._queued_bytes += len(entry.data) + TOUCH_OVERHEAD
         self._idle.clear()
         self._ensure_worker()
         return "queued"
@@ -163,6 +179,23 @@ class BumpQueue:
 
     def _count(self, outcome: str) -> str:
         BUMP_TOTAL.inc(outcome)
+        return outcome
+
+    def _lose(self, outcome: str, n: int = 1) -> str:
+        """Protection that was not applied because the queue fell behind: counted, and logged (at most once a minute,
+        with the totals since): a reuse left unprotected falls back to the old race, a re-pay and never wrong data."""
+        for _ in range(n):
+            BUMP_TOTAL.inc(outcome)
+        self._lost[outcome] = self._lost.get(outcome, 0) + n
+        now = time.monotonic()
+        if now - self._last_loss_log >= LOSS_LOG_EVERY_S:
+            self._last_loss_log = now
+            self._log.warning(
+                "Paid-result bump queue is behind: reuses left unprotected from the retention sweep since the last "
+                "report: %s",
+                ", ".join(f"{k}={v}" for k, v in sorted(self._lost.items())),
+            )
+            self._lost = {}
         return outcome
 
     def _ensure_worker(self) -> None:
@@ -182,7 +215,7 @@ class BumpQueue:
             batch: list[BumpEntry] = []
             while self._queue:
                 entry = self._queue.popleft()
-                self._queued_bytes -= len(entry.data)
+                self._queued_bytes -= len(entry.data) + TOUCH_OVERHEAD
                 batch.append(entry)
             try:
                 await self._process(batch)
@@ -201,13 +234,39 @@ class BumpQueue:
 
     async def _process(self, batch: list[BumpEntry]) -> None:
         groups: dict[tuple[str, str], list[BumpEntry]] = {}
+        stale = 0
         for entry in batch:
             if time.monotonic() - entry.enqueued > ENTRY_MAX_AGE_S:
-                self._count("stale")
+                stale += 1
             else:
                 groups.setdefault((entry.org_id, entry.record_id), []).append(entry)
-        for (org_id, record_id), entries in groups.items():
-            await self._process_record(org_id, record_id, entries)
+        if stale:
+            self._lose("stale", stale)
+        gate = asyncio.Semaphore(RECORD_CONCURRENCY)
+
+        async def write(org_id: str, record_id: str, entries: list[BumpEntry]) -> list[tuple[BumpEntry, bytes]]:
+            async with gate:
+                try:
+                    return await self._write_record(org_id, record_id, entries)
+                except Exception as exc:
+                    self._log.warning("Paid-result bump of a record failed (%s); dropped", type(exc).__name__)
+                    return []
+
+        results = await asyncio.gather(*(write(o, r, es) for (o, r), es in groups.items()))
+        written = {key: w for key, w in zip(groups, results, strict=True) if w}
+        if not written:
+            return
+        # One wait for the whole batch (the last write of any record sets it), then every record is checked.
+        await self._sleep(max(0.0, POST_CHECK_DELAY_S - (time.monotonic() - self._last_write)))
+
+        async def check(org_id: str, record_id: str, items: list[tuple[BumpEntry, bytes]]) -> None:
+            async with gate:
+                try:
+                    await self._post_check(org_id, record_id, items)
+                except Exception as exc:
+                    self._log.warning("Paid-result bump check of a record failed (%s)", type(exc).__name__)
+
+        await asyncio.gather(*(check(o, r, items) for (o, r), items in written.items()))
 
     async def _marker(self, org_id: str, record_id: str) -> tuple[bool, int | None]:
         try:
@@ -216,21 +275,21 @@ class BumpQueue:
             self._log.debug("Paid-result refresh marker unreadable (%s)", type(exc).__name__)
             return False, None
 
-    async def _process_record(self, org_id: str, record_id: str, entries: list[BumpEntry]) -> None:
+    async def _write_record(self, org_id: str, record_id: str, entries: list[BumpEntry]) -> list[tuple[BumpEntry, bytes]]:
         if not self._store.supports_bump:
             for _ in entries:
                 self._count("unsupported")
-            return
+            return []
         if await self._store.fenced(org_id, record_id):
             for _ in entries:
                 self._count("deleted_record")
-            return
+            return []
         readable, marker = await self._marker(org_id, record_id)
         if not readable:
             # Absence is never assumed: with no marker answer nothing is written.
             for _ in entries:
                 self._count("marker_unreadable")
-            return
+            return []
         live: list[BumpEntry] = []
         for entry in entries:
             if entry.past_deadline():
@@ -240,7 +299,7 @@ class BumpQueue:
             else:
                 live.append(entry)
         if not live:
-            return
+            return []
         try:
             signed = await self._store.presign(org_id, record_id, [(e.path, "bump", e.etag) for e in live])
         except Exception as exc:
@@ -248,7 +307,7 @@ class BumpQueue:
             self._log.debug("Paid-result bump presign failed (%s)", type(exc).__name__)
             for _ in live:
                 self._count("presign_failed")
-            return
+            return []
         gate = asyncio.Semaphore(CONCURRENCY)
         written: list[tuple[BumpEntry, bytes]] = []
 
@@ -264,28 +323,38 @@ class BumpQueue:
                     written.append((entry, result))
 
         await asyncio.gather(*(one(e) for e in live))
-        if written:
-            await self._post_check(org_id, record_id, written)
+        return written
 
     async def _bump_one(self, entry: BumpEntry, signed: Any, marker: int | None) -> bytes | None:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
         """The bytes now stored at the key through this bump (to undo exactly them), or None when nothing was written."""
-        new = touched_bytes(entry.data, int(self._clock() * 1000))
+        new = touched_bytes(entry.data, int(self._clock() * 1000), entry.origin_ms)
         if new is None:
             self._count("not_json")
             return None
         outcome, _ = await self._store.bump_to(signed, new)
         if outcome == BUMPED:
-            self._uploaded.append((time.monotonic(), len(new)))
+            self._wrote(len(new))
             self._count("bumped")
             return new
         if outcome in (CHANGED, CONFLICT):
             # A store may answer 412 (or an exhausted 409) to a conditional write of a key that is gone: one read decides.
-            if await self._store.get_versioned(entry.org_id, entry.record_id, entry.path) is not None:
+            # A write that landed before a retried request was refused reads back as our own bytes: it counts as written
+            # (and gets its check), not as a change by someone else.
+            current = await self._store.get_versioned(entry.org_id, entry.record_id, entry.path)
+            if current is not None:
+                if current.data == new:
+                    self._wrote(len(new))
+                    self._count("bumped")
+                    return new
                 self._count("changed")
                 return None
         elif outcome != GONE:
             return None
         return await self._restore(entry, marker)
+
+    def _wrote(self, size: int) -> None:
+        self._last_write = time.monotonic()
+        self._uploaded.append((self._last_write, size))
 
     async def _restore(self, entry: BumpEntry, marker: int | None) -> bytes | None:
         """The object is gone: store the bytes the run holds, under the guards of a paid store."""
@@ -295,18 +364,19 @@ class BumpQueue:
         if _refreshed_since(marker, entry.origin_ms):
             self._count("refreshed")
             return None
-        stored = await self._store.put(entry.org_id, entry.record_id, entry.path, entry.data)
+        data = touched_bytes(entry.data, int(self._clock() * 1000), entry.origin_ms) or entry.data
+        stored = await self._store.put(entry.org_id, entry.record_id, entry.path, data)
         if not stored:
             self._count("restore_lost")
             return None
-        self._uploaded.append((time.monotonic(), len(entry.data)))
+        self._wrote(len(data))
         self._count("restored")
-        return entry.data
+        return data
 
     async def _post_check(self, org_id: str, record_id: str, written: list[tuple[BumpEntry, bytes]]) -> None:
-        """No sooner than ``POST_CHECK_DELAY_S`` after the writes: a refresh whose marker landed since must not keep
-        an object it purges. Such an object is removed again, conditionally on the version this bump wrote."""
-        await self._sleep(POST_CHECK_DELAY_S)
+        """Run no sooner than ``POST_CHECK_DELAY_S`` after the writes (the caller waits once per batch): a refresh whose
+        marker landed since must not keep an object it purges. Such an object is removed again, conditionally on the
+        version this bump wrote."""
         readable, marker = await self._marker(org_id, record_id)
         if not readable:
             readable, marker = await self._marker(org_id, record_id)

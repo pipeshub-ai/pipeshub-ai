@@ -48,6 +48,11 @@ class FakePaidResultStorage:
     delete_bodies: list[dict[str, Any]] = field(default_factory=list)
     #: Answers every delete with this body (a service that knows the route but not the newer fields).
     fixed_delete_reply: dict[str, Any] | None = None
+    #: Whether the purge-cutoff route writes the refresh marker and says so (False: a storage service of an earlier release
+    #: that has the route and not the marker).
+    cutoff_marker: bool = True
+    #: False: the storage service has no purge-cutoff route at all (404).
+    cutoff_route: bool = True
     clock_ms: int = 1_700_000_000_000
     #: What the service names it honours in its replies (``conditionalDelete``, ``bump``); None: a service of an
     #: earlier release (no field, no ``etag`` in listings, ``bump`` refused by validation with a 400).
@@ -68,6 +73,7 @@ class FakePaidResultStorage:
         app.router.add_delete(f"{BASE}/org", self._purge_org)
         app.router.add_post(f"{BASE}/purge-batch", self._purge_batch)
         app.router.add_post(f"{BASE}/{{record}}/delete", self._delete)
+        app.router.add_post(f"{BASE}/{{record}}/purge-cutoff", self._purge_cutoff)
         app.router.add_get(f"{BASE}/{{record}}", self._list)
         app.router.add_delete(f"{BASE}/{{record}}", self._purge_record)
         app.router.add_put("/blob/{tail:.*}", self._put)
@@ -243,6 +249,18 @@ class FakePaidResultStorage:
                 del self.objects[k]
             results.append({"recordId": record, "purged": True})
         return web.json_response({"results": results})
+
+    async def _purge_cutoff(self, request: web.Request) -> web.Response:
+        org, record = self._org(request), request.match_info["record"]
+        self.calls.append(("purge_cutoff", org))
+        if not self.cutoff_route:
+            return web.json_response({"error": {"message": "not found"}}, status=404)
+        if self.cutoff_marker:
+            self.begin_refresh(org, record)
+        reply: dict[str, Any] = {"cutoff": self.clock_ms - self.clock_ms % 1000}
+        if self.cutoff_marker:
+            reply["marker"] = True
+        return web.json_response(reply)
 
     async def _purge_record(self, request: web.Request) -> web.Response:
         org, record = self._org(request), request.match_info["record"]

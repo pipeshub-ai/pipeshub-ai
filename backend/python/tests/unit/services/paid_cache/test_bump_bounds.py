@@ -64,7 +64,7 @@ def test_the_queue_is_bounded_in_entries_and_in_bytes(monkeypatch: pytest.Monkey
     queue = BumpQueue(VersionedStore(), autostart=False)  # type: ignore[arg-type]
     assert [queue.offer(_entry(n)) for n in range(5)] == ["queued"] * 3 + ["dropped"] * 2
     monkeypatch.setattr(bump, "QUEUE_MAX", 100)
-    monkeypatch.setattr(bump, "QUEUE_BYTES_MAX", 250)
+    monkeypatch.setattr(bump, "QUEUE_BYTES_MAX", 420)
     small = BumpQueue(VersionedStore(), autostart=False)  # type: ignore[arg-type]
     assert [small.offer(_entry(n, 100)) for n in range(3)] == ["queued", "queued", "dropped"]
 

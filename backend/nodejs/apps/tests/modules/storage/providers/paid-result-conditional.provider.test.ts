@@ -130,14 +130,53 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
 
     it('honours conditional operations only on a file system it can name as local', async () => {
       const stat = sinon.stub(fsp, 'statfs')
+      LocalStorageAdapter.clearCapabilityMemo()
       stat.resolves({ type: 0xef53 } as never)
       expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
       for (const type of [0x6969, 0xff534d42, 0x65735546, 0xc36400, 0x01021994 + 1]) {
+        LocalStorageAdapter.clearCapabilityMemo()
         stat.resolves({ type } as never)
         expect(await adapter().conditionalCapabilities(), `0x${type.toString(16)}`).to.deep.equal({ conditionalDelete: false, bump: false })
       }
+      LocalStorageAdapter.clearCapabilityMemo()
       stat.rejects(new Error('EIO'))
       expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      // a failed statfs is no answer about the file system: the next call asks again
+      stat.resolves({ type: 0xef53 } as never)
+      expect(await adapter().conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
+    })
+
+    it('says once per process that a mount is not a recognised local file system, however many adapters ask', async () => {
+      LocalStorageAdapter.clearCapabilityMemo()
+      sinon.stub(fsp, 'statfs').resolves({ type: 0x6969 } as never)
+      const warn = sinon.spy()
+      for (let i = 0; i < 5; i += 1) {
+        const a = adapter()
+        ;(a as any).logger = { warn, info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
+        await a.conditionalCapabilities()
+      }
+      expect(warn.callCount).to.equal(1)
+    })
+
+    it('a lock left by a process that is gone is reclaimed at once, a live owner on this host is waited for however old its lock', async () => {
+      const a = adapter()
+      await a.writeObject(key(1), Buffer.from('one'))
+      const dir = path.join((a as any).mountPath, path.dirname(key(1)))
+      const name = `.${createHash('sha1').update(path.basename(key(1))).digest('hex')}.lock`
+      const lock = (pid: number): void =>
+        fs.writeFileSync(path.join(dir, name), JSON.stringify({ token: 'x', pid, host: os.hostname() }))
+      lock(2147483646) // no such process
+      const started = Date.now()
+      await a.writeObject(key(1), Buffer.from('after the crash'))
+      expect(Date.now() - started, 'a crash-left lock made the writer wait').to.be.lessThan(1000)
+
+      lock(process.pid + 0) // this process: alive
+      const old = new Date(Date.now() - 60 * 1000)
+      fs.utimesSync(path.join(dir, name), old, old)
+      setTimeout(() => fs.rmSync(path.join(dir, name), { force: true }), 80)
+      const t0 = Date.now()
+      await a.writeObject(key(1), Buffer.from('after the wait'))
+      expect(Date.now() - t0, 'a live owner lost its lock to a lease that is too short').to.be.greaterThan(60)
     })
   })
 
@@ -235,8 +274,60 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect((await probed('copy-keeps-etag')).caps.bump).to.equal(false)
     })
 
+    const flaky = (fail: { puts?: number; deletes?: number; code?: string }) => {
+      const b = bucket('honours')
+      const a = adapter('flaky-' + Math.random().toString(36).slice(2))
+      a.probeBackoffMs = [0, 0]
+      let puts = 0
+      let dels = 0
+      ;(a as any).s3 = {
+        ...b.s3,
+        deleteObjects: (p: any) => {
+          if (p.Delete.Objects[0].ETag === undefined) return b.s3.deleteObjects(p) // the probe's own cleanup
+          dels += 1
+          if (dels <= (fail.deletes ?? 0)) return done({ Errors: [{ Key: p.Delete.Objects[0].Key, Code: fail.code ?? 'SlowDown' }] })
+          return b.s3.deleteObjects(p)
+        },
+      }
+      sinon.stub(a, 'signObjectUrl').callsFake(async (_k: string, o: any) => ({ url: 'http://s3/put', headers: { 'If-Match': `"${o.ifMatch}"` } }))
+      if ((globalThis.fetch as any).restore) (globalThis.fetch as any).restore()
+      sinon.stub(globalThis, 'fetch').callsFake((async (u: string, init: any) => {
+        puts += 1
+        if (puts <= (fail.puts ?? 0)) return new Response(null, { status: 503 })
+        return b.fetchStub(u, init)
+      }) as any)
+      return a
+    }
+
+    it('a 5xx on the conditional PUT, or a SlowDown or InternalError on a delete, is retried and never remembered as "unsupported"', async () => {
+      expect(await flaky({ puts: 1 }).conditionalCapabilities(), '503 on the wrong-ETag PUT').to.deep.equal({ conditionalDelete: true, bump: true })
+      expect(await flaky({ deletes: 1, code: 'InternalError' }).conditionalCapabilities(), 'InternalError on a delete').to.deep.equal({ conditionalDelete: true, bump: true })
+      expect(await flaky({ deletes: 2, code: 'SlowDown' }).conditionalCapabilities(), 'SlowDown twice').to.deep.equal({ conditionalDelete: true, bump: true })
+    })
+
+    it('an outage that outlasts the retries answers "none" for that call only; the next call, after it, gets the real answer', async () => {
+      const a = flaky({ puts: 100 })
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      ;(globalThis.fetch as sinon.SinonStub).restore()
+      const b = bucket('honours')
+      ;(a as any).s3 = b.s3
+      sinon.stub(globalThis, 'fetch').callsFake(b.fetchStub as any)
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
+    })
+
+    it('a definitive refusal (403) is remembered as "none", not retried', async () => {
+      const a = adapter('forbidden-' + Math.random().toString(36).slice(2))
+      a.probeBackoffMs = [0, 0]
+      const up = sinon.stub().returns({ promise: async () => { throw Object.assign(new Error('denied'), { $metadata: { httpStatusCode: 403 } }) } })
+      ;(a as any).s3 = { upload: up, deleteObjects: () => done({}) }
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
+      expect(up.callCount).to.equal(1)
+    })
+
     it('a transient failure is not remembered: the next ask probes again and gets the real answer', async () => {
       const a = adapter('one-bucket')
+      a.probeBackoffMs = []
       const b = bucket('honours')
       let calls = 0
       ;(a as any).s3 = { ...b.s3, upload: (p: any) => { calls += 1; return calls === 1 ? fail(503, 'SlowDown') : b.s3.upload(p) } }

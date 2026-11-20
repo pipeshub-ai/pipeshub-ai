@@ -1756,7 +1756,9 @@ export class StorageController {
       } finally {
         await adapter.deleteObjects([key]).catch(() => undefined);
       }
-      res.status(HTTP_STATUS.OK).json({ cutoff });
+      // `marker`: the refresh marker was written before this cutoff was taken (a client with paid-result writes on
+      // requires it: a service of an earlier release answers without).
+      res.status(HTTP_STATUS.OK).json({ cutoff, marker: true });
     } catch (error) {
       next(error);
     }

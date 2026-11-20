@@ -240,7 +240,8 @@ async def test_a_gone_object_is_restored_with_the_held_bytes(storage: FakePaidRe
     queue = await _queue(storage)
     queue.offer(_entry(storage, etag="old"))
     await queue.drain_once()
-    assert storage.objects[storage.key(ORG, REC, K)][0] == OLD
+    stored = json.loads(storage.objects[storage.key(ORG, REC, K)][0])
+    assert stored["value"] == "OLD" and "originMs" in stored and "touchedMs" in stored
 
 
 async def test_a_store_that_answers_412_for_a_missing_key_is_checked_with_a_read_and_restored(
@@ -250,7 +251,8 @@ async def test_a_store_that_answers_412_for_a_missing_key_is_checked_with_a_read
     queue = await _queue(storage)
     queue.offer(_entry(storage, etag="old"))
     await queue.drain_once()
-    assert storage.objects[storage.key(ORG, REC, K)][0] == OLD
+    stored = json.loads(storage.objects[storage.key(ORG, REC, K)][0])
+    assert stored["value"] == "OLD" and "originMs" in stored and "touchedMs" in stored
 
 
 async def test_a_refresh_since_the_object_was_written_stops_both_the_bump_and_the_restore(storage: FakePaidResultStorage) -> None:
@@ -381,3 +383,184 @@ async def test_a_restore_is_refused_when_the_deadline_passes_while_the_bump_is_i
     await queue.drain_once()
 
     assert storage.stored(ORG, REC) == [], "the bytes were stored again after the stage deadline"
+
+
+# -- the refresh marker comes with the cutoff, or the refresh does not go on (mixed storage fleet) -----------------------
+
+async def test_with_writes_on_a_cutoff_from_a_service_that_writes_no_marker_fails_the_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refresh that took its cutoff on a storage replica of an earlier release has no marker for a bump to see: the
+    purge would keep a pre-refresh result a reuse bumped. The refresh fails and is retried until storage is updated."""
+    from app.services.paid_cache.cache import PaidResultCache, PurgeCutoffUnavailable
+    from app.services.paid_cache.locks import InProcessLocks
+
+    fake = FakePaidResultStorage(capabilities=("conditionalDelete", "bump"), cutoff_marker=False)
+    await fake.start()
+    try:
+        cache = PaidResultCache(_store(fake), InProcessLocks())
+        monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+        with pytest.raises(PurgeCutoffUnavailable):
+            await cache.require_purge_cutoff(ORG, REC)
+        fake.cutoff_marker = True                                   # the next replica is a current one
+        cutoff = await cache.require_purge_cutoff(ORG, REC)
+        assert cutoff is not None and await _store(fake).refresh_marker_ms(ORG, REC) is not None
+        # With writes off nothing is bumped, so the older replica's cutoff is fine (as before this change).
+        monkeypatch.setenv("PAID_CACHE_WRITE", "off")
+        fake.cutoff_marker = False
+        assert await cache.require_purge_cutoff(ORG, REC) is not None
+    finally:
+        await fake.stop()
+
+
+# -- test gaps found by QA ---------------------------------------------------------------------------------------------
+
+def test_a_refresh_in_the_same_second_as_the_write_counts_as_since() -> None:
+    """Whole-second stamps: a tie is not "before"."""
+    from app.services.paid_cache.bump import _refreshed_since
+
+    assert _refreshed_since(5_000_900, 5_000_100) is True
+    assert _refreshed_since(5_000_000, 5_001_000) is False
+    assert _refreshed_since(None, 5_000_000) is False
+
+
+async def test_an_exhausted_409_is_checked_with_a_read_like_a_412(storage: FakePaidResultStorage) -> None:
+    storage.gone_status = 409
+    queue = await _queue(storage)
+    queue.offer(_entry(storage, etag="old"))
+    await queue.drain_once()
+    assert json.loads(storage.objects[storage.key(ORG, REC, K)][0])["value"] == "OLD"
+    # and when the object is there (someone else's version), nothing is written over it
+    storage._write(storage.key(ORG, REC, K), b'{"v":1,"value":"theirs"}')
+    other = BumpEntry(ORG, REC, K, OLD, "old", 0, None)
+    queue2 = await _queue(storage)
+    queue2.offer(other)
+    await queue2.drain_once()
+    assert b"theirs" in storage.objects[storage.key(ORG, REC, K)][0]
+
+
+async def test_an_object_re_written_between_the_two_listings_is_kept_even_if_its_write_time_did_not_move(
+    storage: FakePaidResultStorage,
+) -> None:
+    store = _store(storage)
+    await _doomed_setup(storage, store)
+    lists = 0
+    old_stamp = storage.objects[storage.key(ORG, REC, K)][1]
+
+    async def rewrite_before_the_second_listing() -> None:
+        nonlocal lists
+        lists += 1
+        if lists == 2:
+            storage._write(storage.key(ORG, REC, K), touched_bytes(OLD, 1) or b"")
+            storage.objects[storage.key(ORG, REC, K)] = (storage.objects[storage.key(ORG, REC, K)][0], old_stamp)
+
+    storage.hooks["list"] = rewrite_before_the_second_listing
+    await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
+    assert K in storage.stored(ORG, REC), "the sweep deleted a version that appeared after its first listing"
+
+
+# -- a bump that may have landed, and a result that predates a refresh --------------------------------------------------
+
+async def test_a_bump_that_landed_before_a_refused_retry_is_checked_like_any_other_write() -> None:
+    from tests.support.versioned_store import VersionedStore
+
+    store = VersionedStore(stamp_ms=1)
+    store.write(ORG, REC, K, OLD)
+    got = await store.get_versioned(ORG, REC, K)
+    assert got is not None and got.etag
+    original = store.bump_to
+
+    async def lands_then_reports_a_lost_race(entry: object, data: bytes) -> tuple[str, str | None]:
+        await original(entry, data)
+        store.begin_refresh(ORG, REC)                # a refresh begins right after the write was sent
+        return CHANGED, None
+
+    store.bump_to = lands_then_reports_a_lost_race  # type: ignore[method-assign]
+
+    async def no_wait(_s: float) -> None:
+        return None
+
+    queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
+    queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None))
+    await queue.drain_once()
+    assert (ORG, REC, K) not in store.files, "a landed bump was not checked after a refused retry"
+
+
+async def test_a_bumped_result_that_predates_a_refresh_is_never_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stop between a bump and its check leaves a pre-refresh result in place: the next reuse finds ``originMs`` and
+    the marker, and computes again."""
+    from unittest.mock import AsyncMock
+
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+    from app.services.paid_cache.run import begin_run, clear_run
+    from tests.support.paid_cache import record_in_flight
+    from tests.support.versioned_store import VersionedStore
+
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    store = VersionedStore(stamp_ms=1000)
+    store.write(ORG, REC, key.relative_path(), touched_bytes(_encode(key, "old text"), 5_000, origin_ms=store.now_ms - 10_000) or b"")
+    store.now_ms += 5_000
+    store.begin_refresh(ORG, REC)                          # a refresh began after the object was first written
+    cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
+    cache.bumps._autostart = False
+    try:
+        with record_in_flight(ORG, REC):
+            begin_run(ORG, REC, "rev1", "parse")
+            paid = AsyncMock(return_value="fresh text")
+            assert await cache.get_or_compute(key, paid) == "fresh text"
+            paid.assert_awaited_once()
+        # a result written after the refresh is reused as before
+        store.now_ms += 5_000
+        store.write(ORG, REC, key.relative_path(), touched_bytes(_encode(key, "new text"), 9_000, origin_ms=store.now_ms) or b"")
+        cache._markers.clear()
+        with record_in_flight(ORG, REC):
+            paid2 = AsyncMock(return_value="unused")
+            assert await cache.get_or_compute(key, paid2) == "new text"
+            paid2.assert_not_called()
+        # and a marker that cannot be read is not "no refresh"
+        store.unreadable_marker = True
+        cache._markers.clear()
+        with record_in_flight(ORG, REC):
+            paid3 = AsyncMock(return_value="again")
+            assert await cache.get_or_compute(key, paid3) == "again"
+    finally:
+        clear_run()
+
+
+# -- throughput: one wait per batch, records at once, and protection that is not applied is counted and logged ----------
+
+async def test_many_records_are_written_at_once_with_one_wait_for_the_batch() -> None:
+    from tests.support.versioned_store import VersionedStore
+
+    store = VersionedStore(stamp_ms=1)
+    waits: list[float] = []
+
+    async def count_wait(seconds: float) -> None:
+        waits.append(seconds)
+
+    queue = BumpQueue(store, sleep=count_wait, autostart=False)  # type: ignore[arg-type]
+    for r in range(40):
+        store.write(ORG, f"rec-{r}", K, OLD)
+        got = await store.get_versioned(ORG, f"rec-{r}", K)
+        assert got is not None and got.etag
+        queue.offer(BumpEntry(ORG, f"rec-{r}", K, got.data, got.etag, 0, None))
+    await queue.drain_once()
+    assert len(waits) == 1 and waits[0] <= 2.5, "the post-write wait is taken once per batch, not once per record"
+    assert all(b"touchedMs" in store.files[(ORG, f"rec-{r}", K)][0] for r in range(40))
+    assert store.ops.count("marker") == 80             # two reads per record: before and after, whatever the batch size
+
+
+async def test_protection_lost_to_a_full_queue_is_counted_and_logged(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.paid_cache import bump
+    from tests.support.versioned_store import VersionedStore
+
+    monkeypatch.setattr(bump, "QUEUE_MAX", 2)
+    queue = BumpQueue(VersionedStore(), autostart=False)  # type: ignore[arg-type]
+    with caplog.at_level("WARNING", logger="app.services.paid_cache.bump"):
+        outcomes = [queue.offer(BumpEntry(ORG, REC, f"ocr_page/{n:064x}.json", b"{}", "e", 0, None)) for n in range(6)]
+    assert outcomes.count("dropped") == 4
+    warnings = [r for r in caplog.records if "behind" in r.getMessage()]
+    assert len(warnings) == 1 and "dropped=1" in warnings[0].getMessage(), "logged once, then rate limited, with counts"

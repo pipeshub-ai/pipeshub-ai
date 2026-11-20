@@ -816,13 +816,22 @@ class AmazonS3Adapter implements StorageServiceInterface {
       if (answer !== null) return answer;
       CONDITIONAL_MEMO.delete(memoKey);
     }
-    const asked = this.probeConditionalSupport();
-    CONDITIONAL_MEMO.set(memoKey, asked);
-    const answer = await asked;
-    if (answer === null) {
-      // Transient: not remembered.
+    // A transient failure (a 5xx, SlowDown, a timeout) is retried with backoff and never remembered: only a
+    // definitive answer is. Callers arriving meanwhile share the attempt in flight.
+    const delays = this.probeBackoffMs;
+    let answer: ConditionalCapabilities | null;
+    for (let attempt = 0; ; attempt += 1) {
+      const asked = this.probeConditionalSupport();
+      CONDITIONAL_MEMO.set(memoKey, asked);
+      answer = await asked;
+      if (answer !== null) break;
       if (CONDITIONAL_MEMO.get(memoKey) === asked)
         CONDITIONAL_MEMO.delete(memoKey);
+      const delay = delays[attempt];
+      if (delay === undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    if (answer === null) {
       return { conditionalDelete: false, bump: false };
     }
     if (!answer.conditionalDelete || !answer.bump) {
@@ -833,6 +842,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
     }
     return answer;
   }
+
+  /** Waits between the attempts of a probe that met a transient failure (tests shorten it). */
+  probeBackoffMs: number[] = [250, 1000];
 
   /**
    * Probe, on a random sentinel outside every record folder: (1) a delete with a wrong ETag must answer
@@ -862,6 +874,15 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
     };
+    // A refusal of the request itself (not of the condition) is no answer about the store: it is asked again later.
+    const transient = new Error('transient');
+    const isTransientStatus = (n: number): boolean =>
+      n === 429 || n === 408 || (n >= 500 && n !== 501);
+    const isTransientCode = (c: string | undefined): boolean =>
+      c !== undefined &&
+      /^(InternalError|SlowDown|ServiceUnavailable|RequestTimeout|Throttl|RequestLimitExceeded|ThrottlingException)/.test(
+        c,
+      );
     const delOnce = async (etag: string): Promise<string> => {
       const result = await this.s3
         .deleteObjects({
@@ -872,7 +893,9 @@ class AmazonS3Adapter implements StorageServiceInterface {
           },
         })
         .promise();
-      return result.Errors?.[0]?.Code ?? 'OK';
+      const code = result.Errors?.[0]?.Code;
+      if (isTransientCode(code)) throw transient;
+      return code ?? 'OK';
     };
     const putIfMatch = async (etag: string, body: string): Promise<number> => {
       const signed = await this.signObjectUrl(key, {
@@ -887,6 +910,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         body,
       });
       await response.arrayBuffer();
+      if (isTransientStatus(response.status)) throw transient;
       return response.status;
     };
     try {
@@ -935,7 +959,11 @@ class AmazonS3Adapter implements StorageServiceInterface {
         bump,
       };
     } catch (error) {
-      const code = status(error);
+      if (error === transient) return null;
+      const httpStatus = status(error);
+      if (httpStatus !== undefined && isTransientStatus(httpStatus))
+        return null;
+      const code = httpStatus;
       // A store that answers the conditional form with a refusal of its own (501, 400, 403) said no, definitively.
       if (code === 501 || code === 400 || code === 403) {
         return { conditionalDelete: false, bump: false };

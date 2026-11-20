@@ -40,6 +40,7 @@ from app.services.paid_cache.store import (
     PAID_RESULT_ROUTES,
     BumpOutcome,
     ListedFile,
+    PurgeCutoffNoMarker,
     VersionedBytes,
 )
 from app.telemetry.backend import METRICS_BACKEND
@@ -130,6 +131,22 @@ class ResultStore:
     async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]: ...
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None: ...
     async def purge_org(self, org_id: str) -> None: ...
+
+
+#: How long a record's refresh marker read stays good for the bumped objects it is compared with.
+MARKER_CACHE_S = 30.0
+
+
+def _origin_ms(raw: bytes) -> int | None:
+    """The ``originMs`` a bump wrote into the envelope, when there is one."""
+    if b'"originMs"' not in raw:
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None
+    origin = body.get("originMs") if isinstance(body, dict) else None
+    return origin if isinstance(origin, int) and not isinstance(origin, bool) else None
 
 
 def _encode(key: CacheKey, value: object) -> bytes:
@@ -249,7 +266,9 @@ class _FencedStore:
     async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]:
         return await self._inner.purge_records(org_id, record_ids)
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
+        if require_marker and getattr(self._inner, "supports_cutoff_marker", False):
+            return await self._inner.purge_cutoff(org_id, record_id, require_marker=True)  # type: ignore[call-arg,no-any-return]
         return await self._inner.purge_cutoff(org_id, record_id)
 
     async def purge_org(self, org_id: str) -> None:
@@ -271,6 +290,8 @@ class PaidResultCache:
         #: more than one loop, and a future cannot be awaited from another loop, so the loop is part of the key.
         self._inflight: dict[tuple[int, str], asyncio.Future[Any]] = {}
         self._bumps: BumpQueue | None = None
+        #: (org, record) -> (read at, the refresh marker's store time or None): see ``_predates_refresh``.
+        self._markers: dict[tuple[str, str], tuple[float, int | None]] = {}
 
     @property
     def store(self) -> ResultStore:
@@ -391,18 +412,29 @@ class PaidResultCache:
             outcomes.update(await self._store.purge_records(org_id, valid))
         return outcomes
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
-        """The store's clock now (ms): the cutoff for one refresh purge, taken once so that every DELETE of it agrees."""
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
+        """The store's clock now (ms): the cutoff for one refresh purge, taken once so that every DELETE of it agrees.
+
+        ``require_marker``: raises ``PurgeCutoffNoMarker`` when the storage service took it without writing the refresh
+        marker (an earlier release)."""
         if not valid_record_id(record_id):
             return None
+        if require_marker:
+            return await self._store.purge_cutoff(org_id, record_id, require_marker=True)  # type: ignore[call-arg]
         return await self._store.purge_cutoff(org_id, record_id)
 
     async def require_purge_cutoff(self, org_id: str, record_id: str) -> int | None:
         """The cutoff of a refresh purge. ``None`` only while paid-result writes are off (a purge without a cutoff
         removes what a delivery that took over has stored, which cannot exist then); with writes on, a storage
         service that cannot name one raises ``PurgeCutoffUnavailable``."""
-        cutoff = await self.purge_cutoff(org_id, record_id)
-        if cutoff is None and valid_record_id(record_id) and writes_enabled():
+        writes = writes_enabled()
+        try:
+            cutoff = await self.purge_cutoff(org_id, record_id, require_marker=writes)
+        except PurgeCutoffNoMarker as exc:
+            # With writes on, a reuse may bump an object past this purge unless the refresh marker is there: the refresh
+            # fails and is retried until the storage service (every replica) is updated.
+            raise PurgeCutoffUnavailable("the storage service takes no refresh marker with its cutoff; update it") from exc
+        if cutoff is None and valid_record_id(record_id) and writes:
             raise PurgeCutoffUnavailable("the storage service cannot yet give a purge cutoff; update it")
         return cutoff
 
@@ -722,6 +754,11 @@ class PaidResultCache:
         if raw is None:
             return False, None, False
         found, value = _decode(key, raw)
+        if found and await self._predates_refresh(key, raw):
+            # A bumped result whose original write is not after the latest refresh survived a purge it should not have
+            # (a stop between the bump and its check): it is replaced like an unreadable one, never reused.
+            self._count(key, "predates_refresh")
+            return False, None, True
         if found and got is not None and hit_out is not None:
             hit_out.append(got)
         if found and validate is not None:
@@ -736,6 +773,31 @@ class PaidResultCache:
         if not found and report:
             self._count(key, "error")
         return found, value, not found
+
+    async def _predates_refresh(self, key: CacheKey, raw: bytes) -> bool:
+        """Only a bumped object carries ``originMs`` (``bump.py``); for one, the record's refresh marker is read (kept for
+        ``MARKER_CACHE_S``). An unreadable marker counts as "predates": the call is made again, never a stale reuse."""
+        origin = _origin_ms(raw)
+        if origin is None:
+            return False
+        read = getattr(self._store, "refresh_marker_ms", None)
+        if read is None:
+            return False
+        name = (key.org_id, key.record_id)
+        cached = self._markers.get(name)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < MARKER_CACHE_S:
+            marker = cached[1]
+        else:
+            try:
+                marker = await read(key.org_id, key.record_id)
+            except Exception as exc:
+                self.logger.debug("Paid-result refresh marker unreadable (%s)", type(exc).__name__)
+                return True
+            if len(self._markers) > 4096:
+                self._markers.clear()
+            self._markers[name] = (now, marker)
+        return marker is not None and marker // 1000 >= origin // 1000
 
     def _unreadable(self, key: CacheKey, why: str) -> None:
         # Logged once per key: the compute that follows replaces the object, so the next lookup hits.
@@ -977,7 +1039,7 @@ class NullPaidResultCache:
             STOPPED.inc(site)
             raise RecordGone(record_id)
 
-    async def purge_cutoff(self, org_id: str, record_id: str) -> int | None:
+    async def purge_cutoff(self, org_id: str, record_id: str, *, require_marker: bool = False) -> int | None:
         return None
 
     async def require_purge_cutoff(self, org_id: str, record_id: str) -> int | None:

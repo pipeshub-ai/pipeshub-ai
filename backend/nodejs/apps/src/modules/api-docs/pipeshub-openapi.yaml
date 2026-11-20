@@ -41049,6 +41049,12 @@ paths:
                   cutoff:
                     type: integer
                     description: Milliseconds since the epoch, by the store's clock.
+                  marker:
+                    type: boolean
+                    description: |
+                      `true`: the refresh marker was written before this cutoff was taken. Absent from a storage
+                      service of an earlier release; a client with paid-result writes on does not go on with a refresh
+                      whose cutoff lacks it.
         '400':
           description: The record id is not valid (`VALIDATION_ERROR`).
           content:

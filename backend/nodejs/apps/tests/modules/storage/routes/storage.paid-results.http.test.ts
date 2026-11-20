@@ -226,6 +226,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       await new Promise((resolve) => setTimeout(resolve, 30))
       const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
       expect(cut.status).to.equal(200)
+      expect((cut.body as { marker?: boolean }).marker, 'the reply names the marker it wrote').to.equal(true)
       const cutoff = (cut.body as { cutoff: number }).cutoff
       expect(cutoff).to.be.a('number').and.to.be.within(Date.now() - 5000, Date.now() + 1000)
       expect(filesOnDisk()).to.have.length(6) // five results and the refresh marker

@@ -187,7 +187,7 @@ async def test_an_object_deleted_before_the_bump_is_stored_again_with_the_held_b
     await queue.drain_once()
 
     again = await store.get_versioned(org, REC, K)
-    assert again is not None and again.data == VALUE
+    assert again is not None and b'"value":"OLD"' in again.data and b"originMs" in again.data
 
 
 async def test_a_refresh_marker_is_written_by_the_cutoff_and_survives_the_purge(store: NodePaidResultStore) -> None:

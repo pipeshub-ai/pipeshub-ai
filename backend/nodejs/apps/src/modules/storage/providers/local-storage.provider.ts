@@ -40,6 +40,11 @@ const KEY_LOCK_POLL_MS = 10;
  * for every process that can reach the mount: ext4, xfs, btrfs, zfs, tmpfs, overlayfs. Anything else (NFS, CIFS,
  * FUSE, Ceph, Lustre, 9p, virtiofs...) reads as shared and honours no conditional operation.
  */
+const LOCAL_CAPABILITY_MEMO = new Map<
+  string,
+  Promise<ConditionalCapabilities>
+>();
+
 const LOCAL_FS_TYPES = new Set<number>([
   0xef53, 0x58465342, 0x9123683e, 0x2fc12fc1, 0x01021994, 0x794c7630,
 ]);
@@ -719,13 +724,18 @@ class LocalStorageAdapter implements StorageServiceInterface {
       `.${createHash('sha1').update(path.basename(fullPath)).digest('hex')}.lock`,
     );
     const token = randomUUID();
+    const owner = JSON.stringify({
+      token,
+      pid: process.pid,
+      host: os.hostname(),
+    });
     const deadline = Date.now() + KEY_LOCK_WAIT_MS;
     for (;;) {
       try {
         // `wx`: exactly one creator wins. (Not `writeFile`: this provider writes bytes in one place only.)
         const lock = await fs.open(lockPath, 'wx', 0o600);
         try {
-          await lock.write(token);
+          await lock.write(owner);
         } finally {
           await lock.close();
         }
@@ -734,8 +744,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         const code = (error as { code?: string }).code;
         if (code !== 'EEXIST') throw error;
         try {
-          const st = await fs.stat(lockPath);
-          if (Date.now() - st.mtimeMs > KEY_LOCK_LEASE_MS) {
+          if (await this.lockIsAbandoned(lockPath)) {
             const stale = path.join(
               path.dirname(lockPath),
               `${path.basename(lockPath)}.stale-${randomUUID()}`,
@@ -762,7 +771,10 @@ class LocalStorageAdapter implements StorageServiceInterface {
     }
     const stillHeld = async (): Promise<boolean> => {
       try {
-        return (await fs.readFile(lockPath, 'utf8')) === token;
+        const held = JSON.parse(await fs.readFile(lockPath, 'utf8')) as {
+          token?: string;
+        };
+        return held.token === token;
       } catch {
         return false;
       }
@@ -772,6 +784,37 @@ class LocalStorageAdapter implements StorageServiceInterface {
     } finally {
       if (await stillHeld()) await fs.rm(lockPath, { force: true });
     }
+  }
+
+  /**
+   * A lock is abandoned when its owner is gone: a process on this host that no longer exists (taken at once, so a
+   * crash costs nothing), or, for any other owner (another host, or a file with no readable owner), when it is older
+   * than the lease. A live owner on this host keeps its lock for as long as it runs; the token check before the
+   * final step covers a holder that stalls.
+   */
+  private async lockIsAbandoned(lockPath: string): Promise<boolean> {
+    try {
+      const held = JSON.parse(await fs.readFile(lockPath, 'utf8')) as {
+        pid?: unknown;
+        host?: unknown;
+      };
+      if (
+        typeof held.pid === 'number' &&
+        held.host === os.hostname() &&
+        held.pid !== process.pid
+      ) {
+        try {
+          process.kill(held.pid, 0);
+        } catch (error) {
+          if ((error as { code?: string }).code === 'ESRCH') return true;
+        }
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') return false;
+      // unreadable or half-written: the lease decides
+    }
+    const st = await fs.stat(lockPath);
+    return Date.now() - st.mtimeMs > KEY_LOCK_LEASE_MS;
   }
 
   /** The synthetic ETag of the file at `fullPath` through a freshly opened descriptor, or null when absent. */
@@ -796,11 +839,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
     }
   }
 
-  private localCapabilityMemo: Promise<ConditionalCapabilities> | undefined;
-
   /** Conditional operations are honoured only on a file system this provider can name as coherent (see above). */
   conditionalCapabilities(): Promise<ConditionalCapabilities> {
-    this.localCapabilityMemo ??= (async () => {
+    // Per mount, per process: the service builds an adapter for each request, and the warning is meant once.
+    const known = LOCAL_CAPABILITY_MEMO.get(this.mountPath);
+    if (known !== undefined) return known;
+    const asked = (async () => {
       try {
         await this.ensureReady();
         const info = await fs.statfs(this.mountPath);
@@ -813,10 +857,18 @@ class LocalStorageAdapter implements StorageServiceInterface {
         }
         return { conditionalDelete: local, bump: local };
       } catch {
+        // Not an answer about the file system: asked again on the next call.
+        LOCAL_CAPABILITY_MEMO.delete(this.mountPath);
         return { conditionalDelete: false, bump: false };
       }
     })();
-    return this.localCapabilityMemo;
+    LOCAL_CAPABILITY_MEMO.set(this.mountPath, asked);
+    return asked;
+  }
+
+  /** Forgets what was learned about mounts (tests). */
+  static clearCapabilityMemo(): void {
+    LOCAL_CAPABILITY_MEMO.clear();
   }
 
   /**
