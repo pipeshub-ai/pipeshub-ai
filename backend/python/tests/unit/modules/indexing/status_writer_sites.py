@@ -38,7 +38,7 @@ SITES: dict[tuple[str, str, str], str] = {
     ("events/events.py", "EventProcessor._reuse_finished_duplicate", "update_record_fields"): NO_RUN_FIELDS,
     ("events/processor.py", "Processor.process_image", "update_node"): NO_RUN_FIELDS,
     ("indexing_main.py", "_republish_stranded_records", "update_node"): NO_RUN_FIELDS,
-    ("indexing_main.py", "_republish_refresh_intents._expire", "update_node_fields_if_match"): NO_RUN_FIELDS,
+    ("indexing_main.py", "_republish_refresh_intents", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("indexing_main.py", "recover_in_progress_records", "update_node"): QUEUE_NO_FILL,
     ("modules/indexing/duplicate_reconcile.py", "DuplicateReconciler.reconcile", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/indexing/duplicate_reconcile.py", "_retry_one", "update_node_fields_if_match"): NO_RUN_FIELDS,

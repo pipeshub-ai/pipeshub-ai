@@ -16738,7 +16738,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             parameters={"ids": unique_ids, "fields": dict(fields)},
             txn_id=None,
         )
-        return int(rows[0]["written"]) if rows else 0
+        return int((rows[0].get("written") if rows else 0) or 0)
 
     async def get_records_with_refresh_intent(
         self, org_id: str, *, after_key: str | None = None, limit: int = 100
