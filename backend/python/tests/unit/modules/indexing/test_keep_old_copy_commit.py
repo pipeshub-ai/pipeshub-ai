@@ -624,7 +624,6 @@ async def test_one_failing_twin_does_not_stop_the_others_and_all_are_waited_for(
 @pytest.mark.asyncio
 async def test_the_release_waits_for_the_latest_retirement_mark_of_the_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two records left the same copy: the first one's timer must not release it while the second one's grace is running."""
-    from unittest.mock import AsyncMock
 
     clock = {"now": 1_000_000.0}
     monkeypatch.setattr(keep_old_copy, "grace_seconds", lambda: 100.0)
