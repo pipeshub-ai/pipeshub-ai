@@ -20,7 +20,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -35,7 +35,11 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.box.connector import BoxConnector
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from tests.integration.real_graph import backend_unavailable, connect_arango, connect_neo4j
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
+)
 from tests.unit.connectors.sources.box.behaviour.box_behaviour_fakes import (
     FakeBoxApi,
     FakeConfigService,

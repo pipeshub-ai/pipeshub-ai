@@ -12,11 +12,15 @@ from logging in" and the Active View Only and Active View/Upload Only users "can
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-
-import pytest
 from unittest.mock import AsyncMock
 
-from box_behaviour_fakes import FakeBoxApi, FakeBoxRecordsDb, FakeCheckpointStore, ready_connector
+import pytest
+from box_behaviour_fakes import (
+    FakeBoxApi,
+    FakeBoxRecordsDb,
+    FakeCheckpointStore,
+    ready_connector,
+)
 
 if TYPE_CHECKING:
     from app.connectors.sources.box.connector import BoxConnector

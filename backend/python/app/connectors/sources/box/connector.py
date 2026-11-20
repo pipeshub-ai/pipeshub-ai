@@ -797,7 +797,7 @@ class BoxConnector(BaseConnector):
             self._user_list_complete = False
             return []
 
-    async def _link_users(self, users: List[AppUser], *, full_sync: bool) -> List[AppUser]:
+    async def _link_users(self, users: list[AppUser], *, full_sync: bool) -> list[AppUser]:
         """Link the Box accounts that can sign in. After a complete user list, an account that left Box (inactive,
         deleted, or any other status) loses its link and its own grants; after a partial one, no one does.
 
@@ -1596,7 +1596,7 @@ class BoxConnector(BaseConnector):
             return
         if returning:
             # Their grants were dropped when they left; dropping the stream position makes any cut-short run full again.
-            self.logger.info(f"👥 [Incremental] {len(returning)} Box account(s) came back; running a full sync for them.")
+            self.logger.info(f"[Incremental] {len(returning)} Box account(s) came back; running a full sync for them.")
             await self.box_cursor_sync_point.update_sync_point("event_stream_cursor", {"cursor": None})
             await self._run_sync()
             return
