@@ -94,11 +94,14 @@ jobs:
         pg: ['17', '18']
         # The graph suite took ~46 min in one job (over 60 on PostgreSQL 18), so it is split by measured time. graph_tests
         # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once. Shard 5 runs
-        # the folder minus what the others name, so a new test file runs there. scripts/test_pg_runtime_shards.py checks that
-        # every case runs exactly once; each shard checks its run against its own collection, so no count is written here.
-        shard: [1, 2, 3, 4, 5]
+        # the folder minus what the others name (--ignore for a file, --deselect for a test), so a new test file runs there.
+        # scripts/test_pg_runtime_shards.py checks that every case runs exactly once; each shard checks its run against its own
+        # collection, so no count is written here. The shards are sized to about 20 min of the 45 min limit (shard 1: 25-35 of
+        # 60); --durations in the graph step prints the per-test times to rebalance by.
+        shard: [1, 2, 3, 4, 5, 6, 7]
         include:
-          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
+          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own, and the
+          # rest is split by the state of the copy
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: '[not_current-adversarial]'
@@ -108,7 +111,10 @@ jobs:
             graph_k: not [not_current-adversarial] and [current-adversarial]
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial]
+            graph_k: not [not_current-adversarial] and not [current-adversarial] and not_current
+          - shard: 6
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: not [not_current-adversarial] and not [current-adversarial] and not not_current
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
@@ -121,6 +127,15 @@ jobs:
               tests/integration/graph_db/postgres/test_kh_listing_flat.py
               tests/integration/graph_db/postgres/test_robustness.py
               tests/integration/graph_db/postgres/test_role_batch.py
+          # from shard 5, by test: the corpus and generated worlds of three kg readers, which sit in its slowest stretches (7-8 min
+          # each). The rest of their files, plan gates included, stays in shard 5 behind the files it followed.
+          - shard: 7
+            graph_tests: >-
+              tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_the_corpus_trail_from_kg_equals_the_walk
+              tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_generated_worlds_trail_from_kg_equals_the_walk
+              tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
+              tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
+              tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
           - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
@@ -133,6 +148,11 @@ jobs:
               --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
               --ignore=tests/integration/graph_db/postgres/test_robustness.py
               --ignore=tests/integration/graph_db/postgres/test_role_batch.py
+              --deselect=tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_the_corpus_trail_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_generated_worlds_trail_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
     services:
       redis:
         image: redis:7.4-bookworm
@@ -241,11 +261,12 @@ jobs:
           args+=(-m integration -p no:cacheprovider)
           if [ -n "$GRAPH_K" ]; then args+=(-k "$GRAPH_K"); fi
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-graph.collected" "${args[@]}"
-          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+          python -m pytest "${args[@]}" --timeout=600 --durations=30 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
 
-      # One job is enough: the split is the same in every job. Collecting the folder and the five shards takes a few minutes.
+      # One job is enough: the split is the same in every job. Collecting the folder and every shard takes a few minutes, so it
+      # runs in shard 4, the shortest.
       - name: Every graph case runs in exactly one shard
-        if: ${{ matrix.shard == 3 && matrix.pg == '17' }}
+        if: ${{ matrix.shard == 4 && matrix.pg == '17' }}
         run: python scripts/test_pg_runtime_shards.py --collect
 
       - name: PostgreSQL clusters (on failure)
