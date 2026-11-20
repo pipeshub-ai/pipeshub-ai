@@ -21,7 +21,7 @@ import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.se
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { behindGuard, realGuards } from '../helpers/guarded-chat'
-import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
+import { conversationExtensions, useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
 import { chatArchivesScope, withListScope } from '../helpers/list-scope'
 
 /**
@@ -1402,6 +1402,108 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
   })
 })
 
+/**
+ * Stands in for a views extension that keeps another user's activity from a viewer: no reasoning, tool steps or tool
+ * results, and only the answer text of an activity transcript. A question keeps all of it.
+ */
+const withoutActivity = <T extends object>(view: T, row: object): T => {
+  const m = row as { messageType?: string; parts?: Array<{ type?: string } | null> }
+  if (m.messageType === 'user_query') return view
+  const shown = view as Record<string, unknown>
+  if ('reasoning' in shown) shown.reasoning = []
+  if ('tools' in shown) shown.tools = []
+  if (m.messageType === 'tool_call') shown.content = ''
+  if (m.parts) shown.parts = m.parts.filter((part) => part?.type === 'text')
+  return view
+}
+const useViewsWithoutActivity = () => {
+  useConversationExtensions(undefined)
+  useConversationExtensions({ views: { ...conversationExtensions().views, viewOthersRow: withoutActivity } })
+}
+
+describe('what a viewer sees of another user\'s reasoning and tool steps', () => {
+  afterEach(() => {
+    sinon.restore()
+    useConversationExtensions(undefined)
+  })
+  const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
+  const readableAll = ['rec-ok', 'rec-no', 'att-ok', 'att-no', R_OK, R_NO, 'app-ok-not-checked', 'https://x/ok', SECRET_URL]
+
+  it('by default, all of it: an answer whose every source is readable keeps its reasoning and tool steps', async () => {
+    stubAccess(readableAll)
+    stubConversation([richAnswer()])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.answerHidden).to.equal(undefined)
+    expect(message.reasoning).to.deep.equal([{ content: 'I looked at the pages' }])
+    expect(message.tools).to.deep.equal(richAnswer().tools)
+    expect(message.parts).to.deep.equal(richAnswer().parts)
+  })
+
+  it('what the views extension leaves of an answer whose every source is readable', async () => {
+    useViewsWithoutActivity()
+    stubAccess(readableAll)
+    stubConversation([richAnswer()])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.answerHidden).to.equal(undefined)
+    expect(message.content).to.equal('The answer [1][2]')
+    expect(message.followUpQuestions).to.have.length(1)
+    expect(message.reasoning).to.deep.equal([])
+    expect(message.tools).to.deep.equal([])
+    expect(message.parts).to.deep.equal([{ type: 'text', content: 'visible answer text' }])
+    const wire = JSON.stringify(message)
+    for (const leaked of [TOOL_TEXT, 'thinking prose', 'I looked at the pages']) expect(wire, leaked).to.not.contain(leaked)
+  })
+
+  it('the owner\'s own answer is not the views extension\'s: it keeps reasoning and tool steps', async () => {
+    useViewsWithoutActivity()
+    stubAccess(readableAll)
+    stubConversation([richAnswer()])
+    const message = await fetchConversation(OWNER)
+
+    expect(message.reasoning).to.have.length(1)
+    expect(message.tools).to.deep.equal(richAnswer().tools)
+    expect(message.parts).to.deep.equal(richAnswer().parts)
+  })
+
+  it('another user\'s tool row that stays shown goes through the views extension too', async () => {
+    useViewsWithoutActivity()
+    stubAccess([])
+    stubConversation([
+      { messageType: 'user_query', content: 'question' },
+      { messageType: 'bot_response', content: 'Plain answer', citations: [] },
+      { messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: SECRET }] },
+    ])
+    const r = res()
+    await getChat()(req(VIEWER, { params: { conversationId: SESSION } }), r, sinon.stub())
+    const [, reply, row] = r.json.firstCall.args[0].conversation.messages
+
+    expect(reply.content).to.equal('Plain answer')
+    expect(row.answerHidden).to.equal(undefined)
+    expect(row.content).to.equal('')
+    expect(row.tools).to.deep.equal([])
+    expect(JSON.stringify(r.json.firstCall.args[0])).to.not.contain(SECRET)
+  })
+
+  it('a failed access check hides another user\'s answer even when it names no record', async () => {
+    stubAccess(null)
+    stubConversation([
+      { messageType: 'user_query', content: 'question' },
+      { messageType: 'bot_response', content: `unchecked ${SECRET}`, citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }] },
+      { messageType: 'bot_response', content: `no sources ${SECRET}` },
+    ])
+    const r = res()
+    await getChat()(req(VIEWER, { params: { conversationId: SESSION } }), r, sinon.stub())
+    const [question, first, second] = r.json.firstCall.args[0].conversation.messages
+
+    expect(question.content).to.equal('question')
+    expect(first.answerHidden).to.deep.equal(unconfirmed)
+    expect(second.answerHidden).to.deep.equal(unconfirmed)
+    expect(JSON.stringify(r.json.firstCall.args[0])).to.not.contain(SECRET)
+  })
+})
+
 describe('the detail hands the rows the reader check shaped to the detail extension', () => {
   afterEach(() => {
     sinon.restore()
@@ -1413,10 +1515,12 @@ describe('the detail hands the rows the reader check shaped to the detail extens
     { messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: SECRET }] },
     { messageType: 'bot_response', content: 'Plain answer', citations: [] },
   ]
-  /** An extension that records what it is given and marks every row it gives back. */
+  /** An extension that records what it is given and marks every row it gives back; views keep others' tool output. */
   const recording = () => {
     const seen: Array<{ before: any[]; shown: any[] }> = []
+    useViewsWithoutActivity()
     useConversationExtensions({
+      views: conversationExtensions().views,
       details: {
         decorate: (_req, response) => Promise.resolve(response),
         afterReaderCheck: (before, shown) => {
@@ -1430,7 +1534,7 @@ describe('the detail hands the rows the reader check shaped to the detail extens
   const expectHandedOver = (seen: Array<{ before: any[]; shown: any[] }>, rows: any[]) => {
     expect(seen).to.have.length(1)
     expect(seen[0]!.before.map((m) => m.messageType)).to.deep.equal(['user_query', 'tool_call', 'bot_response'])
-    // What it is handed is the reader check's view: another person's card without its tool output.
+    // What it is handed is the reader check's view, as the views extension shows it: here without the card's tool output.
     expect(seen[0]!.shown[1].tools).to.deep.equal([])
     expect(rows.map((m) => m.marked)).to.deep.equal([true, true, true])
   }

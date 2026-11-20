@@ -65,6 +65,11 @@ export interface ConversationViewExtension {
    * write answers as for a row that is not there. Left out, yes.
    */
   rowShownTo(req: AuthenticatedUserRequest, row: object): Promise<boolean>;
+  /**
+   * Another user's row (`row`, as stored) as a viewer may see it once its record references are checked (`view`):
+   * what else of it stays, such as its reasoning, tool steps and results. Left out, all of it.
+   */
+  viewOthersRow<T extends object>(view: T, row: object): T;
 }
 
 /** What a conversation list adds to, or takes from, its rows. */
@@ -308,6 +313,7 @@ const defaults = (): ConversationExtensions => ({
     viewRunFailures: (conversation) => conversation,
     viewSources: (rows) => Promise.resolve(rows),
     rowShownTo: () => Promise.resolve(true),
+    viewOthersRow: (view) => view,
   },
   lists: {
     select: () => defaultListSelect(schemaExtensions),

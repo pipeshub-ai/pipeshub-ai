@@ -23,6 +23,8 @@
  * Only the answer text of the activity transcript reaches them, never what the
  * model wrote between its steps. In a shared conversation a message belongs to
  * who sent it (`messageActor`): a collaborator keeps the steps of their own turns.
+ * What else of another user's row a viewer is kept from is the conversation
+ * views' `viewOthersRow`, given the row as this view leaves it; by default nothing more.
  */
 import { withheldCitation } from '../../agent-harness/projection/citation-access';
 import { sharedNotFound } from '../../agent-harness/projection/audiences';
@@ -44,6 +46,7 @@ import {
 } from '../../../libs/context/request-context';
 import type { AppConfig } from '../../tokens_manager/config/config';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
+import { conversationExtensions } from '../services/conversation/conversation-extensions';
 import {
   idOf as idOfValue,
   readerView,
@@ -446,6 +449,8 @@ interface RefEntry {
   name?: string;
   webUrl?: string;
   metadata?: { recordId?: string } | Map<string, string>;
+  /** Set on a source a view has already replaced for a reader who can't open it (`REDACTED`). */
+  redacted?: boolean;
 }
 /** An entry of an answer's activity transcript: text, reasoning, a tool call, a delegate's own timeline. */
 interface PartEntry {
@@ -532,6 +537,8 @@ const filterLists = (f: object | undefined): Array<[string, RefEntry[]]> =>
       ? [[k, (f as Record<string, RefEntry[]>)[k]] as [string, RefEntry[]]]
       : [],
   );
+/** A source a view already replaced because the reader can't open it: it names something unreadable, with no id left. */
+const isMarker = (e: RefEntry | null): boolean => e?.redacted === true;
 
 /**
  * A citation the harness's per-viewer check (P1b C-6) already replaced with its placeholder: it names no document,
@@ -722,10 +729,15 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   // citation that cannot be read at all (its row is gone) is unknown, never "record-free".
   const usedBy = (
     m: M,
-  ): { ids: string[]; urls: string[]; unknown: boolean } => {
+  ): { ids: string[]; urls: string[]; unknown: boolean; denied: boolean } => {
     const ids: string[] = [];
     const urls: string[] = [];
     let unknown = false;
+    // Rows can reach this view already shaped for the reader (the detail names a question's sources first), with
+    // what they can't open replaced by a marker: the source is still there, and still unreadable to them.
+    const denied =
+      (m.referenceData ?? []).some(isMarker) ||
+      filterLists(m.appliedFilters).some(([, l]) => l.some(isMarker));
     for (const c of m.citations ?? []) {
       if (c === null) continue;
       // The harness's check shows every page; its address is still judged here, as on any other message.
@@ -756,25 +768,26 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     }
     for (const [, l] of filterLists(m.appliedFilters))
       ids.push(...l.flatMap(refIds));
-    return { ids, urls, unknown };
+    return { ids, urls, unknown, denied };
   };
   // Turns: a question that opens one, up to the next. A turn's rows go with its hidden answer
   // wherever they sit (the live path saves a card before its answer, a regeneration after it).
   const turnOf: number[] = [];
-  const turnDeps: Array<{ ids: string[]; urls: string[] }> = [
-    { ids: [], urls: [] },
+  const turnDeps: Array<{ ids: string[]; urls: string[]; denied: boolean }> = [
+    { ids: [], urls: [], denied: false },
   ];
   let turn = 0;
   for (const m of messages) {
     if (startsTurn(m)) {
       turn += 1;
-      turnDeps[turn] = { ids: [], urls: [] };
+      turnDeps[turn] = { ids: [], urls: [], denied: false };
     }
     if (m.messageType === 'user_query') {
-      const { ids, urls } = usedBy(m);
-      const deps = turnDeps[turn] ?? { ids: [], urls: [] };
+      const { ids, urls, denied } = usedBy(m);
+      const deps = turnDeps[turn] ?? { ids: [], urls: [], denied: false };
       deps.ids.push(...ids);
       deps.urls.push(...urls);
+      deps.denied ||= denied;
       turnDeps[turn] = deps;
     }
     turnOf.push(turn);
@@ -785,6 +798,8 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     const urls = [...own.urls, ...(turnDeps[t]?.urls ?? [])];
     // A settled denial hides the answer whatever else could not be checked.
     if (
+      own.denied ||
+      turnDeps[t]?.denied === true ||
       ids.some((id) => readable.asked.has(`i:${id}`) && !ok(id)) ||
       urls.some((u) => readable.asked.has(`u:${u}`) && !okUrl(u))
     )
@@ -877,8 +892,421 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
           );
       if (m.notFound !== undefined) view.notFound = sharedNotFound(m.notFound);
     }
-    return view as M;
+    return conversationExtensions().views.viewOthersRow(view, m) as M;
   });
+};
+
+/** Rows read per step, and steps allowed, when a turn's start is read back (as a page's are, `redactPageFor`). */
+const TURN_READ_ROWS = 50;
+const TURN_READ_STEPS = 10;
+
+/** Rows of a chat before a place in it, newest first. */
+export type RowsBefore = (
+  sessionId: string,
+  beforeSeq: number,
+  limit: number,
+) => Promise<ViewerMessage[]>;
+
+/** Where rows are, by id: their chat and their place in it. */
+export type PlacesOf = (
+  ids: string[],
+) => Promise<Map<string, { sessionId: string; seq: number }>>;
+
+export interface TurnViewOptions {
+  known?: Readable;
+  fresh?: (message: ViewerMessage) => boolean;
+  /**
+   * The run of the chat, in order, that rows with no place were taken from (a frame's whole list, of which the
+   * reader check passes only some rows on): their turns are read off it. The rows themselves by default.
+   */
+  run?: readonly object[];
+  /** The chat of rows that don't name theirs. */
+  sessionId?: string;
+  /** The store's rows, by default. */
+  rowsBefore?: RowsBefore;
+  /** The store's places of rows that don't carry theirs, by default. */
+  placesOf?: PlacesOf;
+}
+
+const storedRowsBefore =
+  (orgId: string): RowsBefore =>
+  async (sessionId, beforeSeq, limit) =>
+    (
+      await getConversationRepository().listMessages(sessionId, {
+        orgId,
+        maxSeq: beforeSeq - 1,
+        order: 'desc',
+        limit,
+        withCitations: true,
+      })
+    ).map((row) => row.dto as unknown as ViewerMessage);
+
+const storedPlacesOf =
+  (orgId: string): PlacesOf =>
+  async (ids) => {
+    const rows = await getConversationRepository().listMessageLabels(
+      orgId,
+      ids,
+    );
+    const out = new Map<string, { sessionId: string; seq: number }>();
+    for (const [id, row] of rows) {
+      if (typeof row.seq === 'number') {
+        out.set(id, { sessionId: row.sessionId, seq: row.seq });
+      }
+    }
+    return out;
+  };
+
+const seqOf = (m: object): number | undefined => {
+  const seq = (m as { seq?: unknown }).seq;
+  return typeof seq === 'number' && Number.isInteger(seq) ? seq : undefined;
+};
+
+/**
+ * The rows of an answer's turn before it, from the question that opened the turn, oldest first: proven from `given`
+ * when it holds a row at every place down to that question, else read back through the store. Undefined when the
+ * start can't be read; the rows of a chat's first turn when no question comes before the answer.
+ */
+async function turnBefore(
+  seq: number,
+  given: ReadonlyMap<number, ViewerMessage>,
+  read: (beforeSeq: number) => Promise<ViewerMessage[]>,
+): Promise<ViewerMessage[] | undefined> {
+  const proven: ViewerMessage[] = [];
+  for (let at = seq - 1; at >= 0; at -= 1) {
+    const row = given.get(at);
+    // A place `given` has no row for may hold one it left out (a feed page holds only changed rows): read it.
+    if (row === undefined) break;
+    proven.unshift(row);
+    if (startsTurn(row)) return proven;
+    if (at === 0) return proven;
+  }
+  const rows: ViewerMessage[] = [];
+  let before = seq;
+  for (let step = 0; step < TURN_READ_STEPS; step += 1) {
+    const batch = await read(before);
+    for (const row of batch) {
+      const at = seqOf(row);
+      if (at === undefined || at >= before) return undefined;
+      rows.unshift(row);
+      before = at;
+      if (startsTurn(row)) return rows;
+    }
+    if (batch.length < TURN_READ_ROWS) return rows;
+  }
+  return undefined;
+}
+
+/**
+ * The per-record view of `rows` (`redactMessagesFor`), each answer judged with its whole turn: the question that
+ * opened it and any card replies. The per-record view hides an answer when anything its question names is
+ * unreadable, so an answer judged without its question would show what that question's sources hold.
+ *
+ * - Rows that carry their place (`seq`, a feed page) may hold only what changed: each answer's turn is proven from
+ *   the rows when they fill every place down to its question, else read back through the store.
+ * - Rows that don't (a frame: one run of the chat, in order) are judged in order, the run's first turn read back
+ *   through the store when it began before the run.
+ *
+ * An answer whose turn can't be read is hidden as unconfirmed, but for one the run just made (`fresh`), which its own
+ * asker always gets. Rows come back in their order, one for each given row.
+ */
+export const redactWithTurns = async <M extends object>(
+  appConfig: AppConfig | undefined,
+  viewer: Viewer,
+  rows: M[],
+  ownerOf: (message: ViewerMessage) => string | undefined,
+  opts: TurnViewOptions = {},
+): Promise<M[]> => {
+  const msgs = rows as unknown as ViewerMessage[];
+  if (msgs.length === 0) return rows;
+  const readBack = opts.rowsBefore ?? storedRowsBefore(viewer.orgId);
+  const fresh = (m: ViewerMessage): boolean => opts.fresh?.(m) === true;
+  const sessionOf = (m: ViewerMessage): string | undefined =>
+    idOfValue((m as { sessionId?: unknown }).sessionId) ?? opts.sessionId;
+  const redact = (
+    list: ViewerMessage[],
+    leadUnknown = false,
+  ): Promise<ViewerMessage[]> =>
+    redactMessagesFor(appConfig as AppConfig, viewer, list, ownerOf, {
+      known: opts.known,
+      ...(opts.fresh && { fresh: opts.fresh }),
+      ...(leadUnknown && { leadUnknown }),
+    });
+  const placed = msgs.every(
+    (m) => seqOf(m) !== undefined && sessionOf(m) !== undefined,
+  );
+  if (!placed) {
+    const run = (opts.run ?? msgs) as unknown as ViewerMessage[];
+    const judged = await inOrder(run, sessionOf(run[0] as ViewerMessage));
+    const at = new Map(run.map((m, i) => [m, judged[i] ?? m]));
+    // A row the run doesn't hold has no turn to read off it: an answer is unconfirmed, anything else its own.
+    const strays = msgs.filter((m) => !at.has(m));
+    const alone = strays.length === 0 ? [] : await redact(strays, true);
+    const stray = new Map(strays.map((m, i) => [m, alone[i] ?? m]));
+    return msgs.map((m) => (at.get(m) ?? stray.get(m) ?? m) as M);
+  }
+
+  const out = new Map<ViewerMessage, ViewerMessage>();
+  const unknownTurn = new Set<ViewerMessage>();
+  const bySession = new Map<string, ViewerMessage[]>();
+  for (const m of msgs) {
+    const sid = sessionOf(m) as string;
+    bySession.set(sid, [...(bySession.get(sid) ?? []), m]);
+  }
+  // The run the rows were taken from proves their turns where it holds them; the rows themselves by default.
+  const context = ((opts.run ?? msgs) as ViewerMessage[]).filter(
+    (m) => seqOf(m) !== undefined && sessionOf(m) !== undefined,
+  );
+  for (const [sessionId, list] of bySession) {
+    const given = new Map<number, ViewerMessage>();
+    for (const m of context) {
+      if (sessionOf(m) === sessionId) given.set(seqOf(m) as number, m);
+    }
+    for (const m of list) given.set(seqOf(m) as number, m);
+    const extra = new Map<number, ViewerMessage>();
+    const read = (beforeSeq: number): Promise<ViewerMessage[]> =>
+      readBack(sessionId, beforeSeq, TURN_READ_ROWS);
+    const answers = list
+      .filter(isAnswer)
+      .sort((a, b) => (seqOf(b) as number) - (seqOf(a) as number));
+    for (const answer of answers) {
+      let turnRows: ViewerMessage[] | undefined;
+      try {
+        turnRows = await turnBefore(
+          seqOf(answer) as number,
+          new Map([...extra, ...given]),
+          read,
+        );
+      } catch (error) {
+        logger.warn(
+          'Could not read an answer’s turn; the answer stays hidden',
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        turnRows = undefined;
+      }
+      if (turnRows === undefined) {
+        if (!fresh(answer)) unknownTurn.add(answer);
+        continue;
+      }
+      for (const row of turnRows) {
+        const at = seqOf(row);
+        if (at !== undefined && !given.has(at)) extra.set(at, row);
+      }
+    }
+    const ordered = [...given, ...extra]
+      .sort(([a], [b]) => a - b)
+      .map(([, m]) => m);
+    const shown = await redact(ordered);
+    const mine = new Set(list);
+    ordered.forEach((m, i) => {
+      if (mine.has(m)) out.set(m, shown[i] ?? m);
+    });
+  }
+  return msgs.map((m) =>
+    unknownTurn.has(m)
+      ? (hiddenAnswer(m, ANSWER_UNCONFIRMED) as M)
+      : ((out.get(m) ?? m) as M),
+  );
+
+  /** One run of a chat in order: its first turn read back when it began before the run. */
+  async function inOrder(
+    list: ViewerMessage[],
+    sessionId: string | undefined,
+  ): Promise<ViewerMessage[]> {
+    const first = list.findIndex(startsTurn);
+    const lead = first < 0 ? list : list.slice(0, first);
+    // Only an answer the run didn't just make needs the turn it closes; anything else is judged on its own sources.
+    if (!lead.some((m) => isAnswer(m) && !fresh(m))) return redact(list);
+    let before: ViewerMessage[] | undefined;
+    try {
+      before =
+        sessionId === undefined
+          ? undefined
+          : await leadOf(sessionId, list[0] as ViewerMessage);
+    } catch (error) {
+      logger.warn(
+        'Could not read the turn a run begins in; its answers stay hidden',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      before = undefined;
+    }
+    if (before === undefined) {
+      // Unread, its first turn's answers and cards are unconfirmed, as `redactPageFor` leaves a turn it could not
+      // read; an answer the run just made is still its asker's.
+      const shown = await redact(list);
+      const unread = new Set(
+        lead.filter(
+          (m) => (isAnswer(m) && !fresh(m)) || m.messageType === 'tool_call',
+        ),
+      );
+      return shown.map((m, i) => {
+        const row = list[i] as ViewerMessage;
+        return unread.has(row) &&
+          (m as { answerHidden?: unknown }).answerHidden === undefined
+          ? hiddenAnswer(row, ANSWER_UNCONFIRMED)
+          : m;
+      });
+    }
+    const shown = await redact([...before, ...list]);
+    return shown.slice(before.length);
+  }
+
+  /** The rows before `first` back to the question that opened its turn, oldest first; undefined when unreadable. */
+  async function leadOf(
+    sessionId: string,
+    first: ViewerMessage,
+  ): Promise<ViewerMessage[] | undefined> {
+    const id = idOfValue(first._id);
+    if (id === undefined) return undefined;
+    const place = (
+      await (opts.placesOf ?? storedPlacesOf(viewer.orgId))([id])
+    ).get(id);
+    if (place?.sessionId !== sessionId) return undefined;
+    return turnBefore(place.seq, new Map(), (beforeSeq) =>
+      readBack(sessionId, beforeSeq, TURN_READ_ROWS),
+    );
+  }
+};
+
+/**
+ * `rows` of one chat in chat order, with the rest of each turn they cut read through the store. The reader check
+ * finds a card's answer, and an answer's question, among the rows it is given and by their order; a page of changed
+ * rows may hold a card or an answer without the rest of its turn, and holds them in the order they
+ * changed. A page that is the whole chat (`whole`) needs no read; otherwise each group of nearby rows takes one read
+ * of the turns around it. A turn longer than that stays cut, and the check then hides its card from all but its asker.
+ */
+export async function withWholeTurns<M extends object>(
+  rows: M[],
+  sessionId: string,
+  orgId: string,
+  opts: { whole?: boolean; rowsBefore?: RowsBefore } = {},
+): Promise<M[]> {
+  const place = (m: M): number | undefined => seqOf(m);
+  const placed = rows.filter((m) => place(m) !== undefined);
+  const unplaced = rows.filter((m) => place(m) === undefined);
+  const sorted = [...placed].sort(
+    (a, b) => (place(a) as number) - (place(b) as number),
+  );
+  if (opts.whole === true || sorted.length === 0)
+    return [...sorted, ...unplaced];
+  const read = opts.rowsBefore ?? storedRowsBefore(orgId);
+  const bySeq = new Map<number, M>(sorted.map((m) => [place(m) as number, m]));
+  const clusters: Array<[number, number]> = [];
+  for (const m of sorted) {
+    const at = place(m) as number;
+    const last = clusters[clusters.length - 1];
+    if (last && at - last[1] <= TURN_READ_ROWS) last[1] = at;
+    else clusters.push([at, at]);
+  }
+  const extra = new Map<number, M>();
+  for (const [lo, hi] of clusters) {
+    let window: ViewerMessage[];
+    try {
+      // Newest first from past the group: its rows, and a read's worth on each side of it.
+      window = await read(
+        sessionId,
+        hi + TURN_READ_ROWS + 1,
+        hi - lo + 1 + 2 * TURN_READ_ROWS,
+      );
+    } catch (error) {
+      logger.warn('Could not read the turns a page cuts; they stay cut', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+    const near = new Map<number, ViewerMessage>();
+    for (const row of window) {
+      const at = seqOf(row);
+      // As the page leaves removed rows out.
+      if (
+        at !== undefined &&
+        (row as { removedAt?: unknown }).removedAt == null
+      ) {
+        near.set(at, row);
+      }
+    }
+    const all = new Map<number, ViewerMessage>([
+      ...near,
+      ...(bySeq as unknown as Map<number, ViewerMessage>),
+    ]);
+    const seqs = [...all.keys()].sort((a, b) => a - b);
+    // From the question that opened the group's first turn to the one that opens the turn after its last.
+    const start =
+      [...seqs]
+        .reverse()
+        .find((at) => at <= lo && startsTurn(all.get(at) as ViewerMessage)) ??
+      Math.min(...seqs);
+    const end =
+      seqs.find((at) => at > hi && startsTurn(all.get(at) as ViewerMessage)) ??
+      Infinity;
+    for (const [at, row] of near) {
+      if (at >= start && at < end && !bySeq.has(at))
+        extra.set(at, row as unknown as M);
+    }
+  }
+  return [
+    ...[...bySeq, ...extra].sort(([a], [b]) => a - b).map(([, m]) => m),
+    ...unplaced,
+  ];
+}
+
+/**
+ * Whether the per-record view, with its turn, shows the stored answer at `seq` of `sessionId` to `viewer`. A row read
+ * for a label check carries no citations or files, so the answer is read whole; false when it can't be read.
+ */
+export const storedAnswerShown = async (
+  appConfig: AppConfig | undefined,
+  viewer: Viewer,
+  sessionId: string,
+  seq: number,
+  ownerOf: (message: ViewerMessage) => string | undefined,
+  opts: TurnViewOptions = {},
+): Promise<boolean> => {
+  try {
+    const [row] = await (opts.rowsBefore ?? storedRowsBefore(viewer.orgId))(
+      sessionId,
+      seq + 1,
+      1,
+    );
+    if (row === undefined || seqOf(row) !== seq || !isAnswer(row)) return false;
+    return await shownWithTurn(appConfig, viewer, row, ownerOf, {
+      ...opts,
+      sessionId,
+    });
+  } catch (error) {
+    logger.warn(
+      'Could not read an answer for its per-record view; it is not shown',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return false;
+  }
+};
+
+/** Whether the per-record view, with its turn, shows `row` (an answer) to `viewer`. */
+export const shownWithTurn = async (
+  appConfig: AppConfig | undefined,
+  viewer: Viewer,
+  row: ViewerMessage,
+  ownerOf: (message: ViewerMessage) => string | undefined,
+  opts: TurnViewOptions = {},
+): Promise<boolean> => {
+  const [shown] = await redactWithTurns(
+    appConfig,
+    viewer,
+    [row],
+    ownerOf,
+    opts,
+  );
+  return (
+    shown !== undefined &&
+    (shown as { answerHidden?: unknown }).answerHidden === undefined
+  );
 };
 
 /** The turn-start check is on the way to the first token: it gives up sooner and fails closed. */
@@ -912,13 +1340,15 @@ export const historyForModel = async <M extends ViewerMessage>(
  * judged by its label for them (`readerView`), another person's steps left out, and
  * the per-record view over the rest, with one access request for both. `freshIds`
  * are the answers the run just produced: a check that fails never hides those from
- * their own asker.
+ * their own asker. `identity` is the inbound request's, which an agent named in a
+ * label is checked as; without it that rule stays unchecked, as for a read with no
+ * request behind it.
  */
 export const redactConversationFor = async <C extends { messages?: unknown }>(
   appConfig: AppConfig,
   viewer: Viewer,
   conversation: C,
-  opts: { known?: Readable; freshIds?: unknown[] } = {},
+  opts: { known?: Readable; freshIds?: unknown[]; identity?: unknown } = {},
 ): Promise<C> => {
   if (!Array.isArray(conversation.messages)) return conversation;
   const fresh = new Set((opts.freshIds ?? []).map(String));
@@ -928,8 +1358,17 @@ export const redactConversationFor = async <C extends { messages?: unknown }>(
   // A message with no sender is the initiator's (as a fetch reads it), never the viewer's by default.
   const ownerId =
     idOfValue(chat.initiator) ?? idOfValue(chat.userId) ?? viewer.userId;
+  // A frame's rows carry neither their chat nor their place: the chat is the conversation's.
+  const sessionId =
+    idOfValue((conversation as { _id?: unknown })._id) ??
+    idOfValue((conversation as { id?: unknown }).id) ??
+    undefined;
   const { rows } = await readerView(
-    { ...viewer, member: true },
+    {
+      ...viewer,
+      member: true,
+      ...(opts.identity !== undefined && { identity: opts.identity }),
+    },
     chat,
     conversation.messages as object[],
     {
@@ -938,23 +1377,25 @@ export const redactConversationFor = async <C extends { messages?: unknown }>(
       ownerId,
       ...(opts.known && { known: opts.known }),
       ...(opts.freshIds && { freshIds: opts.freshIds }),
-      // The answers no label decided alone pass the per-record view; questions, notes and cards are shaped for the
-      // reader where the frame is built.
+      // The answers no label decided alone pass the per-record view, each with its turn (its question's sources
+      // count); questions, notes and cards are shaped for the reader where the frame is built.
       perRecordFor: unlabelledAnswers,
       perRecordView: async <R extends object>(list: R[], known: Readable) =>
-        (await redactMessagesFor(
+        redactWithTurns(
           appConfig,
           viewer,
-          list as unknown as ViewerMessage[],
+          list,
           // Whose turn a row is: who wrote or asked for it, else its sender, else the owner's.
           (m) => rowAuthorOf(m as ReaderRow, messageActor(m, ownerId)),
           {
             known,
+            run: conversation.messages as object[],
+            ...(sessionId !== undefined && { sessionId }),
             fresh: (m) =>
               m._id !== undefined &&
               fresh.has((m._id as { toString(): string }).toString()),
           },
-        )) as unknown as R[],
+        ),
     },
   );
   return { ...conversation, messages: rows };
