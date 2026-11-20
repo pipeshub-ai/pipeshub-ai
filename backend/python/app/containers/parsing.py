@@ -17,6 +17,7 @@ from dotenv import find_dotenv, load_dotenv  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
+from app.edition_services import request_scoped_config_service
 from app.utils.logger import create_logger
 
 load_dotenv(find_dotenv(usecwd=True), override=True)
@@ -27,9 +28,12 @@ class ParsingAppContainer(BaseAppContainer):
 
     logger = providers.Singleton(create_logger, "parsing_service")
     key_value_store = providers.Singleton(EncryptedKeyValueStore, logger=logger)
-    config_service = providers.Singleton(
+    raw_config_service = providers.Singleton(
         ConfigurationService, logger=logger, key_value_store=key_value_store
     )
+    # The parsers read an organisation's AI models through it, so it answers for
+    # the organisation of the request being parsed (edition_services).
+    config_service = providers.Singleton(request_scoped_config_service, raw_config_service)
 
     # Wiring configuration — modules that use @inject / Provide[]
     wiring_config = containers.WiringConfiguration(modules=["app.parsing_main"])

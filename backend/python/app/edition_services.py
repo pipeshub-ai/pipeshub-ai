@@ -99,6 +99,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.config.configuration_service import ConfigurationService
     from app.services.messaging.consumer_concurrency import AdmissionBacklog
     from app.services.model_identity.forwarders.registry import ForwarderRegistry
     from app.services.model_identity.groups import GroupMembershipResolver
@@ -113,6 +114,11 @@ def register_extra_toolsets(registry: "ToolsetRegistry") -> None:
 def configure_app(app: "FastAPI", service: str) -> None:
     """Edition setup on a freshly built FastAPI app. `service` names the process. OSS: no-op."""
     pass
+
+
+def request_scoped_config_service(config_service: "ConfigurationService") -> "ConfigurationService":
+    """What the handlers of a service without its own edition container read config through. OSS: the service itself."""
+    return config_service
 
 
 def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, config: dict) -> "BaseChatModel":
