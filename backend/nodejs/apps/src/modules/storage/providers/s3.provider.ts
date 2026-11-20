@@ -826,9 +826,11 @@ class AmazonS3Adapter implements StorageServiceInterface {
   }
 
   /**
-   * What this bucket honours, asked of the store itself once per (endpoint, bucket) and process. Only a definitive
-   * answer is remembered; a timeout or a 5xx is not (this call falls back, the next asks again). See
-   * `probeConditionalSupport`.
+   * What this bucket honours, asked of the store itself per (endpoint, bucket) and process, never an error and never a
+   * wait without end. A definitive answer about the store is kept for the life of the process. A probe that is denied
+   * (a 403 on its prefix) is kept as "not supported" for `probeDeniedTtlMs`, and one that could not tell (a timeout, a
+   * 5xx, after its bounded retries) for `probeUnsureTtlMs`; the probe is then asked again. Meanwhile the sweep and the
+   * purge take their safe re-list path. See `probeConditionalSupport`.
    */
   async conditionalCapabilities(): Promise<ConditionalCapabilities> {
     const memoKey = `${process.env.AWS_ENDPOINT_URL_S3 ?? ''}|${this.bucketName}`;
@@ -1096,10 +1098,11 @@ class AmazonS3Adapter implements StorageServiceInterface {
       // A 400 that is S3's own transient answer (RequestTimeout and its kin, which the SDK has already retried) says
       // nothing about the store's conditions.
       if (isTransientCode((error as { code?: string }).code)) return null;
-      // Only a refusal that says "the conditional form is not supported" is an answer (501, or a 400 whose code names the
-      // unsupported feature). A 403 (a denied probe prefix, a refreshing credential) and a 400 with any other code
-      // (RequestTimeout among them) are not: they are asked again, and a sweep in that window fails and is retried instead
-      // of deleting without a version. The warning names what to allow.
+      // Only a refusal that says "the conditional form is not supported" (501, or a 400 whose code names the unsupported
+      // feature) is a definitive answer about the store, kept for the process. A 403 is handled just below: it is kept
+      // as "not supported" for `probeDeniedTtlMs`. A 400 with any other code (RequestTimeout among them) returns null:
+      // the caller retries within its bound and then keeps "not supported" for `probeUnsureTtlMs`. No path here makes a
+      // sweep or a purge fail or wait; they take the re-list path meanwhile.
       if (
         httpStatus === 501 ||
         (httpStatus === 400 &&
