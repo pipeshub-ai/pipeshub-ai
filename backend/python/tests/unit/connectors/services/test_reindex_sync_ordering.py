@@ -14,12 +14,14 @@ import pytest
 from app.config.constants.arangodb import AppStatus
 from app.connectors.core.base.connector.connector_service import connector_sync_lock
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    USER_LINK_MARK_TTL_MS,
     DataSourceEntitiesProcessor,
     ReindexSuperseded,
     unless_synced_since,
 )
 from app.connectors.core.sync.sync_runner import _run_sync_alone
 from app.connectors.services.event_service import EventService
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -64,9 +66,11 @@ async def test_a_sync_running_when_the_reindex_began_refuses_every_write(app: di
     assert stamp.tripped
 
 
-async def test_a_user_link_pass_in_progress_when_the_reindex_began_refuses_every_write() -> None:
-    """Its end stamp may never land (a failed write, a crash): what the reindex read must not match the store afterwards."""
-    in_progress = {**IDLE, "lastSyncStartedAtTimestamp": 9, "userLinkStartedAtTimestamp": 9}
+@pytest.mark.parametrize("sync_started_since", [False, True])
+async def test_a_user_link_pass_in_progress_when_the_reindex_began_refuses_every_write(sync_started_since: bool) -> None:
+    """The pass may run in another process, and a sync there may start (and end) after the pass did: its mark still counts."""
+    now = get_epoch_timestamp_in_ms()
+    in_progress = {**IDLE, "lastSyncStartedAtTimestamp": now + int(sync_started_since), "userLinkStartedAtTimestamp": now}
     processor, tx, _ = _processor(unchanged=True)
     async with unless_synced_since(AsyncMock(get_document=AsyncMock(return_value=in_progress)), "c9") as stamp:
         with pytest.raises(ReindexSuperseded):
@@ -75,11 +79,11 @@ async def test_a_user_link_pass_in_progress_when_the_reindex_began_refuses_every
     assert stamp.tripped and stamp.expected is None
 
 
-async def test_a_user_link_mark_a_later_sync_start_overtook_is_not_a_pass_in_progress() -> None:
-    """A pass that never wrote its end leaves its mark; the next sync's start time puts it behind, and reindexes write again."""
-    overtaken = {**IDLE, "userLinkStartedAtTimestamp": 4}
+async def test_a_user_link_mark_older_than_its_ttl_is_not_a_pass_in_progress() -> None:
+    """A running pass rewrites its mark; one that ended or crashed leaves it, and reindexes write again once it is that old."""
+    stale = {**IDLE, "userLinkStartedAtTimestamp": get_epoch_timestamp_in_ms() - USER_LINK_MARK_TTL_MS}
     processor, tx, _ = _processor(unchanged=True)
-    async with unless_synced_since(AsyncMock(get_document=AsyncMock(return_value=overtaken)), "c10") as stamp:
+    async with unless_synced_since(AsyncMock(get_document=AsyncMock(return_value=stale)), "c10") as stamp:
         await _write(processor)
     tx.lock_app_if_unchanged.assert_awaited_once_with("c10", STAMP)
     assert not stamp.tripped

@@ -21,6 +21,7 @@ from app.connectors.core.base.connector.connector_service import (
     note_sync_started,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.data_source_entities_processor import USER_LINK_MARK_TTL_MS
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -582,22 +583,26 @@ class EntityEventService(BaseEventService):
                     return True
                 # A reindex sees this pass as it sees a sync (`unless_synced_since`), since the pass writes access too: it moves a
                 # stand-in group's grants onto the user it stood for, which a reindex that read the source earlier would take back.
-                # The start moves the start time (seen by a reindex that began before) and sets the mark a reindex that begins
-                # meanwhile treats as a running sync; only the end write clears it. A pass whose start is not recorded does not run.
-                # shortcut: two passes of one connector in separate processes share the mark, and the first to end clears it for
-                # both; key the mark by pass if user-add events for one connector are ever handled in parallel across processes.
+                # The start moves the start time (seen by a reindex that began before). The mark, rewritten while the pass runs, is
+                # what a reindex that begins meanwhile, in any process, takes for a running sync. It is not cleared at the end: a
+                # pass in another process may share it, so it goes stale instead. A pass whose mark is not written does not run on.
+                async def mark(*keys: str) -> None:
+                    now = get_epoch_timestamp_in_ms()
+                    ensure_written(await self.graph_provider.batch_upsert_nodes(
+                        [{"id": connector_id, **dict.fromkeys(keys, now)}], CollectionNames.APPS.value,
+                    ), "the user-link pass mark")
+
                 note_sync_started(connector_id)
-                started = get_epoch_timestamp_in_ms()
-                await self.graph_provider.batch_upsert_nodes([{
-                    "id": connector_id, ConnectorStateKeys.LAST_SYNC_STARTED_AT: started, ConnectorStateKeys.USER_LINK_STARTED_AT: started,
-                }], CollectionNames.APPS.value)
+                await mark(ConnectorStateKeys.LAST_SYNC_STARTED_AT, ConnectorStateKeys.USER_LINK_STARTED_AT)
+                link = org_context.spawn_in_request(connector.link_new_users(), name="connector_link_users")
                 try:
-                    await connector.link_new_users()
+                    while not (await asyncio.wait({link}, timeout=USER_LINK_MARK_TTL_MS / 4000))[0]:
+                        await mark(ConnectorStateKeys.USER_LINK_STARTED_AT)
+                    await link
                 finally:
-                    await self.graph_provider.batch_upsert_nodes([{
-                        "id": connector_id, ConnectorStateKeys.LAST_SYNC_STARTED_AT: max(get_epoch_timestamp_in_ms(), started),
-                        ConnectorStateKeys.USER_LINK_STARTED_AT: None,
-                    }], CollectionNames.APPS.value)
+                    if not link.done():
+                        link.cancel()
+                        await asyncio.gather(link, return_exceptions=True)
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="link_users")
         return True

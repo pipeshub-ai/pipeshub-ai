@@ -1925,38 +1925,72 @@ class TestUserAddedConnectorLink:
         c.link_new_users.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_pass_moves_the_sync_start_time_before_and_after_it(self, no_debounce: None) -> None:
-        """A reindex sees a sync by its start time, and a pass writes access too: it moves a pseudo-group's grants onto its user."""
+    async def test_a_pass_moves_the_sync_start_time_and_rewrites_its_mark_until_it_ends(self, no_debounce: None) -> None:
+        """A reindex sees a sync by its start time, and a pass writes access too: it moves a pseudo-group's grants onto its user.
+        A reindex in another process sees the pass by its mark, which it rewrites while it runs and never clears: an
+        overlapping pass in a third process may share it."""
         events: list[str] = []
-        c = _connector(link=AsyncMock(side_effect=lambda: events.append("link")))
+
+        async def link() -> None:
+            await asyncio.sleep(0.05)
+
+        c = _connector(link=link)
         svc = _link_service({"c1": c})
         written: list[dict] = []
         svc.graph_provider.batch_upsert_nodes = AsyncMock(
             side_effect=lambda nodes, collection: (events.append(collection), written.append(dict(nodes[0]))),
         )
         before = syncs_started("c1")
-        assert await svc._link_connector("c1") is True
-        assert events == [CollectionNames.APPS.value, "link", CollectionNames.APPS.value]
-        start, end = written
-        # The mark says a pass is running; only the end write clears it, so a reindex never matches a pass that did not end.
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        start, *refreshes = written
         assert start["userLinkStartedAtTimestamp"] == start["lastSyncStartedAtTimestamp"]
-        assert end["userLinkStartedAtTimestamp"] is None and end["lastSyncStartedAtTimestamp"] >= start["lastSyncStartedAtTimestamp"]
+        assert refreshes and all(set(r) == {"id", "userLinkStartedAtTimestamp"} for r in refreshes)
+        assert all(r["userLinkStartedAtTimestamp"] >= start["userLinkStartedAtTimestamp"] for r in refreshes)
+        assert set(events) == {CollectionNames.APPS.value}
         assert syncs_started("c1") == before + 1      # a reindex in this process sees it even when the store refuses both writes
 
     @pytest.mark.asyncio
-    async def test_a_pass_whose_start_is_not_recorded_does_not_run(self, no_debounce: None) -> None:
+    @pytest.mark.parametrize("answer", [RuntimeError("rejected"), False, None])
+    async def test_a_pass_whose_start_is_not_recorded_does_not_run(self, no_debounce: None, answer: object) -> None:
+        """A store may refuse by raising or by answering False (the interface allows both)."""
         c = _connector()
         svc = _link_service({"c1": c})
-        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("rejected"))
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(
+            side_effect=answer if isinstance(answer, Exception) else None, return_value=answer,
+        )
         assert await svc._link_connector("c1") is True
         c.link_new_users.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_pass_that_fails_partway_still_moves_the_start_time_after_it(self, no_debounce: None) -> None:
+    @pytest.mark.parametrize("answer", [RuntimeError("rejected"), False])
+    async def test_a_pass_whose_mark_cannot_be_rewritten_stops(self, no_debounce: None, answer: object) -> None:
+        """Past its TTL a reindex in another process no longer sees the mark, so the pass must not run on unseen."""
+        stopped = asyncio.Event()
+
+        async def link() -> None:
+            try:
+                await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                stopped.set()
+                raise
+
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=[True, answer])
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        assert loop.time() - began < 1      # stopped at the refused rewrite, 10 ms in
+        assert stopped.is_set() and svc.graph_provider.batch_upsert_nodes.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_pass_that_fails_partway_writes_nothing_after_it(self, no_debounce: None) -> None:
         c = _connector(link=AsyncMock(side_effect=RuntimeError("source down")))
         svc = _link_service({"c1": c})
         assert await svc._link_connector("c1") is True
-        assert svc.graph_provider.batch_upsert_nodes.await_count == 2
+        assert svc.graph_provider.batch_upsert_nodes.await_count == 1      # its mark goes stale
 
     @pytest.mark.asyncio
     async def test_a_sync_admitted_during_a_pass_runs_after_it(self, no_debounce: None) -> None:

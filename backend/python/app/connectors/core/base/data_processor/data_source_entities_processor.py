@@ -186,6 +186,9 @@ class SyncStamp:
             raise ReindexSuperseded(f"a sync of connector {self.connector_id} ran while this reindex read the source")
 
 
+#: How long a user-link pass's mark counts as a running pass (see `unless_synced_since`); the pass rewrites it 4 times as often.
+USER_LINK_MARK_TTL_MS = 120_000
+
 _REINDEX_STAMP: contextvars.ContextVar[SyncStamp | None] = contextvars.ContextVar("reindex_sync_stamp", default=None)
 
 
@@ -205,14 +208,16 @@ async def unless_synced_since(graph_provider: IGraphDBProvider, connector_id: st
     started_here = syncs_started(connector_id)
     # A failed read is an error, not a sign that a sync ran.
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
-    # A user-link pass marks its start and clears the mark with its end write; a mark left by a pass whose end was never
-    # written (a refused write, a crash) stops counting once a later sync's start time passes it.
+    # A running user-link pass, in any process, rewrites its mark every USER_LINK_MARK_TTL_MS / 4; a mark that is not older
+    # than the TTL may be one, whatever ran since. A pass that ended or crashed stops counting once its mark is that old.
+    # shortcut: the mark is the pass's clock and the age this process's; clocks more than 3/4 of the TTL apart can hide a
+    # running pass. Stamp the mark with the store's own time if hosts can drift that far.
     link_mark = app.get(ConnectorStateKeys.USER_LINK_STARTED_AT) if app else None
     running = (
         not app
         or connector_sync_lock(connector_id).locked()
         or app.get("status") in (AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value)
-        or (link_mark is not None and link_mark >= (app.get(ConnectorStateKeys.LAST_SYNC_STARTED_AT) or 0))
+        or (link_mark is not None and get_epoch_timestamp_in_ms() - link_mark < USER_LINK_MARK_TTL_MS)
     )
     # Not the status: a sync queued for a slot has not read the source, and its start moves the start time.
     stamp = SyncStamp(connector_id, None if running else {

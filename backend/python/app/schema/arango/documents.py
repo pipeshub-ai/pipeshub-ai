@@ -205,7 +205,7 @@ app_schema = {
             # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
             "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
-            # app.services.messaging.kafka.handlers.entity: a user-link pass's start time, cleared when it ends.
+            # app.services.messaging.kafka.handlers.entity: rewritten while a user-link pass runs, left to go stale after it.
             "userLinkStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncOutcome": {"type": ["string", "null"]},
             "lastSyncSummary": {"type": ["string", "null"]},
