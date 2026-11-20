@@ -56,6 +56,7 @@ class Node:
     placeholder: bool = False
     active: bool = True  # apps only: App.isActive; the gate does not read it
     hide_children: bool = False  # groups only: hideChildren; a display flag, not read for access
+    access_only: bool = False  # groups only: accessOnly; never a listing row, its children are listed under their other parents
     model: str | None = None  # permissionModel: APP_LEVEL, RECORD_GROUP_LEVEL
     app_type: str = "DRIVE"  # apps only; KB opens everything
     origin: str | None = "CONNECTOR"  # records only; None means absent

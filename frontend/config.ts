@@ -6,6 +6,7 @@ export {
   logoutAndRedirect,
   logoutFromWorkspaceMenu,
   switchToSignedInWorkspace,
+  readStoredRefreshToken,
   ELECTRON_SERVER_URL_NAVIGATION_EVENT,
 } from '@/lib/store/auth-store';
 export { useInitializeUserProfile } from '@/lib/hooks/use-initialize-user-profile';
@@ -33,6 +34,8 @@ export { OAuthAppSelector } from '@/app/(main)/workspace/connectors/components/a
 // Users page header — Requests + Blocked Users (Admin Org) between search and Invite
 export { UsersPageHeaderActions } from '@/app/(main)/workspace/users/components/users-page-header-actions';
 export { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@/app/(main)/workspace/mcp-servers/team/components/mcp-inheritance-guards';
+// Who may use an organization MCP server (OSS: everyone, so nothing to manage)
+export { McpManageAccess } from '@/app/(main)/workspace/mcp-servers/team/components/mcp-manage-access';
 export { useUserPermission } from '@/lib/hooks/use-user-permission';
 export { PermissionLockIcon } from '@/app/components/ui/permission-lock-icon';
 export { PermissionDeniedDialog, usePermissionDeniedDialog } from '@/app/components/ui/permission-denied-dialog';

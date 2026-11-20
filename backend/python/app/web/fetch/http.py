@@ -102,9 +102,10 @@ async def fetch_public(
     deadline: Deadline,
     *,
     allow_hop: HopCheck | None = None,
+    max_size_mb: float = MAX_PAGE_MB,
 ) -> FetchedBody:
-    """GET ``url``, following redirects to public addresses that ``allow_hop`` also accepts.
-    Raises a ``WebError``."""
+    """GET ``url``, following redirects to public addresses that ``allow_hop`` also accepts, and
+    refusing a body past ``max_size_mb``. Raises a ``WebError``."""
     if deadline.expired:
         raise TimedOut(f"No time left to fetch {redact_url(url)}")
     try:
@@ -117,7 +118,7 @@ async def fetch_public(
                     logger,
                     timeout=max(1, math.ceil(deadline.remaining())),
                     max_retries_per_strategy=1,
-                    max_size_mb=MAX_PAGE_MB,
+                    max_size_mb=max_size_mb,
                     # A 429 is answered at once as rate_limited; waiting it out is the crawl's way,
                     # and would spend the whole fetch deadline.
                     rate_limit_wait_s=0,

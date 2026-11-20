@@ -99,9 +99,9 @@ def _soft(default: Any, *, flag: bool = False) -> Any:  # noqa: ANN401
             except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch, SchemaValidationError):    # a rejected payload is never a default
                 raise
             except Exception as e:
-                self.logger.error("%s failed: %s", fn.__name__, e)
-                if flag and k.get("raise_on_error"):
+                if flag and k.get("raise_on_error"):  # raised before logging: the caller that handles it logs it once
                     raise
+                self.logger.error("%s failed: %s", fn.__name__, e)
                 return default() if callable(default) else default
         return wrapper
     return deco
@@ -296,8 +296,8 @@ class IdentityMixin(PgBase):
             WHERE org_id = $1 AND coll = 'organizations' AND id = $2 AND coalesce((doc->>'isExternal')::boolean, false) = $3 LIMIT 1""",
                                                    current_org_id(), org_id, is_external), transaction)
 
-    @_soft(list)
-    async def get_users(self, org_id: str, *, active: bool = True) -> list[dict]:
+    @_soft(list, flag=True)
+    async def get_users(self, org_id: str, *, active: bool = True, raise_on_error: bool = False) -> list[dict]:
         return await self._org_users(None, active=active) if self._mine(org_id) else []
 
     async def _org_users(self, tid: str | None, *, active: bool) -> list[dict]:

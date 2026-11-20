@@ -63,6 +63,7 @@ export async function importOAuthAppDocs(
       terms_of_service_url: str(d.termsOfServiceUrl),
       is_confidential: d.isConfidential ?? true,
       is_dynamic: d.isDynamic ?? false,
+      owner_format: typeof d.ownerFormat === 'number' ? d.ownerFormat : null,
       access_token_lifetime:
         typeof d.accessTokenLifetime === 'number'
           ? d.accessTokenLifetime

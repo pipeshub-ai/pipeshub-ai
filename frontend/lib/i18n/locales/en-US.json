@@ -1820,7 +1820,6 @@
       "subtitle": "Create and manage groups to control access and permissions",
       "enterpriseTitle": "Group permissions are available in the Enterprise Edition",
       "enterpriseMessage": "Upgrade to the Enterprise Edition to use group permissions.",
-      "enterpriseContact": "Contact us",
       "createGroup": "Create group",
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
@@ -1901,6 +1900,21 @@
         "saveError": "Failed to save permissions",
         "loadError": "Failed to load permissions",
         "empty": "No permissions are defined yet."
+      }
+    },
+    "enterprise": {
+      "contact": "Talk to Sales",
+      "scim": {
+        "heading": "SCIM provisioning is available in the Enterprise Edition",
+        "message": "Let Okta or Microsoft Entra ID add, update and switch off people in your workspace automatically."
+      },
+      "auditLogs": {
+        "heading": "Audit logs are available in the Enterprise Edition",
+        "message": "See who did what in your workspace, and when."
+      },
+      "usage": {
+        "heading": "Usage, credits and billing are available in the Enterprise Edition",
+        "message": "See what AI costs by person, agent, connector and model, manage credits, your plan and invoices, and set spending alerts in Credit settings."
       }
     },
     "teams": {
@@ -2477,6 +2491,8 @@
       "sections": {
         "overview": "Overview",
         "workspace": "Workspace",
+        "usageAndCredits": "Usage & credits",
+        "security": "Security",
         "personal": "Personal",
         "people": "People",
         "developerSettings": "Developer settings"
@@ -2506,6 +2522,9 @@
         "archivedChats": "Archived chats",
         "users": "Users",
         "groups": "Groups",
+        "scim": "SCIM",
+        "auditLogs": "Audit logs",
+        "usage": "Usage & credits",
         "teams": "Teams",
         "webSearch": "Web search",
         "tenants": "Tenants",
@@ -2792,7 +2811,37 @@
       "tools": {
         "title": "Tools",
         "subtitle": "Turn off individual tools. A tool that is off is not offered to MCP clients, and calls to it are refused.",
-        "writes": "Writes"
+        "writes": "Writes",
+        "descriptions": {
+          "pipeshub_sources": "Lists the connectors and collections the user can read, and the AI models set up for the workspace. Clients use it to choose where to search and which model to chat with.",
+          "pipeshub_search": "Searches indexed documents by meaning across the connectors and collections the user can read, and returns the matching passages with their records.",
+          "pipeshub_get_record_content": "Reads the full text of one record. It also finds a record from a URL, issue key or external ID, browses what sits under a folder, space or epic, and reads a whole Slack thread.",
+          "pipeshub_download_record": "Downloads the original file stored for a record, optionally converted to PDF.",
+          "pipeshub_directory": "Looks up the signed-in user, the workspace's users and groups, and the teams the user belongs to. It changes nothing.",
+          "pipeshub_create_collection": "Creates a new, empty collection owned by the user, ready for uploads.",
+          "pipeshub_upload": "Uploads documents into a collection so they are indexed and become searchable. Up to 20 documents and about 3 MB per call.",
+          "pipeshub_indexing_status": "Reports how far a collection's indexing has got, and which documents failed and why.",
+          "pipeshub_connect_source": "Returns a link the user opens in a browser to connect a source such as Slack, Google Drive or Jira. The tool itself connects nothing.",
+          "pipeshub_add_web_source": "Adds a website as the user's own Web connector. It crawls from a start page, follows its links, and crawls again every day. It keeps 100 pages unless the client asks for more, up to 10,000. An OAuth app or access token also needs the connector:write and connector:sync scopes.",
+          "pipeshub_chat": "Asks PipesHub's own assistant, or one of the workspace's agents, and returns its answer with citations. While write tools are off it does not run connected actions. Turning it off also turns off the agents list.",
+          "pipeshub_agents": "Lists the workspace's agents with their tools and knowledge, so a client can chat with one. It is offered only while Chat with PipesHub is on.",
+          "pipeshub_show_citations": "Shows the user the sources behind an answer, numbered [1], [2] and so on, with a preview of each document. Up to 30 passages per call. It is offered only to clients that can display the citation viewer, such as Claude.",
+          "pipeshub_preview_record": "Used only by the citation viewer, never by the AI model. It loads a record's stored file in pieces so the viewer can show the document. While it is off, the viewer cannot load document previews.",
+          "pipeshub_code_repos": "Lists the indexed code repositories the user can read. The code tools are offered only to users who have indexed code, and an OAuth app or access token also needs the code:read scope.",
+          "pipeshub_code_symbols": "Shows what a directory or file in an indexed repository holds: subdirectories and files, or the symbols a file defines.",
+          "pipeshub_code_neighbours": "Shows what surrounds a file or symbol in the code graph: its callers, the code it calls, its imports and inheritance.",
+          "pipeshub_code_read": "Reads indexed source code: one symbol, a line range or a whole file. It reads the indexed copy, which can be behind the repository.",
+          "pipeshub_code_path": "Shows how one symbol reaches another in a repository, hop by hop.",
+          "pipeshub_code_search": "Finds code by an exact name, a string or a regular expression.",
+          "pipeshub_code_semantic_search": "Finds the code behind a feature or behaviour from a plain-language description, when its names are not known.",
+          "pipeshub_code_outline": "Lists a file's classes, functions and methods with their signatures and line ranges, without the bodies.",
+          "pipeshub_code_impact": "Shows what depends on a symbol: everything that calls, imports or builds on it, with the tests that reach it. It answers who calls this and what breaks if it changes.",
+          "pipeshub_code_impact_of_diff": "Takes a unified diff, such as git diff output or the diff of a pull request, and shows the symbols it changes, the files and tests that reach them, and the callers no test covers.",
+          "pipeshub_code_history": "Lists the indexed pull requests that changed a file, with author, reviewers, who merged it and the tickets it names.",
+          "pipeshub_code_entry_points": "Lists where control enters a repository, such as routes, command-line tools, jobs and hooks. A starting point for reading unfamiliar code.",
+          "pipeshub_entities": "Finds the people, teams, topics, projects, folders, customers and document titles in the workspace's knowledge graph, lists the records connected to one of them, and the people, companies or products mentioned alongside it. Finding and listing are offered once entities have been indexed; the mentioned-alongside list also needs named-entity extraction. An OAuth app or access token also needs the semantic:read or semantic:write scope.",
+          "pipeshub_find_records": "Lists records by who they belong to or what they mention rather than by their words: the records a person is assigned, created, wrote or owns, records that mention an amount, date, quantity or percentage, and passages inside the records that name given people, companies or products. Amounts and dates need named-entity extraction, and the passages are offered only where the deployment also turns on entity search. An OAuth app or access token also needs the semantic:read or semantic:write scope."
+        }
       },
       "appliesNote": "Changes apply to new MCP requests within a few seconds.",
       "loadError": "MCP access settings could not be loaded. Reload the page to try again.",
@@ -2907,8 +2956,7 @@
       },
       "enterpriseSso": {
         "title": "SAML single sign-on and OpenID Connect",
-        "description": "Sign people in through Okta, OneLogin or any other SAML 2.0 or OpenID Connect identity provider.",
-        "contactSales": "To purchase, email {{email}}"
+        "description": "Sign people in through Okta, OneLogin or any other SAML 2.0 or OpenID Connect identity provider."
       }
     },
     "connectors": {
@@ -3199,7 +3247,8 @@
             "max_pages": "Reached the maximum pages limit",
             "time_limit": "Reached its time limit; the next sync carries on",
             "stalled": "The site stopped answering; the next sync carries on",
-            "rate_limited": "The site kept asking for fewer requests; the next sync carries on"
+            "rate_limited": "The site kept asking for fewer requests; the next sync carries on",
+            "start_not_recorded": "The sync could not save its start, so it did not run; the next sync tries again"
           },
           "pagesSaved": "{{count}} pages saved",
           "failed": "{{count}} pages failed",
@@ -3656,6 +3705,95 @@
           "other": "Something about this connector's permissions needs a person to look at it.",
           "unreadable": "The list of folders waiting to update can't be read. Ask whoever runs PipesHub to rebuild this connector's permission index. Search checks each result meanwhile."
         }
+      },
+      "userAccess": {
+        "connect": "Connect",
+        "reconnect": "Reconnect",
+        "connected": "Connected",
+        "connectedAs": "Connected as {{account}}",
+        "connectDialog": {
+          "title": "Connect your account to {{name}}",
+          "description": "Paste a personal access token from your own {{source}} account. PipesHub will show you only the pages your account can open.",
+          "howTo": "How to create a personal access token",
+          "tokenLabel": "Personal access token",
+          "submitting": "Connecting…",
+          "errorFallback": "Your account could not be connected. Try again.",
+          "signInHint": "{{source}} lists only pages you have full access to. Sub-pages of a page you pick are included, also new ones. To add more pages later, sign in again.",
+          "signingIn": "Waiting for {{source}}…",
+          "signInFailed": "Sign-in did not complete. Try again.",
+          "popupBlocked": "Your browser blocked the sign-in window. Allow pop-ups for this site and try again."
+        },
+        "admin": {
+          "title": "Connected users",
+          "description": "This connector shows each person only what their own account can open. People who have not connected see nothing from it.",
+          "remove": "Remove",
+          "removeTitle": "Remove the connection of {{email}}?",
+          "removeMessage": "They stop seeing results from this connector until they connect again.",
+          "removing": "Removing…",
+          "removed": "Connection removed",
+          "status": {
+            "connected": "Connected",
+            "needs_reconnect": "Needs to reconnect",
+            "invited": "Invited",
+            "not_invited": "Not invited",
+            "opted_out": "Asked not to be reminded",
+            "no_account": "No PipesHub account"
+          },
+          "noAccountHint": "Invite them to PipesHub first",
+          "invite": "Invite",
+          "remind": "Remind",
+          "sent_one": "Sent to {{count}} person",
+          "sent_other": "Sent to {{count}} people",
+          "notEmailed_one": "Email could not be sent to {{count}} person; they still got an in-app notification.",
+          "notEmailed_other": "Email could not be sent to {{count}} people; they still got an in-app notification.",
+          "lastSent": "Last sent {{time}}",
+          "connectedAt": "Connected {{time}}",
+          "membersUpdated": "Member list last read {{time}}",
+          "membersPending": "The member list appears after the next sync",
+          "queued_one": "Sending to {{count}} person. They'll get a notification and an email.",
+          "queued_other": "Sending to {{count}} people. They'll get a notification and an email.",
+          "nothingSent": "Nothing was sent",
+          "skipReason": {
+            "connected": "Already connected.",
+            "not_found": "No longer a member.",
+            "opted_out": "Asked not to be reminded.",
+            "recently_sent": "Already sent something in the last day.",
+            "not_sent": "Could not be sent. Try again later."
+          },
+          "inviteWho": "Invite {{name}}",
+          "remindWho": "Remind {{name}}",
+          "removeWho": "Remove the connection of {{name}}",
+          "yourAccount": "Your account",
+          "connectedOf": "{{connected}} of {{total}} people connected",
+          "needReconnect_one": "{{count}} needs to reconnect",
+          "needReconnect_other": "{{count}} need to reconnect",
+          "search": "Search people by name or email",
+          "inviteEveryoneHint": "Everyone who hasn't connected yet",
+          "inviteEveryone": "Invite all ({{count}})",
+          "noMatches": "No one matches “{{q}}”",
+          "nobody": "No one to show yet. People appear after the next sync."
+        },
+        "link": {
+          "title": "Connect your {{source}} account",
+          "forEmail": "for {{email}}",
+          "continue": "Continue to {{source}}",
+          "loading": "Checking your link…",
+          "alreadyConnected": "Your {{source}} account is already connected.",
+          "openApp": "Open PipesHub",
+          "expired": "This link has expired or was already used. Ask your admin for a new one, or connect from Your connectors in PipesHub.",
+          "optedOut": "You won't get more reminders for this connector.",
+          "error": "Something went wrong. Try again in a minute.",
+          "noSignIn": "This connector uses personal access tokens. Open PipesHub and select Connect on the notification to paste yours.",
+          "done": "{{name}} is connected. Your pages will appear in PipesHub search in a few minutes.",
+          "doneUnnamed": "Your account is connected. Your pages will appear in PipesHub search in a few minutes.",
+          "failedTitle": "Could not connect",
+          "failedRetry": "Use the link in your email to try again.",
+          "confirmOptOut": "Stop reminders for {{name}}?",
+          "stopReminders": "Stop reminders",
+          "rateLimited": "Too many attempts, try again in a minute.",
+          "cancelled": "You cancelled the sign-in.",
+          "signInFailed": "The sign-in did not finish. Try again."
+        }
       }
     },
     "mcpServers": {
@@ -3761,6 +3899,7 @@
         "disconnected": "Disconnected successfully",
         "disconnectError": "Failed to disconnect",
         "credentialsSaveError": "Server saved, but credentials could not be saved. You can add them later from Manage.",
+        "accessSaveError": "The server was saved, but who can use it was not. Save again to apply access.",
         "logoSaveError": "Server saved, but its logo could not be saved. You can try again from Manage.",
         "credentialsSaved": "Credentials saved",
         "credentialsReset": "MCP server updated. Saved credentials were removed because the connection changed; connect again to use it.",
@@ -4330,6 +4469,13 @@
       "verifyingConnection": "Verifying connection...",
       "sendImages": "Send images to LLM",
       "sendImagesDescription": "Control whether images are sent to the LLM during web search",
+      "imageSettingsTitle": "Images",
+      "imageSettingsDescription": "What an assistant sees of the images on the web pages it reads",
+      "maxImages": "Most images per page",
+      "maxImagesHelp": "A whole number from 1 to 50. Only models that accept images are sent them.",
+      "maxImagesInvalid": "Enter a whole number from 1 to 50",
+      "imagesCostWarning": "Each image adds to the cost and time of reading a page.",
+      "imageSettingsUnavailable": "Image settings could not be loaded, so they can't be changed yet.",
       "toasts": {
         "providerAdded": "{{label}} is added",
         "providerAddedDescription": "Web search configured successfully. To use {{label}}, toggle off any other web search methods",
@@ -4339,6 +4485,7 @@
         "saveError": "Failed to save web search settings",
         "imagesEnabled": "Images will be sent to LLM",
         "imagesDisabled": "Images will not be sent to LLM",
+        "maxImagesUpdated": "Up to {{count}} images per page will be sent",
         "updateError": "Failed to update setting",
         "saved": "Web search settings saved",
         "savedDescription": "Your changes have been applied successfully.",
@@ -4582,6 +4729,9 @@
           "label": "Extraction service",
           "description": "LLM-based document classification and metadata extraction"
         }
+      },
+      "healthWarnings": {
+        "title": "Attention needed"
       },
       "vectorDbMemory": {
         "title": "Search index doesn't fit in the vector database's memory",

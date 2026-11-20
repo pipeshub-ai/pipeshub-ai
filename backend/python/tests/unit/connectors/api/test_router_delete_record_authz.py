@@ -107,9 +107,7 @@ async def test_same_org_user_without_access_gets_404(kind: dict) -> None:
 
     assert exc.value.status_code == 404
     _assert_untouched(provider, kafka)
-    provider.check_record_access_with_details.assert_awaited_once_with(
-        user_id="user-a", org_id=ORG_A, record_id=RECORD_ID
-    )
+    provider.check_record_access_with_details.assert_awaited_once_with("user-a", ORG_A, RECORD_ID)
 
 
 @pytest.mark.asyncio

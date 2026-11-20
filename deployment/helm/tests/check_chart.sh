@@ -60,7 +60,7 @@ VARIANTS=(
   "local-arangodb|${LOCAL[*]} --set neo4j.enabled=false --set arango.enabled=true --set arango.auth.rootPassword=ci-arango"
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
   "local-redis-cluster-external|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.mode=cluster --set redis.external.clusterEndpoints=redis-0:6379 --set celery.brokerUrl=redis://celery:6379/0"
-  "local-metrics|${LOCAL[*]} --set metrics.podMonitor.enabled=true --set metrics.podMonitor.labels.release=prom"
+  "local-metrics|${LOCAL[*]}"
   "local-metrics-bind|${LOCAL[*]} --set metrics.bind=0.0.0.0"
   "local-extras|${LOCAL[*]} --set networkPolicy.enabled=true ${INGRESS[*]}"
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
@@ -118,15 +118,13 @@ expect() { # variant, grep -F pattern, "present" | "absent" [, only in the docum
   fi
 }
 if [[ -f "$OUT/local-metrics.yaml" ]]; then
-  expect local-metrics 'kind: PodMonitor' present
-  expect local-metrics 'port: metrics' present 'kind: PodMonitor'
-  expect local-metrics 'release: prom' present 'kind: PodMonitor'
+  expect local-metrics 'kind: PodMonitor' absent
+  expect local-metrics 'name: metrics' present
   expect local-metrics 'name: PIPESHUB_METRICS_ENABLED' present
   expect local-metrics 'name: PIPESHUB_METRICS_BIND' present
   expect local-metrics 'fieldPath: status.podIP' present
   expect local-metrics-bind 'name: PIPESHUB_METRICS_BIND' present
   expect local-metrics-bind 'fieldPath: status.podIP' absent
-  expect local-neo4j-kafka 'kind: PodMonitor' absent
   expect local-neo4j-kafka 'name: PIPESHUB_METRICS_PORT' present
 fi
 if [[ -f "$OUT/cloud.yaml" ]]; then
@@ -384,6 +382,15 @@ REFUSED=(
   "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "local sandbox with a string false flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set-string config.sandboxAllowLocal=false"
+  "negative neo4j memory limit|neo4j.resources.limits.memory \"-8Gi\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=-8Gi"
+  "neo4j memory limit with two suffixes|neo4j.resources.limits.memory \"8e3Gi\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8e3Gi"
+  "neo4j memory limit that is not a quantity|neo4j.resources.limits.memory \"lots\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=lots"
+  "neo4j starting heap in a unit neo4j refuses|NEO4J_server_memory_heap_initial__size \"5kib\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5kib"
+  "neo4j starting heap with a lowercase exponent|NEO4J_server_memory_heap_initial__size \"3e9\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3e9"
+  "neo4j starting heap with a plus-signed exponent|NEO4J_server_memory_heap_initial__size \"3E+9\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3E+9"
+  "neo4j starting heap above Long.MAX_VALUE bytes|NEO4J_server_memory_heap_initial__size \"1E19\" is not a size|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=1E19"
+  "neo4j memory limit exponent past the bound|neo4j.resources.limits.memory \"8e31\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=8e31"
+  "neo4j memory limit past the bound through its significand|neo4j.resources.limits.memory \"80000000000e21\" is not a memory quantity|${LOCAL[*]} --set-string neo4j.resources.limits.memory=80000000000e21"
 )
 for entry in "${REFUSED[@]}"; do
   IFS='|' read -r name message rest <<<"$entry"
@@ -409,6 +416,44 @@ for entry in "${ACCEPTED[@]}"; do
     echo "ok rendered: ${name}"
   else
     echo "!! ${name}: refused, but it is not a runtime socket:"; cat "$OUT/accepted.err"; failed=1
+  fi
+done
+
+# Neo4j sizes derived from its memory limit: name | expected initial,max,pagecache | helm arguments.
+# An unquoted integer in a values file reaches the template as a float ("8.589934592e+09").
+printf 'neo4j:\n  resources:\n    limits:\n      memory: 8589934592\n' >"$OUT/neo4j-int-limit.yaml"
+NEO4J_MEMORY=(
+  "8Gi|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=8Gi"
+  "8Gi in bytes, from --set|1024m,4096m,2048m|--set neo4j.resources.limits.memory=8589934592"
+  "8Gi in bytes, from a values file|1024m,4096m,2048m|-f $OUT/neo4j-int-limit.yaml"
+  "unsigned exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e9"
+  "signed exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e+9"
+  "zero-padded signed exponent|953m,3814m,1907m|--set-string neo4j.resources.limits.memory=8e+009"
+  "8Gi as a long significand and a negative exponent|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=85899345920000000000000000000000000000000e-31"
+  "8Gi written with leading zeros and a fraction|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=0000.0000000000085899345920e+21"
+  "starting heap with neo4j's uppercase exponent|3E9,4096m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=3E9"
+  "starting heap with an exponent and a unit|5E3m,5000m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5E3m"
+  "starting heap with a negative exponent|5242880000E-3k,5120m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5242880000E-3k"
+  "negative exponent|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=8589934592000e-3"
+  "leading dot|64m,256m,128m|--set-string neo4j.resources.limits.memory=.5Gi"
+  "plus sign|1024m,4096m,2048m|--set-string neo4j.resources.limits.memory=+8Gi"
+  "starting heap in bytes with neo4j's B suffix|2147483648B,4096m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=2147483648B"
+  "starting heap above half the limit|5242880k,5120m,2048m|--set-string neo4j.resources.limits.memory=8Gi --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=5242880k"
+  "unreadable limit with every size given|1g,2g,1g|--set-string neo4j.resources.limits.memory=lots --set-string neo4j.env.NEO4J_server_memory_heap_initial__size=1g --set-string neo4j.env.NEO4J_server_memory_heap_max__size=2g --set-string neo4j.env.NEO4J_server_memory_pagecache_size=1g"
+)
+for entry in "${NEO4J_MEMORY[@]}"; do
+  IFS='|' read -r name want rest <<<"$entry"
+  read -r -a args <<<"$rest"
+  if ! helm template ci . "${SECRETS[@]}" "${LOCAL[@]}" "${args[@]}" --show-only templates/neo4j-statefulset.yaml >"$OUT/neo4j-mem.yaml" 2>"$OUT/neo4j-mem.err"; then
+    echo "!! neo4j memory, ${name}: refused:"; cat "$OUT/neo4j-mem.err"; failed=1; continue
+  fi
+  got=$(for s in heap_initial__size heap_max__size pagecache_size; do
+    grep -A1 -E "name: NEO4J_(server|dbms)_memory_${s}\$" "$OUT/neo4j-mem.yaml" | sed -n 's/.*value: "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' | head -1
+  done | paste -sd, -)
+  if [[ "$got" == "$want" ]]; then
+    echo "ok neo4j memory, ${name}: ${got}"
+  else
+    echo "!! neo4j memory, ${name}: got '${got}', want '${want}'"; failed=1
   fi
 done
 

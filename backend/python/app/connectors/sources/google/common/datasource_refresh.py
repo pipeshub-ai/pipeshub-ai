@@ -69,8 +69,8 @@ def _saved_expiry(credentials: dict) -> datetime | None:
     try:
         if isinstance(legacy_expiry_ms, (int, float)):
             expires_at: float | None = legacy_expiry_ms / 1000
-        # OAuthToken defaults a missing created_at to now, which would make any saved token look fresh.
-        elif all(credentials.get(key) for key in ("access_token", "created_at", "expires_in")):
+        # OAuthToken defaults a missing or blank created_at to now, which would make any saved token look fresh.
+        elif all(credentials.get(key) for key in ("access_token", "created_at", "expires_in")) and str(credentials["created_at"]).strip():
             expires_at = OAuthToken.from_dict(credentials).expires_at_epoch
         else:
             return None

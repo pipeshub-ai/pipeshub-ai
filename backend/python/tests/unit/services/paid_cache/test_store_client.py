@@ -89,6 +89,24 @@ async def test_an_org_sees_only_its_own_files(storage: FakePaidResultStorage) ->
     assert [f.path for f in await store.list_files("org-1", "rec-1")] == [PATH]
 
 
+async def test_a_storage_without_the_cutoff_route_is_not_a_cache_that_is_off(
+    storage: FakePaidResultStorage, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 404 from purge-cutoff (a storage of an earlier release) leaves the routes on and reports no cutoff, with one warning."""
+    store = _store(storage)
+
+    with caplog.at_level(logging.WARNING, logger="paid-store-test"):
+        assert await store.purge_cutoff("org-1", "rec-1") is None
+        assert await store.purge_cutoff("org-1", "rec-2") is None
+    assert len([r for r in caplog.records if "no purge-cutoff route" in r.message]) == 1
+
+    assert store_module.PAID_RESULT_ROUTES.available
+    # The purge then goes without a cutoff, and the rest of the cache still works.
+    await store.put("org-1", "rec-1", PATH, b"x")
+    await store.purge_record("org-1", "rec-1", before_ms=None)
+    assert await store.list_files("org-1", "rec-1") == []
+
+
 async def test_old_storage_turns_cache_off(storage: FakePaidResultStorage, caplog: pytest.LogCaptureFixture) -> None:
     storage.presign_status = 404
     store = _store(storage)
@@ -310,3 +328,10 @@ async def test_a_malformed_url_error_hides_its_context_too(storage: FakePaidResu
     with pytest.raises(PaidResultStoreError) as raised:
         await _store(storage).put_to(_entry(), b"x")                  # type: ignore[arg-type]
     assert raised.value.__cause__ is None and raised.value.__suppress_context__ is True
+
+
+async def test_a_412_is_a_lost_race_answered_after_one_request(storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _ScriptedSession(_FakeResponse(412, b"<Error><Code>PreconditionFailed</Code></Error>"))
+    monkeypatch.setattr(store_module, "get_shared_session", lambda: session)
+    assert await _store(storage).put_to(_entry(), b"x") is False      # type: ignore[arg-type]
+    assert session.calls == 1                                         # a 412 is never retried

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -57,6 +57,45 @@ class TestBuildDynamicToolsWebAdapterWiring:
         assert len(web_tools) == 2
         assert all(isinstance(t, WebToolAdapter) for t in web_tools)
 
+    @staticmethod
+    def _web_adapters(settings: dict | None) -> dict[str, WebToolAdapter]:
+        context = _make_context()
+        context.tool_state["web_search_config"] = {
+            "provider": "duckduckgo", "configuration": {}, **({"settings": settings} if settings is not None else {}),
+        }
+        return {t.name: t for t in _build_dynamic_tools(context) if isinstance(t, WebToolAdapter)}
+
+    @pytest.mark.parametrize("settings", [None, {"includeImages": False, "maxImages": 3}])
+    def test_pages_are_read_without_images_unless_an_admin_sends_them(self, settings: dict | None) -> None:
+        adapters = self._web_adapters(settings)
+        assert all(a._image_loader is None for a in adapters.values())
+
+    async def test_sent_images_are_read_for_fetch_url_through_the_runs_fetch_service(self) -> None:
+        from app.web.services import WebFetchService
+
+        adapters = self._web_adapters({"includeImages": True, "maxImages": 4})
+        fetch_url, web_search = adapters["dynamic__fetch_url"], adapters["dynamic__web_search"]
+        assert web_search._image_loader is None
+        assert fetch_url._max_images == 4
+
+        with patch.object(WebFetchService, "fetch_images", AsyncMock(return_value=[None])) as fetch_images:
+            assert await fetch_url._image_loader(["https://example.com/a.png"]) == [None]
+        urls, caller = fetch_images.await_args.args
+        assert urls == ["https://example.com/a.png"]
+        assert (caller.org_id, caller.user_id) == ("org-1", "user-1")
+
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [({"includeImages": True, "maxImages": "many"}, 3), ({"includeImages": True, "maxImages": 200}, 50)],
+        ids=["not a number", "past the per-page limit"],
+    )
+    def test_a_bad_or_large_count_never_costs_the_turn_its_web_tools(self, settings: dict, expected: int) -> None:
+        """Building the options sits inside the web tools' try: a raise there dropped web search
+        and fetch_url for the whole turn."""
+        adapters = self._web_adapters(settings)
+        assert set(adapters) == {"dynamic__web_search", "dynamic__fetch_url"}
+        assert adapters["dynamic__fetch_url"]._max_images == expected
+
     def test_no_web_search_config_yields_no_dynamic_web_tools(self) -> None:
         context = _make_context()
         context.tool_state["web_search_config"] = None
@@ -75,6 +114,81 @@ class TestBuildDynamicToolsWebAdapterWiring:
 
         _build_dynamic_tools(context)
         assert context.tool_state["citation_ref_mapper"] is not None
+
+
+class TestOwnFileDownloadLinks:
+    """The sequence from a chat: the agent asks for an uploaded PDF's download link, then passes it to
+    fetch_url. fetch_url must answer from the same request's state, without fetching anything."""
+
+    async def test_fetch_url_refuses_a_link_the_download_tool_just_handed_out(self) -> None:
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from app.agents.actions.artifacts.artifacts import ArtifactManager
+        from app.config.constants.arangodb import OriginTypes
+
+        context = _make_context()
+        context.tool_state["web_search_config"] = {"provider": "duckduckgo", "configuration": {}}
+        tools = {t.name: t for t in _build_dynamic_tools(context)}
+
+        link = "https://files-bucket.s3.amazonaws.com/org-1/report.pdf?X-Amz-Expires=3600&X-Amz-Signature=0123abcd"
+        graph = MagicMock()
+        graph.get_record_by_id = AsyncMock(return_value=SimpleNamespace(
+            id="rec-1", org_id="org-1", origin=OriginTypes.UPLOAD, external_record_id="doc-1",
+            record_name="report.pdf", mime_type="application/pdf", weburl=None,
+        ))
+        graph.get_user_by_user_id = AsyncMock(return_value={"_key": "ukey-1"})
+        graph.get_edge = AsyncMock(return_value=None)
+        graph.check_record_access_with_details = AsyncMock(return_value={"access": "KB"})
+        context.tool_state["graph_provider"] = graph
+        context.tool_state["blob_store"] = MagicMock(get_download_url=AsyncMock(return_value=link))
+        # Toolsets get the request's state dict itself (ToolInstanceCreator), as here.
+        manager = ArtifactManager(context.tool_state)
+        success, _ = await manager.get_record_download_url(record_id="rec-1")
+        assert success is True
+
+        with patch("app.web.services.WebFetchService.fetch", new=AsyncMock()) as fetch:
+            output = await tools["dynamic__fetch_url"].execute(url=link)
+
+        fetch.assert_not_awaited()
+        # A failed call reaches the model as `error`, the same as any fetch_url failure.
+        assert output.success is False
+        payload = json.loads(output.error)
+        assert payload["error_type"] == "own_file"
+        assert "rec-1" in payload["hint"]
+        assert not output.sources  # nothing to cite as a web page
+        assert not context.tool_state.get("web_records")
+
+    async def test_the_next_turn_cannot_fetch_the_link_from_the_saved_step(self) -> None:
+        """A new request has no remembered links; what it gets back is the step as saved."""
+        import json
+        from unittest.mock import AsyncMock
+
+        from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext
+        from app.agents.agent_loop.protocol.transcript_collector import (
+            TranscriptCollector,
+        )
+
+        link = "https://files-bucket.s3.amazonaws.com/org-1/report.pdf?X-Amz-Expires=3600&X-Amz-Signature=0123abcd"
+        ctx = RunContext(role_name="pipeshub-agent", model="gpt-4")
+        collector = TranscriptCollector()
+        await collector.emit(AgentEvent(event_type=EventType.RUN_STARTED, run_context=ctx, payload={}))
+        await collector.emit(AgentEvent(event_type=EventType.TOOL_CALL_START, run_context=ctx, payload={
+            "tool": "dynamic__fetch_url", "args": {"url": link}, "tool_call_id": "call-1",
+        }))
+        saved_url = json.loads(collector.parts[0]["args"])["url"]
+        assert "0123abcd" not in saved_url
+
+        next_turn = _make_context()
+        next_turn.tool_state["web_search_config"] = {"provider": "duckduckgo", "configuration": {}}
+        tools = {t.name: t for t in _build_dynamic_tools(next_turn)}
+        with patch("app.web.services.WebFetchService.fetch", new=AsyncMock()) as fetch:
+            output = await tools["dynamic__fetch_url"].execute(url=saved_url)
+
+        fetch.assert_not_awaited()
+        assert output.success is False
+        assert json.loads(output.error)["error_type"] == "invalid_url"
 
 
 class TestSandboxToolsetGate:

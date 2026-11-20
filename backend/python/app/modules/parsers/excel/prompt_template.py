@@ -1,7 +1,7 @@
-from typing import List
+from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Prompt for summarizing an entire sheet with multiple tables
 sheet_summary_prompt = ChatPromptTemplate.from_messages(
@@ -34,19 +34,69 @@ table_summary_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-class RowDescriptions(BaseModel):
-    descriptions: List[str]
+class KeyedRowDescription(BaseModel):
+    """One description, addressed by the opaque key the row carried in the prompt."""
+
+    key: str
+    description: str = ""
+
+
+def _keep_well_formed_descriptions(value: Any) -> Any:  # noqa: ANN401
+    """Drop entries that carry no usable key or no text, so one bad entry cannot fail a whole answer.
+
+    A bare string (an older positional shape), an entry without a ``key`` or whose key is not a
+    string or integer, and an entry whose description is not text (an object or a list) are
+    dropped: the row it was meant for is simply unanswered and the caller handles it alone.
+    Anything that is not a list is left for validation to reject.
+    """
+    if not isinstance(value, list):
+        return value
+    kept = []
+    for item in value:
+        if isinstance(item, KeyedRowDescription):
+            kept.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        description = item.get("description")
+        if isinstance(key, bool) or not isinstance(key, (str, int)) or not str(key).strip():
+            continue
+        if not (description is None or isinstance(description, str)):
+            continue
+        kept.append({"key": str(key), "description": description or ""})
+    return kept
+
+
+class KeyedRowDescriptions(BaseModel):
+    """Row descriptions keyed by row key (the answer to ``keyed_row_text_prompt``)."""
+
+    descriptions: list[KeyedRowDescription] = Field(default_factory=list)
+
+    _tolerant = field_validator("descriptions", mode="before")(_keep_well_formed_descriptions)
 
 
 class TableEnrichment(BaseModel):
+    """Summary, headers and row descriptions of a table's first batch, one call."""
+
     summary: str = ""
-    headers: List[str] = Field(default_factory=list)
+    headers: list[str] = Field(default_factory=list)
     header_row_count: int = 0
-    descriptions: List[str] = Field(default_factory=list)
+    descriptions: list[KeyedRowDescription] = Field(default_factory=list)
+
+    _tolerant = field_validator("descriptions", mode="before")(_keep_well_formed_descriptions)
+
+
+class TableSummaryHeaders(BaseModel):
+    """Summary and headers alone, asked for when the combined call did not give them."""
+
+    summary: str = ""
+    headers: list[str] = Field(default_factory=list)
+    header_row_count: int = 0
 
 
 class TableHeaders(BaseModel):
-    headers: List[str]
+    headers: list[str]
 
 
 class HeaderDetection(BaseModel):
@@ -74,85 +124,25 @@ class TableHeaderAnalysis(BaseModel):
 
     has_headers: bool
     num_header_rows: int  # 0 if no headers, 1, 2, 3+ for multi-row
-    headers: List[str] = Field(default_factory=list)
+    headers: list[str] = Field(default_factory=list)
     summary: str = ""
     confidence: str = "low"  # "high" or "low"
     reasoning: str = ""
 
 
-# Prompt for converting row data into natural language
-row_text_prompt_for_csv = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """You are a data analysis expert who converts structured data into natural language descriptions.
-Your task is to convert each row of data into a clear, concise and detailed natural language description.
-Use the provided table summary to make the descriptions more meaningful.
-
-CRITICAL RULES:
-- You MUST generate EXACTLY one description for each row - no more, no less.
-- Do NOT skip any rows.
-- Do NOT combine multiple rows into one description.
-- Do NOT split one row into multiple descriptions.
-- Process rows in the exact order they are provided.
-- Do NOT include row numbers (like "Row 1:", "Row 2 presents...", etc.) in your descriptions.
-- Each description should focus ONLY on the data content, not the row position.
-"""),
-        (
-            "user",
-            """Convert the following rows of data into natural language descriptions.
-
-Table Summary:
-{table_summary}
-
-Rows Data (Total: {row_count} rows):
-{numbered_rows_data}
-
-IMPORTANT:
-- You must return EXACTLY {row_count} descriptions - one for each row, in the same order.
-- Do NOT include "Row 1:", "Row 2 presents...", or any row numbers in the descriptions.
-- Focus only on describing the data content itself.
-
-Example input row:
-{{"Name": "John Doe", "Age": 30, "Salary": 50000}}
-
-Example correct output (NO row numbers):
-"John Doe is 30 years old with a salary of $50,000"
-
-Example INCORRECT output (contains row number - DO NOT DO THIS):
-"Row 1: John Doe is 30 years old with a salary of $50,000"
-
-Respond with ONLY a JSON object:
-{{
-    "descriptions": [
-        "Description for row 1",
-        "Description for row 2",
-        ...
-        "Description for row {row_count}"
-    ]
-}}
-
-Verify your response contains exactly {row_count} descriptions before submitting.""",
-        ),
-    ]
-)
-
-# Summary, headers and row descriptions in a single call. Composed from the count
-# discipline of row_text_prompt_for_csv and the header-vs-data rules of
-# excel_header_detection_prompt, so a table that fits in one batch costs one LLM call.
+# Summary, headers and row descriptions in a single call. Each row carries an opaque key the
+# model copies into its answer, so a description is matched to its row by copied text and
+# never by counting: a skipped, merged or reordered row can only lose its own description.
 table_enrichment_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
             """You are a data analysis expert who analyses tables and converts structured data into natural language descriptions.
 
-CRITICAL RULES:
-- You MUST generate EXACTLY one description for each row supplied - no more, no less.
-- Do NOT skip any rows.
-- Do NOT combine multiple rows into one description.
-- Do NOT split one row into multiple descriptions.
-- Process rows in the exact order they are provided.
-- Do NOT include row numbers (like "Row 1:", "Row 2 presents...", etc.) in your descriptions.
+RULES:
+- Every row is listed with a short key in square brackets. Describe each row under its own key: copy the key exactly as written.
+- Write one description per row. Do NOT combine rows and do NOT split a row.
+- Do NOT put keys, row numbers or phrases like "Row 1:" inside the description text.
 - Each description should focus ONLY on the data content, not the row position.
 """,
         ),
@@ -160,7 +150,55 @@ CRITICAL RULES:
             "user",
             """Analyse the following table.
 
-Table Data (Total: {row_count} rows):
+Table Data ({row_count} rows; the number before a key only tells you which row is first):
+{keyed_rows_data}
+{header_context}
+Produce a single JSON object with these fields:
+
+1. "summary": describing this table's purpose and content.
+
+2. "header_row_count": 1 if Row 1 is a header row, otherwise 0.
+
+3. "headers": one name per column. If header_row_count is 1, use Row 1's values. Otherwise invent clear, concise, unique names from each column's content.
+
+4. "descriptions": a list of {{"key": "<key>", "description": <text>}}, one entry for each data row, with the key copied from that row. Do not describe a header row.
+
+Example input row:
+Row 7 [K3QX]: {{"Name": "John Doe", "Age": 30, "Salary": 50000}}
+
+Example correct entry (NO key in the text):
+{{"key": "K3QX", "description": "John Doe is 30 years old with a salary of $50,000"}}
+
+Example INCORRECT entry (contains the key in the text - DO NOT DO THIS):
+{{"key": "K3QX", "description": "[K3QX] John Doe is 30 years old with a salary of $50,000"}}
+
+Respond with ONLY a JSON object:
+{{
+    "summary": "Summary of the table",
+    "header_row_count": 0,
+    "headers": ["Header1", "Header2"],
+    "descriptions": [
+        {{"key": "<key of the first data row>", "description": "Description of that row"}},
+        {{"key": "<key of the next data row>", "description": "Description of that row"}}
+    ]
+}}
+""",
+        ),
+    ]
+)
+
+# Summary and headers alone: asked for when the combined call did not return them, so a
+# table whose rows failed still keeps its summary and column names.
+table_summary_headers_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a data analysis expert who analyses tables.",
+        ),
+        (
+            "user",
+            """Analyse the following table (the first {row_count} rows, numbered from 1).
+
 {numbered_rows_data}
 {header_context}
 Produce a single JSON object with these fields:
@@ -171,30 +209,48 @@ Produce a single JSON object with these fields:
 
 3. "headers": one name per column. If header_row_count is 1, use Row 1's values. Otherwise invent clear, concise, unique names from each column's content.
 
-4. "descriptions": A natural-language description for each supplied row, in the same order. If Row 1 is a header row, add a description for it as well.
-
-Example input row:
-{{"Name": "John Doe", "Age": 30, "Salary": 50000}}
-
-Example correct description (NO row number):
-"John Doe is 30 years old with a salary of $50,000"
-
-Example INCORRECT description (contains a row number - DO NOT DO THIS):
-"Row 1: John Doe is 30 years old with a salary of $50,000"
-
 Respond with ONLY a JSON object:
 {{
     "summary": "Summary of the table",
     "header_row_count": 0,
-    "headers": ["Header1", "Header2"],
-    "descriptions": [
-        "Description for row",
-        "Description for row",
-        ...
-        "Description for row"
-    ]
+    "headers": ["Header1", "Header2"]
 }}
 """,
+        ),
+    ]
+)
+
+# Later batches (and the halves of a batch that failed): row descriptions only, by key.
+keyed_row_text_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """You are a data analysis expert who converts structured data into natural language descriptions.
+Your task is to convert each row of data into a clear, concise and detailed natural language description.
+Use the provided table summary to make the descriptions more meaningful.
+
+RULES:
+- Every row is listed with a short key in square brackets. Describe each row under its own key: copy the key exactly as written.
+- Write one description per row. Do NOT combine rows and do NOT split a row.
+- Do NOT put keys, row numbers or phrases like "Row 1:" inside the description text.""",
+        ),
+        (
+            "user",
+            """Convert the following rows of data into natural language descriptions.
+
+Table Summary:
+{table_summary}
+
+Rows Data ({row_count} rows, each with its key):
+{keyed_rows_data}
+
+Respond with ONLY a JSON object with one entry per row, with each key copied from its row:
+{{
+    "descriptions": [
+        {{"key": "<key of the first row>", "description": "Description of that row"}},
+        {{"key": "<key of the next row>", "description": "Description of that row"}}
+    ]
+}}""",
         ),
     ]
 )
@@ -292,37 +348,6 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 }}
 
 FINAL REMINDER: Your response must contain EXACTLY {column_count} headers. Count them before submitting.""",
-        ),
-    ]
-)
-
-row_text_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """You are a data analysis expert who converts structured data into natural language descriptions.
-Your task is to convert each row of data into a clear, concise and detailed natural language description.
-Use the provided table summary to make the descriptions more meaningful."""),
-        (
-            "user",
-            """Please convert these rows of data into natural language descriptions.
-
-Table Summary:
-{table_summary}
-
-Rows Data:
-{rows_data}
-
-Respond with ONLY a JSON object with the following structure:
-{{
-    "descriptions": [
-        "Description of first row",
-        "Description of second row",
-        "Description of third row"
-    ]
-}}
-
-Number of descriptions should be equal to the number of rows in the data. Do not include any other text or explanation in your response - only the JSON object.""",
         ),
     ]
 )

@@ -168,6 +168,8 @@ class Routes(Enum):
     STORAGE_PAID_RESULTS_PRESIGN = "/api/v1/document/internal/paid-results/presign"
     STORAGE_PAID_RESULTS_ORG = "/api/v1/document/internal/paid-results/org"
     STORAGE_PAID_RESULTS_RECORD = "/api/v1/document/internal/paid-results/{recordId}"
+    STORAGE_PAID_RESULTS_PURGE_BATCH = "/api/v1/document/internal/paid-results/purge-batch"
+    STORAGE_PAID_RESULTS_PURGE_CUTOFF = "/api/v1/document/internal/paid-results/{recordId}/purge-cutoff"
     STORAGE_PAID_RESULTS_DELETE = "/api/v1/document/internal/paid-results/{recordId}/delete"
 
     # User-facing, permission-checked record bytes

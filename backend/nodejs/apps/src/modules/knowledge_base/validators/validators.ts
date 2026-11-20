@@ -91,6 +91,8 @@ export const reindexRecordSchema = z.object({
     .object({
       depth: z.number().check(integerCheck()).min(-1).max(100).optional(),
       statusFilters: z.array(z.string()).optional(),
+      // A user's Force reindex: every stored result is bypassed and paid for again.
+      force: z.boolean().optional(),
     })
     .optional(),
 });

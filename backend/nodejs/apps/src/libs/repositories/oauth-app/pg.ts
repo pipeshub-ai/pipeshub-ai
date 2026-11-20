@@ -14,6 +14,8 @@ import { stripNul } from '../strip-nul';
 import { Params, likeEscape, newObjectId, oidOf, inUnit } from '../pg-util';
 import { clientOrg, goodKey, inKeyUnit, inOrgUnit } from './pg-org';
 import {
+  APP_OWNER_FORMAT,
+  NO_APP_CREATOR,
   OAuthAppStatus,
   type NewOAuthApp,
   type OAuthAppDto,
@@ -49,6 +51,7 @@ interface AppRow {
   terms_of_service_url: string | null;
   is_confidential: boolean;
   is_dynamic: boolean;
+  owner_format: number | null;
   access_token_lifetime: number;
   refresh_token_lifetime: number;
   knowledge_limit: KnowledgeLimit | null;
@@ -61,7 +64,7 @@ interface AppRow {
 
 const COLS = `id, slug, client_id, client_secret_encrypted, name, description, org_id, created_by, token_identity_user_id, redirect_uris,
   allowed_grant_types, allowed_scopes, status, logo_url, homepage_url, privacy_policy_url, terms_of_service_url, is_confidential, is_dynamic,
-  access_token_lifetime, refresh_token_lifetime, knowledge_limit, is_deleted, deleted_by, version, created_at, updated_at`;
+  access_token_lifetime, refresh_token_lifetime, knowledge_limit, is_deleted, deleted_by, version, created_at, updated_at, owner_format`;
 
 /** The optional text fields of the stored row: a NULL column is a key left out, as an unset field was. */
 const OPTIONAL: Array<[keyof AppRow, keyof OAuthAppDto]> = [
@@ -72,6 +75,7 @@ const OPTIONAL: Array<[keyof AppRow, keyof OAuthAppDto]> = [
   ['privacy_policy_url', 'privacyPolicyUrl'],
   ['terms_of_service_url', 'termsOfServiceUrl'],
   ['deleted_by', 'deletedBy'],
+  ['owner_format', 'ownerFormat'],
 ];
 
 export function appDto(r: AppRow): OAuthAppDto {
@@ -157,8 +161,8 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
       const { rows } = await k.query<AppRow>(
         `/* pipeshub:oauth.app_create */ INSERT INTO oauth.apps (org_id, id, slug, client_id, client_secret_encrypted, name, description, created_by,
            redirect_uris, allowed_grant_types, allowed_scopes, status, logo_url, homepage_url, privacy_policy_url, terms_of_service_url,
-           is_confidential, is_dynamic, access_token_lifetime, refresh_token_lifetime, knowledge_limit, created_at, updated_at, token_identity_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $22, $23) RETURNING ${COLS}`,
+           is_confidential, is_dynamic, access_token_lifetime, refresh_token_lifetime, knowledge_limit, created_at, updated_at, token_identity_user_id, owner_format)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $22, $23, $24) RETURNING ${COLS}`,
         [
           k.orgId,
           newObjectId(),
@@ -183,6 +187,7 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
           i.knowledgeLimit ?? null,
           now,
           i.tokenIdentityUserId ?? null,
+          APP_OWNER_FORMAT,
         ],
       );
       return appDto(rows[0] as AppRow);
@@ -435,6 +440,32 @@ export class PgOAuthAppRepository implements OAuthAppRepository, Importable {
             WHERE org_id = $1 AND id = $2::text AND is_dynamic AND NOT is_deleted`,
         [k.orgId, appId, scopes, grant.allowedGrantTypes, new Date()],
       );
+    });
+  }
+
+  async disownInstanceApps(
+    orgId: string,
+    dynamicClientOrgId: string,
+  ): Promise<number> {
+    // Every row stays in its org here (row-level security, primary key (org_id, id)).
+    if (dynamicClientOrgId !== orgId) {
+      throw new Error(
+        'Moving OAuth apps to another organisation is not supported on PostgreSQL',
+      );
+    }
+    return inOrgUnit(orgId, undefined, true, async (k) => {
+      const { rowCount } = await k.query(
+        `/* pipeshub:oauth.app_disown_instance */ UPDATE oauth.apps SET created_by = $2, owner_format = $5, version = version + 1, updated_at = $4
+            WHERE org_id = $1 AND (is_dynamic OR client_id = $3) AND owner_format IS NULL`,
+        [
+          k.orgId,
+          NO_APP_CREATOR,
+          FIRST_PARTY_DEVICE_CLIENT_ID,
+          new Date(),
+          APP_OWNER_FORMAT,
+        ],
+      );
+      return rowCount ?? 0;
     });
   }
 

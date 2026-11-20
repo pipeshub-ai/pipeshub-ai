@@ -148,3 +148,29 @@ def test_the_endpoint_port_is_part_of_the_model_identity() -> None:
     assert model_identity(one) != model_identity(two)
     assert model_identity(one).endswith("@localhost:8000")
     assert model_identity(plain).endswith("@api.example.com") and "secret" not in model_identity(plain)
+
+
+def test_an_operators_record_budget_above_the_protection_window_is_clamped_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.services.paid_cache import locks
+
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", str(30 * 3600))
+    monkeypatch.setattr(locks, "_budget_clamp_warned", set())
+    with caplog.at_level("WARNING"):
+        assert locks.stage_deadline_s() == locks.MAX_RECORD_BUDGET_S
+        assert locks.repurge_horizon_s() >= locks.MAX_RECORD_BUDGET_S
+    assert sum("allows" in r.getMessage() for r in caplog.records) == 1          # warned once
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", str(20 * 3600))
+    assert locks.stage_deadline_s() == 20 * 3600.0                                # inside the window: unchanged
+
+
+def test_the_repurge_horizon_covers_the_configured_budget_even_where_the_stage_deadline_is_clamped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.paid_cache import locks
+
+    monkeypatch.setattr(locks, "_budget_clamp_warned", set())
+    monkeypatch.setenv("PDF_RECORD_PROCESSING_TIMEOUT", str(22 * 3600))
+    assert locks.stage_deadline_s() == locks.MAX_RECORD_BUDGET_S                  # the stage deadline is clamped (20 h)
+    assert locks.repurge_horizon_s() >= 22 * 3600 + locks.admission_window_s()   # the horizon is not: it covers 22 h

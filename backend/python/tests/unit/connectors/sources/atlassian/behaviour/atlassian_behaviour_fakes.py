@@ -298,6 +298,10 @@ class FakeRecordsDb:
         if permissions is not None:
             self.record_permissions[record.external_record_id] = list(permissions)
 
+    async def on_record_metadata_update(self, record: Record) -> None:
+        # Source metadata only (timestamps, name): the record is upserted, its grants are left as they are.
+        self.records[record.external_record_id] = record
+
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, permissions))
 

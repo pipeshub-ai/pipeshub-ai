@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import * as yaml from 'js-yaml'
 import { ApiDocsService } from '../../../src/modules/api-docs/docs.service'
 
 describe('api-docs/docs.service', () => {
@@ -107,6 +108,22 @@ describe('api-docs/docs.service', () => {
       expect(spec).to.have.property('openapi', '3.0.0')
       expect(spec!.info).to.have.property('title', 'Authentication')
       expect(Object.keys(spec!.paths)).to.not.be.empty
+    })
+  })
+
+  describe('getSpecYaml', () => {
+    it('should return null before a spec is loaded', () => {
+      expect(service.getSpecYaml()).to.be.null
+    })
+
+    it('should return the loaded spec as YAML that names no deployment', async () => {
+      await service.initialize()
+      const text = service.getSpecYaml()
+      expect(text).to.be.a('string')
+      const spec = yaml.load(text!) as any
+      expect(spec).to.have.property('openapi', '3.0.0')
+      expect(Object.keys(spec.paths)).to.not.be.empty
+      expect(spec.servers[0].url).to.equal('{instance_url}/api/v1')
     })
   })
 

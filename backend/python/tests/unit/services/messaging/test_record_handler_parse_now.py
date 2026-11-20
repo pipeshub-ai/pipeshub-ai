@@ -66,6 +66,7 @@ class Harness:
         graph.check_record_access_with_details = AsyncMock(return_value={"record": {}} if access else None)
         event_processor.graph_provider = graph
         event_processor.stage_ingress = None
+        event_processor.sink_orchestrator = None  # no vector store to ask about the weight precision
         event_processor.on_event = self._on_event
         pipeline = AsyncMock()
         pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
@@ -307,6 +308,36 @@ class TestFailuresEndInTheMarker:
         assert harness.writes()[-1]["parseNowStatus"] == marker
         assert all("indexingStatus" not in w and "extractionStatus" not in w for w in harness.writes() if "parseNowStatus" in w)
         assert harness.runs == []  # the pipeline was never reached
+
+    # (status, final) -> (parseNowStatus written last, or None for no write; the record's status written, or None)
+    _UNANSWERED_CHECK = {
+        ("AUTO_INDEX_OFF", False): ("QUEUED", None),
+        ("AUTO_INDEX_OFF", True): ("FAILED", None),
+        ("QUEUED", False): (None, None),
+        ("QUEUED", True): ("FAILED", "FAILED"),
+    }
+
+    @pytest.mark.parametrize(("status", "final"), _UNANSWERED_CHECK, ids=["store_only-retry", "store_only-final", "indexed-retry", "indexed-final"])
+    async def test_an_access_check_the_graph_could_not_answer_fails_the_event_not_the_reader(
+        self, status: str, final: bool,
+    ) -> None:
+        """Not "no access" (which writes nothing): the event fails as any failure before the run does, with nothing parsed.
+
+        On the final attempt a record that is indexed as usual is marked FAILED with a reason, as for any failure before
+        the run; a store-only record keeps its status and only its marker ends.
+        """
+        marker, record_status = self._UNANSWERED_CHECK[(status, final)]
+        harness = Harness(_record(indexingStatus=status))
+        harness.graph.check_record_access_with_details = AsyncMock(side_effect=ConnectionError("graph down"))
+        with pytest.raises(ConnectionError):
+            await harness.run(_payload(is_final_failure=final))
+
+        harness.download.assert_not_awaited()
+        assert harness.runs == []
+        writes = harness.writes()
+        assert (writes[-1]["parseNowStatus"] if writes else None) == marker
+        status_writes = [(w["indexingStatus"], w["extractionStatus"], bool(w["reason"])) for w in writes if "indexingStatus" in w]
+        assert status_writes == ([(record_status, record_status, True)] if record_status else [])
 
     async def test_a_password_protected_file_ends_at_once_without_a_retry(self) -> None:
         harness = await self._fail(PasswordProtectedError("needs a password"), final=False)

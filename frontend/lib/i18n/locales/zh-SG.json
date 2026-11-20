@@ -1804,7 +1804,6 @@
       "subtitle": "创建和管理用户组以控制访问和权限",
       "enterpriseTitle": "用户组权限功能仅在企业版中提供",
       "enterpriseMessage": "升级到企业版以使用用户组权限功能。",
-      "enterpriseContact": "联系我们",
       "createGroup": "创建用户组",
       "searchPlaceholder": "搜索...",
       "emptyTitle": "您尚未创建任何用户组",
@@ -1885,6 +1884,21 @@
         "saveError": "保存权限失败",
         "loadError": "加载权限失败",
         "empty": "尚未定义任何权限。"
+      }
+    },
+    "enterprise": {
+      "contact": "联系销售",
+      "scim": {
+        "heading": "SCIM 预配功能仅在企业版中提供",
+        "message": "让 Okta 或 Microsoft Entra ID 自动添加、更新和停用工作区中的成员。"
+      },
+      "auditLogs": {
+        "heading": "审计日志功能仅在企业版中提供",
+        "message": "查看工作区中谁在何时做了什么。"
+      },
+      "usage": {
+        "heading": "用量、额度和账单功能仅在企业版中提供",
+        "message": "按人员、智能体、连接器和模型查看 AI 成本，管理额度、套餐和发票，并在消费设置中设置支出提醒。"
       }
     },
     "teams": {
@@ -2459,6 +2473,8 @@
       "sections": {
         "overview": "概览",
         "workspace": "工作区",
+        "usageAndCredits": "用量与额度",
+        "security": "安全",
         "personal": "个人",
         "people": "成员",
         "developerSettings": "开发者设置"
@@ -2488,6 +2504,9 @@
         "archivedChats": "已归档的对话",
         "users": "用户",
         "groups": "群组",
+        "scim": "SCIM",
+        "auditLogs": "审计日志",
+        "usage": "用量与额度",
         "teams": "团队",
         "webSearch": "网络搜索",
         "tenants": "租户",
@@ -2774,7 +2793,37 @@
       "tools": {
         "title": "工具",
         "subtitle": "关闭单个工具。关闭的工具不会提供给 MCP 客户端，对它的调用会被拒绝。",
-        "writes": "写入"
+        "writes": "写入",
+        "descriptions": {
+          "pipeshub_sources": "列出用户可读取的连接器和集合，以及工作区已配置的 AI 模型。客户端据此选择在哪里搜索以及使用哪个模型聊天。",
+          "pipeshub_search": "在用户可读取的连接器和集合中按语义搜索已索引的文档，并返回匹配的段落及其所属记录。",
+          "pipeshub_get_record_content": "读取一条记录的全文。还可以通过 URL、问题编号或外部 ID 查找记录，浏览文件夹、空间或史诗下的内容，以及读取整个 Slack 会话串。",
+          "pipeshub_download_record": "下载记录存储的原始文件，可选择转换为 PDF。",
+          "pipeshub_directory": "查询当前登录的用户、工作区的用户和群组，以及该用户所属的团队。不会更改任何内容。",
+          "pipeshub_create_collection": "创建一个归用户所有的新空集合，可向其中上传文件。",
+          "pipeshub_upload": "将文档上传到集合，以便建立索引并可供搜索。每次调用最多 20 个文档、约 3 MB。",
+          "pipeshub_indexing_status": "报告集合的索引进度，以及哪些文档失败及其原因。",
+          "pipeshub_connect_source": "返回一个链接，用户在浏览器中打开它来连接 Slack、Google Drive 或 Jira 等来源。该工具本身不会连接任何内容。",
+          "pipeshub_add_web_source": "将网站添加为用户自己的 Web 连接器。它从起始页面开始抓取，跟随页面中的链接，并且每天重新抓取。默认保留 100 个页面，客户端可要求更多，最多 10,000 个。OAuth 应用或访问令牌还需要 connector:write 和 connector:sync 权限范围。",
+          "pipeshub_chat": "向 PipesHub 自带的助手或工作区的某个智能体提问，并返回带引用的回答。写入工具关闭时，它不会运行已连接的操作。关闭它也会同时关闭智能体列表。",
+          "pipeshub_agents": "列出工作区的智能体及其工具和知识，以便客户端与其中一个聊天。仅在“与 PipesHub 聊天”开启时提供。",
+          "pipeshub_show_citations": "向用户展示回答所依据的来源，按 [1]、[2] 等编号，并附带每个文档的预览。每次调用最多 30 个段落。仅提供给能够显示引用查看器的客户端，例如 Claude。",
+          "pipeshub_preview_record": "仅供引用查看器使用，AI 模型不会调用。它分段加载记录所存储的文件，以便查看器显示文档。关闭期间，查看器无法加载文档预览。",
+          "pipeshub_code_repos": "列出用户可读取的已索引代码仓库。代码工具仅提供给拥有已索引代码的用户；OAuth 应用或访问令牌还需要 code:read 权限范围。",
+          "pipeshub_code_symbols": "显示已索引仓库中某个目录或文件包含的内容：子目录和文件，或文件定义的符号。",
+          "pipeshub_code_neighbours": "显示代码图中某个文件或符号周围的内容：它的调用方、它调用的代码、导入和继承关系。",
+          "pipeshub_code_read": "读取已索引的源代码：一个符号、一段行范围或整个文件。读取的是索引副本，可能落后于仓库。",
+          "pipeshub_code_path": "逐步显示仓库中一个符号如何到达另一个符号。",
+          "pipeshub_code_search": "按确切名称、字符串或正则表达式查找代码。",
+          "pipeshub_code_semantic_search": "在不知道名称时，根据自然语言描述查找某个功能或行为背后的代码。",
+          "pipeshub_code_outline": "列出文件中的类、函数和方法及其签名和行范围，不含函数体。",
+          "pipeshub_code_impact": "显示依赖某个符号的内容：所有调用、导入或基于它的代码，以及覆盖到它的测试。可回答谁调用了它、修改后会影响什么。",
+          "pipeshub_code_impact_of_diff": "接收一个统一格式的 diff，例如 git diff 的输出或拉取请求的 diff，显示它更改的符号、涉及这些符号的文件和测试，以及没有测试覆盖的调用方。",
+          "pipeshub_code_history": "列出修改过某个文件的已索引拉取请求，包括作者、审阅者、合并者及其提到的工单。",
+          "pipeshub_code_entry_points": "列出执行进入仓库的位置，例如路由、命令行工具、任务和钩子。是阅读陌生代码的起点。",
+          "pipeshub_entities": "在工作区的知识图谱中查找人员、团队、主题、项目、文件夹、客户和文档标题，列出与其中某一项关联的记录，以及与其一同被提及的人员、公司或产品。查找和列出在实体完成索引后提供；一同提及的列表还需要命名实体提取。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。",
+          "pipeshub_find_records": "按记录属于谁或提及了什么来列出记录，而不是按其文字：分配给某人或由其创建、撰写或拥有的记录，提及金额、日期、数量或百分比的记录，以及记录中提到指定人员、公司或产品的段落。金额和日期需要命名实体提取，段落仅在部署同时开启实体搜索时提供。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。"
+        }
       },
       "appliesNote": "更改会在几秒内应用于新的 MCP 请求。",
       "loadError": "无法加载 MCP 访问设置。请重新加载页面后重试。",
@@ -2888,8 +2937,7 @@
       },
       "enterpriseSso": {
         "title": "SAML 单点登录和 OpenID Connect",
-        "description": "让成员通过 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身份提供商登录。",
-        "contactSales": "如需购买，请发送邮件至 {{email}}"
+        "description": "让成员通过 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身份提供商登录。"
       }
     },
     "connectors": {
@@ -3180,7 +3228,8 @@
             "max_pages": "已达到最大页数限制",
             "time_limit": "已达到时间限制；下次同步将继续",
             "stalled": "网站停止响应；下次同步将继续",
-            "rate_limited": "网站一再要求减少请求；下次同步将继续"
+            "rate_limited": "网站一再要求减少请求；下次同步将继续",
+            "start_not_recorded": "同步无法保存其开始记录，因此未运行；下次同步将重试"
           },
           "pagesSaved": "已保存 {{count}} 个页面",
           "failed": "{{count}} 个页面失败",
@@ -3636,6 +3685,91 @@
           "other": "此连接器的权限需要有人查看。",
           "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
         }
+      },
+      "userAccess": {
+        "connect": "连接",
+        "reconnect": "重新连接",
+        "connected": "已连接",
+        "connectedAs": "已以 {{account}} 连接",
+        "connectDialog": {
+          "title": "将你的账户连接到 {{name}}",
+          "description": "粘贴你自己的 {{source}} 账户中的个人访问令牌。PipesHub 只会向你显示你的账户可以打开的页面。",
+          "howTo": "如何创建个人访问令牌",
+          "tokenLabel": "个人访问令牌",
+          "submitting": "正在连接…",
+          "errorFallback": "无法连接你的账户，请重试。",
+          "signInHint": "{{source}} 只列出你拥有完全访问权限的页面。所选页面的子页面（包括新建的）都会包含在内。之后如需添加更多页面，请重新登录。",
+          "signingIn": "正在等待 {{source}}…",
+          "signInFailed": "登录未完成。请重试。",
+          "popupBlocked": "浏览器拦截了登录窗口。请允许此网站的弹出窗口后重试。"
+        },
+        "admin": {
+          "title": "已连接的用户",
+          "description": "此连接器只向每个人显示其自己账户可以打开的内容。未连接的人看不到任何内容。",
+          "remove": "移除",
+          "removeTitle": "移除 {{email}} 的连接？",
+          "removeMessage": "在重新连接之前，对方将看不到此连接器的结果。",
+          "removing": "正在移除…",
+          "removed": "连接已移除",
+          "status": {
+            "connected": "已连接",
+            "needs_reconnect": "需要重新连接",
+            "invited": "已邀请",
+            "not_invited": "未邀请",
+            "opted_out": "不希望收到提醒",
+            "no_account": "没有 PipesHub 账户"
+          },
+          "noAccountHint": "请先邀请他们加入 PipesHub",
+          "invite": "邀请",
+          "remind": "提醒",
+          "sent_other": "已发送给 {{count}} 人",
+          "notEmailed_other": "有 {{count}} 人的邮件未能发送；他们仍收到了应用内通知。",
+          "lastSent": "上次发送于 {{time}}",
+          "connectedAt": "连接于 {{time}}",
+          "membersUpdated": "成员列表上次读取于 {{time}}",
+          "membersPending": "成员列表将在下次同步后显示",
+          "queued_other": "正在发送给 {{count}} 人。他们会收到一条通知和一封邮件。",
+          "nothingSent": "未发送任何内容",
+          "skipReason": {
+            "connected": "已连接。",
+            "not_found": "已不是成员。",
+            "opted_out": "不希望收到提醒。",
+            "recently_sent": "过去一天内已发送过。",
+            "not_sent": "无法发送。请稍后重试。"
+          },
+          "inviteWho": "邀请 {{name}}",
+          "remindWho": "提醒 {{name}}",
+          "removeWho": "移除 {{name}} 的连接",
+          "yourAccount": "你的账号",
+          "connectedOf": "{{total}} 人中已有 {{connected}} 人连接",
+          "needReconnect_other": "{{count}} 人需要重新连接",
+          "search": "按姓名或邮箱搜索",
+          "inviteEveryoneHint": "所有尚未连接的人",
+          "inviteEveryone": "全部邀请（{{count}}）",
+          "noMatches": "没有与“{{q}}”匹配的人",
+          "nobody": "暂时没有人。下次同步后会显示。"
+        },
+        "link": {
+          "title": "连接你的 {{source}} 账户",
+          "forEmail": "适用于 {{email}}",
+          "continue": "继续前往 {{source}}",
+          "loading": "正在检查链接…",
+          "alreadyConnected": "你的 {{source}} 账户已连接。",
+          "openApp": "打开 PipesHub",
+          "expired": "此链接已过期或已被使用。请向管理员索取新链接，或在 PipesHub 的“您的个人连接器”中连接。",
+          "optedOut": "你将不会再收到此连接器的提醒。",
+          "error": "出了点问题。请一分钟后重试。",
+          "noSignIn": "此连接器使用个人访问令牌。打开 PipesHub，在通知中选择“连接”来粘贴你的令牌。",
+          "done": "{{name}} 已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "doneUnnamed": "你的账户已连接。几分钟后，你的页面将出现在 PipesHub 搜索中。",
+          "failedTitle": "无法连接",
+          "failedRetry": "请使用邮件中的链接重试。",
+          "confirmOptOut": "停止 {{name}} 的提醒？",
+          "stopReminders": "停止提醒",
+          "rateLimited": "尝试次数过多，请一分钟后重试。",
+          "cancelled": "你取消了登录。",
+          "signInFailed": "登录未完成。请重试。"
+        }
       }
     },
     "mcpServers": {
@@ -3741,6 +3875,7 @@
         "disconnected": "已成功断开连接",
         "disconnectError": "断开连接失败",
         "credentialsSaveError": "服务器已保存，但凭证无法保存。您可以稍后在“管理”中添加。",
+        "accessSaveError": "服务器已保存，但可使用者设置未保存。请再次保存以应用访问权限。",
         "logoSaveError": "服务器已保存，但其徽标未能保存。您可以在“管理”中重试。",
         "credentialsSaved": "凭据已保存",
         "credentialsReset": "MCP 服务器已更新。由于连接已更改，已保存的凭证已被删除；请重新连接后再使用。",
@@ -4308,6 +4443,13 @@
       "verifyingConnection": "正在验证连接...",
       "sendImages": "向 LLM 发送图片",
       "sendImagesDescription": "控制在网络搜索期间是否向 LLM 发送图片",
+      "imageSettingsTitle": "图片",
+      "imageSettingsDescription": "助手读取网页时可看到的图片",
+      "maxImages": "每页最多图片数",
+      "maxImagesHelp": "1 到 50 之间的整数。只有支持图片的模型才会收到图片。",
+      "maxImagesInvalid": "请输入 1 到 50 之间的整数",
+      "imagesCostWarning": "每张图片都会增加读取网页的成本和时间。",
+      "imageSettingsUnavailable": "无法加载图片设置，因此暂时无法更改。",
       "toasts": {
         "providerAdded": "已添加 {{label}}",
         "providerAddedDescription": "网络搜索配置成功。要使用 {{label}}，请关闭其他所有网络搜索方式",
@@ -4317,6 +4459,7 @@
         "saveError": "保存网络搜索设置失败",
         "imagesEnabled": "图片将发送给 LLM",
         "imagesDisabled": "图片将不会发送给 LLM",
+        "maxImagesUpdated": "每页最多发送 {{count}} 张图片",
         "updateError": "更新设置失败",
         "saved": "网络搜索设置已保存",
         "savedDescription": "您的更改已成功应用。",
@@ -4560,6 +4703,9 @@
           "label": "提取服务",
           "description": "基于 LLM 的文档分类和元数据提取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜索索引超出了向量数据库的内存",

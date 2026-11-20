@@ -43,7 +43,7 @@ import hmac
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +59,8 @@ if TYPE_CHECKING:
 # Version 1 carried a boundary per partition; such a cursor is refused rather
 # than reinterpreted.
 _VERSION = 2
+# A carried total older than this is counted again: the viewer's access may have narrowed since, and a total must not count what they lost.
+COUNT_MAX_AGE_SECONDS = 300
 
 # Wire keys are short because the cursor travels in a query string, and long
 # ones cost more than they explain. The mapping lives here and nowhere else.
@@ -231,6 +233,15 @@ class KnowledgeHubCursor:
     # Connectors left out of the listing when it began because they were not ready: they stay out for every page of it, since a connector that joined
     # mid-walk would be read only past the boundary, and the carried total would not count it.
     not_ready: list[str] | None = None
+    # When ``total`` and ``counts_by_type`` were counted; ``issued_at_ms`` moves on every page, this does not.
+    counted_at_ms: int = 0
+
+    def with_fresh_counts(self, now_ms: int | None = None) -> "KnowledgeHubCursor":
+        """This cursor, minus a carried total older than ``COUNT_MAX_AGE_SECONDS`` or of unknown age, so the page counts the listing again."""
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        if self.total is None or (self.counted_at_ms > 0 and 0 <= now - self.counted_at_ms <= COUNT_MAX_AGE_SECONDS * 1000):
+            return self
+        return replace(self, total=None, total_capped=False, counts_by_type=None, counted_at_ms=0)
 
     def to_wire(self) -> dict:
         wire: dict[str, Any] = {
@@ -249,6 +260,7 @@ class KnowledgeHubCursor:
             ("pi", self.parent_id), ("pt", self.parent_type),
             ("vp", self.via_parent_id), ("m", self.mode),
             ("u", self.user_id), ("o", self.org_id), ("la", self.limit_apps), ("nx", self.not_ready or None),
+            ("ca", self.counted_at_ms or None),
         )
         wire.update({key: value for key, value in optional if value is not None})
         return wire
@@ -264,6 +276,9 @@ class KnowledgeHubCursor:
             raise CursorError(f"unknown cursor direction {direction!r}")
         if "b" not in wire:
             raise CursorError("cursor carries no boundary")
+        # a count time of another type is an unknown one: the total is counted again, never a 400
+        counted_at = wire.get("ca", 0)
+        counted_at = counted_at if isinstance(counted_at, int) and not isinstance(counted_at, bool) else 0
         items_seen = wire.get("sn", 0)
         if isinstance(items_seen, bool) or not isinstance(items_seen, int) or items_seen < 0:
             raise CursorError("items seen must be a non-negative integer")
@@ -287,6 +302,7 @@ class KnowledgeHubCursor:
             issued_at_ms=wire.get("ts", 0),
             limit_apps=wire.get("la"),
             not_ready=_strings(wire.get("nx"), "not ready connectors"),
+            counted_at_ms=counted_at,
         )
 
 

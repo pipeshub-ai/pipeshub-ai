@@ -13,6 +13,7 @@ the copy, and the call raises. The same take-back is why a connector goes back t
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -21,8 +22,9 @@ from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg import flush, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
-from app.services.graph_db.postgres.kg.model import CODE_EPOCH, Key
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE, Key, _ms, _s
 from app.services.graph_db.postgres.kg.project import project
+from app.services.graph_db.postgres.kg.reader import RECORDS_BYTE_ORDER
 from app.services.graph_db.postgres.kg.stamp import stamp_app
 from app.services.graph_db.postgres.kg.verify import (
     PAGE,
@@ -73,11 +75,13 @@ def _parse(cursor: str | None) -> Key | None:
     if not cursor or cursor == "done":
         return None
     c, _, i = cursor.partition("|")
-    return (c, i)
+    if c == "records":
+        return ("records", "")
+    return ("records", i) if c == RECORDS_BYTE_ORDER else (c, i)
 
 
 def _fmt(k: Key) -> str:
-    return f"{k[0]}|{k[1]}"
+    return f"{RECORDS_BYTE_ORDER if k[0] == 'records' else k[0]}|{k[1]}"
 
 
 # A copy carries this in its (unused until verified) digest once a batch of it was taken off the readers: it then ends not listed from. A restart or a take-back clears it with the cursor.
@@ -209,6 +213,66 @@ async def _copied(db: KernelDB, org: str, app_id: str) -> bool:
                           WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2), false)""", org, app_id))
     with bind(_ctx(org)):
         return await db.run(go)
+
+
+# A copy finished by epoch 7 code holds no trash columns (kg_0019) and nothing else this code derives differently: its trash columns are read from the connector's nodes, derived
+# as the projection derives them and written where they differ, then the copy is relabelled this code's epoch with its mode and its verify. It is never copied again.
+FILL_FROM = 7
+FILL_STATE = """/* pipeshub:kg.trash_fill_state */ SELECT code_epoch, backfill_cursor, mode, verify_digest, verified_at FROM kg.projection_state WHERE org_id = $1 AND app_sk = $2"""
+# One page of the connector's records in id order, whatever they hold (``has``: a delete time or batch to derive): a page reads at most ``page`` rows, so a large connector with
+# few deleted records never scans past its page under the connector's lock.
+FILL_RECORDS = """/* pipeshub:kg.trash_fill_records */ SELECT n.coll, n.id, n.doc->'deletedAtTimestamp' AS ts, n.doc->'deleteBatchId' AS batch,
+    (n.doc ? 'deletedAtTimestamp' OR n.doc ? 'deleteBatchId') AS has FROM graph.nodes n
+    WHERE n.org_id = $1 AND n.coll = 'records' AND (n.doc->>'connectorId') = $2 AND n.id > $3 ORDER BY (n.doc->>'connectorId'), n.id LIMIT $4"""
+# The connector's groups (no index by connector: the org's groups are few beside its records) and the connector itself.
+FILL_REST = """/* pipeshub:kg.trash_fill_rest */ SELECT n.coll, n.id, n.doc->'deletedAtTimestamp' AS ts, n.doc->'deleteBatchId' AS batch FROM graph.nodes n
+    WHERE n.org_id = $1 AND ((n.coll = 'recordGroups' AND (n.doc->>'connectorId') = $2) OR (n.coll = 'apps' AND n.id = $2))
+      AND (n.doc ? 'deletedAtTimestamp' OR n.doc ? 'deleteBatchId')"""
+FILL_HELD = """/* pipeshub:kg.trash_fill_held */ SELECT k.sk, k.coll, k.id, k.kind, k.deleted_ms, k.delete_batch FROM unnest($2::smallint[], $3::text[]) AS q(coll, id)
+    JOIN kg.records k ON k.org_id = $1 AND k.coll = q.coll AND k.id = q.id"""
+
+
+async def fill_trash(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, after: str = "", max_pages: int | None = None,
+                     stop: asyncio.Event | None = None) -> tuple[str | None, str | None]:
+    """Bring a copy finished by epoch 7 code up to this code's epoch in place, from ``after`` (a record id) for at most ``max_pages`` pages. Returns (the mode it was relabelled
+    with, None) when done, (None, where to go on) when a bound or ``stop`` came first, and (None, None) when the connector holds no such copy. Each page holds the connector's
+    lock, as a copy batch does, so the drain never interleaves with it; a call started again from the beginning writes only what still differs."""
+    pages = 0
+
+    async def write(tx: Tx, rows: list) -> None:
+        derived = {(COLL_CODE[r["coll"]], r["id"]): (_ms(_json(r["ts"])), _s(_json(r["batch"]))) for r in rows}
+        if not derived:
+            return
+        held = await tx.fetch(FILL_HELD, org, [k[0] for k in derived], [k[1] for k in derived])
+        await KgWriter(tx).trash_set([(h["sk"], h["coll"], h["id"], h["kind"], *derived[(h["coll"], h["id"])]) for h in held
+                                      if (h["deleted_ms"], h["delete_batch"]) != derived[(h["coll"], h["id"])]])
+
+    async def step(tx: Tx) -> tuple[str, str] | str | None:
+        await lock_apps(tx, org, {app_id}, org_wide=False)
+        state = await tx.fetchrow(FILL_STATE, org, await _app_sk(tx, app_id))
+        if state is None or state["code_epoch"] != FILL_FROM or state["backfill_cursor"] != "done":
+            return None
+        rows = await tx.fetch(FILL_RECORDS, org, app_id, after, page)
+        await write(tx, [r for r in rows if r["has"]])
+        if len(rows) == page:
+            return ("next", rows[-1]["id"])           # the cursor moves only once this unit has committed: a retried unit reads the same page again
+        await write(tx, await tx.fetch(FILL_REST, org, app_id))
+        await KgWriter(tx).projection_set(await _app_sk(tx, app_id), epoch=CODE_EPOCH, mode=state["mode"], digest=state["verify_digest"], cursor="done",
+                                          verified_at=state["verified_at"])
+        return state["mode"]
+    with bind(_ctx(org)):
+        while True:
+            if (stop is not None and stop.is_set()) or (max_pages is not None and pages >= max_pages):
+                return None, after
+            out = await db.run(step, write=True)
+            if not isinstance(out, tuple):
+                return out, None
+            after = out[1]
+            pages += 1
+
+
+def _json(v: object) -> object:
+    return json.loads(v) if isinstance(v, str) else v
 
 
 async def principals_copied(db: KernelDB, org: str) -> bool:

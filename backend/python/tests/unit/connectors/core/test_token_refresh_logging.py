@@ -26,6 +26,7 @@ from app.core import org_context as oc
 from app.utils import credential_refresh_log as CR
 from app.utils import logging_fields
 from app.utils import request_context as rc
+from app.utils.logger import JsonFormatter, TextFormatter
 from app.utils.structured_logging import DefaultLoggingProvider
 from tests.support.refresh_log_fakes import (
     INVALID_GRANT,
@@ -550,3 +551,105 @@ class TestDeauthentication:
         )
         if failure_level is None:
             assert send.await_args.kwargs["message"]["payload"]["orgId"] == "o1"
+
+
+MARKER = "FIELD-MARKER-31"
+
+
+def _answer(**fields: object) -> tuple[int, str]:
+    return 200, json.dumps({"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 3600, **fields})
+
+
+def _assert_no_marker(caplog: pytest.LogCaptureFixture) -> None:
+    for record in caplog.records:
+        rendered = TextFormatter().format(record) + JsonFormatter().format(record) + repr(_fields(record)) + (record.exc_text or "")
+        assert MARKER not in rendered, record.getMessage()
+
+
+class TestMalformedTokenField:
+    """F26c: a token field that cannot be parsed is named, never quoted, and is never saved over the connector's token."""
+
+    @pytest.mark.parametrize("answer", [_answer(created_at=MARKER), _answer(expires_in=MARKER), _answer(expires_in=float("nan"))],
+                             ids=["created_at", "expires_in", "expires_in_nan"])
+    async def test_a_malformed_answer_is_misconfigured_once_and_keeps_the_saved_token(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture, answer: tuple[int, str],
+    ) -> None:
+        endpoint.answers = [answer, answer]
+        config.store[_key("c1")] = _expired()
+        saved = config.store[_key("c1")]["credentials"]
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+        await service._refresh_all_tokens()
+
+        ends = _events(caplog, CR.EVENT_END)
+        assert [(_fields(r)["error_class"], _fields(r)["reason"], _fields(r)["error_type"]) for r in ends] == [
+            ("misconfigured", "malformed_token", "MalformedTokenError")] * 2
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == [ends[0]]
+        assert config.store[_key("c1")]["credentials"] == saved
+        _assert_no_marker(caplog)
+        _assert_no_secrets(caplog)
+
+    async def test_a_numeric_text_lifetime_is_saved_as_a_number_and_scheduled(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [_answer(expires_in="3599")]
+        config.store[_key("c1")] = _expired()
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+        await service._refresh_all_tokens()  # main: TypeError on the saved string, every scan
+
+        assert config.store[_key("c1")]["credentials"]["expires_in"] == 3599
+        assert [_fields(r)["outcome"] for r in _events(caplog, CR.EVENT_END)] == ["success"]
+        assert _events(caplog, CR.EVENT_CHECK_FAILED) == []
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    async def test_a_saved_numeric_text_lifetime_schedules_a_refresh(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        config.store[_key("c1")] = _config()
+        config.store[_key("c1")]["credentials"]["expires_in"] = "3599"  # written before F26c
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+
+        [line] = _events(caplog, CR.EVENT_SCHEDULED)
+        assert (line.levelno, _fields(line)["connector_id"]) == (logging.INFO, "c1")
+        assert _events(caplog, CR.EVENT_CHECK_FAILED) == []
+
+    async def test_a_saved_malformed_lifetime_is_misconfigured_without_its_value_and_the_scan_goes_on(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        config.store[_key("c1")] = _config()
+        config.store[_key("c1")]["credentials"]["expires_in"] = MARKER  # written before F26c
+        config.store[_key("c2")] = _config()
+        _connectors(graph, _doc("c1", "o1"), _doc("c2", "o1"))
+
+        await service._refresh_all_tokens()
+
+        [failed] = _events(caplog, CR.EVENT_CHECK_FAILED)
+        assert (failed.levelno, _fields(failed)["error_class"], _fields(failed)["reason"], _fields(failed)["connector_id"]) == (
+            logging.ERROR, "misconfigured", "malformed_token", "c1")
+        assert [_fields(r)["connector_id"] for r in _events(caplog, CR.EVENT_SCHEDULED)] == ["c2"]
+        _assert_no_marker(caplog)
+
+    async def test_a_bad_refresh_token_lifetime_is_dropped_and_the_refresh_succeeds(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [_answer(refresh_token_expires_in=MARKER)]
+        config.store[_key("c1")] = _expired()
+        _connectors(graph, _doc("c1", "o1"))
+
+        await service._refresh_all_tokens()
+
+        assert [_fields(r)["outcome"] for r in _events(caplog, CR.EVENT_END)] == ["success"]
+        saved = config.store[_key("c1")]["credentials"]
+        assert (saved["access_token"], saved["refresh_token_expires_in"]) == ("at-new", None)
+        _assert_no_marker(caplog)

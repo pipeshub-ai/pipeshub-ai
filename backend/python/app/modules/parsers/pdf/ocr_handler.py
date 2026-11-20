@@ -172,10 +172,6 @@ class OCRHandler:
         """
         self.logger.info("🚀 Starting document processing")
         strategy = self._create_strategy(self.provider, **self._strategy_kwargs)
-        try:
-            self.logger.debug("📥 Loading document")
-            await strategy.load_document(content)
-            return strategy.document_analysis_result
-        except Exception as e:
-            self.logger.error(f"❌ Error processing document: {str(e)}")
-            raise
+        self.logger.debug("📥 Loading document")
+        await strategy.load_document(content)
+        return strategy.document_analysis_result

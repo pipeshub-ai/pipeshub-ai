@@ -198,42 +198,6 @@ class TestInvokeStructuredOutputMinimal:
         assert out is not None and out.x == 3
 
 
-class TestInvokeRowDescriptionsReflection:
-    async def test_count_match_returns_immediately(self):
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-        from app.utils.streaming import invoke_with_row_descriptions_and_reflection
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new=AsyncMock(return_value=RowDescriptions(descriptions=["a", "b"])),
-        ):
-            row = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [], expected_count=2, max_retries=1
-            )
-        assert row is not None and len(row.descriptions) == 2
-
-    async def test_count_mismatch_reflection_returns_corrected(self):
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-        from app.utils.streaming import invoke_with_row_descriptions_and_reflection
-
-        fixed = RowDescriptions(descriptions=["one", "two", "three"])
-
-        async def refl_side_effect(*args, **kwargs):
-            refl_side_effect.call_count = getattr(refl_side_effect, "call_count", 0) + 1
-            if refl_side_effect.call_count == 1:
-                return RowDescriptions(descriptions=["only-one"])
-            return fixed
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new=AsyncMock(side_effect=refl_side_effect),
-        ):
-            row = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [], expected_count=3, max_retries=1
-            )
-        assert row is not None and len(row.descriptions) == 3
-
-
 @pytest.mark.parametrize("scenario", ["success", "bad_import"])
 def test_opik_module_reload_config_branches(monkeypatch, scenario):
     """Exercise module-level Opik init via importlib.reload."""

@@ -24,23 +24,65 @@ import type {
 
 
 import { handleBackendError } from '../../../libs/errors/backend-error';
+import { audit } from '../../../libs/services/audit';
+import {
+  auditTeamMembers,
+  auditUserRefusal,
+  userRefusal,
+  UserAuditReason,
+} from '../utils/user-audit';
+
+/** What the team service's refusal status means (the 400s are input errors and are not audited). */
+const TEAM_REFUSALS: Readonly<Partial<Record<number, UserAuditReason>>> = {
+  [HTTP_STATUS.FORBIDDEN]: 'not_owner',
+  [HTTP_STATUS.NOT_FOUND]: 'not_found',
+  [HTTP_STATUS.CONFLICT]: 'name_taken',
+};
+
+/**
+ * The team service's refusal as an error, tagged with why when the status
+ * says so. It forbids deleting the org's All team before it checks ownership.
+ */
+const teamRefusal = (
+  aiResponse: { statusCode: number },
+  operation: string,
+  protectedTeam = false,
+): Error => {
+  const error = handleBackendError(aiResponse, operation);
+  const reason =
+    protectedTeam && aiResponse.statusCode === HTTP_STATUS.FORBIDDEN
+      ? 'protected_team'
+      : TEAM_REFUSALS[aiResponse.statusCode];
+  return reason === undefined ? error : userRefusal(error, reason);
+};
+
+const asArray = (value: unknown): unknown[] =>
+  Array.isArray(value) ? value : [];
+
+/**
+ * The `userId` of each `{ userId, role }` entry. The route schema has already
+ * dropped entries without both, as the team service would.
+ */
+const userIdsOf = (entries: unknown): unknown[] =>
+  asArray(entries).map((entry) => (entry as { userId?: unknown } | null)?.userId);
 
 /**
  * Handle AI service response
  * Checks status code and extracts error messages if needed
  */
 const handleAIServiceResponse = (
-  aiResponse: any,
+  aiResponse: { statusCode: number; data?: unknown } | undefined,
   res: Response,
   operation: string,
   failureMessage: string,
   successStatus: number = HTTP_STATUS.OK,
+  protectedTeam = false,
 ) => {
   if (!aiResponse) {
     throw new InternalServerError('No response from AI service');
   }
   if (aiResponse.statusCode !== HTTP_STATUS.OK && aiResponse.statusCode !== HTTP_STATUS.CREATED) {
-    throw handleBackendError(aiResponse, operation);
+    throw teamRefusal(aiResponse, operation, protectedTeam);
   }
   const responseData = aiResponse.data;
   if (!responseData) {
@@ -86,10 +128,7 @@ async function enrichTeamsProfilePictures(
   try {
     dpDocs = await getPictureRepository().listSet(orgId, uniqueIds);
   } catch (error) {
-    logger.warn('Could not look up team profile pictures', {
-      orgId,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
+    logger.warn('Could not look up team profile pictures', { error });
     return;
   }
 
@@ -128,12 +167,6 @@ export class TeamsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    this.logger.info('Creating team', {
-      requestId: req.context?.requestId,
-      userId: req.user?.userId,
-      orgId: req.user?.orgId,
-    });
-    const requestId = req.context?.requestId;
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
@@ -161,23 +194,33 @@ export class TeamsController {
         aiResponse.statusCode !== HTTP_STATUS.CREATED &&
         aiResponse.statusCode !== HTTP_STATUS.OK
       ) {
-        throw handleBackendError(aiResponse, 'Creating team');
+        throw teamRefusal(aiResponse, 'Creating team');
       }
       const teamData = aiResponse.data as TeamResponse | undefined;
       if (!teamData) {
         throw new NotFoundError('Creating team failed: Team not found');
       }
       const created = teamIn(teamData);
+      if (created?.id === undefined) {
+        // The team exists, but its answer did not say which one.
+        audit('team.create', { outcome: 'success', reason: 'no_team_id' });
+      } else {
+        audit('team.create', {
+          target: created.id,
+          targetIsTeam: true,
+          outcome: 'success',
+        });
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        // The creator joins as owner; the team service skips them in the list.
+        const members = userIdsOf(body.userRoles).filter((id) => id !== userId);
+        auditTeamMembers('team.member.add', created.id, members);
+      }
       if (created !== undefined) {
         await enrichTeamsProfilePictures(orgId, [created], this.logger);
       }
       res.status(HTTP_STATUS.CREATED).json(teamData);
     } catch (error: any) {
-      this.logger.error('Error creating team', {
-        requestId,
-        message: 'Error creating team',
-        error: error.message,
-      });
+      auditUserRefusal('team.create', error);
       const handledError = handleBackendError(error, 'create team');
       next(handledError);
     }
@@ -188,7 +231,6 @@ export class TeamsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const requestId = req.context?.requestId;
     const { teamId } = req.params as { teamId: string };
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
@@ -229,11 +271,6 @@ export class TeamsController {
       await enrichTeamsProfilePictures(orgId, [found], this.logger);
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
-      this.logger.error('Error getting team', {
-        requestId,
-        message: 'Error getting team',
-        error: error.message,
-      });
       const handledError = handleBackendError(error, 'get team');
       next(handledError);
     }
@@ -244,11 +281,10 @@ export class TeamsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const requestId = req.context?.requestId;
+    const teamId = req.params.teamId as string;
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -270,8 +306,9 @@ export class TeamsController {
         throw new InternalServerError('No response from AI service');
       }
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw handleBackendError(aiResponse, 'Updating team');
+        throw teamRefusal(aiResponse, 'Updating team');
       }
+      this.auditTeamUpdate(teamId, (req.body ?? {}) as Record<string, unknown>);
       const teamData = aiResponse.data as TeamResponse | undefined;
       if (!teamData) {
         throw new NotFoundError('Updating team failed: Team not found');
@@ -282,10 +319,9 @@ export class TeamsController {
       }
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
-      this.logger.error('Error updating team', {
-        requestId,
-        message: 'Error updating team',
-        error: error.message,
+      auditUserRefusal('team.update', error, {
+        target: teamId,
+        targetIsTeam: true,
       });
       const handledError = handleBackendError(error, 'update team');
       next(handledError);
@@ -297,11 +333,10 @@ export class TeamsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const requestId = req.context?.requestId;
+    const teamId = req.params.teamId as string;
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
-      const teamId = req.params.teamId as string;
       if (!orgId) {
         throw new BadRequestError('Organization ID is required');
       }
@@ -323,12 +358,18 @@ export class TeamsController {
         res,
         'Deleting team',
         'Failed to delete team',
+        HTTP_STATUS.OK,
+        teamId === `all_${orgId}`,
       );
+      audit('team.delete', {
+        target: teamId,
+        targetIsTeam: true,
+        outcome: 'success',
+      });
     } catch (error: any) {
-      this.logger.error('Error deleting team', {
-        requestId,
-        message: 'Error deleting team',
-        error: error.message,
+      auditUserRefusal('team.delete', error, {
+        target: teamId,
+        targetIsTeam: true,
       });
       const handledError = handleBackendError(error, 'delete team');
       next(handledError);
@@ -340,7 +381,6 @@ export class TeamsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const requestId = req.context?.requestId;
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
@@ -384,11 +424,6 @@ export class TeamsController {
 
       res.status(HTTP_STATUS.OK).json(data);
     } catch (error: any) {
-      this.logger.error('Error getting team users', {
-        requestId,
-        message: 'Error getting team users',
-        error: error.message,
-      });
       const handledError = handleBackendError(error, 'get team users');
       next(handledError);
     }
@@ -399,7 +434,6 @@ export class TeamsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const requestId = req.context?.requestId;
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
@@ -457,13 +491,29 @@ export class TeamsController {
 
       res.status(HTTP_STATUS.OK).json(teamsData);
     } catch (error: any) {
-      this.logger.error('Error getting user teams', {
-        requestId,
-        message: 'Error getting user teams',
-        error: error.message,
-      });
       next(error);
     }
   }
 
+  /**
+   * The success lines of a team PUT, in the order the team service writes:
+   * name and description, removals, role changes, additions.
+   */
+  private auditTeamUpdate(teamId: string, body: Record<string, unknown>): void {
+    // An empty description is a change too.
+    if (body.name !== undefined || body.description !== undefined) {
+      audit('team.update', {
+        target: teamId,
+        targetIsTeam: true,
+        outcome: 'success',
+      });
+    }
+    auditTeamMembers('team.member.remove', teamId, asArray(body.removeUserIds));
+    auditTeamMembers(
+      'team.member.role.change',
+      teamId,
+      userIdsOf(body.updateUserRoles),
+    );
+    auditTeamMembers('team.member.add', teamId, userIdsOf(body.addUserRoles));
+  }
 }

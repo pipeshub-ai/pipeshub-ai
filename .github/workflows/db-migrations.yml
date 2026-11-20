@@ -11,6 +11,17 @@ on:
       - 'backend/python/app/edition.py'
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/db-migrations.yml'
+  # Two pull requests that each add the next revision of a branch both pass on their own; after both merge, main has two
+  # heads, and only a run on main sees it.
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/db/**'
+      - 'deployment/docker-compose/postgres/pg-roles.sh'
+      - 'backend/python/app/edition.py'
+      - 'scripts/assert_no_skips.py'
+      - '.github/workflows/db-migrations.yml'
 
 permissions:
   contents: read

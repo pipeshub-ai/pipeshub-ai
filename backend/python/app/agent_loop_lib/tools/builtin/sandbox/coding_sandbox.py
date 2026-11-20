@@ -372,7 +372,8 @@ class CodingSandboxTool(Tool):
             "generation unless a Python library would produce significantly better results "
             "(e.g. data science with numpy/pandas, ML with torch/sklearn, image processing "
             "with Pillow, scientific computing with scipy) — when Python is chosen, briefly "
-            "note why. Failures (syntax/type/runtime errors, timeouts) are returned as "
+            "note why. TypeScript has no top-level await: put async code in an "
+            "`async function main()` and call `main()`. Failures (syntax/type/runtime errors, timeouts) are returned as "
             "structured data with a category and suggestion for you to fix and retry — they "
             "are not exceptions. $OUTPUT_DIR is always set: to produce a downloadable file "
             "(PDF, chart, spreadsheet, image, document, ...), write ONLY that final file to "
@@ -450,7 +451,7 @@ class CodingSandboxTool(Tool):
             self._allow_network, len(code),
         )
         try:
-            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id)
+            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name)
         except UnknownSandboxError as e:
             _logger.error("CodingSandboxTool.execute: unknown sandbox %s: %s", sandbox_id, e)
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
@@ -488,7 +489,12 @@ class CodingSandboxTool(Tool):
             packages=packages or [],
             allow_network=self._allow_network,
         )
-        result = await backend.execute(request)
+        try:
+            async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
+                result = await backend.execute(request)
+        except SandboxLimitExceeded as e:
+            _logger.warning("CodingSandboxTool.execute: no free slot: %s", e)
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
         _logger.info(
             "CodingSandboxTool.execute: result exit_code=%d artifacts=%s "
             "duration_ms=%.1f stderr_len=%d",
@@ -583,7 +589,7 @@ class InstallPackagesTool(Tool):
         sandbox_id = _reuse_id(sandbox_id)
         is_fresh_sandbox = sandbox_id is None
         try:
-            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id)
+            resolved_id, backend = await self._manager.get_or_create(SandboxType.CODING, sandbox_id, tool=self.name)
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=unknown_sandbox_guidance(e))
         except SandboxLimitExceeded as e:
@@ -600,7 +606,11 @@ class InstallPackagesTool(Tool):
         if is_fresh_sandbox:
             uploaded_inputs = await _upload_staged_files(backend)
 
-        result = await backend.install_packages(packages, language)
+        try:
+            async with self._manager.slot(SandboxType.CODING, resolved_id, tool=self.name):
+                result = await backend.install_packages(packages, language)
+        except SandboxLimitExceeded as e:
+            return ToolOutput(success=False, error=sandbox_limit_guidance(e))
         data = {**result.model_dump(), "sandbox_id": resolved_id}
         if uploaded_inputs:
             data["input_files"] = sorted(uploaded_inputs)

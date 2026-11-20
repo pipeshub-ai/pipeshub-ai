@@ -494,7 +494,7 @@ class MockTransactionStore:
             return existing.id
         return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
-    async def get_users(self, org_id: str, active: bool = True) -> List[User]:
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> List[User]:
         results = []
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("orgId") == org_id and (not active or doc.get("isActive", True)):
@@ -729,10 +729,10 @@ class MockTransactionStore:
                 "relationshipType": RecordRelations.PARENT_CHILD.value,
             }], CollectionNames.NODE_RELATIONS.value)
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> List[Dict]:
         return self._s.get_edges_from_node(from_node_id, edge_collection)
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
+    async def get_edges_to_node(self, node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> List[Dict]:
         return self._s.get_edges_to_node(node_id, edge_collection)
 
     async def delete_record_by_key(self, key: str) -> None:

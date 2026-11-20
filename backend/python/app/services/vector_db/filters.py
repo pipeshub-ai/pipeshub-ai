@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -282,16 +283,29 @@ def build_filter_expression(
     )
 
 
+class BlankFilterValue(NonRetryableError, ValueError):
+    """A filter names an identifying field (a record, a block) with no value. Dropping the clause would select everything the other clauses allow."""
+
+
+#: Fields that say *which* record or block a filter is about. A filter that names one without a value is a caller's bug, never "no restriction":
+#: ``delete_embeddings("")`` would otherwise become "delete everything of the org".
+REQUIRED_VALUE_KEYS = frozenset({"virtualRecordId", "blockId"})
+_REQUIRED_VALUE_FIELDS = frozenset(canonical_filter_key(k) for k in REQUIRED_VALUE_KEYS)
+
+
 def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondition]:
     """Backend-neutral ``FieldCondition`` list from a key -> value dict.
 
     Keys are canonicalised to ``metadata.x``; None and blank-string values are
-    skipped. A list is kept even when empty (after dropping None): an empty list
-    matches nothing, it is not the absence of a filter. Providers translate the
-    conditions into their own query syntax.
+    skipped, except for the identifying fields in ``REQUIRED_VALUE_KEYS``, where
+    they raise :class:`BlankFilterValue`. A list is kept even when empty (after
+    dropping None): an empty list matches nothing, it is not the absence of a
+    filter. Providers translate the conditions into their own query syntax.
     """
     conditions: list[FieldCondition] = []
     for key, value in filters.items():
+        if is_missing(value) and canonical_filter_key(key) in _REQUIRED_VALUE_FIELDS:
+            raise BlankFilterValue(f"'{key}' in the filter has no value; the clause would be dropped and the filter widened")
         if value is None:
             continue
         field_key = canonical_filter_key(key)

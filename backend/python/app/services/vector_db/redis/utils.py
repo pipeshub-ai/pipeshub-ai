@@ -16,6 +16,7 @@ like ``-`` which are safe in Redis tag values.  We still escape any char that
 Redis treats as special inside ``{}``.
 """
 
+import re
 import struct
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -87,6 +88,33 @@ def redisearch_any_term_query(query: str) -> str:
     return f"({' | '.join(terms)})"
 
 
+_FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def query_fields(query: str) -> frozenset[str]:
+    """The index fields an FT query refers to (every ``@name`` outside an escape).
+
+    Every value this module writes into a query is escaped (:func:`escape_tag_value`,
+    :func:`escape_redisearch_text`), so an unescaped ``@`` always opens a field
+    modifier and a backslash always protects the character after it.
+    """
+    found: set[str] = set()
+    i, n = 0, len(query)
+    while i < n:
+        c = query[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "@":
+            m = _FIELD_NAME.match(query, i + 1)
+            if m:
+                found.add(m.group())
+                i = m.end()
+                continue
+        i += 1
+    return frozenset(found)
+
+
 def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
     """Convert a list of FieldCondition objects to a Redis FT query fragment."""
     parts: List[str] = []
@@ -101,6 +129,9 @@ def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
                 f"values_count_lte on '{field}' cannot be expressed as a Redis "
                 "FT query; split it off before building the query"
             )
+        if cond.value is None and cond.values is None:
+            # Skipping it would leave the rest of the query wider than the caller asked.
+            raise ValueError(f"filter condition on '{field}' carries no value to match")
         if cond.values is not None and not cond.values:
             # An empty list matches nothing, and ``{}`` is a syntax error in a
             # tag query. A tag cannot both be and not be "x".

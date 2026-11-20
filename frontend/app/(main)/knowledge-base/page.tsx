@@ -2634,7 +2634,12 @@ function KnowledgeBasePageContent() {
         } else if (hubItem.nodeType === 'app') {
           await KnowledgeBaseApi.reindexRecordGroup(item.id, depth, statusFilters);
         } else {
-          await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+          // The Force reindex action of an indexed file re-parses and re-indexes it: nothing stored is reused.
+          if (requiresForceReindexConfirmation(reindexNode, statusFilters)) {
+            await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters, true);
+          } else {
+            await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+          }
         }
 
         toast.update(toastId, {
@@ -2642,7 +2647,13 @@ function KnowledgeBasePageContent() {
           title: getReindexSuccessTitle(reindexNode, depth, statusFilters),
         });
 
-        await refreshData();
+        // The request succeeded: a failed refresh of the list is not a failed reindex, and must not offer a retry
+        // that would send the same (possibly Force) request again.
+        try {
+          await refreshData();
+        } catch {
+          // the list refreshes on its next load
+        }
       } catch (error: unknown) {
         const errorMessage = getUserFacingErrorMessage(
           error,

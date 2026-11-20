@@ -114,9 +114,6 @@ def render_metrics(load: ParseLoad | None = None, default_capacity: int | None =
     snap = (load or _load).snapshot()
     stuck_count, stuck_oldest = _stuck.snapshot()
     lines = [
-        "# HELP pipeshub_parsing_in_flight Parse requests in the service now, waiting for a slot or parsing.",
-        "# TYPE pipeshub_parsing_in_flight gauge",
-        f"pipeshub_parsing_in_flight {snap['in_flight']}",
         "# HELP pipeshub_parsing_capacity Concurrent parses this pod takes: PARSING_MAX_CONCURRENT, else its heavy-parse ceiling.",
         "# TYPE pipeshub_parsing_capacity gauge",
         f"pipeshub_parsing_capacity {capacity(default_capacity)}",

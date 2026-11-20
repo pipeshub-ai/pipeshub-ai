@@ -9,6 +9,7 @@ import { AddressInfo } from 'net'
 import express from 'express'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
+import { StorageServiceAdapter } from '../../../../src/modules/storage/adapter/base-storage.adapter'
 import { StorageController } from '../../../../src/modules/storage/controllers/storage.controller'
 import { endpoint as ENDPOINTS_KEY, storageEtcdPaths } from '../../../../src/modules/storage/constants/constants'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
@@ -206,6 +207,215 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect(filesOnDisk()).to.deep.equal(
         [onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
       )
+    })
+
+    it('a purge with `before` removes only objects written before it: a late DELETE leaves what a newer run stored', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      const cutoff = Date.now()
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await store(page('c'), 'stored after the purge started')
+      const purged = await call('DELETE', `/internal/paid-results/${REC}?before=${cutoff}`)
+      expect(purged).to.deep.equal({ status: 200, body: { purged: true } })
+      expect(filesOnDisk()).to.deep.equal(
+        [onDisk(ORG_A, REC, page('c')), onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
+      )
+    })
+
+    it('the purge cutoff is the store\'s own time: what was stored before it goes, what follows it stays, the sentinel is gone', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      expect(cut.status).to.equal(200)
+      const cutoff = (cut.body as { cutoff: number }).cutoff
+      expect(cutoff).to.be.a('number').and.to.be.within(Date.now() - 5000, Date.now() + 1000)
+      expect(filesOnDisk()).to.have.length(5)
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await store(page('c'), 'stored after the cutoff')
+      expect((await call('DELETE', `/internal/paid-results/${REC}?before=${cutoff}`)).status).to.equal(200)
+      expect((await call('DELETE', `/internal/paid-results/${REC}?before=${cutoff}`)).status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal(
+        [onDisk(ORG_A, REC, page('c')), onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
+      )
+    })
+
+    it('a batch purge removes the named records\' folders and nothing else, with one result per id in request order', async () => {
+      const purged = await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC_2, 'never-stored', REC] })
+      expect(purged).to.deep.equal({
+        status: 200,
+        body: { results: [
+          { recordId: REC_2, purged: true },
+          { recordId: 'never-stored', purged: true },
+          { recordId: REC, purged: true },
+        ] },
+      })
+      // Org B's folder of the same record id stays: the org is the token's.
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_B, REC, page('a'))])
+      // A repeat is a success too.
+      expect((await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC] })).status).to.equal(200)
+    })
+
+    it('a batch purge reports a failed id as its own result and still purges the others', async () => {
+      const real = StorageServiceAdapter.prototype.deleteTree
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'deleteTree').callsFake(async function (this: any, root: string) {
+        if (root.endsWith(`/${REC}`)) throw new Error('store down: secret-detail')
+        return real.call(this, root)
+      })
+      const res = await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC, REC_2] })
+      stub.restore()
+      expect(res.status).to.equal(200)
+      expect(res.body.results).to.deep.equal([
+        { recordId: REC, purged: false, error: 'purge failed' },
+        { recordId: REC_2, purged: true },
+      ])
+      expect(JSON.stringify(res.body)).to.not.include('secret-detail')
+      expect(filesOnDisk()).to.include(onDisk(ORG_A, REC, page('a')))
+      expect(filesOnDisk()).to.not.include(onDisk(ORG_A, REC_2, page('a')))
+    })
+
+    it('a batch purge takes the org from the token only: another org\'s token never reaches org A\'s folders', async () => {
+      const res = await call('POST', '/internal/paid-results/purge-batch', { recordIds: [REC, REC_2] }, ORG_B)
+      expect(res.status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal(
+        [onDisk(ORG_A, REC, page('a')), onDisk(ORG_A, REC, page('b')), onDisk(ORG_A, REC, 'manifests/rev1/parse.json'), onDisk(ORG_A, REC_2, page('a'))].sort(),
+      )
+    })
+
+    it('a batch purge refuses a missing or wrong token', async () => {
+      const url = `${baseUrl}/internal/paid-results/purge-batch`
+      const init = { method: 'POST', body: JSON.stringify({ recordIds: [REC] }) }
+      expect((await fetch(url, { ...init, headers: { 'content-type': 'application/json' } })).status).to.equal(401)
+      expect((await fetch(url, { ...init, headers: { 'content-type': 'application/json', authorization: 'Bearer not-a-token' } })).status).to.equal(401)
+      expect(filesOnDisk()).to.have.length(5)
+    })
+
+    it('a batch purge refuses a bad id, the reserved `org`, a repeat, an empty list and more than 100 ids, and removes nothing', async () => {
+      const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `r${i}`)
+      const bad: Array<[string, unknown]> = [
+        ['traversal', { recordIds: [REC, '../x'] }],
+        ['slash', { recordIds: ['a/b'] }],
+        ['dot', { recordIds: ['.hidden'] }],
+        ['long', { recordIds: ['x'.repeat(129)] }],
+        ['reserved org', { recordIds: [REC, 'org'] }],
+        ['empty id', { recordIds: [''] }],
+        ['non-string', { recordIds: [5] }],
+        ['repeat', { recordIds: [REC, REC] }],
+        ['empty list', { recordIds: [] }],
+        ['over the cap', { recordIds: ids(101) }],
+        ['no ids', {}],
+        ['org in the body', { recordIds: [REC], orgId: ORG_A }],
+        ['org in the body (other spelling)', { recordIds: [REC], org: ORG_A }],
+      ]
+      for (const [name, body] of bad) {
+        expect((await call('POST', '/internal/paid-results/purge-batch', body)).status, name).to.equal(400)
+      }
+      expect(filesOnDisk()).to.have.length(5)
+      // Exactly at the cap is fine.
+      expect((await call('POST', '/internal/paid-results/purge-batch', { recordIds: ids(100) })).status).to.equal(200)
+    })
+
+    it('a batch purge keeps at most 8 folder deletes in flight', async () => {
+      const real = StorageServiceAdapter.prototype.deleteTree
+      let inFlight = 0
+      let peak = 0
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'deleteTree').callsFake(async function (this: any, root: string) {
+        inFlight++
+        peak = Math.max(peak, inFlight)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        inFlight--
+        return real.call(this, root)
+      })
+      const ids = Array.from({ length: 40 }, (_, i) => `r${i}`)
+      const res = await call('POST', '/internal/paid-results/purge-batch', { recordIds: ids })
+      stub.restore()
+      expect(res.status).to.equal(200)
+      expect(res.body.results).to.have.length(40)
+      expect(peak).to.be.within(2, 8)
+    })
+
+    it('purge-cutoff refuses a missing or wrong token, and a token acts only inside its own org', async () => {
+      const url = `${baseUrl}/internal/paid-results/${REC}/purge-cutoff`
+      expect((await fetch(url, { method: 'POST' })).status).to.equal(401)
+      expect((await fetch(url, { method: 'POST', headers: { authorization: 'Bearer not-a-token' } })).status).to.equal(401)
+      // Org B's token reaches only org B's folder: org A's objects are neither touched nor listed.
+      const b = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`, undefined, ORG_B)
+      expect(b.status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal(
+        [onDisk(ORG_A, REC, page('a')), onDisk(ORG_A, REC, page('b')), onDisk(ORG_A, REC, 'manifests/rev1/parse.json'),
+          onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort(),
+      )
+    })
+
+    it('purge-cutoff answers 503 and leaves no sentinel when the store gives the sentinel no usable stamp', async () => {
+      const real = StorageServiceAdapter.prototype.listObjects
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'listObjects').callsFake(async function (this: any, prefix: string, opts: any) {
+        const page = await real.call(this, prefix, opts)
+        return prefix.includes('/purge-cutoff/') ? { ...page, objects: page.objects.map((o: any) => ({ ...o, lastModifiedMs: 0 })) } : page
+      })
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      stub.restore()
+      expect(cut.status).to.equal(503)
+      expect(filesOnDisk().filter((f) => f.includes('purge-cutoff'))).to.deep.equal([])
+    })
+
+    it('purge-cutoff refuses a record id that is not a valid one', async () => {
+      for (const bad of ['a%2Fb', '.hidden', 'x'.repeat(300)]) {
+        expect((await call('POST', `/internal/paid-results/${bad}/purge-cutoff`)).status, bad).to.equal(400)
+      }
+      expect(filesOnDisk()).to.have.length(5)
+    })
+
+    it('purge-cutoff leaves no sentinel behind, on success or when the store fails, and a listing never shows one', async () => {
+      const ok = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      expect(ok.status).to.equal(200)
+      expect(filesOnDisk().filter((f) => f.includes('purge-cutoff'))).to.deep.equal([])
+      const listed = await call('GET', `/internal/paid-results/${REC}`)
+      expect(JSON.stringify(listed.body)).to.not.include('purge-cutoff')
+
+      // A sentinel written but not yet removed (a concurrent call, or a crash) is not a result either.
+      const leftOver = path.join(home, PLATFORM_DIR, MOUNT, onDisk(ORG_A, REC, 'purge-cutoff/left-over.json'))
+      fs.mkdirSync(path.dirname(leftOver), { recursive: true })
+      fs.writeFileSync(leftOver, '{}')
+      expect(JSON.stringify((await call('GET', `/internal/paid-results/${REC}`)).body)).to.not.include('purge-cutoff')
+
+      // The listing that reads the stamp fails: the sentinel is still removed.
+      for (const f of filesOnDisk().filter((x) => x.includes('purge-cutoff'))) fs.rmSync(path.join(home, PLATFORM_DIR, MOUNT, f))
+      const real = StorageServiceAdapter.prototype.listObjects
+      const stub = sinon.stub(StorageServiceAdapter.prototype, 'listObjects').callsFake(async function (this: any, prefix: string, opts: any) {
+        if (prefix.includes('/purge-cutoff/')) throw new Error('store down')
+        return real.call(this, prefix, opts)
+      })
+      const failed = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      stub.restore()
+      expect(failed.status).to.be.at.least(500)
+      expect(filesOnDisk().filter((f) => f.includes('purge-cutoff'))).to.deep.equal([])
+    })
+
+    it('accepts a `before` a few minutes ahead of this clock (the store\'s clock may differ), and purges by it', async () => {
+      expect((await call('DELETE', `/internal/paid-results/${REC}?before=${Date.now() + 5 * 60_000}`)).status).to.equal(200)
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC_2, page('a')), onDisk(ORG_B, REC, page('a'))].sort())
+    })
+
+    it('purge-cutoff still answers when over a thousand leftover sentinels sit in the folder', async () => {
+      const dir = path.join(home, PLATFORM_DIR, MOUNT, onDisk(ORG_A, REC, 'purge-cutoff'))
+      fs.mkdirSync(dir, { recursive: true })
+      for (let i = 0; i < 1100; i++) fs.writeFileSync(path.join(dir, `-${String(i).padStart(5, '0')}.json`), '{}')
+      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
+      expect(cut.status).to.equal(200)
+      expect(cut.body.cutoff).to.be.a('number')
+    })
+
+    it('refuses a `before` in the future and removes nothing', async () => {
+      for (const aheadMs of [20 * 60_000, 3_600_000]) {
+        expect((await call('DELETE', `/internal/paid-results/${REC}?before=${Date.now() + aheadMs}`)).status, String(aheadMs)).to.equal(400)
+      }
+      expect(filesOnDisk()).to.have.length(5)
+    })
+
+    it('refuses a `before` that is not one positive integer', async () => {
+      for (const bad of ['abc', '-5', '0', '1.5']) {
+        expect((await call('DELETE', `/internal/paid-results/${REC}?before=${bad}`)).status, bad).to.equal(400)
+      }
+      expect((await call('DELETE', `/internal/paid-results/${REC}?before=5&before=6`)).status).to.equal(400)
+      expect(filesOnDisk()).to.have.length(5)
     })
 
     it('a purge of a record with nothing stored is a success, and so is a repeat', async () => {

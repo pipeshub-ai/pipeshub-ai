@@ -3341,14 +3341,27 @@ const takeoverRefusalMessage = (
     ? embeddingRefusalMessage(takeover)
     : healthCheckFailureMessage(takeover.data, fallback);
 
+// The AI service answers a failed check as `{ message }`, `{ error: text | { message } }`, or
+// FastAPI's `{ detail: text | { message } }`, and a body of plain text in places. Each of them
+// carries the reason the admin needs; a shape not read here showed only the fallback.
 const healthCheckFailureMessage = (data: unknown, fallback: string): string => {
-  const body = (data ?? {}) as {
-    message?: string;
-    error?: string | { message?: string };
+  const textOf = (value: unknown): string | undefined => {
+    const text =
+      value !== null && typeof value === 'object'
+        ? (value as { message?: unknown }).message
+        : value;
+    return typeof text === 'string' && text.trim() !== ''
+      ? text.trim()
+      : undefined;
   };
+  if (data === null || typeof data !== 'object') {
+    return textOf(data) ?? fallback;
+  }
+  const body = data as { message?: unknown; error?: unknown; detail?: unknown };
   return (
-    body.message ??
-    (typeof body.error === 'string' ? body.error : body.error?.message) ??
+    textOf(body.message) ??
+    textOf(body.error) ??
+    textOf(body.detail) ??
     fallback
   );
 };
@@ -3426,8 +3439,10 @@ export const addAIModelProvider =
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
             ? embeddingRefusalMessage(aiResponseData)
-            : ((errData && (errData.message ?? errData.error?.message)) ??
-              `Failed to do health check of ${modelType} configuration, check credentials again`);
+            : healthCheckFailureMessage(
+                errData,
+                `Failed to do health check of ${modelType} configuration, check credentials again`,
+              );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3669,8 +3684,10 @@ export const updateAIModelProvider =
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
             ? embeddingRefusalMessage(aiResponseData)
-            : ((errData && (errData.message ?? errData.error?.message)) ??
-              `Failed to do health check of ${modelType} configuration, check credentials again`);
+            : healthCheckFailureMessage(
+                errData,
+                `Failed to do health check of ${modelType} configuration, check credentials again`,
+              );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.

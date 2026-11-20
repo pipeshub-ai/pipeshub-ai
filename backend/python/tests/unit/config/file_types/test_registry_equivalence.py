@@ -41,17 +41,20 @@ _NEW_MIMES = (
 )
 _TEMPLATE_MIMES = _NEW_MIMES[-2:]
 _TEXT_MIMES = ("text/x-log", "text/x-cfg")
+# The macro-enabled deck: indexable by its mime only, read as the pptx it is (reason pptm-mime).
+_PPTM_MIME = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
 # What each list gains: the new types, the code grammars, the xlsm hint.
 _ADDED: dict[str, object] = {
-    "gate_mimes": (*_NEW_MIMES, *_TEXT_MIMES),
+    "gate_mimes": (*_NEW_MIMES, *_TEXT_MIMES, _PPTM_MIME),
     "gate_extensions": (*_NEW, *_GRAMMARS),
     "_MIME_TO_FORMAT": {
         "application/vnd.ms-outlook": "msg", "application/vnd.oasis.opendocument.text": "odt",
         **dict.fromkeys(_RTF, "rtf"), "application/vnd.ms-excel.sheet.macroEnabled.12": "xlsx",
         "application/vnd.ms-word.document.macroEnabled.12": "docm",
         _TEMPLATE_MIMES[0]: "dotx", _TEMPLATE_MIMES[1]: "potx", "text/x-log": "log", "text/x-cfg": "cfg",
+        _PPTM_MIME: "pptx",
     },
-    "_EXT_TO_FORMAT": {**{k: k for k in _NEW}, "xlsm": "xlsx"},
+    "_EXT_TO_FORMAT": {**{k: k for k in _NEW}, "xlsm": "xlsx", "pptm": "pptx"},
     "mime_to_extension": {
         "application/vnd.ms-outlook": "msg", "application/vnd.oasis.opendocument.text": "odt",
         **dict.fromkeys(_RTF, "rtf"), "application/vnd.ms-excel.sheet.macroEnabled.12": "xlsm",
@@ -121,7 +124,7 @@ def test_the_tier_lists_are_reproduced_by_the_fall_through() -> None:
     main_by_mime = {
         **dict.fromkeys(_MAIN["HEAVY_MIME_TYPES"], "heavy"), **dict.fromkeys(_MAIN["LIGHT_MIME_TYPES"], "light"),
     }
-    new_mimes = {m.lower() for m in (*_NEW_MIMES, *_TEXT_MIMES)}
+    new_mimes = {m.lower() for m in (*_NEW_MIMES, *_TEXT_MIMES, _PPTM_MIME)}
     for mime, ft in file_types._TIER_BY_MIME.items():
         expected = ft.mime_tier if mime in new_mimes else _main_value_for_spelling(main_by_mime, mime)
         assert ft.mime_tier == expected, mime
@@ -132,7 +135,7 @@ def test_the_kind_lists_are_reproduced_by_the_fall_through() -> None:
     by_ext = {e: ft.kind for e, ft in file_types._BY_EXTENSION.items() if ft.kind}
     new = {e: by_ext[e] for e in _NEW if e != "xlsm"}
     assert dict(sorted(by_ext.items())) == dict(sorted({**_MAIN["kind_by_extension"], **new}.items()))
-    new_mimes = {m.lower() for m in (*_NEW_MIMES, *_TEXT_MIMES)}
+    new_mimes = {m.lower() for m in (*_NEW_MIMES, *_TEXT_MIMES, _PPTM_MIME)}
     for mime, ft in file_types._KIND_BY_MIME.items():
         expected = ft.mime_kind if mime in new_mimes else _main_value_for_spelling(_MAIN["kind_by_mime"], mime)
         assert ft.mime_kind == expected, mime

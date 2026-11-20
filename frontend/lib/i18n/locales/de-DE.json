@@ -1730,7 +1730,6 @@
       "subtitle": "Erstellen und verwalten Sie Gruppen zur Steuerung von Zugriff und Berechtigungen",
       "enterpriseTitle": "Gruppenberechtigungen sind in der Enterprise Edition verfügbar",
       "enterpriseMessage": "Upgraden Sie auf die Enterprise Edition, um Gruppenberechtigungen zu nutzen.",
-      "enterpriseContact": "Kontaktieren Sie uns",
       "createGroup": "Gruppe erstellen",
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",
@@ -1811,6 +1810,21 @@
         "saveError": "Berechtigungen konnten nicht gespeichert werden",
         "loadError": "Berechtigungen konnten nicht geladen werden",
         "empty": "Es sind noch keine Berechtigungen definiert."
+      }
+    },
+    "enterprise": {
+      "contact": "Mit dem Vertrieb sprechen",
+      "scim": {
+        "heading": "Die SCIM-Bereitstellung ist in der Enterprise Edition verfügbar",
+        "message": "Lassen Sie Okta oder Microsoft Entra ID Personen in Ihrem Workspace automatisch hinzufügen, aktualisieren und deaktivieren."
+      },
+      "auditLogs": {
+        "heading": "Audit-Logs sind in der Enterprise Edition verfügbar",
+        "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann."
+      },
+      "usage": {
+        "heading": "Nutzung, Credits und Abrechnung sind in der Enterprise Edition verfügbar",
+        "message": "Sehen Sie die KI-Kosten nach Person, Agent, Connector und Modell, verwalten Sie Credits, Tarif und Rechnungen und legen Sie in den Verbrauchseinstellungen Ausgabenwarnungen fest."
       }
     },
     "teams": {
@@ -2316,6 +2330,8 @@
       "sections": {
         "overview": "Übersicht",
         "workspace": "Arbeitsbereich",
+        "usageAndCredits": "Nutzung & Credits",
+        "security": "Sicherheit",
         "personal": "Persönlich",
         "people": "Personen",
         "developerSettings": "Entwicklereinstellungen"
@@ -2343,6 +2359,9 @@
         "archivedChats": "Archivierte Chats",
         "users": "Benutzer",
         "groups": "Gruppen",
+        "scim": "SCIM",
+        "auditLogs": "Audit-Logs",
+        "usage": "Nutzung & Credits",
         "teams": "Teams",
         "webSearch": "Websuche",
         "tenants": "Mandanten",
@@ -2631,7 +2650,37 @@
       "tools": {
         "title": "Tools",
         "subtitle": "Schalten Sie einzelne Tools aus. Ein ausgeschaltetes Tool wird MCP-Clients nicht angeboten, und Aufrufe werden abgelehnt.",
-        "writes": "Schreibt"
+        "writes": "Schreibt",
+        "descriptions": {
+          "pipeshub_sources": "Listet die Konnektoren und Sammlungen auf, die der Benutzer lesen kann, sowie die im Arbeitsbereich eingerichteten KI-Modelle. Clients wählen damit aus, wo gesucht und mit welchem Modell gechattet wird.",
+          "pipeshub_search": "Durchsucht indexierte Dokumente nach Bedeutung in den Konnektoren und Sammlungen, die der Benutzer lesen kann, und liefert die passenden Textstellen mit ihren Datensätzen.",
+          "pipeshub_get_record_content": "Liest den vollständigen Text eines Datensatzes. Findet außerdem einen Datensatz anhand einer URL, eines Ticketschlüssels oder einer externen ID, zeigt, was unter einem Ordner, Bereich oder Epic liegt, und liest einen ganzen Slack-Thread.",
+          "pipeshub_download_record": "Lädt die Originaldatei eines Datensatzes herunter, auf Wunsch in PDF umgewandelt.",
+          "pipeshub_directory": "Schlägt den angemeldeten Benutzer, die Benutzer und Gruppen des Arbeitsbereichs und die Teams des Benutzers nach. Ändert nichts.",
+          "pipeshub_create_collection": "Erstellt eine neue, leere Sammlung, die dem Benutzer gehört und Uploads aufnehmen kann.",
+          "pipeshub_upload": "Lädt Dokumente in eine Sammlung hoch, damit sie indexiert und durchsuchbar werden. Bis zu 20 Dokumente und etwa 3 MB pro Aufruf.",
+          "pipeshub_indexing_status": "Meldet, wie weit die Indexierung einer Sammlung ist und welche Dokumente warum fehlgeschlagen sind.",
+          "pipeshub_connect_source": "Liefert einen Link, den der Benutzer im Browser öffnet, um eine Quelle wie Slack, Google Drive oder Jira zu verbinden. Das Tool selbst verbindet nichts.",
+          "pipeshub_add_web_source": "Fügt eine Website als eigenen Web-Connector des Benutzers hinzu. Der Crawl beginnt bei einer Startseite, folgt deren Links und wird täglich wiederholt. Behalten werden 100 Seiten, sofern der Client nicht mehr anfordert, höchstens 10.000. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich die Scopes connector:write und connector:sync.",
+          "pipeshub_chat": "Fragt den PipesHub-Assistenten oder einen Agenten des Arbeitsbereichs und liefert dessen Antwort mit Quellenangaben. Solange Schreib-Tools aus sind, führt es keine verbundenen Aktionen aus. Wird es ausgeschaltet, ist auch die Agentenliste aus.",
+          "pipeshub_agents": "Listet die Agenten des Arbeitsbereichs mit ihren Tools und ihrem Wissen auf, damit ein Client mit einem davon chatten kann. Wird nur angeboten, solange der Chat mit PipesHub eingeschaltet ist.",
+          "pipeshub_show_citations": "Zeigt dem Benutzer die Quellen hinter einer Antwort, nummeriert als [1], [2] und so weiter, mit einer Vorschau jedes Dokuments. Bis zu 30 Textstellen pro Aufruf. Wird nur Clients angeboten, die den Zitat-Viewer anzeigen können, etwa Claude.",
+          "pipeshub_preview_record": "Wird nur vom Zitat-Viewer verwendet, nie vom KI-Modell. Lädt die gespeicherte Datei eines Datensatzes stückweise, damit der Viewer das Dokument anzeigen kann. Solange es aus ist, kann der Viewer keine Dokumentvorschauen laden.",
+          "pipeshub_code_repos": "Listet die indexierten Code-Repositories auf, die der Benutzer lesen kann. Die Code-Tools werden nur Benutzern mit indexiertem Code angeboten; eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope code:read.",
+          "pipeshub_code_symbols": "Zeigt, was ein Verzeichnis oder eine Datei in einem indexierten Repository enthält: Unterverzeichnisse und Dateien oder die Symbole, die eine Datei definiert.",
+          "pipeshub_code_neighbours": "Zeigt, was eine Datei oder ein Symbol im Code-Graphen umgibt: Aufrufer, aufgerufener Code, Importe und Vererbung.",
+          "pipeshub_code_read": "Liest indexierten Quellcode: ein Symbol, einen Zeilenbereich oder eine ganze Datei. Gelesen wird die indexierte Kopie, die hinter dem Repository zurückliegen kann.",
+          "pipeshub_code_path": "Zeigt Schritt für Schritt, wie ein Symbol in einem Repository ein anderes erreicht.",
+          "pipeshub_code_search": "Findet Code anhand eines exakten Namens, einer Zeichenfolge oder eines regulären Ausdrucks.",
+          "pipeshub_code_semantic_search": "Findet den Code hinter einer Funktion oder einem Verhalten anhand einer Beschreibung in normaler Sprache, wenn die Namen nicht bekannt sind.",
+          "pipeshub_code_outline": "Listet die Klassen, Funktionen und Methoden einer Datei mit Signaturen und Zeilenbereichen auf, ohne deren Inhalt.",
+          "pipeshub_code_impact": "Zeigt, was von einem Symbol abhängt: alles, was es aufruft, importiert oder darauf aufbaut, samt der Tests, die es erreichen. Beantwortet, wer es aufruft und was bei einer Änderung bricht.",
+          "pipeshub_code_impact_of_diff": "Nimmt einen Unified Diff, etwa die Ausgabe von git diff oder den Diff eines Pull Requests, und zeigt die geänderten Symbole, die Dateien und Tests, die sie erreichen, und die Aufrufer, die kein Test abdeckt.",
+          "pipeshub_code_history": "Listet die indexierten Pull Requests auf, die eine Datei geändert haben, mit Autor, Reviewern, wer gemergt hat und den genannten Tickets.",
+          "pipeshub_code_entry_points": "Listet auf, wo die Ausführung in ein Repository eintritt, etwa Routen, Kommandozeilenwerkzeuge, Jobs und Hooks. Ein Einstieg in unbekannten Code.",
+          "pipeshub_entities": "Findet Personen, Teams, Themen, Projekte, Ordner, Kunden und Dokumenttitel im Wissensgraphen des Arbeitsbereichs, listet die mit einem davon verbundenen Datensätze auf sowie die Personen, Unternehmen oder Produkte, die zusammen damit erwähnt werden. Suchen und Auflisten werden angeboten, sobald Entitäten indexiert sind; die Liste der gemeinsam Erwähnten braucht außerdem die Erkennung benannter Entitäten. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope semantic:read oder semantic:write.",
+          "pipeshub_find_records": "Listet Datensätze danach auf, wem sie gehören oder was sie erwähnen, statt nach ihrem Wortlaut: die Datensätze, die einer Person zugewiesen sind oder die sie erstellt, verfasst oder besitzt, Datensätze, die einen Betrag, ein Datum, eine Menge oder einen Prozentsatz erwähnen, und Passagen in den Datensätzen, die bestimmte Personen, Unternehmen oder Produkte nennen. Beträge und Daten brauchen die Erkennung benannter Entitäten, und die Passagen werden nur angeboten, wo die Bereitstellung zusätzlich die Entitätssuche aktiviert. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope semantic:read oder semantic:write."
+        }
       },
       "appliesNote": "Änderungen gelten innerhalb weniger Sekunden für neue MCP-Anfragen.",
       "loadError": "Die MCP-Zugriffseinstellungen konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
@@ -2746,8 +2795,7 @@
       },
       "enterpriseSso": {
         "title": "SAML-Single-Sign-on und OpenID Connect",
-        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an.",
-        "contactSales": "Zum Kauf schreiben Sie an {{email}}"
+        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an."
       }
     },
     "connectors": {
@@ -3038,7 +3086,8 @@
             "max_pages": "Seitenlimit erreicht",
             "time_limit": "Zeitlimit erreicht; die nächste Synchronisierung macht weiter",
             "stalled": "Die Website antwortete nicht mehr; die nächste Synchronisierung macht weiter",
-            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter"
+            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter",
+            "start_not_recorded": "Die Synchronisierung konnte ihren Start nicht speichern und lief daher nicht; die nächste Synchronisierung versucht es erneut"
           },
           "pagesSaved": "{{count}} Seiten gespeichert",
           "failed": "{{count}} Seiten fehlgeschlagen",
@@ -3495,6 +3544,95 @@
           "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen.",
           "unreadable": "Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen. Die Suche prüft währenddessen jedes Ergebnis."
         }
+      },
+      "userAccess": {
+        "connect": "Verbinden",
+        "reconnect": "Erneut verbinden",
+        "connected": "Verbunden",
+        "connectedAs": "Verbunden als {{account}}",
+        "connectDialog": {
+          "title": "Ihr Konto mit {{name}} verbinden",
+          "description": "Fügen Sie ein persönliches Zugriffstoken aus Ihrem eigenen {{source}}-Konto ein. PipesHub zeigt Ihnen nur die Seiten, die Ihr Konto öffnen kann.",
+          "howTo": "So erstellen Sie ein persönliches Zugriffstoken",
+          "tokenLabel": "Persönliches Zugriffstoken",
+          "submitting": "Wird verbunden…",
+          "errorFallback": "Ihr Konto konnte nicht verbunden werden. Versuchen Sie es erneut.",
+          "signInHint": "{{source}} listet nur Seiten auf, auf die Sie vollen Zugriff haben. Unterseiten einer ausgewählten Seite sind enthalten, auch neue. Um später weitere Seiten hinzuzufügen, melden Sie sich erneut an.",
+          "signingIn": "Warten auf {{source}}…",
+          "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut.",
+          "popupBlocked": "Ihr Browser hat das Anmeldefenster blockiert. Erlauben Sie Pop-ups für diese Website und versuchen Sie es erneut."
+        },
+        "admin": {
+          "title": "Verbundene Benutzer",
+          "description": "Dieser Connector zeigt jeder Person nur, was ihr eigenes Konto öffnen kann. Wer sich nicht verbunden hat, sieht nichts daraus.",
+          "remove": "Entfernen",
+          "removeTitle": "Verbindung von {{email}} entfernen?",
+          "removeMessage": "Die Person sieht keine Ergebnisse mehr aus diesem Connector, bis sie sich erneut verbindet.",
+          "removing": "Wird entfernt…",
+          "removed": "Verbindung entfernt",
+          "status": {
+            "connected": "Verbunden",
+            "needs_reconnect": "Muss neu verbinden",
+            "invited": "Eingeladen",
+            "not_invited": "Nicht eingeladen",
+            "opted_out": "Möchte keine Erinnerungen",
+            "no_account": "Kein PipesHub-Konto"
+          },
+          "noAccountHint": "Laden Sie die Person zuerst zu PipesHub ein",
+          "invite": "Einladen",
+          "remind": "Erinnern",
+          "sent_one": "An {{count}} Person gesendet",
+          "sent_other": "An {{count}} Personen gesendet",
+          "notEmailed_one": "Die E-Mail an {{count}} Person konnte nicht gesendet werden; die Benachrichtigung in der App kam trotzdem an.",
+          "notEmailed_other": "Die E-Mail an {{count}} Personen konnte nicht gesendet werden; die Benachrichtigung in der App kam trotzdem an.",
+          "lastSent": "Zuletzt gesendet {{time}}",
+          "connectedAt": "Verbunden {{time}}",
+          "membersUpdated": "Mitgliederliste zuletzt gelesen {{time}}",
+          "membersPending": "Die Mitgliederliste erscheint nach der nächsten Synchronisierung",
+          "queued_one": "Wird an {{count}} Person gesendet. Sie erhält eine Benachrichtigung und eine E-Mail.",
+          "queued_other": "Wird an {{count}} Personen gesendet. Sie erhalten eine Benachrichtigung und eine E-Mail.",
+          "nothingSent": "Nichts gesendet",
+          "skipReason": {
+            "connected": "Bereits verbunden.",
+            "not_found": "Kein Mitglied mehr.",
+            "opted_out": "Möchte keine Erinnerungen.",
+            "recently_sent": "Am letzten Tag wurde bereits etwas gesendet.",
+            "not_sent": "Konnte nicht gesendet werden. Versuchen Sie es später erneut."
+          },
+          "inviteWho": "{{name}} einladen",
+          "remindWho": "{{name}} erinnern",
+          "removeWho": "Verbindung von {{name}} entfernen",
+          "yourAccount": "Ihr Konto",
+          "connectedOf": "{{connected}} von {{total}} Personen verbunden",
+          "needReconnect_one": "{{count}} muss sich neu verbinden",
+          "needReconnect_other": "{{count}} müssen sich neu verbinden",
+          "search": "Personen nach Name oder E-Mail suchen",
+          "inviteEveryoneHint": "Alle, die sich noch nicht verbunden haben",
+          "inviteEveryone": "Alle einladen ({{count}})",
+          "noMatches": "Niemand passt zu „{{q}}“",
+          "nobody": "Noch niemand zu sehen. Personen erscheinen nach der nächsten Synchronisierung."
+        },
+        "link": {
+          "title": "Verbinden Sie Ihr {{source}}-Konto",
+          "forEmail": "für {{email}}",
+          "continue": "Weiter zu {{source}}",
+          "loading": "Link wird geprüft…",
+          "alreadyConnected": "Ihr {{source}}-Konto ist bereits verbunden.",
+          "openApp": "PipesHub öffnen",
+          "expired": "Dieser Link ist abgelaufen oder wurde bereits verwendet. Bitten Sie Ihren Admin um einen neuen oder verbinden Sie sich in PipesHub unter „Ihre persönlichen Konnektoren“.",
+          "optedOut": "Sie erhalten keine weiteren Erinnerungen für diesen Connector.",
+          "error": "Etwas ist schiefgelaufen. Versuchen Sie es in einer Minute erneut.",
+          "noSignIn": "Dieser Connector verwendet persönliche Zugriffstoken. Öffnen Sie PipesHub und wählen Sie in der Benachrichtigung „Verbinden“, um Ihres einzufügen.",
+          "done": "{{name}} ist verbunden. Ihre Seiten erscheinen in wenigen Minuten in der PipesHub-Suche.",
+          "doneUnnamed": "Ihr Konto ist verbunden. Ihre Seiten erscheinen in wenigen Minuten in der PipesHub-Suche.",
+          "failedTitle": "Verbindung fehlgeschlagen",
+          "failedRetry": "Verwenden Sie den Link in Ihrer E-Mail, um es erneut zu versuchen.",
+          "confirmOptOut": "Erinnerungen für {{name}} beenden?",
+          "stopReminders": "Erinnerungen beenden",
+          "rateLimited": "Zu viele Versuche. Versuchen Sie es in einer Minute erneut.",
+          "cancelled": "Sie haben die Anmeldung abgebrochen.",
+          "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut."
+        }
       }
     },
     "mcpServers": {
@@ -3600,6 +3738,7 @@
         "disconnected": "Erfolgreich getrennt",
         "disconnectError": "Trennen fehlgeschlagen",
         "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "accessSaveError": "Der Server wurde gespeichert, aber nicht, wer ihn nutzen darf. Speichern Sie erneut, um den Zugriff anzuwenden.",
         "logoSaveError": "Server gespeichert, aber das Logo konnte nicht gespeichert werden. Sie können es unter „Verwalten“ erneut versuchen.",
         "credentialsSaved": "Anmeldedaten gespeichert",
         "credentialsReset": "MCP-Server aktualisiert. Gespeicherte Anmeldedaten wurden entfernt, da sich die Verbindung geändert hat. Verbinden Sie sich erneut, um ihn zu verwenden.",
@@ -4017,6 +4156,13 @@
       "verifyingConnection": "Verbindung wird überprüft...",
       "sendImages": "Bilder an LLM senden",
       "sendImagesDescription": "Steuern Sie, ob Bilder während der Websuche an das LLM gesendet werden",
+      "imageSettingsTitle": "Bilder",
+      "imageSettingsDescription": "Was ein Assistent von den Bildern auf gelesenen Webseiten sieht",
+      "maxImages": "Höchstzahl Bilder pro Seite",
+      "maxImagesHelp": "Eine ganze Zahl von 1 bis 50. Nur Modelle, die Bilder verarbeiten, erhalten sie.",
+      "maxImagesInvalid": "Geben Sie eine ganze Zahl von 1 bis 50 ein",
+      "imagesCostWarning": "Jedes Bild erhöht Kosten und Dauer beim Lesen einer Seite.",
+      "imageSettingsUnavailable": "Die Bildeinstellungen konnten nicht geladen werden und lassen sich daher noch nicht ändern.",
       "toasts": {
         "providerAdded": "{{label}} wurde hinzugefügt",
         "providerAddedDescription": "Websuche erfolgreich konfiguriert. Um {{label}} zu verwenden, deaktivieren Sie alle anderen Websuche-Methoden",
@@ -4026,6 +4172,7 @@
         "saveError": "Websuche-Einstellungen konnten nicht gespeichert werden",
         "imagesEnabled": "Bilder werden an das LLM gesendet",
         "imagesDisabled": "Bilder werden nicht an das LLM gesendet",
+        "maxImagesUpdated": "Bis zu {{count}} Bilder pro Seite werden gesendet",
         "updateError": "Einstellung konnte nicht aktualisiert werden",
         "saved": "Websuche-Einstellungen gespeichert",
         "savedDescription": "Ihre Änderungen wurden erfolgreich übernommen.",
@@ -4269,6 +4416,9 @@
           "label": "Extraktionsdienst",
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
+      },
+      "healthWarnings": {
+        "title": "Aufmerksamkeit erforderlich"
       },
       "vectorDbMemory": {
         "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",

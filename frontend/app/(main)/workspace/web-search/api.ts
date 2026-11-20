@@ -1,11 +1,12 @@
 import { apiClient } from '@/lib/api';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
-import type {
-  ConfiguredWebSearchProvider,
-  WebSearchConfigData,
-  WebSearchProviderAgentUsage,
-  WebSearchProviderData,
-  WebSearchSettings,
+import {
+  MAX_IMAGES_PER_PAGE,
+  type ConfiguredWebSearchProvider,
+  type WebSearchConfigData,
+  type WebSearchProviderAgentUsage,
+  type WebSearchProviderData,
+  type WebSearchSettings,
 } from './types';
 
 // ============================================================
@@ -29,9 +30,11 @@ const normalizeWebSearchSettings = (settings: Record<string, unknown>): WebSearc
       ? settings.includeImages
       : DEFAULT_WEB_SEARCH_SETTINGS.includeImages;
   const parsedMaxImages = Number(settings?.maxImages);
+  // The server stores up to 500 but reads no more than MAX_IMAGES_PER_PAGE from a page: show the
+  // count that applies, so the editor is never handed a value it refuses.
   const maxImages =
     Number.isInteger(parsedMaxImages) && parsedMaxImages >= 1 && parsedMaxImages <= 500
-      ? parsedMaxImages
+      ? Math.min(parsedMaxImages, MAX_IMAGES_PER_PAGE)
       : DEFAULT_WEB_SEARCH_SETTINGS.maxImages;
 
   return { includeImages, maxImages };
@@ -81,9 +84,9 @@ export const WebSearchApi = {
           inherited: !!data?.inherited || false,
         };
       }
-      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS, inherited: false };
+      return { providers: [], inherited: false };
     } catch {
-      return { providers: [], settings: DEFAULT_WEB_SEARCH_SETTINGS, inherited: false };
+      return { providers: [], inherited: false };
     }
   },
 
@@ -92,7 +95,8 @@ export const WebSearchApi = {
     if (data.status === 'success') {
       return normalizeWebSearchSettings(data.settings);
     }
-    throw new Error(data.message || 'Failed to update web search settings');
+    // No English fallback: the page shows a translated description when the server gives none.
+    throw new Error(data.message || '');
   },
 
   async addProvider(providerData: WebSearchProviderData): Promise<unknown> {

@@ -45,8 +45,8 @@ SHADOW_COMPARED = METRICS_BACKEND.counter(
 )
 SHADOW_SKIPPED = METRICS_BACKEND.counter(
     "pipeshub_acl_shadow_skipped_total",
-    "Searches the shadow filter did not compare, by reason (sampled_out, busy, scopes_unavailable, no_current_connector, unsupported, too_large, "
-    "timeout, error)",
+    "Searches the shadow filter did not compare, by reason (sampled_out, served, busy, scopes_unavailable, no_current_connector, unsupported, "
+    "too_large, timeout, error)",
     ["reason"],
 )
 SHADOW_SECONDS = METRICS_BACKEND.histogram(

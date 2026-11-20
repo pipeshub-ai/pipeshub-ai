@@ -1304,11 +1304,7 @@ function ModelConfigFormBody({
             </Callout.Text>
           </Callout.Root>
         
-        {error && (
-          <Text size="2" style={{ color: 'var(--red-11)', padding: '4px 0' }}>
-            {error}
-          </Text>
-        )}
+        <ConfigSaveError error={error} />
       </Flex>
     );
   }
@@ -1430,11 +1426,7 @@ function ModelConfigFormBody({
         </Box>
       ) : null}
 
-      {error && (
-        <Text size="2" style={{ color: 'var(--red-11)', padding: '4px 0' }}>
-          {error}
-        </Text>
-      )}
+      <ConfigSaveError error={error} />
     </Flex>
   );
 }
@@ -1453,4 +1445,23 @@ function toSchemaField(field: AIModelProviderField, placeholder?: string): Schem
     validation: field.validation,
     examples: field.examples,
   } as unknown as SchemaField;
+}
+
+/**
+ * The reason a save failed. It is printed under the last field, which is often below the fold of a
+ * long form, so it scrolls itself into view: the progress toast only says to look in the panel.
+ */
+function ConfigSaveError({ error }: { error: string | null }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error) ref.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  }, [error]);
+  if (!error) return null;
+  return (
+    <div ref={ref} role="alert" data-testid="ai-model-config-error">
+      <Text size="2" style={{ color: 'var(--red-11)', padding: '4px 0' }}>
+        {error}
+      </Text>
+    </div>
+  );
 }
