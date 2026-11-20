@@ -99,6 +99,7 @@ from app.modules.indexing.rate_limit_deferral import (
 )
 from app.modules.indexing.record_diagnostics import WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
+from app.modules.pipeline import parser_identity
 from app.modules.pipeline.parse_now import (
     ELIGIBLE_STATUSES as PARSE_NOW_ELIGIBLE_STATUSES,
 )
@@ -1923,6 +1924,10 @@ class RecordEventHandler(BaseEventService):
                 record=record_obj,
                 settings={"skip_blob": True},
                 event_type=event_type,
+                # The stored blocks are reused, so the copy is the one its identity describes; its COMPLETED write
+                # re-stamps that identity instead of leaving it stale.
+                parser_identity=parser_identity.known_identity(record),
+                parser_identity_source=str(record.get(parser_identity.IDENTITY_SOURCE_FIELD) or parser_identity.SOURCE_PARSED),
             )
         except Exception:
             # Terminal by nature — the same blob parses the same way next time —

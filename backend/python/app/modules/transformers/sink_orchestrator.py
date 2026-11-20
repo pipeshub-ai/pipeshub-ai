@@ -28,6 +28,7 @@ from app.modules.indexing.parse_now_marker import (
     marker_fields,
 )
 from app.modules.indexing.replay_set import note_record_completed
+from app.modules.pipeline import parser_identity
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.record_metadata.projection import (
     NOT_PROVIDED,
@@ -938,6 +939,10 @@ class SinkOrchestrator(Transformer):
             "processingStartedAt": None,
             "isDirty": False,
         }
+        # With the copy: a commit that moves the record to a replacement copy receives these fields in the same write.
+        status.update(parser_identity.indexed_parser_fields(
+            ctx.parser_identity, ctx.parser_identity_source, at=timestamp, vrid=record.virtual_record_id,
+        ))
         if current_attempt() is not None:
             status.update(cleared_fields())
         if ctx.settings.get(ENRICHMENT_FOLLOWS):

@@ -135,6 +135,7 @@ from app.modules.named_entities.graph_ops import (
     NamedEntityGraphMixin,
     named_entity_neo4j_indexes,
 )
+from app.modules.pipeline import parser_identity
 from app.schema.node_schema_registry import (
     JSON_ENCODED_FIELDS,
     NODE_SCHEMA_REGISTRY,
@@ -8147,11 +8148,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Update all queued records
             current_timestamp = get_epoch_timestamp_in_ms()
             updated_records = []
+            # A duplicate read by another parser than this copy's is not promoted: it stays QUEUED (its own event, or the
+            # stranded-record sweep, releases it).
+            parser_plan = await parser_identity.promotion_plan(
+                ref_record, queued_records, new_indexing_status, virtual_record_id, current_timestamp,
+                lambda key: self.get_document(key, CollectionNames.FILES.value, transaction),
+            )
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
                 record_key = doc.get("_key") or doc.get("id")
-                if not record_key:
+                if not record_key or (parser_plan is not None and record_key not in parser_plan):
                     continue
 
                 update_doc = {
@@ -8163,6 +8170,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
                     **run_reference({}, WriteKind.STATUS_VAR, current_timestamp, status=new_indexing_status),
+                    **(parser_plan or {}).get(record_key, {}),
                 }
                 if reason:
                     update_doc["reason"] = reason
@@ -8197,7 +8205,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
             )
 
-            return len(queued_records)
+            return sum(1 for u in updated_records if "indexingStatus" in u)
 
         except SchemaValidationError:
             raise
