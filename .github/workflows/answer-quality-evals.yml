@@ -92,11 +92,14 @@ jobs:
       - name: Run the golden cases
         working-directory: backend/python
         env:
-          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-          # Azure OpenAI is where the credits are. The helper prefers it over
-          # OpenAI when its credentials are present, and TEST_AI_MODEL_PROVIDER
-          # stops a failure here quietly falling back to a key we no longer fund.
-          TEST_AI_MODEL_PROVIDER: azureOpenAI
+          # The AI model provider is the repository variable TEST_AI_MODEL_PROVIDER
+          # (openAI or azureOpenAI; openAI when unset). Both providers' settings are
+          # always passed, so switching provider is that one variable. The model setup,
+          # the evals and judge, and the browser tests all use only the named provider.
+          TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}
+          TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
           TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
           TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
           TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
@@ -105,9 +108,6 @@ jobs:
           # would send embedding requests to a chat model.
           TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
           TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
-          # The evals build their own chat model rather than going through the
-          # product's provider setup, so they need telling separately.
-          EVAL_PROVIDER: azure_openai
           EVAL_MODEL: ${{ github.event.inputs.model || '' }}
         run: |
           source .venv/bin/activate
@@ -125,11 +125,22 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: backend/python
         env:
+          # The AI model provider is the repository variable TEST_AI_MODEL_PROVIDER
+          # (openAI or azureOpenAI; openAI when unset). Both providers' settings are
+          # always passed, so switching provider is that one variable. The model setup,
+          # the evals and judge, and the browser tests all use only the named provider.
+          TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
+          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+          TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}
+          TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
           TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
           TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
           TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
           TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
-          EVAL_PROVIDER: azure_openai
+          # Without its own value this falls back to the LLM deployment, which
+          # would send embedding requests to a chat model.
+          TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
         run: |
           source .venv/bin/activate
           python -m tests.evals.run_judge_calibration \

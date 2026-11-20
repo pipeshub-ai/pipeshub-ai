@@ -178,11 +178,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       # Real-file conversions run in the modules shard and must not skip there (checked below). The
       # same LibreOffice components as the application image: Writer (doc, odt, rtf), Calc (xls), Impress (ppt).
       - name: Install LibreOffice
@@ -416,11 +411,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         run: pip install uv
 
@@ -466,11 +456,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv
@@ -531,11 +516,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv
@@ -603,11 +583,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv

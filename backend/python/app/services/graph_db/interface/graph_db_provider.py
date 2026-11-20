@@ -7770,12 +7770,16 @@ class IGraphDBProvider(ABC):
     # (a dict it fills as ``{app_id: granted ids}``): the global listing then lets
     # every connector's page read its grants beside the others.
     kh_grants_per_connector = False
+    # Rows one read of the rows before a numbered page may take (``KnowledgeHubService._walk_pages``); 0 is a page's worth, a read per page. Raised by a backend
+    # whose connector page costs about the same for a large window as for one page: its cost is per read, not per row (and whose memory does not grow with it).
+    kh_skip_rows = 0
 
-    async def get_knowledge_hub_warm_sample(self) -> dict[str, str] | None:
-        """One user and one App, record group and record that user can browse
-        (``userId``, ``orgId``, ``appId``, ``groupId``, ``recordId``), for warming
-        the listing statements' plans; None when the backend has no use for it."""
-        return None
+    async def get_knowledge_hub_warm_samples(self) -> list[dict[str, str]]:
+        """Samples for warming the listing statements' plans, in order of preference, at most one per App: each a user
+        and an App, record group and record that user can browse (``userId``, ``orgId``, ``appId``, ``groupId``,
+        ``recordId``). Empty when the backend has no use for it. The caller drops a sample whose App the user has
+        switched off (demo data), which only it can read."""
+        return []
 
     async def kh_scope_enabled(self) -> bool:
         return False
