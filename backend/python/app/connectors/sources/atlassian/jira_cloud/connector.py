@@ -628,6 +628,8 @@ class JiraConnector(BaseConnector):
         self._stored_app_users: list[AppUser] = []
         self._deactivated_account_ids: set[str] = set()
         self._shown_inactive_ids: set[str] = set()
+        # True when this sync holds the withdrawal of many accounts missing from a complete user list.
+        self._absence_held = False
         # A placeholder sweep's read of an ancestor failed (not "Jira has no such issue"), this sweep.
         self._ancestor_read_failed = False
         self._newly_listed_account_ids: list[str] = []
@@ -1084,10 +1086,11 @@ class JiraConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
             # An account missing from the list is gone only after a complete read; one it shows deactivated or
             # without product access is ineligible whatever the read.
-            ineligible_ids = unlicensed_ids | (
-                self._deactivated_account_ids if self._directory_read_complete() else self._shown_inactive_ids)
-            await self._withdraw_ineligible_app_users(jira_users, ineligible_ids)
-            await self._link_authenticated_account(ineligible_ids)
+            await self._withdraw_ineligible_app_users(
+                jira_users, unlicensed_ids | (
+                    self._deactivated_account_ids if self._directory_read_complete() else self._shown_inactive_ids)
+            )
+            await self._link_authenticated_account()
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -2923,6 +2926,7 @@ class JiraConnector(BaseConnector):
             self.issues_sync_point, {u.source_user_id for u in absent}, len(self._stored_app_users),
             get_epoch_timestamp_in_ms(),
         ) if self._directory_read_complete() else (True, False)
+        self._absence_held = not due
         if not due:
             gone = [u for u in gone if u not in absent]
             self.logger.warning(
@@ -2946,24 +2950,33 @@ class JiraConnector(BaseConnector):
             # No longer linked: the rest of this sync must not count them as linked accounts.
             self._stored_app_users = [u for u in self._stored_app_users if u not in gone]
 
-    async def _link_authenticated_account(self, ineligible_ids: set[str]) -> None:
+    async def _link_authenticated_account(self) -> None:
         """The user who configured the connector reads what its Jira account reads (``authenticatedAs``), and that link
-        passes the connector gate, so it holds only while this sync confirms Jira lets the account in; otherwise it is
-        removed (fail closed), and the next sync that confirms it writes it again. Confirmed: product access read in
-        full includes the account and no read shows it ineligible; or, product access unread, a complete user list
-        shows it active (``_keep_licensed_users`` then keeps the connector's own account). A product-access read
-        without the account is the answer that it has none, whatever the user list could show."""
-        me, licensed = self._authenticated_jira_account_id, self._licensed_account_ids
-        if me in ineligible_ids:
-            confirmed = False
-        elif licensed is not None:
-            confirmed = me in licensed
-        else:
-            confirmed = self._directory_read_complete() and me in self._listed_account_ids
-        if me and confirmed:
-            await self.register_authenticated_source_user(self._authenticated_jira_email, me)
-        else:
+        passes the connector gate, so it is written or removed by what this sync reads of the account itself, whether
+        or not the account is still stored (``_authenticated_link``)."""
+        decision = self._authenticated_link()
+        if decision == "link":
+            await self.register_authenticated_source_user(self._authenticated_jira_email, self._authenticated_jira_account_id)
+        elif decision == "unlink":
             await self.data_entities_processor.unlink_authenticator(self.connector_id)
+
+    def _authenticated_link(self) -> str:
+        """``link``, ``unlink`` or ``keep`` the configuring user's link to the connector's own Jira account, after the
+        user and product-access reads. Unknown account, or a row showing it deactivated: unlink. Product access read in
+        full: link exactly when it includes the account (only active members of a product group count), whatever the
+        user list shows. Product access unread: a complete user list showing the account active links it; one without
+        it unlinks, unless that sync holds the withdrawal of many missing accounts (``absent_accounts_due``), which
+        keeps the link as it is; a user list not read in full tells nothing, so the link goes (fail closed)."""
+        me, licensed = self._authenticated_jira_account_id, self._licensed_account_ids
+        if not me or me in self._shown_inactive_ids:
+            return "unlink"
+        if licensed is not None:
+            return "link" if me in licensed else "unlink"
+        if not self._directory_read_complete():
+            return "unlink"
+        if me in self._listed_account_ids:
+            return "link"
+        return "keep" if self._absence_held else "unlink"
 
     def _directory_read_complete(self) -> bool:
         """The user list was read in full: not cut short, not refused, and not empty when accounts were linked

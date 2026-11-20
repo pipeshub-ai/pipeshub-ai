@@ -53,6 +53,7 @@ def _make_mock_deps():
     data_entities_processor.org_id = "org-jira-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.withdraw_team_app_edge = AsyncMock()
+    data_entities_processor.unlink_authenticator = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
@@ -738,6 +739,74 @@ class TestJiraFullSync:
             await connector.run_sync()
         assert dep.link_authenticator_to_source_user.await_count == (1 if linked else 0)
         assert dep.unlink_authenticator.await_args_list == ([] if linked else [call("conn-jira-1")])
+
+    @staticmethod
+    def _missing_from_a_complete_list(licensed: set[str] | None, *, stored: bool) -> tuple[JiraConnector, MagicMock]:
+        """A connector whose user list, read in full, does not show its own account ``a1``; ``stored`` says whether
+        ``a1`` is still a linked app user (the first sync) or was withdrawn already (a later one)."""
+        connector, dep, *_ = _make_connector()
+        connector.data_source = MagicMock()
+        connector._authenticated_jira_account_id, connector._authenticated_jira_email = "a1", "sync@test.com"
+        dep.link_authenticator_to_source_user = AsyncMock()
+        dep.unlink_authenticator = AsyncMock()
+        dep.withdraw_app_user_access = AsyncMock()
+        other = AppUser(app_name=Connectors.JIRA, connector_id="conn-jira-1", source_user_id="b1", org_id="org-jira-1",
+                        email="bob@test.com", full_name="Bob", is_active=True)
+        mine = AppUser(app_name=Connectors.JIRA, connector_id="conn-jira-1", source_user_id="a1", org_id="org-jira-1",
+                       email="sync@test.com", full_name="Sync", is_active=True, id="node-a1")
+
+        async def fetch(**_kwargs: object) -> list[AppUser]:
+            connector._stored_app_users = [mine] if stored else []
+            connector._listed_account_ids = connector._seen_account_ids = {"b1"}
+            connector._shown_inactive_ids = set()
+            connector._deactivated_account_ids = {"a1"} if stored else set()
+            return [other]
+
+        async def keep(found: list[AppUser], _mapping: object) -> list[AppUser]:
+            connector._licensed_account_ids = licensed
+            return found
+
+        connector._fetch_users = AsyncMock(side_effect=fetch)
+        connector._keep_licensed_users = AsyncMock(side_effect=keep)
+        connector._sync_user_groups = AsyncMock(return_value={})
+        connector._fetch_projects = AsyncMock(return_value=([], []))
+        connector._sync_project_roles = AsyncMock()
+        connector._sync_project_lead_roles = AsyncMock()
+        connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        connector._sync_all_project_issues = AsyncMock(return_value={"total_synced": 0, "new_count": 0, "updated_count": 0})
+        connector._update_issues_sync_checkpoint = AsyncMock()
+        connector._handle_issue_deletions = AsyncMock()
+        connector.notify = AsyncMock()
+        return connector, dep
+
+    @pytest.mark.asyncio
+    async def test_an_account_missing_from_a_complete_list_stays_unlinked_on_the_next_sync(self) -> None:
+        """Product access unread, the user list read in full without the connector's account: the first sync withdraws
+        it and removes the link; the next identical read, with the account no longer stored, must not write it again."""
+        for stored in (True, False):
+            connector, dep = self._missing_from_a_complete_list(None, stored=stored)
+            with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+                       new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
+                await connector.run_sync()
+            dep.link_authenticator_to_source_user.assert_not_awaited()
+            assert dep.unlink_authenticator.await_args_list == [call("conn-jira-1")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("licensed", "decision"), [({"a1"}, "link"), (None, "keep"), ({"b1"}, "unlink")])
+    async def test_a_held_mass_absence_keeps_the_link_unless_product_access_says_no(
+        self, licensed: set[str] | None, decision: str,
+    ) -> None:
+        """When the sync holds the withdrawal of many accounts missing from the list (``absent_accounts_due``), the
+        account's absence is not evidence: product access read in full decides (it includes the account: linked; it
+        does not: removed at once), and with product access unread the link stays as it is."""
+        connector, dep = self._missing_from_a_complete_list(licensed, stored=True)
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+                   new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.absent_accounts_due",
+                      new_callable=AsyncMock, return_value=(False, False)):
+            await connector.run_sync()
+        assert dep.link_authenticator_to_source_user.await_count == (1 if decision == "link" else 0)
+        assert dep.unlink_authenticator.await_count == (1 if decision == "unlink" else 0)
 
     @pytest.mark.asyncio
     async def test_run_sync_no_users_returns(self):

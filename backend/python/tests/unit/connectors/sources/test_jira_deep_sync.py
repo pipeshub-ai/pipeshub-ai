@@ -56,6 +56,7 @@ def _make_mock_deps():
     dep.org_id = "org-jira-1"
     dep.on_new_app_users = AsyncMock()
     dep.withdraw_team_app_edge = AsyncMock()
+    dep.unlink_authenticator = AsyncMock()
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()

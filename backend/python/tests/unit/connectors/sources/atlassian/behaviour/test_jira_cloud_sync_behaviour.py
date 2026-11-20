@@ -401,6 +401,10 @@ class SiteDb(CloudRecordsDb):
     async def withdraw_team_app_edge(self, connector_id: str) -> None:
         self.team_gate_open = False
 
+    async def unlink_authenticator(self, connector_id: str) -> None:
+        # The connector's own account is not confirmed on this site (no /myself answer): its link goes.
+        self.authenticator_unlinked = True
+
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, *,
         raise_on_error: bool = False,
