@@ -398,11 +398,11 @@ async def test_a_304_of_a_range_capable_object_says_so() -> None:
 
 # --- refusals -----------------------------------------------------------------------------------------------
 
-async def test_no_access_is_403_even_with_matching_etag() -> None:
+async def test_no_access_is_404_even_with_matching_etag() -> None:
     world = World()
     world.access = None
     exc = await _refusal(world.stream(inm=TAG))
-    assert exc.status_code == 403
+    assert exc.status_code == 404
     assert "etag" not in _headers(exc)
     assert world.info_calls == 0
     world.kb.read.assert_not_awaited()
@@ -428,7 +428,7 @@ def _refuse(name: str) -> Any:
 
 REFUSALS = [
     ("org_mismatch", lambda: World(_record(org_id="org-2")), 404),
-    ("no_access", lambda: _with(World(), access=None), 403),
+    ("no_access", lambda: _with(World(), access=None), 404),
     ("placeholder", lambda: World(_record(is_placeholder=True)), 422),
     ("connector_deleted", lambda: World(app_doc=False), 404),
     ("connector_disabled_not_in_memory", lambda: World(app_doc={"_key": "conn-1", "type": "KB", "isActive": False, "name": "Collections"}, in_memory=False), 409),
