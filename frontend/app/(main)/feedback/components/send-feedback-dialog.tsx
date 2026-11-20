@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Dialog,
   Flex,
@@ -25,6 +25,12 @@ import {
 } from '../attachment-rules';
 import { useFeedbackDialogStore } from '../store';
 import { useSupportDialogStore } from '../../support/store';
+import { SupportApi } from '../../support/api';
+import { EmailAppView, type MailDraft } from '../../support/components/result-step';
+import { SmtpNotice } from '../../support/components/smtp-notice';
+import type { SupportContext } from '../../support/types';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { MAIL_DETAILS_SEPARATOR } from '../../support/utils';
 import type { FeedbackKind } from '../types';
 
 const MIN_DESCRIPTION = 10;
@@ -115,6 +121,19 @@ export function SendFeedbackDialog() {
   const [error, setError] = useState<string | undefined>();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [mail, setMail] = useState<MailDraft | null>(null);
+  const [context, setContext] = useState<SupportContext | null>(null);
+  const isAdmin = useUserStore(selectIsAdmin) === true;
+
+  // Learn whether email is set up, so the form can say so before the person writes anything.
+  useEffect(() => {
+    if (!isOpen) return;
+    const controller = new AbortController();
+    SupportApi.getContext(controller.signal)
+      .then(setContext)
+      .catch(() => setContext(null));
+    return () => controller.abort();
+  }, [isOpen]);
 
   const reset = () => {
     setKind('issue');
@@ -123,6 +142,7 @@ export function SendFeedbackDialog() {
     setError(undefined);
     setIsSubmitting(false);
     setIsDragging(false);
+    setMail(null);
   };
 
   const handleClose = () => {
@@ -160,6 +180,18 @@ export function SendFeedbackDialog() {
     }
   };
 
+  // Without SMTP (or when the send fails) the person sends it from their own mail app, as Contact support does.
+  const showEmailInstead = async (text: string) => {
+    const known = context ?? (await SupportApi.getContext().catch(() => null));
+    const label = kind === 'issue' ? t('feedback.kindIssue') : t('feedback.kindFeedback');
+    const workspace = known?.workspaceName ? ` ${known.workspaceName}` : '';
+    setMail({
+      to: known?.supportEmail ?? '',
+      subject: `[${t('feedback.title')} · ${label}]${workspace}`,
+      body: `${text}${MAIL_DETAILS_SEPARATOR}${label}`,
+    });
+  };
+
   const handleSubmit = async () => {
     const trimmed = description.trim();
     if (trimmed.length < MIN_DESCRIPTION) {
@@ -170,17 +202,21 @@ export function SendFeedbackDialog() {
     setIsSubmitting(true);
     setError(undefined);
     try {
+      if (context && !context.smtpConfigured) {
+        await showEmailInstead(trimmed);
+        return;
+      }
       const { outcome } = await FeedbackApi.submit({ kind, description: trimmed, files });
       // Nothing is stored, so feedback that did not go out is lost unless the person sends it again.
       if (outcome !== 'sent' && outcome !== 'pending') {
-        setError(t('feedback.submitError'));
+        await showEmailInstead(trimmed);
         return;
       }
       toast.success(t('feedback.success'));
       close();
       reset();
     } catch {
-      setError(t('feedback.submitError'));
+      await showEmailInstead(trimmed);
     } finally {
       setIsSubmitting(false);
     }
@@ -255,6 +291,12 @@ export function SendFeedbackDialog() {
           </IconButton>
         </Flex>
 
+        {mail ? (
+          <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingBottom: 16 }}>
+            <EmailAppView mail={mail} fileCount={files.length} onDone={handleClose} />
+          </Box>
+        ) : (
+        <>
         <Box
           style={{
             flex: 1,
@@ -264,6 +306,10 @@ export function SendFeedbackDialog() {
           }}
         >
           <Flex direction="column" gap="3">
+            {context && !context.smtpConfigured && (
+              <SmtpNotice supportEmail={context.supportEmail} isAdmin={isAdmin} />
+            )}
+
             <Flex gap="2" wrap="wrap">
               <KindChip
                 selected={kind === 'issue'}
@@ -467,10 +513,12 @@ export function SendFeedbackDialog() {
               {t('feedback.cancel')}
             </Button>
             <Button size="2" onClick={handleSubmit} disabled={!canSubmit}>
-              {isSubmitting ? <Spinner size="2" /> : t('feedback.submit')}
+              {isSubmitting ? <Spinner size="2" /> : context && !context.smtpConfigured ? t('support.continue') : t('feedback.submit')}
             </Button>
           </Flex>
         </Flex>
+        </>
+        )}
       </Dialog.Content>
     </Dialog.Root>
   );

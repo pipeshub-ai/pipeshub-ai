@@ -16,6 +16,7 @@ import {
 import { SUPPORT_AREA_META } from '../areas';
 import type { SupportAreaKey, SupportDraft, SupportRow } from '../types';
 import { DetailsTable } from './details-table';
+import { SmtpNotice } from './smtp-notice';
 
 export const MIN_DESCRIPTION = 10;
 export const MAX_DESCRIPTION = 5000;
@@ -88,29 +89,7 @@ export function DetailsStep({
 
   return (
     <Flex direction="column" px="5" style={{ gap: 20 }}>
-      {!smtpConfigured && (
-        <Flex
-          gap="3"
-          align="start"
-          style={{
-            padding: 'var(--space-3)',
-            borderRadius: 'var(--radius-3)',
-            background: 'var(--amber-a3)',
-            border: '1px solid var(--amber-a5)',
-          }}
-        >
-          <MaterialIcon name="mail_lock" size={18} color="var(--amber-11)" />
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--amber-12)' }}>
-              {t('support.details.smtpTitle')}
-            </Text>
-            <Text size="1" style={{ color: 'var(--amber-11)' }}>
-              {t('support.details.smtpBody', { email: supportEmail })}{' '}
-              {isAdmin ? t('support.details.smtpAdmin') : t('support.details.smtpMember')}
-            </Text>
-          </Flex>
-        </Flex>
-      )}
+      {!smtpConfigured && <SmtpNotice supportEmail={supportEmail} isAdmin={isAdmin} />}
 
       <Flex
         align="center"
