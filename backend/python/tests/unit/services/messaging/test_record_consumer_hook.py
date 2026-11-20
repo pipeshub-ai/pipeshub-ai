@@ -456,6 +456,33 @@ async def test_the_budget_is_counted_in_entries_a_read_takes_not_in_places_the_b
     assert len([s for s in read if s in EXTRA_STREAMS]) == 10
 
 
+async def test_a_read_pass_with_no_stream_left_by_the_budget_neither_reads_nor_blocks() -> None:
+    """A full buffer shortens the read window, which then lands on extra streams only; with no budget the pass must
+    not call a read with no stream (it sleeps a whole block time)."""
+    fairness = bundle(extra_topics=("extra-events",), extra_read_budget=lambda _s: 0)
+    async with world.redis_world(
+        [], topics=[*SWEEP_BASE, *SWEEP_EXTRA], produce=False, consumer_kwargs={"fairness": fairness},
+    ) as run:
+        consumer = run.consumer
+        consumer.config.block_ms = 1500
+        consumer._IndexingRedisStreamsConsumer__buffer_room = lambda: 2  # two places: a window of two streams
+        real = consumer._xreadgroup_grouped
+        asked: list[dict] = []
+
+        async def spy(streams: dict, count: int, block_ms: Any) -> Any:  # noqa: ANN401
+            asked.append(dict(streams))
+            assert streams, "a read with no stream sleeps the whole block time"
+            return await real(streams, count, block_ms)
+
+        consumer._xreadgroup_grouped = spy
+        started = time.monotonic()
+        for _ in range(16):  # two rounds over the 8 windows, 4 of them extra streams only
+            await consumer._IndexingRedisStreamsConsumer__read_phase()
+        elapsed = time.monotonic() - started
+    assert asked and all(set(streams) <= set(SWEEP_BASE) for streams in asked)
+    assert elapsed < 1.4, elapsed  # the earlier behaviour sleeps 1.5 s for each of those windows
+
+
 async def test_a_short_window_of_extra_streams_only_with_no_budget_left_reads_nothing_and_does_not_fail() -> None:
     assert await one_budget_pass(0, room=2, offset=10) == []  # the window is two extra streams
 
