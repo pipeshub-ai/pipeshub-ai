@@ -30,6 +30,12 @@ export { createOrgAuthConfigRouter } from './modules/auth/routes/orgAuthConfig.r
 export { MailServiceContainer } from './modules/mail/container/mailService.container';
 export { createMailServiceRouter } from './modules/mail/routes/mail.routes';
 
+// --- Contact support and Send feedback (emailed to SUPPORT_EMAIL; nothing stored) ---
+export {
+  createSupportRouter,
+  createFeedbackRouter,
+} from './modules/support/support.routes';
+
 // --- Enterprise search ---
 export { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 export {

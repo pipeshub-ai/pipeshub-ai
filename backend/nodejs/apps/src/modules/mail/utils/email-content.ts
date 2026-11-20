@@ -5,6 +5,8 @@ import {
   appUserInvite,
   domainLimitReached,
   emailChangeNotice,
+  feedbackCopy,
+  feedbackReceived,
   isEmailChangeNoticeData,
   joinRequestDecision,
   joinRequestNotify,
@@ -12,6 +14,7 @@ import {
   orgEmailVerification,
   resetEmail,
   resetPassword,
+  supportRequest,
   suspiciousLoginAttempt,
 } from './emailTemplates';
 
@@ -60,6 +63,15 @@ export function getEmailContent(
 
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
+
+    case EmailTemplateType.SupportRequest:
+      return supportRequest(templateData);
+
+    case EmailTemplateType.FeedbackReceived:
+      return feedbackReceived(templateData);
+
+    case EmailTemplateType.FeedbackCopy:
+      return feedbackCopy(templateData);
 
     default:
       throw 'Unknown Template';

@@ -26,6 +26,8 @@ import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { ENTERPRISE_FEATURES, type EnterpriseSection } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
+import { useFeedbackDialogStore } from '@/app/(main)/feedback/store';
+import { useSupportDialogStore } from '@/app/(main)/support/store';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -115,6 +117,8 @@ export default function WorkspaceSidebar() {
   const rawPathname = usePathname();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
+  const openSupport = useSupportDialogStore((s) => s.open);
+  const openFeedback = useFeedbackDialogStore((s) => s.open);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
@@ -316,6 +320,21 @@ export default function WorkspaceSidebar() {
               rightSlot={item.beta ? <BetaBadge /> : undefined}
             />
           ))}
+        </Flex>
+
+        {/* This sidebar has no footer, so the workspace menu's help items are not reachable from here. */}
+        <Flex direction="column" gap="1">
+          <SectionHeader title={t('workspace.sidebar.sections.help')} />
+          <WorkspaceSidebarItem
+            icon={<MaterialIcon name="support_agent" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+            label={t('support.menuLabel')}
+            onClick={openSupport}
+          />
+          <WorkspaceSidebarItem
+            icon={<MaterialIcon name="feedback" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+            label={t('feedback.menuLabel')}
+            onClick={openFeedback}
+          />
         </Flex>
       </Flex>
     </SidebarBase>

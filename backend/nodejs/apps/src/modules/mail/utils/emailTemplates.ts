@@ -16,6 +16,9 @@ const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appu
 const joinRequestNotifyTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestNotify.hbs');
 const joinRequestDecisionTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestDecision.hbs');
 const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
+const supportRequestTemplate = loadTemplate('src/modules/mail/views/layouts/support/supportRequest.hbs');
+const feedbackReceivedTemplate = loadTemplate('src/modules/mail/views/layouts/support/feedbackReceived.hbs');
+const feedbackCopyTemplate = loadTemplate('src/modules/mail/views/layouts/support/feedbackCopy.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
 const headTemplate = loadTemplate('src/modules/mail/views/partials/head.hbs');
@@ -100,5 +103,8 @@ export const orgEmailVerification = (templateData: Record<string,any>): string =
 export const domainLimitReached = (templateData: Record<string,any>): string => compileTemplate(domainLimitReachedTemplate, templateData);
 export const joinRequestNotify = (templateData: Record<string,any>): string => compileTemplate(joinRequestNotifyTemplate, templateData);
 export const joinRequestDecision = (templateData: Record<string,any>): string => compileTemplate(joinRequestDecisionTemplate, templateData);
+export const supportRequest = (templateData: Record<string,any>): string => compileTemplate(supportRequestTemplate, templateData);
+export const feedbackReceived = (templateData: Record<string,any>): string => compileTemplate(feedbackReceivedTemplate, templateData);
+export const feedbackCopy = (templateData: Record<string,any>): string => compileTemplate(feedbackCopyTemplate, templateData);
 
 
