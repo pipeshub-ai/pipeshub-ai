@@ -2936,7 +2936,9 @@
           "pipeshub_code_impact": "Ukáže, co na symbolu závisí: vše, co ho volá, importuje nebo na něm staví, včetně testů, které k němu vedou. Odpovídá na to, kdo ho volá a co se rozbije, když se změní.",
           "pipeshub_code_impact_of_diff": "Vezme unified diff, například výstup příkazu git diff nebo diff pull requestu, a ukáže symboly, které mění, soubory a testy, které k nim vedou, a volající, které nepokrývá žádný test.",
           "pipeshub_code_history": "Vypíše indexované pull requesty, které změnily soubor, s autorem, recenzenty, tím, kdo je sloučil, a s tikety, které zmiňují.",
-          "pipeshub_code_entry_points": "Vypíše, kde do repozitáře vstupuje běh programu, například trasy, nástroje příkazového řádku, úlohy a hooky. Výchozí bod pro čtení neznámého kódu."
+          "pipeshub_code_entry_points": "Vypíše, kde do repozitáře vstupuje běh programu, například trasy, nástroje příkazového řádku, úlohy a hooky. Výchozí bod pro čtení neznámého kódu.",
+          "pipeshub_entities": "Najde osoby, týmy, témata, projekty, složky, zákazníky a názvy dokumentů ve znalostním grafu pracovního prostoru, vypíše záznamy propojené s jedním z nich a osoby, firmy nebo produkty zmíněné spolu s ním. Hledání a výpis se nabízejí, jakmile jsou entity zaindexované; seznam společně zmíněných navíc potřebuje rozpoznávání pojmenovaných entit. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění semantic:read nebo semantic:write.",
+          "pipeshub_find_records": "Vypisuje záznamy podle toho, komu patří nebo co zmiňují, nikoli podle jejich slov: záznamy, které má osoba přiřazené nebo které vytvořila, napsala či vlastní, záznamy zmiňující částku, datum, množství nebo procento, a pasáže v záznamech, které jmenují dané osoby, firmy nebo produkty. Částky a data potřebují rozpoznávání pojmenovaných entit a pasáže se nabízejí jen tam, kde nasazení navíc zapne hledání entit. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění semantic:read nebo semantic:write."
         }
       },
       "appliesNote": "Změny se na nové požadavky MCP uplatní během několika sekund.",
