@@ -511,7 +511,7 @@ def _analyzed(c, org: str, sql: str, params: tuple) -> str:
 
 
 def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
-    """A read of every match pages after the last id. With the matches of a key in id order inside its index (graph_0014), page k seeks past the cursor
+    """A read of every match pages after the last id. With the matches of a key in id order inside its index (graph_0015), page k seeks past the cursor
     and reads one page of index entries; before, each page read every match of the key and dropped those before the cursor (pages x matches)."""
     cluster, name = rdb
     with connect(cluster, name) as c:

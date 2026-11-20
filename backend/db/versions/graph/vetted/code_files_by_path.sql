@@ -27,7 +27,7 @@ BEGIN
   IF p_limit NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'code_files_by_path: p_limit must be 1..1000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
   IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-  -- the page's ids by the key's index from the cursor on (it ends with id, graph_0014): a page reads one page of matches, not every match before it;
+  -- the page's ids by the key's index from the cursor on (it ends with id, graph_0015): a page reads one page of matches, not every match before it;
   -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
   -- equality does not let the planner drop it from the order, and an order by id alone walks the primary key and filters the collection
   RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
