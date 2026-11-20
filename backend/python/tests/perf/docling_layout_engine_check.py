@@ -117,6 +117,27 @@ def iou(a: list[float], b: list[float]) -> float:
     return inter / union if union > 0 else 1.0
 
 
+def has_full_matching(xs: list[list[float]], ys: list[list[float]], min_iou: float) -> bool:
+    """True when every box in ``xs`` can be paired with its own box in ``ys`` at IoU >= ``min_iou``.
+
+    Pairing by sorted position is wrong: a 0.1 shift in x sorts two same-label boxes the other way round and
+    crosses the pairs. This is a maximum bipartite matching (augmenting paths), so the pairing is the best one."""
+    if len(xs) != len(ys):
+        return False
+    owner: dict[int, int] = {}
+
+    def assign(i: int, seen: set[int]) -> bool:
+        for j, y in enumerate(ys):
+            if j not in seen and iou(xs[i], y) >= min_iou:
+                seen.add(j)
+                if j not in owner or assign(owner[j], seen):
+                    owner[j] = i
+                    return True
+        return False
+
+    return all(assign(i, set()) for i in range(len(xs)))
+
+
 def differences(a: list[dict], b: list[dict], min_iou: float) -> list[str]:
     bad = []
     for pa, pb in zip(a, b, strict=True):
@@ -124,8 +145,10 @@ def differences(a: list[dict], b: list[dict], min_iou: float) -> list[str]:
         where = f"doc {pa['doc']} page {pa['page']}"
         if [c[0] for c in ca] != [c[0] for c in cb]:
             bad.append(f"{where}: labels {[c[0] for c in ca]} vs {[c[0] for c in cb]}")
-        elif any(iou(x[1], y[1]) < min_iou for x, y in zip(ca, cb, strict=True)):
-            bad.append(f"{where}: a box differs (IoU < {min_iou})")
+            continue
+        for label in sorted({c[0] for c in ca}):
+            if not has_full_matching([c[1] for c in ca if c[0] == label], [c[1] for c in cb if c[0] == label], min_iou):
+                bad.append(f"{where}: the {label} boxes do not pair one-to-one at IoU >= {min_iou}")
     return bad
 
 

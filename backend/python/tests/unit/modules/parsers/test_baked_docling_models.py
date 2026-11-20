@@ -249,6 +249,7 @@ def test_bake_script_writes_the_tree_the_resolvers_accept(monkeypatch: pytest.Mo
 
 def _accurate_only_view(src: Path, dst: Path) -> Path:
     """The baked directory without the TableFormer fast weights, built from symlinks."""
+    src = src.resolve()  # symlink targets resolve from the link's directory, so a relative path would dangle
     dst.mkdir()
     for entry in src.iterdir():
         if entry.name != dm.TABLEFORMER_REPO.replace("/", "--"):
@@ -257,6 +258,18 @@ def _accurate_only_view(src: Path, dst: Path) -> Path:
     tf.mkdir(parents=True)
     (tf / "accurate").symlink_to(src / dm.TABLEFORMER_REPO.replace("/", "--") / dm.TABLEFORMER_PATH / "accurate")
     return dst
+
+
+def test_accurate_only_view_accepts_a_relative_models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tf = dm.TABLEFORMER_REPO.replace("/", "--")
+    (tmp_path / "models" / "other").mkdir(parents=True)
+    for mode in ("accurate", "fast"):
+        (tmp_path / "models" / tf / dm.TABLEFORMER_PATH / mode).mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    view = _accurate_only_view(Path("models"), tmp_path / "view")
+    assert (view / "other").resolve() == (tmp_path / "models" / "other").resolve()
+    assert (view / tf / dm.TABLEFORMER_PATH / "accurate").resolve().is_dir()
+    assert not (view / tf / dm.TABLEFORMER_PATH / "fast").exists()
 
 
 @pytest.mark.skipif(
