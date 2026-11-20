@@ -122,6 +122,7 @@ describe('Contact support and Send feedback routes', () => {
         (req as Request & { user: unknown }).user = {
           userId: USER_ID,
           orgId: ORG_ID,
+          isOAuth: req.headers['x-test-oauth'] === '1',
         };
         // As the real middleware does: the token's org is bound for the rest of the request.
         runWithOrgContext(
@@ -155,6 +156,20 @@ describe('Contact support and Send feedback routes', () => {
     else process.env.SUPPORT_EMAIL = savedSupportEmail;
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
+  });
+
+  describe('callers holding an access token', () => {
+    it('cannot send a support request or feedback; only an interactive session can', async () => {
+      for (const path of ['/support', '/feedback']) {
+        const response = await fetch(`${baseUrl}${path}`, {
+          method: 'POST',
+          headers: { 'x-test-user': '1', 'x-test-oauth': '1' },
+          body: new FormData(),
+        });
+        expect(response.status, path).to.equal(403);
+      }
+      expect(send.called).to.equal(false);
+    });
   });
 
   describe('GET /support/context', () => {

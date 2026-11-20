@@ -134,6 +134,26 @@ describe('SendFeedbackDialog', { timeout: 15000 }, () => {
     expect(mocks.submit).not.toHaveBeenCalled();
   });
 
+  it('keeps the form and the text when there is no support address to email', async () => {
+    mocks.submit.mockRejectedValue(new Error('down'));
+    mocks.getContext.mockRejectedValue(new Error('down'));
+    renderOpen();
+
+    submitFeedback();
+
+    await screen.findByText('feedback.submitError');
+    expect((screen.getByRole('textbox', { name: 'feedback.descriptionPlaceholder' }) as HTMLTextAreaElement).value).toBe(
+      'Please add a dark theme for the editor.',
+    );
+  });
+
+  it('shows which kind is selected to assistive technology', () => {
+    renderOpen();
+
+    expect(screen.getByRole('button', { name: /feedback.kindIssue/ }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: /feedback.kindFeedback/ }).getAttribute('aria-pressed')).toBe('false');
+  });
+
   it('refuses files that together are more than one email can carry', () => {
     renderOpen();
     const sized = (name: string, megabytes: number) => {

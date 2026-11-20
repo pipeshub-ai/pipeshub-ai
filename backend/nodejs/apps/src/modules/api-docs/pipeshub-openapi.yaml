@@ -81572,8 +81572,9 @@ paths:
         - Support
       summary: Whether Send feedback can email
       description: |
-        Whether SMTP is set up and turned on for this instance. The Send feedback form opens only
-        when it is. Returns no secrets.
+        Whether SMTP is set up and turned on for this instance. The Send feedback form opens either
+        way; without SMTP it offers a ready-made email to send from the person's own email app.
+        Returns no secrets.
       operationId: getFeedbackSmtpStatus
       security:
         - bearerAuth: []

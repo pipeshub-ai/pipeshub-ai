@@ -3,6 +3,8 @@
 // Long mailto links fail in some mail apps (Windows cuts a link off near 2,000 characters);
 // "Copy message" always has the full text.
 export const MAILTO_URL_LIMIT = 1900;
+// The subject shares the link with the body, so it gets a share of its own (the full subject stays in "Copy message").
+const MAILTO_SUBJECT_BUDGET = 300;
 /** Between what the person wrote and the details added for them, in the ready-made email. */
 export const MAIL_DETAILS_SEPARATOR = '\n\n---\n';
 
@@ -63,12 +65,13 @@ function encodeWithin(text: string, budget: number): string {
  */
 export function buildMailto(to: string, subject: string, body: string): { href: string; shortened: boolean } {
   const address = encodeWithin(to, Number.MAX_SAFE_INTEGER).replace(/%40/g, '@');
-  const head = `mailto:${address}?subject=${encodeWithin(subject, Number.MAX_SAFE_INTEGER)}&body=`;
+  const head = `mailto:${address}?subject=${encodeWithin(subject, MAILTO_SUBJECT_BUDGET)}&body=`;
   const budget = Math.max(0, MAILTO_URL_LIMIT - head.length);
   const whole = encodeWithin(body, Number.MAX_SAFE_INTEGER);
   if (whole.length <= budget) return { href: head + whole, shortened: false };
 
-  const cut = body.indexOf(MAIL_DETAILS_SEPARATOR);
+  // The generated details come last, so a separator the person typed in their own text is not mistaken for it.
+  const cut = body.lastIndexOf(MAIL_DETAILS_SEPARATOR);
   const written = cut < 0 ? body : body.slice(0, cut);
   const details = cut < 0 ? '' : body.slice(cut);
   const ellipsis = encodeURIComponent('\r\n…');

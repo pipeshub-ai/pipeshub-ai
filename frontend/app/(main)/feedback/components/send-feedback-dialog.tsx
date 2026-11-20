@@ -69,6 +69,7 @@ function KindChip({
     <button
       type="button"
       disabled={disabled}
+      aria-pressed={selected}
       onClick={onSelect}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -128,6 +129,8 @@ export function SendFeedbackDialog() {
   // Learn whether email is set up, so the form can say so before the person writes anything.
   useEffect(() => {
     if (!isOpen) return;
+    // Until this opening's answer arrives the state is unknown, so a stale one cannot skip the send.
+    setContext(null);
     const controller = new AbortController();
     SupportApi.getContext(controller.signal)
       .then(setContext)
@@ -183,10 +186,15 @@ export function SendFeedbackDialog() {
   // Without SMTP (or when the send fails) the person sends it from their own mail app, as Contact support does.
   const showEmailInstead = async (text: string) => {
     const known = context ?? (await SupportApi.getContext().catch(() => null));
+    // No address to write to: keep the form and its text instead of showing an email with nobody to send it to.
+    if (!known?.supportEmail) {
+      setError(t('feedback.submitError'));
+      return;
+    }
     const label = kind === 'issue' ? t('feedback.kindIssue') : t('feedback.kindFeedback');
-    const workspace = known?.workspaceName ? ` ${known.workspaceName}` : '';
+    const workspace = known.workspaceName ? ` ${known.workspaceName}` : '';
     setMail({
-      to: known?.supportEmail ?? '',
+      to: known.supportEmail,
       subject: `[${t('feedback.title')} · ${label}]${workspace}`,
       body: `${text}${MAIL_DETAILS_SEPARATOR}${label}`,
     });
