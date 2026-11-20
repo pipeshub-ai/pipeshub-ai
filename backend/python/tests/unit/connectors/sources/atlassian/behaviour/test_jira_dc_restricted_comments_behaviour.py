@@ -31,6 +31,7 @@ from test_jira_dc_sync_behaviour import (  # the stub site and fakes the sync te
 )
 
 from app.config.constants.arangodb import AccessRule
+from app.connectors.sources.atlassian.jira_data_center import connector as dc
 from app.models.entities import CommentRecord, RecordType
 from app.models.permission import EntityType
 from app.sources.client.http.http_client import HTTPClient
@@ -404,3 +405,88 @@ async def test_a_reindex_reads_restricted_comments_given_as_a_bare_list(site, db
     await connector.reindex_records([stored])
 
     assert tickets(db)["1001"].source_updated_at == stored.source_updated_at, "left for the sync to write the comment"
+
+
+async def test_an_issue_gone_from_jira_leaves_the_retry_list_with_its_comment_records(site, db, store, search) -> None:
+    """Jira rejects a whole ``id in`` clause (400) naming an id it does not know: the clause is split, the issue
+    that is gone leaves the list with its comment records, and the others are read."""
+    role = next(r for m, p, r in site._routes if (m, p) == ("GET", f"{API}/project/ENG/role"))
+    site.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["no"]}, status=403))
+    second = with_comments(ts(2), [comment("602", role="Developers"), comment("603", group="devs")])
+    second["id"], second["key"] = "1002", "ENG-2"
+    search.add("ENG", 0, [with_comments(ts(2), [comment("502", role="Developers")]), second])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    assert to_retry(store) == ["1001", "1002"] and grants(db, "comment_603") == {(EntityType.GROUP, "devs")}
+
+    def rejects_gone_ids(request: httpx.Request) -> httpx.Response:
+        if "1002" in json.loads(request.content)["jql"]:
+            return json_response({"errorMessages": ["A value with ID '1002' does not exist for the field 'id'."],
+                                  "errors": {}}, status=400)
+        return search(request)
+
+    site.on("POST", f"{API}/search", rejects_gone_ids)
+    site.on("GET", f"{API}/project/ENG/role", role)
+    search.pages.clear()
+    search.add("ENG", 0, [with_comments(ts(2), [comment("502", role="Developers")])])  # 1002 deleted in Jira
+    notes_before = len(db.records)
+    await connector.run_sync()
+
+    assert grants(db, "comment_502") == {(EntityType.ROLE, "ENG_10002")}, "the issue Jira still has is read"
+    assert to_retry(store) == []
+    assert "comment_602" not in db.records and "comment_603" not in db.records, "no comment of a gone issue stays granted"
+    assert len(db.records) == notes_before - 2
+
+
+async def test_the_retry_list_is_saved_as_the_project_ends_after_the_last_cursor_move(
+    site, db, store, search, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass after the walk's last cursor write (a re-read for a security change) puts an issue back on the list:
+    the list as the project ends is saved, even when it equals the one the sync started with."""
+    path = f"{API}/project/ENG/role"
+    role = next(r for m, p, r in site._routes if (m, p) == ("GET", path))
+    site.on("GET", path, json_response({"errorMessages": ["no"]}, status=403))
+    search.add("ENG", 0, [with_comments(ts(2), [comment("502", role="Developers")])])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    assert to_retry(store) == ["1001"]
+
+    site.on("GET", path, role)
+    walked = dc.levels_after_walk
+
+    def and_a_later_pass_fails_it_again(*args: object) -> object:
+        connector._comment_retry.add("1001")  # after the walk's last cursor write, which saved the list empty
+        return walked(*args)
+
+    monkeypatch.setattr(dc, "levels_after_walk", and_a_later_pass_fails_it_again)
+    await connector.run_sync()
+
+    assert to_retry(store) == ["1001"]
+
+
+@pytest.mark.parametrize("page", [
+    {"comments": "not a list", "total": 1},
+    {"comments": [7], "total": 1},
+    {"total": 2},
+])
+async def test_an_embedded_comment_page_that_is_not_a_list_of_comments_is_unread(site, db, store, search, page) -> None:
+    bad = issue("1001", "ENG-1", ts(2))
+    bad["fields"]["comment"] = page
+    search.add("ENG", 0, [bad])
+    connector, _ = await make_connector(db, store)
+
+    await connector.run_sync()
+
+    assert to_retry(store) == ["1001"]
+
+
+@pytest.mark.parametrize("page", [{"comments": [], "total": 0}, {"total": 0}, []])
+async def test_an_empty_comment_list_is_a_complete_read(site, db, store, search, page) -> None:
+    empty = issue("1001", "ENG-1", ts(2))
+    empty["fields"]["comment"] = page
+    search.add("ENG", 0, [empty])
+    connector, _ = await make_connector(db, store)
+
+    await connector.run_sync()
+
+    assert to_retry(store) == [] and comment_records(db) == {}

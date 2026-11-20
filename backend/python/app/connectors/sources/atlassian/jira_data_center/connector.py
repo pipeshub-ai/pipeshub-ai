@@ -3751,7 +3751,7 @@ class JiraDataCenterConnector(BaseConnector):
             retry = pre_walk_marker(stored_levels)
             if retry != stored_levels:
                 await self._record_security_levels(project_key, retry, force=True)
-        stored_retry = await self._reread_comment_retry(project_key, project_id, jira_users, project_sync_data)
+        await self._reread_comment_retry(project_key, project_id, jira_users, project_sync_data)
         if _stored_map((project_sync_data or {}).get("child_parents")):
             await self._settle_children(project_key, project_id, jira_users, {"new_count": 0, "updated_count": 0}, {})
 
@@ -3903,9 +3903,9 @@ class JiraDataCenterConnector(BaseConnector):
             if not self._issue_build_failures:
                 self._people_read_due.append(project_key)
         self._retry_given_up = False
-        # After every pass of this project (the re-reads after the walk add to it too), whether or not the cursor moved.
-        if sorted(self._comment_retry) != stored_retry:
-            await self._update_project_sync_checkpoint(project_key, comment_retry=json.dumps(sorted(self._comment_retry)))
+        # After every pass of this project (the re-reads after the walk add to it too), whether or not the cursor moved,
+        # and whatever a cursor write saved meanwhile: the list as it ends is the one the next sync reads.
+        await self._update_project_sync_checkpoint(project_key, comment_retry=json.dumps(sorted(self._comment_retry)))
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -4039,26 +4039,48 @@ class JiraDataCenterConnector(BaseConnector):
     ) -> list[str]:
         """Read again, by id, the stored issues whose restricted comments an earlier sync could not write in full (a
         comment list or a role not read): the cursor has passed them, and nothing at the source moves their ``updated``.
-        An issue written in full leaves the list; one Jira no longer returns in this project leaves it too (deleted, or
-        moved, which its new project's sync reads). Returns the list as stored."""
+        An issue written in full leaves the list; one Jira no longer returns in this project leaves it too (moved, which
+        its new project's sync reads). Jira rejects a whole ``id in`` clause with 400 ("Returned if there is a problem
+        with the JQL query", POST /rest/api/2/search, 10.2 to 11.3 specifications) when one id is unknown to it: the
+        clause is split until that id is alone, and an id Jira does not know (deleted, or no longer visible to the
+        sync account) leaves the list with its comment records, so none stays granted."""
         try:
             stored = sorted({str(i) for i in json.loads((project_sync_data or {}).get("comment_retry") or "[]")
                              if str(i).isdigit()})
         except (TypeError, ValueError):
             stored = []
         self._comment_retry = set()
-        try:
-            for start in range(0, len(stored), CHILD_REREAD_CHUNK):
-                clause = f"id in ({', '.join(stored[start:start + CHILD_REREAD_CHUNK])})"
+
+        async def reread(ids: list[str]) -> None:
+            try:
                 async for batch, _more, _ts in self._fetch_issues_batched(
-                    project_key, project_id, users, None, None, is_new_project=True, stored_only=True, extra_jql=clause,
+                    project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
+                    extra_jql=f"id in ({', '.join(ids)})",
                 ):
                     if batch:
                         await self._process_new_records(batch, project_key, {"new_count": 0, "updated_count": 0})
+            except JiraReadError as e:
+                if e.status != HttpStatusCode.BAD_REQUEST.value:
+                    raise
+                if len(ids) > 1:
+                    await reread(ids[: len(ids) // 2])
+                    await reread(ids[len(ids) // 2:])
+                    return
+                comments = await self._stored_comment_records(ids[0])
+                if comments:
+                    result = await self.data_entities_processor.on_records_deleted_cascade(
+                        [c.id for c in comments], self.connector_id, cascade_children=False,
+                    )
+                    if not isinstance(result, dict) or not result.get("success", False):
+                        raise RuntimeError(f"could not delete the comment records of issue {ids[0]}: {result}") from e
+                self.logger.info("Issue %s is no longer in Jira for this account; its comment records are removed", ids[0])
+
+        try:
+            for start in range(0, len(stored), CHILD_REREAD_CHUNK):
+                await reread(stored[start:start + CHILD_REREAD_CHUNK])
         except Exception:
             self._comment_retry |= set(stored)  # not read: kept for the next sync
             raise
-        return stored
 
     async def _reread_issues_naming(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
@@ -5835,11 +5857,14 @@ class JiraDataCenterConnector(BaseConnector):
         stored_by_id = {r.external_record_id: r for r in await self._stored_comment_records(issue_id)} if stored else {}
         failure: Exception | None = None
         comment_field = fields.get("comment")
-        comments = comment_field if isinstance(comment_field, list) else []
-        if comment_field is not None and not isinstance(comment_field, (list, dict)):
-            failure = ValueError(f"the comment field of issue {issue_id} is not a comment list")
-        if isinstance(comment_field, dict):
-            comments = list(comment_field.get("comments") or [])
+        comments: Any = comment_field.get("comments") if isinstance(comment_field, dict) else comment_field
+        if comments is None and isinstance(comment_field, dict) and comment_field.get("total") == 0:
+            comments = []  # a page of none
+        if comment_field is not None and not (isinstance(comments, list) and all(isinstance(c, dict) for c in comments)):
+            # Not a list of comments: none is taken for public, or kept with an old audience.
+            comments, failure = [], ValueError(f"the comment field of issue {issue_id} is not a list of comments")
+        comments = list(comments or [])
+        if isinstance(comment_field, dict) and failure is None:
             total = comment_field.get("total")
             try:
                 if isinstance(total, int) and not isinstance(total, bool) and total > len(comments):
