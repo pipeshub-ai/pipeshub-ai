@@ -1898,6 +1898,9 @@ class KnowledgeBaseService:
                 received_at = epoch_ms(file_metadata.get("receivedAt")) or timestamp
                 record.source_timestamp_origin = upload_origin(record.source_updated_at, received_at).value
                 record.external_revision_id = str(timestamp)
+                size = file_metadata.get("size")
+                if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                    record.size_in_bytes = size
                 await processor.on_record_content_update(record)
             else:
                 # Metadata-only (rename): persists records.recordName + files.name, no event.
