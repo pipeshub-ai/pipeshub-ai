@@ -53,6 +53,9 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 
+_WEBURLS_PER_CALL = 1000      # graph.records_by_weburl takes at most this many addresses
+
+
 def _typed(rec_raw: Any, typ_raw: Any) -> Record:  # noqa: ANN401
     """The typed record; a record with no type document is the base record (the Neo4j provider would drop the whole listing)."""
     rec = _rec(rec_raw)
@@ -115,11 +118,14 @@ class LookupsMixin(PgBase):
 
     async def get_record_by_weburl(self, weburl: str, org_id: str | None = None, transaction: str | None = None) -> Record | None:
         """By exact web URL; LINK records are skipped."""
-        org = current_org_id()
+        current_org_id()      # the vetted read answers for the org of the unit of work; a missing org raises here, before the try
+        if weburl is None:
+            return None
         try:
-            d = await self._one("""/* pipeshub:graph.get_record_by_weburl */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'webUrl' = $2 AND ($3::text IS NULL OR n.doc->>'orgId' = $3) AND n.doc->>'recordType' <> 'LINK' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false LIMIT 1""",
-                                org, weburl, org_id or None, transaction=transaction)
+            # graph_0014: a plain statement under row security reaches no index on the address, so it read every record of the org
+            d = await self._one("""/* pipeshub:graph.get_record_by_weburl */ SELECT r.doc FROM graph.records_by_weburl(ARRAY[$1]::text[]) r
+                WHERE ($2::text IS NULL OR r.doc->>'orgId' = $2) AND r.doc->>'recordType' <> 'LINK' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false LIMIT 1""",
+                                weburl, org_id or None, transaction=transaction)
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:
             self.logger.error(f"❌ Get record by web URL failed: {e}")
@@ -230,24 +236,29 @@ class LookupsMixin(PgBase):
     async def get_records_by_weburls(self, weburls: list[str], org_id: str, per_address: int = 2, transaction: str | None = None, *, include_deleted: bool = False) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
-        rows = await self._lrows("""/* pipeshub:graph.get_records_by_weburls */ SELECT id, "recordType", "connectorName", "webUrl", "isDependentNode" FROM (
-              SELECT n.id, n.doc->>'recordType' AS "recordType", n.doc->>'connectorName' AS "connectorName", n.doc->>'webUrl' AS "webUrl",
-                     coalesce((n.doc->>'isDependentNode')::boolean, false) AS "isDependentNode",
-                     row_number() OVER (PARTITION BY n.doc->>'webUrl' ORDER BY coalesce((n.doc->>'isDependentNode')::boolean, false), n.id) AS rn
-              FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'webUrl' = ANY($2::text[]) AND n.doc->>'orgId' = $3
-                AND n.doc->>'recordType' <> 'LINK' AND NOT coalesce((n.doc->>'isPlaceholder')::boolean, false) AND ($5 OR coalesce((n.doc->>'isDeleted')::boolean, false) = false)) q
-            WHERE rn <= $4""", current_org_id(), _uniq(weburls), org_id, per_address, include_deleted, transaction=transaction)
-        return [dict(r) for r in rows]
+        current_org_id()
+        urls = _uniq(weburls)
+        out: list[dict[str, Any]] = []
+        for i in range(0, len(urls), _WEBURLS_PER_CALL):      # each address is answered on its own, so a split call answers alike
+            rows = await self._lrows("""/* pipeshub:graph.get_records_by_weburls */ SELECT id, "recordType", "connectorName", "webUrl", "isDependentNode" FROM (
+                  SELECT r.node_id AS id, r.doc->>'recordType' AS "recordType", r.doc->>'connectorName' AS "connectorName", r.doc->>'webUrl' AS "webUrl",
+                         coalesce((r.doc->>'isDependentNode')::boolean, false) AS "isDependentNode",
+                         row_number() OVER (PARTITION BY r.doc->>'webUrl' ORDER BY coalesce((r.doc->>'isDependentNode')::boolean, false), r.node_id) AS rn
+                  FROM graph.records_by_weburl($1::text[]) r WHERE r.doc->>'orgId' = $2
+                    AND r.doc->>'recordType' <> 'LINK' AND NOT coalesce((r.doc->>'isPlaceholder')::boolean, false) AND ($4 OR coalesce((r.doc->>'isDeleted')::boolean, false) = false)) q
+                WHERE rn <= $3""", urls[i:i + _WEBURLS_PER_CALL], org_id, per_address, include_deleted, transaction=transaction)
+            out.extend(dict(r) for r in rows)
+        return out
 
     async def get_records_linking_to_weburls(self, weburls: list[str], org_id: str, connector_names: list[str], limit: int = 100, after: str | None = None,
                                              transaction: str | None = None) -> list[str]:
         if not weburls or not org_id or not connector_names:
             return []
-        rows = await self._lrows("""/* pipeshub:graph.get_records_linking_to_weburls */ SELECT DISTINCT h.id FROM graph.nodes link
-            JOIN graph.edges e ON e.org_id = link.org_id AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = link.id
+        rows = await self._lrows("""/* pipeshub:graph.get_records_linking_to_weburls */ SELECT DISTINCT h.id FROM graph.records_by_weburl($2::text[]) link
+            JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = link.node_id
               AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
             JOIN graph.nodes h ON h.org_id = e.org_id AND h.coll = 'records' AND h.id = e.from_id
-            WHERE link.org_id = $1 AND link.coll = 'records' AND link.doc->>'webUrl' = ANY($2::text[]) AND link.doc->>'orgId' = $3
+            WHERE link.doc->>'orgId' = $3
               AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
               AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5)
             ORDER BY h.id LIMIT $6""", current_org_id(), list(weburls), org_id, list(connector_names), after, limit, transaction=transaction)
@@ -256,12 +267,10 @@ class LookupsMixin(PgBase):
     async def get_issue_sites(self, org_id: str, connector_names: list[str], limit: int | None = None, transaction: str | None = None) -> list[str]:
         if not org_id or not connector_names:
             return []
-        rows = await self._lrows("""/* pipeshub:graph.get_issue_sites */ SELECT site FROM (
-              SELECT DISTINCT (regexp_match(n.doc->>'webUrl', '^(.*)/browse/'))[1] AS site FROM graph.nodes n
-              WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'orgId' = $2 AND n.doc->>'recordType' = 'TICKET'
-                AND n.doc->>'connectorName' = ANY($3::text[]) AND n.doc->>'webUrl' LIKE '%/browse/%' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false) q
-            WHERE site <> '' ORDER BY site LIMIT $4""", current_org_id(), org_id, list(connector_names), limit, transaction=transaction)
-        return [r["site"] for r in rows if r["site"]]
+        current_org_id()
+        rows = await self._lrows("/* pipeshub:graph.get_issue_sites */ SELECT site_url FROM graph.ticket_sites($1, $2::text[], $3)",
+                                 org_id, list(connector_names), limit, transaction=transaction)
+        return [r["site_url"] for r in rows if r["site_url"]]
 
     async def find_duplicate_records(self, record_key: str, md5_checksum: str, org_id: str, record_type: str | None = None, size_in_bytes: int | None = None,
                                      transaction: str | None = None) -> list[dict]:

@@ -527,3 +527,96 @@ async def test_the_pending_reconciles_of_every_org_come_back_with_their_org_unde
         assert [r["orgId"] for r in await sys_p.get_records_pending_duplicate_reconcile(10, 1000) if r["_key"] == key] == [orgs[0]]
     with pytest.raises(org_context.MissingOrgContext):
         await sys_p.get_records_pending_duplicate_reconcile(10, 1000)
+
+
+# The provider's statements before the address lookups read through graph.records_by_weburl and graph.ticket_sites (graph_0014): each read every record of the org.
+OLD_BY_WEBURL = """SELECT n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'webUrl' = $2 AND ($3::text IS NULL OR n.doc->>'orgId' = $3)
+    AND n.doc->>'recordType' <> 'LINK' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false"""
+OLD_BY_WEBURLS = """SELECT id, "recordType", "connectorName", "webUrl", "isDependentNode" FROM (
+      SELECT n.id, n.doc->>'recordType' AS "recordType", n.doc->>'connectorName' AS "connectorName", n.doc->>'webUrl' AS "webUrl",
+             coalesce((n.doc->>'isDependentNode')::boolean, false) AS "isDependentNode",
+             row_number() OVER (PARTITION BY n.doc->>'webUrl' ORDER BY coalesce((n.doc->>'isDependentNode')::boolean, false), n.id) AS rn
+      FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'webUrl' = ANY($2::text[]) AND n.doc->>'orgId' = $3
+        AND n.doc->>'recordType' <> 'LINK' AND NOT coalesce((n.doc->>'isPlaceholder')::boolean, false) AND ($5 OR coalesce((n.doc->>'isDeleted')::boolean, false) = false)) q
+    WHERE rn <= $4"""
+OLD_LINKING = """SELECT DISTINCT h.id FROM graph.nodes link
+    JOIN graph.edges e ON e.org_id = link.org_id AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = link.id
+      AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
+    JOIN graph.nodes h ON h.org_id = e.org_id AND h.coll = 'records' AND h.id = e.from_id
+    WHERE link.org_id = $1 AND link.coll = 'records' AND link.doc->>'webUrl' = ANY($2::text[]) AND link.doc->>'orgId' = $3
+      AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
+      AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5)
+    ORDER BY h.id LIMIT $6"""
+OLD_SITES = """SELECT site FROM (
+      SELECT DISTINCT (regexp_match(n.doc->>'webUrl', '^(.*)/browse/'))[1] AS site FROM graph.nodes n
+      WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'orgId' = $2 AND n.doc->>'recordType' = 'TICKET'
+        AND n.doc->>'connectorName' = ANY($3::text[]) AND n.doc->>'webUrl' LIKE '%/browse/%' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false) q
+    WHERE site <> '' ORDER BY site LIMIT $4"""
+LONG_URL = "https://long.example/" + "".join(f"{i:08x}{(i * 2654435761) % 2**32:08x}" for i in range(400))
+
+
+async def _seed_web(p: OrgBound, holders_of: str) -> None:
+    w = "https://w.example/p"
+    rows = [raw(p.org, "page", webUrl=w, recordType="WEBPAGE"), raw(p.org, "att1", webUrl=w, isDependentNode=True), raw(p.org, "att0", webUrl=w, isDependentNode=True),
+            raw(p.org, "page2", webUrl=w), raw(p.org, "slash", webUrl=w + "/"), raw(p.org, "query", webUrl=w + "?a=1"), raw(p.org, "gone", webUrl=w + "/gone", isDeleted=True),
+            raw(p.org, "ph", webUrl=w + "/ph", isPlaceholder=True), raw(p.org, "long", webUrl=LONG_URL), raw(p.org, "empty", webUrl=""),
+            raw(p.org, "owned-elsewhere", webUrl=w + "/o", orgId=holders_of), raw(p.org, "nourl"),
+            raw(p.org, "lnk", webUrl=w, recordType="LINK", connectorName="SLACK WORKSPACE"), raw(p.org, "lnk2", webUrl=w + "/", recordType="LINK", connectorName="SLACK"),
+            raw(p.org, "lnk-gh", webUrl=w, recordType="LINK", connectorName="GITHUB"), raw(p.org, "lnk-gone", webUrl=w + "/ph", recordType="LINK", connectorName="SLACK", isDeleted=True),
+            *(raw(p.org, f"m{i}", recordType="MESSAGE", connectorName="SLACK WORKSPACE", isDeleted=i == 3) for i in range(6)),
+            raw(p.org, "t1", recordType="TICKET", connectorName="JIRA", webUrl="https://x.atlassian.net/browse/K-1"),
+            raw(p.org, "t2", recordType="TICKET", connectorName="JIRA DATA CENTER", webUrl="https://jira.corp.example/jira/browse/D-2"),
+            raw(p.org, "t3", recordType="TICKET", connectorName="JIRA", webUrl="https://gone.atlassian.net/browse/G-1", isDeleted=True),
+            raw(p.org, "t4", recordType="TICKET", connectorName="JIRA", webUrl="https://h.example/browse/x/browse/K-1")]
+    await p.batch_upsert_nodes(rows, "records")
+    pc = {"from_collection": "records", "to_collection": "records", "relationshipType": "PARENT_CHILD"}
+    await p.batch_create_edges([{**pc, "from_id": f"m{i}", "to_id": t} for i, t in enumerate(["lnk", "lnk", "lnk2", "lnk", "lnk-gh", "lnk-gone"])], "nodeRelations")
+
+
+async def test_the_address_lookups_answer_what_the_plain_statements_answered(pg_db) -> None:
+    a, b = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org()), OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    await _seed_web(a, b.org)
+    await _seed_web(b, a.org)
+    w = "https://w.example/p"
+    urls = [w, w + "/", w + "?a=1", w + "/gone", w + "/ph", w + "/o", LONG_URL, "", w.upper(), w + "x", "https://nowhere.example/"]
+    calls = 0
+    for p, other in ((a, b), (b, a)):
+        for u in [*urls, None]:
+            for owner in (p.org, other.org, None):
+                old = {r["id"] for r in await p._lrows(OLD_BY_WEBURL, p.org, u, owner)}
+                got = await p.get_record_by_weburl(u, owner)
+                assert (got.id in old) if got else not old, (u, owner, got and got.id, old)
+                calls += 1
+        for batch in ([w], urls, urls[:4] + [w] * 3, [f"https://miss.example/{i}" for i in range(1100)] + [w, w + "/"]):
+            for per in (1, 2, 50):
+                for deleted in (False, True):
+                    for owner in (p.org, other.org):
+                        old = await p._lrows(OLD_BY_WEBURLS, p.org, list(dict.fromkeys(x for x in batch if x)), owner, per, deleted)
+                        got = await p.get_records_by_weburls(batch, owner, per, include_deleted=deleted)
+                        assert sorted(map(tuple, (dict(r).values() for r in old))) == sorted(map(tuple, (r.values() for r in got))), (len(batch), per, deleted)
+                        calls += 1
+        for batch in ([w], [w, w + "/"], urls, [w + "/ph"]):
+            for names in (["SLACK WORKSPACE", "SLACK"], ["SLACK"], ["GITHUB"], ["JIRA"]):
+                for owner in (p.org, other.org):
+                    for limit in (1, 2, 100):
+                        after = None
+                        for _ in range(6):
+                            old = [r["id"] for r in await p._lrows(OLD_LINKING, p.org, batch, owner, names, after, limit)]
+                            assert await p.get_records_linking_to_weburls(batch, owner, names, limit, after) == old, (batch, names, owner, limit, after)
+                            calls += 1
+                            if len(old) < limit:
+                                break
+                            after = old[-1]
+        for names in (["JIRA"], ["JIRA", "JIRA DATA CENTER"], ["GITHUB"], ["JIRA", "JIRA"]):
+            for owner in (p.org, other.org):
+                for limit in (None, 0, 1, 3):
+                    old = [r["site"] for r in await p._lrows(OLD_SITES, p.org, owner, names, limit)]
+                    assert await p.get_issue_sites(owner, names, limit) == old, (names, owner, limit)
+                    calls += 1
+    assert calls > 400
+    # the answers themselves, for the reader
+    assert {r["id"] for r in await a.get_records_by_weburls([w], a.org, 50)} == {"page", "page2", "att0", "att1"}
+    assert [r["id"] for r in await a.get_records_by_weburls([w], a.org, 1)] == ["page"]
+    assert (await a.get_record_by_weburl(LONG_URL, a.org)).id == "long"
+    assert await a.get_records_linking_to_weburls([w, w + "/"], a.org, ["SLACK WORKSPACE", "SLACK"]) == ["m0", "m1", "m2"]
+    assert await a.get_issue_sites(a.org, ["JIRA", "JIRA DATA CENTER"]) == sorted(["https://x.atlassian.net", "https://jira.corp.example/jira", "https://h.example/browse/x"])
