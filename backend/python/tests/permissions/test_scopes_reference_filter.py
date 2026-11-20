@@ -369,13 +369,15 @@ def refused_records(worlds: list[World]) -> list[tuple[World, str]]:
 async def test_stamping_a_refused_record_container_over_admits() -> None:
     """The fallback for a refused record is the legacy filter, never Container: its access differs from its record
     group's, so a Container stamp admits it through the group (QA measured 8,097 and 6,963 on these worlds)."""
-    layer, oracle = OracleScopeLayer(), OracleLayer()
     over = {"record-group-level": 0, "multi-parent": 0}
     for world in (derive_stamps(w) for w in generated()):
         for w, node_id in refused_records([world]):
             kind = "multi-parent" if multi_parent(w, node_id) else "record-group-level"
             container = replace(w.node(node_id), stamp="container")
             forced = w.with_node(container)
+            # Fresh layers per forced world: both cache a compiled graph per world and never evict, so shared ones
+            # held every forced world of the run at once (past 16 GB).
+            layer, oracle = OracleScopeLayer(), OracleLayer()
             for viewer in w.users():
                 scopes = await layer.viewer_scopes(forced, viewer)
                 if reference_filter(forced, scopes, node_id) and not oracle.explain(forced, viewer, [node_id])[node_id].admitted:

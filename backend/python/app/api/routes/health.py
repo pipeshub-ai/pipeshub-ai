@@ -524,8 +524,18 @@ async def _model_setup_failed_response(
             ),
             model_config, model, error_code="endpoint_unreachable",
         )
-    if code in ("rate_limit", "quota_exceeded"):
-        # OpenAI answers 429 for an exhausted quota as well as a rate limit, and the key is fine in both.
+    if code == "quota_exceeded":
+        # OpenAI answers 429 for an empty balance as well as a rate limit; waiting only fixes the second.
+        return _config_error(
+            _with_provider_reason(
+                f"The {_provider_display_name(provider)} account for {name} is out of credit, so the test "
+                "call was turned down. The API key is fine: add credit or raise the usage limit in the "
+                "provider's billing settings, then try again.",
+                provider, reason,
+            ),
+            model_config, model, error_code=code,
+        )
+    if code == "rate_limit":
         return _config_error(
             _with_provider_reason(
                 f"{_provider_display_name(provider)} turned down the test call for {name} because of a "
@@ -559,8 +569,9 @@ async def _model_setup_failed_response(
 
 
 def _is_settings_failure(e: BaseException) -> bool:
-    """Whether the provider refused the settings or could not be reached at all."""
-    return provider_error_code(e) in _REJECTED_SETTINGS_CODES or _looks_like_connectivity_error(e)
+    """Whether the provider refused the settings, has no credit left for them, or could not be reached at all."""
+    code = provider_error_code(e)
+    return code in _REJECTED_SETTINGS_CODES or code == "quota_exceeded" or _looks_like_connectivity_error(e)
 
 
 def _chosen_embedding_config(embedding_configs: list[dict]) -> dict:

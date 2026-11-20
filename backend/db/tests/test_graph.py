@@ -495,6 +495,126 @@ def test_the_hot_lookups_keep_their_key_index_when_the_planner_expects_a_big_col
         assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, 'bz0', 1)")] == ["bz1"]
 
 
+# ---- keyed record lookups (graph_0014) -------------------------------------------------------------------------------------------------
+def _big_leaf(c, org):
+    """The planner now expects the org's partition to hold 4 billion documents, as a large org's leaf looks to it (see the test above)."""
+    c.execute("RESET ROLE")
+    c.execute("ANALYZE graph.nodes")
+    leaf = c.execute("SELECT tableoid::regclass::text FROM graph.nodes WHERE org_id = %s LIMIT 1", (org,)).fetchone()[0]
+    c.execute(f"UPDATE pg_class SET reltuples = 4000000000 WHERE oid = '{leaf}'::regclass OR oid IN (SELECT indexrelid FROM pg_index WHERE indrelid = '{leaf}'::regclass)")
+
+
+def _reads_by(plan: str, index: str, key: str) -> list[str]:
+    """Every read of graph.nodes in an auto_explain text plan that is not bounded by ``index`` with an index condition naming ``key``: a sequential scan, or
+    an index or bitmap scan of another index or by org_id alone."""
+    lines = plan.splitlines()
+    bad = []
+    for i, line in enumerate(lines):
+        if re.search(r"Seq Scan on nodes", line):
+            bad.append(line.strip())
+        m = re.search(r"Index (?:Only )?Scan(?: Backward)? using (\S+) on nodes|Bitmap Index Scan on (nodes\S*)", line)
+        if not m:
+            continue
+        own = []                                    # the node's own detail lines: up to its first child or the next node
+        for nxt in lines[i + 1:]:
+            if nxt.strip().startswith("->") or not nxt.strip() or not nxt.startswith(" "):
+                break
+            own.append(nxt)
+        cond = next((x.split("Index Cond: ", 1)[1] for x in own if "Index Cond: " in x), None)
+        if not (m.group(1) or m.group(2)).endswith(index) or not cond or key not in cond:
+            bad.append(f"{line.strip()}: {cond or 'no index condition'}")
+    return bad
+
+
+def test_the_virtual_record_lookup_probes_its_index_per_id_however_many_ids_a_call_holds(rdb):
+    """The key's statistics live only on a partial index, which the planner does not read: it prices `= ANY` at 0.5 % of the leaf per id, so a call with
+    hundreds of ids (a few dozen on a 10M-record org) read the whole leaf. One index probe per distinct id keeps the read bounded by the ids."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'virtualRecordId', 'v' || (i %% 9000)) "
+                  "FROM generate_series(1, 12000) i", (A, A))
+        _big_leaf(c, A)
+        many = [f"v{i}" for i in range(0, 9000, 45)] + ["v45", "nope"]         # 200 ids, then one of them again and one held by no record
+        for ids in (many, ["v7"], [f"v{i}" for i in range(1000)]):
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT node_id FROM graph.records_by_virtual_id(%s::text[])", (ids,))
+            for i in (0, 6):
+                assert "Index Cond" in plans[i] and not _reads_by(plans[i], "", "virtualRecordId"), (len(ids), i, plans[i])
+        as_role(c, "pipeshub_connectors", A)
+        got = sorted(r[0] for r in c.execute("SELECT node_id FROM graph.records_by_virtual_id(%s::text[])", (many,)))
+        want = sorted(r[0] for r in c.execute("SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' "
+                                              "AND n.doc->>'orgId' = n.org_id AND n.doc->>'virtualRecordId' = ANY(%s::text[])", (many,)))
+        assert got == want and len(set(got)) == len(got) > 200, (len(got), len(want))
+
+
+TICKETS = {      # id -> (connector, recordType, webUrl): the issue ENG-1 in the shapes a pattern must tell apart
+    "t1": ("c1", "TICKET", "https://x.atlassian.net/browse/ENG-1"), "t12": ("c1", "TICKET", "https://x.atlassian.net/browse/ENG-12"),
+    "t1s": ("c1", "TICKET", "https://x.atlassian.net/browse/ENG-1/"), "t1q": ("c1", "TICKET", "https://x.atlassian.net/browse/ENG-1?focusedCommentId=4"),
+    "t1h": ("c1", "TICKET", "https://x.atlassian.net/browse/ENG-1#c"), "t1x": ("c1", "TICKET", "https://x.atlassian.net/browse/ENG-1x"),
+    "tlow": ("c1", "TICKET", "https://x.atlassian.net/browse/eng-1"), "tdup": ("c1", "TICKET", "https://h/browse/browse/ENG-1"),
+    "tc2": ("c2", "TICKET", "https://y.atlassian.net/browse/ENG-1"), "tfile": ("c1", "FILE", "https://x.atlassian.net/browse/ENG-1"),
+    "tnone": ("c1", "TICKET", None), "tmid": ("c1", "TICKET", "https://x.atlassian.net/jira/browse/ENG-1"),
+}
+OLD_ISSUE = ("SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'connectorId' = %s "
+             "AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' ~ %s")
+
+
+def _issue_pattern(key: str) -> str:
+    """jira_issue_browse_url_regex of the provider (re.escape of '/browse/<key>' between the same anchors)."""
+    return f".*{re.escape(f'/browse/{key}')}(?:[/?#].*)?$"
+
+
+def test_the_issue_lookup_returns_a_record_the_plain_statement_matched_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for rid, (conn, rtype, url) in TICKETS.items():
+                if org == B and rid == "t1":
+                    continue                                                        # the exact match is A's alone
+                c.execute(NODE, (org, "records", rid, json.dumps({"orgId": org, "connectorId": conn, "recordType": rtype, **({"webUrl": url} if url else {})})))
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for conn in ("c1", "c2", "c9"):
+                for key in ("ENG-1", "ENG-12", "eng-1", "ENG-1x", "ENG", "ENG-9", "EN.-1", "browse"):
+                    old = {r[0] for r in c.execute(OLD_ISSUE, (conn, _issue_pattern(key)))}
+                    new = [r[0] for r in c.execute("SELECT node_id FROM graph.record_by_issue_url(%s, %s)", (conn, _issue_pattern(key)))]
+                    assert len(new) <= 1 and set(new) <= old and bool(new) == bool(old), (org, conn, key, new, old)
+        as_role(c, "pipeshub_connectors", A)
+        assert {r[0] for r in c.execute(OLD_ISSUE, ("c1", _issue_pattern("ENG-1")))} == {"t1", "t1s", "t1q", "t1h", "tdup", "tmid"}
+        as_role(c, "pipeshub_connectors", B)
+        assert c.execute("SELECT count(*) FROM graph.record_by_issue_url('c1', %s)", (_issue_pattern("ENG-12"),)).fetchone()[0] == 1
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert c.execute("SELECT count(*) FROM graph.record_by_issue_url('c1', %s)", (_issue_pattern("ENG-1"),)).fetchone()[0] == 0
+        as_role(c, "pipeshub_connectors", A)
+        for args in ((None, "x"), ("", "x"), ("c" * 201, "x"), ("c1", None), ("c1", ""), ("c1", "x" * 2001)):
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute("SELECT * FROM graph.record_by_issue_url(%s, %s)", args)
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            assert c.execute("SELECT has_function_privilege(%s, 'graph.record_by_issue_url(text, text)', 'EXECUTE')", (role,)).fetchone()[0] is ok, role
+
+
+def test_the_issue_lookup_reads_the_candidates_of_the_key_where_the_plain_statement_reads_the_org(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 't' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'c' || (i %% 3), 'recordType', 'TICKET', "
+                  "'webUrl', 'https://x.atlassian.net/browse/P' || (i %% 40) || '-' || i) FROM generate_series(1, 12000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'f' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'c1', 'recordType', 'FILE') "
+                  "FROM generate_series(1, 12000) i", (A, A))
+        _big_leaf(c, A)
+        for conn, key in (("c1", "P7-1007"), ("c1", "P7-99999"), ("c2", "P39-11999")):
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT node_id FROM graph.record_by_issue_url(%s, %s)", (conn, _issue_pattern(key)))
+            for i in (0, 6):
+                assert "ticket_url" in plans[i] and not _reads_by(plans[i], "ticket_url", "webUrl"), (key, i, plans[i])
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, OLD_ISSUE + " LIMIT 1", ("c1", _issue_pattern("P7-1007")))
+        assert _reads_by(plain[6], "ticket_url", "webUrl"), plain[6]           # what the provider sent before: a read of the org
+        as_role(c, "pipeshub_connectors", A)
+        assert [r[0] for r in c.execute("SELECT node_id FROM graph.record_by_issue_url('c2', %s)", (_issue_pattern("P7-1007"),))] == ["t1007"]
+
+
 # ---- the knowledge graph's per-record lookups (graph_0006) ------------------------------------------------------------------------------
 def _seed_kg(c):
     """The same ids and keys in both orgs, awkward ones included: mixed-case and non-ASCII ids (byte order is not the database's order), repeated source keys and
@@ -1041,7 +1161,8 @@ STALE_PLAIN = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.
 UNHELD_PLAIN = """WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev, max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s
                     WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(%s::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
                  SELECT g.v, g.rev FROM g WHERE g.newest < %s::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = current_setting('app.org_id') AND r.coll = 'records'
-                    AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev"""
+                    AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED'
+                       AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev"""
 
 
 UNHELD_NEW = """SELECT virtual_record_id, revision FROM graph.stage_states_unheld(%s::text[]) GROUP BY 1, 2 HAVING max(coalesce(updated_at_ms::numeric, 0)) < %s::bigint ORDER BY 1, 2"""      # the caller's grouping

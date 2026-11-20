@@ -19,6 +19,7 @@ Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
+- [Contributor License Agreement](#contributor-license-agreement)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing](#testing)
 - [Community Guidelines](#community-guidelines)
@@ -91,7 +92,6 @@ The rest of this section is for running application services from source.
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
-sudo apt install libmariadb-dev
 ```
 
 #### macOS
@@ -277,12 +277,35 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    - Provide a clear description of the changes
    - Reference any related issues
    - Add screenshots if applicable
+9. **Sign the [Contributor License Agreement](CLA.md)** when the CLA Assistant bot asks, on your first pull request (see below)
 
 Pull requests from forks run the integration tests without repository secrets:
 CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
 runs the full suite on a reviewed commit using *Run workflow* on
 `integration-tests.yml` with that commit's hash (see
 [integration-tests/README.md](integration-tests/README.md)).
+
+## Contributor License Agreement
+
+Before we can merge your first pull request, you need to sign our [Contributor License Agreement](CLA.md) (CLA). You keep the copyright to your work; the CLA gives PipesHub a license to use and distribute it.
+
+Signing takes a minute. The CLA Assistant bot comments on your pull request with a link; follow it, sign in with GitHub and select **I agree**. You only sign once.
+
+If the `license/cla` check is still failing after you signed:
+
+- Select **recheck** in the bot's comment; that re-runs the check.
+- Make sure the email in your commits is linked to your GitHub account ([GitHub's guide](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/adding-an-email-address-to-your-github-account)). Commits made with an unlinked email can't be matched to your signature. To fix your own commits on the branch:
+
+  ```bash
+  git config user.email "you@example.com"   # an email linked to your GitHub account
+  git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/pipeshub-ai/pipeshub-ai.git
+  git fetch upstream
+  git log --merges --oneline upstream/main..HEAD   # if this prints anything, ask for help on the pull request instead
+  # Rewrite only the commits authored with your old email (replace old@example.com); other people's commits keep their author
+  git rebase --exec 'if [ "$(git log -1 --format=%ae)" = "old@example.com" ]; then git commit --amend --no-edit --reset-author; fi' upstream/main
+  git log --format="%h %ae %s" upstream/main..HEAD   # check your commits now show the new email
+  git push --force-with-lease origin HEAD:feature/your-feature-name   # your pull request's branch
+  ```
 
 ## Code Style Guidelines
 

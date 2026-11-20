@@ -501,3 +501,78 @@ class TestNarrationCitations:
         await collector.emit(_event(EventType.TEXT_MESSAGE_END, {}))
 
         assert collector.parts[0]["content"] == f"See Pricing [1]({record}) [2](ref1)."
+
+
+class TestSignedStorageLinksAreNotStored:
+    """A signed storage link opens its file without a sign-in for as long as it lasts. The stored step
+    keeps the rest of the link but not its signature: later turns read the step's summary, not this copy."""
+
+    SIGNED = (
+        "https://files-bucket.s3.us-west-2.amazonaws.com/org-1/KnowledgeBase/private/doc-1/current/report.pdf"
+        "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAEXAMPLE%2F20261117%2Fus-west-2%2Fs3%2Faws4_request"
+        "&X-Amz-Date=20261117T000000Z&X-Amz-Expires=3600&X-Amz-Signature=0123abcd&X-Amz-SignedHeaders=host"
+    )
+    PLAIN = "https://shop.example/item?code=123&state=CA&key=blue"
+
+    async def _stored(self, start: dict[str, Any], end: dict[str, Any]) -> dict[str, Any]:
+        collector = TranscriptCollector()
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {"tool_call_id": "call-1", **start}))
+        await collector.emit(_event(EventType.TOOL_CALL_END, {"tool_call_id": "call-1", "is_error": False, **end}))
+        return collector.parts[0]
+
+    def _hidden(self, stored: str) -> None:
+        assert "0123abcd" not in stored and "AKIAEXAMPLE" not in stored
+        assert "files-bucket.s3.us-west-2.amazonaws.com/org-1/KnowledgeBase/private/doc-1/current/report.pdf" in stored
+
+    async def test_download_tool_result(self) -> None:
+        result = json.dumps({
+            "success": True, "record_id": "rec-1", "download_url": self.SIGNED, "file_name": "report.pdf",
+            "url_type": "direct_download",
+        })
+        part = await self._stored(
+            {"tool": "artifacts__get_record_download_url", "args": {"record_id": "rec-1"}},
+            {"tool": "artifacts__get_record_download_url", "content": result, "result_summary": "Completed successfully"},
+        )
+        self._hidden(part["resultPreview"])
+        stored = json.loads(part["resultPreview"])  # still JSON, the rest unchanged
+        assert {k: v for k, v in stored.items() if k != "download_url"} == {
+            "success": True, "record_id": "rec-1", "file_name": "report.pdf", "url_type": "direct_download",
+        }
+        assert part["resultSummary"] == "Completed successfully"
+
+    async def test_a_quoted_link_inside_a_json_string_keeps_the_json_valid(self) -> None:
+        """In JSON text the quote that closes the link is escaped; the backslash must stay."""
+        part = await self._stored(
+            {"tool": "some_tool", "args": {}},
+            # The signature last, so the escaped closing quote follows it directly.
+            {"tool": "some_tool", "content": json.dumps({"message": 'Open "' + self.SIGNED.removesuffix("&X-Amz-SignedHeaders=host") + '"'})},
+        )
+        self._hidden(part["resultPreview"])
+        assert json.loads(part["resultPreview"])["message"].endswith('"')
+
+    async def test_fetch_url_arguments_and_label(self) -> None:
+        part = await self._stored(
+            {"tool": "dynamic__fetch_url", "args": {"url": self.SIGNED}, "args_summary": f"Reading {self.SIGNED}"},
+            {"tool": "dynamic__fetch_url", "content": "{}"},
+        )
+        self._hidden(part["args"])
+        self._hidden(json.loads(part["args"])["url"])
+        self._hidden(part["argsSummary"])
+
+    async def test_a_summary_quoting_the_link(self) -> None:
+        part = await self._stored(
+            {"tool": "some_tool", "args": {}},
+            {"tool": "some_tool", "content": "done", "result_summary": f"Saved to {self.SIGNED}"},
+        )
+        self._hidden(part["resultSummary"])
+
+    async def test_other_links_are_stored_as_they_were(self) -> None:
+        part = await self._stored(
+            {"tool": "dynamic__fetch_url", "args": {"url": self.PLAIN}, "args_summary": f"Reading {self.PLAIN}"},
+            {"tool": "dynamic__fetch_url", "content": json.dumps({"url": self.PLAIN}), "result_summary": f"Read {self.PLAIN}"},
+        )
+        assert json.loads(part["args"]) == {"url": self.PLAIN}
+        assert part["argsSummary"] == f"Reading {self.PLAIN}"
+        assert json.loads(part["resultPreview"]) == {"url": self.PLAIN}
+        assert part["resultSummary"] == f"Read {self.PLAIN}"

@@ -16,8 +16,11 @@ BEGIN
   IF EXISTS (SELECT 1 FROM unnest(p_vrids) e WHERE e IS NULL) THEN RAISE EXCEPTION 'records_by_virtual_id: p_vrids has a NULL item' USING ERRCODE = '22023'; END IF;
   IF EXISTS (SELECT 1 FROM unnest(p_vrids) e WHERE e IS NOT NULL AND length(e) NOT BETWEEN 1 AND 200) THEN RAISE EXCEPTION 'records_by_virtual_id: p_vrids has an item of the wrong length' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
-  RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-    WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY(p_vrids) AND n.doc->>'orgId' = v_org
+  -- One index probe per distinct id (graph_0014). The key's only statistics are on a partial index, which the planner does not read, so it
+  -- prices `= ANY(...)` at half a percent of the leaf per id and scans the whole leaf once a call holds enough ids (about 50 on a 10M-record org).
+  RETURN QUERY SELECT m.id, m.doc FROM (SELECT DISTINCT v FROM unnest(p_vrids) v) k
+    CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n
+      WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = k.v AND n.doc->>'orgId' = v_org LIMIT 5000) m
     LIMIT 5000;
 END $fn$;
 REVOKE ALL ON FUNCTION graph.records_by_virtual_id(text[]) FROM PUBLIC;

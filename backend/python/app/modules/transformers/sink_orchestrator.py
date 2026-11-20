@@ -20,6 +20,7 @@ from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.parse_now_marker import (
     ParseNowStatus,
@@ -56,6 +57,7 @@ from app.modules.transformers.stored_write import (
     is_none_run,
     mint_stored_write,
 )
+from app.modules.transformers.swap_commit import SwapCommitter
 from app.modules.transformers.transformer import (
     ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
@@ -151,6 +153,7 @@ class SinkOrchestrator(Transformer):
         self.logger = logging.getLogger(__name__)
         self.blob_storage = blob_storage
         self.vector_store = vector_store
+        self.swap = SwapCommitter(self)
         self.graph_provider = graph_provider
         self.entity_vector_store = entity_vector_store
         # Canonicalises taxonomy names between classification and the graph
@@ -316,12 +319,15 @@ class SinkOrchestrator(Transformer):
 
         if skip_vector_store:
             await self._project_properties(ctx, record_doc)
-            success = await self.graph_provider.batch_update_nodes(
-                [
-                    sink_only_end_fields(record_id, record.virtual_record_id)
-                ],
-                CollectionNames.RECORDS.value,
-            )
+            end_fields = sink_only_end_fields(record_id, record.virtual_record_id)
+            swap_run = keep_old_copy.current_swap(record_id, record.virtual_record_id)
+            if swap_run is not None:
+                # No vectors are written, but the stored content is the new copy's: the record moves to it through the commit.
+                success = await self.swap.commit(ctx, swap_run, {k: v for k, v in end_fields.items() if k != "id"})
+                if success:
+                    await self.swap.finish(ctx, swap_run)
+            else:
+                success = await self.graph_provider.batch_update_nodes([end_fields], CollectionNames.RECORDS.value)
             if not success:
                 self.logger.warning(
                     "Failed to update record %s status - record may not exist in database",
@@ -357,6 +363,10 @@ class SinkOrchestrator(Transformer):
                     # (a reconciliation save would bring back a mapping the delete removed),
                     # and the event ends as an expected outcome, without enrichment.
                     raise RecordDeletedError(record_id)
+            swap_run = keep_old_copy.current_swap(record_id, record.virtual_record_id)
+            if swap_run is not None:
+                with stage("swap.finish"):
+                    await self.swap.finish(ctx, swap_run)
             with stage("blob.metadata"):
                 await self._save_reconciliation_metadata(ctx)
             with stage("entities.identity"):
@@ -914,10 +924,16 @@ class SinkOrchestrator(Transformer):
             status["isVLMOcrProcessed"] = True
         # Update, never upsert: a record deleted mid-indexing would come back as
         # a bare node that keeps its vectors from the orphan sweep.
-        updated = await self.graph_provider.batch_update_nodes(
-            [status],
-            CollectionNames.RECORDS.value,
-        )
+        swap = keep_old_copy.current_swap(record.id, record.virtual_record_id)
+        if swap is not None:
+            # A replacement copy: the record moves to it in this write, only while it still names the old one.
+            fields = {k: v for k, v in status.items() if k != "id"}
+            updated = await self.swap.commit(ctx, swap, fields)
+        else:
+            updated = await self.graph_provider.batch_update_nodes(
+                [status],
+                CollectionNames.RECORDS.value,
+            )
         if not updated:
             self.logger.warning(
                 "Record %s no longer exists; indexingStatus=COMPLETED not recorded",

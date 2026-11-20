@@ -62,14 +62,22 @@ function stamped(row: NewNotification, now: Date): NewNotification {
 export class MongoNotificationRepository implements NotificationRepository {
   async insert(row: NewNotification): Promise<NotificationRow> {
     const doc = prepareNotification(row);
-    // a row with no time of its own is stored exactly as it always was: the schema stamps both times
-    if (doc.visibleAt === undefined && doc.createdAt === undefined)
+    // a row with no time and no id of its own is stored exactly as it always was (one with an id is idempotent by it, in insertMany): the schema stamps both times
+    if (
+      doc._id === undefined &&
+      doc.visibleAt === undefined &&
+      doc.createdAt === undefined
+    )
       return rowOf(await Notifications.create(doc));
     return (await this.insertMany([row]))[0] as NotificationRow;
   }
 
   async insertMany(rows: NewNotification[]): Promise<NotificationRow[]> {
     const now = new Date();
+    // every row is checked before any is written, so a refused row leaves the others unstored
+    const docs = rows.map((r) => stamped(r, now));
+    // the schema's own checks (required fields, enums) run on every document here: create() would otherwise store the first row of a batch and refuse a later one
+    for (const d of docs) await new Notifications(d).validate();
     const out = new Array<NotificationRow>(rows.length);
     const fresh: number[] = [];
     for (const [i, r] of rows.entries()) {
@@ -81,7 +89,9 @@ export class MongoNotificationRepository implements NotificationRepository {
       try {
         out[i] = rowOf(
           (
-            await Notifications.create([stamped(r, now)], { timestamps: false })
+            await Notifications.create([docs[i] as NewNotification], {
+              timestamps: false,
+            })
           )[0],
         );
       } catch (e) {
@@ -96,7 +106,7 @@ export class MongoNotificationRepository implements NotificationRepository {
     }
     if (fresh.length > 0) {
       const saved = await Notifications.create(
-        fresh.map((i) => stamped(rows[i] as NewNotification, now)),
+        fresh.map((i) => docs[i] as NewNotification),
         { timestamps: false },
       );
       for (const [j, i] of fresh.entries()) out[i] = rowOf(saved[j]);

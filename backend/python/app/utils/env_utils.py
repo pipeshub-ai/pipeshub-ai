@@ -17,6 +17,17 @@ import logging
 import os
 
 
+def hf_hub_offline() -> bool:
+    """True iff `huggingface_hub` would run in offline mode.
+
+    Mirrors its own parsing: `HF_HUB_OFFLINE`, falling back to
+    `TRANSFORMERS_OFFLINE` when the former is unset or empty, upper-cased and
+    compared to `1/ON/YES/TRUE` with no `strip()`.
+    """
+    value = os.environ.get("HF_HUB_OFFLINE") or os.environ.get("TRANSFORMERS_OFFLINE") or ""
+    return value.upper() in {"1", "ON", "YES", "TRUE"}
+
+
 def env_bool(name: str, default: bool) -> bool:  # noqa: FBT001
     """True iff the env var `name` is `"true"` (case-insensitive).
 

@@ -1493,6 +1493,10 @@ class BlobStorage(Transformer):
         record = ctx.record
         org_id = record.org_id
         record_id = record.id
+        # Imported here: paid_cache reaches this module through its store (a cycle at import time).
+        from app.services.paid_cache.orphan import ensure_record_alive
+
+        await ensure_record_alive(org_id, record_id, "blob")
         virtual_record_id = record.virtual_record_id
         if not virtual_record_id:
             raise ValueError(f"record {record_id} has no virtual record id to store under")

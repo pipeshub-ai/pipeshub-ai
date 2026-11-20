@@ -184,6 +184,31 @@ def test_build_model_does_not_download_when_explicitly_offline(monkeypatch) -> N
     assert calls == [True]
 
 
+@pytest.mark.parametrize("value", [" true", "true ", "1 ", " yes"])
+def test_build_model_downloads_when_hf_hub_offline_is_whitespace_padded(monkeypatch, value) -> None:
+    """huggingface_hub does not strip HF_HUB_OFFLINE, so a padded value means online."""
+    import sys
+
+    calls: list[bool] = []
+    monkeypatch.setenv("HF_HUB_OFFLINE", value)
+    with patch.dict(sys.modules, {"fastembed": _fake_fastembed(calls, cached=False)}):
+        model = SparseEmbedder()._build_model()
+    assert calls == [True, False]
+    assert model.model_name == "Qdrant/bm25"
+
+
+@pytest.mark.parametrize("value", ["on", "ON", "True", "YES"])
+def test_build_model_does_not_download_for_every_value_hf_hub_treats_as_offline(monkeypatch, value) -> None:
+    import sys
+
+    calls: list[bool] = []
+    monkeypatch.setenv("HF_HUB_OFFLINE", value)
+    with patch.dict(sys.modules, {"fastembed": _fake_fastembed(calls, cached=False)}):
+        with pytest.raises(RuntimeError, match="not in cache"):
+            SparseEmbedder()._build_model()
+    assert calls == [True]
+
+
 def test_build_model_leaves_hf_hub_offline_alone(monkeypatch) -> None:
     # huggingface_hub reads HF_HUB_OFFLINE once, at import, so the old runtime toggle did nothing.
     import os
