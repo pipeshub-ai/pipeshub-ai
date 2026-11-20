@@ -59,8 +59,8 @@ export function McpToolsApprovalsTab({
   const showFooter = showRules;
 
   return (
-    <Flex direction="column" style={{ height: '100%', minHeight: 0 }}>
-      <Flex direction="column" gap="4" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingBottom: 'var(--space-4)' }}>
+    <Flex direction="column">
+      <Flex direction="column" gap="4" style={{ paddingBottom: 'var(--space-4)' }}>
         <McpDisabledCallout instance={instance} />
         <SignInCard
           instance={instance}
@@ -164,8 +164,11 @@ export function McpToolsApprovalsTab({
           data-testid="mcp-rules-footer"
           style={{
             borderTop: '1px solid var(--olive-3)',
-            paddingTop: 'var(--space-3)',
-            flexShrink: 0,
+            paddingBlock: 'var(--space-3)',
+            // Stays in view while the page scrolls, so unsaved rules are never out of sight.
+            position: 'sticky',
+            bottom: 0,
+            backgroundColor: 'var(--olive-1)',
           }}
         >
           <Text size="1" style={{ color: editor.changes > 0 ? 'var(--amber-11)' : 'var(--gray-10)' }}>

@@ -24,7 +24,6 @@ import { McpServerIcon } from './mcp-server-icon';
 import { McpDisabledBadge, isMcpInstanceDisabled } from './mcp-stdio-policy';
 import { useToolRulesEditor } from './mcp-tool-rules-editor';
 
-const CONTENT_WIDTH = 880;
 
 interface McpServerPageProps {
   instance: McpMyServerEntry;
@@ -160,13 +159,12 @@ export function McpServerPage({
       style={{
         width: '100%',
         height: '100%',
-        minHeight: 0,
+        overflowY: 'auto',
         paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
-        paddingBottom: 'var(--space-5)',
         paddingInline: pagePaddingX(100),
       }}
     >
-      <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%', maxWidth: CONTENT_WIDTH }}>
+      <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
         <button
           type="button"
           onClick={requestBack}
@@ -195,7 +193,7 @@ export function McpServerPage({
         </Text>
       </Flex>
 
-      <Flex align="start" gap="3" style={{ width: '100%', maxWidth: CONTENT_WIDTH }}>
+      <Flex align="start" gap="3" style={{ width: '100%' }}>
         <Flex
           align="center"
           justify="center"
@@ -255,7 +253,6 @@ export function McpServerPage({
           data-testid="mcp-server-added"
           style={{
             width: '100%',
-            maxWidth: CONTENT_WIDTH,
             padding: 'var(--space-3)',
             borderRadius: 'var(--radius-3)',
             backgroundColor: `var(--${addedColor}-a3)`,
@@ -280,7 +277,7 @@ export function McpServerPage({
         </Flex>
       )}
 
-      <Box style={{ flex: 1, minHeight: 0, width: '100%', maxWidth: CONTENT_WIDTH }}>
+      <Box style={{ width: '100%' }}>
         <McpToolsApprovalsTab
           instance={instance}
           state={connectionState}
