@@ -106,6 +106,55 @@ async def test_the_recovery_deadline_also_bounds_a_write_that_succeeds_late() ->
         await write_within(refused_then_slow, 0.8)
 
 
+async def test_the_widening_record_holds_begins_from_the_list_to_the_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A begin already sent is answered (and listed) before the list is taken, and one started meanwhile reaches the server only
+    after the change has returned, so the list is what was open when the change was sent."""
+    server: list[str] = []
+    running: list[str] = []
+
+    class Begin:
+        def __init__(self, txn: str) -> None:
+            self.txn = txn
+
+        async def __aenter__(self) -> None:
+            server.append(f"begin {self.txn}")
+            await asyncio.sleep(0.2)
+            running.append(self.txn)
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class Client:
+        async def _get_session(self) -> object:
+            return type("S", (), {"post": lambda _, url, txn: Begin(txn)})()
+
+        async def list_running_transactions(self) -> list[dict[str, str]]:
+            return [{"id": t} for t in running]
+
+        async def update_collection_schema(self, *_: object) -> bool:
+            server.append("change")
+            await asyncio.sleep(0.2)
+            server.append("change answered")
+            return True
+
+    client = Client()
+    sent, waited = running_at_each_widening(client, monkeypatch)
+
+    async def begin(txn: str) -> None:
+        async with (await client._get_session()).post("/_db/d/_api/transaction/begin", txn):
+            pass
+
+    in_flight = asyncio.create_task(begin("a"))
+    await asyncio.sleep(0.05)
+    change = asyncio.create_task(client.update_collection_schema("records", {}, 5))
+    await asyncio.sleep(0.05)
+    later = asyncio.create_task(begin("b"))
+    await asyncio.gather(in_flight, change, later)
+
+    assert (sent, waited) == ([["a"]], [1])
+    assert server == ["begin a", "change", "change answered", "begin b"]
+
+
 @pytest.mark.parametrize(("savers", "hold_max"), [(4, 0.4), (6, 7.0)], ids=["short-transactions", "one-always-open"])
 async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, savers: int, hold_max: float) -> None:
     p, s = env
@@ -151,7 +200,7 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
     await asyncio.sleep(3 if hold_max < 5 else 8)
     narrowed_at = time.monotonic()
     assert await p.http_client.update_collection_schema(RECORDS, narrow_schema(), timeout=30)  # the older image starts
-    sent = running_at_each_widening(p.http_client, monkeypatch)
+    sent, begins_waited_out = running_at_each_widening(p.http_client, monkeypatch)
     trigger_started = time.monotonic()
     # What this is about is recovery, not how many tries it takes: skipped widenings, a forced one that timed out with its lease still held
     # (the next tries are refused without a new widening until the lease or the pending change ends) and the retries between them all
@@ -171,14 +220,14 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
     print(f"seed={seed} savers={savers} hold_max={hold_max}s: trigger write landed after {widened_after:.2f}s ({attempts} attempts); plain writes in window {len(window)}, "
           f"max wait {window[-1]:.2f}s, p99 {p99:.3f}s (bound {STALL_BOUND_S}s); saves ok={saves['ok']} refused={saves['refused']} "
           f"other={len(saves['other'])} first_refusal={saves['first_refusal']}; rewiden_total +{total:g}, contended +{contended:g}; "
-          f"running at each widening {sent}")
+          f"running at each widening {sent}, begins waited out {begins_waited_out}")
     assert (await s.doc(tainted))["indexingStatus"] == "QUEUED"
     assert generation_of_schema(await p.http_client.get_collection_schema(RECORDS)) == RECORD_SCHEMA_GENERATION, "the schema ends wide"
     assert saves["other"] == [], saves["other"][:3]
     if hold_max < 5:
-        # The trigger's refusal marks this process narrow, so new save transactions wait in begin_transaction until the schema is wide:
-        # the open ones end, and none begins between the guard's quiet point and the change. A first change the server does not answer
-        # in time keeps its lease, and a later try may send it again; every one of them must go out with none open.
+        # The trigger's refusal marks this process narrow, so new save transactions wait in begin_transaction until the schema is wide
+        # and the open ones end; the helper holds begins from the list to the change, so none begins in between. A first change the
+        # server does not answer in time keeps its lease, and a later try may send it again; every one of them must go out with none open.
         assert sent and all(not running for running in sent), f"a widening was sent while the server listed {sent} right before it: every records write waits for those"
     else:
         # a transaction is nearly always open, so the first quiet-point wait finds no moment: that widening is skipped (the write is refused

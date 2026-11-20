@@ -12,6 +12,9 @@ The widening tests assert the same way: what a write waits for is the set of str
 change is sent, and the guard decides when to send it; ``running_at_each_widening`` records what the server lists right
 before each change. The waits themselves are printed."""
 
+import asyncio
+import contextlib
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -19,20 +22,63 @@ import pytest
 STALL_BOUND_S = 2.0
 
 
-def running_at_each_widening(client: Any, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:  # noqa: ANN401
-    """From now on, for each schema change ``client`` sends, the ids of the stream transactions the server lists right before it.
+def running_at_each_widening(client: Any, monkeypatch: pytest.MonkeyPatch) -> tuple[list[list[str]], list[int]]:  # noqa: ANN401
+    """From now on, for each schema change ``client`` sends, the ids of the stream transactions the server lists right before
+    it, and how many begin requests were still unanswered when the change came up (waited out before the list).
 
     The change waits for every transaction open when it reaches the server, and every later records write queues behind it.
-    The list is a separate request, so a transaction that begins between it and the change is not in it: an empty list says
-    the guard sent the change with nothing open after its quiet point, not that none began before the change arrived (the
-    guard does not hold new transactions back from other processes). A test asserting on an empty list keeps new
-    transactions out of that window itself."""
+    The list is a request of its own, so ``client``'s begin requests are held from the moment the change comes up until it
+    returns, and the ones already sent are answered before the list is taken: none of ``client``'s transactions can begin
+    between the list and the change, and an empty list is a change sent with none of them open. Another client's
+    transactions are not held (the guard itself never holds them back)."""
     sent: list[list[str]] = []
-    update = client.update_collection_schema
+    waited: list[int] = []
+    update, get_session = client.update_collection_schema, client._get_session
+    begins_open = asyncio.Event()
+    begins_open.set()
+    all_answered = asyncio.Event()
+    all_answered.set()
+    unanswered = 0
+
+    @contextlib.asynccontextmanager
+    async def held_begin(request: Any) -> AsyncIterator[Any]:  # noqa: ANN401
+        nonlocal unanswered
+        while not begins_open.is_set():  # a begin woken by one change can meet the next one closed
+            await begins_open.wait()
+        unanswered += 1
+        all_answered.clear()
+        try:
+            async with request as resp:
+                yield resp
+        finally:
+            unanswered -= 1
+            if not unanswered:
+                all_answered.set()
+
+    class Session:
+        def __init__(self, session: Any) -> None:  # noqa: ANN401
+            self._session = session
+
+        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            return getattr(self._session, name)
+
+        def post(self, url: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            request = self._session.post(url, *args, **kwargs)
+            return held_begin(request) if url.endswith("/_api/transaction/begin") else request
+
+    async def session() -> Session:
+        return Session(await get_session())
 
     async def listed_then_update(name: str, schema: dict | None = None, timeout: float | None = None) -> bool:
-        sent.append([t["id"] for t in await client.list_running_transactions()])
-        return await update(name, schema, timeout)
+        begins_open.clear()
+        try:
+            waited.append(unanswered)
+            await all_answered.wait()
+            sent.append([t["id"] for t in await client.list_running_transactions()])
+            return await update(name, schema, timeout)
+        finally:
+            begins_open.set()
 
+    monkeypatch.setattr(client, "_get_session", session)
     monkeypatch.setattr(client, "update_collection_schema", listed_then_update)
-    return sent
+    return sent, waited
