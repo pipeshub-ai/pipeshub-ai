@@ -66,20 +66,6 @@ export async function createSupportRequest(
   }
 }
 
-export async function getFeedbackSmtpStatus(
-  req: AuthenticatedUserRequest,
-  res: Response,
-  next: NextFunction,
-  service: SupportService,
-): Promise<void> {
-  try {
-    requireUser(req);
-    res.status(200).json({ configured: await service.isSmtpConfigured() });
-  } catch (error) {
-    next(error);
-  }
-}
-
 export async function createFeedback(
   req: AuthenticatedUserRequest,
   res: Response,

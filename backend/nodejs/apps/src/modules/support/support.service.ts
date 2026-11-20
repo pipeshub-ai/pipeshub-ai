@@ -125,10 +125,6 @@ export class SupportService {
     };
   }
 
-  async isSmtpConfigured(): Promise<boolean> {
-    return (await this.readSmtp()) !== null;
-  }
-
   /** The same request key sent again within the hour answers with the first result instead of a second email. */
   createSupportRequest(
     input: SupportRequestInput,

@@ -6722,10 +6722,6 @@
     "invalidType": "Tento typ souboru není podporován.",
     "fileTooLarge": "Každý soubor smí mít nejvýše 5 MB.",
     "tooManyFiles": "Můžete přiložit až 5 souborů.",
-    "smtpNotConfigured": "SMTP není nakonfigurováno",
-    "smtpNotConfiguredAdmin": "Nejprve nakonfigurujte SMTP a pak odešlete zpětnou vazbu.",
-    "smtpConfigureAction": "Konfigurovat SMTP",
-    "smtpNotConfiguredMember": "Požádejte správce, aby nejprve nakonfiguroval SMTP, a pak to zkuste znovu.",
     "filesTotalTooLarge": "Soubory mohou mít dohromady nejvýše 8 MB."
   }
 }
