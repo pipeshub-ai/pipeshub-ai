@@ -123,6 +123,22 @@ if built:
 
 All questions in one `decide` call share the input; a question that depends on an earlier answer needs a second call. An answer the provider declines comes back with `refused=True`; one the response does not contain comes back with `missing=True` (usually a wrong endpoint or format). Failures raise `DecisionModelError`. Rate limits and overload (429, 500, 502, 503, 504, 529) are retried up to twice, unless the provider asks to wait more than 5 seconds.
 
+## Ollama output dimensions on upgrade
+
+Ollama output dimensions now reach the embedding API. Previously, the saved
+setting was ignored and collections used the model's native width. Existing
+record and entity collections keep their current width for both indexing and
+search; the saved setting is left unchanged. New installations use the saved
+dimension. No collection is automatically dropped or reindexed by this change.
+
+To apply a different dimension to existing data, schedule an explicit embedding
+rebuild that recreates the affected collections and reindexes their contents at
+the desired width. Keep indexing and queries stopped during that migration, then
+restart the indexing and query services to discard cached embedding clients.
+Rebuild the entity index separately as well. All record collections must agree
+on their dimension; conflicting widths require completing the migration before
+indexing or querying can resume.
+
 ## Local embedding model memory
 
 The bundled embedding server (`app/embedding_main.py`) holds a local model in memory only while something uses it.
