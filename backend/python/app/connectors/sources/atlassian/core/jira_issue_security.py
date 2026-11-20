@@ -700,6 +700,12 @@ def _entry_group_id(entry: dict[str, Any], *, names_are_ids: bool) -> str | None
     return str(fallback) if fallback else None
 
 
+def field_group_entries(holders: list[dict[str, Any]], fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """The entries this issue's group pickers hold for a level's ``groupCustomField`` holders, as the payload gives them."""
+    return [entry for holder in holders if isinstance(holder, dict) and holder.get("type") == HOLDER_GROUP_FIELD
+            for entry in _field_entries(_holder_field_value(holder, fields)[1])]
+
+
 def field_group_ids(
     holders: list[dict[str, Any]], fields: dict[str, Any], *, names_are_ids: bool = False,
 ) -> tuple[set[str], bool]:

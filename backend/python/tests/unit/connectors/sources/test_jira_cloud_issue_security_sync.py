@@ -4188,6 +4188,28 @@ class TestARecordGroupOfPickedGroupsIsNeverStale:
         assert json.loads(point["picker_groups"]) == [["10102", ["g-other"]]]
 
 
+APP_GROUP = {"groupId": "g-app", "name": "atlassian-addons-admin"}
+
+
+@pytest.mark.asyncio
+async def test_a_picked_add_on_group_grants_nobody_and_is_not_waited_for() -> None:
+    """An ``atlassian-addons`` group holds app accounts: the sync leaves it out of every group read, so a picker selecting it
+    makes no one a reader alone, and, every group listed, nothing is unread."""
+    c = _connector()
+    c.issues_sync_point = _KeptSyncPoints()
+    c.data_entities_processor.on_new_user_groups = AsyncMock()
+    c._fetch_groups = AsyncMock(return_value=([APP_GROUP], False))
+    c._fetch_group_members = AsyncMock(return_value=(["acc-1"], True))
+    await c._sync_user_groups(_users())
+    c._fetch_group_members.assert_not_awaited()
+    record = _stored_ticket()
+    perms, skipped, _ = apply_issue_access_settled(
+        record, _picked_issue(APP_GROUP)["fields"], is_subtask=False, project_key="PROJ",
+        context=_picker_context(c._group_members, complete=c._groups_complete),
+        user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+    assert (record.access_rule, perms, skipped) == (AccessRule.STRICT, [], [])
+
+
 class TestAReindexReadsTheGroupsAPickerSelects:
     MEMBERS = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": h} for h in PICKER_LEVEL["10102"]]}
 
@@ -4206,6 +4228,13 @@ class TestAReindexReadsTheGroupsAPickerSelects:
         assert c._fetch_group_members.await_args.args[0] == "g-pick"
         # The next sync reads it, so the group's later member changes re-read it.
         assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+
+    @pytest.mark.asyncio
+    async def test_a_picked_add_on_group_is_not_read_by_a_reindex_and_grants_nobody(self) -> None:
+        c, _ = self._reindex((["acc-1"], True), value=APP_GROUP)
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        c._fetch_group_members.assert_not_awaited()
+        assert record.access_rule == AccessRule.STRICT and all(p.entity_type != EntityType.USER for p in perms)
 
     @pytest.mark.asyncio
     async def test_a_reporter_outside_the_selected_group_gets_no_grant_from_a_reindex(self) -> None:

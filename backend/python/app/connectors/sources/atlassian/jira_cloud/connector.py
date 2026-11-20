@@ -109,6 +109,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     closed_level_groups,
     collect_paged_values,
     custom_field_ids_from_members,
+    field_group_entries,
     field_group_ids,
     group_members_digest,
     http_status_is_transient,
@@ -5451,6 +5452,10 @@ class JiraConnector(BaseConnector):
         if not security.browse_holders or level_id not in security.members_by_level:
             return set()
         users = {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **synced}
+        for entry in field_group_entries(security.members_by_level[level_id], fields or {}):
+            if _is_app_group(entry.get("name")) and isinstance(entry.get("groupId"), str) and entry["groupId"]:
+                # As the sync leaves it out of every group read: no member, and nothing read.
+                security.reindex_groups.setdefault(entry["groupId"], [])
         picked, _ = field_group_ids(security.members_by_level[level_id], fields or {})
         for group_id in sorted(picked):
             await self._reindex_group_members(security, group_id, users)
