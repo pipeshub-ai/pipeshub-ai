@@ -56,6 +56,7 @@ for _p in (_AUTH_ROOT, _ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper import local_auth  # noqa: E402
 from helper.clients.auth_client import UserAccountClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.second_user import (  # noqa: E402
@@ -216,8 +217,10 @@ class TestAuthenticate(UserAccountTestBase):
         assert_response_matches_openapi_operation(
             authenticate_success_body, "authenticate"
         )
-        access_token = authenticate_success_body.get("accessToken")
-        refresh_token = authenticate_success_body.get("refreshToken")
+        # Both tokens, from the reply or (two-step sign-in) from the switch to its org.
+        access_token, refresh_token = local_auth.finish_sign_in(
+            self.client.base_url, authenticate_success_body
+        )
         assert access_token, (
             f"authenticate did not return accessToken: {list(authenticate_success_body.keys())}"
         )
@@ -632,6 +635,8 @@ class TestBlockInvalidatesExistingSessions(UserAccountTestBase):
             mongo[MONGO_DB_NAME].userCredentials.insert_one({
                 "userId": user_id,
                 "orgId": org_id,
+                # As helper/second_user.py seeds it: a backend may find the credential by address.
+                "email": email,
                 "hashedPassword": hashed,
                 "ipAddress": "127.0.0.1",
                 "wrongCredentialCount": 0,

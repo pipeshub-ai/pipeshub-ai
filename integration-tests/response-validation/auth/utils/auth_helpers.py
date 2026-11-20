@@ -133,8 +133,10 @@ def login_with_user(
         f"authenticate failed: {auth_resp.status_code}: {auth_resp.text}"
     )
     authenticate_response_json = auth_resp.json()
-    access_token = authenticate_response_json.get("accessToken")
-    refresh_token = authenticate_response_json.get("refreshToken")
+    from helper import local_auth
+
+    base_url = getattr(client, "base_url", None) or getattr(account._client, "base_url", "")
+    access_token, refresh_token = local_auth.finish_sign_in(base_url, authenticate_response_json)
     assert access_token, (
         f"authenticate did not return accessToken: "
         f"{list(authenticate_response_json.keys())}"
