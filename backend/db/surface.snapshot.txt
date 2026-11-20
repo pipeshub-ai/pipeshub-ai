@@ -1266,7 +1266,7 @@ func graph.ref_links(text[],text,text,integer) owner=pipeshub_vetted_graph secde
 func graph.stage_states_by_revision(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=60eaee6b0646cff685230c159b49ebff ext=-
 func graph.stage_states_page(text,text,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a3208be1a7eb86259c302986beb3a97f ext=-
 func graph.stage_states_stale(text[],bigint,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=5bf31d0a9c981b840094d9d290c48b93 ext=-
-func graph.stage_states_unheld(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=728a7b7598098d4e7c698760a693996e ext=-
+func graph.stage_states_unheld(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ba9881d75c81ed3a8070a207d711a4a3 ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
@@ -1627,6 +1627,7 @@ index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=fals
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_external_any on graph.nodes unique=false exclusion=false valid=true def=6bf577338a8f5cc6491718d073f1ec00
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
+index graph.nodes_record_pending_vrid on graph.nodes unique=false exclusion=false valid=true def=e9cf8f4cc709d7da6cb0f813649cc954
 index graph.nodes_record_ticket_site on graph.nodes unique=false exclusion=false valid=true def=823bc7f1ea13b7bc3fb2687bcca446b3
 index graph.nodes_record_ticket_url on graph.nodes unique=false exclusion=false valid=true def=b7a08a810f598ec981d576195fd467ed
 index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid=true def=dfea55500a23daf82e044379884face6

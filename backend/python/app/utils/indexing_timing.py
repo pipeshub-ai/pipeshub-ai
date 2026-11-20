@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.messaging.error_classifier import is_record_deleted, is_source_refusal
 from app.utils.error_class import (
+    OUR_BUGS,
     classify_error,
     has_chain,
     innermost_type,
@@ -83,7 +84,6 @@ _SETTLE_FAILED = frozenset({"ack_failed", "commit_failed", "claim_lost"})
 # Pages fail concurrently (the page fan-out): the first page noted is the one whose exception propagated.
 _FIRST_WINS = ("exc", "page")
 _NOT_A_FAULT = frozenset({"shutdown", "cancelled"})
-_OUR_BUGS = (KeyError, AttributeError, TypeError, NameError, AssertionError)
 
 # Wrapper boundaries, in the order a record passes them.
 ADMITTED = "admitted"
@@ -321,7 +321,7 @@ def _write_end(timeline: RecordTimeline, internal: str, logger: logging.Logger) 
 def _error_class(exc: BaseException) -> str:
     # A bug in our own parse code raises straight into the processor's wrapper; a library that wraps its own
     # KeyError (docling: a zip renamed .docx) is the user's content. Logging only: retries do not read this.
-    if isinstance(exc, DocumentProcessingError) and isinstance(exc.__cause__, _OUR_BUGS):
+    if isinstance(exc, DocumentProcessingError) and isinstance(exc.__cause__, OUR_BUGS):
         return "internal"
     return classify_error(exc)
 

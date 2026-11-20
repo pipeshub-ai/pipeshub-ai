@@ -552,6 +552,8 @@ functions:
       RETURN QUERY SELECT s.doc->>'virtualRecordId', s.doc->>'rev', s.doc->>'updatedAtMs' FROM graph.nodes s
         WHERE s.org_id = v_org AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(p_virtual_record_ids) AND s.doc->>'rev' IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v_org AND r.coll = 'records' AND r.doc->>'virtualRecordId' = s.doc->>'virtualRecordId' AND r.doc->>'contentRev' = s.doc->>'rev')
+          AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v_org AND r.coll = 'records' AND r.doc->>'virtualRecordId' = s.doc->>'virtualRecordId'
+            AND r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true')
         LIMIT 100000;
 
   # One page of a connector's live records at FILE_TYPE_NOT_SUPPORTED after an id (byte order, as records_page_by_connector), for the file-type re-queue
@@ -601,7 +603,7 @@ functions:
           UNION ALL (SELECT 'files.path'::text, f.id, NULL::text, NULL::text, NULL::text FROM graph.nodes f
             WHERE f.org_id = v_org AND f.coll = 'files' AND f.doc->>'path' = 'storage://' || d.e ORDER BY f.id COLLATE ucs_basic LIMIT 1)) x;
 
-# ---- records by web address, and the Jira sites of the org's tickets (graph_0015) -------------------------------------------------------------
+# ---- records by web address, and the Jira sites of the org's tickets (graph_0017) -------------------------------------------------------------
 # Same reason as above: a plain statement read every record of the org to match an address. Each address is probed on its own (one probe per distinct
 # address, as records_by_virtual_id does), so a call with many addresses cannot plan a scan of the org.
 

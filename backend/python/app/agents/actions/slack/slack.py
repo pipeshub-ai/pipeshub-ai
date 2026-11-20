@@ -39,6 +39,7 @@ from app.connectors.core.registry.tool_builder import (
 from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
+from app.utils.oauth_errors import RATE_LIMITED_ERROR_CODES, TEMPORARY_ERROR_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -210,18 +211,17 @@ _SLACK_ERROR_EXPLANATIONS: Dict[str, str] = {
     "time_in_past": "The scheduled time is in the past. Pick a time in the future.",
     "time_too_far": "Slack can only schedule messages up to 120 days ahead. Pick an earlier time.",
 }
-_SLACK_TEMPORARY_ERRORS = {"fatal_error", "internal_error", "service_unavailable", "request_timeout"}
 _SLACK_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _explain_slack_error(code: str, status_code: int | None, retry_after: str | None) -> str:
     """Plain-language failure with a next step, keyed on Slack's error code."""
-    if code in ("ratelimited", "rate_limited") or status_code == HTTPStatus.TOO_MANY_REQUESTS:
+    if code in RATE_LIMITED_ERROR_CODES or status_code == HTTPStatus.TOO_MANY_REQUESTS:
         wait = f"Wait {retry_after} seconds" if str(retry_after or "").isdigit() else "Wait a minute"
         return f"Slack is limiting how fast requests can be made. {wait} and try again."
     if code in _SLACK_ERROR_EXPLANATIONS:
         return _SLACK_ERROR_EXPLANATIONS[code]
-    if code in _SLACK_TEMPORARY_ERRORS or (status_code or 0) >= HTTPStatus.INTERNAL_SERVER_ERROR:
+    if code in TEMPORARY_ERROR_CODES or (status_code or 0) >= HTTPStatus.INTERNAL_SERVER_ERROR:
         return "Slack is having a temporary problem. Try again in a moment."
     return f"Slack refused the request (error code '{code}')."
 

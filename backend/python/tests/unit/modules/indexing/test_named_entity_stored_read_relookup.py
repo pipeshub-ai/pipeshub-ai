@@ -17,7 +17,7 @@ from app.modules.transformers.blob_storage import (
     StorageDocumentNotFoundError,
 )
 
-RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a",
+RECORD = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a", "indexingStatus": "COMPLETED",
           "recordName": "n", "recordType": "FILE", "origin": "UPLOAD", "connectorName": "KB",
           "connectorId": "c", "externalRecordId": "e", "version": 0}
 

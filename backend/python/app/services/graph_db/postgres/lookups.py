@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 
-# The records at web addresses come from graph.records_by_weburl (graph_0015): one index probe per address, at most 10,000 records per address (a
+# The records at web addresses come from graph.records_by_weburl (graph_0017): one index probe per address, at most 10,000 records per address (a
 # vetted read has a hard limit) and 1,000 addresses per call, so one statement slices a longer list (a STABLE function reads the snapshot of the
 # statement that calls it: one snapshot, with or without the caller's transaction). Each statement also answers `capped`: an address filled its
 # 10,000 and may hold more. Then the plain statement below answers alone (it reads every record of the org; kept out of the first statement, whose
@@ -151,7 +151,7 @@ class LookupsMixin(PgBase):
         if weburl is None:
             return None
         try:
-            # graph_0015: a plain statement under row security reaches no index on the address, so it read every record of the org
+            # graph_0017: a plain statement under row security reaches no index on the address, so it read every record of the org
             rows = await self._at_addresses("""/* pipeshub:graph.get_record_by_weburl */ WITH f AS MATERIALIZED (SELECT r.doc FROM graph.records_by_weburl(ARRAY[$1]::text[]) r),
                   q AS (SELECT f.doc FROM f WHERE ($2::text IS NULL OR f.doc->>'orgId' = $2) AND f.doc->>'recordType' <> 'LINK'
                     AND coalesce((f.doc->>'isDeleted')::boolean, false) = false LIMIT 1)

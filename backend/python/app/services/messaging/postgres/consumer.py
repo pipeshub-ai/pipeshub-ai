@@ -16,6 +16,7 @@ import json
 import os
 import time
 import uuid
+from collections import Counter
 from logging import Logger
 from typing import TYPE_CHECKING, Any, override
 
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
     from app.services.distributed.interface import IDistributedLeaseManager
     from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
+    from app.services.messaging.scheduling.interface import IndexingFairness
     from app.services.messaging.worker_loop import WorkerLoop
 
 _SWEEP_EVERY_S = 60.0
@@ -122,7 +124,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         stage_admission: "StageAdmission | None" = None,
         priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: "IndexingFairness | None" = None,
     ) -> None:
+        self._fairness = fairness  # claim steps: which topics to claim from, in what order and amounts
         self._worker = worker  # the loop the indexing handler runs on; claims, heartbeats and settling stay on this one
         self.stage_admission = stage_admission  # a pipeline-stage consumer: its own permits and lease pool, no record lease
         self.priority_lane = priority_lane  # the consumer of the priority topic: its own handler cap and lease pool
@@ -282,7 +286,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                     await asyncio.sleep(0.05)
                     continue
                 self._wake.clear()
-                batch = await self.queue.claim(
+                batch = await self._claim(
                     self.config.group_id,
                     self.config.topics,
                     self.consumer_name,
@@ -315,6 +319,19 @@ class PgMessagingConsumer(IMessagingConsumer):
                     "Error in queue consume loop: %s: %s", type(e).__name__, e
                 )
                 await asyncio.sleep(1)
+
+    async def _claim(self, group: str, topics: list[str], consumer: str, limit: int, visibility_s: float, *, ordered: bool) -> list[Delivery]:
+        """``queue.claim``; with claim steps, one single-topic claim per step, in the order and amounts they give, up to ``limit`` rows."""
+        steps = self._fairness.claim_steps if self._fairness else None
+        if steps is None:
+            return await self.queue.claim(group, topics, consumer, limit, visibility_s, ordered=ordered)
+        out: list[Delivery] = []
+        for topic, rows in steps(limit, Counter(t for t, _ in self._held)):
+            if len(out) >= limit:
+                break
+            if rows > 0:
+                out += await self.queue.claim(group, [topic], consumer, min(rows, limit - len(out)), visibility_s, ordered=ordered)
+        return sorted(out, key=lambda d: d.message_id)
 
     async def _idle(self, poll_s: float) -> None:
         """Wait for a NOTIFY. With a LISTEN connection nothing polls: the only timer is the moment a retry backoff ends or a claim

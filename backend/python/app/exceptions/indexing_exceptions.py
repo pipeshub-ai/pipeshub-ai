@@ -83,6 +83,18 @@ class RecordDeletedError(IndexingError):
         super().__init__(f"record {record_id} was deleted while it was being indexed", record_id)
 
 
+class SupersededRun(RecordDeletedError):
+    """This run's replacement copy can no longer be committed: the record's status was changed under it (an edit saved
+    mid-run stores NOT_STARTED) or another run took over the record's pending virtual record.
+
+    An expected outcome, handled as :class:`RecordDeletedError` is (terminal, no FAILED write): the follow-up event the
+    change published redoes the work. The run removes its own pending copy before it raises this.
+    """
+
+    def __init__(self, record_id: str) -> None:
+        IndexingError.__init__(self, f"the replacement copy of record {record_id} was superseded", record_id)
+
+
 class RecordStatusUpdateError(IndexingError):
     """Raised when persisting a record's status fields to the graph DB fails.
 

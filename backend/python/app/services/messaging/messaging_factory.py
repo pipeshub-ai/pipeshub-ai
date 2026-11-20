@@ -44,6 +44,7 @@ from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
     FairSchedulerConfig,
+    IndexingFairness,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
@@ -340,6 +341,7 @@ class MessagingFactory:
         stage_admission: "StageAdmission | None" = None,
         priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: IndexingFairness | None = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -379,6 +381,8 @@ class MessagingFactory:
                       the priority topic: records are admitted ahead of the queued
                       backlog but under the lane's own caps and lease pools.
 
+            fairness: Optional parts for the record consumer; ignored unless INDEXING with default key fields and no explicit extractor, weights, priority lane or stage admission.
+
         Returns:
             IMessagingConsumer instance
         """
@@ -386,6 +390,19 @@ class MessagingFactory:
             broker_type = get_message_broker_type()
 
         effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()
+        if fairness is not None:
+            if consumer_type != ConsumerType.INDEXING or any(x is not None for x in (key_extractor, weight_provider, stage_admission, priority_lane)):
+                fairness = None
+            elif not effective_fair_config.enabled or effective_fair_config.key_fields != FairSchedulerConfig().key_fields:
+                logger.warning("Ignoring the record consumer's extra parts: fair scheduling is off or key fields are set")
+                fairness = None
+        if fairness is not None:
+            effective_fair_config = dataclasses.replace(effective_fair_config, key_fields=fairness.key_fields)
+            key_extractor, weight_provider = fairness.key_extractor, fairness.weights
+            if fairness.extra_topics and config is not None:
+                topics = [*config.topics, *(t for t in fairness.extra_topics if t not in config.topics)]
+                config = (dataclasses.replace(config, topics=topics) if dataclasses.is_dataclass(config)
+                          else config.model_copy(update={"topics": topics}))
         if priority_lane is not None:
             # The lane's per-org share is the fair scheduler's, and a priority record is not
             # ordered against its partition's others: its cap, not the partition, bounds it.
@@ -413,6 +430,7 @@ class MessagingFactory:
                 stage_admission=stage_admission,
                 priority_lane=priority_lane,
                 worker=worker if consumer_type == ConsumerType.INDEXING else None,
+                fairness=fairness,
             )
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
@@ -445,6 +463,7 @@ class MessagingFactory:
                     stage_admission=stage_admission,
                     priority_lane=priority_lane,
                     worker=worker,
+                    fairness=fairness,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -471,5 +490,6 @@ class MessagingFactory:
                     stage_admission=stage_admission,
                     priority_lane=priority_lane,
                     worker=worker,
+                    fairness=fairness,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

@@ -2,19 +2,12 @@
 
 import json
 import logging
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# We must install a mock 'mariadb' module into sys.modules BEFORE importing
-# the source module, because the source does `import mariadb` at module level
-# and sets it to None if the import fails.
-_mock_mariadb_module = MagicMock()
-_mock_mariadb_module.Error = type("MariaDBError", (Exception,), {})
-sys.modules["mariadb"] = _mock_mariadb_module
-
-from app.sources.client.mariadb.mariadb import (  # noqa: E402
+import app.sources.client.mariadb.mariadb as _mariadb_mod
+from app.sources.client.mariadb.mariadb import (
     AuthConfig,
     MariaDBClient,
     MariaDBClientBuilder,
@@ -23,9 +16,14 @@ from app.sources.client.mariadb.mariadb import (  # noqa: E402
     MariaDBResponse,
 )
 
-import app.sources.client.mariadb.mariadb as _mariadb_mod  # noqa: E402
+_mock_mariadb_module = MagicMock()
+_mock_mariadb_module.Error = type("MariaDBError", (Exception,), {})
 
-_mariadb_mod.mariadb = _mock_mariadb_module
+
+@pytest.fixture(autouse=True)
+def _mock_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The client module's own `mariadb` name, not sys.modules: a sys.modules stub is what every later import gets.
+    monkeypatch.setattr(_mariadb_mod, "mariadb", _mock_mariadb_module)
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,7 @@ from app.services.messaging.scheduling.interface import (
     FairnessKey,
     FairnessKeyExtractor,
     FairSchedulerConfig,
+    IndexingFairness,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import (
@@ -346,7 +347,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         stage_admission: "concurrency.StageAdmission | None" = None,
         priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: IndexingFairness | None = None,
     ) -> None:
+        self._fairness = fairness
         self.logger = logger
         self.config = config
         if config:
@@ -416,6 +419,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         from app import edition_services
 
         self.admission_backlog = edition_services.admission_backlog()
+        if fairness is not None and fairness.observer is not None:
+            self.admission_backlog.observer = fairness.observer
         self._suspects_waiting = 0
         self._backpressure_active = False
         # The fair read phase's "engaged" WARN was logged and its "cleared" INFO is still owed (throttled).
@@ -531,8 +536,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # than its share of the slots (see scheduling.slot_share).
         self._slot_share: SlotShare | None = None
         if self.fair_scheduler_config.enabled:
-            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider)
-            self._slot_share = SlotShare(
+            room = (lambda key: fairness.buffer_room(key, self._scheduler)) if fairness and fairness.buffer_room else None
+            self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider, room=room)
+            self._slot_share = (fairness.planner if fairness and fairness.planner else SlotShare)(  # type: ignore[assignment]
                 self.fair_scheduler_config.entity_depth, self.weight_provider
             )
 
@@ -3424,6 +3430,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # times_delivered incremented and then be neither buffered nor
         # parked -- burning delivery attempts on work it cannot hold.
         per_stream = max(1, buffer_room // max(1, len(streams)))
+        extra_budget = self._fairness.extra_read_budget(scheduler) if self._fairness and self._fairness.extra_read_budget else None
+        if extra_budget is not None:
+            # Only as many extra streams as the budget covers a batch of, from the shared cursor, which then moves to the last read.
+            extra = [t for t in streams if _LANE_SUFFIX.sub("", t) in self._fairness.extra_topics]
+            topics = list(self.config.topics)
+            start = self._read_offset % len(topics)
+            chosen = sorted(extra, key=lambda t: (topics.index(t) - start) % len(topics))[: max(0, extra_budget) // min(max(1, self.config.batch_size), per_stream)]
+            if chosen:
+                self._read_offset = topics.index(chosen[-1]) + 1
+            streams = {t: ">" for t in streams if t not in extra or t in chosen}
+            if not streams:  # a window of extra streams the budget leaves out: nothing to read, and no block for it
+                self._lanes_with_data = set()  # as the empty read it replaces did, so parked base lanes get read again
+                await self.__wait_for_finish(_BUSY_BLOCK_MS / 1000)
+                return
         # Buffered work behind a task in flight waits for its finish, which no XREADGROUP
         # notices: read without blocking, then wait for the finish. A blocked read is never
         # cancelled (that drops its connection). A finish since the dispatch phase looked counts

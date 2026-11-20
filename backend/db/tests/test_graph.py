@@ -1161,7 +1161,8 @@ STALE_PLAIN = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.
 UNHELD_PLAIN = """WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev, max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s
                     WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(%s::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
                  SELECT g.v, g.rev FROM g WHERE g.newest < %s::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = current_setting('app.org_id') AND r.coll = 'records'
-                    AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev"""
+                    AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED'
+                       AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev"""
 
 
 UNHELD_NEW = """SELECT virtual_record_id, revision FROM graph.stage_states_unheld(%s::text[]) GROUP BY 1, 2 HAVING max(coalesce(updated_at_ms::numeric, 0)) < %s::bigint ORDER BY 1, 2"""      # the caller's grouping
@@ -1334,12 +1335,12 @@ def test_the_link_read_uses_its_two_indexes_where_the_plain_statement_cannot(rdb
         assert not any(re.search(r"Index Cond: .*externalRecordId", p) for p in plain), plain[0]
 
 
-# ---- records by web address and the Jira sites of the org (graph_0015) ---------------------------------------------------------------------
+# ---- records by web address and the Jira sites of the org (graph_0017) ---------------------------------------------------------------------
 # 6,421 characters that compress poorly: more than a btree row holds, so the index keys the address by its md5
 LONG = "https://long.example/" + "".join(f"{i:08x}{(i * 2654435761) % 2**32:08x}" for i in range(400))
 OLD_AT = "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'webUrl' = ANY(%s::text[])"
 AT = "SELECT node_id FROM graph.records_by_weburl(%s::text[])"
-# the provider's statement before graph_0015
+# the provider's statement before graph_0017
 OLD_SITES = ("SELECT site FROM (SELECT DISTINCT (regexp_match(n.doc->>'webUrl', '^(.*)/browse/'))[1] AS site FROM graph.nodes n "
              "WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'orgId' = %s AND n.doc->>'recordType' = 'TICKET' "
              "AND n.doc->>'connectorName' = ANY(%s::text[]) AND n.doc->>'webUrl' LIKE '%%/browse/%%' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false) q "

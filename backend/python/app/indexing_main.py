@@ -47,10 +47,11 @@ from app.core.org_context import (
 )
 from app.edition import check_runtime_settings
 from app.edition_containers import IndexingAppContainer
-from app.edition_services import configure_app
+from app.edition_services import configure_app, indexing_fairness
 from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
@@ -118,6 +119,7 @@ from app.services.llm_gateway.fleet_redis import (
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.llm_gateway.trial_lease import get_trial_renewer
 from app.services.llm_gateway.wire import hook_status as wire_hook_status
+from app.services.messaging import consumer_concurrency
 from app.services.messaging.backpressure import (
     get_default_backpressure_coordinator,
 )
@@ -137,6 +139,7 @@ from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.membership import expect_groups
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.storage_protocol import tagged
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
 from app.services.parsing.remote_concurrency import remote_parse_concurrency
@@ -254,7 +257,8 @@ async def recover_in_progress_records(
     # Track results for final summary
     results = {"requeued": 0, "skipped": 0, "exhausted": 0, "error": 0}
     total_records = 0
-    recovery_owner = f"recovery:{uuid4().hex}"
+    # Carries the storage-protocol tag, so the owner of the lease that runs the orphan sweep is visibly a pod of this protocol
+    recovery_owner = tagged(f"recovery:{uuid4().hex}")
     recovery_renewal_task: asyncio.Task[None] | None = None
     recovery_lock_held = False
     # Shared by both the single coordination lock ("recovery") and each
@@ -1257,6 +1261,12 @@ async def _sweep_orphaned_virtual_record_mappings(
             for mapping in page
             if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
         }
+        # A copy a record just left (its replacement committed) is kept for the grace: a reader's cached map may still name it.
+        retired_at = {
+            vrid: mapping.get(keep_old_copy.RETIRED_AT_FIELD)
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        }
         try:
             # One read per page, not one per mapping: the answer is the same,
             # and on Neo4j each read is a millisecond of the indexing loop.
@@ -1287,6 +1297,15 @@ async def _sweep_orphaned_virtual_record_mappings(
             if not org_of.get(vrid):
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
             if (org_of[vrid], vrid) in _orphan_kept_until:
+                continue
+            # A copy may have been retired (or retired again) after this page was read, whatever mark the page shows: the mark is read
+            # again right before the delete, and a read that fails leaves the copy for the next pass.
+            try:
+                row = await graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, raise_on_error=True)
+            except Exception:
+                continue
+            retired = (row or {}).get(keep_old_copy.RETIRED_AT_FIELD, retired_at.get(vrid))
+            if isinstance(retired, (int, float)) and time.time() * 1000 - retired < keep_old_copy.grace_seconds() * 1000:
                 continue
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
@@ -2182,12 +2201,28 @@ async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
             streams[group] = sorted(found)
         return await membership_module.redis_untagged(redis, streams)
 
+    async def check_any(groups: dict[str, list[str]]) -> list[str]:
+        # Idle consumers count as live: an idle older pod can hold a sweep lease. Kafka's check has no idle notion.
+        if broker_type == MessageBrokerType.KAFKA:
+            return await check(groups)
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        redis = get_redis_provider(RedisConnectionConfig.from_redis_config(redis_config)).get_client()
+        streams: dict[str, list[str]] = {}
+        for group, topics in groups.items():
+            found = set(topics)
+            for topic in topics:
+                async for key in redis.scan_iter(match=f"{topic}.*"):
+                    found.add(key.decode() if isinstance(key, bytes) else str(key))
+            streams[group] = sorted(found)
+        return await membership_module.redis_untagged(redis, streams, idle_live_ms=None)
+
     publisher = membership_module.MembershipPublisher(
         logger,
         check,
         lambda key, entry, ttl: membership_module.publish_entry(config_service, key, entry, ttl),
         holder=owner,
         is_leader=is_leader,
+        check_any=check_any,
     )
     await publisher.run()
 
@@ -2566,6 +2601,7 @@ async def start_kafka_consumers(
         # passing it explicitly here is what lets the consumer's read loop
         # actually see their 429 signals and pause new reads.
         record_kafka_consumer = MessagingFactory.create_consumer(
+            fairness=indexing_fairness(lambda pool: consumer_concurrency.slot_pool_limit(record_kafka_consumer, pool)),
             broker_type=broker_type,
             logger=logger,
             config=record_consumer_config,

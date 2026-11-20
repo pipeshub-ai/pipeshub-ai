@@ -17,10 +17,10 @@ from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: py
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 from app.utils.process_hardening import disable_vendor_telemetry
-from tests.support.sys_modules_guard import install as install_sys_modules_guard
 
-# Before any test module is collected, so a module-level patch.dict(sys.modules) is checked too.
-install_sys_modules_guard()
+# Loaded before any test module is collected, so module-level sys.modules edits are checked too. Registered only here:
+# importing it directly as well would import it before pytest can rewrite its asserts.
+pytest_plugins = ("tests.support.sys_modules_guard",)
 # Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
 disable_vendor_telemetry()
 # The suite exercises the real metrics backend whatever the edition default.
