@@ -186,7 +186,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       await store(page('a'), 'A')
       await store(page('a'), 'B', REC, ORG_B)
       const del = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')] })
-      expect(del).to.deep.equal({ status: 200, body: { deleted: 1, changed: [] } })
+      expect(del).to.deep.equal({ status: 200, body: { deleted: 1 } })
       expect(filesOnDisk()).to.deep.equal([onDisk(ORG_B, REC, page('a'))])
     })
 
@@ -674,7 +674,7 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       await store(page('a'), '1')
       await store(page('b'), '2')
       const del = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a'), page('c')] })
-      expect(del).to.deep.equal({ status: 200, body: { deleted: 2, changed: [] } })
+      expect(del).to.deep.equal({ status: 200, body: { deleted: 2 } })
       expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('b'))])
     })
 
@@ -718,16 +718,35 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect(refused.status).to.equal(400)
     })
 
-    it('on a store that cannot delete by version a request naming versions is refused (503), never turned into a plain delete', async () => {
+    const guarded = (items: { path: string; etag: string }[], org = ORG_A) =>
+      call('POST', `/internal/paid-results/${REC}/delete-if-match`, { items }, org)
+
+    it('a store that confirmed it cannot delete by version answers "unsupported" and deletes nothing; a plain delete is untouched', async () => {
       await store(page('a'), 'one')
       const etag = (await list())[0]!.etag!
       LocalStorageAdapter.clearCapabilityMemo()
       ;(fsp.statfs as sinon.SinonStub).resolves({ type: 0x6969 } as never)
-      const r = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')], etags: { [page('a')]: etag } })
+      const r = await guarded([{ path: page('a'), etag }])
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ unsupported: true, deleted: 0, changed: [] })
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('a'))])
+      expect((await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')] })).status).to.equal(200)
+    })
+
+    it('a store whose probe cannot tell answers 503 on the guarded route and deletes nothing', async () => {
+      await store(page('a'), 'one')
+      const etag = (await list())[0]!.etag!
+      LocalStorageAdapter.clearCapabilityMemo()
+      ;(fsp.statfs as sinon.SinonStub).rejects(new Error('EIO'))
+      const r = await guarded([{ path: page('a'), etag }])
       expect(r.status).to.equal(503)
       expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('a'))])
-      // a request that names no versions is the plain delete, as before
-      expect((await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')] })).status).to.equal(200)
+    })
+
+    it('the plain delete route ignores an etags field: it is not a guard, and the guarded route is where versions go', async () => {
+      await store(page('a'), 'one')
+      const r = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')], etags: { [page('a')]: 'stale' } })
+      expect(r.body).to.deep.equal({ deleted: 1 })
     })
 
     it('the file route refuses a bump on a store that does not honour it, before any write', async () => {
@@ -781,13 +800,12 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       await store(page('a'), 'one')
       await store(page('b'), 'two')
       const [a, b] = await list()
-      const bumped = await bump(page('b'), b!.etag!, 'two, touched')
-      expect(bumped).to.equal(200)
+      expect(await bump(page('b'), b!.etag!, 'two, touched')).to.equal(200)
 
-      const r = await call('POST', `/internal/paid-results/${REC}/delete`, {
-        paths: [page('a'), page('b')],
-        etags: { [page('a')]: a!.etag, [page('b')]: b!.etag },
-      })
+      const r = await guarded([
+        { path: page('a'), etag: a!.etag! },
+        { path: page('b'), etag: b!.etag! },
+      ])
 
       expect(r.status).to.equal(200)
       expect(r.body).to.deep.equal({ deleted: 1, changed: [page('b')] })
@@ -795,13 +813,14 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect((await read(page('b'))).text).to.equal('two, touched')
     })
 
-    it('a path without an etag is deleted unconditionally, a missing one is done, and etags for other paths are refused', async () => {
+    it('the guarded route counts a missing object as done, refuses a path given twice or a malformed etag (400), and another org\'s token reaches only its own folder', async () => {
       await store(page('a'), 'one')
-      const gone = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a'), page('b')], etags: { [page('b')]: 'x'.repeat(8) } })
-      expect(gone.status).to.equal(200)
-      expect(filesOnDisk()).to.deep.equal([])
-      const stray = await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')], etags: { [page('c')]: 'x' } })
-      expect(stray.status).to.equal(400)
+      expect((await guarded([{ path: page('b'), etag: 'x'.repeat(8) }])).body).to.deep.equal({ deleted: 1, changed: [] })
+      expect((await guarded([{ path: page('a'), etag: 'abc' }, { path: page('a'), etag: 'abd' }])).status).to.equal(400)
+      expect((await guarded([{ path: page('a'), etag: 'not an etag!' }])).status).to.equal(400)
+      const etag = (await list())[0]!.etag!
+      expect((await guarded([{ path: page('a'), etag }], ORG_B)).body).to.deep.equal({ deleted: 1, changed: [] })
+      expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('a'))])
     })
 
     it('a bump replaces the bytes through a new file and changes the etag; the old etag no longer applies (412)', async () => {
@@ -905,8 +924,10 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     it('leaves no lock file behind and lists none', async () => {
       await store(page('a'), 'one')
       const etag = (await list())[0]!.etag!
-      await bump(page('a'), etag, 'x')
-      await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')], etags: { [page('a')]: (await list())[0]!.etag } })
+      expect(await bump(page('a'), etag, 'x')).to.equal(200)
+      const removed = await guarded([{ path: page('a'), etag: (await list())[0]!.etag! }])
+      expect(removed.body).to.deep.equal({ deleted: 1, changed: [] })
+      expect(filesOnDisk()).to.deep.equal([])                 // the bump and the delete ran
       expect(filesOnDisk().filter((f) => f.endsWith('.lock'))).to.deep.equal([])
     })
   })

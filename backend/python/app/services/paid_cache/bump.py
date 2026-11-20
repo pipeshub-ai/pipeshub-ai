@@ -31,6 +31,7 @@ from app.services.paid_cache.store import (
     CHANGED,
     CONFLICT,
     GONE,
+    GuardUnsupported,
     VersionedBytes,
 )
 from app.telemetry.backend import METRICS_BACKEND
@@ -111,13 +112,13 @@ class BumpStore(Protocol):
 
     async def fenced(self, org_id: str, record_id: str) -> bool: ...
     async def presign(self, org_id: str, record_id: str, files: Sequence[Any]) -> Mapping[tuple[str, str], Any]: ...
-    async def bump_to(self, entry: Any, data: bytes) -> tuple[str, str | None]: ...  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    async def bump_to(
+        self, entry: Any, data: bytes, charge: Callable[[int], None] | None = None,  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    ) -> tuple[str, str | None]: ...
     async def get_versioned(self, org_id: str, record_id: str, path: str) -> VersionedBytes | None: ...
     async def refresh_marker_ms(self, org_id: str, record_id: str) -> int | None: ...
     async def put(self, org_id: str, record_id: str, path: str, data: bytes) -> bool: ...
-    async def delete_files(
-        self, org_id: str, record_id: str, paths: list[str], etags: Mapping[str, str] | None = None,
-    ) -> Any: ...  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    async def delete_files_if_match(self, org_id: str, record_id: str, items: Mapping[str, str]) -> list[str]: ...
 
 
 @dataclass(slots=True)
@@ -256,16 +257,29 @@ class BumpQueue:
     # -- worker ----------------------------------------------------------------------------------
 
     async def _run(self) -> None:
-        while self._queue:
-            batch: list[BumpEntry] = []
+        try:
             while self._queue:
-                entry = self._queue.popleft()
-                self._queued_bytes -= len(entry.data) + TOUCH_OVERHEAD
-                batch.append(entry)
-            try:
-                await self._process(batch)
-            except Exception as exc:
-                self._log.warning("Paid-result bump batch failed (%s); dropped", type(exc).__name__)
+                batch: list[BumpEntry] = []
+                while self._queue:
+                    entry = self._queue.popleft()
+                    self._queued_bytes -= len(entry.data) + TOUCH_OVERHEAD
+                    batch.append(entry)
+                try:
+                    await self._process(batch)
+                except Exception as exc:
+                    self._log.warning("Paid-result bump batch failed (%s); dropped", type(exc).__name__)
+        finally:
+            # Also on cancellation (the loop closing): what is still queued will never run, so what it was promised of the
+            # process-wide budget is given back.
+            self.close()
+
+    def close(self) -> None:
+        """Drops what is queued and gives its reserved bytes back (shutdown)."""
+        while self._queue:
+            entry = self._queue.popleft()
+            self._pending.discard((entry.org_id, entry.record_id, entry.path))
+            self._budget.release(len(entry.data) + TOUCH_OVERHEAD)
+        self._queued_bytes = 0
         self._idle.set()
 
     async def drain_once(self) -> None:
@@ -391,9 +405,9 @@ class BumpQueue:
         if new is None:
             self._count("not_json")
             return None
-        outcome, _ = await self._store.bump_to(signed, new)
+        outcome, _ = await self._store.bump_to(signed, new, self._charge)
         if outcome == BUMPED:
-            self._wrote(len(new))
+            self._wrote()
             self._count("bumped")
             return new
         if outcome in (CHANGED, CONFLICT):
@@ -403,7 +417,7 @@ class BumpQueue:
             current = await self._store.get_versioned(entry.org_id, entry.record_id, entry.path)
             if current is not None:
                 if current.data == new:
-                    self._wrote(len(new))
+                    self._wrote()
                     self._count("bumped")
                     return new
                 self._count("changed")
@@ -412,14 +426,22 @@ class BumpQueue:
             return None
         return await self._restore(entry, marker)
 
-    def _wrote(self, size: int) -> None:
+    def _charge(self, size: int) -> None:
+        """Bytes sent in one transfer attempt, counted whatever its answer."""
+        self._budget.record(time.monotonic(), size)
+
+    def _wrote(self) -> None:
         self._last_write = time.monotonic()
-        self._budget.record(self._last_write, size)
 
     async def _restore(self, entry: BumpEntry, marker: int | None) -> bytes | None:
         """The object is gone: store the bytes the run holds, under the guards of a paid store."""
         if entry.past_deadline():
             self._count("deadline")
+            return None
+        # The marker is read again here: a refresh may have begun and purged while the bump request was in flight.
+        readable, marker = await self._marker(entry.org_id, entry.record_id)
+        if not readable:
+            self._count("marker_unreadable")
             return None
         if _refreshed_since(marker, entry.origin_ms):
             self._count("refreshed")
@@ -429,7 +451,8 @@ class BumpQueue:
         if not stored:
             self._count("restore_lost")
             return None
-        self._wrote(len(data))
+        self._charge(len(data))
+        self._wrote()
         self._count("restored")
         return data
 
@@ -444,16 +467,16 @@ class BumpQueue:
         for entry, data in written:
             if readable and not fenced and not _refreshed_since(marker, entry.origin_ms):
                 continue
-            if not self._honours(org_id, "conditionalDelete"):
-                # Removing the object again would be an unconditional delete that could take a refresh's newer result: it
-                # is left, and the next reuse refuses it by its ``originMs`` and the marker (``cache.py``).
-                self._count("undo_unavailable")
-                continue
             try:
                 current = await self._store.get_versioned(org_id, record_id, entry.path)
                 if current is not None and current.etag and current.data == data:
-                    await self._store.delete_files(org_id, record_id, [entry.path], {entry.path: current.etag})
-                    self._count("undone")
+                    kept = await self._store.delete_files_if_match(org_id, record_id, {entry.path: current.etag})
+                    # A path the store reports as changed was replaced after the read: the undo did not happen.
+                    self._count("undo_kept" if entry.path in kept else "undone")
+            except GuardUnsupported:
+                # Removing the object again would be an unconditional delete that could take a refresh's newer result: it
+                # is left, and the next reuse refuses it by its ``originMs`` and the marker (``cache.py``).
+                self._count("undo_unavailable")
             except Exception as exc:
                 self._log.warning("Paid-result bump undo failed (%s)", type(exc).__name__)
                 self._count("undo_failed")

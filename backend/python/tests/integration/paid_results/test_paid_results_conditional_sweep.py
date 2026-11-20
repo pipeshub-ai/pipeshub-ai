@@ -14,12 +14,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from app.modules.transformers.blob_storage import TransientStorageError
 from app.services.paid_cache.bump import BumpEntry, BumpQueue, touched_bytes
 from app.services.paid_cache.cache import _FencedStore
 from app.services.paid_cache.retention import GRACE_MS, sweep_record
 from app.services.paid_cache.run import RunScope
-from app.services.paid_cache.store import BUMPED, CHANGED, GONE
+from app.services.paid_cache.store import BUMPED, CHANGED, GONE, GuardUnsupported
 from tests.support.paid_results_it import new_org
 
 if TYPE_CHECKING:
@@ -72,29 +71,35 @@ async def _queue(store: NodePaidResultStore, org: str) -> BumpQueue:
     return BumpQueue(fenced, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
 
 
+async def _guard(store: NodePaidResultStore, org: str) -> bool:
+    """Whether the storage behind the org deletes by version (learned from a reply, as the sweep's store learns it)."""
+    await store.list_files(org, REC)
+    return store.honours(org, "conditionalDelete")
+
+
 class _Racing:
     """The sweep's store, with a reuse's bump run at the worst point the store allows: between the last look and the
     delete when the store deletes by version (the delete is then refused), and just before the last look when it does
     not (the pre-delete listing then drops the object; a bump after that look is the documented residual)."""
 
-    def __init__(self, store: NodePaidResultStore, run_bump: Any) -> None:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
-        self._store, self._run_bump, self._done, self._lists = store, run_bump, False, 0
+    def __init__(self, store: NodePaidResultStore, run_bump: Any, guard: bool) -> None:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+        self._store, self._run_bump, self._guard, self._done, self._lists = store, run_bump, guard, False, 0
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
         return getattr(self._store, name)
 
     async def list_files(self, o: str, r: str, prefix: str = "") -> Any:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
         self._lists += 1
-        if self._lists == 3 and not self._store.supports_conditional_delete and not self._done:
+        if self._lists == 3 and not self._guard and not self._done:
             self._done = True
             await self._run_bump()
         return await self._store.list_files(o, r, prefix)
 
-    async def delete_files(self, o: str, r: str, paths: list[str], etags: Any = None) -> list[str]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
-        if self._store.supports_conditional_delete and not self._done:
+    async def delete_files_if_match(self, o: str, r: str, items: Any) -> list[str]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+        if self._guard and not self._done:
             self._done = True
             await self._run_bump()
-        return await self._store.delete_files(o, r, paths, etags)
+        return await self._store.delete_files_if_match(o, r, items)
 
 
 async def test_the_storage_service_names_what_it_honours(store: NodePaidResultStore) -> None:
@@ -118,15 +123,14 @@ async def test_a_delete_naming_a_stale_version_keeps_the_object(store: NodePaidR
     outcome, _ = await store.bump_to(signed[(K, "bump")], touched_bytes(VALUE, int(time.time() * 1000)) or b"")
     assert outcome == BUMPED
 
-    if not store.supports_conditional_delete:
-        # A store that cannot delete by version refuses a request that names versions (503): it is never turned into a plain
-        # delete. The sweep sends no versions to such a store.
-        with pytest.raises(TransientStorageError):
-            await store.delete_files(org, REC, [K], {K: before.etag})
+    if not await _guard(store, org):
+        # A store that confirmed it cannot delete by version says so (it deletes nothing): the sweep then takes its look.
+        with pytest.raises(GuardUnsupported):
+            await store.delete_files_if_match(org, REC, {K: before.etag})
         after = await store.get_versioned(org, REC, K)
         assert after is not None and after.etag != before.etag
         return
-    changed = await store.delete_files(org, REC, [K], {K: before.etag})
+    changed = await store.delete_files_if_match(org, REC, {K: before.etag})
     assert changed == [K], "the delete removed a version it was not named for"
     after = await store.get_versioned(org, REC, K)
     assert after is not None and after.etag != before.etag
@@ -172,10 +176,11 @@ async def test_a_reuse_landing_between_the_second_listing_and_the_delete_keeps_t
         assert queue.offer(BumpEntry(org, REC, K, got.data, got.etag, got.last_modified_ms - 3 * 3_600_000, None)) == "queued"
         await queue.drain_once()
 
-    result = await sweep_record(_Racing(store, run_bump), org, REC, now_ms=_later())  # type: ignore[arg-type]
+    guard = await _guard(store, org)
+    result = await sweep_record(_Racing(store, run_bump, guard), org, REC, now_ms=_later())  # type: ignore[arg-type]
 
     assert await store.get_versioned(org, REC, K) is not None, "the sweep deleted the version the reuse had just replaced"
-    if store.supports_conditional_delete:
+    if guard:
         assert result.changed == 1
 
 
@@ -201,7 +206,7 @@ async def test_a_refresh_marker_is_written_by_the_cutoff_and_survives_the_purge(
     cutoff = await store.purge_cutoff(org, REC)
     assert cutoff is not None
     marker = await store.refresh_marker_ms(org, REC)
-    assert marker is not None and marker // 1000 <= cutoff // 1000
+    assert marker == cutoff - 1000, "the fence is the cutoff the storage took (one second earlier: a tie counts as refreshed)"
 
     await store.purge_record(org, REC, before_ms=cutoff + 5_000)
 
@@ -245,7 +250,7 @@ async def test_a_loop_of_reuses_against_a_sweeping_loop_loses_no_reused_object(s
     async def run_bumps() -> None:
         await queue.drain_once()
 
-    await sweep_record(_Racing(store, run_bumps), org, REC, now_ms=_later())  # type: ignore[arg-type]
+    await sweep_record(_Racing(store, run_bumps, await _guard(store, org)), org, REC, now_ms=_later())  # type: ignore[arg-type]
 
     present = {f.path for f in await store.list_files(org, REC, "ocr_page/")}
     assert set(reused) <= present, f"{len(set(reused) - present)} reused objects lost"

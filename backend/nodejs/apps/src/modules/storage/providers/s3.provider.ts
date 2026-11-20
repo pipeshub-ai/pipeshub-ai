@@ -939,6 +939,12 @@ class AmazonS3Adapter implements StorageServiceInterface {
       // it honours the write condition: PUT If-Match, wrong ETag refused, right one replaces and the ETag moves.
       const putWrong = await putIfMatch('0'.repeat(32), '{"probe":2}');
       const putRight = await putIfMatch(e1, '{"probe":3}');
+      // Only a status that speaks of the condition is an answer: 412 (refused), 2xx (the condition was ignored or met) or
+      // 501 (not implemented). A denial, a throttle or anything else says nothing about the store: ask again later.
+      const speaksOfCondition = (n: number): boolean =>
+        n === 412 || n === 501 || (n >= 200 && n < 300);
+      if (!speaksOfCondition(putWrong) || !speaksOfCondition(putRight))
+        return null;
       const e2 = await exists();
       const bump =
         putWrong === 412 &&
@@ -950,16 +956,21 @@ class AmazonS3Adapter implements StorageServiceInterface {
       // (1) wrong ETag: refused, object kept.
       const wrong = await delOnce('0'.repeat(32));
       const keptAfterWrong = (await exists()) !== null;
-      const deleteRefuses =
-        keptAfterWrong &&
-        (wrong === 'PreconditionFailed' ||
-          wrong === 'ConditionalRequestConflict');
+      const refusal = (c: string): boolean =>
+        c === 'PreconditionFailed' || c === 'ConditionalRequestConflict';
+      const deleteRefuses = keptAfterWrong && refusal(wrong);
       if (!keptAfterWrong) {
         // The store deleted on a wrong ETag: it ignores the condition. Nothing more to learn about deletes.
         return { conditionalDelete: false, bump };
       }
+      // The object stayed, but not because the store refused the condition (AccessDenied, a throttle, a code of its own):
+      // that is no evidence about conditional deletes. Not remembered.
+      if (wrong !== 'OK' && !refusal(wrong) && wrong !== 'NotImplemented')
+        return null;
       // (2) the current ETag deletes; the missing key then answers gone (OK or NoSuchKey).
       const right = await delOnce(current);
+      if (right !== 'OK' && !refusal(right) && right !== 'NotImplemented')
+        return null;
       const goneAfterRight = (await exists()) === null;
       const missing = await delOnce(current);
       const missingOk =
@@ -976,28 +987,49 @@ class AmazonS3Adapter implements StorageServiceInterface {
       const httpStatus = status(error);
       if (httpStatus !== undefined && isTransientStatus(httpStatus))
         return null;
-      const code = httpStatus;
-      // A store that answers the conditional form with a refusal of its own (501, 400, 403) said no, definitively.
-      if (code === 403) {
-        // The sentinel (or a conditional request) was denied. That is a definitive "no" for this deployment, so the sweep
-        // takes the safe fallback instead of failing for ever; the operator can allow the probe prefix to get it back.
+      // A 400 that is S3's own transient answer (RequestTimeout and its kin, which the SDK has already retried) says
+      // nothing about the store's conditions.
+      if (isTransientCode((error as { code?: string }).code)) return null;
+      // Only a refusal that says "the conditional form is not supported" is an answer (501, or a 400 whose code names the
+      // unsupported feature). A 403 (a denied probe prefix, a refreshing credential) and a 400 with any other code
+      // (RequestTimeout among them) are not: they are asked again, and a sweep in that window fails and is retried instead
+      // of deleting without a version. The warning names what to allow.
+      const errorCode = (error as { code?: string }).code ?? '';
+      if (httpStatus === 403 || errorCode === 'AccessDenied') {
         this.logger.warn(
-          'The object store denied the conditional-write probe; paid-result sweeps use the fallback. Allow PutObject, GetObject and DeleteObject on the probe prefix to enable conditional deletes',
+          'The object store denied the conditional-write probe; paid-result sweeps wait until it is allowed. Allow PutObject, GetObject and DeleteObject on the probe prefix',
           { probePrefix: PROBE_FOLDER },
         );
+        return null;
       }
-      if (code === 501 || code === 400 || code === 403) {
+      if (
+        httpStatus === 501 ||
+        (httpStatus === 400 &&
+          /NotImplemented|InvalidRequest|UnsupportedOperation|InvalidArgument/.test(
+            errorCode,
+          ))
+      ) {
         return { conditionalDelete: false, bump: false };
       }
       return null;
     } finally {
-      await this.s3
-        .deleteObjects({
-          Bucket: this.bucketName,
-          Delete: { Objects: [{ Key: key }], Quiet: true },
-        })
-        .promise()
-        .catch(() => undefined);
+      // Bounded: a cleanup that never answers must not hold the answer every caller of this probe shares. A sentinel
+      // left behind is in a folder no listing shows.
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        this.s3
+          .deleteObjects({
+            Bucket: this.bucketName,
+            Delete: { Objects: [{ Key: key }], Quiet: true },
+          })
+          .promise()
+          .catch(() => undefined),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, this.probeTimeoutMs);
+          timer.unref();
+        }),
+      ]);
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 

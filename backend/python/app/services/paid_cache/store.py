@@ -9,6 +9,7 @@ with one warning; indexing is unaffected.
 
 import asyncio
 import email.utils
+import json
 import logging
 import threading
 import time
@@ -72,6 +73,10 @@ PURGE_RECORDS = METRICS_BACKEND.counter(
 
 class PaidResultStoreError(Exception):
     """A storage reply this client cannot use. Never carries a signed URL."""
+
+
+class GuardUnsupported(PaidResultStoreError):
+    """The storage behind the request cannot delete by version (it said so, or it has no such route: an earlier release)."""
 
 
 class PurgeCutoffNoMarker(PaidResultStoreError):
@@ -200,9 +205,6 @@ class NodePaidResultStore:
         #: The same, per org: a storage service answers for the target of the request (an org's own store), and a reply
         #: for one org says nothing about another's.
         self._caps_by_org: dict[str, frozenset[str]] = {}
-        #: Orgs whose storage said, in its last reply, that it could not yet tell what it honours (a failed probe): not
-        #: the same as "nothing" and not the same as a reply that names no capability (an earlier release).
-        self._inconclusive_orgs: set[str] = set()
         # Reuses the artifact client's reply handling and its URL transfer helpers.
         self._artifacts = NodeArtifactStore(blob_storage, self.logger)
 
@@ -243,14 +245,6 @@ class NodePaidResultStore:
         if len(self._caps_by_org) > 4096:
             self._caps_by_org.clear()
         self._caps_by_org[org_id] = known
-        if body.get("capabilitiesInconclusive") is True:
-            self._inconclusive_orgs.add(org_id)
-        else:
-            self._inconclusive_orgs.discard(org_id)
-
-    def capabilities_unknown(self, org_id: str) -> bool:
-        """The storage behind the org could not tell, in its last reply, whether it deletes by version."""
-        return org_id in self._inconclusive_orgs
 
     def honours(self, org_id: str, capability: str) -> bool:
         """Whether the storage behind ``org_id`` said, in its last reply for that org, that it honours ``capability``."""
@@ -259,10 +253,6 @@ class NodePaidResultStore:
     @property
     def supports_bump(self) -> bool:
         return "bump" in self.capabilities
-
-    @property
-    def supports_conditional_delete(self) -> bool:
-        return "conditionalDelete" in self.capabilities
 
     async def presign(
         self, org_id: str, record_id: str, files: Sequence[tuple[str, str] | tuple[str, str, str]],
@@ -325,27 +315,38 @@ class NodePaidResultStore:
                 return files
             after = nxt
 
-    async def delete_files(
-        self, org_id: str, record_id: str, paths: Sequence[str], etags: Mapping[str, str] | None = None,
-    ) -> list[str]:
-        """Deletes ``paths``. A path with an entry in ``etags`` goes only while that is still its version: the ETags a
-        caller supplies are always sent (a service that cannot honour them answers 503 and the call raises; one of an
-        earlier release lists no ETag, so none is supplied). A caller that takes the unconditional path supplies none.
-        Returns the paths the service kept because the object changed since it was listed."""
+    async def delete_files(self, org_id: str, record_id: str, paths: Sequence[str]) -> None:
+        """Deletes ``paths`` unconditionally (the plain route)."""
         route = Routes.STORAGE_PAID_RESULTS_DELETE.value.format(recordId=record_id)
-        changed: list[str] = []
         for start in range(0, len(paths), MAX_FILES_PER_CALL):
-            chunk = list(paths[start:start + MAX_FILES_PER_CALL])
-            request: dict[str, Any] = {"paths": chunk}
-            if etags:
-                guarded = {p: etags[p] for p in chunk if p in etags}
-                if guarded:
-                    request["etags"] = guarded
-            reply = await self._call(org_id, "POST", route, body=request)
+            await self._call(
+                org_id, "POST", route, body={"paths": list(paths[start:start + MAX_FILES_PER_CALL])},
+            )
+
+    async def delete_files_if_match(self, org_id: str, record_id: str, items: Mapping[str, str]) -> list[str]:
+        """Deletes each path only while it is still the version named, through a route of its own. Returns the paths kept
+        because the object changed. Raises ``GuardUnsupported`` when the storage cannot delete by version (it said so, or
+        it is a replica of an earlier release that has no such route, which would otherwise ignore the guard): nothing was
+        deleted then, and the caller takes its own fallback. A storage that could not tell yet answers 503, which raises
+        as a transient failure for the caller to retry."""
+        route = Routes.STORAGE_PAID_RESULTS_DELETE_IF_MATCH.value.format(recordId=record_id)
+        pairs = list(items.items())
+        changed: list[str] = []
+        for start in range(0, len(pairs), MAX_FILES_PER_CALL):
+            chunk = pairs[start:start + MAX_FILES_PER_CALL]
+            try:
+                reply = await self._call(
+                    org_id, "POST", route, latch=False,
+                    body={"items": [{"path": p, "etag": e} for p, e in chunk]},
+                )
+            except ArtifactRoutesUnavailable as exc:
+                raise GuardUnsupported("the storage service has no delete-by-version route") from exc
+            if reply.get("unsupported") is True:
+                raise GuardUnsupported("the storage cannot delete by version")
             kept = reply.get("changed")
-            # A reply without the field (a service of an earlier release) kept nothing.
-            if isinstance(kept, list):
-                changed.extend(p for p in kept if isinstance(p, str))
+            if not isinstance(kept, list):
+                raise PaidResultStoreError("delete-by-version answered no list of kept paths")
+            changed.extend(p for p in kept if isinstance(p, str))
         return changed
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
@@ -491,6 +492,16 @@ class NodePaidResultStore:
             return None
         if found.last_modified_ms is None:
             raise PaidResultStoreError("the refresh marker has no write time")
+        # Once the storage service has taken the cutoff it writes it into the marker. A result written at or after the
+        # cutoff survives the purge (it removes only what is older, in whole seconds), so the fence is the cutoff, not the
+        # marker's own time: returned one second earlier because a tie with the fence counts as "refreshed since".
+        try:
+            body = json.loads(found.data)
+        except ValueError:
+            body = None
+        cutoff = body.get("cutoffMs") if isinstance(body, dict) else None
+        if isinstance(cutoff, int) and not isinstance(cutoff, bool) and cutoff > 0:
+            return cutoff - 1000
         return found.last_modified_ms
 
     async def put(self, org_id: str, record_id: str, path: str, data: bytes) -> bool:
@@ -544,7 +555,9 @@ class NodePaidResultStore:
 
         return bool(await self._blob_storage._with_storage_retry("paid-result upload", attempt))
 
-    async def bump_to(self, entry: SignedFileUrl, data: bytes) -> tuple[BumpOutcome, str | None]:
+    async def bump_to(
+        self, entry: SignedFileUrl, data: bytes, charge: Callable[[int], None] | None = None,
+    ) -> tuple[BumpOutcome, str | None]:
         """The conditional replace a bump signs (``If-Match`` sent with exactly the signed headers). Returns the outcome
         and the new ETag when the store sent one. The store's own status says what happened, never a route reply: 404 is
         ``gone``, 412 ``changed``, a 409 that outlasts the retries ``conflict``."""
@@ -554,6 +567,8 @@ class NodePaidResultStore:
 
         async def attempt() -> tuple[BumpOutcome, str | None]:
             for conflict in range(_CONFLICT_ATTEMPTS):
+                if charge is not None:
+                    charge(len(data))        # every transfer attempt is bytes sent, whatever the answer
                 try:
                     async with get_shared_session().put(
                         URL(entry.url, encoded=True), data=data, headers=headers, skip_auto_headers={"Content-Type"},

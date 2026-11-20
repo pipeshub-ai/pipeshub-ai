@@ -471,10 +471,48 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(Date.now() - started).to.be.lessThan(2000)
     })
 
-    it('a definitive refusal (403) is remembered as "none", not retried', async () => {
-      const a = adapter('forbidden-' + Math.random().toString(36).slice(2))
-      a.probeBackoffMs = [0, 0]
-      const up = sinon.stub().returns({ promise: async () => { throw Object.assign(new Error('denied'), { $metadata: { httpStatusCode: 403 } }) } })
+    it('a 403 (denied probe prefix, refreshing credential) or a 400 RequestTimeout is not "unsupported": asked again, never remembered', async () => {
+      for (const failure of [
+        { $metadata: { httpStatusCode: 403 }, code: 'AccessDenied' },
+        { $metadata: { httpStatusCode: 400 }, code: 'RequestTimeout' },
+      ]) {
+        const a = adapter('denied-' + Math.random().toString(36).slice(2))
+        a.probeBackoffMs = []
+        const b = bucket('honours')
+        let first = true
+        ;(a as any).s3 = { ...b.s3, upload: (p: any) => { if (first) { first = false; return { promise: async () => { throw Object.assign(new Error('x'), failure) } } } return b.s3.upload(p) } }
+        sinon.stub(a, 'signObjectUrl').callsFake(async (_k: string, o: any) => ({ url: 'http://s3/put', headers: { 'If-Match': `"${o.ifMatch}"` } }))
+        if ((globalThis.fetch as any).restore) (globalThis.fetch as any).restore()
+        sinon.stub(globalThis, 'fetch').callsFake(b.fetchStub as any)
+        expect(await a.conditionalCapabilities(), failure.code).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+        expect(await a.conditionalCapabilities(), 'asked again').to.deep.equal({ conditionalDelete: true, bump: true })
+      }
+    })
+
+    it('a delete that leaves the object without a precondition code (AccessDenied) is no evidence, and is not remembered', async () => {
+      const a = adapter('denied-del-' + Math.random().toString(36).slice(2))
+      a.probeBackoffMs = []
+      const b = bucket('honours')
+      let denied = true
+      ;(a as any).s3 = {
+        ...b.s3,
+        deleteObjects: (p: any) => {
+          if (denied && p.Delete.Objects[0].ETag !== undefined) return done({ Errors: [{ Key: p.Delete.Objects[0].Key, Code: 'AccessDenied' }] })
+          return b.s3.deleteObjects(p)
+        },
+      }
+      sinon.stub(a, 'signObjectUrl').callsFake(async (_k: string, o: any) => ({ url: 'http://s3/put', headers: { 'If-Match': `"${o.ifMatch}"` } }))
+      if ((globalThis.fetch as any).restore) (globalThis.fetch as any).restore()
+      sinon.stub(globalThis, 'fetch').callsFake(b.fetchStub as any)
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+      denied = false
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
+    })
+
+    it('a 501 is a definitive "not supported" and is remembered', async () => {
+      const a = adapter('notimpl-' + Math.random().toString(36).slice(2))
+      a.probeBackoffMs = []
+      const up = sinon.stub().returns({ promise: async () => { throw Object.assign(new Error('ni'), { $metadata: { httpStatusCode: 501 } }) } })
       ;(a as any).s3 = { upload: up, deleteObjects: () => done({}) }
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })

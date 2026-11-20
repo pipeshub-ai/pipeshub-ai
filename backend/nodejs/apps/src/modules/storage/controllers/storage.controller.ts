@@ -1517,47 +1517,58 @@ export class StorageController {
       if (typeof recordParam !== 'string' || recordParam === '') {
         throw new BadRequestError('recordId must be a single value');
       }
-      const { paths, etags } = req.body as {
-        paths: string[];
-        etags?: Record<string, string>;
+      const { paths } = req.body as { paths: string[] };
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const adapter = await this.initializeStorageAdapter(req);
+      await adapter.deleteObjects(paths.map((p) => `${root}/${p}`));
+      res.status(HTTP_STATUS.OK).json({ deleted: paths.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Deletes each path only while it is still the version named (its listed ETag). The answer says which were kept
+   * (`changed`). A store that confirmed it cannot delete by version answers 200 with `unsupported: true` and deletes
+   * nothing (the caller then takes its own fallback); one that could not tell answers 503 (the caller retries). A request
+   * that names versions is never turned into a plain delete.
+   */
+  async deletePaidResultsIfMatch(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      this.assertBodyOrgMatchesToken(req, orgId);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const { items } = req.body as {
+        items: { path: string; etag: string }[];
       };
       const root = paidResultsRecordRoot(orgId, recordParam);
       const adapter = await this.initializeStorageAdapter(req);
-      // A path with a listed ETag goes only while that is still its version; the rest is the unconditional delete
-      // (a caller that listed no ETag, or a store that honours none).
       const caps = await adapter.conditionalCapabilities();
-      const guarded: { key: string; etag: string; path: string }[] = [];
-      if (etags !== undefined && Object.keys(etags).length > 0) {
-        // A request that names versions is never turned into a plain delete: a replica whose probe said no (or could
-        // not tell) answers 503, and the sweep tries again.
-        if (!caps.conditionalDelete) {
-          throw new ServiceUnavailableError(
-            'This store cannot delete by version right now; try again',
-          );
-        }
-      }
-      if (caps.conditionalDelete && etags !== undefined) {
-        for (const p of paths) {
-          const etag = etags[p];
-          if (etag !== undefined)
-            guarded.push({ key: `${root}/${p}`, etag, path: p });
-        }
-      }
-      const guardedSet = new Set(guarded.map((g) => g.path));
-      const plain = paths.filter((p) => !guardedSet.has(p));
-      if (plain.length > 0) {
-        await adapter.deleteObjects(plain.map((p) => `${root}/${p}`));
-      }
-      let changed: string[] = [];
-      if (guarded.length > 0) {
-        const result = await adapter.deleteObjectsIfMatch(
-          guarded.map(({ key, etag }) => ({ key, etag })),
+      if (caps.inconclusive === true) {
+        throw new ServiceUnavailableError(
+          'The store could not say whether it deletes by version; try again',
         );
-        changed = result.changed.map((k) => k.slice(root.length + 1));
       }
+      if (!caps.conditionalDelete) {
+        res
+          .status(HTTP_STATUS.OK)
+          .json({ unsupported: true, deleted: 0, changed: [] });
+        return;
+      }
+      const result = await adapter.deleteObjectsIfMatch(
+        items.map(({ path, etag }) => ({ key: `${root}/${path}`, etag })),
+      );
+      const changed = result.changed.map((k) => k.slice(root.length + 1));
       res
         .status(HTTP_STATUS.OK)
-        .json({ deleted: paths.length - changed.length, changed });
+        .json({ deleted: items.length - changed.length, changed });
     } catch (error) {
       next(error);
     }

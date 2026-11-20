@@ -41115,14 +41115,9 @@ paths:
                   maxItems: 1000
                   items:
                     $ref: '#/components/schemas/PaidResultPath'
-                etags:
-                  type: object
-                  description: The ETag each named path was listed with. May name only paths in `paths`.
-                  additionalProperties:
-                    type: string
       responses:
         '200':
-          description: The files are gone, except those named in `changed`.
+          description: The files are gone.
           content:
             application/json:
               schema:
@@ -41132,11 +41127,6 @@ paths:
                 properties:
                   deleted:
                     type: integer
-                  changed:
-                    type: array
-                    description: Paths kept because their version differs from the ETag sent. Absent from a storage service of an earlier release.
-                    items:
-                      type: string
         '400':
           description: >-
             The body is not valid (`VALIDATION_ERROR`): a path that is not a cache file, a path given twice, no paths or more than 1000.
@@ -41156,11 +41146,95 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '503':
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/{recordId}/delete-if-match:
+    parameters:
+      - $ref: '#/components/parameters/PaidResultRecordId'
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove named cached model outputs only while they are the listed version (service-to-service)
+      description: |
+        Removes up to 1000 files, each only while its ETag is still the one named (the one the listing returned). A file
+        that changed since is kept and named in `changed`; one already gone counts as removed. A route of its own, not a
+        field of the plain delete: a storage service of an earlier release answers `404` here, where it would have ignored
+        a version field and deleted without the guard. A store that confirmed it cannot delete by version answers `200`
+        with `unsupported: true` and deletes nothing (the caller takes its own fallback); one whose probe could not tell
+        yet answers `503` (retry). A request that names versions is never turned into a plain delete.
+      operationId: internalDeleteIfMatchPaidResults
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - items
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  description: Each path at most once.
+                  items:
+                    type: object
+                    required:
+                      - path
+                      - etag
+                    properties:
+                      path:
+                        $ref: '#/components/schemas/PaidResultPath'
+                      etag:
+                        type: string
+                        pattern: '^[A-Za-z0-9._:+=-]{1,128}$'
+      responses:
+        '200':
+          description: The files are gone, except those named in `changed`, or nothing was deleted (`unsupported`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - deleted
+                  - changed
+                properties:
+                  deleted:
+                    type: integer
+                  changed:
+                    type: array
+                    description: Paths kept because their version differs from the ETag sent.
+                    items:
+                      type: string
+                  unsupported:
+                    type: boolean
+                    description: '`true`: the store cannot delete by version; nothing was deleted.'
+        '400':
           description: >-
-            `etags` names versions and the store cannot delete by version right now (it does not honour the condition, or
-            its probe could not tell yet). Nothing was deleted and the request is never turned into a plain delete: retry
-            it, keeping the version guard. A request that names no `etags` still deletes unconditionally.
+            The body is not valid (`VALIDATION_ERROR`): a path that is not a cache file, a path given twice, a malformed ETag, no items or more than 1000.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The body names a different organisation than the storage token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The store could not yet say whether it deletes by version. Nothing was deleted; retry.
           content:
             application/json:
               schema:

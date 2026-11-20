@@ -489,23 +489,31 @@ export const ListPaidResultsSchema = z.object({
 export const DeletePaidResultsSchema = z.object({
   headers: Headers,
   params: z.object({ recordId: paidResultRecordIdSchema }),
-  body: z
-    .object({
-      orgId: z.string().optional(),
-      paths: z
-        .array(paidResultPathSchema)
-        .min(1)
-        .max(PAID_RESULT_LIST_PAGE)
-        .refine(uniqueItems, { message: 'Each path may appear only once' }),
-      // The ETag each path was listed with: an object that changed since is kept, not deleted.
-      etags: z.record(paidResultPathSchema, etagSchema).optional(),
-    })
-    .refine(
-      (b) =>
-        b.etags === undefined ||
-        Object.keys(b.etags).every((p) => b.paths.includes(p)),
-      { message: 'etags may name only the listed paths' },
-    ),
+  body: z.object({
+    orgId: z.string().optional(),
+    paths: z
+      .array(paidResultPathSchema)
+      .min(1)
+      .max(PAID_RESULT_LIST_PAGE)
+      .refine(uniqueItems, { message: 'Each path may appear only once' }),
+  }),
+});
+
+// A delete by version has a route of its own: a storage replica that does not know it answers 404, where one that
+// merely ignored an `etags` field of the plain route would delete without the guard.
+export const DeleteIfMatchPaidResultsSchema = z.object({
+  headers: Headers,
+  params: z.object({ recordId: paidResultRecordIdSchema }),
+  body: z.object({
+    orgId: z.string().optional(),
+    items: z
+      .array(z.object({ path: paidResultPathSchema, etag: etagSchema }))
+      .min(1)
+      .max(PAID_RESULT_LIST_PAGE)
+      .refine((items) => uniqueItems(items.map((i) => i.path)), {
+        message: 'Each path may appear only once',
+      }),
+  }),
 });
 
 export const PurgeCutoffPaidResultsSchema = z.object({

@@ -51,6 +51,10 @@ class FakePaidResultStorage:
     #: Whether the purge-cutoff route writes the refresh marker and says so (False: a storage service of an earlier release
     #: that has the route and not the marker).
     cutoff_marker: bool = True
+    #: Every conditional bump write answers 409 (a store that keeps saying a write is in flight).
+    conflict_all_bumps: bool = False
+    #: False: this replica has no delete-by-version route (404), as one of an earlier release.
+    guard_route: bool = True
     #: The storage could not tell what it honours (a failed probe): named apart from "none" in listings and presigns.
     capabilities_inconclusive: bool = False
     #: False: the storage service has no purge-cutoff route at all (404).
@@ -75,6 +79,7 @@ class FakePaidResultStorage:
         app.router.add_delete(f"{BASE}/org", self._purge_org)
         app.router.add_post(f"{BASE}/purge-batch", self._purge_batch)
         app.router.add_post(f"{BASE}/{{record}}/delete", self._delete)
+        app.router.add_post(f"{BASE}/{{record}}/delete-if-match", self._delete_if_match)
         app.router.add_post(f"{BASE}/{{record}}/purge-cutoff", self._purge_cutoff)
         app.router.add_get(f"{BASE}/{{record}}", self._list)
         app.router.add_delete(f"{BASE}/{{record}}", self._purge_record)
@@ -116,8 +121,14 @@ class FakePaidResultStorage:
         self.objects[key] = (data, self.clock_ms)
         self.etags[key] = hashlib.md5(data).hexdigest() if self.etag_mode == "md5" else f"u{self._writes}"
 
+    def _etag(self, key: str) -> str:
+        """The object's version; a fixture seeded straight into ``objects`` has the content hash."""
+        known = self.etags.get(key)
+        return known if known is not None else hashlib.md5(self.objects[key][0]).hexdigest()
+
     def etag_of(self, org: str, record: str, path: str) -> str | None:
-        return self.etags.get(self.key(org, record, path))
+        key = self.key(org, record, path)
+        return self._etag(key) if key in self.objects else None
 
     def begin_refresh(self, org: str, record: str) -> None:
         """The marker the storage service writes before it takes a purge cutoff."""
@@ -174,7 +185,9 @@ class FakePaidResultStorage:
             await self._hook("bump_put")
             if key not in self.objects:
                 return web.Response(status=self.gone_status)
-            if match.strip('"') != self.etags.get(key):
+            if self.conflict_all_bumps:
+                return web.Response(status=409)
+            if match.strip('"') != self._etag(key):
                 return web.Response(status=412)
         self._write(key, data)
         return web.Response(status=200, headers={"ETag": f'"{self.etags[key]}"'})
@@ -185,7 +198,7 @@ class FakePaidResultStorage:
         if entry is None:
             return web.Response(status=self.missing_status)
         return web.Response(body=entry[0], headers={
-            "ETag": f'"{self.etags[key]}"', "Last-Modified": formatdate(entry[1] // 1000, usegmt=True),
+            "ETag": f'"{self._etag(key)}"', "Last-Modified": formatdate(entry[1] // 1000, usegmt=True),
         })
 
     async def _list(self, request: web.Request) -> web.Response:
@@ -203,7 +216,7 @@ class FakePaidResultStorage:
             "objects": [
                 {
                     "path": k[len(root):], "size": len(self.objects[k][0]), "lastModifiedMs": self.objects[k][1],
-                    **({"etag": self.etags[k]} if self.capabilities is not None else {}),
+                    **({"etag": self._etag(k)} if self.capabilities is not None else {}),
                 }
                 for k in page
             ],
@@ -222,19 +235,34 @@ class FakePaidResultStorage:
         body = await request.json()
         self.delete_bodies.append(body)
         await self._hook("delete")
-        if self.fixed_delete_reply is not None:
-            return web.json_response(self.fixed_delete_reply)
-        etags = body.get("etags") if self.capabilities is not None else None
-        changed: list[str] = []
         for p in body["paths"]:
-            key = self.key(org, record, p)
-            if etags and p in etags and key in self.objects and etags[p] != self.etags.get(key):
-                changed.append(p)
+            self.objects.pop(self.key(org, record, p), None)
+        return web.json_response({"deleted": len(body["paths"])})
+
+    async def _delete_if_match(self, request: web.Request) -> web.Response:
+        """The delete-by-version route: absent on a storage service of an earlier release (404), refused with 503 while the
+        probe cannot tell, answered ``unsupported`` by a store that ignores the condition."""
+        org, record = self._org(request), request.match_info["record"]
+        self.calls.append(("delete_if_match", org))
+        body = await request.json()
+        self.delete_bodies.append(body)
+        await self._hook("delete")
+        if self.capabilities is None or not self.guard_route:
+            return web.json_response({"error": {"message": "not found"}}, status=404)
+        if self.capabilities_inconclusive:
+            return web.json_response({"error": {"message": "cannot tell yet"}}, status=503)
+        if "conditionalDelete" not in self.capabilities:
+            return web.json_response({"unsupported": True, "deleted": 0, "changed": []})
+        changed: list[str] = []
+        for item in body["items"]:
+            key = self.key(org, record, item["path"])
+            if key in self.objects and item["etag"] != self._etag(key):
+                changed.append(item["path"])
                 continue
             self.objects.pop(key, None)
-        reply: dict[str, Any] = {"deleted": len(body["paths"]) - len(changed)}
-        if self.capabilities is not None:
-            reply["changed"] = changed
+        reply: dict[str, Any] = {"deleted": len(body["items"]) - len(changed), "changed": changed}
+        if self.fixed_delete_reply is not None:
+            reply = dict(self.fixed_delete_reply)
         return web.json_response(reply)
 
     async def _purge_batch(self, request: web.Request) -> web.Response:

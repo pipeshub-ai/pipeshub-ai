@@ -44,9 +44,9 @@ async def test_a_slow_store_does_not_slow_a_hit() -> None:
     store.write(ORG, REC, key.relative_path(), _encode(key, "text"), age_ms=OLD_MS)
     slow = store.bump_to
 
-    async def slow_bump(entry: Any, data: bytes) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    async def slow_bump(entry: Any, data: bytes, charge: Any = None) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
         await asyncio.sleep(0.5)
-        return await slow(entry, data)
+        return await slow(entry, data, charge)
 
     store.bump_to = slow_bump  # type: ignore[method-assign]
     cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]

@@ -17,6 +17,7 @@ from app.services.paid_cache.store import (
     BUMPED,
     CHANGED,
     GONE,
+    GuardUnsupported,
     NodePaidResultStore,
     PaidResultStoreError,
 )
@@ -72,7 +73,8 @@ async def test_the_sweep_names_the_listed_etag_and_deletes_an_unchanged_object(s
 
     assert K not in storage.stored(ORG, REC)
     assert result.changed == 0
-    assert storage.delete_bodies[-1]["etags"][K] == etag
+    guarded = [b for b in storage.delete_bodies if "items" in b]
+    assert {i["path"]: i["etag"] for b in guarded for i in b["items"]}[K] == etag
 
 
 async def test_an_object_re_written_after_the_listing_is_kept_and_counted(storage: FakePaidResultStorage) -> None:
@@ -89,7 +91,7 @@ async def test_an_object_re_written_after_the_listing_is_kept_and_counted(storag
 
     assert K in storage.stored(ORG, REC), "the store deletes a version the sweep did not list"
     assert result.changed == 1
-    assert result.deleted == len(storage.delete_bodies[-1]["paths"]) - 1
+    assert result.deleted == len(storage.delete_bodies[-1]["items"]) - 1
 
 
 async def test_a_store_that_honours_no_conditional_delete_is_listed_once_more_right_before_the_delete() -> None:
@@ -110,12 +112,14 @@ async def test_a_store_that_honours_no_conditional_delete_is_listed_once_more_ri
                 fake._write(fake.key(ORG, REC, K), touched_bytes(OLD, fake.clock_ms) or b"")
 
         fake.hooks["list"] = bump_before_the_last_look
+        seen = len(fake.calls)
 
         await sweep_record(store, ORG, REC, now_ms=fake.clock_ms)
 
         assert lists == 3, "snapshot, second snapshot, and the look right before the delete"
         assert K in fake.stored(ORG, REC)
-        assert all("etags" not in body for body in fake.delete_bodies)
+        kinds = [c[0] for c in fake.calls[seen:] if c[0].startswith("delete")]
+        assert kinds[0] == "delete_if_match", "the guarded route is asked first; its 'cannot' answer sends the sweep to the look"
     finally:
         await fake.stop()
 
@@ -131,19 +135,48 @@ async def test_a_service_without_capabilities_is_never_sent_etags_and_deletes_as
         result = await sweep_record(store, ORG, REC, now_ms=fake.clock_ms)
 
         assert K not in fake.stored(ORG, REC)
-        assert all("etags" not in body for body in fake.delete_bodies)
+        assert not any(c[0] == "delete_if_match" for c in fake.calls), "a guarded delete was sent to an older service"
         assert result.changed == 0
         assert not store.supports_bump
     finally:
         await fake.stop()
 
 
-async def test_a_delete_reply_without_changed_reads_as_nothing_kept(storage: FakePaidResultStorage) -> None:
+async def test_a_guarded_delete_reply_that_names_no_kept_list_is_an_error_not_nothing_kept(storage: FakePaidResultStorage) -> None:
     store = _store(storage)
-    storage.fixed_delete_reply = {"deleted": 1}                    # a service that knows the route but not the field
+    storage.fixed_delete_reply = {"deleted": 1}
     storage._write(storage.key(ORG, REC, K), OLD)
 
-    assert await store.delete_files(ORG, REC, [K], {K: "x"}) == []
+    with pytest.raises(PaidResultStoreError):
+        await store.delete_files_if_match(ORG, REC, {K: "x"})
+
+
+async def test_a_replica_without_the_guarded_route_never_deletes_and_the_sweep_falls_back_to_the_look() -> None:
+    """Rolling deploy: the listing came from a new replica (it has etags), the delete reaches an old one. The old replica
+    404s the guarded route, where it would have ignored an ``etags`` field of the plain one and deleted without the guard."""
+    fake = FakePaidResultStorage(capabilities=("conditionalDelete", "bump"), guard_route=False)
+    await fake.start()
+    try:
+        store = _store(fake)
+        await _doomed_setup(fake, store)
+        with pytest.raises(GuardUnsupported):
+            await store.delete_files_if_match(ORG, REC, {K: "x"})
+        assert K in fake.stored(ORG, REC) and store_module.PAID_RESULT_ROUTES.available
+        lists = 0
+
+        async def reuse_before_the_last_look() -> None:
+            nonlocal lists
+            lists += 1
+            if lists == 3:
+                fake.clock_ms += 10
+                fake._write(fake.key(ORG, REC, K), touched_bytes(OLD, fake.clock_ms) or b"")
+
+        fake.hooks["list"] = reuse_before_the_last_look
+        await sweep_record(store, ORG, REC, now_ms=fake.clock_ms)
+        assert K in fake.stored(ORG, REC)
+        assert all("etags" not in b for b in fake.delete_bodies)
+    finally:
+        await fake.stop()
 
 
 async def test_capabilities_are_read_from_each_reply_and_never_latched(storage: FakePaidResultStorage) -> None:
@@ -438,8 +471,9 @@ async def test_an_exhausted_409_is_checked_with_a_read_like_a_412(storage: FakeP
     queue.offer(_entry(storage, etag="old"))
     await queue.drain_once()
     assert json.loads(storage.objects[storage.key(ORG, REC, K)][0])["value"] == "OLD"
-    # and when the object is there (someone else's version), nothing is written over it
+    # and when the object is there (someone else's version) and every bump answers 409, nothing is written over it
     storage._write(storage.key(ORG, REC, K), b'{"v":1,"value":"theirs"}')
+    storage.conflict_all_bumps = True
     other = BumpEntry(ORG, REC, K, OLD, "old", 0, None)
     queue2 = await _queue(storage)
     queue2.offer(other)
@@ -478,8 +512,8 @@ async def test_a_bump_that_landed_before_a_refused_retry_is_checked_like_any_oth
     assert got is not None and got.etag
     original = store.bump_to
 
-    async def lands_then_reports_a_lost_race(entry: object, data: bytes) -> tuple[str, str | None]:
-        await original(entry, data)
+    async def lands_then_reports_a_lost_race(entry: object, data: bytes, charge: object = None) -> tuple[str, str | None]:
+        await original(entry, data, charge)  # type: ignore[arg-type]
         store.begin_refresh(ORG, REC)                # a refresh begins right after the write was sent
         return CHANGED, None
 
@@ -583,10 +617,7 @@ async def test_a_reply_for_another_org_does_not_change_what_this_orgs_storage_ho
     await store.presign("org-b", REC, [(K, "get")])
     assert store.honours("org-a", "conditionalDelete") and store.honours("org-a", "bump")
     assert not store.honours("org-b", "conditionalDelete")
-    storage.capabilities = ("conditionalDelete", "bump")
-    storage._write(storage.key("org-a", REC, K), OLD)
-    await store.delete_files("org-a", REC, [K], {K: "x"})
-    assert storage.delete_bodies[-1].get("etags") == {K: "x"}, "the guard was stripped by a reply about another org"
+    assert not store.honours("org-c", "bump"), "an org that was never asked honours nothing"
 
 
 async def test_a_path_with_no_listed_version_is_looked_at_again_even_when_others_have_one() -> None:
@@ -689,8 +720,8 @@ async def test_a_bump_is_not_undone_by_an_unconditional_delete_on_a_store_withou
     store.delete_files = spy  # type: ignore[method-assign]
     original = store.bump_to
 
-    async def bump_then_refresh(entry: object, data: bytes) -> tuple[str, str | None]:
-        result = await original(entry, data)
+    async def bump_then_refresh(entry: object, data: bytes, charge: object = None) -> tuple[str, str | None]:
+        result = await original(entry, data, charge)  # type: ignore[arg-type]
         store.begin_refresh(ORG, REC)                   # a refresh begins after the write: the check would remove it
         return result
 
@@ -702,34 +733,39 @@ async def test_a_bump_is_not_undone_by_an_unconditional_delete_on_a_store_withou
     queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
     queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None))
     await queue.drain_once()
+    assert b"touchedMs" in store.files[(ORG, REC, K)][0], "the bump never landed: the test says nothing"
     assert deleted == [], "a delete that cannot name the version was sent"
 
 
 async def test_a_sweep_is_retried_not_run_while_the_storage_could_not_tell_what_it_honours(storage: FakePaidResultStorage) -> None:
-    """An inconclusive probe is not "no conditional delete": deleting then could remove a result a reuse just re-wrote."""
+    """The storage answers the guarded delete itself: 503 while it cannot tell (raised, retried), "unsupported" once it
+    confirmed it ignores the condition (the fallback). The sweep keeps no capability state of its own."""
     store = _store(storage)
     await _doomed_setup(storage, store)
-    storage.capabilities = ()
     storage.capabilities_inconclusive = True
-    deletes_before = len(storage.delete_bodies)
-    with pytest.raises(PaidResultStoreError):
+    plain_before = [b for b in storage.delete_bodies if "paths" in b]
+    with pytest.raises(Exception):  # noqa: B017 - a JSON value or opaque signed-URL entry of any shape
         await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
-    assert K in storage.stored(ORG, REC) and len(storage.delete_bodies) == deletes_before
-    # a storage that confirmed it ignores the condition (or an earlier release that names nothing) still sweeps
+    assert K in storage.stored(ORG, REC)
+    assert [b for b in storage.delete_bodies if "paths" in b] == plain_before, "a plain delete followed an inconclusive answer"
     storage.capabilities_inconclusive = False
+    storage.capabilities = ("bump",)                              # now confirmed: it ignores the condition
     await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
     assert K not in storage.stored(ORG, REC)
 
 
 # -- review round 3 ----------------------------------------------------------------------------------------------------
 
-async def test_supplied_etags_are_always_sent_even_when_this_orgs_capabilities_say_none(storage: FakePaidResultStorage) -> None:
+async def test_a_guarded_delete_is_refused_or_unsupported_never_plain(storage: FakePaidResultStorage) -> None:
     store = _store(storage)
-    storage.capabilities = ()
-    await store.presign(ORG, REC, [(K, "get")])
-    assert not store.honours(ORG, "conditionalDelete")
-    await store.delete_files(ORG, REC, [K], {K: "abc"})
-    assert storage.delete_bodies[-1].get("etags") == {K: "abc"}, "a guard the caller supplied was stripped"
+    storage._write(storage.key(ORG, REC, K), OLD)
+    storage.capabilities = ("bump",)
+    with pytest.raises(GuardUnsupported):
+        await store.delete_files_if_match(ORG, REC, {K: "abc"})
+    assert K in storage.stored(ORG, REC), "a guarded delete on a store that cannot honour it deleted"
+    storage.capabilities = ("conditionalDelete", "bump")
+    assert await store.delete_files_if_match(ORG, REC, {K: "stale"}) == [K]
+    assert K in storage.stored(ORG, REC)
 
 
 async def test_a_path_whose_bump_presign_failed_is_offered_again_by_a_later_hit() -> None:
@@ -770,7 +806,7 @@ def test_the_hourly_byte_budget_is_shared_by_queues_and_promised_bytes_count() -
     budget = ByteBudget(per_hour=500)
     one = BumpQueue(VersionedStore(), autostart=False, budget=budget)  # type: ignore[arg-type]
     two = BumpQueue(VersionedStore(), autostart=False, budget=budget)  # type: ignore[arg-type]
-    entry = lambda n: BumpEntry(ORG, REC, f"ocr_page/{n:064x}.json", b"x" * 100, "e", 0, None)  # noqa: E731
+    entry = lambda n: BumpEntry(ORG, REC, f"ocr_page/{n:064x}.json", b"x" * 100, "e", 0, None)  # noqa: E731 - a JSON value or opaque signed-URL entry of any shape
     assert one.offer(entry(1)) == "queued" and two.offer(entry(2)) == "queued"      # 2 x 196 reserved
     assert one.offer(entry(3)) == "over_budget" and two.offer(entry(4)) == "over_budget"
 
@@ -797,9 +833,9 @@ async def test_a_batch_is_checked_again_before_each_storage_request_for_paths_wi
     real_delete = store.delete_files
     first = True
 
-    async def delete_then_a_reuse_lands(o: str, r: str, paths: object, etags: object = None) -> list[str]:
+    async def delete_then_a_reuse_lands(o: str, r: str, paths: object) -> None:
         nonlocal first
-        result = await real_delete(o, r, paths, etags)  # type: ignore[arg-type]
+        result = await real_delete(o, r, paths)  # type: ignore[arg-type]
         if first:
             first = False
             store.now_ms += 5
@@ -858,3 +894,115 @@ async def test_an_unreadable_marker_neither_reuses_nor_overwrites_a_bumped_resul
         assert store.files[(ORG, REC, key.relative_path())][1] == before, "a result was overwritten on an unknown marker"
     finally:
         clear_run()
+
+
+# -- review round 4 ----------------------------------------------------------------------------------------------------
+
+async def test_every_upload_attempt_of_a_bump_is_charged_to_the_byte_budget(storage: FakePaidResultStorage) -> None:
+    from app.services.paid_cache.bump import ByteBudget
+
+    storage._write(storage.key(ORG, REC, K), OLD)
+    storage.conflict_all_bumps = True                       # three attempts, all answered 409
+    queue = await _queue(storage)
+    queue._budget = ByteBudget()
+    etag = storage.etag_of(ORG, REC, K)
+    entry = BumpEntry(ORG, REC, K, OLD, etag or "", 0, None)
+    queue.offer(entry)
+    await queue.drain_once()
+    sent = len([h for h in storage.put_headers if "If-Match" in h])
+    assert sent == 3
+    assert queue._budget.used(__import__("time").monotonic()) >= 3 * len(OLD), "attempts after the first were not charged"
+
+
+async def test_queued_reservations_are_given_back_when_the_queue_is_closed() -> None:
+    from app.services.paid_cache.bump import ByteBudget
+    from tests.support.versioned_store import VersionedStore
+
+    budget = ByteBudget(per_hour=1000)
+    queue = BumpQueue(VersionedStore(), autostart=False, budget=budget)  # type: ignore[arg-type]
+    entry = lambda n: BumpEntry(ORG, REC, f"ocr_page/{n:064x}.json", b"x" * 100, "e", 0, None)  # noqa: E731 - a JSON value or opaque signed-URL entry of any shape
+    assert queue.offer(entry(1)) == "queued" and queue.offer(entry(2)) == "queued"
+    assert budget._reserved > 0
+    queue.close()
+    assert budget._reserved == 0, "a closed queue kept what it had been promised"
+    assert queue.offer(entry(1)) == "queued", "a key of a closed queue stayed pending"
+
+
+async def test_a_restore_reads_the_refresh_marker_again_before_it_stores(storage: FakePaidResultStorage) -> None:
+    queue = await _queue(storage)
+
+    async def a_refresh_begins_while_the_bump_is_in_flight() -> None:
+        storage.begin_refresh(ORG, REC)
+
+    storage.hooks["bump_put"] = a_refresh_begins_while_the_bump_is_in_flight
+    queue.offer(_entry(storage, etag="old", origin_ms=storage.clock_ms - 2 * HOUR))     # the object is gone: 404
+    await queue.drain_once()
+    assert [p for p in storage.stored(ORG, REC) if not p.startswith("refreshed/")] == [], "pre-refresh bytes were restored"
+
+
+async def test_an_undo_the_store_reports_as_changed_is_not_counted_as_done() -> None:
+    from app.services.paid_cache import bump
+    from tests.support.versioned_store import VersionedStore
+
+    counted: list[str] = []
+    store = VersionedStore(stamp_ms=1)
+    store.write(ORG, REC, K, OLD)
+    got = await store.get_versioned(ORG, REC, K)
+    assert got is not None and got.etag
+    original = store.bump_to
+
+    async def bump_then_refresh(entry: object, data: bytes, charge: object = None) -> tuple[str, str | None]:
+        result = await original(entry, data, charge)  # type: ignore[arg-type]
+        store.begin_refresh(ORG, REC)
+        return result
+
+    store.bump_to = bump_then_refresh  # type: ignore[method-assign]
+    real_if_match = store.delete_files_if_match
+
+    async def replaced_before_the_delete(o: str, r: str, items: dict) -> list[str]:
+        store.write(o, r, K, b'{"v":1,"value":"newer"}')           # a writer replaced it after the undo read it
+        return await real_if_match(o, r, items)
+
+    store.delete_files_if_match = replaced_before_the_delete  # type: ignore[method-assign]
+
+    async def no_wait(_s: float) -> None:
+        return None
+
+    queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
+    queue._count = lambda outcome: counted.append(outcome) or outcome  # type: ignore[method-assign,func-returns-value]
+    queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None))
+    await queue.drain_once()
+    assert "undone" not in counted and "undo_kept" in counted
+    assert b"newer" in store.files[(ORG, REC, K)][0]
+    assert bump is not None
+
+
+async def test_the_read_that_discovers_bump_support_carries_the_version_too(storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    cache = PaidResultCache(_store(storage), InProcessLocks())
+    storage._write(storage.key(ORG, REC, key.relative_path()), _encode(key, "text"))
+    hit: list = []
+    found, _value, _unusable = await cache._lookup(key, key.relative_path(), None, hit_out=hit)     # first call for the org
+    assert found and hit and hit[0].etag, "the first read of an org dropped the version a bump needs"
+
+
+async def test_the_marker_fence_is_the_cutoff_once_the_storage_has_taken_it(storage: FakePaidResultStorage) -> None:
+    store = _store(storage)
+    storage._write(storage.key(ORG, REC, "refreshed/marker.json"), json.dumps({"startedMs": 1, "cutoffMs": 7_000}).encode())
+    storage.objects[storage.key(ORG, REC, "refreshed/marker.json")] = (
+        storage.objects[storage.key(ORG, REC, "refreshed/marker.json")][0], 1_700_000_900_000,   # written long after the cutoff
+    )
+    from app.services.paid_cache.bump import _refreshed_since
+
+    fence = await store.refresh_marker_ms(ORG, REC)
+    assert fence == 6_000
+    assert _refreshed_since(fence, 7_500) is False, "a result written in the cutoff second survives the purge and is current"
+    assert _refreshed_since(fence, 6_900) is True, "a result from before the cutoff second is purged and stale"
+    # before the cutoff is known the marker's own time is the conservative fence
+    storage._write(storage.key(ORG, REC, "refreshed/marker.json"), b'{"startedMs":1}')
+    assert await store.refresh_marker_ms(ORG, REC) == storage.objects[storage.key(ORG, REC, "refreshed/marker.json")][1]

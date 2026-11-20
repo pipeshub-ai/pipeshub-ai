@@ -14,6 +14,7 @@ from app.services.paid_cache.store import (
     BUMPED,
     CHANGED,
     GONE,
+    GuardUnsupported,
     ListedFile,
     VersionedBytes,
 )
@@ -83,14 +84,19 @@ class VersionedStore:
             key=lambda f: f.path,
         )
 
-    async def delete_files(
-        self, org: str, rec: str, paths: Sequence[str], etags: Mapping[str, str] | None = None,
-    ) -> list[str]:
+    async def delete_files(self, org: str, rec: str, paths: Sequence[str]) -> None:
         await self._op("delete")
-        changed: list[str] = []
         for p in paths:
+            self.files.pop((org, rec, p), None)
+
+    async def delete_files_if_match(self, org: str, rec: str, items: Mapping[str, str]) -> list[str]:
+        await self._op("delete_if_match")
+        if not self.supports_conditional_delete:
+            raise GuardUnsupported("this store ignores the condition")
+        changed: list[str] = []
+        for p, etag in items.items():
             entry = self.files.get((org, rec, p))
-            if self.supports_conditional_delete and entry is not None and etags and p in etags and etags[p] != entry[1]:
+            if entry is not None and etag != entry[1]:
                 changed.append(p)
                 continue
             self.files.pop((org, rec, p), None)
@@ -113,8 +119,10 @@ class VersionedStore:
         await self._op("presign")
         return {(f[0], f[1]): (org, rec, f[0], f[2] if len(f) > 2 else None) for f in files}
 
-    async def bump_to(self, entry: Any, data: bytes) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    async def bump_to(self, entry: Any, data: bytes, charge: Callable[[int], None] | None = None) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
         await self._op("bump_put")
+        if charge is not None:
+            charge(len(data))
         org, rec, path, etag = entry
         current = self.files.get((org, rec, path))
         if current is None:
@@ -150,4 +158,8 @@ class VersionedStore:
         await self._op("purge_list")
         listed = [f for f in await self.list_files(org, rec) if f.last_modified_ms < before_ms]
         await self._op("purge_delete")
-        await self.delete_files(org, rec, [f.path for f in listed], {f.path: f.etag for f in listed if f.etag})
+        if self.supports_conditional_delete:
+            await self.delete_files_if_match(org, rec, {f.path: f.etag for f in listed if f.etag})
+            await self.delete_files(org, rec, [f.path for f in listed if not f.etag])
+        else:
+            await self.delete_files(org, rec, [f.path for f in listed])

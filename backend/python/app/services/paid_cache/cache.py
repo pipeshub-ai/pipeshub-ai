@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
@@ -44,6 +45,7 @@ from app.services.paid_cache.run import RunScope, current_run
 from app.services.paid_cache.store import (
     PAID_RESULT_ROUTES,
     BumpOutcome,
+    GuardUnsupported,
     ListedFile,
     PurgeCutoffNoMarker,
     VersionedBytes,
@@ -131,7 +133,7 @@ class ResultStore:
     async def overwrite(self, org_id: str, record_id: str, path: str, data: bytes) -> None:
         """Overwrites one result object: a refresh run's, or one that was found unreadable."""
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]: ...
-    async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> Any: ...  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None: ...
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None: ...
     async def purge_records(self, org_id: str, record_ids: Sequence[str]) -> dict[str, BaseException | None]: ...
     async def purge_cutoff(self, org_id: str, record_id: str) -> int | None: ...
@@ -155,8 +157,11 @@ def _origin_ms(raw: bytes) -> int | None:
 
 
 def _encode(key: CacheKey, value: object) -> bytes:
+    # ``w``: one value per write, so two writes of the same result are not the same bytes (on S3 and MinIO the ETag is the
+    # content hash, and a delete that names a version must not match a later write that happens to equal it).
     return json.dumps(
-        {"v": FORMAT, "kind": key.kind, "value": value}, ensure_ascii=False, separators=(",", ":"),
+        {"v": FORMAT, "kind": key.kind, "value": value, "w": secrets.token_hex(8)},
+        ensure_ascii=False, separators=(",", ":"),
     ).encode("utf-8")
 
 
@@ -224,15 +229,17 @@ class _FencedStore:
     async def list_files(self, org_id: str, record_id: str, prefix: str = "") -> list[ListedFile]:
         return await self._inner.list_files(org_id, record_id, prefix)
 
-    async def delete_files(
-        self, org_id: str, record_id: str, paths: list[str], etags: Mapping[str, str] | None = None,
-    ) -> list[str]:
-        """The paths the store kept because their version changed (empty from a store that cannot say)."""
-        result = await (
-            self._inner.delete_files(org_id, record_id, paths, etags) if etags
-            else self._inner.delete_files(org_id, record_id, paths)
-        )
-        return list(result) if isinstance(result, list) else []
+    async def delete_files(self, org_id: str, record_id: str, paths: list[str]) -> None:
+        await self._inner.delete_files(org_id, record_id, paths)
+
+    async def delete_files_if_match(self, org_id: str, record_id: str, items: Mapping[str, str]) -> list[str]:
+        """Deletes each path only while it is still the version named; the paths kept (changed since listed). Raises
+        ``GuardUnsupported`` when the storage cannot delete by version. A store with no such operation (a test fake with no
+        versions) raises it too: nothing was deleted, and the caller takes its fallback."""
+        guarded = getattr(self._inner, "delete_files_if_match", None)
+        if guarded is None:
+            raise GuardUnsupported("this store cannot delete by version")
+        return list(await guarded(org_id, record_id, items))
 
     async def fenced(self, org_id: str, record_id: str) -> bool:
         """The record or its org is deleted: nothing more is written for it."""
@@ -244,23 +251,12 @@ class _FencedStore:
     def supports_bump(self) -> bool:
         return bool(getattr(self._inner, "supports_bump", False))
 
-    @property
-    def supports_conditional_delete(self) -> bool:
-        # A store that says nothing (a test fake) is taken to honour what it lists: it lists no ETag unless it does.
-        return bool(getattr(self._inner, "supports_conditional_delete", True))
-
-    def capabilities_unknown(self, org_id: str) -> bool:
-        unknown = getattr(self._inner, "capabilities_unknown", None)
-        return bool(unknown(org_id)) if unknown is not None else False
-
     def honours(self, org_id: str, capability: str) -> bool:
         """What the storage behind the org honours; a store that says nothing per org falls back to its overall flags."""
         per_org = getattr(self._inner, "honours", None)
         if per_org is not None:
             return bool(per_org(org_id, capability))
-        if capability == "bump":
-            return bool(getattr(self._inner, "supports_bump", False))
-        return bool(getattr(self._inner, "supports_conditional_delete", True))
+        return bool(getattr(self._inner, "supports_bump", False)) if capability == "bump" else False
 
     async def presign(self, org_id: str, record_id: str, files: Sequence[Any]) -> Mapping[tuple[str, str], Any]:
         return await self._inner.presign(org_id, record_id, files)  # type: ignore[attr-defined,no-any-return]
@@ -275,8 +271,10 @@ class _FencedStore:
     async def refresh_marker_ms(self, org_id: str, record_id: str) -> int | None:
         return await self._inner.refresh_marker_ms(org_id, record_id)  # type: ignore[attr-defined,no-any-return]
 
-    async def bump_to(self, entry: Any, data: bytes) -> tuple[BumpOutcome, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
-        return await self._inner.bump_to(entry, data)  # type: ignore[attr-defined,no-any-return]
+    async def bump_to(
+        self, entry: Any, data: bytes, charge: Callable[[int], None] | None = None,  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    ) -> tuple[BumpOutcome, str | None]:
+        return await self._inner.bump_to(entry, data, charge)  # type: ignore[attr-defined,no-any-return]
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         await self._inner.purge_record(org_id, record_id, before_ms=before_ms)
@@ -766,8 +764,9 @@ class PaidResultCache:
         if hit_out is not None:
             hit_out.clear()          # what an earlier lookup of this call saw is not what a bump may be built on
         try:
-            if hit_out is not None and self._store.honours(key.org_id, "bump"):  # type: ignore[attr-defined]
-                # The version and write time travel with the bytes: what a bump of this hit needs.
+            if hit_out is not None:
+                # The version and write time travel with the bytes (what a bump of this hit needs). Asked whatever the
+                # storage is known to honour: the read that discovers bump support must carry them too.
                 got = await self._store.get_versioned(key.org_id, key.record_id, path)  # type: ignore[attr-defined]
                 raw = None if got is None else got.data
             else:
