@@ -68,8 +68,9 @@ if [ "$MODE" = --online ]; then
 fi
 
 KEEP_LOGIN=0
-# any exit closes the login, unless an online move is running that still writes as it
-trap '[ "$KEEP_LOGIN" = 1 ] || import_login_close' EXIT
+# any exit closes the login, unless an online move is running that still writes as it. The exit status stays the run's: a failed
+# close prints its own warning and must not turn a finished copy (0) or an error (2) into a refusal (1).
+trap 'rc=$?; [ "$KEEP_LOGIN" = 1 ] || import_login_close || true; exit "$rc"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 import_login_open

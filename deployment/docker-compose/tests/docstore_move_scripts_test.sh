@@ -199,6 +199,13 @@ check_eq "a failed copy exits 1" "$RC" 1
 check_eq "and still closes the login" "$(steps)" \
   "verifier login-open stop:pipeshub-ai tool:preflight tool:migrate --offline login-close"
 check_eq "and removes the import password" "$(import_pw)" ""
+new_install
+STUB_CLOSE_FAIL=1 run_script "$MIGRATE" --offline
+check_eq "a finished copy whose login close fails still exits 0" "$RC" 0
+check "and says the login could not be closed" "$OUT" "the import login could not be closed"
+new_install
+STUB_FAIL="migrate --offline" STUB_RC=2 STUB_CLOSE_FAIL=1 run_script "$MIGRATE" --offline
+check_eq "a copy the tool fails with an error, whose login close then fails, exits 2" "$RC" 2
 
 new_install
 STUB_FAIL="preflight" run_script "$MIGRATE" --offline
