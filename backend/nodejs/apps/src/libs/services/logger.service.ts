@@ -556,6 +556,10 @@ export class Logger {
     if (obj instanceof Error) {
       return this.serializeError(obj, seen, withStack);
     }
+    // A Buffer's toJSON lists every byte, so one file in the metadata would log its whole content.
+    if (ArrayBuffer.isView(obj) || obj instanceof ArrayBuffer) {
+      return `[binary ${String(obj.byteLength)} bytes]`;
+    }
     // Dates and Mongo ids have no own keys worth walking; JSON shows them through toJSON.
     const { toJSON } = obj as { toJSON?: unknown };
     if (typeof toJSON === 'function') {
