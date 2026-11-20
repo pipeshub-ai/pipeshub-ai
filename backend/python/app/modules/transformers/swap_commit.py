@@ -62,6 +62,8 @@ TWIN_CONCURRENCY = 8
 UNDO_ATTEMPTS = 3
 UNDO_BACKOFF_SECONDS = 0.2
 _RECORDS = CollectionNames.RECORDS.value
+#: What a twin takes over from the record when it moves to its copy (and gives back when the move is undone).
+_TWIN_IDENTITY = ("summaryDocumentId", "secretsRedacted")
 _MAPPING = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
 
@@ -89,8 +91,23 @@ class SwapCommitter:
         # Marked just before the write, so that a process that dies between the move and ``finish`` leaves the old copy with its grace: the
         # orphan sweep would otherwise take it at once, while a reader's cached map may still name it. Harmless when the write is refused
         # (the copy is still held, and a mark older than the grace delays nothing).
-        with contextlib.suppress(Exception):
-            await graph.update_node(swap.old_vrid, _MAPPING, {keep_old_copy.RETIRED_AT_FIELD: int(time.time() * 1000)})
+        # Required: without the mark a process that dies after the move would leave the old copy to the orphan sweep at once. When it cannot be
+        # stored the record stays on the old copy and the run is retried.
+        marked, cause = False, None
+        try:
+            marked = bool(await graph.update_node(swap.old_vrid, _MAPPING, {keep_old_copy.RETIRED_AT_FIELD: int(time.time() * 1000)}))
+        except Exception as exc:
+            cause = exc
+        if not marked:
+            try:
+                row_exists = await graph.get_document(swap.old_vrid, _MAPPING, raise_on_error=True) is not None
+            except Exception:
+                row_exists = True  # unreadable: not shown to be absent
+            if row_exists:  # a copy with no mapping row is found by no sweep: nothing to protect; otherwise the mark is required
+                raise IndexingError(
+                    "The old copy could not be marked for its grace; the record stays on it and the run is retried",
+                    details={"record_id": swap.record_id, "virtual_record_id": swap.old_vrid},
+                ) from cause
         # The records that keep sharing the old copy are fenced around the move, as for any other move off a shared one.
         fence = leaving_vrid(graph, record.id, swap.old_vrid, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
         async with fence:
@@ -123,7 +140,8 @@ class SwapCommitter:
         )
         committed = await self.commit(ctx, swap, fields)  # type: ignore[arg-type]
         if committed:
-            await self.finish(ctx, swap)  # type: ignore[arg-type]
+            # The new copy is empty: twins keep the copy they have, or they would lose their search results
+            await self.finish(ctx, swap, repoint_twins=False)  # type: ignore[arg-type]
         return committed
 
     async def _confirm_after_commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
@@ -262,7 +280,7 @@ class SwapCommitter:
 
     # ------------------------------------------------------------------ after the commit
 
-    async def finish(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
+    async def finish(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, *, repoint_twins: bool = True) -> None:
         """Everything after the commit. The record already serves the new copy, so a failure here is logged: the old copy has a
         holder (a twin still on it) or none (the orphan sweep takes it), and the membership resync is the repair path's."""
         record = ctx.record
@@ -271,7 +289,7 @@ class SwapCommitter:
             await vs._resync_membership_after_write(swap.new_vrid, record.id)
         except Exception as exc:
             self.logger.warning("Membership of %s not re-applied after its commit: %s", swap.new_vrid, type(exc).__name__)
-        if swap.forced:
+        if swap.forced and repoint_twins:
             try:
                 await self._repoint_twins(ctx, swap)
             except Exception as exc:
@@ -306,9 +324,13 @@ class SwapCommitter:
         org = org_for_filter(swap.org_id, match_bound=True)
         flt = await db.filter_collection(must={"orgId": org, "virtualRecordId": swap.old_vrid})
         empty = {CONNECTOR_IDS_FIELD: [], RECORD_GROUP_IDS_FIELD: [], ROOT_RECORD_GROUP_IDS_FIELD: []}
-        for collection in await vs.collection_locator.all_collections(fresh=True, strict=True):
-            await db.set_payload(collection, empty, flt)
-        await mark_scope_stale(db, vs.collection_locator, swap.old_vrid, self.logger)
+        cleared_failure: Exception | None = None
+        try:
+            for collection in await vs.collection_locator.all_collections(fresh=True, strict=True):
+                await db.set_payload(collection, empty, flt)
+            await mark_scope_stale(db, vs.collection_locator, swap.old_vrid, self.logger)
+        except Exception as exc:  # partway: a record that attached meanwhile may have lost its membership in the collections already cleared
+            cleared_failure = exc
         # A record that attached to the old copy while its membership was being taken off keeps its own: the holders are read again after
         # the write, and recomputing the arrays from them puts that record back. When that does not complete the connector's membership is
         # walked again (the backfill), as for a twin.
@@ -320,6 +342,8 @@ class SwapCommitter:
             self.logger.warning("Membership of %s not restored after its retirement: %s", swap.old_vrid, type(exc).__name__)
             for key in await self._holders_connectors(swap):
                 await self._request_membership_repair(None, key)
+        if cleared_failure is not None:
+            raise cleared_failure
 
     async def _holders_connectors(self, swap: keep_old_copy.SwapRun) -> set[str]:
         try:
@@ -360,7 +384,8 @@ class SwapCommitter:
                 if theirs != mine:
                     return False
                 fence = leaving_vrid(graph, key, swap.old_vrid, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
-                identity = {k: me[k] for k in ("summaryDocumentId", "secretsRedacted") if me.get(k) is not None}
+                identity = {k: me[k] for k in _TWIN_IDENTITY if me.get(k) is not None}
+                before = {k: twin.get(k) for k in _TWIN_IDENTITY}
                 async with fence:
                     moved = await graph.update_node_fields_if(
                         key, _RECORDS, {"virtualRecordId": swap.new_vrid, **identity},
@@ -371,8 +396,9 @@ class SwapCommitter:
                 if moved and ((await graph.get_document(record.id, _RECORDS)) or {}).get("virtualRecordId") != swap.new_vrid:
                     # The record moved on while this twin was moved (its copy is retired and may go): the twin goes back to the old copy.
                     await graph.update_node_fields_if(
-                        key, _RECORDS, {"virtualRecordId": swap.old_vrid},
+                        key, _RECORDS, {"virtualRecordId": swap.old_vrid, **{k: v for k, v in before.items() if v is not None}},
                         [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", EQ, ProgressStatus.COMPLETED.value)],
+                        unset=[k for k in identity if before[k] is None],  # the identity the move copied goes with it
                     )
                     return False
                 if moved:
@@ -389,7 +415,11 @@ class SwapCommitter:
                     )
                 return bool(moved)
 
-        await asyncio.gather(*(one(k) for k in keys if k and k != record.id))
+        # Every move is waited for (the membership of the old copy is recomputed after this), and one failing twin does not stop the others
+        results = await asyncio.gather(*(one(k) for k in keys if k and k != record.id), return_exceptions=True)
+        for failure in results:
+            if isinstance(failure, BaseException):
+                self.logger.warning("A twin of record %s was not re-pointed: %s", record.id, type(failure).__name__)
 
     async def _request_membership_repair(self, twin_context: RecordContext, connector_id: str | None) -> None:
         """Have the connector's vector membership walked again (the designed repair path: the backfill scanner picks up an app whose
@@ -405,6 +435,14 @@ class SwapCommitter:
         """Release the old copy once the accessible-records cache cannot still map a reader to it."""
         try:
             await asyncio.sleep(keep_old_copy.grace_seconds())
+            # Another record may have left the same copy since (it writes a newer mark): the copy goes only when the latest mark's grace is over.
+            for _ in range(10):
+                row = await self.o.graph_provider.get_document(swap.old_vrid, _MAPPING)
+                mark = (row or {}).get(keep_old_copy.RETIRED_AT_FIELD)
+                left = (mark / 1000 + keep_old_copy.grace_seconds() - time.time()) if isinstance(mark, (int, float)) else 0
+                if left <= 0:
+                    break
+                await asyncio.sleep(left)
             with for_org(swap.org_id, job="swap-release"):
                 await self.release_old_copy(swap, record)
         except Exception as exc:

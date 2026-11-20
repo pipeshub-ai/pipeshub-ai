@@ -1,4 +1,4 @@
-"""graph: an index on the virtual record a record is indexing into (the pending vrid), so the holder lookups stay index-only"""
+"""graph: an index on the virtual record a record is indexing into (the pending vrid), so the holder lookups can use an index on both of their arms"""
 from alembic import op
 from db.lib.ddl import ensure_partitioned_index
 

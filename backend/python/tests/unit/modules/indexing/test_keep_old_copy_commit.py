@@ -515,3 +515,165 @@ async def test_when_the_read_and_the_undo_both_fail_the_record_is_an_attempt_in_
     doc["pendingVirtualRecordId"] = "Y2"
     assert await swap.commit(ctx_for("A", "Y2"), keep_old_copy.SwapRun("A", "o", "Y", "Y2"), {"indexingStatus": "COMPLETED"})
     assert g.records["A"]["virtualRecordId"] == "Y2" and g.records["A"]["indexingStatus"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_a_mark_that_cannot_be_stored_leaves_the_record_on_the_old_copy() -> None:
+    from unittest.mock import AsyncMock
+
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    swap, _ = committer(g)
+    g.mapping["X"] = {"orgId": "o"}  # the row exists but the mark could not be written
+    g.update_node = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    with pytest.raises(IndexingError):
+        await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "X"
+    g.update_node = AsyncMock(side_effect=RuntimeError("down"))  # type: ignore[method-assign]
+    with pytest.raises(IndexingError):
+        await swap.commit(ctx_for("A", "Y"), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_twins_stay_on_their_copy_when_the_committed_copy_is_empty() -> None:
+    from unittest.mock import AsyncMock
+
+    g = FakeGraph({
+        "A": rec("X", "IN_PROGRESS", pendingVirtualRecordId="Y", connectorId="k1"),
+        "B": rec("X", "COMPLETED", connectorId="k1"),
+    })
+    swap, _ = committer(g)
+    swap.finish = AsyncMock()  # type: ignore[method-assign]
+    assert await swap.commit_document(g.records["A"], keep_old_copy.SwapRun("A", "o", "X", "Y", True), {"indexingStatus": "EMPTY"})
+    swap.finish.assert_awaited_once()
+    assert swap.finish.await_args.kwargs == {"repoint_twins": False}
+    assert g.records["B"]["virtualRecordId"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_a_failure_partway_through_the_membership_clear_still_restores_the_holders() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    swap, vs = committer(g)
+    vs.collection_locator.all_collections = AsyncMock(return_value=["c1", "c2"])
+    calls = {"n": 0}
+
+    async def clear(*_a: object, **_k: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            g.records["B"] = rec("X", "COMPLETED")  # attaches after the first collection was cleared
+        else:
+            raise RuntimeError("down")  # the second clear fails
+
+    vs.vector_db_service.set_payload = AsyncMock(side_effect=clear)
+    with patch("app.modules.transformers.swap_commit.org_for_filter", return_value="o"), \
+         patch("app.modules.transformers.swap_commit.mark_scope_stale", AsyncMock()), \
+         patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()) as sync:
+        with pytest.raises(RuntimeError):
+            await swap._retire_membership(run())
+    sync.assert_awaited_once()  # the holders are read again and their membership restored before the failure surfaces
+
+
+@pytest.mark.asyncio
+async def test_a_twin_that_moves_back_gets_its_own_summary_and_redaction_back() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({
+        "A": {"orgId": "o", "virtualRecordId": "Y", "indexingStatus": "COMPLETED", "md5Checksum": "m", "connectorId": "k1",
+              "summaryDocumentId": "sumY", "secretsRedacted": 3},
+        "B": rec("X", "COMPLETED", connectorId="k1", summaryDocumentId="sumX"),  # no secretsRedacted of its own
+    })
+    swap, _ = committer(g)
+    real = g.update_node_fields_if
+
+    async def move_then_a_later_run_commits(key: str, collection: str, updates: dict, conditions: list, *a: object, **k: object) -> bool:
+        moved = await real(key, collection, updates, conditions, *a, **k)
+        if key == "B" and moved and updates.get("virtualRecordId") == "Y":
+            g.records["A"]["virtualRecordId"] = "Z"
+        return moved
+
+    g.update_node_fields_if = move_then_a_later_run_commits  # type: ignore[method-assign]
+    with patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()):
+        await swap._repoint_twins(ctx_for("A", "Y"), run(forced=True))
+    assert g.records["B"] == {**rec("X", "COMPLETED", connectorId="k1", summaryDocumentId="sumX")}  # nothing of Y's identity is left on it
+
+
+@pytest.mark.asyncio
+async def test_one_failing_twin_does_not_stop_the_others_and_all_are_waited_for() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({
+        "A": {"orgId": "o", "virtualRecordId": "Y", "indexingStatus": "COMPLETED", "md5Checksum": "m", "connectorId": "k1"},
+        "B": rec("X", "COMPLETED", connectorId="k1"), "C": rec("X", "COMPLETED", connectorId="k1"),
+    })
+    swap, _ = committer(g)
+    real = g.get_document
+
+    async def get(key: str, collection: str, **k: object) -> dict | None:
+        if key == "B":
+            raise RuntimeError("down")
+        return await real(key, collection, **k)
+
+    g.get_document = get  # type: ignore[method-assign]
+    with patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()):
+        await swap._repoint_twins(ctx_for("A", "Y"), run(forced=True))
+    assert g.records["C"]["virtualRecordId"] == "Y" and g.records["B"]["virtualRecordId"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_the_release_waits_for_the_latest_retirement_mark_of_the_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two records left the same copy: the first one's timer must not release it while the second one's grace is running."""
+    import time as _time
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(keep_old_copy, "grace_seconds", lambda: 100.0)
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    g.mapping["X"] = {keep_old_copy.RETIRED_AT_FIELD: _time.time() * 1000 + 40_000}  # a later mark: 40 s from now
+    swap, _ = committer(g)
+    swap.release_old_copy = AsyncMock()  # type: ignore[method-assign]
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            g.mapping["X"] = {}  # the later grace is over when the timer wakes the second time
+
+    monkeypatch.setattr("app.modules.transformers.swap_commit.asyncio.sleep", fake_sleep)
+    await swap._release_after_grace(run(), ctx_for("A", "Y").record)
+    assert sleeps[0] == 100.0 and len(sleeps) == 2 and sleeps[1] > 100.0  # waited for the newer mark's grace as well
+    swap.release_old_copy.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_after_a_failed_read_and_a_failed_undo_the_copy_search_serves_is_the_complete_one_that_was_confirmed_before_the_move(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exact guarantee of the double failure: the pre-commit read found every block, and once the record names the copy nothing can
+    sweep it (a record holds the virtual record it names, whatever its status), so the copy it keeps serving until the rerun is whole."""
+    from app.services.graph_db.common.record_visibility import holds_vrid
+
+    monkey_points = {"Y": ["b1", "b2"]}  # the store holds the whole set throughout
+    g = FakeGraph({"A": rec("X", "IN_PROGRESS", pendingVirtualRecordId="Y", hasIndexedCopy=True)})
+    reads = {"n": 0}
+
+    def view(vrid: str) -> list[str]:
+        reads["n"] += 1
+        if reads["n"] == 2:
+            raise TimeoutError("the read after the write fails")
+        return monkey_points.get(vrid, [])
+
+    real = g.update_node_fields_if
+
+    async def undo_fails(key: str, collection: str, updates: dict, conditions: list, *a: object, **k: object) -> bool:
+        if updates.get("virtualRecordId") == "X" and updates.get("pendingVirtualRecordId"):
+            raise TimeoutError("the undo write fails")
+        return await real(key, collection, updates, conditions, *a, **k)
+
+    g.update_node_fields_if = undo_fails  # type: ignore[method-assign]
+    swap, _ = committer(g, view=view)
+    monkeypatch.setattr("app.modules.transformers.swap_commit.UNDO_BACKOFF_SECONDS", 0)
+    with pytest.raises(TimeoutError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1", "b2"]), run(), {"indexingStatus": "COMPLETED"})
+    doc = g.records["A"]
+    assert doc["virtualRecordId"] == "Y" and doc["indexingStatus"] == "IN_PROGRESS" and doc["hasIndexedCopy"] is True
+    assert holds_vrid(doc, "Y")  # a sweep cannot take it: the record names it
+    assert monkey_points["Y"] == ["b1", "b2"]  # and what search serves is the set the pre-commit read confirmed
