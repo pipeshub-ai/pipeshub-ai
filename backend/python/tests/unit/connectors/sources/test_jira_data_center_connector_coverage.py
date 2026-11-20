@@ -471,12 +471,11 @@ async def test_check_and_fetch_updated_record_unsupported_returns_none():
     "raw, expected",
     [
         ({}, None),
-        # On DC, name is the canonical group identifier; fall back to name
-        # as groupId when neither groupId nor id is exposed by the server.
+        # On DC, the name is the group's only identifier: an id in a row is not a second key.
         ({"name": "g"}, {"name": "g", "groupId": "g"}),
         ({"groupId": "1"}, None),
-        ({"name": "gn", "groupId": "gid"}, {"name": "gn", "groupId": "gid"}),
-        ({"name": "gn", "id": "i2"}, {"name": "gn", "groupId": "i2"}),
+        ({"name": "gn", "groupId": "gid"}, {"name": "gn", "groupId": "gn"}),
+        ({"name": "gn", "id": "i2"}, {"name": "gn", "groupId": "gn"}),
     ],
 )
 def test_normalize_jira_dc_group_row(raw, expected):
@@ -1218,7 +1217,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
         conn,
         "_fetch_groups",
         new_callable=AsyncMock,
-        return_value=GroupPickerPage([{"groupId": "g1", "name": "G1"}]),
+        return_value=GroupPickerPage([{"groupId": "G1", "name": "G1"}]),
     ):
         with patch.object(
             conn,
@@ -1228,8 +1227,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
         ):
             mmap = (await conn._sync_user_groups([u])).members
     conn.data_entities_processor.on_new_user_groups.assert_awaited()
-    assert mmap["g1"][0].email == "member@example.com"
-    assert mmap["G1"] == mmap["g1"]
+    assert mmap == {"G1": [u]}  # by name, the only key a Data Center group has
 
 
 @pytest.mark.asyncio
@@ -1289,7 +1287,7 @@ async def test_sync_project_roles_user_and_group_actors():
                     "type": "atlassian-user-role-actor",
                     "actorUser": {"accountId": "u1", "emailAddress": "actor@example.com"},
                 },
-                {"type": "atlassian-group-role-actor", "groupId": "gx", "name": "GX"},
+                {"type": "atlassian-group-role-actor", "name": "GX"},
             ],
         }
     )
@@ -1303,7 +1301,7 @@ async def test_sync_project_roles_user_and_group_actors():
         await conn._sync_project_roles(
             ["P"],
             [u],
-            {"gx": gmember},
+            {"GX": gmember},
         )
     conn.data_entities_processor.on_new_app_roles.assert_awaited()
     args = conn.data_entities_processor.on_new_app_roles.call_args[0][0]

@@ -968,6 +968,28 @@ class TestSecuredSubtasks:
 
 
 
+class TestGroupsAreKeyedByName:
+    """Data Center names a group by its name alone (``/groups/picker`` lists ``name``, ``html`` and ``labels``; members
+    are read by ``groupname``). A picker row that also carries an id equal to another group's name must not put its
+    members under that other group."""
+
+    async def test_a_group_whose_id_is_another_groups_name_does_not_take_its_members(self) -> None:
+        c = _connector()
+        c.data_source = MagicMock()
+        ds = MagicMock()
+        ds.groups_picker_get_v2 = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value={
+            "groups": [{"name": "beta"}, {"name": "alpha", "groupId": "beta"}], "total": 2})))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        alice, bob = _user("alice-key", "alice@x.com"), _user("bob-key", "bob@x.com")
+        c._fetch_group_members = AsyncMock(side_effect=lambda _gid, name: {"beta": ["bob-key"], "alpha": ["alice-key"]}[name])
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        result = await c._sync_user_groups([alice, bob])
+        assert result.members == {"beta": [bob], "alpha": [alice]}
+        written = {g.source_user_group_id: m for (g, m), in (call.args[0] for call in
+                                                           c.data_entities_processor.on_new_user_groups.await_args_list)}
+        assert written == {"beta": [bob], "alpha": [alice]}
+
+
 class TestStoredNoLevelIssuesHealOnce:
     """Issues an earlier version stored closed for a missing ``security`` key are read again once."""
 

@@ -216,19 +216,19 @@ def log_skipped(logger: logging.Logger, *, reason: str) -> None:
 
 def log_strike(
     logger: logging.Logger, *, strike: int, max_strikes: int, cause: BaseException, counted: bool = True,
+    reason: str | None = None,
 ) -> None:
-    """A rejected refresh token: ``counted=False`` when it was already rotated (a lost race). The cause's
-    class and OAuth code (never its text) are on the line: the ``end`` that said it may be a DEBUG repeat."""
+    """A rejected refresh token: ``counted=False`` when it was already rotated (a lost race), with ``reason`` where
+    there is more than one why (MCP: ``rotated``, ``within_window``, ``not_saved``). The cause's class and OAuth code
+    (never its text) are on the line: the ``end`` that said it may be a DEBUG repeat."""
     cls, _ = _classified(cause)
-    log_event(logger, EVENT_STRIKE, strike=f"{strike}/{max_strikes}", counted=counted,
+    log_event(logger, EVENT_STRIKE, strike=f"{strike}/{max_strikes}", counted=counted, reason=reason,
               error_class=cls, oauth_error=_first(cause, _oauth_error))
 
 
-def log_deauthenticated(
-    logger: logging.Logger, *, reason: str, strikes: int, path: str | None = None, **fields: object,
-) -> None:
-    """``path`` only where one kind has more than one (MCP: background or route); ``trigger`` already says how."""
-    log_event(logger, EVENT_DEAUTHENTICATED, level=logging.WARNING, reason=reason, strikes=strikes, path=path, **fields)
+def log_deauthenticated(logger: logging.Logger, *, reason: str, strikes: int, **fields: object) -> None:
+    """A sign-in switched off after ``strikes`` rejections; ``trigger`` says which path saw the last one."""
+    log_event(logger, EVENT_DEAUTHENTICATED, level=logging.WARNING, reason=reason, strikes=strikes, **fields)
 
 
 def log_refresh_failure(

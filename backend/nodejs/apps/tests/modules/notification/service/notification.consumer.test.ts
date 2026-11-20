@@ -2,13 +2,12 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
+import { NotificationConsumer, notificationEventRefused } from '../../../../src/modules/notification/service/notification.consumer';
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { GatewayTimeoutError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
-import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
 import * as NotificationSchema from '../../../../src/modules/notification/schema/notification.schema';
 import * as RecipientResolver from '../../../../src/modules/notification/utils/notification-recipient.resolver';
 import * as PayloadResolver from '../../../../src/modules/notification/utils/notification-payload.resolver';
@@ -283,14 +282,12 @@ describe('notification/service/notification.consumer', () => {
 
       describe('a supplied _id', () => {
         const other = new mongoose.Types.ObjectId().toString();
-        const refusedCount = async () =>
-          Number(/notification_event_refused_total\{reason="id_with_many_recipients"\} (\d+)/.exec(await metricsBackend.serialize())?.[1] ?? 0);
         it('refuses an event with an _id and several recipients: logged, counted, nothing written, marked handled', async () => {
           mockConsumer.isConnected.returns(true);
           sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user), new mongoose.Types.ObjectId(other)]);
           const insertMany = sinon.stub().resolves([]);
           setNotificationRepository({ insertMany } as never);
-          const before = await refusedCount();
+          const refused = sinon.spy(notificationEventRefused, 'inc');
           const handler = sinon.stub().resolves();
           await consumer.consume(handler);
           await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
@@ -299,7 +296,7 @@ describe('notification/service/notification.consumer', () => {
           expect(mockLogger.error.calledOnce).to.be.true;
           expect(mockLogger.error.firstCall.args[1].error).to.equal('Notification event refused');
           expect(handler.calledOnce).to.be.true;
-          expect(await refusedCount()).to.equal(before + 1);
+          expect(refused.calledOnceWithExactly({ reason: 'id_with_many_recipients' })).to.be.true;
         });
 
         it('keeps the _id for one recipient', async () => {

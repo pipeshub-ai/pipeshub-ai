@@ -27105,11 +27105,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR seed IN seed_rgs
                 FILTER seed.hideChildren != true
                 FOR child IN 1..@inherit_max_depth INBOUND seed._id {inherit_permissions}
-                    PRUNE child.orgId != @org_id
+                    // The walk stays inside the seed's connector.
+                    PRUNE child.orgId != @org_id OR child.connectorId != seed.connectorId
                     OPTIONS {{ bfs: true, uniqueVertices: "global", vertexCollections: ["{record_groups}"] }}
                     FILTER child != null AND IS_SAME_COLLECTION("{record_groups}", child)
                     FILTER child.orgId == @org_id AND child.isDeleted != true
-                    FILTER child.connectorId IN record_level_app_ids
+                    FILTER child.connectorId == seed.connectorId AND child.connectorId IN record_level_app_ids
                     RETURN child._key
         )
 

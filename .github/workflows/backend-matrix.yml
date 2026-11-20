@@ -12,8 +12,9 @@ name: backend-matrix
 # The graph jobs find their tests rather than listing them. A real-graph test
 # is any file under tests/integration that reads NEO4J_IT_URI or ARANGO_IT_URL
 # (the env below) and gives its backend parameter the id "neo4j" or "arango";
-# each job runs that backend's cases from every such file. New real-graph tests
-# that follow the convention run here without editing this workflow.
+# each backend's cases from every such file run across that backend's shard
+# jobs, each file in exactly one shard (scripts/graph_shards.py). New real-graph
+# tests that follow the convention run here without editing this workflow.
 #
 # The storage job is the same idea for the file stores. A storage test is any
 # file under tests/integration that reads ARTIFACTS_IT_STORAGE_URL; the job runs
@@ -93,6 +94,7 @@ on:
       - 'backend/python/tests/integration/graph_db/**'
       # Which test files each job runs.
       - 'scripts/integration_discovery.py'
+      - 'scripts/graph_shards.py'
       - 'backend/python/tests/integration/compose/**'
       # The storage job: the storage routes and what they load (found by tracing
       # what tests/support/storage-it-server.ts requires), the SDK versions that
@@ -225,10 +227,10 @@ jobs:
         uses: ./.github/actions/pr-changes
 
   backend:
-    name: ${{ matrix.suite }} · ${{ matrix.backend }}
+    name: ${{ matrix.suite }} · ${{ matrix.backend }}${{ matrix.shard && format(' ({0})', matrix.shard) || '' }}
     needs: changes
     runs-on: ubuntu-latest
-    # The graph jobs take 27-28 minutes of a 30-minute limit, so any new graph test pushed them over it.
+    # One graph job per store reached 37-43 minutes; its shards take about 15 each (scripts/graph_shards.py).
     timeout-minutes: 45
 
     strategy:
@@ -268,17 +270,54 @@ jobs:
             select: redis
           # Redis too: the stranded-record sweep publishes onto a real stream.
           # Qdrant too: the trash's vector cleanup runs against a real collection.
+          # One job per shard of the discovered real-graph files; scripts/test_graph_shards.py checks every shard is here for both stores.
           - suite: graph
             backend: neo4j
+            shard: 1/4
             compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
             services: neo4j-graph-it redis-messaging-it qdrant-vector-it
-            discover: NEO4J_IT_URI|ARANGO_IT_URL
+            select: neo4j
+          - suite: graph
+            backend: neo4j
+            shard: 2/4
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: neo4j-graph-it redis-messaging-it qdrant-vector-it
+            select: neo4j
+          - suite: graph
+            backend: neo4j
+            shard: 3/4
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: neo4j-graph-it redis-messaging-it qdrant-vector-it
+            select: neo4j
+          - suite: graph
+            backend: neo4j
+            shard: 4/4
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: neo4j-graph-it redis-messaging-it qdrant-vector-it
             select: neo4j
           - suite: graph
             backend: arangodb
+            shard: 1/4
             compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
             services: arango-graph-it redis-messaging-it qdrant-vector-it
-            discover: NEO4J_IT_URI|ARANGO_IT_URL
+            select: arango
+          - suite: graph
+            backend: arangodb
+            shard: 2/4
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: arango-graph-it redis-messaging-it qdrant-vector-it
+            select: arango
+          - suite: graph
+            backend: arangodb
+            shard: 3/4
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: arango-graph-it redis-messaging-it qdrant-vector-it
+            select: arango
+          - suite: graph
+            backend: arangodb
+            shard: 4/4
+            compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
+            services: arango-graph-it redis-messaging-it qdrant-vector-it
             select: arango
           # A job of its own: inside the graph jobs it would take them past their timeout.
           - suite: gitlab
@@ -307,7 +346,7 @@ jobs:
       COMPOSE: ${{ matrix.compose }}
       SERVICES: ${{ matrix.services }}
       TESTS: ${{ matrix.tests }}
-      DISCOVER: ${{ matrix.discover }}
+      SHARD: ${{ matrix.shard }}
       SELECT: ${{ matrix.select }}
       REPORT: ${{ github.workspace }}/backend-matrix-results.xml
       # What the real-service tests read; these match their defaults and the
@@ -369,16 +408,11 @@ jobs:
         if: env.SUITE_RUNS == 'true'
         working-directory: backend/python
         run: |
-          if [ -n "$DISCOVER" ]; then
-            # A file needs the store when it, a module it imports or a conftest above it names it.
-            # Files that also need storage run in the storage job; files that need a server
-            # started at a memory preset (NEO4J_IT_PRESET) are run by hand against one; the
-            # GitLab simulator and the PostgreSQL provider have jobs of their own.
-            TESTS=$(python3 ../../scripts/integration_discovery.py tests/integration --needs "$DISCOVER" \
-              --not 'ARTIFACTS_IT_STORAGE_URL|NEO4J_IT_PRESET' \
-              --exclude-dir tests/integration/gitlab_simulated --exclude-dir tests/integration/graph_db/postgres \
-              | tr '\n' ' ')
-            echo "Discovered: $TESTS"
+          if [ -n "$SHARD" ]; then
+            # This shard's share of the discovered real-graph files; no pipe, so a failure stops the step
+            TESTS=$(python3 ../../scripts/graph_shards.py "$SHARD")
+            # shellcheck disable=SC2086
+            echo "Shard $SHARD:" $TESTS
           fi
           # shellcheck disable=SC2086
           # redis_restart tests restart their own AOF container; they are run by hand (see the marker in pytest.ini).

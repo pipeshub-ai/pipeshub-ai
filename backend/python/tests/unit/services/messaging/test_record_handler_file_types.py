@@ -12,6 +12,8 @@ from app.utils.user_errors import file_too_large_to_read
 from tests.unit.config.file_types import gen_pinned_decisions as gen
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
 _NEW = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx")
@@ -174,3 +176,53 @@ def test_the_off_switch_reads_only_registry_keys() -> None:
     assert file_types.disabled_keys(None) == frozenset()
     assert file_types.disabled_from_env("") is None
     assert file_types.disabled_from_env(" msg ,, rtf") == {"disabled": ["msg", "rtf"]}
+
+
+@pytest.mark.parametrize("signed_url", [True, False], ids=["signed-url", "connector-stream"])
+@pytest.mark.parametrize(
+    ("ext", "mime", "record_type", "route"),
+    [
+        ("css", "text/css", "CODE_FILE", file_types.Dispatch(file_types.Route.CODE, None)),
+        ("pdf", "application/pdf", "FILE", None),
+    ],
+)
+async def test_the_handler_hands_the_gate_route_to_the_dispatch(
+    ext: str, mime: str, record_type: str, route: file_types.Dispatch | None, signed_url: bool,
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from app.services.messaging.config import (
+        IndexingEvent,
+        PipelineEvent,
+        PipelineEventData,
+    )
+
+    record = {**_record(ext), "recordType": record_type}
+    handler = gen._gate_handler(record)
+    envelopes: list[dict[str, Any]] = []
+
+    def on_event(envelope: dict[str, Any]) -> AsyncIterator[PipelineEvent]:
+        envelopes.append(envelope)
+
+        async def events() -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        return events()
+
+    handler.event_processor.on_event = MagicMock(side_effect=on_event)
+    handler.config_service.get_config = AsyncMock(return_value={"connectors": {"endpoint": "http://connector.invalid"}})
+    payload = {
+        "recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1", "connectorId": "conn-1",
+        "recordName": f"f.{ext}", "extension": ext, "mimeType": mime,
+        **({"signedUrl": "https://example.invalid/f"} if signed_url else {}),
+    }
+    module = "app.services.messaging.kafka.handlers.record"
+    with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"bytes"), \
+         patch(f"{module}.generate_jwt", new_callable=AsyncMock, return_value="token"), \
+         patch(f"{module}.make_api_call", new_callable=AsyncMock, return_value={"data": b"bytes"}):
+        async for _ in handler.process_event("newRecord", payload):
+            pass
+    assert len(envelopes) == 1
+    assert envelopes[0]["gateRoute"] == route
+    assert envelopes[0]["payload"] is payload

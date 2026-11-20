@@ -19,6 +19,7 @@ on:
       # The window of the coalesced re-purge runs on the state tables in PostgreSQL mode (PgWindowStore).
       - 'backend/python/app/services/paid_cache/**'
       - 'backend/python/tests/support/repurge_window.py'
+      - 'backend/python/tests/support/plan_gate.py'
       - 'backend/python/app/services/redis/**'
       - 'backend/python/app/services/cache/**'
       - 'backend/python/app/config/**'

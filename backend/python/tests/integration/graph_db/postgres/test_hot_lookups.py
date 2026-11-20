@@ -128,9 +128,9 @@ async def test_a_hot_lookup_is_sent_to_its_vetted_read(world, monkeypatch) -> No
         "code_files_by_path", "blocks_by_record", "blocks_by_name", "plain"]
 
 
-async def test_a_long_after_key_and_a_full_page_are_read_by_the_plain_statement(world, pg_db, monkeypatch) -> None:
-    """An ``after_key`` over the function's bound would be refused (and ``get_nodes_by_filters`` would answer nothing); more matches than one page
-    are read in one statement, so one snapshot."""
+async def test_a_long_after_key_is_read_by_the_plain_statement_and_a_full_page_by_the_next_page_of_the_vetted_read(world, pg_db, monkeypatch) -> None:
+    """An ``after_key`` over the function's bound would be refused (and ``get_nodes_by_filters`` would answer nothing). More matches than one page are
+    read page after page by the vetted read, in one repeatable-read unit (one snapshot): the plain statement reads every document of the collection."""
     a, _ = world
     f = {"orgId": a.org, "recordId": "r1"}
     expected = await old(pg_db, a.org, OLD_PAGE, "blocks", "a" * 300, 0, 5, list(f), [json.dumps(v) for v in f.values()])
@@ -144,7 +144,47 @@ async def test_a_long_after_key_and_a_full_page_are_read_by_the_plain_statement(
         return await real(self, sql, *args)
     monkeypatch.setattr(Tx, "fetch", spy)
     assert len(await a.get_nodes_by_filters("blocks", f, raise_on_error=True)) == 1502
-    assert [next(n for n in ("blocks_by_record", "get_nodes_by_filters") if n in s) for s in sent if "graph." in s] == ["blocks_by_record", "get_nodes_by_filters"]
+    assert [next(n for n in ("blocks_by_record", "get_nodes_by_filters") if n in s) for s in sent if "graph." in s] == ["blocks_by_record", "blocks_by_record"]
+    sent.clear()
+    paths = [{"_key": f"g{i:04d}", "orgId": a.org, "filePath": "src/common.py"} for i in range(2000)]      # one path in 2000 repositories
+    await a.batch_upsert_nodes(paths, "codeFiles")
+    got = await a.get_nodes_by_filters("codeFiles", {"orgId": a.org, "filePath": "src/common.py"}, return_fields=["_key"], raise_on_error=True)
+    assert sorted(d["_key"] for d in got) == [p["_key"] for p in paths]
+    assert [next(n for n in ("code_files_by_path", "get_nodes_by_filters") if n in s) for s in sent if "graph." in s] == ["code_files_by_path"] * 3
     sent.clear()
     assert len(await a.get_nodes_by_filters("blocks", {**f, "qualifiedName": "m::f3"}, raise_on_error=True)) == 1       # fewer than a page: the vetted read alone
     assert [("blocks_by_record" in s) for s in sent if "graph." in s] == [True]
+
+
+async def test_the_pages_of_a_lookup_read_one_snapshot(world, monkeypatch) -> None:
+    """A row another session commits between two pages, with a key past the cursor, is not in the answer: every page reads the snapshot of the first."""
+    import os
+
+    import asyncpg
+
+    from app.services.graph_db.postgres import core
+
+    a, _ = world
+    f = {"orgId": a.org, "recordId": "r1"}
+    before = sorted(d["_key"] for d in await a.get_nodes_by_filters("blocks", f, raise_on_error=True))
+    assert len(before) == 1502
+    real, pages = core._hot_rows, []
+
+    async def first_page_then_a_commit(*args: object, **kw: object) -> list:
+        rows = await real(*args, **kw)
+        pages.append(len(rows))
+        if len(pages) == 1:          # another session commits a match past the cursor before the second page is read
+            con = await asyncpg.connect(os.environ["PG_CORE_URL"])          # the service login the fixture already needs, as the app uses it
+            try:
+                async with con.transaction():
+                    await con.execute("SELECT set_config('role', 'pipeshub_connectors', true), set_config('app.org_id', $1, true)", a.org)
+                    await con.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'blocks', 'zzzz', $2::jsonb)", a.org,
+                                      json.dumps({"id": "zzzz", "orgId": a.org, "recordId": "r1", "connectorId": "c1"}))
+            finally:
+                await con.close()
+        return rows
+    monkeypatch.setattr(core, "_hot_rows", first_page_then_a_commit)
+    got = sorted(d["_key"] for d in await a.get_nodes_by_filters("blocks", f, raise_on_error=True))
+    assert pages[:2] == [1000, 502] and got == before, (pages, len(got), "zzzz" in got)
+    monkeypatch.undo()
+    assert "zzzz" in [d["_key"] for d in await a.get_nodes_by_filters("blocks", f, raise_on_error=True)]       # committed: the next read sees it

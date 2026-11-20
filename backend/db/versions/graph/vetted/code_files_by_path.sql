@@ -12,7 +12,7 @@ AS $fn$
 DECLARE v_org text := NULLIF(current_setting('app.org_id', true), '');
 BEGIN
   IF p_path IS NULL THEN RAISE EXCEPTION 'code_files_by_path: p_path is required' USING ERRCODE = '22023'; END IF;
-  IF length(p_path) NOT BETWEEN 1 AND 2000 THEN RAISE EXCEPTION 'code_files_by_path: p_path length must be 1..2000' USING ERRCODE = '22023'; END IF;
+  IF length(p_path) NOT BETWEEN 1 AND 4096 THEN RAISE EXCEPTION 'code_files_by_path: p_path length must be 1..4096' USING ERRCODE = '22023'; END IF;
   IF p_keys IS NULL THEN RAISE EXCEPTION 'code_files_by_path: p_keys is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_keys) > 32 THEN RAISE EXCEPTION 'code_files_by_path: p_keys takes at most 32 items' USING ERRCODE = '22023'; END IF;
   IF EXISTS (SELECT 1 FROM unnest(p_keys) e WHERE e IS NULL) THEN RAISE EXCEPTION 'code_files_by_path: p_keys has a NULL item' USING ERRCODE = '22023'; END IF;
@@ -27,14 +27,18 @@ BEGIN
   IF p_limit NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'code_files_by_path: p_limit must be 1..1000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
   IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-  -- only the ids are materialized (the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection); the page's docs are fetched by key
+  -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0018): a page reads one page of matches, not
+  -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
+  -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
+  -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
+  -- equality does not let the planner drop it from the order, and an order by id alone walks the primary key and filters the collection
   RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
-    WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path
+    WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND hashtext(n.doc->>'filePath') = hashtext(p_path) AND n.doc->>'filePath' IS NOT DISTINCT FROM p_path
       AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
         WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                   ELSE n.doc->f.k IS DISTINCT FROM f.v END))
-    SELECT n.id, n.doc FROM (SELECT m.id FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit) pg
-    JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = pg.id ORDER BY n.id;
+                   ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+      AND n.id > p_after ORDER BY hashtext(n.doc->>'filePath'), n.id LIMIT p_limit)
+    SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = m.id ORDER BY n.id;
 END $fn$;
 REVOKE ALL ON FUNCTION graph.code_files_by_path(text, text[], jsonb[], boolean, text, int) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION graph.code_files_by_path(text, text[], jsonb[], boolean, text, int) TO pipeshub_connectors;

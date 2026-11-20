@@ -47,6 +47,9 @@ SCOPE_MAX = 100_000
 COUNT_CAP = 10_000          # a count of what kg decides is exact up to this many rows; a listing with more reports the cap
 UNDECIDED_MAX = 200         # rows kg does not decide that a count may hand to the walk
 CLASS_MAX = 50_000          # classes of a connector a count evaluates
+# The children of a page's rows whose classes a browse reads to decide their arrows by those classes only: up to about this many, one read of their class ids costs less than
+# deciding every class of the connector (each literal of each class a seek); past it the browse decides every class.
+CLASS_COVER = 2_000
 COUNT_SCAN = 500            # candidates the total asks the access check about when kg does not serve the connector (the check is the expensive part during a sync); more than that is reported as "at least"
 WINDOW_MAX = 2_000
 ADMIT_CHUNK = 2_000
@@ -85,15 +88,34 @@ def _node_type(coll: str, doc: dict) -> str:
     return "folder" if doc.get("mimeType") in FOLDER_MIME_TYPES or str(doc.get("recordType") or "").upper() == "FOLDER" else "record"
 
 
-async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str]) -> dict[str, Any] | None:
+async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str], only: list[int] | None = None) -> dict[str, Any] | None:
     """What the viewer's grants open of a connector kg serves, per class: met with no grant of the row's own (``plain``), met with the row's own grant (``own``), and the classes kg cannot vouch
-    for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate."""
-    got = await tx.fetchrow(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
+    for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate. With ``only``, just those of the connector's classes
+    are decided (``known``; one that is not the connector's opens nothing, as when every class is read): a row of any other class is the access check's (``_kh_class_split``), a
+    statement handed the sets reads only rows of known classes, and :func:`cover_children` decides more of them."""
+    got = await (tx.fetchrow(kgl.CLASSES, org, app_sk, CLASS_MAX + 1) if only is None else tx.fetchrow(kgl.CLASSES_OF, org, app_sk, only))
     if got["n"] > CLASS_MAX:
         return None
     found = {int(c): cl for c, cl in json.loads(got["doc"]).items()}
     verdicts = await kg_read.class_verdicts(tx, org, found, held)
-    return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None}}
+    return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None},
+            "known": None if only is None else set(only), "held": held}
+
+
+async def cover_children(tx: Tx, org: str, sets: dict[str, Any], parents: list[int], hidden: list[int]) -> dict[str, Any] | None:
+    """Sets read for some classes (``class_sets`` with ``only``) extended, in place, by the classes of the live children of ``parents`` (what their arrows decide by class), or by every
+    class of the connector when they have more than CLASS_COVER children. None when those cannot be decided by class (too many classes): the check decides the children then."""
+    kids = await tx.fetch(kgl.CHILD_CLASSES, org, parents, CLASS_COVER + 1, hidden)
+    new = None if len(kids) > CLASS_COVER else sorted({k["class_id"] for k in kids if k["class_id"] is not None} - sets["known"])
+    if new == []:
+        return sets
+    got = await class_sets(tx, org, sets["app_sk"], sets["held"], new)
+    if got is None:
+        return None
+    for k in ("plain", "own", "unvouched"):
+        sets[k] |= got[k]
+    sets["known"] = None if new is None else sets["known"] | got["known"]
+    return sets
 
 
 async def head(tx: Tx, org: str, app_id: str, held: set[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
@@ -403,7 +425,7 @@ class KhListingMixin(PgBase):
         for r in rows:
             # a row of another connector has its connector's classes, not these: the check decides it, as it does a deleted or a foreign one
             if (r["r13"] is False and r["has_path"] and r["class_id"] is not None and not r["fenced"] and not r["placeholder"] and r["class_id"] not in sets["unvouched"]
-                    and r["app_sk"] == sets["app_sk"] and not r["deleted"] and not r["alien"]):
+                    and r["app_sk"] == sets["app_sk"] and not r["deleted"] and not r["alien"] and (sets["known"] is None or r["class_id"] in sets["known"])):
                 if r["class_id"] in sets["plain"] or (r["class_id"] in sets["own"] and r["id"] in granted):
                     ok.add(r["id"])
             else:
@@ -541,6 +563,8 @@ class KhListingMixin(PgBase):
         groups = [c["sk"] for c in page if c["kind"] == 2 and not c["hide_children"]]
         held = {r["sk"] for r in await tx.fetch(kgl.HELD, org, groups, sorted(gset))} if tops and groups and gset else set()
         rest = asked
+        if sets is not None and sets["known"] is not None:      # a browse decides by the classes it has read: those of these rows' children too
+            sets = await cover_children(tx, org, sets, asked, hidden)
         if sets is not None:
             q = kgl.Params([org, asked, hidden])
             admit_c = kgl.class_admit("c", q, {"plain": sorted(sets["plain"]), "own": sorted(sets["own"]), "unvouched": sorted(sets["unvouched"]), "granted": sorted(gset), "walked": set()})

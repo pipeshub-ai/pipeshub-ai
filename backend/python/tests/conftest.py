@@ -15,6 +15,9 @@ import pytest
 
 from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: pytest finds it by name)
 
+# LiteLLM fetches its model price map from the network when it is imported, unless told to use the copy it ships with.
+# Set before anything imports litellm, and not with setdefault: a developer's own value must not bring the download back.
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 from app.utils.process_hardening import disable_vendor_telemetry
 

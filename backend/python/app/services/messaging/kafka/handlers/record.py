@@ -2250,7 +2250,8 @@ class RecordEventHandler(BaseEventService):
                         )
                     elif payload.get("phase") == repurge_window.PHASE_HOP:
                         await repurge_window.handle_page_hop(
-                            self.producer, batch_org, payload, purge=paid_cache.purge_record, loop=self._producer_loop,
+                            self.producer, batch_org, payload, purge=paid_cache.purge_record, purge_many=paid_cache.purge_records,
+                            loop=self._producer_loop,
                         )
                     else:
                         raise repurge_window.BatchPayloadError("purgePaidResultsBatch has no known phase")
@@ -2820,6 +2821,9 @@ class RecordEventHandler(BaseEventService):
                 file_types.TEXT_LOG_HARD_LIMIT_BYTES if decision.limited_as is not None else None
             )
 
+            # The same payload object on either download path; the gate's reader goes with it.
+            event_data_for_processor = {"eventType": event_type, "payload": payload, "gateRoute": decision.route}
+
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
 
@@ -2847,10 +2851,6 @@ class RecordEventHandler(BaseEventService):
                 else:
                     payload["buffer"] = response
                     note(size_bytes=len(response))
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload
-                    }
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
@@ -2908,11 +2908,6 @@ class RecordEventHandler(BaseEventService):
                         return
                     if is_deferred(record):
                         await self._end_rate_limit_wait(record_id)
-
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload
-                    }
 
                     event_data_for_processor["payload"]["buffer"] = response["data"]
                     if isinstance(response["data"], (bytes, bytearray)):
