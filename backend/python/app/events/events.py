@@ -34,11 +34,19 @@ from app.events.dedup import (
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
     IndexingError,
+    PasswordProtectedError,
     ProcessingError,
     RecordDeletedError,
 )
 from app.models.entities import Record
+from app.modules.indexing import keep_old_copy, replay_set
+from app.modules.indexing.connector_off_events import (
+    SAME_BYTES_SKIP_RETRY_DELAY_S,
+    SameBytesSkipPending,
+    enrichment_cut_short,
+)
 from app.modules.indexing.embed_resume import (
     DELIVERY_ID_KEY,
     EMBED_DELIVERY_ID,
@@ -60,6 +68,13 @@ from app.modules.indexing.parse_now_marker import (
     shape_status_write,
     store_only_active,
 )
+from app.modules.indexing.record_diagnostics import (
+    PAGE_COUNT,
+    WriteKind,
+    page_count_of,
+    write_with_revision_rule,
+)
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parse_engine.inspection import (
     InspectedFacts,
@@ -72,6 +87,7 @@ from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
+from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
@@ -82,6 +98,7 @@ from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.docling.client import (
     MAX_PAGES_ENV,
+    DoclingParseError,
     DoclingUnavailableError,
     docling_max_pages,
     docling_takes,
@@ -89,6 +106,7 @@ from app.services.docling.client import (
 )
 from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.common.record_visibility import (
+    PENDING_VIRTUAL_RECORD_ID,
     RecordVisibility,
     indexed_copy_fields,
     is_live_record,
@@ -100,14 +118,16 @@ from app.services.messaging.config import (
     PipelineEventData,
     messaging_env,
 )
-from app.services.messaging.error_classifier import is_expected_outcome
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.paid_cache.run import current_run as current_paid_run
+from app.services.paid_cache.run import refresh_requested
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
+from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
     CollectionStrategy,
@@ -116,8 +136,9 @@ from app.services.vector_db.strategy import (
     resolve_write_collection_name,
 )
 from app.utils.cpu_offload import offload_if_large
+from app.utils.error_class import log_failure
 from app.utils.file_signatures import match_metadata_file_signature
-from app.utils.indexing_timing import stage
+from app.utils.indexing_timing import note, stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file
 
@@ -169,7 +190,7 @@ class EventProcessor:
         stage_ingress: StageIngress | None = None,
     ) -> None:
         self.logger = logger
-        self.logger.info("🚀 Initializing EventProcessor")
+        self.logger.info("Initializing EventProcessor")
         self.processor = processor
         self.graph_provider = graph_provider
         self.config_service = config_service
@@ -209,17 +230,132 @@ class EventProcessor:
                 "Indexing pipeline unavailable; cannot apply vector membership",
                 details={"virtual_record_id": virtual_record_id},
             )
+        await pipeline.sync_vector_membership(virtual_record_id)
+
+    @staticmethod
+    def _is_same_bytes_update(
+        event_type: str,
+        event_data: Mapping[str, Any],
+        record: Mapping[str, Any],
+        content_rev: str,
+        *,
+        store_only: bool,
+        is_code: bool,
+        is_sql: bool,
+    ) -> bool:
+        """Whether an update carries the very bytes the record is already indexed from.
+
+        Plain updates only: a forced reindex, a vector-store rebuild and a named-stage re-run each
+        ask for work. Code and SQL kinds are never skipped: their projection and stored blocks are
+        not the whole content, so the bytes alone do not show the record is current. The record must
+        be COMPLETED at this very content revision with an indexed copy, enrichment must not have
+        been cut short, and nothing that is not a full index (a parse-now run, a store-only run) is
+        in play. Anything unknown fails closed, to the full run.
+        """
+        return (
+            event_type == EventTypes.UPDATE_RECORD.value
+            and not event_data.get("forceReindex")
+            and not event_data.get("vectorDbOnly")
+            and not event_data.get("stages")
+            and not store_only
+            and current_run() is None
+            and not is_code
+            and not is_sql
+            and record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+            and record.get("hasIndexedCopy") is True
+            and not enrichment_cut_short(record)
+            and bool(record.get("virtualRecordId"))
+            and bool(content_rev)
+            and record.get("contentRev") == content_rev
+        )
+
+    async def _skip_same_bytes(self, record: Mapping[str, Any], record_id: str) -> bool:
+        """Settle a same-bytes update without parsing or embedding; False when it must run in full.
+
+        0. The record's own points are still in the store (a cleanup or reset of the index leaves a COMPLETED record with none).
+        1. The membership sync: a full update ends in one, and the update may be the sign that the
+           record's connector, groups or permissions changed under the same bytes.
+        2. An unforced redrive of the stages after embed that did not finish (failed or paused). A
+           finished stage is not claimed, so statuses and `reason` stay; the claim never resets the
+           revision's pause budget (only a forced one does).
+        3. The delivery is remembered in the replay set, as the record's COMPLETED write would.
+
+        A revision the stage runtime never saw (a lost hand-off, or content indexed before it existed)
+        is not skipped: the full run dispatches every stage. A sync, redrive or state read that fails
+        raises ``SameBytesSkipPending``: the record is left untouched and the delivery handed back.
+        """
+        ingress = self.stage_ingress
+        if ingress is None:
+            return False
+        vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
         try:
-            await pipeline.sync_vector_membership(virtual_record_id)
-        except Exception as e:
-            # Propagate so the consumer redelivers. Swallowing here leaves the
-            # record attached to the VRID with its connectorId missing from the
-            # points and nothing to repair it; both callers are event handlers,
-            # and re-running a duplicate attach is idempotent.
-            self.logger.error(
-                "Failed to sync vector membership for %s: %s", virtual_record_id, e
+            if await ingress.handoff_lost(record):
+                return False
+            # The record's points must still be in the store: after a cleanup or a reset of the index its status still says
+            # COMPLETED while its vectors are gone (or were never written under the live epoch), and skipping would keep it
+            # unsearchable until a reindex reaches it. No point of its own, or nothing to ask: run in full, which embeds under
+            # the index's current precision and epoch.
+            pipeline = self._indexing_pipeline()
+            try:
+                org_id = org_for_filter()
+            except OrgRequired:
+                return False
+            if pipeline is None or org_id not in await pipeline.orgs_holding_points(vrid):
+                return False
+            await self.sync_vector_membership(vrid)
+            dispatched = await ingress.redrive_unchanged(vrid, rev, record)
+        except Exception as exc:
+            # The record is indexed and stays as it is: no status is written and nothing is re-indexed
+            # (a full run of a type not reconciled block by block replaces its vrid and takes its points
+            # out before it parses). The delivery is handed back instead; the broker's backstop bounds it.
+            self.logger.warning(
+                "Record %s: the same-bytes skip could not finish (%s); handing the update back, record untouched",
+                record_id, type(exc).__name__,
             )
-            raise
+            raise SameBytesSkipPending(
+                f"{record_id}: same-bytes skip could not finish: {type(exc).__name__}",
+                delay_s=SAME_BYTES_SKIP_RETRY_DELAY_S,
+            ) from exc
+        if dispatched is None:
+            return False
+        self.logger.info(
+            "Record %s: same content as its indexed revision %s; parse and embed skipped, %d stage(s) re-dispatched",
+            record_id, rev, len(dispatched),
+        )
+        completed_at = record.get("lastIndexTimestamp")
+        if isinstance(completed_at, int):
+            await replay_set.note_record_completed(record_id, completed_at, self.logger)
+        return True
+
+    async def _restore_indexed_fields(
+        self,
+        record: Mapping[str, Any],
+        record_id: str,
+        content: bytes | str | None,
+        content_rev: str,
+    ) -> None:
+        """After a same-bytes skip, put back ``parsingStatus`` and ``md5Checksum`` when the write that sent the update
+        reset them: a Collection file replaced with the same bytes is saved again with neither (``NOT_STARTED``, no
+        checksum), and the skip runs no parse to set them. The record stays in duplicate detection only with its checksum.
+
+        Only while the record is still COMPLETED at this revision, so a run of other bytes that started meanwhile keeps its
+        own values. Not the delivery's business: a failure is logged and the update is still settled."""
+        try:
+            fields: dict[str, Any] = {}
+            if record.get("parsingStatus") != ProgressStatus.COMPLETED.value:
+                fields["parsingStatus"] = ProgressStatus.COMPLETED.value
+            if content:  # as `_check_duplicate_by_md5`: no bytes, no checksum
+                data = content.encode("utf-8") if isinstance(content, str) else content
+                md5 = await offload_if_large(self._hash_for_dedup, data, record.get("recordType"), record.get("mimeType"))
+                if record.get("md5Checksum") != md5:
+                    fields["md5Checksum"] = md5
+            if not fields:
+                return
+            match = {"contentRev": content_rev, "indexingStatus": ProgressStatus.COMPLETED.value}
+            if await self.graph_provider.update_node_fields_if_match(record_id, CollectionNames.RECORDS.value, fields, match):
+                self.logger.info("Record %s: restored %s after a same-bytes skip", record_id, ", ".join(sorted(fields)))
+        except Exception as exc:
+            self.logger.warning("Record %s: could not restore the parsing status and checksum after a same-bytes skip: %s", record_id, exc)
 
     async def _rewrite_or_delete_vrid_vectors(self, virtual_record_id: str) -> None:
         if not virtual_record_id or not isinstance(virtual_record_id, str):
@@ -239,6 +375,44 @@ class EventProcessor:
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
 
+    async def _begin_swap(
+        self, doc: dict[str, Any], old_vrid: str, new_vrid: str, org_id: str, *, forced: bool,
+    ) -> None:
+        """Name the vrid this run writes as the record's pending one, leaving ``virtualRecordId`` on the old copy.
+
+        A compare-and-set against what this run read (the vrid it replaces and the pending one it takes over): when another run
+        committed or took over meanwhile, the write is refused and the event is retried from the record's current state.
+        The pending vrid of an earlier run is released only after the write won, through the holder-checked deleters."""
+        record_id = _record_key(doc)
+        earlier = keep_old_copy.pending_of(doc)
+        won = await self.graph_provider.update_node_fields_if_match(
+            record_id,
+            CollectionNames.RECORDS.value,
+            {PENDING_VIRTUAL_RECORD_ID: new_vrid},
+            {"virtualRecordId": old_vrid, PENDING_VIRTUAL_RECORD_ID: earlier},
+        )
+        if not won:
+            raise IndexingError(
+                "The record changed while its replacement copy was being started; the event is retried",
+                details={"record_id": record_id},
+            )
+        doc[PENDING_VIRTUAL_RECORD_ID] = new_vrid
+        keep_old_copy.begin_swap(keep_old_copy.SwapRun(record_id, org_id, old_vrid, new_vrid, forced))
+        if earlier and earlier not in (new_vrid, old_vrid):
+            self._spawn_abandoned_vrid_cleanup(org_id, earlier)
+            await self._rewrite_or_delete_vrid_vectors(earlier)
+
+    async def _clear_pending(self, doc: dict[str, Any]) -> None:
+        """The record ends this run as a copy of another record's, or without indexing: it has no replacement copy pending any more. The
+        field goes (never null), so a commit of an earlier run of the record, which expects it, is refused."""
+        pending = keep_old_copy.pending_of(doc)
+        if not pending:
+            return
+        await self.graph_provider.update_node_fields_if_match(
+            _record_key(doc), CollectionNames.RECORDS.value, {}, {PENDING_VIRTUAL_RECORD_ID: pending}, unset=[PENDING_VIRTUAL_RECORD_ID]
+        )
+        doc.pop(PENDING_VIRTUAL_RECORD_ID, None)
+
     async def _discard_embed_marker(self, doc: dict[str, Any], marker: dict[str, Any], org_id: str) -> None:
         """End an interrupted run's marker when the record turns out to need no indexing.
 
@@ -251,6 +425,7 @@ class EventProcessor:
             "Failed to clear the embedding marker of record",
             doc,
         )
+        await self._clear_pending(doc)
         orphaned = marker.get(EMBED_VRID)
         if orphaned and orphaned != doc.get("virtualRecordId"):
             self._spawn_abandoned_vrid_cleanup(org_id, orphaned)
@@ -308,6 +483,53 @@ class EventProcessor:
                         virtual_record_id, max_attempts, e,
                     )
 
+    async def _write_page_count(
+        self,
+        record_id: str,
+        content_rev: str | None,
+        pages: object,
+    ) -> None:
+        """Record the page count of the PDF revision being parsed, only while the record is still on that revision.
+
+        Written on every attempt, even when the record held this count before it: the attempt's own start write drops a count
+        when the record moved to another revision in between, and the snapshot read before it cannot tell.
+
+        Not an attempt's business: a failure here is logged and never fails the record. A parse-now store-only run
+        writes no status, so it is matched on the revision alone."""
+        count = page_count_of(pages)
+        if count is None or content_rev is None:
+            return
+        match: dict[str, Any] = {"contentRev": content_rev}
+        if not store_only_active():
+            match["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+        try:
+            await self.graph_provider.update_node_fields_if_match(
+                record_id, CollectionNames.RECORDS.value, {PAGE_COUNT: count}, match
+            )
+        except Exception as error:  # diagnostic only
+            self.logger.warning("Could not record the page count of %s: %s", record_id, error)
+
+    async def _persist_parsing_completed(self, record_doc: dict[str, Any], pages: object, content_rev: str | None = None) -> None:
+        """``parsingStatus=COMPLETED``, with the page count the parsing service reported in the same conditional write
+        while the record is still on this revision and attempt. When nothing matches, the plain status write runs, as
+        before, without a count. ``content_rev`` is the revision of the bytes that were parsed, never the one of the record read
+        afterwards: a record that moved to another revision while the service parsed matches nothing."""
+        fields = {"parsingStatus": ProgressStatus.COMPLETED.value}
+        count = page_count_of(pages)
+        record_id = _record_key(record_doc)
+        if count is not None and record_id and content_rev is not None:
+            match: dict[str, Any] = {"contentRev": content_rev}
+            if not store_only_active():
+                match["indexingStatus"] = ProgressStatus.IN_PROGRESS.value
+            shaped = shape_status_write({**fields, PAGE_COUNT: count})
+            try:
+                if await self.graph_provider.update_node_if_unchanged(record_id, CollectionNames.RECORDS.value, shaped, record_doc, match):
+                    record_doc.update(shaped)
+                    return
+            except Exception as error:  # fall back to the plain write
+                self.logger.warning("Could not record the page count of %s with its status: %s", record_id, error)
+        await self.update_record_fields(record_doc, fields)
+
     async def _dispatch_pdf_binary(
         self,
         record_name: str,
@@ -319,20 +541,23 @@ class EventProcessor:
         virtual_record_id: str,
         event_type: str | None = None,
         prev_virtual_record_id: str | None = None,
+        content_rev: str | None = None,
     ) -> AsyncGenerator[PipelineEvent, None]:
         """Route PDF bytes to OCR, pdfplumber+OpenCV, or Docling — whichever the
         existing PDF pipeline would pick for a native PDF.
         """
-        self.logger.info("🔍 Checking if PDF needs OCR processing")
+        self.logger.debug("Checking if PDF needs OCR processing")
         inspected = await inspect_untrusted_pdf(pdf_binary, label=record_name)
+        # The count of the bytes that are parsed (the pdfium rewrite when the file was repaired), written once per revision.
+        await self._write_page_count(record_id, content_rev, inspected.page_count)
         # Every parser below reads the bytes that passed inspection.
         pdf_binary = inspected.content
         needs_ocr = inspected.needs_ocr
-        self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
+        self.logger.debug("OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
 
         if needs_ocr:
             # Skip docling and use OCR handler directly
-            self.logger.info("🤖 PDF needs OCR, skipping layout parser")
+            self.logger.debug("PDF needs OCR, skipping layout parser")
             async for event in self.processor.process_pdf_document_with_ocr(
                 recordName=record_name,
                 recordId=record_id,
@@ -353,13 +578,14 @@ class EventProcessor:
         # call per page: when Docling is not used or cannot read the file, the
         # local layout parser reads it instead.
         use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+        docling_unavailable: DoclingUnavailableError | None = None
         if use_pdfplumber:
-            self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
+            self.logger.debug("Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
-            self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
+            self.logger.debug("PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
         elif not docling_takes(len(pdf_binary), inspected.page_count):
-            self.logger.info(
-                "📄 PDF has %d pages, more than Docling takes (%s=%d); using the PdfPlumber+OpenCV processor",
+            self.logger.debug(
+                "PDF has %d pages, more than Docling takes (%s=%d); using the PdfPlumber+OpenCV processor",
                 inspected.page_count, MAX_PAGES_ENV, docling_max_pages(),
             )
         else:
@@ -381,14 +607,18 @@ class EventProcessor:
                         if event.event == IndexingEvent.PARSING_COMPLETE:
                             pdf_binary = inspected = None
                         yield event
-            except DoclingUnavailableError as exc:
+            except (DoclingUnavailableError, DoclingParseError) as exc:
                 # Only before Docling produced anything: after PARSING_COMPLETE a
                 # second parse would index the record twice.
                 if yielded:
                     raise
-                self.logger.warning(
-                    "⚠️ Docling is unavailable (%s); using the PdfPlumber+OpenCV processor", exc
+                # Swallowed (the PdfPlumber path runs next), so logged here once, without text.
+                log_failure(
+                    self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
+                    status=exc.status_code, include_error_text=False,
                 )
+                if isinstance(exc, DoclingUnavailableError):
+                    docling_unavailable = exc
             else:
                 if not docling_failed:
                     return
@@ -400,19 +630,37 @@ class EventProcessor:
                         "Docling failed after parsing completed",
                         details={"record_id": record_id},
                     )
-                self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
+                # The processor already wrote index.parse_fallback for this sentinel.
+                self.logger.debug("Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
-        async for event in self.processor.process_pdf_with_pdf_plumber(
-            recordName=record_name,
-            recordId=record_id,
-            pdf_binary=pdf_binary,
-            virtual_record_id=virtual_record_id,
-            event_type=event_type,
-            prev_virtual_record_id=prev_virtual_record_id,
-        ):
-            if event.event == IndexingEvent.PARSING_COMPLETE:
-                pdf_binary = inspected = None
-            yield event
+        parsed = False
+        retry: DoclingUnavailableError | None = None
+        try:
+            async for event in self.processor.process_pdf_with_pdf_plumber(
+                recordName=record_name,
+                recordId=record_id,
+                pdf_binary=pdf_binary,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                if event.event == IndexingEvent.PARSING_COMPLETE:
+                    parsed = True
+                    pdf_binary = inspected = None
+                yield event
+        except DocumentProcessingError as layout_exc:
+            if (
+                docling_unavailable is None
+                or parsed
+                or isinstance(layout_exc, PasswordProtectedError)
+                or worker_gave_up_on(layout_exc)
+            ):
+                raise
+            retry = docling_unavailable
+        if retry is not None:
+            # Docling may read what PdfPlumber could not: retry once it serves again, not a verdict on the file.
+            # Raised outside the handler, so the layout error is not its __context__ for the classifier to read.
+            raise retry
 
     @staticmethod
     def _reads_as_code_file(
@@ -430,6 +678,36 @@ class EventProcessor:
         return record_type == RecordTypes.CODE_FILE.value and (
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
+
+    @staticmethod
+    def _read_plan(
+        record_type: str | None,
+        mime_type: str,
+        extension: str | None,
+        file_path: str | None,
+        record_name: str,
+        gate_route: file_types.Dispatch | None,
+    ) -> tuple[file_types.Dispatch | None, str | None, bool]:
+        """``(dispatch, code_ext, reads_as_code_file)``: how a record is read, from its labels.
+
+        *gate_route* is the reader the record handler's gate accepted the file for; it is used only
+        where the labels name none, so a file the gate accepted is never refused here.
+        """
+        code_ext = file_types.code_extension(extension, file_path, record_name)
+        reads_as_code_file = EventProcessor._reads_as_code_file(
+            record_type, mime_type, code_ext, record_name
+        )
+        dispatch = file_types.legacy_route(
+            mime_type, extension, code_ext=code_ext, reads_as_code_file=reads_as_code_file,
+            is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
+        )
+        if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
+            # A docm, or a .log a repository stored as text/plain, is not source.
+            reads_as_code_file = False
+        if dispatch is None and gate_route is not None:
+            # What the gate accepted is read as it judged it, never refused here.
+            dispatch, reads_as_code_file = gate_route, gate_route.route is Route.CODE
+        return dispatch, code_ext, reads_as_code_file
 
     async def _dispatch_stages(
         self, record: Record, event_type: str | None, *, defer_classify: bool = False
@@ -458,7 +736,7 @@ class EventProcessor:
         if result.count:
             self.logger.info(
                 "Redacted %s secret(s) (%s) from %s before indexing",
-                result.count, ", ".join(result.kinds), record_name,
+                result.count, ", ".join(result.kinds), _record_key(doc),
             )
         # Written even when 0: its presence is what tells dedup the content was scanned.
         if result.count != doc.get("secretsRedacted"):
@@ -488,6 +766,7 @@ class EventProcessor:
         *,
         is_code: bool = False,
         file_path: str | None = None,
+        content_rev: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """New orchestration path: parse → index → enrich via standalone services.
 
@@ -508,7 +787,7 @@ class EventProcessor:
 
         # ── Step 1: Parse ────────────────────────────────────────────────────
         self.logger.debug(
-            "📤 Sending '%s' to Parsing Service (mime=%s ext=%s)", record_name, mime_type, extension
+            "Sending %s to Parsing Service (mime=%s ext=%s)", record_id, mime_type, extension
         )
         provider = ParserProvider(os.getenv("PARSER_BACKEND") or ParserProvider.DEFAULT.value)
         # What the paid calls of this revision use is listed in its manifest, for retention by reference.
@@ -539,7 +818,7 @@ class EventProcessor:
             record_name=record_name,
         ).validate(block_container)
         self.logger.debug(
-            "✅ Parsing complete via provider '%s' (%d blocks)",
+            "Parsing complete via provider '%s' (%d blocks)",
             parse_result.provider_used.value if parse_result.provider_used else "unknown",
             len(block_container.blocks),
         )
@@ -554,10 +833,7 @@ class EventProcessor:
         if record_doc is None:
             raise RecordDeletedError(record_id)
 
-        await self.update_record_fields(
-            record_doc,
-            {"parsingStatus": ProgressStatus.COMPLETED.value},
-        )
+        await self._persist_parsing_completed(record_doc, (parse_result.metadata or {}).get("page_count"), content_rev)
 
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
@@ -567,31 +843,40 @@ class EventProcessor:
         store_only = store_only_active()
         if not block_container.blocks and not block_container.block_groups:
             self.logger.info(
-                "⚠️ Empty document for %s — marking EMPTY", record_id
+                "Empty document for %s — marking EMPTY", record_id
             )
             if is_code and not store_only:
                 # As process_code_document does: an emptied file kept its last
                 # version's blocks, and their calls and imports stayed (B3).
                 await self.processor._drop_code_blocks(record_id)
-            if not store_only:
-                await self._drop_the_previous_vectors_of_an_emptied_record(
-                    record_doc, prev_virtual_record_id or virtual_record_id, event_type
-                )
-            self._require_persisted(
-                await self.update_record_fields(
+            empty_fields = {
+                # parsingStatus is already COMPLETED from the write above.
+                "indexingStatus": ProgressStatus.EMPTY.value,
+                **indexed_copy_fields(ProgressStatus.EMPTY),
+                **cleared_fields(),
+                "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                "isDirty": False,
+            }
+            swap_run = None if store_only else keep_old_copy.current_swap(record_id, virtual_record_id)
+            swap_committer = getattr(self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None), "swap", None)
+            if swap_run is not None and swap_committer is not None:
+                # A replacement is pending: the old copy stays until the empty result commits (the record moves to the empty copy and the
+                # old one is released after the grace), so a failed status write leaves the record on a copy that is still there.
+                self._require_persisted(
+                    await swap_committer.commit_document(record_doc, swap_run, shape_status_write(empty_fields)),
+                    "Failed to persist EMPTY status for record",
                     record_doc,
-                    {
-                        # parsingStatus is already COMPLETED from the write above.
-                        "indexingStatus": ProgressStatus.EMPTY.value,
-                        **indexed_copy_fields(ProgressStatus.EMPTY),
-                        **cleared_fields(),
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "isDirty": False,
-                    },
-                ),
-                "Failed to persist EMPTY status for record",
-                record_doc,
-            )
+                )
+            else:
+                if not store_only:
+                    await self._drop_the_previous_vectors_of_an_emptied_record(
+                        record_doc, prev_virtual_record_id or virtual_record_id, event_type
+                    )
+                self._require_persisted(
+                    await self.update_record_fields(record_doc, empty_fields),
+                    "Failed to persist EMPTY status for record",
+                    record_doc,
+                )
             if self.config_service is not None:
                 # The revision is complete: its paid calls (a scan's page OCR) are listed in a final manifest.
                 await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)
@@ -648,7 +933,7 @@ class EventProcessor:
             )
 
         # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
-        self.logger.debug("📥 Indexing record %s (making searchable)", record_id)
+        self.logger.debug("Indexing record %s (making searchable)", record_id)
         await self.sink_orchestrator.index(ctx)
         if self.config_service is not None:
             await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)
@@ -659,7 +944,7 @@ class EventProcessor:
                 data=PipelineEventData(record_id=record_id),
             )
             return
-        self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
+        self.logger.debug("Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: classification runs as a pipeline stage, on its own permits ──
         await self._dispatch_stages(
@@ -683,13 +968,16 @@ class EventProcessor:
             current = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value, raise_on_error=True
             ) or {}
+            now = get_epoch_timestamp_in_ms()
             updates: dict[str, Any] = {
                 "indexingStatus": ProgressStatus.QUEUED.value,
-                "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "queuedAtTimestamp": now,
                 "processingStartedAt": None,
                 "reason": RETRY_SCHEDULED,
                 EMBED_SECONDS: embed_seconds,
                 EMBED_UNCOUNTED: uncounted,
+                # a cut hands the record back to its queue inside the run it is in
+                **run_reference(current, WriteKind.QUEUE, now),
             }
             if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
@@ -718,11 +1006,20 @@ class EventProcessor:
 
         return write
 
-    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> bool:
-        """Persist a partial record update or fail the current attempt."""
+    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any], *, attempt_start: bool = False) -> bool:
+        """Persist a partial record update or fail the current attempt.
+
+        ``attempt_start``: the write is the start of an indexing attempt (the status becomes IN_PROGRESS for a new
+        attempt). The store then decides, from the stored record, whether this continues the run or starts one,
+        and counts the attempt, in the same statement. A parse-now store-only run writes no status, so it is not
+        an attempt."""
         record_id = _record_key(doc) or "unknown"
         # In a parse-now run the status fields become the marker (see parse_now_marker).
         fields = shape_status_write(fields)
+        # A count belongs to the content it was taken from, the same rule as ``write_attempt_start``, decided in the store's own statement
+        # (see ``write_with_revision_rule``). A store-only run drops the status fields, so its attempt start is a plain write that carries the
+        # revision too.
+        sets_revision = "contentRev" in fields and not (attempt_start and "indexingStatus" in fields)
         left_vrid = doc.get("virtualRecordId") if "virtualRecordId" in fields else None
         leaving = bool(left_vrid) and left_vrid != fields["virtualRecordId"] and scope_fields_enabled()
         doc.update(fields)
@@ -732,11 +1029,16 @@ class EventProcessor:
         success = False
         try:
             async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
-                success = await self.graph_provider.update_node(
-                    record_id,
-                    CollectionNames.RECORDS.value,
-                    fields,
-                )
+                if attempt_start and "indexingStatus" in fields:
+                    success = await self.graph_provider.write_attempt_start(record_id, fields)
+                elif sets_revision:
+                    success = await write_with_revision_rule(self.graph_provider, record_id, CollectionNames.RECORDS.value, fields)
+                else:
+                    success = await self.graph_provider.update_node(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        fields,
+                    )
         except Exception as e:
             if not success:
                 raise
@@ -744,7 +1046,7 @@ class EventProcessor:
             self.logger.error("Could not register the records still sharing VRID %s after updating %s: %s", left_vrid, record_id, e)
         if not success:
             self.logger.warning(
-                f"❌ Failed to update record {record_id} fields {tuple(fields)}"
+                f"Failed to update record {record_id} fields {tuple(fields)}"
             )
             return False
         return True
@@ -767,9 +1069,9 @@ class EventProcessor:
     ) -> None:
         """An update that leaves a record empty must not leave its old content searchable.
 
-        Types not reconciled block by block lost their vectors before this
-        event ran; reconciled ones still hold them. A VRID another record also
-        holds is that record's content, so it is left alone.
+        Every type still holds its vectors when this runs: nothing is taken out
+        ahead of the work. A VRID another record also holds is that record's
+        content, so it is left alone.
         """
         if not virtual_record_id or event_type not in (
             EventTypes.UPDATE_RECORD.value,
@@ -845,12 +1147,12 @@ class EventProcessor:
             fields["parsingStatus"] = ProgressStatus.IN_PROGRESS.value
         if content_rev is not None:
             fields["contentRev"] = content_rev
-        success = await self.update_record_fields(doc, fields)
+        success = await self.update_record_fields(doc, fields, attempt_start=status == ProgressStatus.IN_PROGRESS)
         self._require_persisted(
             success, f"Failed to persist status {status.value} for record", doc
         )
         self.logger.debug(
-            f"🔍 Record {record_id}: Successfully updated status to {status.value}"
+            f"Record {record_id}: Successfully updated status to {status.value}"
         )
 
 
@@ -900,7 +1202,8 @@ class EventProcessor:
                 # self.info(f"🔍 HTML normalized for dedup: {text}")  
                 return content    
             except Exception as e:
-                self.logger.error(f"❌ Error normalizing HTML for dedup: {repr(e)}")
+                # No text: a UnicodeDecodeError's args carry the document's bytes.
+                log_failure(self.logger, "index.dedup_normalize_failed", e, level=logging.WARNING, include_error_text=False)
                 return content
         try:
             parsed = json.loads(content)
@@ -1009,6 +1312,7 @@ class EventProcessor:
         *,
         content_rev: str | None = None,
         scans_for_secrets: bool = False,
+        force_index: bool = False,
     ) -> DedupDecision:
         """Check for duplicate records by MD5 hash and decide whether to skip indexing.
 
@@ -1027,6 +1331,10 @@ class EventProcessor:
 
         ``scans_for_secrets`` records are not attached to a finished twin
         that was never scanned: its vectors and blob hold the raw content.
+
+        ``force_index`` (a user's Force reindex) never attaches to a twin or waits for one: nothing of the twin's
+        identity is copied onto the record, which is indexed itself (a shared VRID it already holds is rebuilt, as
+        for a twin whose stored content is gone).
         """
         # Calculate MD5 from content
         existing_md5_checksum = doc.get("md5Checksum")
@@ -1056,7 +1364,7 @@ class EventProcessor:
                     success, "Failed to persist md5Checksum for record", doc
                 )
 
-            self.logger.debug("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
+            self.logger.debug("Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
         if not md5_checksum:
             return DedupDecision(virtual_record_id=None, skip_indexing=False)
@@ -1071,7 +1379,7 @@ class EventProcessor:
 
         if not duplicate_records:
             self.logger.debug(
-                f"🚀 No duplicate records found for record {_record_key(doc)}"
+                f"No duplicate records found for record {_record_key(doc)}"
             )
             return DedupDecision(virtual_record_id=None, skip_indexing=False)
 
@@ -1086,11 +1394,22 @@ class EventProcessor:
             enrichment_live_after_ms=enrichment_live_after_ms,
         )
         if match is None:
-            self.logger.info(
-                "🚀 No usable duplicate for %s, proceeding with processing",
+            self.logger.debug(
+                "No usable duplicate for %s, proceeding with processing",
                 _record_key(doc),
             )
             return DedupDecision()
+
+        if force_index:
+            self.logger.info("Forced reindex of %s: indexing it itself, not attaching to a twin", _record_key(doc))
+            # With the old copy kept the forced run writes its own copy (and re-points its twins at the commit): it never
+            # rebuilds the shared one in place, which emptied the twins' points while it ran.
+            keeps_old_copy = doc.get("hasIndexedCopy") is True and await keep_old_copy.swap_allowed(self.config_service)
+            return DedupDecision(
+                rebuild_shared_vrid=bool(match.is_processed)
+                and doc.get("virtualRecordId") == match.record.get("virtualRecordId")
+                and not keeps_old_copy,
+            )
 
         if match.is_processed:
             return await self._reuse_finished_duplicate(
@@ -1104,7 +1423,7 @@ class EventProcessor:
             return DedupDecision()
 
         self.logger.info(
-            f"🚀 Duplicate record {_record_key(match.record)} is being processed "
+            f"Duplicate record {_record_key(match.record)} is being processed "
             "into the same collection, changing status to QUEUED."
         )
         # Before QUEUED: the twin's completion promotes this record straight
@@ -1112,10 +1431,16 @@ class EventProcessor:
         if before_reusing_status is not None:
             await before_reusing_status()
             before_reusing_status = None
+        # The record is in its run already (its attempt began it): this continues it. Read again, because `doc` does not
+        # carry what the attempt's own write stamped.
+        current = await self.graph_provider.get_document(_record_key(doc), CollectionNames.RECORDS.value) or doc
         self._require_persisted(
             await self.update_record_fields(
                 doc,
-                {"indexingStatus": ProgressStatus.QUEUED.value},
+                {
+                    "indexingStatus": ProgressStatus.QUEUED.value,
+                    **run_reference(current, WriteKind.QUEUE, get_epoch_timestamp_in_ms()),
+                },
             ),
             "Failed to persist QUEUED status for duplicate record",
             doc,
@@ -1190,6 +1515,7 @@ class EventProcessor:
         scans_for_secrets: bool = False,
     ) -> DedupDecision:
         attached_vrid = match.record.get("virtualRecordId")
+        keeps_old_copy = False
 
         if scans_for_secrets and match.record.get("secretsRedacted") is None:
             # Indexed before redaction existed: reusing it would keep the
@@ -1227,7 +1553,10 @@ class EventProcessor:
                 await before_reusing_status()
             await self._attach_to_finished_twin(match.record, doc, content_rev=content_rev)
         else:
-            if attached_vrid:
+            # With the old copy kept, the twin's vrid is not taken before the run: that write is what dropped the old copy.
+            # The record indexes under a vrid of its own and keeps serving its old copy until it commits.
+            keeps_old_copy = doc.get("hasIndexedCopy") is True and await keep_old_copy.swap_allowed(self.config_service)
+            if attached_vrid and not keeps_old_copy:
                 # Same content, different collection: reuse the content
                 # identity (and with it the stored blob), but leave
                 # indexingStatus alone so this record still gets vectors of its
@@ -1239,32 +1568,14 @@ class EventProcessor:
                     doc,
                 )
             await self._copy_twin_edges(match.record, doc)
-        if match.same_collection and self.sink_orchestrator is not None:
-            # The copy above only touched the graph — this record still
-            # has no `record`/`record_group` point, and the taxonomy
-            # points it now shares carry only the other record's
-            # connectorId/recordGroupId. Different-collection duplicates
-            # skip this: they continue to full indexing and get entity
-            # sync from SinkOrchestrator.index()/enrich() there instead.
-            # sync_entities_for_duplicate is already best-effort
-            # internally; caught again here so a mock/mis-wired sink in
-            # a caller can never turn dedup's own bookkeeping into a
-            # failed event.
-            try:
-                await self.sink_orchestrator.sync_entities_for_duplicate(doc)
-            except Exception as exc:
-                self.logger.warning(
-                    "Entity vector sync failed for duplicate %s (non-fatal): %s",
-                    _record_key(doc),
-                    exc,
-                )
         self.logger.debug(
-            "✅ Duplicate record %s resolved (same_collection=%s)",
+            "Duplicate record %s resolved (same_collection=%s)",
             _record_key(match.record),
             match.same_collection,
         )
         return DedupDecision(
-            virtual_record_id=attached_vrid, skip_indexing=match.same_collection
+            virtual_record_id=None if (not match.same_collection and keeps_old_copy) else attached_vrid,
+            skip_indexing=match.same_collection,
         )
 
     async def _copy_twin_edges(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
@@ -1339,11 +1650,16 @@ class EventProcessor:
                 "Failed to persist duplicate record fields",
                 doc,
             )
+            await self._clear_pending(doc)
             if vrid:
                 # Set first: a sync that raises or is cancelled may already
                 # have written some of the points.
                 sync_attempted = True
                 await self.sync_vector_membership(vrid)
+            # Before the status: the copy has no `record`/`record_group` point yet, and the taxonomy points it now
+            # shares carry only the twin's connectorId/recordGroupId. The handler acknowledges a redelivered event
+            # for a COMPLETED record, so a flip handed back after the status was written would never run this again.
+            await self._sync_entities_for_attached_copy(doc)
             self._require_persisted(
                 await self.update_record_fields(
                     doc,
@@ -1380,6 +1696,26 @@ class EventProcessor:
                 target_key, prior_identity, vrid if sync_attempted else None
             )
             raise
+
+    async def _sync_entities_for_attached_copy(self, doc: dict[str, Any]) -> None:
+        """Project the copy's taxonomy and its own record points into the entity index.
+
+        ``sync_entities_for_duplicate`` is already best-effort internally; caught again here so a mock/mis-wired sink
+        can never turn dedup's own bookkeeping into a failed event. A flip of the weight precision is the exception:
+        it goes up, with the record still not COMPLETED, so its redelivery attaches and syncs again.
+        """
+        if self.sink_orchestrator is None:
+            return
+        try:
+            await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+        except PrecisionFlip:
+            raise
+        except Exception as exc:
+            self.logger.warning(
+                "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                _record_key(doc),
+                exc,
+            )
 
     async def _restore_identity_after_failed_attach(
         self,
@@ -1475,7 +1811,8 @@ class EventProcessor:
                 - signed_url: Signed URL to download the file
                 - connector_name: Name of the connector
                 - metadata_route: Route to get metadata
-                
+                - gateRoute: the reader the record handler's gate accepted the file for, if any
+
         Yields:
             Dict with 'event' key:
             - {'event': 'parsing_complete', 'data': {...}}
@@ -1505,11 +1842,13 @@ class EventProcessor:
                     "Event has no payload",
                     details={"event_type": event_type},
                 )
+            # The reader the record handler's gate accepted the file for, when it judged one.
+            gate_route = event_data.get("gateRoute")
             event_data = payload
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
-            self.logger.debug(f"📥 Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
+            self.logger.debug(f"Processing event: {event_type}: for record {record_id} with virtual_record_id {virtual_record_id}")
 
             if not record_id:
                 raise ProcessingError(
@@ -1554,16 +1893,6 @@ class EventProcessor:
             # (status, revision) before the vrid is chosen, so a marker read from it would match any event.
             embed_marker = marker_of(record)
 
-            # A successful attempt never clears `reason` (the status writer only
-            # sets it when non-empty), so drop the previous failure text here or
-            # it outlives a good reindex.
-            if doc.get("reason") and not store_only:
-                self._require_persisted(
-                    await self.update_record_fields(doc, {"reason": None}),
-                    "Failed to clear the previous failure reason for record",
-                    doc,
-                )
-
             # Extract necessary data
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
@@ -1572,20 +1901,6 @@ class EventProcessor:
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
-            # A CODE_FILE's mime is not trustworthy: connectors that walk a git
-            # tree default it to text/plain for anything they do not recognise,
-            # and they do not always populate `extension`. Derive a separate
-            # extension for code dispatch and language detection — the original
-            # value must stay intact for reconciliation, tier, and generic dispatch.
-            code_ext = extension
-            if not code_ext or code_ext == "unknown":
-                file_path_raw = event_data.get("filePath") or ""
-                fp_base = file_path_raw.rsplit("/", 1)[-1]
-                rn_base = record_name.rsplit("/", 1)[-1]
-                if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
-                    code_ext = fp_base.rsplit(".", 1)[-1].lower()
-                elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
-                    code_ext = rn_base.rsplit(".", 1)[-1].lower()
             file_content = event_data.get("buffer")
 
             # Connector streaming or JSON API responses may deliver already-parsed
@@ -1603,25 +1918,43 @@ class EventProcessor:
             content_len = len(file_content) if file_content else 0
             doc_md5_from_connector = doc.get("md5Checksum")
             self.logger.debug(
-                f"🔍 [DEBUG] file_content for MD5: type={type(file_content).__name__} len={content_len} "
+                f"[DEBUG] file_content for MD5: type={type(file_content).__name__} len={content_len} "
                 f"doc.md5Checksum(from connector)={doc_md5_from_connector}"
             )
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
+            dispatch, code_ext, reads_as_code_file = self._read_plan(
+                record_type, mime_type, extension, event_data.get("filePath"), record_name, gate_route
+            )
             is_code = _is_code_file(mime_type, code_ext)
-            reads_as_code_file = self._reads_as_code_file(
-                record_type, mime_type, code_ext, record_name
-            )
-            dispatch = file_types.legacy_route(
-                mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
-                is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
-            )
-            if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:
-                # A docm, or a .log a repository stored as text/plain, is not source.
-                reads_as_code_file = False
             scans_for_secrets = self._scans_for_secrets(
                 record_type, reads_as_code_file=reads_as_code_file
             )
+
+            # The same bytes again (an update re-delivered, or queued behind one that already indexed
+            # them): nothing to parse or embed. Decided before anything is written, so `reason` and the
+            # statuses stay as they are.
+            if self._is_same_bytes_update(
+                event_type, event_data, record, content_rev, store_only=store_only,
+                is_code=is_code or reads_as_code_file or record_type == RecordTypes.CODE_FILE.value,
+                is_sql=mime_type in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
+                or (dispatch is not None and dispatch.route in (Route.SQL_TABLE, Route.SQL_VIEW)),
+            ) and await self._skip_same_bytes(record, record_id):
+                await self._restore_indexed_fields(record, record_id, file_content, content_rev)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+
+            # A successful attempt never clears `reason` (the status writer only
+            # sets it when non-empty), so drop the previous failure text here or
+            # it outlives a good reindex.
+            if doc.get("reason") and not store_only:
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"reason": None}),
+                    "Failed to clear the previous failure reason for record",
+                    doc,
+                )
+
 
             # The blob and the vectors are shared through the duplicate's
             # virtualRecordId, but block nodes are keyed by record, so a deduped
@@ -1658,35 +1991,36 @@ class EventProcessor:
 
             rebuild_shared_vrid = False
             # Calculate MD5 hash and check for duplicates for ALL record types
-            try:
-                # A store-only run stands on its own: attaching to a finished twin would copy that
-                # record's statuses onto one whose statuses must stay as they are.
-                dedup_decision = DedupDecision() if store_only else await self._check_duplicate_by_md5(
-                    file_content, doc, before_reusing_status=before_reusing_status,
-                    content_rev=content_rev, scans_for_secrets=scans_for_secrets,
+            # A store-only run stands on its own: attaching to a finished twin would copy that
+            # record's statuses onto one whose statuses must stay as they are.
+            dedup_decision = DedupDecision() if store_only else await self._check_duplicate_by_md5(
+                file_content, doc, before_reusing_status=before_reusing_status,
+                content_rev=content_rev, scans_for_secrets=scans_for_secrets,
+                # A user's Force reindex re-parses and re-embeds: it is never settled by a twin, and a twin's
+                # identity is never copied onto it before the decision is made.
+                force_index=refresh_requested(event_data),
+            )
+            if dedup_decision.skip_indexing:
+                self.logger.debug("Duplicate record detected, skipping processing")
+                if embed_marker:
+                    await self._discard_embed_marker(doc, embed_marker, org_id)
+                await notify_record_indexed(
+                    connector_name=doc.get("connectorName"),
+                    connector_id=doc.get("connectorId"),
+                    external_record_group_id=doc.get("externalGroupId"),
+                    org_id=doc.get("orgId"),
                 )
-                if dedup_decision.skip_indexing:
-                    self.logger.info("Duplicate record detected, skipping processing")
-                    if embed_marker:
-                        await self._discard_embed_marker(doc, embed_marker, org_id)
-                    await notify_record_indexed(
-                        connector_name=doc.get("connectorName"),
-                        connector_id=doc.get("connectorId"),
-                        external_record_group_id=doc.get("externalGroupId"),
-                        org_id=doc.get("orgId"),
-                    )
-                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                    return
-                rebuild_shared_vrid = dedup_decision.rebuild_shared_vrid
-                if dedup_decision.virtual_record_id:
-                    # Different-collection duplicate: content identity was copied
-                    # onto `doc` inside _check_duplicate_by_md5; pick it up here
-                    # so the rest of this pipeline indexes under the reused VRID.
-                    virtual_record_id = dedup_decision.virtual_record_id
-            except Exception as e:
-                self.logger.error(f"❌ Error in MD5/duplicate processing: {repr(e)}")
-                raise
+                # Noted once the awaits above are done: a failure in them is not a skip.
+                note(outcome="skipped", reason="duplicate", duplicate_of=dedup_decision.virtual_record_id)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
+            rebuild_shared_vrid = dedup_decision.rebuild_shared_vrid
+            if dedup_decision.virtual_record_id:
+                # Different-collection duplicate: content identity was copied
+                # onto `doc` inside _check_duplicate_by_md5; pick it up here
+                # so the rest of this pipeline indexes under the reused VRID.
+                virtual_record_id = dedup_decision.virtual_record_id
             if isinstance(file_content, str):
                 file_content = file_content.strip()
 
@@ -1705,12 +2039,13 @@ class EventProcessor:
 
             metadata_file_match = match_metadata_file_signature(file_content)
             if metadata_file_match:
-                self.logger.info(
-                    "❌ Skipping OS metadata file (%s): %s",
+                self.logger.debug(
+                    "Skipping OS metadata file (%s): %s",
                     metadata_file_match,
-                    record_name,
+                    record_id,
                 )
                 await self.mark_record_status(doc, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
+                note(outcome="skipped", reason="metadata_file")  # only once the status is written
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
@@ -1757,6 +2092,7 @@ class EventProcessor:
                         "processingStartedAt": processing_started_at,
                         "contentRev": content_rev,
                     },
+                    attempt_start=True,
                 )
             else:
                 # Legacy inline pipeline: parse+index run in-process without a
@@ -1788,12 +2124,23 @@ class EventProcessor:
                 and not rebuild_shared_vrid
                 and not dedup_decision.virtual_record_id
             )
+            keep_old_copy.end_swap()
+            # A run that replaces an indexed copy writes the new set under a fresh vrid and keeps the record on the old one until
+            # that set commits (keep_old_copy). Refused unless the fleet is confirmed; then the run keeps the order it always had.
+            swap_old_vrid = None
+            if (
+                not store_only
+                and doc.get("virtualRecordId")
+                and (doc.get("hasIndexedCopy") is True or doc.get("indexingStatus") == ProgressStatus.COMPLETED.value)
+                and await keep_old_copy.swap_allowed(self.config_service)
+            ):
+                swap_old_vrid = doc.get("virtualRecordId")
             checkpoint = None
             if resumable_kind and may_resume(
                 embed_marker,
                 delivery_id=delivery_id,
                 rev=content_rev,
-                node_vrid=doc.get("virtualRecordId"),
+                node_vrid=keep_old_copy.pending_of(doc) or doc.get("virtualRecordId"),
                 force_reindex=bool(event_data.get("forceReindex")),
             ):
                 checkpoint = await self.processor.load_checkpoint(embed_marker[EMBED_VRID], org_id, content_rev)
@@ -1818,7 +2165,7 @@ class EventProcessor:
                 # sharing that VRID unreadable, so rebuild it in place.
                 virtual_record_id = doc.get("virtualRecordId")
                 self.logger.info(
-                    f"📊 Rebuilding shared vrid {virtual_record_id} whose stored content is missing"
+                    f"Rebuilding shared vrid {virtual_record_id} whose stored content is missing"
                 )
                 prev_virtual_record_id = virtual_record_id
             elif event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
@@ -1843,17 +2190,17 @@ class EventProcessor:
                             virtual_record_id = str(uuid4())
                             abandoned_virtual_record_id = prev_virtual_record_id
                             self.logger.info(
-                                f"📊 Multiple records ({len(records_with_vrid)}) share vrid {prev_virtual_record_id}, "
+                                f"Multiple records ({len(records_with_vrid)}) share vrid {prev_virtual_record_id}, "
                                 f"generated new vrid: {virtual_record_id}"
                             )
                         else:
                             # 1:1 case: only this record uses the vrid, keep for diff-based reconciliation
                             self.logger.info(
-                                f"📊 Keeping existing virtual_record_id for reconciliation: {virtual_record_id}"
+                                f"Keeping existing virtual_record_id for reconciliation: {virtual_record_id}"
                             )
                     else:
                         # No existing vrid, treat as new record
-                        self.logger.info("📊 No existing virtual_record_id for reconciliation type, treating as new")
+                        self.logger.debug("No existing virtual_record_id for reconciliation type, treating as new")
                 else:
                     abandoned_virtual_record_id = virtual_record_id
                     virtual_record_id = str(uuid4())
@@ -1861,14 +2208,47 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
+            swap_new = False
+            if swap_old_vrid and checkpoint is None and not rebuild_shared_vrid:
+                if virtual_record_id == swap_old_vrid and event_type in (
+                    EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value
+                ):
+                    # Kept in place for a diff: only a forced run (it re-embeds everything) and a first pass (no stored
+                    # reconciliation metadata to diff against) replace the copy. Both used to purge the old points first.
+                    replace = refresh_requested(event_data)
+                    if not replace:
+                        blob_storage = getattr(self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None), "blob_storage", None)
+                        if blob_storage is not None:
+                            # A failed read fails the event (it is retried): it is never read as "no metadata".
+                            replace = not await blob_storage.get_reconciliation_metadata(swap_old_vrid, org_id)
+                    if replace:
+                        prev_virtual_record_id = swap_old_vrid
+                        virtual_record_id = str(uuid4())
+                if virtual_record_id != swap_old_vrid:
+                    swap_new = True
+                    # The old copy is released after the commit, not before the parse.
+                    abandoned_virtual_record_id = None
+
             # Persist the vrid this attempt will index under *before* parsing
             # starts. If this attempt fails partway through (after vectors are
             # written but before indexingStatus=COMPLETED), the retry re-reads
-            # this same vrid from the record instead of minting a fresh one —
-            # so record.py's bulk_delete_embeddings (for non-reconciliation
-            # types) or the reconciliation diff (for reconciliation-enabled
-            # types) targets the orphaned vectors instead of abandoning them.
-            if virtual_record_id != doc.get("virtualRecordId"):
+            # this same vrid from the record instead of minting a fresh one
+            # (an interrupted embedding resumes under it; a reconciliation-enabled
+            # type diffs against its stored blocks) so the orphaned vectors are
+            # not abandoned. A type that is not reconciled block by block and
+            # is not resuming mints a new vrid below, and its old one is cleaned.
+            if swap_new:
+                await self._begin_swap(
+                    doc, swap_old_vrid, virtual_record_id, org_id, forced=refresh_requested(event_data)
+                )
+            elif (
+                swap_old_vrid
+                and checkpoint is not None
+                and keep_old_copy.pending_of(doc) == virtual_record_id
+            ):
+                # The same event again, resuming into the copy it was writing: the pending vrid already names it.
+                keep_old_copy.begin_swap(keep_old_copy.SwapRun(_record_key(doc), org_id, swap_old_vrid, virtual_record_id))
+            elif virtual_record_id != doc.get("virtualRecordId"):
                 await self.update_record_fields(
                     doc, {"virtualRecordId": virtual_record_id}
                 )
@@ -2048,6 +2428,7 @@ class EventProcessor:
                     file_content=content_bytes,
                     is_code=is_code,
                     file_path=event_data.get("filePath"),
+                    content_rev=content_rev,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None
@@ -2064,7 +2445,7 @@ class EventProcessor:
                 file_content, extension=extension, mime_type=mime_type
             )
             if route is Route.GOOGLE_SLIDES:
-                self.logger.info("🚀 Processing Google Slides")
+                self.logger.debug("Processing Google Slides")
                 async for event in self.processor.process_pptx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2082,7 +2463,7 @@ class EventProcessor:
                 return
 
             if route is Route.GOOGLE_DOCS:
-                self.logger.info("🚀 Processing Google Docs")
+                self.logger.debug("Processing Google Docs")
                 async for event in self.processor.process_docx_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2100,7 +2481,7 @@ class EventProcessor:
                 return
 
             if route is Route.GOOGLE_SHEETS:
-                self.logger.info("🚀 Processing Google Sheets")
+                self.logger.debug("Processing Google Sheets")
                 async for event in self.processor.process_excel_document(
                     recordName=record_name,
                     recordId=record_id,
@@ -2173,7 +2554,7 @@ class EventProcessor:
                 return
 
             if route is Route.BLOCKS:
-                self.logger.debug("🚀 Processing Blocks Container")
+                self.logger.debug("Processing Blocks Container")
                 async for event in self.processor.process_blocks(
                     recordName=record_name,
                     recordId=record_id,
@@ -2218,6 +2599,7 @@ class EventProcessor:
                     virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
+                    content_rev=content_rev,
                 ):
                     if event.event == IndexingEvent.PARSING_COMPLETE:
                         file_content = content_bytes = None
@@ -2392,7 +2774,7 @@ class EventProcessor:
                     yield event
 
             elif route is Route.SQL_TABLE:
-                self.logger.info(f"🚀 Processing SQL Table: {record_name}")
+                self.logger.debug(f"Processing SQL Table: {record_id}")
                 async for event in self.processor.process_sql_structured_data(
                     recordName=record_name,
                     recordId=record_id,
@@ -2407,7 +2789,7 @@ class EventProcessor:
                     yield event
 
             elif route is Route.SQL_VIEW:
-                self.logger.info(f"🚀 Processing SQL View: {record_name}")
+                self.logger.debug(f"Processing SQL View: {record_id}")
                 async for event in self.processor.process_sql_structured_data(
                     recordName=record_name,
                     recordId=record_id,
@@ -2513,15 +2895,6 @@ class EventProcessor:
                     extension, f"Unsupported file extension: {extension} (mime type {mime_type})"
                 )
 
-            self.logger.info(
-                f"✅ Successfully processed document for record {record_id}"
-            )
-
-        except Exception as e:
-            # Let the error bubble up to Kafka consumer
-            if not is_expected_outcome(e):  # the record handler logs it once
-                self.logger.error(f"❌ Error in event processor: {repr(e)}")
-            raise
         finally:
             if forced_record_id is not None and self.stage_ingress is not None:
                 self.stage_ingress.clear_forced(forced_record_id)

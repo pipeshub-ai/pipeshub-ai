@@ -13,6 +13,10 @@ PERMANENT_GRANT_ERROR_CODES = frozenset({
     "bad_refresh_token", "incorrect_client_credentials", "invalid_refresh_token",
 })
 
+# The provider refuses our OAuth client (unknown, wrong secret, or not allowed this grant): an admin's or a
+# new registration's fix, not the user's grant.
+CLIENT_REJECTED_ERROR_CODES = frozenset({"invalid_client", "unauthorized_client", "incorrect_client_credentials"})
+
 # Providers that only say it in prose (Atlassian's "refresh_token is invalid").
 PERMANENT_REFRESH_TEXT_MARKERS = (
     "invalid_grant",
@@ -38,6 +42,23 @@ _AUTHORIZATION_ERROR_CLASS = {
         "registration_not_supported",
     ), "bad_request"),
 }
+
+
+# Codes a provider answers (Slack: with HTTP 200, ok=false) when it is down or throttling, so a retry can work.
+# Slack's names, but no provider uses them to mean "your configuration".
+TEMPORARY_ERROR_CODES = frozenset({"fatal_error", "internal_error", "service_unavailable", "request_timeout"})
+RATE_LIMITED_ERROR_CODES = frozenset({"ratelimited", "rate_limited"})
+
+_TRANSIENT_ERROR_CLASS = {
+    **dict.fromkeys(TEMPORARY_ERROR_CODES, "unavailable"),
+    **dict.fromkeys(RATE_LIMITED_ERROR_CODES, "rate_limited"),
+    "server_error": "upstream_5xx", "temporarily_unavailable": "unavailable",  # RFC 6749's names, classed as in the redirect map
+}
+
+
+def transient_error_class(code: Optional[str]) -> Optional[str]:
+    """The error_class of a provider `error` that says it is busy or down; None for any other code."""
+    return _TRANSIENT_ERROR_CLASS.get((code or "").lower())
 
 
 def authorization_error_class(code: Optional[str]) -> str:

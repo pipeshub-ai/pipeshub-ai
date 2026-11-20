@@ -13,7 +13,7 @@ import tempfile
 import time
 from collections.abc import AsyncGenerator, Mapping
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple, cast
+from typing import Annotated, Any, Literal, NamedTuple, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 from uuid import uuid4
 
@@ -22,6 +22,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -64,6 +65,11 @@ from app.api.middlewares.auth import (
     is_request_admin,
     require_scopes,
     require_service_token,
+)
+from app.api.middlewares.request_log import (
+    add_request_log_fields,
+    bind_request_log_fields,
+    mark_request_failure,
 )
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
@@ -109,6 +115,7 @@ from app.edition_config import (
     strip_redacted_fields,
     vector_store_rebuild_available,
 )
+from app.connectors.api.connector_stats_cache import connector_stats
 from app.edition_services import get_data_entities_processor_cls
 from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
@@ -156,6 +163,7 @@ from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildConflictError,
     acquire_rebuild_lock,
     assert_no_indexing_in_flight,
+    precision_wait_in_force,
     list_rebuild_apps,
     release_rebuild_lock,
     schedule_vector_store_job_async,
@@ -179,6 +187,11 @@ from app.services.featureflag.platform_settings import (
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.permissions import access_status
+from app.services.permissions.currency import MODE_KEY, chosen_mode
+from app.services.permissions.mode import AclFilterMode
+from app.services.storage_documents import BoundReadChanged, BoundReadOutOfRange, StorageDocumentInfo
+from app.utils.byte_range import ByteRange, resolve_range
+from app.utils.content_tag import SERVED_VERSION_TIMEOUT_SECONDS, content_tag, if_none_match_matches, preview_pdf_pipeline
 from app.services.permissions.structure_generation import note_structure_change, store_now
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
@@ -190,6 +203,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.render_budget import FETCH_MAX_CHARS
 from app.utils.egress_ips import get_egress_ips
+from app.utils.error_class import log_failure
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.utils.not_indexed import not_indexed_note
@@ -212,12 +226,18 @@ from app.utils.oauth_config import (
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import (
+    get_document_or_503,
+    get_org_or_503,
+    get_record_or_503,
+    get_user_or_503,
+)
 
 logger = create_logger("connector_service")
 
@@ -564,12 +584,43 @@ async def _invoke_connector_stream(
         raise to_stream_error(e, connector=connector_display) from e
 
 
+_NOT_MODIFIED = 304
+
+
 def _refuse_placeholder_content(record: Record) -> None:
     """A placeholder is a navigation stub with no content of its own."""
     if getattr(record, "is_placeholder", False) is True:
         raise not_downloadable(
             "This item is a placeholder and has no content to open.",
             connector=getattr(record.connector_name, "value", None),
+        )
+
+
+def refuse_connector_state(connector_instance: dict[str, Any] | None, *, loaded: bool = False) -> None:
+    """Refuse a record whose connector is gone (404) or disabled (409).
+
+    The stream route runs this when the connector is not in memory (``loaded`` False); a loaded
+    connector is served as it always was. The details call of a content open runs it for every
+    connector record whether the connector is loaded or not, so an open the stream would refuse is
+    refused there first.
+    """
+    if not connector_instance:
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
+        )
+    if loaded:
+        return
+    name = connector_instance.get("name", "connector")
+    if not connector_instance.get("isActive", False):
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=f"The connector '{name}' is currently disabled. Enable it from Connector Settings and try again.",
+        )
+    if not connector_instance.get("type", ""):
+        raise HTTPException(
+            status_code=HttpStatusCode.NOT_FOUND.value,
+            detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
         )
 
 
@@ -584,6 +635,10 @@ async def _resolve_record_content_response(
     request: Request,
     config_service: ConfigurationService,
     graph_provider: IGraphDBProvider,
+    emit_validators: bool = False,
+    if_none_match: str | None = None,
+    range_header: str | None = None,
+    if_range: str | None = None,
 ) -> Response | StreamingResponse:
     """Shared dispatch: UPLOAD/ARTIFACT/ATTACHMENTS → blob storage;
     CONNECTOR → lazy-init connector + stream_record.
@@ -607,12 +662,8 @@ async def _resolve_record_content_response(
         )
 
     connector_id = record.connector_id
-    connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-    if not connector_instance:
-        raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
-        )
+    connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
+    refuse_connector_state(connector_instance, loaded=True)
 
     container: ConnectorAppContainer = request.app.container
     connector_registry: ConnectorRegistry = request.app.state.connector_registry
@@ -629,13 +680,135 @@ async def _resolve_record_content_response(
         logger=logger,
     )
 
+    if not emit_validators:
+        return await _serve_record_bytes(connector_obj, record, user_id, convert_to)
+
+    # The validator is read where a 200 would start its byte read, after every refusal above, so a 304
+    # is only ever an answer to a caller who could have had the bytes.
+    wants_pdf = convert_to == MimeTypes.PDF.value and get_pdf_conversion_info(record)[0]
+    variant: Literal["original", "pdf"] = "pdf" if wants_pdf else "original"
+    pipeline = await asyncio.to_thread(preview_pdf_pipeline) if variant == "pdf" else None
+    info1 = await _served_info(connector_obj, record)
+    etag = content_tag(record.id, info1, variant, pipeline=pipeline)
+    # Bound reads (whole or partial) need the original bytes of a stored object whose size and version were verified.
+    bound = (
+        variant == "original"
+        and etag is not None
+        and info1 is not None
+        and info1.object_size is not None
+        and callable(getattr(connector_obj, "stream_record_bound", None))
+    )
+    if if_none_match_matches(if_none_match, etag):
+        return Response(status_code=_NOT_MODIFIED, headers=_validator_headers(etag, ranges=bound))
+
+    if bound:
+        # A Range is honoured only against the representation the caller holds: an If-Range that is not the
+        # current strong tag (RFC 9110 section 13.1.5) gets the whole body.
+        wanted = range_header if if_range is None or if_range.strip() == etag else None
+        plan = resolve_range(wanted, info1.object_size)
+        if plan == "unsatisfiable":
+            raise HTTPException(
+                status_code=HttpStatusCode.RANGE_NOT_SATISFIABLE.value,
+                detail="Requested range not satisfiable",
+                headers={"Content-Range": f"bytes */{info1.object_size}"},
+            )
+        streamed = await _serve_bound(connector_obj, record, info1, etag, plan)
+        if streamed is not None:
+            return streamed
+        # The object changed twice while it was being read: the bytes answer as they always did, with no tag.
+        response = await _serve_record_bytes(connector_obj, record, user_id, convert_to)
+        response.headers.update(_validator_headers(None))
+        return response
+
+    response = await _serve_record_bytes(connector_obj, record, user_id, convert_to)
+    if etag is not None:
+        # The tag names the bytes only if the stored object did not change while they were read.
+        info2 = await _served_info(connector_obj, record)
+        if not (info2 is not None and info2.trusted and info2.fingerprint == info1.fingerprint):
+            etag = None
+    if isinstance(response, Response):
+        response.headers.update(_validator_headers(etag))
+    return response
+
+
+async def _serve_bound(
+    connector_obj: BaseConnector,
+    record: Record,
+    info: StorageDocumentInfo,
+    etag: str,
+    plan: ByteRange | None,
+) -> StreamingResponse | None:
+    """Stream the verified object, whole or one range, bound to its version: the tag names exactly the bytes sent.
+
+    If the object changed after it was verified (412 or 416 from the bound read), it is verified again and the
+    new bytes are sent whole under their own tag, because the caller's range was against the old ones. A second
+    change returns None and the caller serves the bytes untagged.
+    """
+    for attempt in range(2):
+        try:
+            response = await connector_obj.stream_record_bound(record, info, plan)  # type: ignore[attr-defined]
+        except (BoundReadChanged, BoundReadOutOfRange):
+            if attempt:
+                return None
+            fresh = await _served_info(connector_obj, record)
+            fresh_tag = content_tag(record.id, fresh, "original")
+            if fresh is None or fresh_tag is None:
+                return None
+            info, etag, plan = fresh, fresh_tag, None
+            continue
+        response.headers.update(_validator_headers(etag, ranges=True))
+        return response
+    return None
+
+
+def wants_validators(headers: Mapping[str, str]) -> bool:
+    """True when the caller sent ``If-None-Match`` or ``X-Record-Content-Open: 1``: only then is the stored version read."""
+    return headers.get("if-none-match") is not None or headers.get("x-record-content-open") == "1"
+
+
+def _without_validators(error: HTTPException) -> HTTPException:
+    """A refusal or failure is never cached and never carries a validator, so tags cannot be probed."""
+    headers = {k: v for k, v in (error.headers or {}).items() if k.lower() != "etag"}
+    headers["Cache-Control"] = "no-store"
+    error.headers = headers
+    return error
+
+
+async def _served_info(connector_obj: BaseConnector, record: Record) -> StorageDocumentInfo | None:
+    """The connector's verified version of the bytes it would serve; None when it has none, on any failure."""
+    served = getattr(connector_obj, "served_version", None)
+    if not callable(served):
+        return None
+    try:
+        info = await asyncio.wait_for(served(record), timeout=SERVED_VERSION_TIMEOUT_SECONDS)
+    except Exception as e:  # total on purpose: the validator is an optimisation
+        logger.debug("served_version unavailable (%s)", type(e).__name__)
+        return None
+    return info if isinstance(info, StorageDocumentInfo) else None
+
+
+def _validator_headers(etag: str | None, *, ranges: bool = False) -> dict[str, str]:
+    headers = {"Cache-Control": "private, no-store", "Accept-Ranges": "bytes" if ranges else "none"}
+    if etag is not None:
+        headers["ETag"] = etag
+    return headers
+
+
+async def _serve_record_bytes(
+    connector_obj: BaseConnector,
+    record: Record,
+    user_id: str,
+    convert_to: str | None,
+) -> Response | StreamingResponse:
     buffer = await _invoke_connector_stream(connector_obj, record, user_id)
 
     if convert_to == MimeTypes.PDF.value:
         needs_conversion, record_name, file_extension = get_pdf_conversion_info(record)
         if needs_conversion:
             try:
-                return await convert_buffer_to_pdf_stream(buffer, record_name, file_extension)
+                return await convert_buffer_to_pdf_stream(
+                    buffer, record_name, file_extension, record_id=record.id,
+                )
             except HTTPException:
                 raise
             except Exception as e:
@@ -687,7 +860,7 @@ async def get_record_content_internal(
                 detail="Token missing userId — this endpoint requires a user-bound token",
             )
 
-        record = await graph_provider.get_record_by_id(record_id)
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
@@ -1307,7 +1480,7 @@ async def get_signed_url(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
             )
 
-        record = await graph_provider.get_record_by_id(record_id)
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found"
@@ -1372,7 +1545,7 @@ async def stream_record_internal(
                 detail="Missing orgId in token"
             )
 
-        record_task = graph_provider.get_record_by_id(record_id)
+        record_task = get_record_or_503(graph_provider, record_id)
         org_task = get_org_or_503(graph_provider, org_id)
         record, org = await asyncio.gather(record_task, org_task)
 
@@ -1428,7 +1601,7 @@ async def stream_record_internal(
             return Response(content=buffer or b'', media_type=mime_type)
 
         connector_id = record.connector_id
-        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
         if not connector_instance:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
@@ -1531,9 +1704,7 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Get record details
-        record = await graph_provider.get_record_by_id(
-            record_id
-        )
+        record = await get_record_or_503(graph_provider, record_id)
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
@@ -1562,7 +1733,7 @@ async def download_file(
             graph_provider, request.app.container.config_service(), org_id, user_id, connector_id
         )
         # Get connector instance to check scope and existence
-        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await get_document_or_503(graph_provider, connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None) if connector_instance else None
         if not connector_instance or connector_type is None:
             raise HTTPException(
@@ -1613,9 +1784,7 @@ async def stream_record(
         user_id = user.get("userId")
 
         org_task = get_org_or_503(graph_provider, org_id)
-        record_task = graph_provider.get_record_by_id(
-            record_id
-        )
+        record_task = get_record_or_503(graph_provider, record_id)
         org, record = await asyncio.gather(org_task, record_task)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
@@ -1661,13 +1830,20 @@ async def stream_record(
             request=request,
             config_service=config_service,
             graph_provider=graph_provider,
+            # A request that neither carries a validator nor says it wants one is served as it always was:
+            # no storage version reads, no validator headers.
+            emit_validators=wants_validators(request.headers),
+            if_none_match=request.headers.get("if-none-match"),
+            range_header=request.headers.get("range"),
+            if_range=request.headers.get("if-range"),
         )
 
     except HTTPException as e:
-        raise e
+        _without_validators(e)
+        raise
     except Exception as e:
         logger.error("Error streaming record: %s", str(e), exc_info=True)
-        raise to_stream_error(e) from e
+        raise _without_validators(to_stream_error(e)) from e
 
 
 CONVERTIBLE_UPLOAD_EXTENSIONS = frozenset(
@@ -1782,7 +1958,9 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
 async def convert_buffer_to_pdf_stream(
     buffer: StreamingResponse | Response | bytes | io.IOBase,
     record_name: str,
-    file_extension: str | None = None
+    file_extension: str | None = None,
+    *,
+    record_id: str | None = None,
 ) -> StreamingResponse:
     """
     Convert a file buffer to PDF and return as a streaming response.
@@ -1845,8 +2023,13 @@ async def convert_buffer_to_pdf_stream(
                     detail=f"Unsupported buffer type for conversion: {type(buffer)}"
                 )
 
-        # Convert to PDF
-        pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+        # Convert to PDF. One event per converter run: the server-side count of conversions.
+        try:
+            pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+        except Exception:
+            logger.info("record_preview_conversion record_id=%s variant=pdf outcome=failed", record_id)
+            raise
+        logger.info("record_preview_conversion record_id=%s variant=pdf outcome=ok", record_id)
 
         # Handle case where LibreOffice may have renamed the file
         if not os.path.exists(pdf_path):
@@ -1895,12 +2078,29 @@ async def _stage_states_of(graph_provider: IGraphDBProvider, record: object) -> 
     return [s.model_dump(mode="json", by_alias=True) for s in summaries]
 
 
+async def _refuse_connector_state_for_open(graph_provider: IGraphDBProvider, doc: dict[str, Any] | None) -> None:
+    """The details call of a content open: the stream route's connector refusals, loaded or not.
+
+    Only connector-sourced records are checked. Artifacts and storage-backed records are served
+    from blob storage and have no connector state to refuse.
+    """
+    if not doc or doc.get("origin") != "CONNECTOR":
+        return
+    if doc.get("recordType") == RecordType.ARTIFACT.value or doc.get("connectorName") in (
+        Connectors.ATTACHMENTS.value, Connectors.CODING_SANDBOX.value,
+    ):
+        return
+    connector_instance = await get_document_or_503(graph_provider, doc.get("connectorId"), CollectionNames.APPS.value)
+    refuse_connector_state(connector_instance)
+
+
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
     record_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    x_record_content_open: str | None = Header(None, alias="X-Record-Content-Open"),
 ) -> dict | None:
     """
     Check if the current user has access to a specific record
@@ -1923,6 +2123,8 @@ async def get_record_by_id(
                 graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId")
             )
             await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
+            if x_record_content_open == "1":
+                await _refuse_connector_state_for_open(graph_provider, doc)
             await hide_record_parents_outside_connection(
                 request, graph_provider, org_id, user_id, has_access, containers=("knowledgeBase", "folder"),
             )
@@ -2616,6 +2818,22 @@ async def _schedule_upload_removal(
         ) from e
 
 
+def mark_user_forced_reindex(event_data: dict) -> None:
+    """A user's Force reindex re-parses and re-indexes: every stored paid result is bypassed and paid for again.
+
+    A record event carries it directly; a sync-events reindex carries ``force``, which the handler that walks the
+    records turns into the same flag on each record event it publishes.
+    """
+    payload = event_data.get("payload")
+    if not isinstance(payload, dict):
+        return
+    if event_data.get("topic") == "record-events":
+        payload["forceReindex"] = True
+        payload["refreshPaidOutputs"] = True
+    else:
+        payload["force"] = True
+
+
 def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | None]:
     """Parse depth and optional statusFilters from a reindex request body."""
     if not request_body:
@@ -2727,6 +2945,8 @@ async def reindex_single_record(
 
             event_data = result.get("eventData")
             event_published = False
+            if event_data and request_body and request_body.get("force") is True:
+                mark_user_forced_reindex(event_data)
             if event_data:
                 try:
                     timestamp = get_epoch_timestamp_in_ms()
@@ -2789,8 +3009,7 @@ async def get_connector_stats_endpoint(
             request, graph_provider, connector_registry, connector_id, org_id
         )
 
-        # Fetch stats from graph provider
-        result = await graph_provider.get_connector_stats(org_id, connector_id)
+        result = await connector_stats(graph_provider, org_id, connector_id)
         if result["success"]:
              return {"success": True, "data": result["data"]}
         else:
@@ -2957,7 +3176,10 @@ async def _accept_vector_store_job(
     # the same VRID can interleave delete-then-upsert into duplicates.
     try:
         apps = await list_rebuild_apps(graph_provider, org_id=org_id)
-        await assert_no_indexing_in_flight(graph_provider, apps)
+        # A cleanup is how an index is moved to another weight precision: while indexing is waiting for the
+        # embedding precision its queued records are not work in flight, so only IN_PROGRESS ones are counted.
+        waiting_for_precision = operation == "cleanup" and await precision_wait_in_force(config_service)
+        await assert_no_indexing_in_flight(graph_provider, apps, waiting_for_precision=waiting_for_precision)
     except VectorStoreRebuildConflictError as exc:
         await release_rebuild_lock(lock, redis)
         raise HTTPException(
@@ -2978,6 +3200,7 @@ async def _accept_vector_store_job(
         if operation == "cleanup":
             job = start_vector_store_cleanup(
                 logger=logger,
+                config_service=config_service,
                 graph_provider=graph_provider,
                 kafka_service=kafka_service,
                 lock=lock,
@@ -2985,6 +3208,7 @@ async def _accept_vector_store_job(
                 org_id=org_id,
                 user_id=user_id,
                 apps=apps,
+                waiting_for_precision=waiting_for_precision,
             )
         else:
             data_store = await container.data_store()
@@ -7053,7 +7277,9 @@ async def handle_oauth_callback(
             error = None
 
         if error:
-            logger.error(f"OAuth error: {error}")
+            # The raw parameter is anyone's input: only a code a spec defines goes on the line.
+            add_request_log_fields(request, oauth_error=authorization_error_code(error))
+            mark_request_failure(request, None, error_class=authorization_error_class(error), reason="provider_error")
             return {
                 "success": False,
                 "error": error,
@@ -7095,6 +7321,18 @@ async def handle_oauth_callback(
                 "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
+        # A user signing in with their own account to a per-user connector, not the connector's own sign-in.
+        from app.connectors.api.user_access_router import (
+            complete_user_sign_in,
+            is_user_sign_in_state,
+        )
+
+        if is_user_sign_in_state(state_data):
+            return await complete_user_sign_in(
+                request, graph_provider, connector_id=connector_id, state=original_state, code=code,
+                base_url=base_url, settings_url=f"{base_url}{settings_base_path}",
+            )
+
         # ============================================================
         # 3. Authorization & Configuration Retrieval
         # ============================================================
@@ -7106,7 +7344,8 @@ async def handle_oauth_callback(
             is_admin=is_admin
         )
         if not instance:
-            logger.error(f"Instance {connector_id} not found or access denied")
+            # connector_id comes from the caller's state: kept off the line.
+            mark_request_failure(request, None, error_class="not_found", reason="instance_not_found")
             return {
                 "success": False,
                 "error": "instance_not_found",
@@ -7130,13 +7369,16 @@ async def handle_oauth_callback(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="Only the creator or an administrator can handle OAuth callback for this connector"
             )
+        # Bound only after the checks above (stricter than the toolset callback): a state naming a connector the
+        # caller may not use never puts its id on a line.
+        bind_request_log_fields(request, connector_id=connector_id, connector_type=connector_type)
 
         # Get configuration
         config_path = _get_config_path_for_instance(connector_id)
         config = await config_service.get_config(config_path)
 
         if not config or not config.get(OAuthConfigKeys.AUTH):
-            logger.error(f"No OAuth config for instance {connector_id}")
+            mark_request_failure(request, None, error_class="misconfigured", reason="config_not_found")
             return {
                 "success": False,
                 "error": "config_not_found",
@@ -7159,6 +7401,8 @@ async def handle_oauth_callback(
                 registry_type=instance.get("type", ""),
             )
         except HTTPException:
+            # Only its shared-config lookup logs a cause; the line says which step failed.
+            mark_request_failure(request, None, error_class="misconfigured", reason="oauth_config_fetch_error")
             return {
                 "success": False,
                 "error": "oauth_config_fetch_error",
@@ -7183,30 +7427,16 @@ async def handle_oauth_callback(
             await oauth_provider.close()
 
         if not token or not token.access_token:
-            logger.error(f"Invalid token received for instance {connector_id}")
+            mark_request_failure(request, None, error_class="internal", reason="invalid_token")
             return {
                 "success": False,
                 "error": "invalid_token",
                 "redirect_url": f"{base_url}{settings_base_path}?oauth_error=invalid_token"
             }
 
-        # Log token information after OAuth callback completes
-        logger.info(
-            f"OAuth token exchange completed for instance {connector_id} (connector_type: {connector_type}). "
-            f"Token details - has_access_token: {bool(token.access_token)}, "
-            f"has_refresh_token: {bool(token.refresh_token)}, "
-            f"token_type: {token.token_type}, "
-            f"expires_in: {token.expires_in}, "
-            f"refresh_token_expires_in: {token.refresh_token_expires_in}, "
-            f"scope: {token.scope}, "
-            f"has_id_token: {bool(token.id_token)}, "
-            f"uid: {token.uid}, "
-            f"account_id: {token.account_id}, "
-            f"team_id: {token.team_id}, "
-            f"created_at: {token.created_at}"
-        )
-
-        logger.info(f"OAuth tokens stored successfully for instance {connector_id}")
+        # The provider's token fields (scopes, uid, account_id, team_id) stay off the logs: this route serves every
+        # connector and can't tell an opaque id from a login.
+        add_request_log_fields(request, has_refresh_token=bool(token.refresh_token))
 
         # ============================================================
         # 6. Post-Processing: Cache, Token Refresh, Status Update
@@ -7269,7 +7499,8 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
-        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
+        # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
+        mark_request_failure(request, e, reason="server_error", include_error_text=False)
 
         # Update instance authentication status on error
         if connector_id:
@@ -8000,24 +8231,8 @@ async def _get_streaming_connector(
         _tag_instance_name(connector_obj, connector_display_name)
         return connector_obj
 
-    if not connector_instance.get("isActive", False):
-        raise HTTPException(
-            status_code=HttpStatusCode.CONFLICT.value,
-            detail=(
-                f"The connector '{connector_display_name}' is currently disabled. "
-                "Enable it from Connector Settings and try again."
-            ),
-        )
-
+    refuse_connector_state(connector_instance)
     connector_type = connector_instance.get("type", "")
-    if not connector_type:
-        raise HTTPException(
-            status_code=HttpStatusCode.NOT_FOUND.value,
-            detail=(
-                "The connector for this record no longer exists or was deleted. "
-                "The record cannot be streamed."
-            ),
-        )
 
     logger.info(
         "Connector %s not in memory — lazy-initializing for streaming",
@@ -8261,7 +8476,7 @@ async def _build_and_store_connector(
             # Connector surfaced a specific, actionable reason (e.g. multi-site OAuth
             # ambiguity). Show it to the user instead of the generic message.
             error_msg = str(init_error)  # user-written message
-            logger.error(f"❌ {error_msg}")
+            log_failure(logger, "connector.init_failed", init_error, connector_id=connector_id)
             with contextlib.suppress(Exception):
                 await dispose_connector(connector)
             raise HTTPException(
@@ -10545,12 +10760,10 @@ async def _sync_interval_minutes(request: Request, connector_id: str) -> int | N
         return None
 
 
-@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-async def get_permission_status(
-    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> dict[str, Any]:
-    """Admin only. Everyone who may not read the connector gets the 404 of a missing one: a non-admin, another organisation's connector, another
-    user's personal connector (the registry's read gate), and a connected app whose limit does not name the whole connector (its counts could not be limited)."""
+async def _admin_connector_app(request: Request, connector_id: str, graph_provider: IGraphDBProvider) -> dict[str, Any]:
+    """The connector's app document, for an admin who may read the whole connector. Everyone else gets the 404 of a missing one: a non-admin,
+    another organisation's connector, another user's personal connector (the registry's read gate), and a connected app whose limit does not
+    name the whole connector (its counts could not be limited)."""
     not_found_error = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
     org_id = current_org_id()
     user_id = request.state.user.get("userId")
@@ -10563,4 +10776,36 @@ async def get_permission_status(
         whole, _ = await connection_apps(request, graph_provider, org_id, user_id)
         if connector_id not in whole:
             raise not_found_error
+    return app
+
+
+@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+async def get_permission_status(
+    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only (`_admin_connector_app`)."""
+    app = await _admin_connector_app(request, connector_id, graph_provider)
     return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))
+
+
+class PermissionFilterRequest(BaseModel):
+    mode: Literal["inherit", "legacy", "scopes"]
+
+
+@router.patch("/api/v1/connectors/{connector_id}/permissions/filter", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+async def set_permission_filter(
+    connector_id: str, body: PermissionFilterRequest, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only (`_admin_connector_app`). Sets the connector's own permission filter mode and answers with its `filter` status. `scopes` is
+    refused (409, with the blockers) when this deployment cannot search any connector with the scope filter; `legacy` and `inherit` are always
+    accepted, so a rollback never depends on the state it rolls back from."""
+    app = await _admin_connector_app(request, connector_id, graph_provider)
+    default, store_serves = AclFilterMode.from_env(), access_status.store_serves_scope_filter()
+    if body.mode == "scopes" and (found := access_status.blockers(default, store_serves=store_serves)):
+        raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail={"error": "not_switchable", "blockers": found})
+    # the app document is the one record of the mode: the serving plan reads it (`currency.switched_connectors`), so there is nothing to keep in step
+    if not await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {MODE_KEY: body.mode}):
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
+    logger.info("audit: permission filter of connector %s set from %s to %s by user %s",
+                connector_id, chosen_mode(app), body.mode, request.state.user.get("userId"))
+    return access_status.filter_state({**app, MODE_KEY: body.mode}, default, store_serves=store_serves)

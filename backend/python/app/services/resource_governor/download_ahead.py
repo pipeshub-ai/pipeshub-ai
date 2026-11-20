@@ -42,6 +42,16 @@ class DownloadAhead:
         self._in_use += 1
         return True
 
+    async def try_acquire(self) -> bool:
+        """Take a slot only if one is free right now (never waits, never queues); True when the bound is off."""
+        if self._semaphore is None:
+            return True
+        if self._waiting or self._in_use >= self.limit:
+            return False
+        await self._semaphore.acquire()  # a slot is free and nobody is queued: this does not suspend
+        self._in_use += 1
+        return True
+
     def release(self) -> None:
         if self._semaphore is None:
             return

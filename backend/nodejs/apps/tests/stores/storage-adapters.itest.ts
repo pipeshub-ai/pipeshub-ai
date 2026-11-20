@@ -349,6 +349,85 @@ describe('Storage adapters against a real storage server', function () {
     expect(got.equals(Buffer.concat(partBodies))).to.equal(true);
   });
 
+  describe('bound range reads (what the record preview issues)', () => {
+    async function signed(body: Buffer, name = 'ranged.bin'): Promise<{ doc: Document; url: string; etag: string }> {
+      const stored = await upload(name, body);
+      const doc = documentFor(target, stored);
+      const res = await target.adapter.getSignedUrl(doc);
+      expect(res.statusCode).to.equal(200);
+      const url = res.data as string;
+      const whole = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+      const etag = whole.headers.get('etag');
+      expect(etag, 'the object has an ETag').to.be.a('string');
+      await whole.arrayBuffer();
+      return { doc, url, etag: etag as string };
+    }
+
+    it('answers one closed range with exactly those bytes, as 206 with the length', async () => {
+      const body = randomBytes(300 * 1024);
+      const { url, etag } = await signed(body);
+      const res = await fetch(url, { headers: { Range: 'bytes=1000-70999', 'If-Match': etag } });
+      expect(res.status).to.equal(206);
+      const got = Buffer.from(await res.arrayBuffer());
+      expect(got.equals(body.subarray(1000, 71000))).to.equal(true);
+      expect(res.headers.get('content-range')).to.equal(`bytes 1000-70999/${body.length}`);
+    });
+
+    it('honours an open-ended range', async () => {
+      const body = randomBytes(64 * 1024);
+      const { url, etag } = await signed(body);
+      const res = await fetch(url, { headers: { Range: `bytes=${body.length - 100}-`, 'If-Match': etag } });
+      expect(res.status).to.equal(206);
+      expect(Buffer.from(await res.arrayBuffer()).equals(body.subarray(body.length - 100))).to.equal(true);
+    });
+
+    it('answers a range past the end with 416 (the length comes from the verified object size, not from this answer)', async () => {
+      const body = randomBytes(8 * 1024);
+      const { url } = await signed(body);
+      const res = await fetch(url, { headers: { Range: 'bytes=999999999-' } });
+      expect(res.status).to.equal(416);
+      await res.arrayBuffer();
+    });
+
+    it('refuses a read bound to an object that was overwritten (412), even for a range', async () => {
+      const body = randomBytes(32 * 1024);
+      const { doc, url, etag } = await signed(body, 'overwritten.bin');
+      const res = await target.adapter.updateBuffer(randomBytes(32 * 1024), doc);
+      expect(res.statusCode).to.equal(200);
+      const fresh = await target.adapter.getSignedUrl(doc);
+      const stale = await fetch(fresh.data as string, { headers: { Range: 'bytes=0-99', 'If-Match': etag } });
+      expect(stale.status).to.equal(412);
+      await stale.arrayBuffer();
+      // the old link is not a way around the binding either
+      const old = await fetch(url, { headers: { Range: 'bytes=0-99', 'If-Match': etag } });
+      expect([200, 206, 403, 404, 412]).to.include(old.status);
+      if (old.status !== 412) {
+        const now = await fetch(fresh.data as string, { headers: { Range: 'bytes=0-0' } });
+        await now.arrayBuffer();
+        expect(now.headers.get('etag')).to.not.equal(etag);
+      }
+    });
+
+    it('streams a whole object bound to its tag without holding it in memory', async () => {
+      const body = randomBytes(24 * 1024 * 1024);
+      const { url, etag } = await signed(body, 'stream.bin');
+      const res = await fetch(url, { headers: { 'If-Match': etag } });
+      expect(res.status).to.equal(200);
+      let received = 0;
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let peak = process.memoryUsage().rss;
+      const start = peak;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.length;
+        peak = Math.max(peak, process.memoryUsage().rss);
+      }
+      expect(received).to.equal(body.length);
+      expect(peak - start).to.be.lessThan(4 * body.length);
+    });
+  });
+
   describe('artifact sets', () => {
     // One content revision's files, as the presign route lays them out.
     const revisionRoot = (rev: string): string => `${orgPrefix}/record-revisions/${runId}-vr/${rev}`

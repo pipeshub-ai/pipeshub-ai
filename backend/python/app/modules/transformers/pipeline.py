@@ -2,13 +2,18 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
-from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
+from app.modules.indexing.parse_now_marker import shape_status_write
+from app.modules.reconciliation.block_identity import ID_SCHEME, BlockIdentity
+from app.modules.reconciliation.service import (
+    ReconciliationMetadata,
+    ReconciliationService,
+)
 from app.modules.transformers.blob_storage import StorageLookupUnavailableError
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.indexing.parse_now_marker import shape_status_write
 from app.modules.transformers.transformer import (
     ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
@@ -16,7 +21,9 @@ from app.modules.transformers.transformer import (
     ReconciliationContext,
     TransformContext,
 )
+from app.modules.transformers.vectorstore import VirtualRecordBusy
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.paid_cache.orphan import ensure_record_alive
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
@@ -37,6 +44,18 @@ class IndexingPipeline:
         self.logger = create_logger("indexing_pipeline")
 
     @staticmethod
+    def assign_block_ids(reconciliation_service: ReconciliationService, record: object) -> ReconciliationMetadata:
+        """Give the record's blocks content-derived ids (every parser's output goes through here) and
+        return the metadata built from them. Without an org or virtual record the ids stay as parsed
+        and the metadata carries no scheme, so the next diff re-keys instead of pairing them."""
+        block_containers = record.block_containers
+        assigned = BlockIdentity.assign(block_containers, record.org_id, record.virtual_record_id)
+        metadata = reconciliation_service.build_metadata(block_containers)
+        if assigned:
+            metadata.id_scheme = ID_SCHEME
+        return metadata
+
+    @staticmethod
     async def build_reconciliation_context(
         ctx: TransformContext,
         logger: logging.Logger,
@@ -48,18 +67,56 @@ class IndexingPipeline:
         if not block_containers:
             return None
         reconciliation_service = ReconciliationService(logger)
-        new_metadata = reconciliation_service.build_metadata(block_containers)
+        new_metadata = IndexingPipeline.assign_block_ids(reconciliation_service, record)
 
         if ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and record.virtual_record_id and record.org_id:
             prev_vrid = ctx.prev_virtual_record_id
 
-            if prev_vrid and prev_vrid == record.virtual_record_id:
+            from app.services.paid_cache.run import current_run
+
+            scope = current_run()
+            if prev_vrid and prev_vrid == record.virtual_record_id and scope is not None and scope.refresh:
+                # A user's Force reindex (a refresh run) re-embeds every block: no diff keeps an unchanged block's
+                # point, and no re-key moves one. The record's old points go first, as on a first reconciliation pass.
+                # The points go before the blocks are embedded again: if indexing then fails, the record has no vectors
+                # until its retry (its status is FAILED, never COMPLETED, so the retry runs).
+                logger.warning(
+                    f"Forced reindex of {record.virtual_record_id}: purging its vectors, then indexing every block; "
+                    f"the record has no vectors until this indexing completes"
+                )
+                try:
+                    await sink_orchestrator.vector_store.purge_record_vectors(
+                        record.org_id, record.virtual_record_id, record
+                    )
+                except VirtualRecordBusy:
+                    raise  # the virtual record's lease is busy or lost: the delivery is handed back, not indexed over old points
+                except Exception as e:
+                    # Not purged: an unchanged block would be indexed twice, so the failure is the delivery's.
+                    logger.warning(f"Failed to purge vectors for a forced reindex of {record.virtual_record_id}: {e}")
+                    raise
+            elif prev_vrid and prev_vrid == record.virtual_record_id:
                 # 1:1 case: same vrid, do diff-based reconciliation
                 old_metadata_dict = await sink_orchestrator.blob_storage.get_reconciliation_metadata(
                     record.virtual_record_id, record.org_id
                 )
                 if old_metadata_dict:
                     old_metadata = ReconciliationMetadata.from_dict(old_metadata_dict)
+                    if old_metadata.id_scheme != new_metadata.id_scheme:
+                        # Stored points carry ids of another scheme: unchanged blocks are moved to their new ids.
+                        blocks_to_index_ids, block_ids_to_delete, rekey_ids = reconciliation_service.compute_rekey(
+                            old_metadata, new_metadata
+                        )
+                        logger.info(
+                            f"Reconciliation (1:1, re-key): {len(rekey_ids)} to move, "
+                            f"{len(blocks_to_index_ids)} to index, {len(block_ids_to_delete)} to delete"
+                        )
+                        return ReconciliationContext(
+                            new_metadata=new_metadata.to_dict(),
+                            blocks_to_index_ids=blocks_to_index_ids,
+                            block_ids_to_delete=block_ids_to_delete,
+                            rekey_ids=rekey_ids,
+                            recorded_points=old_metadata.pointed_blocks,
+                        )
                     blocks_to_index_ids, block_ids_to_delete, unchanged_id_map = reconciliation_service.compute_diff(
                         old_metadata, new_metadata
                     )
@@ -69,6 +126,7 @@ class IndexingPipeline:
                             block_containers, unchanged_id_map
                         )
                         new_metadata = reconciliation_service.build_metadata(block_containers)
+                        new_metadata.id_scheme = old_metadata.id_scheme
 
                     logger.info(
                         f"📊 Reconciliation (1:1): {len(blocks_to_index_ids)} to index, "
@@ -78,6 +136,7 @@ class IndexingPipeline:
                         new_metadata=new_metadata.to_dict(),
                         blocks_to_index_ids=blocks_to_index_ids,
                         block_ids_to_delete=block_ids_to_delete,
+                        recorded_points=old_metadata.pointed_blocks,
                     )
                 attempt = current_attempt()
                 if attempt is not None and attempt.resume:
@@ -95,6 +154,8 @@ class IndexingPipeline:
                     await sink_orchestrator.vector_store.purge_record_vectors(
                         record.org_id, record.virtual_record_id, record
                     )
+                except VirtualRecordBusy:
+                    raise  # the virtual record's lease is busy or lost: the delivery is handed back, not indexed over the old points
                 except Exception as e:
                     logger.warning(
                         f"⚠️ Failed to purge stale vectors during first reconciliation pass "
@@ -123,6 +184,8 @@ class IndexingPipeline:
         try:
             store_only = bool(ctx.settings.get(STORE_ONLY))
             record = ctx.record
+            # A record deleted while its run was in flight is not embedded or written (see paid_cache/orphan.py).
+            await ensure_record_alive(record.org_id, record.id, "embed")
             block_containers = record.block_containers
 
             if block_containers is not None:
@@ -183,8 +246,8 @@ class IndexingPipeline:
                             record_group_id=getattr(record, "record_group_id", None),
                             create_if_missing=path_known,
                         )
-                    except StorageLookupUnavailableError:
-                        raise  # the event is retried; stale metadata must not stay
+                    except (StorageLookupUnavailableError, VirtualRecordBusy):
+                        raise  # the event is retried; stale metadata must not stay, and the old points must not stay searchable
                     except Exception as e:
                         self.logger.warning(
                             f"⚠️ Failed to clean up old vectors for empty document: {str(e)}"
@@ -200,11 +263,18 @@ class IndexingPipeline:
                     "isDirty": False,
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,
                 }
-                success = await self.document_extraction.graph_provider.update_node(
-                    record_id,
-                    CollectionNames.RECORDS.value,
-                    shape_status_write(status_fields),
-                )
+                swap_run = keep_old_copy.current_swap(record_id, record.virtual_record_id)
+                if swap_run is not None:
+                    # The new copy is empty: the record moves to it and the old copy is released after the commit.
+                    success = await self.sink_orchestrator.swap.commit(ctx, swap_run, shape_status_write(status_fields))
+                    if success:
+                        await self.sink_orchestrator.swap.finish(ctx, swap_run)
+                else:
+                    success = await self.document_extraction.graph_provider.update_node(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        shape_status_write(status_fields),
+                    )
                 if not success:
                     self.logger.warning(
                         "⚠️ Failed to update indexing status for record %s - record may not exist",

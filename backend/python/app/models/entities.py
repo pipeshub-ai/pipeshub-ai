@@ -11,7 +11,8 @@ from uuid import uuid4
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+from app.modules.indexing.record_diagnostics import STORED_RUN_FIELDS
 from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     AccessRule,
@@ -326,8 +327,15 @@ class Record(BaseModel):
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     # Write-time only. Set when a record's parent is not its permission parent.
     inherit_permissions_from_group: bool = Field(default=False)
+    # Write-time only. The external id of a record group the record takes its access from (a Jira
+    # issue's security level): it inherits that group, hangs under it, and inherits nothing it is
+    # filed under. None: no such group is named (one stored is kept); "": none, so a stored one goes.
+    access_group_external_id: str | None = Field(default=None)
     # Write-time only. When set, this save replaces the record's permission edges.
     rewrite_permissions: bool = Field(default=False)
+    # Write-time only. When set, this save's permissions are some of the record's (one user's view of it):
+    # they are added, and never replace the stored ones, not even on a full sync's first write.
+    adds_permissions: bool = Field(default=False)
     # Read by the permission traversal on every visited node, so unlike
     # inherit_permissions — which is expressed as an edge — this is stored.
     # OPEN by default: a connector that says nothing gets the permissive
@@ -348,6 +356,9 @@ class Record(BaseModel):
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
     first_queued_at: int | None = Field(default=None, description="Epoch ms the record first went in line for its current processing run. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
     indexing_attempts: int | None = Field(default=None, description="How many times processing has been attempted for the record. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
+    # What the stored document said about the record's current run when it was read. Never serialised: it only lets the
+    # save path decide, from the stored values, whether a write continues the run or starts a new one.
+    _stored_run: dict | None = PrivateAttr(default=None)
 
     # Source information
     weburl: str | None = None
@@ -594,7 +605,7 @@ class Record(BaseModel):
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
-        return Record(
+        parsed = Record(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
@@ -641,6 +652,10 @@ class Record(BaseModel):
             push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
         )
+        parsed._stored_run = {
+            name: arango_base_record.get(name) for name in STORED_RUN_FIELDS if name in arango_base_record
+        }
+        return parsed
 
     def to_kafka_record(self) -> dict:
         raise NotImplementedError("Implement this method in the subclass")
@@ -3121,6 +3136,10 @@ class RecordGroup(BaseModel):
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
     )
+    access_only: bool = Field(
+        default=False,
+        description="Carries access only (a Jira security level): never a Knowledge Hub row, its records are listed where they are filed",
+    )
     is_deleted_at_source: bool = Field(
         default=False,
         description="Gone at the source and kept only while records in the trash belong to it",
@@ -3149,6 +3168,7 @@ class RecordGroup(BaseModel):
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
             "hideChildren": self.hide_children,
+            "accessOnly": self.access_only,
             "accessRule": self.access_rule.value,
             "permissionModel": (self.permission_model.value if self.permission_model else None),
             "webUrl": self.web_url,
@@ -3175,6 +3195,7 @@ class RecordGroup(BaseModel):
             connector_id=arango_base_record_group.get("connectorId"),
             is_internal=arango_base_record_group.get("isInternal", False),
             hide_children=arango_base_record_group.get("hideChildren", False),
+            access_only=bool(arango_base_record_group.get("accessOnly", False)),
             group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl"),
             created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),

@@ -68,6 +68,7 @@ from app.services.resource_governor.memory_domain import (
 )
 from app.services.resource_governor.models import ParseTier, Pool
 from app.services.resource_governor.probe import memory_domain_id
+from app.utils.error_class import log_failure
 from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import reset_admitted_in, set_admitted_in
 
@@ -631,9 +632,8 @@ async def clear_retry_tracking(host: ConcurrencyHost, message_id: str) -> None:
     try:
         await host.retry_manager.clear(message_id)
     except Exception as e:
-        host.logger.error(
-            "Failed to clear retry tracking for %s: %s", message_id, e
-        )
+        # Swallowed: what this delivery settled stands; only the count is left behind.
+        log_failure(host.logger, "index.retry_clear_failed", e, level=logging.WARNING, tracking_id=message_id)
 
 
 async def get_retry_count(host: ConcurrencyHost, message_id: str) -> int:
@@ -1535,6 +1535,8 @@ class RequeueWithoutAttempt(Exception):
     # Whether hand-backs count toward the delivery backstop, which stops a message from
     # being handed back forever.
     counts_toward_backstop = True
+    # Names the kind of hand-back in the reason the backstop gives up with (None: the admission wording).
+    give_up_label: str | None = None
     # Whether the reason holds for the whole stage (a paused dependency), so a consumer that
     # can stop claiming does; False when only this message has to wait.
     pauses_consumer = True
@@ -1545,6 +1547,13 @@ class RequeueWithoutAttempt(Exception):
         self.delay_s = delay_s
         # The level the consumer logs the hand-back at: lower for a wake that only repeats what was already reported.
         self.log_level = log_level
+
+
+def backstop_give_up_reason(error: RequeueWithoutAttempt, cycles: int, backstop: int) -> str:
+    """The reason a message is given up on when its hand-backs reach the delivery backstop."""
+    if error.give_up_label:
+        return f"{error.give_up_label}: handed back {cycles} times (backstop {backstop})"
+    return f"handed back {cycles} times without being admitted (backstop {backstop})"
 
 
 class ProgressRequeue(RequeueWithoutAttempt):
@@ -1815,9 +1824,9 @@ async def reclass_download_slot(
     """Move a record's download place to the class its inspection now says. Returns the admission to hold from here on.
 
     A small PDF that inspection turns into a huge one keeps holding a place of the small pool while it waits for its
-    parse slot, which blocks the next small PDF's download. The place in the new class's pool is taken first (the
-    record's content is already in hand, so the places stay bounded) and the old one given back after; if no new place
-    comes free in *timeout*, ``ParseAdmissionTimeout`` is raised and the old place is still the caller's to release.
+    parse slot, which blocks the next small PDF's download. A free place of the new pool is taken without waiting and the
+    old one given back; when none is free the old place is given back first and the record queues for the new one (never
+    waiting while holding the old). If none comes free in *timeout*, ``ParseAdmissionTimeout`` is raised.
     A no-op without ``PARSE_ADMISSION=classes`` or when the class did not change."""
     if admission is None or admission.released or ctx is None:
         return admission
@@ -1829,11 +1838,20 @@ async def reclass_download_slot(
     if ahead is wiring.download_ahead(old):
         admission.download_class = new  # type: ignore[attr-defined]  # large and huge share the big pool: the place is right
         return admission
+    if await ahead.try_acquire():
+        # A place of the new pool is free now: take it, then give the old one back.
+        moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+        moved.download_class = new  # type: ignore[attr-defined]
+        release_admission(admission)
+        return moved
+    # None is free. Never wait while holding the old place: two records crossing between full pools would wait on each
+    # other. Give it back, then queue for the new one through the ordinary path (its content is in hand, so the excess
+    # is bounded by the records moving).
+    release_admission(admission)
     if not await ahead.acquire(timeout):
         raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
     moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
     moved.download_class = new  # type: ignore[attr-defined]
-    release_admission(admission)
     return moved
 
 

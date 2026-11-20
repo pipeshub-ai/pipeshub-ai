@@ -18,12 +18,12 @@ import time
 from collections.abc import AsyncGenerator
 from concurrent.futures import Future
 from concurrent.futures import wait as futures_wait
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from aiokafka import TopicPartition
 
-from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -34,6 +34,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
+    _BACKPRESSURE_CLEAR_SETTLE_SECONDS,
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )
@@ -41,6 +42,7 @@ from app.services.messaging.lease import DEADLINE_LOSS_REASON, LeaseRenewer
 from app.services.resource_governor import Pool
 from app.services.resource_governor.models import ParseTier
 from app.utils import indexing_timing as timing
+from tests.support.eventually import until
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 # ---------------------------------------------------------------------------
@@ -198,7 +200,11 @@ class TestApplyBackpressure:
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_action_when_no_paused_and_below_capacity(self, consumer):
         """No resume needed when nothing is paused."""
@@ -281,7 +287,11 @@ class TestApplyBackpressureDownstreamCoordinator:
         consumer._IndexingKafkaConsumer__apply_backpressure()
 
         consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
     def test_no_coordinator_behaves_as_before(self, consumer):
         consumer.consumer = MagicMock()
@@ -359,6 +369,14 @@ class TestProcessMessageWrapperExtended:
 # Fix 6: retry backoff delay applied before semaphore acquisition
 # ===================================================================
 
+_NOW = 1_000_000.0
+
+
+def _freeze_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp not-before from a frozen clock: read twice on the wall clock, a stalled runner pushed it past the window."""
+    monkeypatch.setattr("app.services.messaging.kafka.consumer.indexing_consumer.time", SimpleNamespace(time=lambda: _NOW))
+
+
 class TestRetryDelayBeforeSemaphore:
     """A re-queued message is stamped with a not-before timestamp, and the
     consumer waits it out before acquiring the parsing semaphore — so the
@@ -371,21 +389,20 @@ class TestRetryDelayBeforeSemaphore:
         assert _compute_retry_backoff_seconds(10) == pytest.approx(300.0)
 
     @pytest.mark.asyncio
-    async def test_requeue_message_stamps_not_before(self, logger, plain_config):
+    async def test_requeue_message_stamps_not_before(self, logger, plain_config, monkeypatch):
         """_requeue_message stamps an absolute _retry_not_before sized by retry_count."""
         consumer = IndexingKafkaConsumer(logger, plain_config)
         consumer.producer = AsyncMock()
 
         message = StreamMessage(eventType="newRecord", payload={"recordId": "r1"})
-        before = time.time()
+        _freeze_clock(monkeypatch)
 
         await consumer._requeue_message("record-events", message, "stable-id", retry_count=2)
 
         consumer.producer.send_event.assert_awaited_once()
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
         assert sent_payload["_retry_tracking_id"] == "stable-id"
-        # retry_count=2 -> ~60s backoff
-        assert before + 59.0 <= sent_payload["_retry_not_before"] <= before + 61.0
+        assert sent_payload["_retry_not_before"] == _NOW + 60.0  # retry_count=2: a 60 s backoff
 
     @pytest.mark.asyncio
     async def test_requeue_message_keeps_request_id_and_org(self, logger, plain_config) -> None:
@@ -404,10 +421,10 @@ class TestRetryDelayBeforeSemaphore:
         assert seen == [RequestContext(root_id="root-1", org_id="org-1")]
 
     @pytest.mark.asyncio
-    async def test_requeue_message_holds_for_a_given_delay(self, logger, plain_config) -> None:
+    async def test_requeue_message_holds_for_a_given_delay(self, logger, plain_config, monkeypatch) -> None:
         consumer = IndexingKafkaConsumer(logger, plain_config)
         consumer.producer = AsyncMock()
-        before = time.time()
+        _freeze_clock(monkeypatch)
 
         await consumer._requeue_message(
             "pipeline.classify", StreamMessage(eventType="stageJob", payload={"jobId": "j1"}), "stable-id",
@@ -415,7 +432,7 @@ class TestRetryDelayBeforeSemaphore:
         )
 
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
-        assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
+        assert sent_payload["_retry_not_before"] == _NOW + 90.0
 
     @pytest.mark.asyncio
     async def test_requeue_failure_does_not_commit_original(
@@ -639,15 +656,8 @@ class TestStartProcessingTaskCallback:
             msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
-            # Wait for task completion
-            import time
-            time.sleep(1)
-
-            # Future should be cleaned up via callback
-            with consumer._futures_lock:
-                # All futures should have been cleaned up
-                remaining = len(consumer._active_futures)
-            assert remaining == 0
+            # The done callback runs on the worker thread, so wait for it without blocking this loop.
+            assert await until(lambda: consumer._get_active_task_count() == 0)
         finally:
             consumer.running = False
             consumer._IndexingKafkaConsumer__stop_worker_thread()
@@ -1220,22 +1230,6 @@ class TestProcessMessageWrapper:
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
-
-    @pytest.mark.asyncio
-    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self, consumer) -> None:
-        consumer.parsing_semaphore = asyncio.Semaphore(1)
-        consumer.indexing_semaphore = asyncio.Semaphore(1)
-        consumer.logger = MagicMock()
-
-        async def handler(parsed) -> AsyncGenerator[PipelineEvent, None]:
-            raise RecordDeletedError("r1")
-            yield
-
-        consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
-        await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert not any("process_message_wrapper" in str(c.args[0]) for c in consumer.logger.error.call_args_list)
-        assert any("ended as expected" in str(c.args[0]) for c in consumer.logger.info.call_args_list)
 
     @pytest.mark.asyncio
     async def test_shutdown_during_parsing_slot_wait_does_not_increment_retry(
@@ -1860,6 +1854,44 @@ class TestProcessMessageWrapperWithGovernor:
         governor_consumer._commit_offset.assert_awaited_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("label", "repairs_queued"), [("same-bytes", 1), (None, 0)])
+    async def test_a_give_up_queues_one_membership_repair_only_for_a_same_bytes_hand_back(
+        self, governor_consumer, label, repairs_queued
+    ) -> None:
+        from app.modules.indexing.connector_off_events import SameBytesSkipPending
+        from tests.support.give_up_sink import (
+            completed_record_sink,
+            repairs,
+            update_message_value,
+        )
+
+        error = SameBytesSkipPending("r1: skip") if label else concurrency.RequeueWithoutAttempt("wait")
+        sink = completed_record_sink()
+        governor_consumer.running = True
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        governor_consumer.retry_manager = AsyncMock()
+        governor_consumer.retry_manager.record_delivery = AsyncMock(return_value=10)
+        governor_consumer._requeue_message = AsyncMock()
+        governor_consumer._commit_offset = AsyncMock()
+        governor_consumer.disposition_sink = sink
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            raise error
+            yield  # an async generator, like every handler
+
+        governor_consumer.message_handler = handler
+        with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+            env.redis_max_deliveries = 10
+            env.record_processing_timeout = 5.0
+            result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(
+                _make_message(value=update_message_value())
+            )
+
+        assert result is False
+        governor_consumer._requeue_message.assert_not_awaited()
+        assert len(repairs(sink)) == repairs_queued
+
+    @pytest.mark.asyncio
     async def test_a_repeated_pause_hand_back_is_logged_below_warning(self, governor_consumer, caplog) -> None:
         """A job that wakes again into the same outage says so once at WARNING (its first pause); every later wake is
         routine, or 1000 paused jobs would write 1000 warnings per wake cycle."""
@@ -1885,7 +1917,7 @@ class TestProcessMessageWrapperWithGovernor:
             assert await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(
                 _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             ) is False
-        handed_back = [r.levelno for r in caplog.records if "handed back without counting an attempt" in r.getMessage()]
+        handed_back = [r.levelno for r in caplog.records if r.getMessage() == "index.end"]  # the hand-back's one line
         assert handed_back == [logging.WARNING, logging.DEBUG]
 
     @pytest.mark.asyncio
@@ -2334,7 +2366,11 @@ class TestApplyBackpressureFullCoverage:
         consumer._backpressure_logged = True
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_called()
+        assert consumer._backpressure_logged is True  # one clear turn does not end the episode
+        consumer._backpressure_clear_since -= _BACKPRESSURE_CLEAR_SETTLE_SECONDS
+        consumer._IndexingKafkaConsumer__apply_backpressure()
         assert consumer._backpressure_logged is False
+        assert consumer.consumer.resume.call_count == 2  # every clear turn resumes, settled or not
 
 
 class TestInitialize:

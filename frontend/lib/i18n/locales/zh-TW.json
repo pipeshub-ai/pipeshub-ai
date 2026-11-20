@@ -1804,7 +1804,6 @@
       "subtitle": "建立及管理群組以控制存取權和權限",
       "enterpriseTitle": "群組權限功能僅在企業版中提供",
       "enterpriseMessage": "升級至企業版即可使用群組權限功能。",
-      "enterpriseContact": "聯絡我們",
       "createGroup": "建立群組",
       "searchPlaceholder": "搜尋...",
       "emptyTitle": "您尚未建立任何群組",
@@ -1885,6 +1884,21 @@
         "saveError": "儲存權限失敗",
         "loadError": "載入權限失敗",
         "empty": "尚未定義任何權限。"
+      }
+    },
+    "enterprise": {
+      "contact": "聯絡銷售",
+      "scim": {
+        "heading": "SCIM 佈建功能僅在企業版中提供",
+        "message": "讓 Okta 或 Microsoft Entra ID 自動新增、更新和停用工作區中的成員。"
+      },
+      "auditLogs": {
+        "heading": "稽核記錄功能僅在企業版中提供",
+        "message": "查看工作區中誰在何時做了什麼。"
+      },
+      "usage": {
+        "heading": "用量、額度和帳單功能僅在企業版中提供",
+        "message": "依人員、代理程式、連接器和模型查看 AI 成本，管理額度、方案和發票，並在用量設定中設定支出提醒。"
       }
     },
     "teams": {
@@ -2166,10 +2180,10 @@
         "errorNameRequired": "請為此權杖輸入名稱。",
         "errorCreateTitle": "無法建立權杖",
         "expiryHeading": "有效期限",
+        "expiry7Days": "7 天",
         "expiry30Days": "30 天",
         "expiry90Days": "90 天",
         "expiry365Days": "365 天",
-        "expiryNever": "永不到期",
         "permissionsHeading": "範圍",
         "errorScopeRequired": "請至少選取一個範圍。",
         "selectAllScopes": "全選",
@@ -2459,6 +2473,8 @@
       "sections": {
         "overview": "總覽",
         "workspace": "工作區",
+        "usageAndCredits": "用量與額度",
+        "security": "安全性",
         "personal": "個人",
         "people": "成員",
         "developerSettings": "開發人員設定"
@@ -2488,6 +2504,9 @@
         "archivedChats": "已封存的對話",
         "users": "使用者",
         "groups": "群組",
+        "scim": "SCIM",
+        "auditLogs": "稽核記錄",
+        "usage": "用量與額度",
         "teams": "團隊",
         "webSearch": "網頁搜尋",
         "tenants": "租戶",
@@ -2774,7 +2793,35 @@
       "tools": {
         "title": "工具",
         "subtitle": "關閉個別工具。關閉的工具不會提供給 MCP 用戶端，對它的呼叫會被拒絕。",
-        "writes": "寫入"
+        "writes": "寫入",
+        "descriptions": {
+          "pipeshub_sources": "列出使用者可讀取的連接器和集合，以及工作區已設定的 AI 模型。用戶端據此選擇在哪裡搜尋以及使用哪個模型聊天。",
+          "pipeshub_search": "在使用者可讀取的連接器和集合中依語意搜尋已索引的文件，並傳回相符的段落及其所屬記錄。",
+          "pipeshub_get_record_content": "讀取一筆記錄的全文。也可以透過 URL、議題編號或外部 ID 尋找記錄，瀏覽資料夾、空間或 Epic 底下的內容，以及讀取整個 Slack 討論串。",
+          "pipeshub_download_record": "下載記錄所儲存的原始檔案，可選擇轉換為 PDF。",
+          "pipeshub_directory": "查詢目前登入的使用者、工作區的使用者和群組，以及該使用者所屬的團隊。不會變更任何內容。",
+          "pipeshub_create_collection": "建立一個由使用者擁有的全新空集合，可將檔案上傳到其中。",
+          "pipeshub_upload": "將文件上傳到集合，以便建立索引並可供搜尋。每次呼叫最多 20 份文件、約 3 MB。",
+          "pipeshub_indexing_status": "回報集合的索引進度，以及哪些文件失敗及其原因。",
+          "pipeshub_connect_source": "傳回一個連結，使用者在瀏覽器中開啟它來連接 Slack、Google Drive 或 Jira 等來源。此工具本身不會連接任何內容。",
+          "pipeshub_add_web_source": "將網站新增為使用者自己的 Web 連接器。它從起始頁面開始爬取，跟隨頁面中的連結，並且每天重新爬取。預設保留 100 個頁面，用戶端可要求更多，最多 10,000 個。OAuth 應用程式或存取權杖還需要 connector:write 和 connector:sync 範圍。",
+          "pipeshub_chat": "向 PipesHub 內建的助理或工作區的某個代理提問，並傳回附引用的回答。寫入工具關閉時，它不會執行已連線的動作。關閉它也會同時關閉代理清單。",
+          "pipeshub_agents": "列出工作區的代理及其工具和知識，讓用戶端可以與其中一個聊天。僅在「與 PipesHub 聊天」開啟時提供。",
+          "pipeshub_show_citations": "向使用者顯示回答所依據的來源，以 [1]、[2] 等編號，並附上每份文件的預覽。每次呼叫最多 30 個段落。僅提供給能夠顯示引用檢視器的用戶端，例如 Claude。",
+          "pipeshub_preview_record": "僅供引用檢視器使用，AI 模型不會呼叫。它分段載入記錄所儲存的檔案，讓檢視器可以顯示文件。關閉期間，檢視器無法載入文件預覽。",
+          "pipeshub_code_repos": "列出使用者可讀取的已索引程式碼儲存庫。程式碼工具僅提供給擁有已索引程式碼的使用者；OAuth 應用程式或存取權杖還需要 code:read 範圍。",
+          "pipeshub_code_symbols": "顯示已索引儲存庫中某個目錄或檔案包含的內容：子目錄和檔案，或檔案定義的符號。",
+          "pipeshub_code_neighbours": "顯示程式碼圖中某個檔案或符號周圍的內容：它的呼叫端、它呼叫的程式碼、匯入和繼承關係。",
+          "pipeshub_code_read": "讀取已索引的原始碼：一個符號、一段行範圍或整個檔案。讀取的是索引副本，可能落後於儲存庫。",
+          "pipeshub_code_path": "逐步顯示儲存庫中一個符號如何到達另一個符號。",
+          "pipeshub_code_search": "依確切名稱、字串或規則運算式尋找程式碼。",
+          "pipeshub_code_semantic_search": "在不知道名稱時，根據自然語言描述尋找某個功能或行為背後的程式碼。",
+          "pipeshub_code_outline": "列出檔案中的類別、函式和方法及其簽章和行範圍，不含函式主體。",
+          "pipeshub_code_impact": "顯示相依於某個符號的內容：所有呼叫、匯入或以它為基礎的程式碼，以及涵蓋到它的測試。可回答誰呼叫了它、修改後會影響什麼。",
+          "pipeshub_code_impact_of_diff": "接收一個統一格式的 diff，例如 git diff 的輸出或拉取請求的 diff，顯示它變更的符號、涉及這些符號的檔案和測試，以及沒有測試涵蓋的呼叫端。",
+          "pipeshub_code_history": "列出修改過某個檔案的已索引拉取請求，包括作者、審閱者、合併者及其提到的工單。",
+          "pipeshub_code_entry_points": "列出執行進入儲存庫的位置，例如路由、命令列工具、工作和掛鉤。是閱讀陌生程式碼的起點。"
+        }
       },
       "appliesNote": "變更會在幾秒內套用到新的 MCP 請求。",
       "loadError": "無法載入 MCP 存取設定。請重新載入頁面後再試一次。",
@@ -2888,8 +2935,7 @@
       },
       "enterpriseSso": {
         "title": "SAML 單一登入與 OpenID Connect",
-        "description": "讓成員透過 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身分提供者登入。",
-        "contactSales": "如需購買，請寄信至 {{email}}"
+        "description": "讓成員透過 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身分提供者登入。"
       }
     },
     "connectors": {
@@ -3180,7 +3226,8 @@
             "max_pages": "已達到最大頁數限制",
             "time_limit": "已達到時間限制；下次同步將繼續",
             "stalled": "網站停止回應；下次同步將繼續",
-            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續",
+            "start_not_recorded": "同步無法儲存其開始記錄，因此未執行；下次同步將重試"
           },
           "pagesSaved": "已儲存 {{count}} 個頁面",
           "failed": "{{count}} 個頁面失敗",
@@ -3636,6 +3683,91 @@
           "other": "此連接器的權限需要有人查看。",
           "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
         }
+      },
+      "userAccess": {
+        "connect": "連接",
+        "reconnect": "重新連接",
+        "connected": "已連接",
+        "connectedAs": "已以 {{account}} 連接",
+        "connectDialog": {
+          "title": "將你的帳戶連接到 {{name}}",
+          "description": "貼上你自己的 {{source}} 帳戶中的個人存取權杖。PipesHub 只會向你顯示你的帳戶可以開啟的頁面。",
+          "howTo": "如何建立個人存取權杖",
+          "tokenLabel": "個人存取權杖",
+          "submitting": "正在連接…",
+          "errorFallback": "無法連接你的帳戶，請重試。",
+          "signInHint": "{{source}} 只列出你擁有完整存取權限的頁面。所選頁面的子頁面（包括新建立的）都會包含在內。之後如需新增更多頁面，請重新登入。",
+          "signingIn": "正在等待 {{source}}…",
+          "signInFailed": "登入未完成。請重試。",
+          "popupBlocked": "瀏覽器封鎖了登入視窗。請允許此網站的彈出視窗後重試。"
+        },
+        "admin": {
+          "title": "已連接的使用者",
+          "description": "此連接器只向每個人顯示其自己帳戶可以開啟的內容。未連接的人看不到任何內容。",
+          "remove": "移除",
+          "removeTitle": "移除 {{email}} 的連接？",
+          "removeMessage": "在重新連接之前，對方將看不到此連接器的結果。",
+          "removing": "正在移除…",
+          "removed": "連接已移除",
+          "status": {
+            "connected": "已連接",
+            "needs_reconnect": "需要重新連接",
+            "invited": "已邀請",
+            "not_invited": "未邀請",
+            "opted_out": "不希望收到提醒",
+            "no_account": "沒有 PipesHub 帳戶"
+          },
+          "noAccountHint": "請先邀請他們加入 PipesHub",
+          "invite": "邀請",
+          "remind": "提醒",
+          "sent_other": "已傳送給 {{count}} 人",
+          "notEmailed_other": "有 {{count}} 人的郵件未能傳送；他們仍收到了應用程式內通知。",
+          "lastSent": "上次傳送於 {{time}}",
+          "connectedAt": "連接於 {{time}}",
+          "membersUpdated": "成員清單上次讀取於 {{time}}",
+          "membersPending": "成員清單將在下次同步後顯示",
+          "queued_other": "正在傳送給 {{count}} 人。他們會收到一則通知和一封郵件。",
+          "nothingSent": "未傳送任何內容",
+          "skipReason": {
+            "connected": "已連接。",
+            "not_found": "已不是成員。",
+            "opted_out": "不希望收到提醒。",
+            "recently_sent": "過去一天內已傳送過。",
+            "not_sent": "無法傳送。請稍後重試。"
+          },
+          "inviteWho": "邀請 {{name}}",
+          "remindWho": "提醒 {{name}}",
+          "removeWho": "移除 {{name}} 的連接",
+          "yourAccount": "你的帳號",
+          "connectedOf": "{{total}} 人中已有 {{connected}} 人連線",
+          "needReconnect_other": "{{count}} 人需要重新連線",
+          "search": "依姓名或電子郵件搜尋",
+          "inviteEveryoneHint": "所有尚未連線的人",
+          "inviteEveryone": "全部邀請（{{count}}）",
+          "noMatches": "沒有符合「{{q}}」的人",
+          "nobody": "目前沒有人。下次同步後會顯示。"
+        },
+        "link": {
+          "title": "連接你的 {{source}} 帳戶",
+          "forEmail": "適用於 {{email}}",
+          "continue": "繼續前往 {{source}}",
+          "loading": "正在檢查連結…",
+          "alreadyConnected": "你的 {{source}} 帳戶已連接。",
+          "openApp": "開啟 PipesHub",
+          "expired": "此連結已過期或已被使用。請向管理員索取新連結，或在 PipesHub 的「您的個人連接器」中連接。",
+          "optedOut": "你將不會再收到此連接器的提醒。",
+          "error": "發生問題。請一分鐘後重試。",
+          "noSignIn": "此連接器使用個人存取權杖。開啟 PipesHub，在通知中選擇「連線」來貼上你的權杖。",
+          "done": "{{name}} 已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
+          "doneUnnamed": "你的帳戶已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
+          "failedTitle": "無法連接",
+          "failedRetry": "請使用郵件中的連結重試。",
+          "confirmOptOut": "停止 {{name}} 的提醒？",
+          "stopReminders": "停止提醒",
+          "rateLimited": "嘗試次數過多，請一分鐘後重試。",
+          "cancelled": "你取消了登入。",
+          "signInFailed": "登入未完成。請重試。"
+        }
       }
     },
     "mcpServers": {
@@ -3741,6 +3873,7 @@
         "disconnected": "已成功中斷連線",
         "disconnectError": "無法中斷連線",
         "credentialsSaveError": "伺服器已儲存，但憑證無法儲存。您可以稍後從「管理」中新增。",
+        "accessSaveError": "伺服器已儲存，但可使用者設定未儲存。請再次儲存以套用存取權限。",
         "logoSaveError": "伺服器已儲存，但其標誌未能儲存。您可以在「管理」中重試。",
         "credentialsSaved": "憑證已儲存",
         "credentialsReset": "MCP 伺服器已更新。由於連線已變更，已儲存的憑證已被移除；請重新連線後再使用。",
@@ -4308,6 +4441,13 @@
       "verifyingConnection": "正在驗證連線...",
       "sendImages": "傳送圖片給 LLM",
       "sendImagesDescription": "控制在網頁搜尋期間是否將圖片傳送給 LLM",
+      "imageSettingsTitle": "圖片",
+      "imageSettingsDescription": "助理讀取網頁時可看到的圖片",
+      "maxImages": "每頁最多圖片數",
+      "maxImagesHelp": "1 到 50 之間的整數。只有支援圖片的模型才會收到圖片。",
+      "maxImagesInvalid": "請輸入 1 到 50 之間的整數",
+      "imagesCostWarning": "每張圖片都會增加讀取網頁的成本和時間。",
+      "imageSettingsUnavailable": "無法載入圖片設定，因此暫時無法變更。",
       "toasts": {
         "providerAdded": "已新增 {{label}}",
         "providerAddedDescription": "網頁搜尋設定成功。若要使用 {{label}}，請關閉其他網頁搜尋方式",
@@ -4317,6 +4457,7 @@
         "saveError": "無法儲存網頁搜尋設定",
         "imagesEnabled": "圖片將會傳送給 LLM",
         "imagesDisabled": "圖片將不會傳送給 LLM",
+        "maxImagesUpdated": "每頁最多傳送 {{count}} 張圖片",
         "updateError": "無法更新設定",
         "saved": "網頁搜尋設定已儲存",
         "savedDescription": "您的變更已成功套用。",
@@ -4560,6 +4701,9 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜尋索引超出了向量資料庫的記憶體",
@@ -5930,6 +6074,55 @@
       "offDescription": "它已從所有人的回覆、搜尋與記錄中移除，範例帳戶也無法登入。請在「個人資料 → 示範資料」中重新開啟。",
       "onTitle": "已為所有人重新開啟示範資料",
       "errorTitle": "無法為所有人變更示範資料"
+    },
+    "about": {
+      "open": "示範裡有什麼？",
+      "title": "關於 Acme Corp 示範",
+      "description": "Acme Corp 是一家虛構的軟體公司。Demo 連接器會載入它的記錄，讓你不必連接自己的工具就能試用 PipesHub。不會聯絡 PipesHub 以外的任何服務，其中也沒有你公司的資料。",
+      "status": {
+        "shown": "它現在會出現在你的回答、搜尋和記錄中。示範結果帶有 Demo 標籤。",
+        "hiddenRealData": "由於你的組織已有自己的資料，它已從你的回答中隱藏。除非有人為自己開啟，否則沒人會看到它。",
+        "hiddenByChoice": "由於你已將其關閉，它已從你的回答中隱藏。",
+        "offForEveryone": "管理員已為所有人關閉它，因此它不會出現在任何人的回答中，範例帳號也無法登入。",
+        "show": "在我的回答中顯示"
+      },
+      "tools": {
+        "title": "包含內容",
+        "tool": "工具",
+        "places": "位置",
+        "records": "記錄",
+        "total": "合計"
+      },
+      "people": {
+        "title": "人員",
+        "description": "範例員工。他們的名字以記錄作者的身分出現；其中只有兩人可以登入。",
+        "canSignIn": "可以登入"
+      },
+      "restricted": {
+        "title": "誰能看到什麼",
+        "description": "新增 Demo 連接器的人可以讀取其中的大部分內容，Alice 和 Bob 可以讀取各自團隊能看到的內容。你組織中的其他人無法讀取任何內容；在你的回答中顯示示範並不會授予存取權限。以下每筆記錄只有其群組成員才能讀取，因此同一個問題會因提問者不同而得到不同的回答。",
+        "readers": "可以開啟：{{names}}",
+        "noReaders": "兩個範例帳號都無法開啟這些記錄。"
+      },
+      "questions": {
+        "title": "試著問問"
+      },
+      "accounts": {
+        "title": "可登入的範例帳號",
+        "description": "在另一個瀏覽器中以 Alice 或 Bob 身分登入，看看同一個問題在不同權限下如何回答。",
+        "state": {
+          "checking": "正在檢查…",
+          "active": "可以登入",
+          "off": "已關閉登入",
+          "missing": "未建立",
+          "unknown": "無法檢查"
+        },
+        "password": "它們使用安裝 PipesHub 時設定的初始密碼（PIPESHUB_DEMO_PASSWORD）。PipesHub 只保存其加密形式，因此無法在此顯示。",
+        "lostPassword": "如果沒人知道密碼，「忘記密碼」也幫不上忙，因為 .example 位址無法接收郵件。伺服器維運人員可以在 PipesHub 容器中執行以下指令，取得設定新密碼的連結：",
+        "missing": "範例帳號僅在安裝時設定了 PIPESHUB_DEMO_PERSONAS=1 才會建立。沒有它們示範也能使用，只是無法以 Alice 或 Bob 身分登入。",
+        "retry": "重試"
+      },
+      "close": "關閉"
     }
   },
   "graph": {

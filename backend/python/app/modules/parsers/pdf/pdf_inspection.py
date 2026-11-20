@@ -17,11 +17,7 @@ from typing import TYPE_CHECKING
 import pdfplumber
 import pypdfium2
 
-from app.exceptions.indexing_exceptions import PasswordProtectedError
-from app.modules.parsers.encryption import (
-    PASSWORD_PROTECTED_MESSAGE,
-    pdfium_password_error,
-)
+from app.modules.parsers.encryption import open_pdfium_document
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
 if TYPE_CHECKING:
@@ -228,14 +224,7 @@ def repair_pdf(content: bytes) -> bytes:
     Raises ``PasswordProtectedError`` when the file needs a password, and
     ``pypdfium2.PdfiumError`` when pdfium cannot open it for another reason.
     """
-    try:
-        document = pypdfium2.PdfDocument(content)
-    except pypdfium2.PdfiumError as exc:
-        if pdfium_password_error(exc):
-            raise PasswordProtectedError(
-                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
-            ) from exc
-        raise
+    document = open_pdfium_document(content)
     try:
         rewritten = io.BytesIO()
         document.save(rewritten)

@@ -45,6 +45,7 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_scopes_set": (([11], [3], [5], [True], [True], [False], [False]), "kg.scopes"),
     "kg.w_scopes_delete": (([11],), "kg.scopes"),
     "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
+    "kg.w_trash_set": (([11], [3], ["rec"], [3], [1790000000000], ["bt1"]), "kg.records"),
     "kg.w_counts_add": (([5], [1], [7], [3], [False], [None], [None], [2]), "kg.counts"),
     "kg.w_counts_delete": (([1],), "kg.counts"),
     "kg.w_analyze_request": ((5,), "kg.analyze_requests"),
@@ -52,6 +53,7 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
     "kg.w_counts_add": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::smallint[]", "%s::boolean[]", "%s::text[]", "%s::text[]", "%s::bigint[]"],
     "kg.w_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::bytea[]"],
+    "kg.w_trash_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s::text[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
     "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s"],
@@ -68,7 +70,7 @@ def marks(args: tuple, name: str | None = None) -> str:
 
 # The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
 GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
-EPOCH = 7
+EPOCH = 8
 
 
 def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
@@ -157,7 +159,7 @@ def test_the_change_log_is_acknowledged_by_transaction_and_by_id_and_only_in_the
         c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))              # as the capture trigger will: this transaction's id by default
         c.execute("SET LOCAL ROLE pipeshub_connectors")
         c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
-        assert c.execute("SELECT kg.w_changes_ack(7)").fetchone()[0] == 1
+        assert c.execute("SELECT kg.w_changes_ack(8)").fetchone()[0] == 1
         c.execute("COMMIT")
         assert [list(r[4]) for r in rows(c, "kg.graph_changes", ORG_A)] == [["3:other", "4:u"]]
         clean(c)
@@ -225,6 +227,8 @@ BAD = {
     "kg.w_listing_set": [([11, 12], [3], ["s"], [3], [True], [False], [False], [None]), ([11], [4], ["s"], [3], [True], [False], [False], [None]), ([11], [3], [""], [3], [True], [False], [False], [None]),
                          ([11], [3], ["s"], [3], [None], [False], [False], [None]), ([11], [3], ["s"], [3], [True], [None], [False], [None]), ([11], [3], ["s"], [3], [True], [False], [None], [None]),
                          ([None], [3], ["s"], [3], [True], [False], [False], [None]), ([11], [3], ["s"], [3], [True], [False], [False], [None, None])],
+    "kg.w_trash_set": [([11, 12], [3], ["s"], [3], [1], ["b"]), ([11], [4], ["s"], [3], [1], ["b"]), ([11], [3], [""], [3], [1], ["b"]), ([None], [3], ["s"], [3], [1], ["b"]),
+                       ([11], [3], ["s"], [3], [1, 2], ["b"]), ([11], [3], ["s"], [3], [1], ["b", "c"]), (None, [3], ["s"], [3], [1], ["b"])],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
@@ -552,6 +556,21 @@ def test_the_listing_columns_are_written_to_the_row_of_the_session_org_and_the_o
         assert bytes(c.execute("SELECT name_sort FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0]) == b"\x00n"
         call(c, "kg.w_listing_set", ORG_B, ([11], [3], ["rec-1"], [3], [False], [False], [False], [None]))                                # another org's call makes a row of its own
         assert tuple(c.execute("SELECT folder, hide_children, alien FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (True, True, True)
+        clean(c)
+
+
+def test_the_trash_columns_are_written_to_the_row_of_the_session_org_and_the_other_columns_stay(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        before = c.execute("SELECT name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert call(c, "kg.w_trash_set", ORG_A, ([11], [3], ["rec-1"], [3], [1790000000000], ["bt1"])) == [(1,)]
+        got = c.execute("SELECT deleted_ms, delete_batch, name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert tuple(got) == (1790000000000, "bt1", *before)
+        assert call(c, "kg.w_trash_set", ORG_A, ([11], [3], ["rec-1"], [3], [None], [None])) == [(1,)]                                  # a restore clears them
+        assert tuple(c.execute("SELECT deleted_ms, delete_batch FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (None, None)
+        call(c, "kg.w_trash_set", ORG_B, ([11], [3], ["rec-1"], [3], [5], ["other"]))                                                    # another org's call makes a row of its own
+        assert tuple(c.execute("SELECT deleted_ms, delete_batch FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (None, None)
         clean(c)
 
 

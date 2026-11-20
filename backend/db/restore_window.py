@@ -136,7 +136,8 @@ def close_window(admin: psycopg.Connection, migrate: psycopg.Connection, *, aban
 
 
 def export_org(migrate: psycopg.Connection, backup: psycopg.Connection, org: str, directory: Path) -> list[str]:
-    """Write one CSV per registered org-scoped table holding ONLY ``org``'s rows, parents before children, plus ``order.txt``."""
+    """Write one CSV per registered org-scoped table holding ONLY ``org``'s rows, parents before children, plus ``order.txt``, all read in
+    one REPEATABLE READ snapshot."""
     tables = [r[0] for r in migrate.execute("SELECT rel::text FROM kernel.rls_registry WHERE class NOT IN ('global', 'internal')")]
     deps = {t: set() for t in tables}
     for child, parent in migrate.execute(
@@ -151,14 +152,17 @@ def export_org(migrate: psycopg.Connection, backup: psycopg.Connection, org: str
         ordered += ready
         for t in ready:
             del deps[t]
-    if not any(backup.execute(sql.SQL("SELECT 1 FROM {} WHERE org_id = %s LIMIT 1").format(sql.SQL(t)), (org,)).fetchone() for t in ordered):
-        raise Refused(f"{org} has no rows in any table; nothing to export")
-    directory.mkdir(parents=True, exist_ok=True)
-    for t in ordered:
-        with (directory / f"{t}.csv").open("wb") as f, backup.cursor().copy(
-                sql.SQL("COPY (SELECT * FROM {} WHERE org_id = {}) TO STDOUT (FORMAT csv, HEADER, NULL '\\N')").format(sql.SQL(t), sql.Literal(org))) as cp:
-            for chunk in cp:
-                f.write(bytes(chunk))
+    # one snapshot for every table: derived rows (counters, term frequencies) must agree with the rows they are derived from
+    with backup.transaction():
+        backup.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        if not any(backup.execute(sql.SQL("SELECT 1 FROM {} WHERE org_id = %s LIMIT 1").format(sql.SQL(t)), (org,)).fetchone() for t in ordered):
+            raise Refused(f"{org} has no rows in any table; nothing to export")
+        directory.mkdir(parents=True, exist_ok=True)
+        for t in ordered:
+            with (directory / f"{t}.csv").open("wb") as f, backup.cursor().copy(
+                    sql.SQL("COPY (SELECT * FROM {} WHERE org_id = {}) TO STDOUT (FORMAT csv, HEADER, NULL '\\N')").format(sql.SQL(t), sql.Literal(org))) as cp:
+                for chunk in cp:
+                    f.write(bytes(chunk))
     (directory / "order.txt").write_text("\n".join(ordered) + "\n", encoding="utf-8")
     return ordered
 

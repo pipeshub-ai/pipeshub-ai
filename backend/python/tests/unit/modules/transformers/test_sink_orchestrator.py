@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import RecordDeletedError
+from app.models.entities import EntityRecord, EntityType
 from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.models.entities import EntityRecord, EntityType
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -224,6 +223,58 @@ class TestSkipBlob:
 
         orch.blob_storage.apply.assert_not_awaited()
         orch.vector_store.apply.assert_awaited_once_with(ctx)
+
+    @pytest.mark.asyncio
+    async def test_a_vector_only_reindex_saves_the_stored_metadata_the_vector_store_updated(self) -> None:
+        """No diff and no blob write, but the points are all written again: the stored reconciliation metadata goes through the apply
+        (which records which blocks got a point) and is saved, so the recorded set follows an embedding-model change."""
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"}, vector_result=True)
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+        ctx.reconciliation_context = None
+        ctx.record.virtual_record_id, ctx.record.org_id = "vr-1", "org-1"
+        orch.blob_storage.get_reconciliation_metadata = AsyncMock(return_value={"hashes": {"b": "h"}, "pointedBlocks": ["old"]})
+
+        async def apply(c: object) -> bool:
+            c.reconciliation_context.new_metadata["pointedBlocks"] = ["new"]
+            return True
+
+        orch.vector_store.apply = AsyncMock(side_effect=apply)
+        await orch.index(ctx)
+        saved = orch.blob_storage.save_reconciliation_metadata.await_args.args[3]
+        assert saved == {"hashes": {"b": "h"}, "pointedBlocks": ["new"]}
+
+    @pytest.mark.asyncio
+    async def test_a_vector_only_reindex_whose_stored_metadata_cannot_be_read_fails_the_record(self) -> None:
+        """An unreadable document is not an absent one: the old recorded set could name a block the reindex gives no point, so the
+        record fails and is retried (and nothing is embedded or saved)."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.modules.transformers.blob_storage import (
+            ReconciliationMetadataUnavailable,
+        )
+
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"}, vector_result=True)
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+        ctx.reconciliation_context = None
+        ctx.record.virtual_record_id, ctx.record.org_id = "vr-1", "org-1"
+        orch.blob_storage.get_reconciliation_metadata = AsyncMock(side_effect=ReconciliationMetadataUnavailable("down"))
+        with pytest.raises(IndexingError):
+            await orch.index(ctx)
+        orch.vector_store.apply.assert_not_awaited()
+        orch.blob_storage.save_reconciliation_metadata.assert_not_awaited()
+        assert orch.blob_storage.get_reconciliation_metadata.await_args.kwargs == {"raise_on_error": True}
+
+    @pytest.mark.asyncio
+    async def test_a_vector_only_reindex_never_creates_the_metadata_document(self) -> None:
+        """It has no storage path: the save updates the document in place and creates none at a guessed path."""
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"}, vector_result=True)
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+        ctx.reconciliation_context = MagicMock(new_metadata={"hashes": {}})
+        ctx.record.virtual_record_id, ctx.record.org_id = "vr-1", "org-1"
+        await orch.index(ctx)
+        assert orch.blob_storage.save_reconciliation_metadata.await_args.kwargs["create_if_missing"] is False
 
 
 # =========================================================================
@@ -838,7 +889,8 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         self._bind(remember)
         await orch.index(_make_ctx("rec-7"))
 
-        assert order == ["completed", "metadata", "identity", "remember"]
+        # The record's own entity points go first (a handed-back write leaves the record retryable); the entry is last.
+        assert order == ["identity", "completed", "metadata", "remember"]
         written = orch.graph_provider.batch_update_nodes.await_args.args[0][0]
         assert remembered == [("rec-7", written["lastIndexTimestamp"])]
         assert "lastDelivery" not in str(orch.graph_provider.batch_update_nodes.await_args)
@@ -858,7 +910,7 @@ class TestTheReplaySetIsWrittenAfterTheCompletedWrite:
         with pytest.raises(RuntimeError):
             await orch.index(_make_ctx("rec-7"))
 
-        assert order == ["completed"]
+        assert order == ["identity", "completed"]
         assert remembered == []
 
     @pytest.mark.asyncio

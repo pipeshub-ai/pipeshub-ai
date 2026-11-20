@@ -183,6 +183,12 @@ describe('command.interface', () => {
       expect(result).to.have.property('x-pipeshub-mcp-relay', 'relay-1')
     })
 
+    it('keeps the record content-open header, which makes the connector service refuse a deleted or disabled connector', () => {
+      const cmd = new TestCommand('http://example.com')
+      const result = cmd.testSanitizeHeaders({ 'X-Record-Content-Open': '1' })
+      expect(result).to.have.property('x-record-content-open', '1')
+    })
+
     it('should add content-type application/json when no content-type is present', () => {
       const cmd = new TestCommand('http://example.com')
       const result = cmd.testSanitizeHeaders({})

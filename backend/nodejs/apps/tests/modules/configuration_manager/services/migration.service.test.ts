@@ -75,8 +75,14 @@ describe('MigrationService', () => {
       const groupNameIndexStub = sinon.stub(service, 'userGroupNameIndexMigration' as any).resolves()
       const delegationTtlStub = sinon.stub(service, 'delegationLogRetentionMigration' as any).resolves()
       const serviceAccountKindStub = sinon.stub(service, 'serviceAccountKindBackfillMigration' as any).resolves()
+      const instanceAppStub = sinon.stub(service, 'instanceAppOwnerMigration' as any).resolves()
+      const dynamicClientOrg = async () => 'org-1'
 
-      await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
+      await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any, dynamicClientOrg })
+
+      // Before anything that waits: a metadata document client consented to before it runs would lose its creator.
+      expect(instanceAppStub.calledOnceWithExactly(dynamicClientOrg)).to.be.true
+      expect(instanceAppStub.calledBefore(signInStub)).to.be.true
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
       expect(signInStub.calledOnce).to.be.true

@@ -205,6 +205,8 @@ app_schema = {
             # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
             "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            # app.services.messaging.kafka.handlers.entity: rewritten while a user-link pass runs, left to go stale after it.
+            "userLinkStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncOutcome": {"type": ["string", "null"]},
             "lastSyncSummary": {"type": ["string", "null"]},
             # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
@@ -229,6 +231,7 @@ app_schema = {
             "scopeProjectionOpenWrites": {"type": ["string", "null"]},  # {token: {deadline, roots}} of the writes counted as opened (see open_write)
             "scopeSweepState": {"type": ["string", "null"]},  # {failures, error, retry time} of the sweep of this connector (see scope_sweep)
             "scopeRewriteLease": {"type": ["string", "null"]},  # {holder, deadline} of the rewriter that holds the connector (see permissions.rewrite_lease)
+            "aclFilterMode": {"type": ["string", "null"]},  # the admin's permission filter mode for this connector (see permissions.currency.MODE_KEY)
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
@@ -474,6 +477,9 @@ record_schema = {
             "parseNowAt": {"type": ["number", "null"]},
             # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
             # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            # The virtual record the record is indexing a replacement copy into; it keeps serving `virtualRecordId` until the
+            # copy commits, and the field is removed (never null) by the commit and by every other end of the run.
+            "pendingVirtualRecordId": {"type": ["string", "null"]},
             "embedVrid": {"type": ["string", "null"]},
             "embedRev": {"type": ["string", "null"]},
             "embedKey": {"type": ["string", "null"]},
@@ -500,6 +506,12 @@ record_schema = {
     "level": "strict",
     "message": "Document does not match the record schema.",
 }
+
+# Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
+# collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+RECORD_SCHEMA_GENERATION = 3
+record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 
 # Pipeline stage state: one document per (virtual record, content revision, stage).
@@ -1094,6 +1106,7 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            "accessOnly": {"type": ["boolean", "null"], "default": False},
             # Permission traversal input, as on records: per node, and
             # RESTRICTED never cascades to children.
             "accessRule": {

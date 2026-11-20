@@ -168,7 +168,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     it('counts: what was copied, and what was left out, add up', async () => {
       expect(await count('content.documents')).to.equal(3);
       expect(await count('content.project_members')).to.equal(3);
-      expect(await count('platform.notifications')).to.equal(3);
+      expect(await count('platform.notifications')).to.equal(4);
       expect(await count('platform.mail_log')).to.equal(2);
       expect(await count('oauth.access_tokens')).to.equal(3);
       expect(await count('integrations.slack_threads')).to.equal(2);
@@ -193,6 +193,13 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     it('notifications from months with no partition land in the default partition and read back', async () => {
       const r = (await stack.admin((c) => c.query("SELECT tableoid::regclass::text AS p FROM platform.notifications WHERE created_at < '2020-01-01'"))).rows;
       expect(r.map((x: { p: string }) => x.p)).to.deep.equal(['platform.notifications_def']);
+    });
+
+    it('a scheduled notification keeps its visible_at, and the others have none', async () => {
+      const r = (await stack.admin((c) => c.query('SELECT type, visible_at, updated_at FROM platform.notifications ORDER BY type'))).rows as Array<{ type: string; visible_at: Date | null; updated_at: Date }>;
+      const by = new Map(r.map((x) => [x.type, x]));
+      expect(by.get('scheduled')?.visible_at?.toISOString()).to.equal('2026-10-02T10:00:00.000Z');
+      expect(by.get('sync')?.visible_at).to.equal(null);
     });
 
     it('connector_id follows the customMetadata entry', async () => {

@@ -121,6 +121,9 @@ def connector():
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
         dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_all_active_users = AsyncMock(return_value=[])
+        dep.get_users_with_permission_to_node = AsyncMock(return_value=[])
+        dep.get_groups_with_permission_to_node = AsyncMock(return_value=[])
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
@@ -151,6 +154,7 @@ def connector():
         dep.on_new_user_groups = AsyncMock()
         dep.inheritance_when_unreadable = AsyncMock(return_value=False)
         dep.add_permission_to_record = AsyncMock()
+        dep.get_roles_on_record = AsyncMock(return_value=({}, {}))
         yield c
 
 
@@ -434,8 +438,9 @@ class TestProcessDriveItemComprehensive:
             return_value=existing
         )
         meta = _make_file_metadata(parents=["new-parent"])
+        # A My Drive item's list always names its owner; an empty one is no answer, and fails the item.
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
-            "permissions": []
+            "permissions": [{"id": "p-owner", "type": "user", "role": "owner", "emailAddress": "u@test.com"}]
         })
         result = await connector._process_drive_item(
             meta, user_id="uid1", user_email="u@test.com",

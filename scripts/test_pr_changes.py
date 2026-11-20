@@ -233,6 +233,38 @@ class TestEveryImportedHelperIsCovered(unittest.TestCase):
                 self.assertTrue(pc.matches(path, trigger))
 
 
+_APP_IMPORT = re.compile(r"^\s*(?:from|import)\s+(app(?:\.\w+)+)", re.M)
+
+
+def _app_files_the_record_diagnostics_integration_tests_import() -> set[str]:
+    python = ROOT / "backend" / "python"
+    tests = [
+        *python.joinpath("tests/integration/graph_db").rglob("*record_diagnostics*.py"),
+        python / "tests" / "unit" / "attempt_start.py",
+    ]
+    found: set[str] = set()
+    for path in tests:
+        for module in _APP_IMPORT.findall(path.read_text(encoding="utf-8", errors="ignore")):
+            file = _module_file(python, module)
+            if file is not None and file.name != "__init__.py":
+                found.add(file.relative_to(ROOT).as_posix())
+    return found
+
+
+class TestTheRecordDiagnosticsGraphTestsRunWhenTheirCodeChanges(unittest.TestCase):
+    """The real-graph record diagnostics tests drive these modules (the event processor among them), so a change to one starts the graph job."""
+
+    def test_every_app_module_they_import_is_a_trigger(self) -> None:
+        modules = _app_files_the_record_diagnostics_integration_tests_import()
+        self.assertIn("backend/python/app/events/events.py", modules, "the import walk missed the event processor")
+        on = _workflow("backend-matrix.yml").get(True) or _workflow("backend-matrix.yml")["on"]
+        trigger = on["pull_request"]["paths"]
+        for path in sorted(modules):
+            with self.subTest(path=path):
+                self.assertTrue(pc.matches(path, pc.MATRIX_PYTHON))
+                self.assertTrue(pc.matches(path, trigger))
+
+
 class TestTheActionAndWorkflowsAgree(unittest.TestCase):
     def test_the_action_exposes_every_output(self) -> None:
         action = yaml.safe_load((ROOT / ".github/actions/pr-changes/action.yml").read_text())

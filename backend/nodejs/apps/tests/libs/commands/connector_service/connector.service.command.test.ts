@@ -36,6 +36,17 @@ describe('ConnectorServiceCommand', () => {
     } as unknown as Response
   }
 
+  it('sends the record content-open header on the outbound request', async () => {
+    fetchStub.resolves(makeFetchResponse(200, {}))
+    await new ConnectorServiceCommand({
+      uri: 'http://connector.local/api/v1/records/r1',
+      method: HttpMethod.GET,
+      headers: { authorization: 'Bearer t', 'X-Record-Content-Open': '1' },
+    }).execute()
+    const sent = new Headers(fetchStub.firstCall.args[1].headers as Record<string, string>)
+    expect(sent.get('x-record-content-open')).to.equal('1')
+  })
+
   describe('constructor', () => {
     it('should set method, body, and sanitized headers', () => {
       const options: ConnectorServiceCommandOptions = {

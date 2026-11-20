@@ -57,6 +57,16 @@ def admission_backlog() -> "AdmissionBacklog":
     return AdmissionBacklog()
 
 
+def indexing_fairness(slot_limit: "Callable[[str], int]") -> "IndexingFairness | None":
+    """Optional parts for the record consumer: a key extractor, weights, a slot planner, a buffer room rule, a read
+    budget for extra topics, an observer, extra topics and PostgreSQL claim steps.
+
+    ``slot_limit(pool)`` is the slot limit the consumer's own planner is given for a pool; call it only once the
+    consumer is built. OSS: none, so the consumer keeps its defaults.
+    """
+    return None
+
+
 def get_connector_registry_cls():
     """Return the ConnectorRegistry class (lazy to avoid circular imports)."""
     from app.connectors.core.registry.connector_registry import ConnectorRegistry
@@ -94,12 +104,15 @@ def get_data_entities_processor_cls():
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi import FastAPI
     from langchain_core.embeddings import Embeddings
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.registry.toolset_registry import ToolsetRegistry
     from app.services.messaging.consumer_concurrency import AdmissionBacklog
+    from app.services.messaging.scheduling.interface import IndexingFairness
     from app.services.model_identity.forwarders.registry import ForwarderRegistry
     from app.services.model_identity.groups import GroupMembershipResolver
     from app.web.ports import WebAccessGate

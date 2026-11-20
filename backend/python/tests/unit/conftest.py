@@ -9,6 +9,9 @@ from collections.abc import Iterator
 import pytest
 
 from tests.support.edition_defaults import unit_test_fixtures
+from tests.support.mock_config_epoch import (
+    _epoch_of_a_collection_whose_config_is_a_mock,  # noqa: F401  (autouse)
+)
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +19,13 @@ def _no_table_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every PDF parse runs the rule-based table path. The learned detector downloads its model from the Hub in a
     worker thread: a stalled download outlived the test's timeout and kept the pytest worker from exiting."""
     monkeypatch.setenv("PDF_TABLE_MODEL", "off")
+
+
+@pytest.fixture(autouse=True)
+def _paid_cache_writes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The paid-result cache stores nothing unless ``PAID_CACHE_WRITE`` is on (its default for the release that
+    first ships it is off). The cache's own tests run with writes on; the off behaviour deletes the variable."""
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
 
 
 @pytest.fixture(autouse=True)

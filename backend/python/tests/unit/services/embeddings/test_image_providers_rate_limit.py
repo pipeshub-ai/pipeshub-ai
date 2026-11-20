@@ -369,3 +369,218 @@ async def test_a_cancelled_voyage_call_waits_for_its_request_to_return(monkeypat
     query_task.cancel()
     with pytest.raises((asyncio.CancelledError, requests.exceptions.ConnectionError)):
         await query_task
+
+
+# ---- allowance refusals in Voyage and Gemini, thread settling in Cohere and Bedrock -------------------------------------------
+
+
+class _AllowanceRefused(Exception):
+    pass
+
+
+def _refusal(*_: Any, **__: Any) -> Any:  # noqa: ANN401
+    from app.services.llm_gateway.wire import SendAllowanceSpent
+
+    raise _AllowanceRefused("APIConnectionError") from SendAllowanceSpent("the stage job has used its sends")
+
+
+async def test_a_spent_send_allowance_leaves_the_voyage_provider(one_attempt: None) -> None:
+    embeddings = MagicMock()
+    embeddings.aembed_documents = AsyncMock(side_effect=_refusal)
+    provider = MultimodalEmbeddingFactory.create(_config("voyage", dense_embeddings=embeddings))
+    with pytest.raises(_AllowanceRefused):
+        await provider.embed_images([IMAGE])  # type: ignore[union-attr]
+
+
+async def test_a_spent_send_allowance_leaves_the_gemini_provider(monkeypatch: pytest.MonkeyPatch, one_attempt: None) -> None:
+    from google import genai
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:  # noqa: ANN401
+            self.aio = MagicMock()
+            self.aio.models.embed_content = AsyncMock(side_effect=_refusal)
+
+    monkeypatch.setattr(genai, "Client", FakeClient)
+    provider = MultimodalEmbeddingFactory.create(_config("gemini"))
+    with pytest.raises(_AllowanceRefused):
+        await provider.embed_images(["AAAA"])  # type: ignore[union-attr]
+
+
+async def _cancelled_call_waits_for_the_sdk(provider: Any, started: Any, release: Any, returned: Any) -> None:  # noqa: ANN401
+    """Cancel ``embed_images`` while the synchronous SDK call runs: the cancellation must not come out before it returned."""
+    import asyncio
+
+    task = asyncio.create_task(provider.embed_images([IMAGE]))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.2)
+    assert not task.done(), "the cancellation left while the provider's request was still running"
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert returned.is_set()
+
+
+async def test_a_cancelled_cohere_image_call_waits_for_its_request(monkeypatch: pytest.MonkeyPatch, one_attempt: None) -> None:
+    import threading
+
+    started, release, returned = threading.Event(), threading.Event(), threading.Event()
+
+    def embed(**_: Any) -> Any:  # noqa: ANN401
+        started.set()
+        release.wait(5)
+        returned.set()
+        raise RuntimeError("late failure")
+
+    client = MagicMock()
+    client.embed.side_effect = embed
+    monkeypatch.setitem(sys.modules, "cohere", types.SimpleNamespace(ClientV2=lambda api_key: client))
+    provider = MultimodalEmbeddingFactory.create(_config("cohere"))
+    await _cancelled_call_waits_for_the_sdk(provider, started, release, returned)
+
+
+async def test_a_cancelled_bedrock_image_call_waits_for_its_request(monkeypatch: pytest.MonkeyPatch, one_attempt: None) -> None:
+    import threading
+
+    started, release, returned = threading.Event(), threading.Event(), threading.Event()
+
+    def invoke(**_: Any) -> Any:  # noqa: ANN401
+        started.set()
+        release.wait(5)
+        returned.set()
+        raise RuntimeError("late failure")
+
+    client = MagicMock()
+    client.invoke_model.side_effect = invoke
+    monkeypatch.setattr("boto3.client", lambda **_: client)
+    provider = MultimodalEmbeddingFactory.create(_config("bedrock"))
+    await _cancelled_call_waits_for_the_sdk(provider, started, release, returned)
+
+
+async def test_jina_requests_are_counted_and_admitted_by_the_wire_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Jina posts with a ``requests`` session, which has no hooks: a failed request counts toward the job's sends, and an
+    exhausted allowance refuses the request before it is made."""
+    import requests
+
+    from app.services.llm_gateway import wire
+    from app.utils.custom_embeddings import JinaEmbeddings
+
+    posted: list[int] = []
+
+    class Session:
+        def post(self, *_: Any, **__: Any) -> Any:  # noqa: ANN401
+            posted.append(1)
+            raise requests.exceptions.ConnectionError("refused")
+
+    embeddings = JinaEmbeddings(jina_api_key="k", model_name="m")
+    embeddings.session = Session()  # the class builds its own session
+    with wire.wire_scope() as seen, pytest.raises(requests.exceptions.ConnectionError):
+        await embeddings.aembed_documents(["x"])
+    assert seen.requests == 1 and posted == [1], "the thread must keep the wire scope of the attempt"
+    with wire.metered(wire.SendMeter(allowance=0)), wire.wire_scope(), pytest.raises(Exception) as refused:
+        await embeddings.aembed_documents(["x"])
+    assert wire.refused_by_allowance(refused.value) and posted == [1], "no request was made past the allowance"
+
+
+async def test_a_cancelled_jina_call_waits_for_its_request_to_return() -> None:
+    import asyncio
+    import threading
+
+    from app.utils.custom_embeddings import JinaEmbeddings
+
+    inside, release, returned = threading.Event(), threading.Event(), threading.Event()
+
+    class Session:
+        def post(self, *_: Any, **__: Any) -> Any:  # noqa: ANN401
+            inside.set()
+            release.wait(5)
+            returned.set()
+            raise RuntimeError("late failure")
+
+    embeddings = JinaEmbeddings(jina_api_key="k", model_name="m")
+    embeddings.session = Session()  # the class builds its own session
+    task = asyncio.create_task(embeddings.aembed_documents(["x"]))
+    await asyncio.to_thread(inside.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.2)
+    assert not task.done(), "the cancellation left while the request was still running"
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert returned.is_set()
+
+
+async def test_jina_failure_status_is_kept_for_the_retry_decision() -> None:
+    """A 429 reply carries its status and headers on the raised error, so the gateway sees a throttle and its Retry-After."""
+    import requests
+
+    from app.utils.custom_embeddings import JinaAPIError, JinaEmbeddings
+
+    response = requests.Response()
+    response.status_code, response._content = 429, b'{"detail": "slow down"}'
+    response.headers["Retry-After"] = "30"
+
+    class Session:
+        def post(self, *_: Any, **__: Any) -> Any:  # noqa: ANN401
+            return response
+
+    embeddings = JinaEmbeddings(jina_api_key="k", model_name="m")
+    embeddings.session = Session()  # the class builds its own session
+    with pytest.raises(JinaAPIError) as raised:
+        embeddings.embed_documents(["x"])
+    assert raised.value.status_code == 429 and raised.value.response.headers["Retry-After"] == "30"
+
+
+def test_importing_custom_embeddings_does_not_import_the_community_jina_module() -> None:
+    """The Jina class is built on first use, so its deprecation warning and import cost stay out of every importer."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, app.utils.custom_embeddings as m\n"
+        "assert 'langchain_community.embeddings.jina' not in sys.modules\n"
+        "cls = m.JinaEmbeddings\n"
+        "assert 'langchain_community.embeddings.jina' in sys.modules and m.JinaEmbeddings is cls\n"
+    )
+    result = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr[-2000:]
+
+
+def test_jina_requests_carry_a_finite_connect_and_read_timeout() -> None:
+    """``requests`` waits for ever without a timeout; a stalled Jina server would hold the thread of a cancelled call."""
+    from app.utils.custom_embeddings import JinaEmbeddings
+
+    seen: dict[str, Any] = {}
+
+    class Session:
+        def post(self, *_: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            seen.update(kwargs)
+            raise RuntimeError("stop here")
+
+    embeddings = JinaEmbeddings(jina_api_key="k", model_name="m")
+    embeddings.session = Session()  # the class builds its own session
+    with pytest.raises(RuntimeError):
+        embeddings.embed_documents(["x"])
+    connect, read = seen["timeout"]
+    assert 0 < connect < float("inf") and 0 < read < float("inf")
+
+
+@pytest.mark.parametrize("body", ["null", "[]", '"oops"', "42"])
+def test_a_jina_reply_that_is_not_an_object_still_carries_its_status(body: str) -> None:
+    """The retry decision reads the status and response from the raised error, so no reply shape may bypass ``JinaAPIError``."""
+    import requests
+
+    from app.utils.custom_embeddings import JinaAPIError, JinaEmbeddings
+
+    response = requests.Response()
+    response.status_code, response._content = 503, body.encode()
+
+    class Session:
+        def post(self, *_: Any, **__: Any) -> Any:  # noqa: ANN401
+            return response
+
+    embeddings = JinaEmbeddings(jina_api_key="k", model_name="m")
+    embeddings.session = Session()  # the class builds its own session
+    with pytest.raises(JinaAPIError) as raised:
+        embeddings.embed_documents(["x"])
+    assert raised.value.status_code == 503 and raised.value.response is response

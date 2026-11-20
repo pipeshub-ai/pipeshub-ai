@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.kg import backfill, bootstrap, drainer, locks
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.verify import (
     Cursor,
     verify_chunk,
@@ -61,10 +62,12 @@ HOLD_S = 300.0                   # after a demotion by the net, the bootstrap le
 NET = METRICS_BACKEND.counter("pipeshub_kg_net_total", "Checks of an enforced connector against the walk, by where they ran and what they found (over: kg admitted what the walk denies; under: kg denied what the walk admits; same; skipped; busy: a sample found the process at its limit; error)", ["source", "result"])
 LAST_VERIFIED = METRICS_BACKEND.gauge("pipeshub_kg_net_last_verified_seconds", "Unix time a connector's last complete verify against the graph finished (alert when it is older than a few verify intervals)", ["org", "connector"])
 OVERDUE = METRICS_BACKEND.gauge("pipeshub_kg_net_verify_overdue", "Enforced connectors whose full verify has not completed within 24 verify intervals", ["org"])
+OLDER = METRICS_BACKEND.gauge("pipeshub_kg_net_older_epoch", "Enforced connectors whose copy is of an older projection code epoch: not served or verified until the bootstrap brings them up to date (alert when it stays above 0)", ["org"])
 DEMOTED = METRICS_BACKEND.counter("pipeshub_kg_net_demoted_total", "Connectors taken back to the walk because kg differs from it", ["source"])
 
+# A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
-    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
+    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' AND s.code_epoch = $2 ORDER BY k.id"""
 
 _SAMPLES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task]] = weakref.WeakKeyDictionary()     # per loop: a loop that died leaves no sample counted as in flight
 _RETRY: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Task] = weakref.WeakKeyDictionary()
@@ -338,8 +341,10 @@ async def settle() -> None:
 
 # ---- the periodic verify --------------------------------------------------------------------------------------------------------------------
 
+# A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
-    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
+    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' AND s.code_epoch = $2 ORDER BY k.id"""
+OLDER_EPOCH = """/* pipeshub:kg.net_older_epoch */ SELECT count(*) FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0 AND mode = 'enforce' AND code_epoch <> $2"""
 
 
 # The planner profile of the reader (no bitmap or sequential scans: with no statistics, or a connector that holds most of the org's rows, one can read the whole org to sort a page) and the limit of one page.
@@ -361,11 +366,11 @@ class VerifyState:
 
 
 async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
-    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design), else ``done`` or
-    ``more``."""
+    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design) or a restamp
+    job hides rows of it (their stamps are outdated by design until the job is over them), else ``done`` or ``more``."""
     async def go(tx: Tx) -> str:
         await tx.fetchval(CHUNK_PROFILE, VERIFY_TIMEOUT)
-        if not await drainer.serves(tx, org, app):
+        if not await drainer.serves(tx, org, app) or await drainer.fenced(tx, org, app):
             return "skipped"
         return "done" if await verify_chunk(tx, org, app, cur) else "more"
     with bind(drainer._ctx(org)):
@@ -397,11 +402,11 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
     if every <= 0:
         return 0
 
-    async def enforced(tx: Tx) -> list[str]:
-        return [r["id"] for r in await tx.fetch(ENFORCED, org)]
+    async def enforced(tx: Tx) -> tuple[list[str], int]:
+        return [r["id"] for r in await tx.fetch(ENFORCED, org, CODE_EPOCH)], await tx.fetchval(OLDER_EPOCH, org, CODE_EPOCH)
     try:
         with bind(drainer._ctx(org)):
-            apps = await db.run(enforced, isolation="repeatable_read")
+            apps, older = await db.run(enforced, isolation="repeatable_read")
     except Exception:
         NET.inc("verify", "error")
         logger.warning("kg verify could not list the enforced connectors of an org", exc_info=True)
@@ -420,6 +425,7 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 st.flagged = True
                 logger.error("kg connector %s of org %s has not completed a verify in %d intervals", app, org, OVERDUE_INTERVALS)
     OVERDUE.set(org, value=overdue)
+    OLDER.set(org, value=older)
     turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now), key=lambda a: states[(org, a)].due)[:VERIFY_PER_PASS]
     completed = 0
     for app in turn:

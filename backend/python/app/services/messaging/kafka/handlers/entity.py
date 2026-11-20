@@ -18,8 +18,12 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.connector.connector_service import (
     connector_sync_lock,
+    note_sync_started,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    USER_LINK_MARK_TTL_MS,
+)
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -36,6 +40,8 @@ from app.containers.connector import (
 from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
 from app.exceptions.non_retryable import NonRetryableError
+from app.modules.indexing.record_diagnostics import WriteKind
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_republish import record_event
 from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
@@ -577,7 +583,30 @@ class EntityEventService(BaseEventService):
                 app = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
                 if not app or not app.get("isActive", False) or app.get("status") == APP_STATUS_DELETING:
                     return True
-                await connector.link_new_users()
+                # A reindex sees this pass as it sees a sync (`unless_synced_since`), since the pass writes access too: it moves a
+                # stand-in group's grants onto the user it stood for, which a reindex that read the source earlier would take back.
+                # The start moves the start time (seen by a reindex that began before). The mark, rewritten while the pass runs, is
+                # what a reindex that begins meanwhile, in any process, takes for a running sync. It is not cleared at the end: a
+                # pass in another process may share it, so it goes stale instead. A pass whose mark is not written does not run on.
+                # A write gets a quarter of the TTL, as does the wait between writes: the next mark lands at most 3/4 of the
+                # TTL after the last one's time, before it expires. A write that misses its deadline stops the pass.
+                async def mark(*keys: str) -> None:
+                    now = get_epoch_timestamp_in_ms()
+                    ensure_written(await asyncio.wait_for(self.graph_provider.batch_upsert_nodes(
+                        [{"id": connector_id, **dict.fromkeys(keys, now)}], CollectionNames.APPS.value,
+                    ), USER_LINK_MARK_TTL_MS / 4000), "the user-link pass mark")
+
+                note_sync_started(connector_id)
+                await mark(ConnectorStateKeys.LAST_SYNC_STARTED_AT, ConnectorStateKeys.USER_LINK_STARTED_AT)
+                link = org_context.spawn_in_request(connector.link_new_users(), name="connector_link_users")
+                try:
+                    while not (await asyncio.wait({link}, timeout=USER_LINK_MARK_TTL_MS / 4000))[0]:
+                        await mark(ConnectorStateKeys.USER_LINK_STARTED_AT)
+                    await link
+                finally:
+                    if not link.done():
+                        link.cancel()
+                        await asyncio.gather(link, return_exceptions=True)
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="link_users")
         return True
@@ -586,9 +615,10 @@ class EntityEventService(BaseEventService):
         """Handle user update event"""
         try:
             self.logger.debug("Processing user updated event for user %s", payload.get("userId"))
-            # Find existing user by userId
+            # raise_on_error: the providers answer None to a failed read too, and
+            # "not found" would hide the outage from the classifier.
             existing_user = await self.graph_provider.get_user_by_user_id(
-                payload["userId"],
+                payload["userId"], raise_on_error=True
             )
 
             if not existing_user:
@@ -1089,6 +1119,8 @@ class EntityEventService(BaseEventService):
             "queuedAtTimestamp": now,
             "processingStartedAt": None,
             "reason": None,
+            # a record parked while its connector was off has no open run: this starts one
+            **run_reference(record, WriteKind.QUEUE, now),
         }
         # Stale recovery parks these too when it parks an in-flight record.
         for status_field in ("parsingStatus", "extractionStatus"):
@@ -1323,7 +1355,9 @@ class EntityEventService(BaseEventService):
                         self.app_container.connectors_map[kb_key] = connector
                         self.logger.info(f"KB connector instance registered for kb_key={kb_key}")
         except Exception as reg_err:
-            error_class.log_failure(self.logger, "entity_event.step_failed", reg_err, step="register_kb_connector")
+            error_class.log_failure(
+                self.logger, "entity_event.step_failed", reg_err, step="register_kb_connector", connector_id=kb_key
+            )
 
         self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
         return {

@@ -22,6 +22,7 @@ from app.modules.parse_engine.cost import (
     FormatKind,
     estimate,
 )
+from tests.support.eventually import done_without_waiting
 from tests.support.fake_member_budget import FakeMemberBudget
 
 S, L, H = CostClass.SMALL, CostClass.LARGE, CostClass.HUGE
@@ -57,7 +58,7 @@ async def test_small_docling_bypasses_cpu() -> None:
     gate = route_gate(est, cpu_gate, docling_gate)
     assert gate is docling_gate
     before = (budget.reserve_calls, budget.snapshot()["used"])
-    permit = await asyncio.wait_for(gate.acquire(request_from_estimate(est), deadline_s=1), 0.5)
+    permit = done_without_waiting(gate.acquire(request_from_estimate(est), deadline_s=1))
     assert (budget.reserve_calls, budget.snapshot()["used"]) == before  # no CPU token, no reserve
     assert cpu_gate.running(S) == 0 and docling_gate.running(S) == 1
     assert permit.inner is None

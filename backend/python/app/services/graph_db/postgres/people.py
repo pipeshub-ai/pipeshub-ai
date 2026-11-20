@@ -134,8 +134,7 @@ class PeopleMixin(IdentityMixin):
 
         try:
             return await self._q(go, transaction, write=True)
-        except Exception as e:
-            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
+        except Exception:
             raise
 
     # ---- a principal by email -------------------------------------------------------------------------------------------------------

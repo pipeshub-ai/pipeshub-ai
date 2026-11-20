@@ -249,21 +249,39 @@ _REVIVE = f"""/* pipeshub:pgvector.revive */
         {_COUNT % '(SELECT 1 FROM r WHERE r.lex_terms IS NOT NULL) x'}"""
 
 
-# The group rows the points join, locked FOR KEY SHARE (the lightest lock that the group collection's FOR UPDATE conflicts with; it does not
-# block another writer's update of the row) in key order, before any point is written: the collection never removes the membership of a
-# group under a writer that is adding points to it, whether or not the points carry membership. A group with no row has no membership to lose.
+# Every writer of group rows (a batch, a membership write) first takes one advisory lock per group key, rows or not, in one order (the lock
+# keys sorted): only then does it lock or create a row. Row locks alone cannot give one order, because a group with no row has nothing to
+# lock: a batch holding rH would then create rG while a membership writer that had created rG waited for rH, a deadlock. The group
+# collection and the membership triggers take no key locks: the collection skips locked rows and the triggers lock rows the writer holds.
+GROUP_WRITE_CLASS = 7366         # advisory-lock class of the group writers (registered in kernel.lock_keys by retrieval_0006)
+_LOCK_GROUP_KEYS = f"""/* pipeshub:pgvector.lock_group_keys */
+        SELECT count(pg_advisory_xact_lock({GROUP_WRITE_CLASS}, s.h))
+          FROM (SELECT DISTINCT hashtext($1 || '/' || $2::int::text || '/' || k) AS h FROM unnest($3::text[]) AS k ORDER BY 1 OFFSET 0) s"""
+
+# The group rows the points join, locked in key order before any point is written: the group collection (FOR UPDATE) never removes the
+# membership of a group under a writer that is adding points to it, whether or not the points carry membership. FOR NO KEY UPDATE, the
+# mode the membership update below needs and the point trigger's FOR SHARE (retrieval_0006) conflicts with: a batch holds all its groups
+# before its first point, so it never upgrades a lock (two writers of one group take turns at the key locks). A group with no row has no
+# membership to lose.
 _LOCK_GROUPS = """/* pipeshub:pgvector.lock_groups */
         SELECT 1 FROM retrieval.point_groups WHERE org_id = $1 AND collection_id = $2 AND group_key = ANY($3::text[])
-        ORDER BY group_key FOR KEY SHARE"""
+        ORDER BY group_key FOR NO KEY UPDATE"""
 
 
 async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, computed_at: datetime | None, *, safe_mode: bool) -> None:
     """Points, their text, payload and postings, and their groups' membership, in this transaction. New points are inserted; points
     that exist are locked and updated in place (``point_sk`` is kept: the generated bit column and the indexes follow). A point
-    deleted between the two steps is inserted by the next round. The rows of the points' groups are locked first (see ``_LOCK_GROUPS``)."""
+    deleted between the two steps is inserted by the next round. The points' groups are locked first (``_LOCK_GROUP_KEYS``, then
+    ``_LOCK_GROUPS``), and
+    their membership is written before the points: a point takes its group's membership keys when it is written (retrieval_0006), so a
+    new point is written once, not written and then rewritten by the membership that follows it."""
     args = (b.org, collection_id, space_id, b.point_ids, b.group_keys, b.vrids, b.block_ids, b.ent_types, b.ent_ids, b.ent_kinds,
             b.ent_levels, b.embeddings, b.term_start, b.term_end, b.terms, b.weights, b.payloads, b.contents)
-    await tx.execute(_LOCK_GROUPS, b.org, collection_id, sorted(set(b.group_keys)))
+    keys = sorted(set(b.group_keys))
+    await tx.execute(_LOCK_GROUP_KEYS, b.org, collection_id, keys)
+    await tx.execute(_LOCK_GROUPS, b.org, collection_id, keys)
+    if b.groups:
+        await write_groups(tx, b.org, collection_id, b.groups, computed_at, allow_empty=False)
     todo = list(b.point_ids)
     for _ in range(4):
         made = {r["point_id"] for r in await tx.fetch(_INSERT_NEW, *args, todo)}
@@ -280,8 +298,6 @@ async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, compute
     # A point deleted while HNSW safe mode was on (a tombstone) and written again is alive again, and counted again. Always run, not
     # only in safe mode: the tombstone outlives a switch of the mode, and without tombstones this is an index probe that finds nothing.
     await tx.execute(_REVIVE, b.org, collection_id, space_id, b.point_ids)
-    if b.groups:
-        await write_groups(tx, b.org, collection_id, b.groups, computed_at, allow_empty=False)
 
 
 _GROUP_ROWS = """/* pipeshub:pgvector.write_groups */
@@ -336,6 +352,7 @@ async def write_groups(tx: Tx, org: str, collection_id: int, groups: dict[str, d
     leaves the rest as it is, as a payload merge does on the other providers). ``allow_empty=False`` (indexing) never replaces arrays
     with empty ones: an upsert that carries no membership must not erase what the membership sync wrote. The rows of ``group_members``
     (kinds 1-3 membership, 4 path, 5 override scope) are made to match the arrays that result."""
+    await tx.execute(_LOCK_GROUP_KEYS, org, collection_id, list(groups))     # held already when called by upsert
     rows = [{"k": k, **{col: v[key] if key in v else None for key, col in _ROW_COLUMNS}} for k, v in groups.items()]
     won = await tx.fetch(_GROUP_ROWS, org, collection_id, json.dumps(rows), computed_at, allow_empty)
     members = [{"k": r["group_key"], "kind": kind, "members": list(r[column] or [])}

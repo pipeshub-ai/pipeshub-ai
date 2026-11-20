@@ -32,6 +32,7 @@ from app.services.base_client import (
 )
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.config import messaging_env
+from app.services.paid_cache.orphan import RecordGone, RecordHandBack, current_guard
 from app.services.paid_cache.run import current_run
 from app.services.parsing.interface import (
     ParseErrorCode,
@@ -150,7 +151,52 @@ class ParsingClient(BaseServiceClient):
         skip_table_enrichment: bool = False,
         file_path: str | None = None,
     ) -> ParseResult:
-        """Parse *file_content* by calling the Parsing Service.
+        """Parse *file_content* by calling the Parsing Service. A 410 (``RECORD_GONE``: the service saw the record's delete
+        marker change) is never taken at its word: the record is read first (``orphan.DeliveryGuard.confirm_gone``). Gone:
+        ``RecordGone``. Live: the parse is sent again with the markers just read, at most twice (the third request disables
+        the service's stop). The read fails: ``RecordHandBack`` (the delivery is handed back; no drain, no immediate re-parse).
+        """
+        guard = current_guard()
+        while True:
+            try:
+                return await self._parse_once(
+                    file_content, record_name, mime_type, extension, org_id, provider,
+                    skip_table_enrichment=skip_table_enrichment, file_path=file_path,
+                    extra_fields=guard.request_fields() if guard is not None else {},
+                )
+            except ParsingClientError as exc:
+                if exc.code != ParseErrorCode.RECORD_GONE or guard is None:
+                    raise
+                backend = None
+                if guard.backend_of is not None:
+                    try:
+                        backend = await guard.backend_of()
+                    except Exception:
+                        backend = None
+                verdict = await guard.confirm_gone(backend)
+                if verdict == "live":
+                    continue
+                if verdict == "gone":
+                    raise RecordGone(guard.record_id, "the parsing service refused its parse") from exc
+                raise RecordHandBack(
+                    f"{guard.record_id}: the parsing service refused a deleted record and the record could not be read",
+                    delay_s=15.0,
+                ) from exc
+
+    async def _parse_once(
+        self,
+        file_content: bytes,
+        record_name: str,
+        mime_type: str,
+        extension: str,
+        org_id: str | None,
+        provider: ParserProvider | None,
+        *,
+        skip_table_enrichment: bool,
+        file_path: str | None,
+        extra_fields: dict[str, str],
+    ) -> ParseResult:
+        """One request to the Parsing Service.
 
         Returns a :class:`ParseResult` on success.
         Raises :class:`ParsingClientError` on expected failures, including
@@ -176,12 +222,15 @@ class ParsingClient(BaseServiceClient):
             form_data["provider"] = provider.value
         if file_path:
             form_data["file_path"] = file_path
+        form_data.update(extra_fields)
         # The record budget this call waits under: the service bounds its stage (and its late writes) by it.
         form_data["record_budget_s"] = str(messaging_env.record_processing_timeout_for(extension, mime_type))
         run = current_run()
         if run is not None and run.refresh:
             # A refreshPaidOutputs run bypasses the stored outputs in the parsing service too.
             form_data["refresh_paid_outputs"] = "true"
+            # Names this refresh: the client's own retry of the request carries the same one.
+            form_data["refresh_token"] = run.refresh_token
 
         record_budget = messaging_env.record_processing_timeout_for(extension, mime_type)
         try:

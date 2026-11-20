@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -17,6 +18,7 @@ import {
   ARTIFACT_RETIRING_HEARTBEAT_MS,
   PAID_RESULT_URL_TTL_SECONDS,
   PAID_RESULT_LIST_PAGE,
+  PAID_RESULT_PURGE_BATCH_MAX,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -24,6 +26,7 @@ import {
   S3StorageConfig,
 } from '../config/storage.config';
 import { Logger } from '../../../libs/services/logger.service';
+import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
 import { ConfigurationManagerServiceCommand } from '../../../libs/commands/configuration_manager/cm.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -74,6 +77,7 @@ import {
 } from '../utils/utils';
 import {
   paidResultsOrgRoot,
+  RECORD_ID,
   isPaidResultManifestPath,
   isPaidResultObjectPath,
   paidResultsRecordRoot,
@@ -218,6 +222,18 @@ function virtualRecordIdOf(
 // TODO: Remove these globals
 let storageConfig:
   AzureBlobStorageConfig | LocalStorageConfig | S3StorageConfig | null = null;
+
+/**
+ * How far past this service's clock a purge cutoff may lie before it is refused. The cutoff is the object store's clock,
+ * which may differ from this host's, so the bound is one only a bug would exceed; a cutoff past the warning mark is
+ * accepted and logged.
+ */
+const PURGE_CUTOFF_FUTURE_LIMIT_MS = 15 * 60_000;
+const PURGE_CUTOFF_FUTURE_WARN_MS = 60_000;
+/** The record folder's sentinel area: listings leave it out and the purge that follows it removes it with the folder. */
+const PURGE_CUTOFF_FOLDER = 'purge-cutoff';
+/** Folder deletes in flight at once within one batch purge. */
+const PAID_RESULT_PURGE_BATCH_CONCURRENCY = 8;
 
 @injectable()
 export class StorageController {
@@ -1048,6 +1064,7 @@ export class StorageController {
       }
     });
     stream.pipe(res);
+    releaseOnClientClose(res, stream);
   }
 
   /**
@@ -1384,7 +1401,12 @@ export class StorageController {
       });
       res.status(HTTP_STATUS.OK).json({
         objects: page.objects
-          .filter((o) => o.key.startsWith(`${root}/`))
+          // A purge-cutoff sentinel is the store's clock reading, never a result.
+          .filter(
+            (o) =>
+              o.key.startsWith(`${root}/`) &&
+              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`),
+          )
           .map((o) => ({
             path: o.key.slice(root.length + 1),
             size: o.size,
@@ -1433,9 +1455,189 @@ export class StorageController {
       if (typeof recordParam !== 'string' || recordParam === '') {
         throw new BadRequestError('recordId must be a single value');
       }
+      // The validator has coerced it to a positive integer; anything else (an array, a non-number) is refused here too.
+      const beforeQuery: unknown = req.query.before;
+      if (
+        beforeQuery !== undefined &&
+        typeof beforeQuery !== 'string' &&
+        typeof beforeQuery !== 'number'
+      ) {
+        throw new BadRequestError('before must be a single value');
+      }
       const adapter = await this.initializeStorageAdapter(req);
-      await adapter.deleteTree(paidResultsRecordRoot(orgId, recordParam));
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // The cutoff is an instant the store's own clock returned (`purge-cutoff`): one in the future is not one.
+      if (beforeQuery !== undefined) {
+        const aheadMs = Number(beforeQuery) - Date.now();
+        if (aheadMs > PURGE_CUTOFF_FUTURE_LIMIT_MS) {
+          throw new BadRequestError('before is in the future');
+        }
+        if (aheadMs > PURGE_CUTOFF_FUTURE_WARN_MS) {
+          this.logger.warn(
+            'Paid-result purge cutoff is ahead of this service clock',
+            { aheadMs },
+          );
+        }
+      }
+      if (beforeQuery === undefined) {
+        await adapter.deleteTree(root);
+      } else {
+        // A purge that started at this instant removes only what existed then: a late DELETE (its caller lost its
+        // lease and a newer one has stored results since) leaves the newer objects alone.
+        await this.deletePaidResultsOlderThan(
+          adapter,
+          root,
+          Number(beforeQuery),
+        );
+      }
       res.status(HTTP_STATUS.OK).json({ purged: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes the folders of up to `PAID_RESULT_PURGE_BATCH_MAX` records in one request (the same removal as the
+   * per-record DELETE without `before`, which is what a re-purge hop does). Each id gets its own result: one folder
+   * that cannot be removed never hides the others, and the caller repeats just the failed ones. Safe to repeat.
+   */
+  async purgePaidResultsBatch(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const body = req.body as { recordIds?: unknown };
+      const ids = body.recordIds;
+      // The validator has run; this refuses anything it did not (fail closed, and the bound holds on its own).
+      if (
+        !Array.isArray(ids) ||
+        ids.length === 0 ||
+        ids.length > PAID_RESULT_PURGE_BATCH_MAX ||
+        !ids.every(
+          (id) => typeof id === 'string' && RECORD_ID.test(id) && id !== 'org',
+        )
+      ) {
+        throw new BadRequestError('recordIds must be 1 to 100 record ids');
+      }
+      const recordIds = ids as string[];
+      const adapter = await this.initializeStorageAdapter(req);
+      const results: Array<{
+        recordId: string;
+        purged: boolean;
+        error?: string;
+      }> = [];
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const i = cursor++;
+          if (i >= recordIds.length) return;
+          const recordId = recordIds[i] as string;
+          try {
+            await adapter.deleteTree(paidResultsRecordRoot(orgId, recordId));
+            results[i] = { recordId, purged: true };
+          } catch (error) {
+            // The detail stays in the log: a store error can carry a path or a credential hint.
+            this.logger.error('Could not purge a paid-result folder', {
+              recordId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            results[i] = { recordId, purged: false, error: 'purge failed' };
+          }
+        }
+      };
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.min(
+              PAID_RESULT_PURGE_BATCH_CONCURRENCY,
+              recordIds.length,
+            ),
+          },
+          worker,
+        ),
+      );
+      res.status(HTTP_STATUS.OK).json({ results });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes the objects under `root` last written before `before` (ms). Object versions are not read: a store's
+   * write time is its own clock (whole seconds on S3 and Azure), so the caller passes an instant a margin earlier
+   * than its purge started. An object overwritten between the listing and the delete is the one gap (a conditional
+   * delete on the listed etag would close it, which the storage adapters do not offer yet).
+   */
+  private async deletePaidResultsOlderThan(
+    adapter: StorageServiceAdapter,
+    root: string,
+    before: number,
+  ): Promise<void> {
+    let after: string | undefined;
+    for (;;) {
+      const page = await adapter.listObjects(`${root}/`, {
+        after,
+        limit: PAID_RESULT_LIST_PAGE,
+      });
+      const doomed = page.objects
+        .filter(
+          (o) => o.key.startsWith(`${root}/`) && o.lastModifiedMs < before,
+        )
+        .map((o) => o.key);
+      if (doomed.length > 0) {
+        await adapter.deleteObjects(doomed);
+      }
+      if (page.next === undefined) return;
+      after = page.next;
+    }
+  }
+
+  /**
+   * The store's current time, as a cutoff for a purge that follows: a sentinel object is written to the record's folder
+   * and its last-modified stamp (the object store's own clock, the one every stored result carries) is read back, so no
+   * clock of the caller or of this service decides which objects a purge may remove. The sentinel is deleted again.
+   */
+  async paidResultsPurgeCutoff(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const adapter = await this.initializeStorageAdapter(req);
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // A folder of its own, so the lookup never depends on how many other sentinels a crash left beside it.
+      const folder = `${root}/${PURGE_CUTOFF_FOLDER}/${randomUUID()}/`;
+      const key = `${folder}stamp.json`;
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('{}'),
+        documentPath: key,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      let cutoff: number;
+      try {
+        const page = await adapter.listObjects(folder, {
+          limit: PAID_RESULT_LIST_PAGE,
+        });
+        const written = page.objects.find((o) => o.key === key);
+        // A stamp that is not a positive number (an S3 object listed without LastModified reads as 0) is no stamp.
+        if (written === undefined || !(written.lastModifiedMs > 0)) {
+          throw new ServiceUnavailableError(
+            'The store did not stamp the cutoff',
+          );
+        }
+        cutoff = written.lastModifiedMs;
+      } finally {
+        await adapter.deleteObjects([key]).catch(() => undefined);
+      }
+      res.status(HTTP_STATUS.OK).json({ cutoff });
     } catch (error) {
       next(error);
     }
@@ -2457,7 +2659,14 @@ export class StorageController {
         // Local files are bound to the identity the caller verified (`ifMatch`): S3 and Azure callers send `If-Match` themselves.
         const ifMatch =
           typeof req.query.ifMatch === 'string' ? req.query.ifMatch : undefined;
-        serveFileFromLocalStorage(document, res, resolvedVersion, ifMatch);
+        const range = req.headers.range;
+        serveFileFromLocalStorage(
+          document,
+          res,
+          resolvedVersion,
+          ifMatch,
+          typeof range === 'string' ? range : undefined,
+        );
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }

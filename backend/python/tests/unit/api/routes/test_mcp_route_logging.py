@@ -33,7 +33,11 @@ from app.agents.mcp.errors import (
     MCPRequestNotSentError,
 )
 from app.agents.mcp.models import MCPAuthMode, OAuthTokens
-from app.agents.mcp.oauth_client import MCPOAuthError, MCPRefreshTokenInvalidError
+from app.agents.mcp.oauth_client import (
+    MCPOAuthError,
+    MCPRefreshTokenInvalidError,
+    exchange_code_for_token,
+)
 from app.api.middlewares.request_log import install_request_logging
 from app.api.routes import mcp_servers
 from app.utils.logger import log_record_fields
@@ -175,8 +179,8 @@ async def test_a_dead_server_on_test_connection_is_one_warning_without_its_text(
 @pytest.mark.parametrize(("error", "status", "level", "cls", "reason"), [
     (lambda: MCPRefreshTokenInvalidError(SENTINEL, error_code="invalid_grant", status=400), 409, logging.INFO,
      "auth_expired", "auth_expired"),
-    # What the token client raises for a rejected client: 409 "reconnect", so INFO (a 4xx), still misconfigured.
-    (lambda: MCPRefreshTokenInvalidError(SENTINEL, error_code="invalid_client", status=401), 409, logging.INFO,
+    # What the token client raises for a rejected client: not a rejected grant, so 502, ERROR (misconfigured).
+    (lambda: MCPOAuthError(SENTINEL, error_code="invalid_client", status=401), 502, logging.ERROR,
      "misconfigured", "auth_expired"),
     # A rejected client with an overloaded endpoint's status is not a refusal for good: 502.
     (lambda: MCPOAuthError(SENTINEL, error_code="invalid_client", status=429), 502, logging.ERROR, "misconfigured",
@@ -195,10 +199,8 @@ async def test_an_oauth_refresh_failure_is_one_line_at_its_class(capture, error,
     assert response.status_code == status
     record, fields = _end(capture)
     assert record.levelno == level
-    # A rejected refresh token signs the credential out, and says so: the request's own line stays the only other one.
-    deauthenticated = [r for r in capture.records if r.getMessage() == "credential_refresh.deauthenticated"]
-    assert len(deauthenticated) == (status == 409)
-    assert _loud(capture) == ([record] if level >= logging.WARNING else []) + deauthenticated
+    # The route signs nobody out itself (the shared refresh counts strikes): the request's line is the only one.
+    assert _loud(capture) == ([record] if level >= logging.WARNING else [])
     assert (fields["error_class"], fields["reason"], fields["mcp_server_id"]) == (cls, reason, "inst-1")
     assert "error_message" not in fields
     # ERROR keeps the stack's frames, each exception's text omitted.
@@ -227,13 +229,13 @@ class _SaveFails(FakeConfigService):
         return self.result
 
 
-@pytest.mark.parametrize(("saved", "gone", "status", "line"), [
-    (True, False, 409, "credential_refresh.deauthenticated"),
-    (False, False, 409, "credential_refresh.deauthenticate_failed"),
-    (True, True, 409, "credential_refresh.deauthenticate_failed"),  # removed (Disconnect) before the route's write
-    (None, False, 500, None),  # the write raises: a 500, as before
-], ids=["deauthenticated", "not-updated", "not-found", "write-raises"])
-async def test_a_rejected_refresh_through_the_real_route_is_one_end_and_its_deauth(capture, saved, gone, status, line) -> None:
+@pytest.mark.parametrize(("saved", "gone", "strike"), [
+    (True, False, {"strike": "1/3", "counted": True}),
+    (False, False, {"strike": "1/3", "counted": False, "reason": "not_saved"}),
+    (True, True, None),  # removed (Disconnect) before the strike's write: nothing to count
+    (None, False, {"strike": "1/3", "counted": False}),  # the write raises: a failure line, still the provider's 409
+], ids=["counted", "not-saved", "gone", "write-raises"])
+async def test_a_rejected_refresh_through_the_real_route_is_one_end_and_its_strike(capture, saved, gone, strike) -> None:
     store = _SaveFails({
         get_mcp_credentials_path("inst-1", USER): {"isAuthenticated": True, "oauthTokens": {
             "accessToken": "at-old", "refreshToken": SEEDED_RT, "tokenUrl": f"{TOKEN_URL}?tenant={SEEDED_RT}",
@@ -249,25 +251,20 @@ async def test_a_rejected_refresh_through_the_real_route_is_one_end_and_its_deau
     ):
         response = await _call(_app(store), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
 
-    assert response.status_code == status
+    assert response.status_code == 409
     [end] = [r for r in capture.records if r.getMessage() == "credential_refresh.end"]
     assert end.levelno == logging.WARNING
     assert log_record_fields(end).items() >= {"error_class": "auth_expired", "reason": "invalid_grant"}.items()
-    deauth = [r for r in capture.records if r.getMessage().startswith("credential_refresh.deauth")]
-    assert [r.getMessage() for r in deauth] == ([line] if line else [])
-    if gone:
-        assert (deauth[0].levelno, log_record_fields(deauth[0])["reason"]) == (logging.ERROR, "not_found")
-    elif saved is True:
-        assert log_record_fields(deauth[0]).items() >= {
-            "reason": "refresh_token_invalid", "strikes": 1, "path": "route", "trigger": "on_demand",
-            "mcp_server_id": "inst-1", "owner_id": USER,
-        }.items()
-    if saved is False:
-        assert (deauth[0].levelno, log_record_fields(deauth[0])["reason"]) == (logging.ERROR, "not_updated")
+    strikes = [r for r in capture.records if r.getMessage() == "credential_refresh.strike"]
+    assert [{k: v for k, v in log_record_fields(r).items() if k in ("strike", "counted", "reason")} for r in strikes] == (
+        [strike] if strike else [])
+    for line in strikes:
+        assert log_record_fields(line).items() >= {"trigger": "on_demand", "mcp_server_id": "inst-1", "owner_id": USER}.items()
+    assert not [r for r in capture.records if r.getMessage().startswith("credential_refresh.deauth")]
     request_end, request_fields = _end(capture)
-    assert request_fields["status"] == status
-    assert "error_message" not in request_fields or saved is None
-    # The write's own error escapes without the provider's answer as its context: nothing of it in any record.
+    assert request_fields["status"] == 409
+    assert "error_message" not in request_fields
+    # The write's own error stays off the provider's answer: nothing of it in any record.
     assert_no_secrets(capture)
 
 
@@ -519,6 +516,12 @@ def _exchange_refused(flow: _Flow) -> str:
     return f"code=c&state={flow.start('s')}"
 
 
+def _exchange_answered_200(flow: _Flow) -> str:
+    # GitHub's sign-in answer for a code that expired or was used twice: the user's, not our configuration (F26 N1).
+    flow.exchange.side_effect = MCPOAuthError(SENTINEL, error_code="bad_verification_code", status=200)
+    return f"code=c&state={flow.start('s')}"
+
+
 def _not_saved(flow: _Flow) -> str:
     flow.store.saves = False
     return f"code=c&state={flow.start('s')}"
@@ -537,6 +540,8 @@ def _not_saved(flow: _Flow) -> str:
     (_instance_gone, "instance_not_found", logging.WARNING, "not_found", None, {"mcp_server_id": "inst-1"}),
     (_client_changed, "client_config_changed", logging.WARNING, "conflict", "ValueError", {"mcp_server_id": "inst-1"}),
     (_exchange_refused, "token_exchange_failed", logging.WARNING, "auth_expired", "MCPOAuthError",
+     {"mcp_server_id": "inst-1"}),
+    (_exchange_answered_200, "token_exchange_failed", logging.WARNING, "auth_expired", "MCPOAuthError",
      {"mcp_server_id": "inst-1"}),
     (_not_saved, "credentials_not_saved", logging.WARNING, "unavailable", None, {"mcp_server_id": "inst-1"}),
 ])
@@ -594,3 +599,134 @@ def test_no_route_log_call_carries_a_caught_exception() -> None:
 
     for name in ("mcp_servers.py", "toolsets.py", "api_toolsets.py"):
         assert _logged_exceptions((ROUTES / name).read_text()) == [], name
+
+
+# --- a token endpoint that never answers -----------------------------------------------------------------------------
+# The real token client and refresh down to `oauth_client._post_token_request`, through a real httpx client whose
+# transport fails the way httpx does. The provider is down: every surface says so, as for a 503, and keeps the sign-in.
+
+NO_ANSWER = [
+    pytest.param(lambda: httpx.ConnectError(SENTINEL), "unavailable", id="refused"),
+    pytest.param(lambda: httpx.ConnectTimeout(SENTINEL), "timeout", id="connect-timeout"),
+    pytest.param(lambda: httpx.ReadTimeout(SENTINEL), "timeout", id="read-timeout"),
+    pytest.param(lambda: httpx.RemoteProtocolError(SENTINEL), "unavailable", id="cut-off"),
+]
+CRED_PATH = f"/services/mcp/credentials/inst-1/{USER}"
+
+
+@contextmanager
+def _token_endpoint_failing(raised: Exception) -> Iterator[None]:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise raised
+
+    with patch("app.agents.mcp.oauth_client.GuardedTransport", new=lambda *_a, **_k: httpx.MockTransport(fail)):
+        yield
+
+
+def _signed_in() -> tuple[FakeConfigService, dict[str, Any]]:
+    auth = {"isAuthenticated": True, "oauthTokens": {
+        "accessToken": "old", "refreshToken": "r", "tokenUrl": "https://auth.example.com/token"}}
+    return FakeConfigService({CRED_PATH: auth, "/services/mcp/dcr-clients/inst-1": {"clientId": "client"}}), auth
+
+
+def _rejecting_the_access_token() -> AsyncMock:
+    """The MCP server answers 401, so discovery refreshes the sign-in once."""
+    return AsyncMock(side_effect=MCPHttpStatusError(401, "expired"))
+
+
+def _assert_quiet_lines(caplog: pytest.LogCaptureFixture, record: logging.LogRecord, cls: str, *, refreshes: int) -> None:
+    """The request's line, after the refresh attempt's own `credential_refresh.end` when one ran: each a WARNING
+    of the cell's class, no stack. The attempt line carries the transport error's text by design; no other line may."""
+    attempts = [r for r in caplog.records if r.getMessage() == "credential_refresh.end"]
+    assert len(attempts) == refreshes
+    for attempt in attempts:
+        fields = log_record_fields(attempt)
+        assert (attempt.levelno, fields["outcome"], fields["error_class"]) == (logging.WARNING, "failure", cls)
+        assert not attempt.exc_text
+    assert record.levelno == logging.WARNING and _loud(caplog) == [*attempts, record]
+    assert not record.exc_text and SENTINEL not in _text_outside_attempts(caplog)
+
+
+def _text_outside_attempts(caplog: pytest.LogCaptureFixture) -> str:
+    return "\n".join(f"{r.getMessage()} {log_record_fields(r)} {r.exc_text or ''}"
+                     for r in caplog.records if r.getMessage() != "credential_refresh.end")
+
+
+@pytest.mark.parametrize(("raised", "cls"), NO_ANSWER)
+async def test_a_callback_whose_token_endpoint_never_answers_says_the_exchange_failed(capture, raised, cls) -> None:
+    flow = _Flow()
+    flow.exchange = exchange_code_for_token  # the real one
+    with flow.patched(), _token_endpoint_failing(raised()):
+        response = await _call(_app(flow.store), "GET", f"{BASE}/oauth/callback?code=c&state={flow.start('s')}")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": False, "error": "token_exchange_failed",
+        "errorMessage": "Failed to exchange the authorization code for tokens. Please try connecting again.",
+    }
+    record, fields = _end(capture)
+    _assert_quiet_lines(capture, record, cls, refreshes=0)
+    assert (fields["error_class"], fields["reason"], fields["mcp_server_id"]) == (cls, "token_exchange_failed", "inst-1")
+
+
+@pytest.mark.parametrize(("raised", "cls"), NO_ANSWER)
+async def test_a_refresh_whose_token_endpoint_never_answers_is_a_bad_gateway(capture, raised, cls) -> None:
+    store, _ = _signed_in()
+    with patch.object(mcp_servers, "_get_org_instance", new=AsyncMock(return_value=_instance())), \
+         _token_endpoint_failing(raised()):
+        response = await _call(_app(store), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
+
+    assert (response.status_code, response.json()) == (
+        502, {"detail": "Failed to refresh the OAuth token. Please try again or reconnect this MCP server."})
+    record, fields = _end(capture)
+    _assert_quiet_lines(capture, record, cls, refreshes=1)
+    assert (fields["error_class"], fields["reason"], fields["mcp_server_id"]) == (cls, "unreachable", "inst-1")
+    assert store.data[CRED_PATH]["isAuthenticated"] is True  # an outage signs nobody out
+
+
+@pytest.mark.parametrize(("raised", "cls"), NO_ANSWER)
+async def test_test_connection_whose_sign_in_cannot_be_renewed_is_a_bad_gateway(capture, raised, cls) -> None:
+    store, auth = _signed_in()
+    instance = _instance(authMode=MCPAuthMode.OAUTH.value)
+    with patch.object(mcp_servers, "_get_org_instance", new=AsyncMock(return_value=instance)), \
+         patch.object(mcp_servers, "_resolve_effective_user_auth", new=AsyncMock(return_value=auth)), \
+         patch.object(mcp_servers, "resolve_mcp_instances_with_inheritance", new=AsyncMock(return_value=[instance])), \
+         patch("app.agents.mcp.discovery.discover_tool_listing", new=_rejecting_the_access_token()), \
+         _token_endpoint_failing(raised()):
+        response = await _call(_app(store), "GET", f"{BASE}/instances/inst-1/tools")
+
+    assert (response.status_code, response.json()) == (502, {"detail": action_failed("load this MCP server's tools")})
+    record, fields = _end(capture)
+    _assert_quiet_lines(capture, record, cls, refreshes=1)
+    assert (fields["error_class"], fields["reason"]) == (cls, "unreachable")
+
+
+@pytest.mark.parametrize(("raised", "cls"), NO_ANSWER)
+async def test_a_listed_server_whose_sign_in_cannot_be_renewed_is_unreachable(capture, raised, cls) -> None:
+    store, auth = _signed_in()
+    instance = _instance(authMode=MCPAuthMode.OAUTH.value)
+    with ExitStack() as stack:
+        for name, value in {
+            "resolve_mcp_instances_with_inheritance": AsyncMock(return_value=[instance]),
+            "_check_user_is_admin": AsyncMock(return_value=False),
+            "resolve_instance_owner_config_service": AsyncMock(return_value=None),
+            "_resolve_effective_user_auth": AsyncMock(return_value=auth),
+            "cached_tools_for_owner": AsyncMock(return_value=None),
+        }.items():
+            stack.enter_context(patch.object(mcp_servers, name, new=value))
+        stack.enter_context(patch("app.agents.mcp.discovery.discover_tool_listing", new=_rejecting_the_access_token()))
+        stack.enter_context(_token_endpoint_failing(raised()))
+        response = await _call(_app(store), "GET", f"{BASE}/my-mcp-servers?includeTools=true")
+
+    assert response.status_code == 200
+    (entry,) = response.json()["instances"]
+    # Red "can't reach", not the grey "slow to respond" a timeout code shows as a still-connected server.
+    assert (entry["toolsErrorCode"], entry["toolsError"]) == ("unreachable", mcp_servers._SIGN_IN_RENEWAL_UNAVAILABLE)
+    assert not entry.get("toolsTimedOut")
+    ((level, fields),) = _discover_lines(capture)
+    assert (level, fields["error_class"], fields["mcp_reason"], fields["source"]) == (
+        logging.WARNING, cls, "unreachable", "listing")
+    (attempt,) = [r for r in capture.records if r.getMessage() == "credential_refresh.end"]
+    assert (attempt.levelno, log_record_fields(attempt)["error_class"]) == (logging.WARNING, cls)
+    assert not any(r.exc_text for r in capture.records) and SENTINEL not in _text_outside_attempts(capture)
+    assert store.data[CRED_PATH]["isAuthenticated"] is True

@@ -22,6 +22,7 @@ def _arango(*, stages_exist: bool = True) -> tuple[ArangoHTTPProvider, AsyncMock
     client.create_collection = AsyncMock(return_value=True)
     client.update_collection_schema = AsyncMock(return_value=True)
     client.ensure_persistent_index = AsyncMock(return_value=True)
+    client.record_guard = None  # a client with no records-schema guard writes the schema itself
     provider.http_client = client
     return provider, client
 
@@ -179,6 +180,7 @@ class TestRecordsSchemaUpdate:
         client.has_collection = AsyncMock(return_value=True)
         client.update_collection_schema = AsyncMock(side_effect=lambda name, _schema: name != RECORDS)
         client.has_graph = AsyncMock(return_value=True)
+        client.record_guard = None
         provider.http_client = client
         provider._ensure_edge_definitions_up_to_date = AsyncMock()  # type: ignore[method-assign]
         provider._ensure_indexes = AsyncMock()  # type: ignore[method-assign]

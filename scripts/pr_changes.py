@@ -146,6 +146,7 @@ STORAGE_NODE = (
 INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/conftest.py",
     f"{PYTHON}/tests/support/**",
+    f"{PYTHON}/tests/unit/attempt_start.py",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
     f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",
@@ -194,6 +195,7 @@ MATRIX_PYTHON = (
     ".github/workflows/backend-matrix.yml",
     # Which test files each suite runs.
     "scripts/integration_discovery.py",
+    "scripts/graph_shards.py",
 ) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):

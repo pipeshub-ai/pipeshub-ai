@@ -429,6 +429,13 @@ class GraphTransactionStore(TransactionStore):
             {"defaultKnowledgeBaseId": expected}, transaction=self.txn,
         )
 
+    async def lock_app_if_unchanged(self, connector_id: str, expected: dict) -> bool:
+        """Whether the connector's app document still holds ``expected``. It is write-locked until this transaction ends,
+        so a sync cannot start between this check and the commit."""
+        return await self.graph_provider.update_node_fields_if_match(
+            connector_id, CollectionNames.APPS.value, {}, expected, transaction=self.txn,
+        )
+
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
 
@@ -625,6 +632,12 @@ class GraphTransactionStore(TransactionStore):
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
         return await self.graph_provider.remove_user_access_to_connector(connector_id, user_id, transaction=self.txn)
 
+    async def remove_unlinked_user_access_to_connector(self, connector_id: str) -> int:
+        return await self.graph_provider.remove_unlinked_user_access_to_connector(connector_id, transaction=self.txn)
+
+    async def get_user_granted_records(self, connector_id: str, user_id: str) -> list[dict[str, Any]]:
+        return await self.graph_provider.get_user_granted_records(connector_id, user_id, transaction=self.txn)
+
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
@@ -794,8 +807,8 @@ class GraphTransactionStore(TransactionStore):
             connector_id, external_id, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
-        users_dict = await self.graph_provider.get_users(org_id, active=active)
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list[User]:
+        users_dict = await self.graph_provider.get_users(org_id, active=active, raise_on_error=raise_on_error)
         return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
     async def get_app_users(
@@ -1917,6 +1930,7 @@ _CONNECTOR_WRITERS: dict[str, Callable[[dict], str | None]] = {
     "remove_user_access_to_record": lambda b: b["connector_id"],
     # the same for every grant the user holds on the connector: any of them may be the last on its record or group
     "remove_user_access_to_connector": lambda b: b["connector_id"],
+    "remove_unlinked_user_access_to_connector": lambda b: b["connector_id"],
 }
 for _name, _of in _CONNECTOR_WRITERS.items():
     _wrap_connector_writer(_name, _of)
@@ -2028,6 +2042,8 @@ _HARMLESS_WRITERS = frozenset({
     "replace_record_entity_relations",
     # which knowledge base a user calls their default: a field of the user node, never an edge or an access rule
     "name_default_knowledge_base",
+    # an empty write that only locks the app document
+    "lock_app_if_unchanged",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 

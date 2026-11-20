@@ -84,6 +84,9 @@ export { createDelegationRouter } from './modules/oauth_provider/routes/delegati
  */
 export const DELEGATION_AVAILABLE = false;
 
+// --- Dynamic client registration: where a client registered at /register is stored ---
+export { dynamicClientOwnerOrg as dynamicClientOrg } from './modules/oauth_provider/services/dynamic-client-org';
+
 // --- OAuth Apps ---
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';

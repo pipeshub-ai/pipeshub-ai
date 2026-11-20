@@ -33,6 +33,15 @@ export interface OAuthTokenPayload {
    * calling.
    */
   act?: { sub: string };
+  /**
+   * The identity in `createdBy` is a service account, not a person.
+   *
+   * Present only on a client_credentials token whose application names the
+   * service account it acts as. Nothing authorises on it: it is there so that
+   * code which has to treat a machine identity differently from a colleague
+   * can tell them apart without a second lookup.
+   */
+  actsAsServiceAccount?: true;
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
   /** Access tokens: the resource (RFC 8707) the token is for, when its client named one. */
@@ -406,9 +415,8 @@ export interface TokenListItem {
 export interface CreatePatRequest {
   name: string;
   scopes?: string[];
-  /** Days until expiry, or 'never' for a non-expiring token (stored as a
-   * far-future expiresAt — the schema's expiresAt is required). */
-  expiryDays?: 30 | 90 | 365 | 'never';
+  /** Days until expiry; defaults to 30. */
+  expiryDays?: 7 | 30 | 90 | 365;
   /** What the token may see; omit for everything the user can. */
   knowledgeLimit?: KnowledgeLimit;
 }

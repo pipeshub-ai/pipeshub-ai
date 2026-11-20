@@ -10,7 +10,7 @@ import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { isProcessedError } from '@/lib/api';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
-import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
+import { isMcpInstanceReadOnly, McpInheritedCallout, McpManageAccess } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
 import { McpServersApi } from '../../api';
@@ -54,6 +54,7 @@ import {
   MCP_TRANSPORT_LABELS,
   isPersonalMcpInstance,
 } from '../../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const DCR_PROBE_DEBOUNCE_MS = 500;
 
@@ -145,6 +146,12 @@ export function McpInstanceConfigPanel({
 
   const isTemplateBased = Boolean(resolvedTemplate);
   const isReadOnly = isMcpInstanceReadOnly(editingInstance);
+  // Set by a Manage Access section that saves who may use an organization server.
+  const manageAccessSave = useRef<((serverId: string) => Promise<void>) | null>(null);
+  // The server a save in this panel created: a retry after a later step failed updates it instead of creating another.
+  const createdInstanceId = useRef<string | null>(null);
+  // Bumped whenever the panel opens on a server: a save started before that touches nothing after it.
+  const saveSession = useRef(0);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -188,6 +195,9 @@ export function McpInstanceConfigPanel({
 
   useEffect(() => {
     if (!open) return;
+    createdInstanceId.current = null;
+    saveSession.current += 1;
+    setIsSaving(false);
     setActiveTab('configuration');
     toolsRequest.current += 1;
     setToolsLoad({ status: 'idle' });
@@ -504,34 +514,55 @@ export function McpInstanceConfigPanel({
   };
 
   const save = async () => {
+    const session = saveSession.current;
+    // Every later step reads this session's form, so a save whose session ended stops here.
+    const ended = () => session !== saveSession.current;
     setIsSaving(true);
     try {
       const payload = buildPayload();
       let instanceId: string;
+      let reportSaved: () => void;
       if (mode === 'edit' && editingInstance) {
         const updated = await McpServersApi.updateInstance(editingInstance._id, payload);
+        if (ended()) return;
         instanceId = updated._id;
-        if (updated.credentialsReset) {
-          toast.warning(t('workspace.mcpServers.toasts.credentialsReset'));
-        } else {
-          toast.success(t('workspace.mcpServers.toasts.updated'));
-        }
+        reportSaved = updated.credentialsReset
+          ? () => toast.warning(t('workspace.mcpServers.toasts.credentialsReset'))
+          : () => toast.success(t('workspace.mcpServers.toasts.updated'));
       } else {
-        const created = await McpServersApi.createInstance(payload);
-        instanceId = created._id;
-        toast.success(t('workspace.mcpServers.toasts.created'));
+        instanceId = createdInstanceId.current
+          ? (await McpServersApi.updateInstance(createdInstanceId.current, payload))._id
+          : (await McpServersApi.createInstance(payload))._id;
+        if (ended()) return;
+        createdInstanceId.current = instanceId;
+        reportSaved = () => toast.success(t('workspace.mcpServers.toasts.created'));
       }
 
       await saveCredentialsIfProvided(instanceId);
+      if (ended()) return;
+      if (!isPersonal && manageAccessSave.current) {
+        try {
+          await manageAccessSave.current(instanceId);
+        } catch (error) {
+          if (ended()) return;
+          // The server is saved but the access chosen here is not; stay open so a retry can apply it.
+          const detail = isProcessedError(error) ? error.message : undefined;
+          toast.error(t('workspace.mcpServers.toasts.accessSaveError'), detail ? { description: detail } : undefined);
+          return;
+        }
+      }
       await saveLogoIfChanged(instanceId);
+      if (ended()) return;
 
+      reportSaved();
       onSaved();
       requestOpenChange(false);
     } catch (error) {
+      if (ended()) return;
       const detail = isProcessedError(error) ? error.message : undefined;
       toast.error(t('workspace.mcpServers.toasts.saveError'), detail ? { description: detail } : undefined);
     } finally {
-      setIsSaving(false);
+      if (!ended()) setIsSaving(false);
     }
   };
 
@@ -844,9 +875,9 @@ export function McpInstanceConfigPanel({
               const isRequired = effectiveRequiredEnv.includes(envKey);
               return (
                 <FormField key={envKey} label={envKey} optional={!isRequired}>
-                  <TextField.Root
+                  <SecretTextField
                     size="2"
-                    type={isSecretFieldName(envKey) ? 'password' : 'text'}
+                    masked={isSecretFieldName(envKey)}
                     value={envValues[envKey] ?? ''}
                     onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
                     placeholder={credentialsPlaceholder}
@@ -857,9 +888,8 @@ export function McpInstanceConfigPanel({
 
           {authMode === 'api_token' && !multiEnvAuth && (
             <FormField label={apiTokenLabel} optional>
-              <TextField.Root
+              <SecretTextField
                 size="2"
-                type="password"
                 value={apiToken}
                 onChange={(e) => setApiToken(e.target.value)}
                 placeholder={credentialsPlaceholder ?? apiTokenPlaceholder}
@@ -872,9 +902,8 @@ export function McpInstanceConfigPanel({
               label={t('workspace.mcpServers.form.headerValue', { headerName: headerName || 'Authorization' })}
               optional
             >
-              <TextField.Root
+              <SecretTextField
                 size="2"
-                type="password"
                 value={headerValue}
                 onChange={(e) => setHeaderValue(e.target.value)}
                 placeholder={credentialsPlaceholder}
@@ -920,9 +949,9 @@ export function McpInstanceConfigPanel({
                 required={oauthClientRequired}
                 optional={!oauthClientRequired}
               >
-                <TextField.Root
+                <SecretTextField
                   size="2"
-                  type={showOauthClientSecret ? 'text' : 'password'}
+                  masked={!showOauthClientSecret}
                   value={oauthClientSecret}
                   onChange={(e) => setOauthClientSecret(e.target.value)}
                   placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientSecretPlaceholder')}
@@ -943,7 +972,7 @@ export function McpInstanceConfigPanel({
                       />
                     </IconButton>
                   </TextField.Slot>
-                </TextField.Root>
+                </SecretTextField>
                 <McpClientSecretPrefixHint prefix={resolvedTemplate?.clientSecretPrefix} secret={oauthClientSecret} />
               </FormField>
               {mode === 'edit' && hasExistingOAuthClient && (
@@ -999,6 +1028,10 @@ export function McpInstanceConfigPanel({
         </Grid>
       </Flex>
 
+      {!isPersonal && (
+        <McpManageAccess serverId={editingInstance?._id ?? null} disabled={isReadOnly} saveRef={manageAccessSave} />
+      )}
+
       {mode === 'create' && authMode !== 'none' && !useAdminAuth && (
         <Text size="1" style={{ color: 'var(--gray-10)' }}>
           {t('workspace.mcpServers.form.connectAfterCreateHint')}
@@ -1018,7 +1051,10 @@ export function McpInstanceConfigPanel({
     <>
       <WorkspaceRightPanel
         open={open}
-        onOpenChange={requestOpenChange}
+        onOpenChange={(next) => {
+          // Closing mid-save would leave the server half set up (credentials, access, logo).
+          if (next || !isSaving) requestOpenChange(next);
+        }}
         title={mode === 'edit' && liveInstance ? liveInstance.name : panelTitle}
         icon={mode === 'edit' && liveInstance ? undefined : 'hub'}
         titleNode={

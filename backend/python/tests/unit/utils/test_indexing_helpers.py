@@ -20,6 +20,7 @@ from app.utils.indexing_helpers import (
     image_bytes_to_base64,
     TableSummary,
 )
+from tests.support.table_model import keyed_answer
 from app.utils.table_enrichment import get_rows_text
 
 
@@ -385,9 +386,10 @@ class TestGetRowsText:
     @pytest.mark.asyncio
     @patch("app.utils.table_enrichment.invoke_with_structured_output_and_reflection")
     async def test_with_column_headers_and_parsed_response(self, mock_invoke):
-        parsed = MagicMock()
-        parsed.descriptions = ["Row 1 is about X", "Row 2 is about Y"]
-        mock_invoke.return_value = parsed
+        async def answer(_llm, messages, *_a, **_k) -> object:
+            return keyed_answer(messages, ["Row 1 is about X", "Row 2 is about Y"])
+
+        mock_invoke.side_effect = answer
 
         table_data = {
             "grid": [

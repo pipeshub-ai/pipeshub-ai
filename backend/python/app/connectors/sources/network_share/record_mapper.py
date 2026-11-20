@@ -14,6 +14,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
+    get_mime_type_for_extension,
 )
 from app.connectors.core.base.data_processor.system_files import is_office_lock_file
 from app.connectors.sources.network_share.pathing import (
@@ -87,9 +88,10 @@ def mime_for(rel_path: str, *, is_directory: bool) -> str:
         return MimeTypes.FOLDER.value
     base = rel_path.rsplit("/", 1)[-1]
     extension = base.rpartition(".")[2] if "." in base else None
-    # A type indexed since the registry's second version is stored under its own mime, which the
-    # host's table may not know (.cfg) or may spell as another type's (text/plain for .log).
-    own = file_types.canonical_mime_for_new_extension(extension)
+    # A type the registry maps is stored under its mime, which the host's table may not know
+    # (.cfg, .docx on Windows) or may spell as another type's (text/plain for .log, and the
+    # Windows registry's application/x-zip-compressed for .zip).
+    own = file_types.canonical_mime_for_new_extension(extension) or get_mime_type_for_extension(extension)
     if own is not None:
         return own
     guessed, _ = mimetypes.guess_type(rel_path)

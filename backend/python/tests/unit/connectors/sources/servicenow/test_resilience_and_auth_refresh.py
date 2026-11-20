@@ -28,6 +28,7 @@ from servicenow_fakes import (
 from app.connectors.sources.servicenow.servicenow import connector as connector_module
 from app.models.permission import PermissionType
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
+from app.sources.client.servicenow import servicenow as client_module
 from app.sources.client.servicenow.servicenow import (
     ServiceNowRateLimited,
     ServiceNowRateLimitPolicy,
@@ -154,6 +155,8 @@ async def test_timeout_retried(monkeypatch, slept) -> None:
 async def test_no_request_after_rate_limit_stop(monkeypatch, slept) -> None:
     policy = _policy()
     ds, sent = _datasource([_rate_limited(), _ok([])], monkeypatch, policy)
+    now = 1_800_000_000.0
+    monkeypatch.setattr(client_module, "time", SimpleNamespace(time=lambda: now))  # the reset is stamped from now, not read again later
 
     with pytest.raises(ServiceNowRateLimited) as stop:
         await _list(ds)
@@ -162,7 +165,7 @@ async def test_no_request_after_rate_limit_stop(monkeypatch, slept) -> None:
 
     assert len(sent) == 1, "no retry into the spent hour, and nothing sent after it"
     assert slept == []
-    assert stop.value.reset_at == pytest.approx(time.time() + 1731, abs=5)
+    assert stop.value.reset_at == now + 1731
     assert stop.value.rule == RULE
     assert "UTC" in str(stop.value)
 

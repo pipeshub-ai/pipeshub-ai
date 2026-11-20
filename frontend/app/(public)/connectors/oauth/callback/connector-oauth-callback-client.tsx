@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import NextLink from 'next/link';
+import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -48,11 +50,27 @@ function connectorIdFromRedirect(redirectUrl: string | undefined): string | null
 
 type CallbackStatus = 'processing' | 'success' | 'error';
 
+/** A sign-in started from an emailed connect link: its base64url JSON state names the user (`linkUser`). */
+function isEmailLinkState(state: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(atob(state.replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof parsed === 'object' && parsed !== null && Boolean((parsed as { linkUser?: unknown }).linkUser);
+  } catch {
+    return false;
+  }
+}
+
+/** `error` null: connected. */
+type LinkResult = { error: string | null; name?: string };
+
 /**
  * Completes connector OAuth in a popup: exchanges `code` via the Node API (legacy parity),
  * notifies the opener with `CONNECTOR_OAUTH_*` postMessage types, then closes the window.
  */
 export function ConnectorOAuthCallbackClient() {
+  const { t } = useTranslation();
+  // Set for a sign-in from an emailed link: no opener and maybe no session, so the result shows here.
+  const [linkResult, setLinkResult] = useState<LinkResult | null>(null);
   const [status, setStatus] = useState<CallbackStatus>('processing');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -83,17 +101,37 @@ export function ConnectorOAuthCallbackClient() {
         const state = searchParams.get('state');
         const oauthError = searchParams.get('error');
         const oauthErrorDescription = searchParams.get('error_description');
+        const signInFailed = t('workspace.connectors.userAccess.link.signInFailed');
+        // The provider's error code is not a sentence; `access_denied` means the user pressed Cancel.
+        const providerMessage = oauthError
+          ? oauthError === 'access_denied'
+            ? t('workspace.connectors.userAccess.link.cancelled')
+            : oauthErrorDescription?.trim() || signInFailed
+          : null;
 
-        if (oauthError) {
-          const providerMessage =
-            oauthErrorDescription?.trim() || oauthError || 'OAuth was cancelled or rejected.';
+        if (state && isEmailLinkState(state)) {
+          if (providerMessage || !code) {
+            setLinkResult({ error: providerMessage || signInFailed });
+            return;
+          }
+          try {
+            const result = await ConnectorsApi.completeUserAccessLink(code, state);
+            setLinkResult(
+              result.success
+                ? { error: null, name: result.connectorName }
+                : { error: result.error_message || t('workspace.connectors.userAccess.link.error') }
+            );
+          } catch {
+            setLinkResult({ error: t('workspace.connectors.userAccess.link.error') });
+          }
+          return;
+        }
+
+        if (providerMessage) {
           throw new Error(providerMessage);
         }
-        if (!code) {
-          throw new Error('No authorization code received.');
-        }
-        if (!state) {
-          throw new Error('No state parameter received.');
+        if (!code || !state) {
+          throw new Error(signInFailed);
         }
 
         // A sign-out (e.g. in another tab) drops the answer: fail into the error state rather than spin forever.
@@ -127,7 +165,7 @@ export function ConnectorOAuthCallbackClient() {
     };
 
     void run();
-  }, [closeWindow]);
+  }, [closeWindow, t]);
 
   if (handoffLink) {
     return <DesktopHandoffNotice deepLink={handoffLink} titleKey="auth.desktopHandoff.integrationTitle" />;
@@ -147,7 +185,40 @@ export function ConnectorOAuthCallbackClient() {
   };
 
   let statusPanel: ReactNode;
-  switch (status) {
+  if (linkResult) {
+    const ok = !linkResult.error;
+    statusPanel = (
+      <Flex direction="column" align="center" gap="4">
+        <MaterialIcon
+          name={ok ? 'check' : 'error_outline'}
+          size={21}
+          color={ok ? 'var(--accent-11)' : 'var(--red-11)'}
+        />
+        {ok ? (
+          <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-12)', lineHeight: '24px' }}>
+            {linkResult.name
+              ? t('workspace.connectors.userAccess.link.done', { name: linkResult.name })
+              : t('workspace.connectors.userAccess.link.doneUnnamed')}
+          </Text>
+        ) : (
+          <>
+            <Text as="p" size="4" weight="medium" style={{ margin: 0, color: 'var(--red-10)' }}>
+              {t('workspace.connectors.userAccess.link.failedTitle')}
+            </Text>
+            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-10)', wordBreak: 'break-word' }}>
+              {linkResult.error}
+            </Text>
+            <Text as="p" size="3" style={{ margin: 0, color: 'var(--gray-10)' }}>
+              {t('workspace.connectors.userAccess.link.failedRetry')}
+            </Text>
+          </>
+        )}
+        <Button asChild size="2" variant={ok ? 'solid' : 'outline'} color={ok ? undefined : 'gray'} style={{ minHeight: 44 }}>
+          <NextLink href="/">{t('workspace.connectors.userAccess.link.openApp')}</NextLink>
+        </Button>
+      </Flex>
+    );
+  } else switch (status) {
     case 'processing':
       statusPanel = (
         <Flex direction="column" align="center" gap="5">

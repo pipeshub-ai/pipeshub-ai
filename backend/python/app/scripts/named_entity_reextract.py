@@ -128,6 +128,10 @@ async def _wants_reextract(
 ) -> bool:
     if not is_live_record(record) or not record.get("virtualRecordId"):
         return False
+    # A record that is replacing its copy (or failed doing so) serves the old copy under the revision of the attempt: an extraction
+    # would be kept under a revision that copy never had. (The page below asks for COMPLETED records; this holds for any caller.)
+    if record.get("indexingStatus") not in (None, ProgressStatus.COMPLETED.value):
+        return False
     try:
         blob = await blob_storage.get_record_from_storage(record["virtualRecordId"], record.get("orgId"))
         metadata = (blob or {}).get("semantic_metadata") or {}

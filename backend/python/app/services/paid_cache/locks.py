@@ -5,6 +5,8 @@ delete markers ``<ns>:pc:deleted:{<org>:<record>}`` that fence a deleted record'
 that dies simply lapses. Redis holds nothing else for the cache: results live in the blob store.
 """
 
+import logging
+import math
 import secrets
 import threading
 import time
@@ -19,6 +21,9 @@ LOCK_TTL_MS = 120_000
 
 _RENEW_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) end return 0"
 _OWNS_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return 1 end return 0"
+_MARK_IF_OWNED_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[2], '1', 'PX', ARGV[2]) return 1 end return 0"
+)
 _RELEASE_LUA = "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"
 
 
@@ -45,10 +50,36 @@ PARSE_GATE_WAIT_S = 120
 PARSE_MEMORY_WAIT_S = 30
 
 
-def _budgets() -> tuple[float, float]:
-    """(general record budget, longest budget of any record type), from the environment, live."""
+_budget_clamp_warned: set[str] = set()
+
+
+def _clamped(name: str, default: float) -> float:
+    """A record budget from the environment, never above ``MAX_RECORD_BUDGET_S``: a run longer than the open-manifest
+    protection window could still be writing after it ends. A setting above it is clamped with one warning."""
+    value = env_seconds(name, default)
+    if value > MAX_RECORD_BUDGET_S:
+        if name not in _budget_clamp_warned:
+            _budget_clamp_warned.add(name)
+            logging.getLogger(__name__).warning(
+                "%s=%.0f s is above the %.0f s the paid-result cache allows (its open-manifest protection window less a "
+                "margin); the stage deadline and the re-purge horizon use %.0f s", name, value, MAX_RECORD_BUDGET_S,
+                MAX_RECORD_BUDGET_S,
+            )
+        return MAX_RECORD_BUDGET_S
+    return value
+
+
+def _raw_budgets() -> tuple[float, float]:
+    """(general record budget, longest budget of any record type), from the environment, live, as configured: the
+    indexing consumer admits under these, whatever the stage deadline is clamped to."""
     record = env_seconds("RECORD_PROCESSING_TIMEOUT", 1800.0)
     return record, max(record, env_seconds("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
+
+
+def _budgets() -> tuple[float, float]:
+    """The same, clamped to the protection window (for the stage deadline); warns once per variable when it clamps."""
+    record = _clamped("RECORD_PROCESSING_TIMEOUT", 1800.0)
+    return record, max(record, _clamped("PDF_RECORD_PROCESSING_TIMEOUT", 5400.0))
 
 
 def stage_deadline_s() -> float:
@@ -62,7 +93,23 @@ def stage_deadline_s() -> float:
 
 
 #: The most a record budget a caller sends can be: a request body is not trusted with an unbounded deadline.
-MAX_RECORD_BUDGET_S = 7 * 24 * 3600.0
+#: How long an open manifest keeps its objects out of the retention sweep (a run still writing is protected this long).
+OPEN_MANIFEST_PROTECTS_S = 24 * 3600
+#: Kept inside the window: a run whose budget is longer than the protection could still be writing after it ends.
+OPEN_MANIFEST_MARGIN_S = 4 * 3600
+MAX_RECORD_BUDGET_S = float(OPEN_MANIFEST_PROTECTS_S - OPEN_MANIFEST_MARGIN_S)
+
+
+def valid_record_budget(record_budget_s: object) -> float | None:
+    """The record budget a caller sent, when it is a usable duration (finite, positive, below the open-manifest
+    protection window by its margin), else None."""
+    if isinstance(record_budget_s, bool) or not isinstance(record_budget_s, int | float):
+        return None
+    try:
+        budget = float(record_budget_s)
+    except OverflowError:
+        return None
+    return budget if math.isfinite(budget) and 0 < budget <= MAX_RECORD_BUDGET_S else None
 
 
 def stage_deadline_for(record_budget_s: float | None) -> float:
@@ -72,12 +119,8 @@ def stage_deadline_for(record_budget_s: float | None) -> float:
     for, whatever its own environment says. An absent or unusable figure (an older client during a rollout) falls
     back to the service's own settings (``stage_deadline_s()``).
     """
-    if (
-        isinstance(record_budget_s, int | float) and not isinstance(record_budget_s, bool)
-        and 0 < record_budget_s <= MAX_RECORD_BUDGET_S
-    ):
-        return max(float(STAGE_DEADLINE_S), float(record_budget_s))
-    return stage_deadline_s()
+    budget = valid_record_budget(record_budget_s)
+    return max(float(STAGE_DEADLINE_S), budget) if budget is not None else stage_deadline_s()
 
 
 def admission_window_s() -> float:
@@ -89,7 +132,7 @@ def admission_window_s() -> float:
     the request is sent within the whole longest budget; the parsing route can then hold it for the admission gate and
     the memory wait before ``parse`` starts.
     """
-    record, longest = _budgets()
+    record, longest = _raw_budgets()
     window = PARSE_SLOT_WAITS * record + longest + PARSE_GATE_WAIT_S + PARSE_MEMORY_WAIT_S
     return float(-(-window // REPURGE_MARGIN_S) * REPURGE_MARGIN_S)
 
@@ -97,7 +140,10 @@ def admission_window_s() -> float:
 def repurge_horizon_s() -> float:
     """The chain ends once this long has passed since the delete, computed from the live configuration: the latest a
     stage can begin, the longest it may run, the last write's deadline, a lock's life and a margin."""
-    return admission_window_s() + stage_deadline_s() + WRITE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
+    # The unclamped budgets: the consumer admits (and a write can land) under what is configured, so the horizon
+    # covers that even where the stage deadline is clamped.
+    longest = max(float(STAGE_DEADLINE_S), _raw_budgets()[1])
+    return admission_window_s() + longest + WRITE_DEADLINE_S + LOCK_TTL_MS // 1000 + REPURGE_MARGIN_S
 
 
 def lock_name(org_id: str, record_id: str, digest: str) -> str:
@@ -108,6 +154,11 @@ def lock_name(org_id: str, record_id: str, digest: str) -> str:
 def deleted_name(org_id: str, record_id: str | None = None) -> str:
     """The marker of a deleted record, or (no record) of a deleted org."""
     return f"pc:deleted:{{{org_id}:{record_id}}}" if record_id is not None else f"pc:deleted:{{{org_id}}}"
+
+
+def manifest_lock_name(org_id: str, record_id: str, path: str) -> str:
+    """The lock one replica holds while it reads, merges and replaces a manifest another replica may also write."""
+    return f"pc:mlock:{{{org_id}:{record_id}}}:{path}"
 
 
 def refresh_name(org_id: str, record_id: str, event_id: str) -> str:
@@ -129,11 +180,18 @@ class LockBackend(Protocol):
 
     async def release(self, name: str, token: str) -> None: ...
 
-    async def mark(self, name: str, ttl_ms: int) -> None:
-        """Sets a marker that reads as set until it lapses."""
+    async def mark(self, name: str, ttl_ms: int, value: str = "1") -> None:
+        """Sets a marker that reads as set until it lapses. ``value`` is what ``marker_value`` reads back (a delete
+        stores its time in ms; a marker of an older release holds ``1``)."""
+
+    async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
+        """Sets the marker only while ``token`` still holds ``lock_name``, in one atomic step; False when it does not."""
 
     async def is_marked(self, name: str) -> bool:
         """Raises when unreachable: a caller that cannot tell must not assume the marker is absent."""
+
+    async def marker_value(self, name: str) -> str | None:
+        """The marker's value, None when it is not set. One single-key read. Raises when unreachable."""
 
 
 class RedisLocks:
@@ -161,20 +219,35 @@ class RedisLocks:
     async def release(self, name: str, token: str) -> None:
         await self._client.eval(_RELEASE_LUA, 1, self.key_of(name), token)  # type: ignore[misc]
 
-    async def mark(self, name: str, ttl_ms: int) -> None:
-        await self._client.set(self.key_of(name), "1", px=ttl_ms)
+    async def mark(self, name: str, ttl_ms: int, value: str = "1") -> None:
+        await self._client.set(self.key_of(name), value, px=ttl_ms)
+
+    async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
+        return bool(await self._client.eval(  # type: ignore[misc]
+            _MARK_IF_OWNED_LUA, 2, self.key_of(lock_name), self.key_of(name), token, ttl_ms,
+        ))
 
     async def is_marked(self, name: str) -> bool:
         return bool(await self._client.exists(self.key_of(name)))
+
+    async def marker_value(self, name: str) -> str | None:
+        value = await self._client.get(self.key_of(name))
+        if value is None:
+            return None
+        return value.decode() if isinstance(value, bytes) else str(value)
 
 
 class InProcessLocks:
     """The same contract inside one process: tests, and a deployment whose Redis cannot be reached."""
 
     shared = False
+    #: True only for the stand-in a deployment uses when its Redis cannot be reached: what a refresh with paid-result
+    #: writes on refuses, because no other worker can see its markers or leases. Tests use the plain object.
+    degraded = False
 
     def __init__(self) -> None:
         self._held: dict[str, tuple[str, float]] = {}
+        self._values: dict[str, str] = {}
         self._clock = time.monotonic
         #: Event loops on several threads share one instance (the fallback of a Redis that cannot be reached).
         self._mutex = threading.Lock()
@@ -208,14 +281,30 @@ class InProcessLocks:
             if held is not None and held[0] == token:
                 del self._held[name]
 
-    async def mark(self, name: str, ttl_ms: int) -> None:
+    async def mark(self, name: str, ttl_ms: int, value: str = "1") -> None:
         with self._mutex:
             self._held[name] = ("marker", self._clock() + ttl_ms / 1000)
+            self._values[name] = value
+
+    async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
+        with self._mutex:
+            held = self._held.get(lock_name)
+            if held is None or held[0] != token or held[1] <= self._clock():
+                return False
+            self._held[name] = ("marker", self._clock() + ttl_ms / 1000)
+            return True
 
     async def is_marked(self, name: str) -> bool:
         with self._mutex:
             held = self._held.get(name)
             return held is not None and held[1] > self._clock()
+
+    async def marker_value(self, name: str) -> str | None:
+        with self._mutex:
+            held = self._held.get(name)
+            if held is None or held[0] != "marker" or held[1] <= self._clock():
+                return None
+            return self._values.get(name, "1")
 
     def expire_all(self) -> None:
         """Test hook: every held lock lapses, as a dead holder's does (markers stay)."""

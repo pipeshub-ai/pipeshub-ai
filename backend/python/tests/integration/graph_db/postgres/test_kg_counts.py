@@ -289,7 +289,7 @@ async def test_a_connector_copied_again_at_the_current_projection_epoch_keeps_it
         assert await con.fetchval("SELECT count(*) FROM kg.links WHERE org_id = $1 AND kind = $2", org, LINK_PARENT_CHILD)
         # what epoch-5 code left: no kind-3 links, and its epoch on the connectors
         await con.execute("DELETE FROM kg.links WHERE org_id = $1 AND kind = $2", org, LINK_PARENT_CHILD)
-        await con.execute("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, CODE_EPOCH - 1)
+        await con.execute("UPDATE kg.projection_state SET code_epoch = 5 WHERE org_id = $1 AND app_sk <> 0", org)        # not 7: the bootstrap fills an epoch 7 copy in place
         with ctx(org):
             await p.batch_upsert_nodes([{"_key": i, "recordName": i, "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in late], "records")
             await p.batch_create_edges([edge("fold", "records", i, "records", relationshipType="PARENT_CHILD") for i in late], "nodeRelations")

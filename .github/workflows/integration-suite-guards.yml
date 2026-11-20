@@ -81,8 +81,6 @@ jobs:
       - name: Install dependencies
         if: steps.scope.outputs.run == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
           pip install uv
           cd backend/python
           # The guards import the backend's models and connector registry; the
@@ -100,6 +98,7 @@ jobs:
             integration-tests/unit/test_admin_route_conditional_world.py
             integration-tests/unit/test_guard_scope.py
             integration-tests/unit/test_suite_extensions.py
+            integration-tests/unit/test_citation_viewer_stats.py
             integration-tests/unit/test_perf_costclass.py
             integration-tests/unit/test_perf_costclass_driver.py
         run: |

@@ -1,9 +1,7 @@
 """Unit tests for :mod:`app.connectors.sources.local_fs.connector`.
 
-``connector.py`` registers via ``ConnectorBuilder.build_decorator``, which imports
-``connector_registry`` and thus ``ConnectorAppContainer``. Install lightweight
-``sys.modules`` shims *before* importing the connector (same pattern as
-``test_mariadb_client.py``) so the full DI graph is not loaded.
+The connector's module imports the real application container, which loads without a stub; no module of the process
+is replaced, so a test collected later in the same run sees the real ``app.containers.connector``.
 """
 
 from __future__ import annotations
@@ -21,19 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # --- Import shims (must run before ``from app.connectors...connector import``) ---
-if "app.containers.connector" not in sys.modules:
-    _stub_container = types.ModuleType("app.containers.connector")
-
-    class _ContainerMeta(type):
-        def __getattr__(cls, name):
-            return None
-
-    class _ConnectorAppContainer(metaclass=_ContainerMeta):
-        pass
-
-    _stub_container.ConnectorAppContainer = _ConnectorAppContainer
-    sys.modules["app.containers.connector"] = _stub_container
-
 try:
     # redis is a pinned dependency (pyproject: redis==5.2.1) and provides every
     # name stubbed below. Stub only when it is genuinely absent: installing the
@@ -76,10 +61,6 @@ except ImportError:
     _redis.asyncio = _redis_asyncio
     sys.modules["redis"] = _redis
 
-if "etcd3" not in sys.modules:
-    _etcd3 = types.ModuleType("etcd3")
-    _etcd3.client = type("client", (), {})
-    sys.modules["etcd3"] = _etcd3
 # --- end shims ---
 
 import aiohttp  # noqa: E402

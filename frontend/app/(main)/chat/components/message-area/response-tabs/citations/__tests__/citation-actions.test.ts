@@ -23,6 +23,7 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 const { useAuthStore } = await import('@/lib/store/auth-store');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { useChatStore } = await import('@/chat/store');
+const { clearRecordContent } = await import('@/lib/record-content');
 const {
   buildCitationMapsFromApi,
   buildCitationMapsFromStreaming,
@@ -128,7 +129,8 @@ describe('clicking a citation', () => {
   const createObjectURL = vi.fn(() => 'blob:preview-1');
 
   beforeEach(() => {
-    useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+    useAuthStore.setState({ accessToken: jwtExpiringIn(3600, { orgId: 'o1', userId: 'u1' }), refreshToken: 'r' });
+    clearRecordContent();
     useChatStore.setState({ previewFile: null, previewMode: 'sidebar' });
     push.mockReset();
     openWindow.mockReset();
@@ -230,6 +232,83 @@ describe('clicking a citation', () => {
       expect(preview()?.url).toBe('');
       expect(preview()?.blob).toBeInstanceOf(Blob);
       expect(createObjectURL).not.toHaveBeenCalled();
+    });
+
+    describe('jumping between citations of one record', () => {
+      const pdfRoutes = (streamReply?: () => Promise<{ status: number; data: Blob; headers: Record<string, string> }>) => ({
+        [`GET ${KB}/record/r1`]: { status: 200, data: { record: { mimeType: 'application/pdf', recordName: 'Q3 report.pdf', previewRenderable: true } } },
+        [`GET ${KB}/stream/record/r1`]:
+          streamReply ?? { status: 200, data: new Blob(['%PDF'], { type: 'application/pdf' }), headers: { etag: '"v1"' } },
+      });
+
+      it('a jump within the shown record does not fetch', async () => {
+        const api = fakeApi(pdfRoutes());
+        await actions().onPreview(citation({ citationId: 'c1', pageNum: [4] }), maps);
+        const shown = preview()!;
+        const detailsBefore = api.count(`GET ${KB}/record/r1`);
+
+        for (let i = 0; i < 10; i++) {
+          await actions().onPreview(citation({ citationId: i % 2 ? 'c1' : 'c3', pageNum: [i % 2 ? 4 : 9] }), maps);
+        }
+
+        expect(api.count(`GET ${KB}/stream/record/r1`)).toBe(1);
+        expect(api.count(`GET ${KB}/record/r1`)).toBe(detailsBefore);
+        expect(preview()?.url).toBe(shown.url);
+        expect(preview()?.blob).toBe(shown.blob);
+        expect(preview()).toMatchObject({ initialCitationId: 'c1', initialPage: 4 });
+        expect(preview()?.jumpSeq).toBe((shown.jumpSeq ?? 0) + 10);
+        // The same set of citations keeps its identity, so renderers do not re-apply highlights.
+        expect(preview()?.citations).toBe(shown.citations);
+      });
+
+      it('the same chip twice counts as two jumps', async () => {
+        fakeApi(pdfRoutes());
+        await actions().onPreview(citation({ citationId: 'c3', pageNum: [9] }), maps);
+        const before = preview()!.jumpSeq ?? 0;
+        await actions().onPreview(citation({ citationId: 'c3', pageNum: [9] }), maps);
+        await actions().onPreview(citation({ citationId: 'c3', pageNum: [9] }), maps);
+        expect(preview()?.jumpSeq).toBe(before + 2);
+      });
+
+      it('a citation of the other kind of stream takes the full path', async () => {
+        const api = fakeApi(pdfRoutes());
+        await actions().onPreview(citation({ citationId: 'c1' }), maps);
+        const deck = { mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', recordName: 'deck.pptx', extension: 'pptx' };
+        await actions().onPreview(citation({ citationId: 'c1', ...deck }), maps);
+        expect(api.count(`GET ${KB}/record/r1`)).toBe(2);
+      });
+
+      it('a citation without type fields never guesses', async () => {
+        const api = fakeApi(pdfRoutes());
+        await actions().onPreview(citation({ citationId: 'c1' }), maps);
+        await actions().onPreview(citation({ citationId: 'c3', mimeType: '', extension: '' }), maps);
+        expect(api.count(`GET ${KB}/record/r1`)).toBe(2);
+      });
+
+      it('a chip while loading re-targets and the load lands on the last target', async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        const api = fakeApi(
+          pdfRoutes(async () => {
+            await gate;
+            return { status: 200, data: new Blob(['%PDF'], { type: 'application/pdf' }), headers: { etag: '"v1"' } };
+          }),
+        );
+        const first = actions().onPreview(citation({ citationId: 'c1', pageNum: [4] }), maps);
+        await vi.waitFor(() => expect(api.count(`GET ${KB}/stream/record/r1`)).toBe(1));
+        expect(preview()?.isLoading).toBe(true);
+
+        await actions().onPreview(citation({ citationId: 'c3', pageNum: [9] }), maps);
+        expect(preview()).toMatchObject({ isLoading: true, initialCitationId: 'c3', initialPage: 9 });
+
+        release();
+        await first;
+
+        expect(api.count(`GET ${KB}/stream/record/r1`)).toBe(1);
+        expect(preview()).toMatchObject({ isLoading: false, initialCitationId: 'c3', initialPage: 9 });
+        expect(preview()?.citations?.map((c) => c.id)).toEqual(['c1', 'c3']);
+        expect(preview()?.jumpSeq).toBeGreaterThan(0);
+      });
     });
 
     it('does not download a file that cannot be previewed', async () => {

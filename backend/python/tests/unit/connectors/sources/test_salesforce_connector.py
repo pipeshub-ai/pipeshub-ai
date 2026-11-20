@@ -5495,14 +5495,11 @@ class TestGetOpportunityRelatedChildRecords:
 
 class TestHandleWebhookNotification:
 
-    def test_webhook_creates_task(self):
-        import asyncio as asyncio_mod
+    def test_webhook_requests_a_sync(self):
         connector = _make_connector()
-        connector.run_incremental_sync = AsyncMock()
-
-        with patch.object(asyncio_mod, "create_task") as mock_create_task:
-            connector.handle_webhook_notification({"type": "push"})
-            mock_create_task.assert_called_once()
+        connector.request_sync = MagicMock()
+        connector.handle_webhook_notification({"type": "push"})
+        connector.request_sync.assert_called_once_with()
 
 
 # ===========================================================================

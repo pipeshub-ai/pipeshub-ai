@@ -768,3 +768,29 @@ class TestContentHash:
         assert content_hash("data:image/png;base64,QQ==") == content_hash(
             "data:image/png;base64,QQ=="
         )
+
+
+class TestHashedOncePerImage:
+    """content_hash is a sha256 over the whole payload; tens of MB per image."""
+
+    async def test_warm_admit_and_render_hash_each_image_once(self) -> None:
+        from app.utils import image_admission
+
+        uri = _uri(1)
+        admission = _admission()
+        with patch.object(
+            image_admission, "content_hash", wraps=image_admission.content_hash
+        ) as spy:
+            await admission.warm([uri])
+            admission.admit([_candidate(1, data_uri=uri)])
+            assert admission.admitted_uri(uri) == uri
+            assert admission.rendered_uri(uri) == uri
+        # Once for the source URI, once for the candidate built from it.
+        assert spy.call_count == 2
+
+    def test_a_replaced_candidate_hashes_its_new_bytes(self) -> None:
+        from dataclasses import replace
+
+        candidate = _candidate(1)
+        _ = candidate.hash
+        assert replace(candidate, data_uri=_uri(2)).hash == _candidate(2).hash != candidate.hash

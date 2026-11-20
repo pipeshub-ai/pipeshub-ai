@@ -178,16 +178,39 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       # Real-file conversions run in the modules shard and must not skip there (checked below). The
       # same LibreOffice components as the application image: Writer (doc, odt, rtf), Calc (xls), Impress (ppt).
+      # The ~108 MB download once took 16-26 minutes from the runner's mirror (azure.archive.ubuntu.com, ~100 kB/s)
+      # and the job hit its 30-minute limit mid-pytest. apt only fails over between the image's mirrors
+      # (/etc/apt/apt-mirrors.txt) on an error, never on a slow transfer, so each download attempt is bounded and the
+      # second one goes to archive.ubuntu.com. Rewriting the mirror list keeps the package lists the image shipped:
+      # their names follow the source URI (mirror+file:...), not the mirror. Only the download is bounded; the
+      # install reads local files, so a timeout can never interrupt dpkg.
       - name: Install LibreOffice
         if: ${{ matrix.shard == 'modules' }}
-        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui
+        timeout-minutes: 10
+        env:
+          ATTEMPT_SECONDS: '240'
+        run: |
+          packages=(libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui)
+          download() {
+            sudo timeout --kill-after=10 "$ATTEMPT_SECONDS" apt-get install -y --no-install-recommends --download-only \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 "${packages[@]}"
+          }
+          if ! download; then
+            echo "::warning::The LibreOffice download from the runner's apt mirror failed or took over ${ATTEMPT_SECONDS}s; retrying from archive.ubuntu.com"
+            if ! grep -rqs 'mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list /etc/apt/sources.list.d/; then
+              echo "::error::The runner's apt sources no longer use /etc/apt/apt-mirrors.txt, so there is no mirror to fall back to"
+              exit 1
+            fi
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://security.ubuntu.com/ubuntu/\tpriority:2\n' \
+              | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            if ! download; then
+              echo "::error::The LibreOffice download failed or took over ${ATTEMPT_SECONDS}s from both the runner's apt mirror and archive.ubuntu.com"
+              exit 1
+            fi
+          fi
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Install uv
         run: pip install uv
@@ -242,6 +265,12 @@ jobs:
       # the workers' data into COVERAGE_FILE. GitHub's 4 vCPUs are 2 cores, so
       # each of the 4 workers runs a test at about half serial speed:
       # --timeout=60 keeps pytest.ini's 30s hang guard at the same CPU budget.
+      # That guard (SIGALRM) cannot stop a test that swallows the alarm or waits in
+      # C code, and a modules run once sat silent until the job's 30-minute
+      # cancel, with no stack. faulthandler_timeout prints every thread's stack
+      # from a C watchdog, which works even then. It only prints: exiting the
+      # worker would make xdist re-queue that worker's finished files, and
+      # --dist loadfile then never completes. 300 is the longest timeout mark.
       - name: Run unit tests (${{ matrix.shard }})
         working-directory: backend/python
         env:
@@ -256,7 +285,7 @@ jobs:
         run: |
           args=$(python3 ../../scripts/unit_shards.py args "$SHARD")
           mapfile -t shard_args <<< "$args"
-          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
+          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 -o faulthandler_timeout=300 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
 
       # Every capacity knob blank, as compose and Helm deliver an unset one: each service's start-up import must
@@ -278,6 +307,18 @@ jobs:
           python3 ../../scripts/assert_no_skips.py junit-pgvector.xml --min-tests 1 \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
+
+      # The key-value access map cites the app code that reads each key. db-migrations.yml runs it only for
+      # backend/db changes, so an app change that renamed or dropped a cited read broke main unseen. Its tests that
+      # need no PostgreSQL run here; the ones marked postgres run in db-migrations.yml.
+      - name: Key-value access map citations match the app
+        if: ${{ matrix.shard == 'core' }}
+        working-directory: backend/db
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/backend/db
+        run: |
+          uv pip install --system -r requirements.txt
+          pytest -p no:cacheprovider tests/test_kv_access_map.py -m "not postgres" --timeout=300 -q
 
       # The real odt and rtf conversions run again with a report of their own, so a LibreOffice the
       # runner lost fails the build instead of skipping them.
@@ -398,11 +439,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         run: pip install uv
 
@@ -448,11 +484,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv
@@ -513,11 +544,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv
@@ -585,11 +611,6 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
 
       - name: Install uv
         run: pip install uv

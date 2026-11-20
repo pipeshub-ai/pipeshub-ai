@@ -47,10 +47,11 @@ from app.core.org_context import (
 )
 from app.edition import check_runtime_settings
 from app.edition_containers import IndexingAppContainer
-from app.edition_services import configure_app
+from app.edition_services import configure_app, indexing_fairness
 from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing import keep_old_copy
 from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
@@ -118,6 +119,7 @@ from app.services.llm_gateway.fleet_redis import (
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.llm_gateway.trial_lease import get_trial_renewer
 from app.services.llm_gateway.wire import hook_status as wire_hook_status
+from app.services.messaging import consumer_concurrency
 from app.services.messaging.backpressure import (
     get_default_backpressure_coordinator,
 )
@@ -135,7 +137,10 @@ from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
+from app.services.messaging.membership import expect_groups
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.precision_runtime import start_precision_check
+from app.services.messaging.storage_protocol import tagged
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
 from app.services.parsing.remote_concurrency import remote_parse_concurrency
@@ -147,7 +152,7 @@ from app.telemetry.modules.record_storage_metrics import record_recovery_org_pas
 from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.indexing_workers import indexing_worker_count
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
@@ -253,7 +258,8 @@ async def recover_in_progress_records(
     # Track results for final summary
     results = {"requeued": 0, "skipped": 0, "exhausted": 0, "error": 0}
     total_records = 0
-    recovery_owner = f"recovery:{uuid4().hex}"
+    # Carries the storage-protocol tag, so the owner of the lease that runs the orphan sweep is visibly a pod of this protocol
+    recovery_owner = tagged(f"recovery:{uuid4().hex}")
     recovery_renewal_task: asyncio.Task[None] | None = None
     recovery_lock_held = False
     # Shared by both the single coordination lock ("recovery") and each
@@ -1256,6 +1262,12 @@ async def _sweep_orphaned_virtual_record_mappings(
             for mapping in page
             if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
         }
+        # A copy a record just left (its replacement committed) is kept for the grace: a reader's cached map may still name it.
+        retired_at = {
+            vrid: mapping.get(keep_old_copy.RETIRED_AT_FIELD)
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        }
         try:
             # One read per page, not one per mapping: the answer is the same,
             # and on Neo4j each read is a millisecond of the indexing loop.
@@ -1286,6 +1298,15 @@ async def _sweep_orphaned_virtual_record_mappings(
             if not org_of.get(vrid):
                 continue      # a row that names no organisation is the unscoped pass's (_clean_mappings_without_org)
             if (org_of[vrid], vrid) in _orphan_kept_until:
+                continue
+            # A copy may have been retired (or retired again) after this page was read, whatever mark the page shows: the mark is read
+            # again right before the delete, and a read that fails leaves the copy for the next pass.
+            try:
+                row = await graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, raise_on_error=True)
+            except Exception:
+                continue
+            retired = (row or {}).get(keep_old_copy.RETIRED_AT_FIELD, retired_at.get(vrid))
+            if isinstance(retired, (int, float)) and time.time() * 1000 - retired < keep_old_copy.grace_seconds() * 1000:
                 continue
             try:
                 with for_org(org_of[vrid], job="orphan-sweep"):
@@ -2126,10 +2147,13 @@ async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
     config_service = app_container.config_service()
     broker_type = get_message_broker_type()
     if broker_type == MessageBrokerType.POSTGRES:
-        # Its consumers register no group, so there is nothing to check. Nothing is published, which
-        # is the "stale" result: artifact readers stay on the stored record and retention stays paused.
+        # The queue keeps no durable record of its members: a claim is gone once acked, and a consumer parked on LISTEN
+        # writes nothing, so an older pod between records leaves no trace for this leader or the next. Nothing in the
+        # database keeps an older build from connecting either. With no proof, nothing is published: the result stays
+        # stale, which holds artifact reads and pauses stored-record retention.
         logger.info(
-            "Indexing membership is not published for the %s broker: artifact reads stay on the stored record",
+            "Indexing membership is not published for the %s broker: artifact reads stay on the stored record "
+            "and stored-record retention stays paused",
             broker_type.value,
         )
         return
@@ -2178,12 +2202,28 @@ async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
             streams[group] = sorted(found)
         return await membership_module.redis_untagged(redis, streams)
 
+    async def check_any(groups: dict[str, list[str]]) -> list[str]:
+        # Idle consumers count as live: an idle older pod can hold a sweep lease. Kafka's check has no idle notion.
+        if broker_type == MessageBrokerType.KAFKA:
+            return await check(groups)
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        redis = get_redis_provider(RedisConnectionConfig.from_redis_config(redis_config)).get_client()
+        streams: dict[str, list[str]] = {}
+        for group, topics in groups.items():
+            found = set(topics)
+            for topic in topics:
+                async for key in redis.scan_iter(match=f"{topic}.*"):
+                    found.add(key.decode() if isinstance(key, bytes) else str(key))
+            streams[group] = sorted(found)
+        return await membership_module.redis_untagged(redis, streams, idle_live_ms=None)
+
     publisher = membership_module.MembershipPublisher(
         logger,
         check,
         lambda key, entry, ttl: membership_module.publish_entry(config_service, key, entry, ttl),
         holder=owner,
         is_leader=is_leader,
+        check_any=check_any,
     )
     await publisher.run()
 
@@ -2474,6 +2514,22 @@ async def _start_record_title_consumer(
         )
 
 
+PRIORITY_GROUP = "records_priority_consumer_group"
+
+
+def _stage_group(stage_name: str) -> str:
+    return f"pipeline_{stage_name}_group"
+
+
+def _indexing_groups(record_config: Any, priority_topic: str, registry: Any) -> dict[str, list[str]]:  # noqa: ANN401
+    """Every indexing consumer group this process runs, whether its consumer has started yet or not."""
+    return {
+        record_config.group_id: list(record_config.topics),
+        PRIORITY_GROUP: [priority_topic],
+        **{_stage_group(name): [registry.topic_for(name)] for name in registry.names()},
+    }
+
+
 async def start_kafka_consumers(
     app_container: IndexingAppContainer,
     governor: ResourceGovernor | None = None,
@@ -2537,6 +2593,10 @@ async def start_kafka_consumers(
             app_container, producer=retry_producer
         )
         connector_off_filter = await app_container.connector_off_filter()
+        # Hands back, as they are read, the events that would write vectors of another precision than the
+        # indexes hold; its verdict is recomputed in the background.
+        precision_filter, precision_task = await start_precision_check(app_container, logger)
+        app_container.precision_task = precision_task
         # Kept on the container so shutdown can release its Redis client.
         app_container.record_event_handler = record_event_handler
 
@@ -2546,6 +2606,7 @@ async def start_kafka_consumers(
         # passing it explicitly here is what lets the consumer's read loop
         # actually see their 429 signals and pause new reads.
         record_kafka_consumer = MessagingFactory.create_consumer(
+            fairness=indexing_fairness(lambda pool: consumer_concurrency.slot_pool_limit(record_kafka_consumer, pool)),
             broker_type=broker_type,
             logger=logger,
             config=record_consumer_config,
@@ -2557,6 +2618,7 @@ async def start_kafka_consumers(
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
             connector_off_filter=connector_off_filter,
+            precision_filter=precision_filter,
             worker=worker,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
@@ -2579,7 +2641,7 @@ async def start_kafka_consumers(
             priority_config = await MessagingUtils.create_consumer_config(
                 app_container,
                 "records_priority_consumer_client",
-                "records_priority_consumer_group",
+                PRIORITY_GROUP,
                 [priority_topic],
                 is_indexing=True,
             )
@@ -2595,6 +2657,7 @@ async def start_kafka_consumers(
                 backpressure_coordinator=get_default_backpressure_coordinator(),
                 disposition_sink=record_event_handler,
                 connector_off_filter=connector_off_filter,
+                precision_filter=precision_filter,
                 priority_lane=PriorityLane(
                     heavy_limit=messaging_env.priority_lane_heavy_limit,
                     light_limit=messaging_env.priority_lane_light_limit,
@@ -2641,11 +2704,17 @@ async def start_kafka_consumers(
         # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
         pipeline_runtime.record_leases.bind(concurrency_manager)
         record_event_handler.record_leases = pipeline_runtime.record_leases  # lets the abandon sink tell a dead holder from a live one
+        # Records that share a virtual record serialise their vector writes and stray sweep on one lease of that virtual record.
+        from app.modules.transformers.vectorstore import VectorStore
+
+        VectorStore.vrid_leases = pipeline_runtime.record_leases
         pipeline_runtime.queued_copies.bind_copies_promoted(
             record_event_handler.request_code_edge_builds_for_copies
         )
         registry = pipeline_runtime.registry
         stage_topics = [registry.topic_for(name) for name in registry.names()]
+        # Before any stage consumer starts (they may start much later): an indexing membership entry covers these groups.
+        expect_groups(_indexing_groups(record_consumer_config, priority_topic, registry))
         stage_producer = retry_producer
         main_loop = asyncio.get_running_loop()
         setattr(
@@ -2668,7 +2737,7 @@ async def start_kafka_consumers(
                     stage_config = await MessagingUtils.create_consumer_config(
                         app_container,
                         f"pipeline_{stage_name}_client",
-                        f"pipeline_{stage_name}_group",
+                        _stage_group(stage_name),
                         [topic],
                         is_indexing=True,
                     )
@@ -2834,6 +2903,10 @@ async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_
     # after the clients bound to it.
     if close_worker_loop:
         await _close_worker_loop(container)
+
+    precision_task = getattr(container, "precision_task", None)
+    if precision_task is not None:
+        precision_task.cancel()
 
     handler = getattr(container, "record_event_handler", None)
     aclose = getattr(handler, "aclose", None)
@@ -3419,8 +3492,10 @@ async def health_check(request: Request) -> JSONResponse:
         )
 
 
-def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8091)
     import warnings
     workers = workers or indexing_worker_count()
     if reload and workers > 1:

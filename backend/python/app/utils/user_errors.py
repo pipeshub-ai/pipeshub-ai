@@ -35,6 +35,7 @@ from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 from app.utils.api_call import ApiCallError
+from app.utils.embedding_retry import is_quota_exhausted
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -375,6 +376,11 @@ def _ai_messages(model: str) -> dict[str, str]:
             f"The {model} is busy right now, so this file wasn't indexed. Reindex it in "
             "a few minutes."
         ),
+        "quota_exceeded": (
+            f"The {model}'s provider account is out of credit, so this file wasn't indexed. "
+            "An admin can add credit with the provider or choose another model in "
+            "Workspace → AI Models, then Reindex the file."
+        ),
         "auth_error": (
             f"The {model} rejected PipesHub's API key, so this file wasn't indexed. An "
             "admin can update the key in Workspace → AI Models, then Reindex the file."
@@ -568,6 +574,9 @@ def _provider_code(chain: list[BaseException]) -> str:
         if _aws_error_code(e) == "NotAuthorized":
             return "auth_error"
         status = _status_code(e)
+        # An empty balance: OpenAI answers it 429 and Anthropic 400, and neither is fixed by waiting.
+        if status in (400, 402, 429) and is_quota_exhausted(e):
+            return "quota_exceeded"
         if status == 429:
             return "rate_limit"
         if status in (401, 403):
@@ -583,7 +592,7 @@ def _provider_code(chain: list[BaseException]) -> str:
     for e in theirs:
         name = type(e).__name__
         if "RateLimit" in name:
-            return "rate_limit"
+            return "quota_exceeded" if is_quota_exhausted(e) else "rate_limit"
         if "Authentication" in name or "PermissionDenied" in name:
             return "auth_error"
         if "ContextWindow" in name or "ContextLength" in name:
@@ -640,6 +649,11 @@ def _ai_failure_code(chain: list[BaseException]) -> str:
 def provider_error_code(exc: BaseException) -> str:
     """`classify_error`'s code for an exception raised by an AI provider's SDK."""
     return _provider_code(list(_chain(exc)))
+
+
+def provider_response_status(exc: BaseException) -> int | None:
+    """The HTTP status of the response an AI provider sent, or ``None`` when no response arrived."""
+    return next((status for e in _chain(exc) if not _ours(e) and (status := _status_code(e)) is not None), None)
 
 
 def _llm_not_configured(exc: BaseException) -> bool:

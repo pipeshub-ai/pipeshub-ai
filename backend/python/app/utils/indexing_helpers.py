@@ -1,10 +1,9 @@
 import base64
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
-from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.jinja_templates import compiled_template
 from app.utils.llm import get_llm_for_role

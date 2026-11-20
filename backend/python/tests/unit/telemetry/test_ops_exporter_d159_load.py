@@ -25,7 +25,7 @@ import pytest
 from tests.support.free_port import free_port
 
 PY = Path(__file__).resolve().parents[3]
-SCRAPE_TIMEOUT_S = 10.0  # the chart's metrics.podMonitor.scrapeTimeout
+SCRAPE_TIMEOUT_S = 10.0  # a typical scrape timeout
 BURNERS = max(2, min(4, os.cpu_count() or 2))
 
 pytestmark = [pytest.mark.stress, pytest.mark.skipif(not sys.platform.startswith("linux"), reason="a Linux load test")]

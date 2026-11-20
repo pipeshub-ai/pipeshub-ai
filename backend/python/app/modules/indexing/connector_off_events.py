@@ -76,6 +76,28 @@ class RecordHeldForDelete(RequeueWithoutAttempt):
     pauses_consumer = False
 
 
+# How long a same-bytes update whose skip could not finish waits before it is delivered again.
+SAME_BYTES_SKIP_RETRY_DELAY_S = 30.0
+
+
+# Names a give-up on a same-bytes update in the reason the consumer abandons it with.
+SAME_BYTES_GIVE_UP_LABEL = "same-bytes update could not apply its membership sync"
+
+
+class SameBytesSkipPending(RequeueWithoutAttempt):
+    """An update of the bytes a record is already indexed from could not finish its cheap work (the membership
+    sync, the stage re-dispatch, the stage-state read): handed back with the record left exactly as it is, still
+    COMPLETED, and no paid re-index. The hand-backs count toward the delivery backstop, which ends them: a message
+    handed back that many times is given up on with a reason naming the count, so a store that stays down is
+    neither a silent loop nor a re-parse of an indexed record."""
+
+    counts_toward_backstop = True
+    pauses_consumer = False
+    give_up_label = SAME_BYTES_GIVE_UP_LABEL
+    # Logged once, at WARNING, by the code that raised it; not a fault for the handler to log again.
+    expected_outcome = True
+
+
 class ReadTimeOutcome(Enum):
     PASS = "pass"
     # The handler acknowledges without writing anything.
@@ -101,8 +123,10 @@ def connector_gated_event(event_type: str, payload: Mapping[str, Any]) -> bool:
 
 
 def clears_embeddings_first(event_type: str, payload: Mapping[str, Any]) -> bool:
-    """Whether the handler deletes the record's embeddings before anything
-    else: an update or reindex of a type that is not reconciled block by block."""
+    """Whether an update or reindex is of a type that is not reconciled block by block: its re-parse
+    replaces the whole record under a new vrid. The handler no longer takes the old points out first
+    (they go with the old vrid once the record has moved); the read-time filter still leaves these
+    events to the handler."""
     if payload.get("vectorDbOnly") or event_type not in (
         EventTypes.UPDATE_RECORD.value,
         EventTypes.REINDEX_RECORD.value,

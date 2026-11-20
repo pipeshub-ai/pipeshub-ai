@@ -275,13 +275,20 @@ def test_metrics_text_format(monkeypatch) -> None:
             assert name in values, "every sample follows its TYPE line"
             values[name] = int(value)
     assert values == {
-        "pipeshub_parsing_in_flight": 1,
         "pipeshub_parsing_capacity": 8,
         "pipeshub_parsing_saturated_total": 1,
         "pipeshub_parsing_requests_total": 1,
         "pipeshub_parse_stuck_conversions": 0,
         "pipeshub_parse_stuck_oldest_seconds": 0,
     }
+
+
+def test_metrics_text_exports_no_in_flight_gauge() -> None:
+    """The in-flight count stays in the process (it drives the 429 and /health); it is not a metric."""
+    load = ParseLoad()
+    load.try_enter(8)
+    assert "in_flight" not in render_metrics(load)
+    assert load.snapshot()["in_flight"] == 1
 
 
 def test_capacity_falls_back_to_the_governor_ceiling(monkeypatch) -> None:
@@ -299,7 +306,7 @@ def test_metrics_and_health_endpoints_on_the_parsing_app() -> None:
     response = client.get("/metrics")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
-    assert "pipeshub_parsing_in_flight " in response.text
+    assert "pipeshub_parsing_capacity " in response.text
     health_load = parse_load().snapshot()
     assert set(health_load) == {"in_flight", "max_concurrent", "saturated_total", "requests_total"}
 

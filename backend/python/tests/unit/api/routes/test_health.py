@@ -502,9 +502,11 @@ class TestPerformLlmHealthCheck:
             resp = await perform_llm_health_check(config, logger)
 
         body = resp.body.decode()
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        assert json.loads(body)["details"]["error_code"] == "rate_limit"
         assert "doesn't support images" not in body
-        assert "Rate limit" not in body  # the provider's text is logged, never returned
+        # Not an SDK error, so not the provider's answer: its text stays in the log.
+        assert "Rate limit reached" not in body
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):
@@ -1569,9 +1571,11 @@ class TestPerformLlmHealthCheckFullCoverage:
             resp = await perform_llm_health_check(config, logger)
 
         body = resp.body.decode()
-        assert resp.status_code == 500
+        assert resp.status_code == 400
+        assert json.loads(body)["details"]["error_code"] == "rate_limit"
         assert "doesn't support images" not in body
-        assert "Rate limit" not in body  # the provider's text is logged, never returned
+        # Not an SDK error, so not the provider's answer: its text stays in the log.
+        assert "Rate limit reached" not in body
 
     @pytest.mark.asyncio
     async def test_multimodal_both_fail(self):

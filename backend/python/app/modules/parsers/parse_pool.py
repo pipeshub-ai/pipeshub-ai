@@ -363,7 +363,19 @@ class _Lane:
         raise payload
 
     def _crashed(self, job: _Job) -> ParseWorkerError:
-        self._drop_worker()
+        worker = self._worker
+        self._drop_worker()  # stops and reaps it, so its exit status is known
+        from app.services.resource_governor.kinds import ParseKind
+
+        # Only an Excel load sets that limit; any other job dying of it (an operator's `ulimit -t`) is the retryable crash below.
+        if job.kind is ParseKind.EXCEL_LOAD and worker is not None and worker.process.returncode == -signal.SIGXCPU:
+            # The job's own CPU limit ended it (workbook_model._cpu_limited): the same stop as the
+            # timeout above, and no sign of memory pressure.
+            _logger.warning(
+                "Parsing %s (%d bytes) used up its CPU time limit; its worker was replaced",
+                job.label, job.size,
+            )
+            return ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out")
         _logger.warning(
             "The parse worker died while parsing %s (%d bytes), most likely out of memory. "
             "That record fails; a fresh worker takes the next file.",
@@ -452,7 +464,9 @@ def _lane_demand(kind: object | None = None, size: int = 0) -> Demand:
 
     demand = wiring.lane_demand(kind, class_pools.current_class()) if wiring.classes_enabled() else Demand(Family.PARSE, 1)
     memory = lane_charge_bytes(kind, size) if isinstance(kind, ParseKind) else 0
-    return dataclasses.replace(demand, mem_bytes=memory) if memory else demand
+    # A demand that already carries its own memory (an inspection's designed 0.1 GiB) keeps it: the kind's lane charge
+    # is added only where nothing else holds that memory (an Excel load), never over a figure chosen for the demand.
+    return dataclasses.replace(demand, mem_bytes=memory) if memory and not demand.mem_bytes else demand
 
 
 class _EventToken:

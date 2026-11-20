@@ -36,6 +36,8 @@ export interface IdentityFixture {
   newId(): string;
   /** Removes every org auth config row (the "first live config" lookups are store-wide). */
   clearOrgAuth(): Promise<void>;
+  /** Stores the sign-in methods a release removed from the organisation's config, as the upgrade migration does. */
+  storeRemovedSignInMethods(orgId: string, methods: string[]): Promise<void>;
 }
 
 const MAX = 5;
@@ -695,6 +697,47 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const today = new Date().toISOString().slice(0, 10);
       expect((await groups.list(org, { skip: 0, limit: 10, createdBefore: today })).total).to.equal(4);
     });
+
+    it('list pages in creation (id) order, whatever the names, so pages neither repeat nor skip a group', async () => {
+      const org = await fx.newOrg();
+      const tag = uniq('Ord');
+      const made: string[] = [];
+      for (const name of [`${tag}-z`, `${tag}-B`, `${tag}-a`, `${tag}-M`])
+        made.push((await groups.create(org, { name, type: 'custom' }))._id);
+      const ids = (q: { skip: number; limit: number }) => groups.list(org, q).then((r) => r.rows.map((g) => g._id));
+      expect(await ids({ skip: 0, limit: 10 })).to.deep.equal([...made].sort());
+      expect([...(await ids({ skip: 0, limit: 2 })), ...(await ids({ skip: 2, limit: 2 }))]).to.deep.equal([...made].sort());
+    });
+
+    it('the groups of a person come in id order, whatever the names', async () => {
+      const org = await fx.newOrg();
+      const tag = uniq('Mem');
+      const u = fx.newId();
+      const made: string[] = [];
+      for (const name of [`${tag}-z`, `${tag}-B`, `${tag}-a`]) made.push((await groups.create(org, { name, type: 'custom' }))._id);
+      await groups.addMembers(org, made, [u]);
+      expect((await groups.groupsOfUser(org, u)).map((g) => g._id)).to.deep.equal([...made].sort());
+      expect((await groups.summariesForUsers(org, [u])).map((g) => g._id)).to.deep.equal([...made].sort());
+    });
+
+    it('memberIdsOfTypes lists members group by group in id order, each group in its own member order, repeats kept', async () => {
+      const org = await fx.newOrg();
+      const tag = uniq('Typ');
+      const [u1, u2, u3] = [fx.newId(), fx.newId(), fx.newId()];
+      const made: string[] = [];
+      for (const name of [`${tag}-z`, `${tag}-B`, `${tag}-a`]) made.push((await groups.create(org, { name, type: 'custom' }))._id);
+      const members: Record<string, string[]> = { [made[0]!]: [u1, u2], [made[1]!]: [u3, u1], [made[2]!]: [u2] };
+      for (const g of made) for (const u of members[g]!) await groups.addMembers(org, [g], [u]);
+      const expected = [...made].sort().flatMap((g) => members[g]!);
+      expect(await groups.memberIdsOfTypes(org, ['custom'])).to.deep.equal(expected);
+    });
+
+    it('stats lists the names in code-point order', async () => {
+      const org = await fx.newOrg();
+      const tag = uniq('St');
+      for (const name of [`${tag}-z`, `${tag}-B`, `${tag}-a`]) await groups.create(org, { name, type: 'custom' });
+      expect((await groups.stats(org)).map((s) => s._id)).to.deep.equal([`${tag}-B`, `${tag}-a`, `${tag}-z`]);
+    });
   });
 
   describe('users', () => {
@@ -726,11 +769,12 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.getLive(org, u._id))!._id).to.equal(u._id);
       expect(await users.getLive(await fx.newOrg(), u._id)).to.equal(null);
       expect((await users.getLiveById(u._id))!.orgId).to.equal(org);
-      expect(await users.getAccountState(u._id)).to.include({ kind: 'human', isDisabled: false });
+      // exact shape: a store that adds a field (MongoDB's default `_id` in a projection) shows as a shadow-read difference
+      expect(await users.getAccountState(u._id)).to.deep.equal({ kind: 'human', isDisabled: false });
       const snap = await users.getAuthSnapshot(org, u._id);
       expect(snap).to.include({ email: u.email, role: 'admin' });
       expect(await users.getAuthSnapshot(await fx.newOrg(), u._id)).to.equal(null);
-      expect(await users.getRoleSnapshot(org, u._id)).to.include({ role: 'admin' });
+      expect(await users.getRoleSnapshot(org, u._id)).to.deep.equal({ role: 'admin', kind: 'human' });
       await users.markDeleted(org, u._id);
       expect(await users.getLive(org, u._id)).to.equal(null);
       expect(await users.getLiveById(u._id)).to.equal(null);
@@ -1178,6 +1222,25 @@ export function describeIdentityContract(fx: IdentityFixture): void {
         expect(err, JSON.stringify(steps)).to.be.instanceOf(Error);
       }
       expect(await orgAuth.replaceSteps(await fx.newOrg(), [{ order: 1, allowedMethods: [] }])).to.equal(null);
+    });
+
+    it('get, getLive and replaceSteps return the same fields whatever removedSignInMethods holds', async () => {
+      const org = await fx.newOrg();
+      await orgAuth.createDefault(org, undefined);
+      const fields = ['__v', '_id', 'authSteps', 'createdAt', 'isDeleted', 'orgId', 'updatedAt'];
+      const sameShape = async (): Promise<void> => {
+        const steps = [{ order: 1, allowedMethods: [{ type: 'password' }] }];
+        for (const c of [await orgAuth.get(org), await orgAuth.getLive(org), await orgAuth.replaceSteps(org, steps)]) {
+          expect(Object.keys(c!).sort()).to.deep.equal(fields);
+        }
+      };
+      await sameShape();
+      expect(await orgAuth.removedSignInMethods(org)).to.deep.equal([]);
+      for (const removed of [['samlSso', 'oauth'], []]) {
+        await fx.storeRemovedSignInMethods(org, removed);
+        await sameShape();
+        expect(await orgAuth.removedSignInMethods(org)).to.deep.equal(removed);
+      }
     });
   });
 

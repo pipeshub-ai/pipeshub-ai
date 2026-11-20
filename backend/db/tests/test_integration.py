@@ -7,7 +7,9 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.exc import DBAPIError
 
+from db import epoch_lint
 from db.lib import ddl
+from db.locations import version_locations
 
 from .conftest import _free_port, run_migrate, start_migrate
 
@@ -69,17 +71,15 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (18, 11), "platform": (8, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
-         "graph": (13, 0), "kg": (17, 17), "retrieval": (4, 0)}
-# platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0008", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0017", "retrieval_0004", "graph_0013"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+# read from the revision files, not pinned by hand: every pull request that adds a revision would edit the same line
+HEADS, REVISION_HEADS = epoch_lint.expected_heads(version_locations())
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=18 min_code=11" in r.stdout and "epoch platform_data=4 min_code=0" in r.stdout
+    assert all(f"epoch {b}={e} min_code={m}" in r.stdout for b, (e, m) in HEADS.items())
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
@@ -96,7 +96,7 @@ def test_service_role_grants(db):
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
     with connect(cluster, name, "pipeshub_node_login") as c:
         c.execute("SET ROLE pipeshub_node")
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 18
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == HEADS["kernel"][0]
         c.execute("SELECT kernel.assert_profile_epoch(1)")
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="expects 2"):
             c.execute("SELECT kernel.assert_profile_epoch(2)")
@@ -232,7 +232,7 @@ def test_contract_epochs_and_dev_downgrade(db, tmp_path):
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == {"kernel": (1, 11)}                      # the contract stays
     assert run_migrate(url, **env).returncode == 0                                     # and forward again
-    assert epochs(cluster, name)["kernel"] == (18, 11)
+    assert epochs(cluster, name)["kernel"] == HEADS["kernel"]
 
 
 def test_one_module_down_and_up_leaves_a_clean_catalog(db):
@@ -725,7 +725,7 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0008", min_code=None):
+def _as_newer_build(cluster, name, revision="platform_0010", min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))
@@ -835,6 +835,15 @@ KV_MATRIX = [
     ("connectors", "/services/mcp/credentials/i1/u1", True, True), ("connectors", "/services/api-toolsets/credentials/i1/u1", True, True),
     ("connectors", "/services/softDeletePurge/state", True, True), ("connectors", "/services/deployment", True, True),
     ("connectors", "/migrations/node_relation_v1", True, True), ("connectors", "state:lock:x:leader", True, True),
+    ("connectors", "/services/vectordb/embedding_epoch/records/current", True, True),      # the cleanup moves the epoch (platform_0010)
+    ("connectors", "/services/vectordb/embedding_epoch/records/tokens/r1/issuing", True, True),
+    ("connectors", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),  # debt of unconfirmed batches sits under the epoch prefix
+    ("indexing", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),
+    ("query", "/services/vectordb/embedding_epoch/records/debt/o1/ab12", True, True),
+    ("connectors", "/services/vectordb/embedding_pin/records", True, False),               # pins are written by indexing and query
+    ("connectors", "/services/vectordb/embedding_epochx", True, False), ("connectors", "/services/vectordb/collection_manifest", True, False),
+    ("connectors", "/services/vectordb/precision_verdict", True, False),
+    ("indexing", "/services/vectordb/embedding_pin/records", True, True), ("query", "/services/vectordb/embedding_pin/records", True, True),
     ("connectors", "/services/agents/parked-turns/c1", True, False), ("connectors", "/services/smtp", False, False),
     ("connectors", "/services/slackBot", False, False), ("connectors", "/services/auth/google", False, False),
     ("connectors", "/services/mcp/accessPolicy/o1", False, False), ("connectors", "crawl:reconcile:c1", False, False),
@@ -964,6 +973,48 @@ def test_in_shadow_every_access_is_admitted_and_one_outside_the_prefixes_is_logg
         assert all(f"role pipeshub_{role}" in n and "secret-value" not in n and n.count("/") <= 3 for n in outside), outside
     with connect(cluster, name) as c:
         assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
+
+
+def test_in_enforce_connectors_writes_the_epoch_keys_of_a_cleanup_and_no_pin_or_other_vector_key(kv_db):
+    """The search-index cleanup (connectors) begins a reset: a pointer set, then the issuing and live keys of the new token created."""
+    cluster, name = kv_db
+    _set_mode(cluster, name, True)
+    base = "/services/vectordb/embedding_epoch/records"
+    with _as(cluster, name, "connectors") as c:
+        c.execute(UPSERT, (f"{base}/current",))
+        for state in ("issuing", "live"):
+            c.execute("INSERT INTO platform.kv_entries (key, value) VALUES (%s, 'w') ON CONFLICT DO NOTHING RETURNING true",
+                      (f"{base}/tokens/r2/{state}",))
+        c.commit()
+        # The refusal itself is the proof: other roles write these keys elsewhere in this database, so their
+        # presence afterwards says nothing about this role.
+        for key in ("/services/vectordb/embedding_pin/records", "/services/vectordb/embedding_pin/records/o1",
+                    "/services/vectordb/collection_manifest", "/services/vectordb/embedding_epochs/records"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                c.execute(UPSERT, (key,))
+            c.rollback()
+    wrote = (f"{base}/current", f"{base}/tokens/r2/issuing", f"{base}/tokens/r2/live")
+    with connect(cluster, name) as c:   # the exact keys, not a count: the role matrix above writes under the same prefix
+        present = {k for (k,) in c.execute("SELECT key FROM platform.kv_entries WHERE key = ANY(%s)", (list(wrote),))}
+        assert present == set(wrote)
+
+
+def test_platform_0010_downgrades_to_the_matrix_of_platform_0008_and_upgrades_again(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+    assert run_migrate(url, "downgrade", "platform_0009", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "connectors") as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+    with _as(cluster, name, "indexing") as c:                                   # platform_0007's spend guard grants are kept
+        assert c.execute("SELECT 1 FROM platform.kv_entries WHERE key = '/services/indexing/spendGuard/hmacKey'").fetchone() is not None
+    _set_mode(cluster, name, False)
+    assert run_migrate(url).returncode == 0
+    _set_mode(cluster, name, True)
+    with _as(cluster, name, "connectors") as c:
+        c.execute(UPSERT, ("/services/vectordb/embedding_epoch/records/current",))
+        c.rollback()
 
 
 def test_a_service_role_cannot_create_anything_a_policy_function_could_resolve_to(kv_db):

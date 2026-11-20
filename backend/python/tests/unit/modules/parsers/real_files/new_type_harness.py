@@ -147,6 +147,7 @@ async def service(ext: str, content: bytes, mime: str | None = None) -> BlocksCo
         "docm": OoxmlPackageParser(local, "word"),
         "dotx": OoxmlPackageParser(local, "word"),
         "potx": OoxmlPackageParser(local, "slides"),
+        "pptx": local,  # a macro-enabled deck is read by the pptx parser as it is
         "msg": MsgParser(SelectolaxHtmlParser(allow_remote_fetch=False)),
         "log": PlainTextParser(),
         "cfg": PlainTextParser(),

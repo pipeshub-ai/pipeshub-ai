@@ -19,9 +19,13 @@ from app.models.blocks import (
     TableMetadata,
     TableRowMetadata,
 )
-from app.modules.parsers.excel.prompt_template import TableEnrichment
-from app.utils import indexing_helpers, table_enrichment
+from app.modules.parsers.excel.prompt_template import (
+    KeyedRowDescription,
+    TableEnrichment,
+)
+from app.utils import table_enrichment
 from app.utils.table_enrichment import _enhance_one_table
+from tests.support.table_model import keyed_rows
 
 ROWS = [("SEO", "New"), ("Onboarding", "Review"), ("BackToSchool", "Disc")]
 
@@ -67,38 +71,32 @@ def _build(header_at: int | None) -> tuple[BlocksContainer, BlockGroup]:
 
 
 class _Harness:
-    """Captures the rows actually sent to the LLM and answers one description each."""
+    """Captures the rows actually sent to the LLM and answers one description each, under each row's key."""
 
     def __init__(self, truncate_to: int | None = None) -> None:
         self.sent: list[list[str]] = []
         self._truncate_to = truncate_to
 
-    def format_spy(self, rows):
-        """Stands in for format_rows_with_index; the prompt text is irrelevant here."""
-        self.sent = [list(r) for r in rows]
-        return str(rows)
-
-    async def llm(self, _llm, _messages, _model, _field, count):
-        descriptions = [f"DESC<{r[0]}>" for r in self.sent]
+    async def llm(self, _llm, messages, _model, *_args, **_kwargs):
+        shown = keyed_rows(messages)
+        self.sent = [list(row) for _key, row in shown]
+        descriptions = [
+            KeyedRowDescription(key=key, description=f"DESC<{row[0]}>") for key, row in shown
+        ]
         if self._truncate_to is not None:
-            return TableEnrichment(
-                summary="s",
-                headers=["invented_a", "invented_b"],
-                header_row_count=0,
-                descriptions=descriptions[: self._truncate_to],
-            )
+            descriptions = descriptions[: self._truncate_to]
         return TableEnrichment(
             summary="s",
             headers=["invented_a", "invented_b"],
             header_row_count=0,
-            descriptions=descriptions[:count],
+            descriptions=descriptions,
         )
 
 
 async def _enrich(group, container, harness, logger=None):
-    with patch.object(indexing_helpers, "format_rows_with_index", harness.format_spy), patch.object(
+    with patch.object(
         table_enrichment,
-        "invoke_with_count_validation_and_reflection",
+        "invoke_with_structured_output_and_reflection",
         new=AsyncMock(side_effect=harness.llm),
     ):
         await _enhance_one_table(group, container, MagicMock(), logger or MagicMock())
@@ -195,7 +193,7 @@ class TestRowDescriptionAlignment:
 @pytest.mark.asyncio
 async def test_a_table_whose_model_call_failed_still_gets_a_plain_summary() -> None:
     failing = AsyncMock(side_effect=RuntimeError("provider down"))
-    with patch.object(table_enrichment, "invoke_with_count_validation_and_reflection", failing):
+    with patch.object(table_enrichment, "invoke_with_structured_output_and_reflection", failing):
         result = await table_enrichment.enrich_table_grid(
             MagicMock(), [["Name", "Age"], ["a", "1"], ["b", "2"]], logger=MagicMock(), known_header_row_count=1
         )

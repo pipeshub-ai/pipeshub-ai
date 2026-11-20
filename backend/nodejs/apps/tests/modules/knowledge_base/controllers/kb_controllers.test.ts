@@ -1806,6 +1806,23 @@ describe('Knowledge Base Controller', () => {
       }
     })
 
+    it('forwards force: true to the connector service, and force: false when the request has none', async () => {
+      const handler = reindexRecord(createMockAppConfig())
+      const bodies: any[] = []
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
+        bodies.push(typeof this.body === 'string' ? JSON.parse(this.body) : this.body)
+        return { statusCode: 200, data: { message: 'ok' } } as any
+      })
+
+      for (const body of [{ depth: 0, force: true }, { depth: 0 }]) {
+        await handler(createMockRequest({ params: { recordId: 'r1' }, body }), createMockResponse(), createMockNext())
+      }
+
+      expect(bodies).to.have.length(2)
+      expect(bodies[0].force).to.equal(true)
+      expect(bodies[1].force).to.equal(false)
+    })
+
     it('should reindex with force flag', async () => {
       const handler = reindexRecord(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
@@ -3326,6 +3343,22 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should relay the connector-gone detail of a 404 and keep the generic message for a missing record', async () => {
+      const gone = 'The connector for this record no longer exists or was deleted. The record cannot be streamed.'
+      const stub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+      stub.onFirstCall().resolves({ statusCode: 404, data: { detail: gone } })
+      stub.onSecondCall().resolves({ statusCode: 404, data: { detail: 'Record not found' } })
+
+      const handler = getRecordById(createMockAppConfig())
+      const first = createMockNext()
+      await handler(createMockRequest({ params: { recordId: 'r1' } }), createMockResponse(), first)
+      const second = createMockNext()
+      await handler(createMockRequest({ params: { recordId: 'r2' } }), createMockResponse(), second)
+
+      expect(first.firstCall.args[0].message).to.equal(gone)
+      expect(second.firstCall.args[0].message).to.equal('Record r2 not found')
     })
 
     it('should call next when reindexRecord connector returns non-200', async () => {

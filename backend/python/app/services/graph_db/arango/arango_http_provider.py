@@ -56,6 +56,7 @@ from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import (
+    RecordSchemaNarrowError,
     GraphLockUnavailableError,
     GraphQueryError,
     PermissionVerificationUnavailableError,
@@ -96,8 +97,11 @@ from app.models.source_dates import (
     upload_times_undated,
 )
 from app.modules.code_graph.edge_build_trigger import is_code_record
+from app.modules.indexing.record_diagnostics import WriteKind, aql_parts
+from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.schema.arango.documents import (
+    RECORD_SCHEMA_GENERATION,
     agent_schema,
     agent_skill_candidates_schema,
     agent_skill_versions_schema,
@@ -178,6 +182,7 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoQueryError,
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
+from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
 from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
 from app.services.graph_db.common.cascade_retry import (
     CASCADE_ATTEMPTS,
@@ -193,6 +198,7 @@ from app.services.graph_db.common.name_match import aql_name_key, name_query_par
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
+    aql_holds_vrid,
     aql_live_record,
     aql_record_visibility,
     aql_searchable_record,
@@ -239,6 +245,7 @@ from app.services.graph_db.conditions import (
     EQ,
     IS_NULL,
     NULL_OR_EQ,
+    ONE_OF,
     Cond,
     check_conditions,
 )
@@ -316,6 +323,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.utils import error_class
+from app.utils.db_query_log import expecting
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
 
@@ -525,8 +533,9 @@ def _aql_open_hop(c: str, p: str, tag: str) -> str:
 def _aql_read_by_app(v: str) -> str:
     """Whether ``v`` is read by this App's rules (``@app_id``). A record or group of another connector that a
     group edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's
-    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once."""
-    return f"({v}.connectorId == @app_id)"
+    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once. A group that carries
+    access only (``accessOnly``) is never a row: what hangs under it is listed under its other parents."""
+    return f"({v}.connectorId == @app_id AND {v}.accessOnly != true)"
 
 
 def _aql_in_scope(c: str, p: str) -> str:
@@ -664,7 +673,7 @@ def _aql_undecided(v: str, *, decided: str | None = None, hiding: bool = True) -
         FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
             FILTER kh_ue.relationshipType IN {_HIERARCHY_AQL}
             FILTER IS_SAME_COLLECTION("{records}", kh_uc) OR IS_SAME_COLLECTION("{groups}", kh_uc)
-            FILTER kh_uc.orgId == @org_id AND kh_uc.connectorId == @app_id AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
+            FILTER kh_uc.orgId == @org_id AND {_aql_read_by_app("kh_uc")} AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
             {f"FILTER kh_uc._id NOT IN {decided}" if decided else ""}
             FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}
             // a child a browse of it would refuse takes no place under the cap
@@ -1223,6 +1232,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not all([arango_url, arango_user, arango_password, arango_db]):
                 raise ValueError("Missing required ArangoDB configuration values")
 
+            await self._stop_record_guard()  # a second connect() replaces the client; its guard's poller would otherwise run on
             # Create HTTP client
             self.http_client = ArangoHTTPClient(
                 base_url=arango_url,
@@ -1235,6 +1245,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Connect to ArangoDB
             if not await self.http_client.connect():
                 raise Exception("Failed to connect to ArangoDB")
+            self.http_client.record_guard = RecordSchemaGuard(
+                self.http_client, self.logger, schema=record_schema, generation=RECORD_SCHEMA_GENERATION,
+            )
 
             # Ensure database exists
             if not await self.http_client.database_exists(arango_db):
@@ -1254,8 +1267,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to connect to ArangoDB via HTTP: {str(e)}")
+            await self._stop_record_guard()
             self.http_client = None
             return False
+
+    async def _stop_record_guard(self) -> None:
+        """Cancel the poll of the current client's records-schema guard (it holds the client, so it would keep polling after a disconnect)."""
+        guard = self.http_client.record_guard if self.http_client else None
+        if guard is not None:
+            await guard.stop()
 
     async def disconnect(self) -> bool:
         """
@@ -1266,6 +1286,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             self.logger.info("🚀 Disconnecting from ArangoDB via HTTP API")
+            await self._stop_record_guard()
             if self.http_client:
                 await self.http_client.disconnect()
             self.http_client = None
@@ -1274,6 +1295,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to disconnect: {str(e)}")
             return False
+
+    async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
+        """Apply ``schema`` to a collection. The records schema is applied only while the live generation is
+        lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
+        older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
+        repairs it, eventually (see ``record_schema_guard``)."""
+        client = self.http_client
+        if client is not None and name == CollectionNames.RECORDS.value and client.record_guard is not None:
+            guard = client.record_guard
+            # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
+            # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
+            # later checks and writes repair it. An unreadable live schema is not written over (this attempt of the start fails).
+            try:
+                await guard.ensure_wide("startup")
+            except Exception as error:
+                self.logger.warning("could not apply the records schema: %s", error)
+                return False
+            return await guard.is_wide()
+        return await client.update_collection_schema(name, schema)
+
+    async def ensure_wide_record_schema(self, trigger: str = "manual") -> bool:
+        """Widen the live records schema now (outside any transaction). Test and operator entry point."""
+        guard = self.http_client.record_guard if self.http_client else None
+        return bool(guard and await guard.ensure_wide(trigger))
+
+    def start_record_schema_poll(self, interval: float = 10.0) -> None:
+        """Check the live records schema every ``interval`` seconds on the running loop and widen it when it is
+        narrower than this process's."""
+        if self.http_client and self.http_client.record_guard:
+            self.http_client.record_guard.start(interval)
 
     async def ensure_schema(self) -> bool:
         """
@@ -1295,6 +1346,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 schema_by_collection[col_name] = col_schema
 
             # 1. Create all collections (node + edge)
+            apps_schema_applied = True
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
             for col in CollectionNames:
                 name = col.value
@@ -1305,16 +1357,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         name, edge=is_edge, schema=col_schema
                     ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
+                        apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
+                        continue
+                    # A create that lost the race to another process answers 409, which counts as created: that
+                    # process's schema may be older, so the schema is applied as to any existing collection.
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
-                    # Ensure schema is applied to pre-existing collections too. Not fatal here: the
-                    # indexing service, which writes the fields a newer schema adds, does not start
-                    # until the records schema is applied (ensure_pipeline_schema).
-                    if col_schema and not await self.http_client.update_collection_schema(name, col_schema):
-                        self.logger.error(
-                            "The schema of collection '%s' was not updated; documents carrying fields "
-                            "the previous schema does not list will be refused until it is", name,
-                        )
+                # Ensure schema is applied to pre-existing collections too. Not fatal here: the
+                # indexing service, which writes the fields a newer schema adds, does not start
+                # until the records schema is applied (ensure_pipeline_schema).
+                if col_schema and not await self._apply_schema(name, col_schema):
+                    self.logger.error(
+                        "The schema of collection '%s' was not updated; documents carrying fields "
+                        "the previous schema does not list will be refused until it is", name,
+                    )
+                    # Reported to the caller for apps: an older apps schema refuses every write to an app
+                    # document, and a sync whose start is refused does not run (`run_sync_task`).
+                    apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -1342,8 +1401,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
 
-            self.logger.info("✅ ArangoDB schema ensured successfully")
-            return True
+            self.start_record_schema_poll()
+            if apps_schema_applied:
+                self.logger.info("✅ ArangoDB schema ensured successfully")
+            return apps_schema_applied
 
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
@@ -1360,8 +1421,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             _ = await client.create_collection(stages, schema=stage_state_schema)
         # The connector service creates records; until it has, this fails and the caller retries.
         for name, schema in ((stages, stage_state_schema), (CollectionNames.RECORDS.value, record_schema)):
-            if not await client.update_collection_schema(name, schema):
+            if not await self._apply_schema(name, schema):
                 raise RuntimeError(f"could not apply the schema of collection '{name}'")
+        self.start_record_schema_poll()
         for fields in _STAGE_STATE_INDEXES:
             if not await client.ensure_persistent_index(stages, list(fields)):
                 raise RuntimeError(f"could not ensure the index {list(fields)} on '{stages}'")
@@ -1512,6 +1574,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["virtualRecordId", "orgId"],
+        )
+        # SPARSE: the virtual record a record is indexing into. Only records mid-replace carry it; the holder lookups
+        # (record_visibility.aql_holds_vrid) match it, with a `!= null` guard so this index serves the correlated forms.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["pendingVirtualRecordId"],
+            sparse=True,
         )
 
         for fields in _STAGE_STATE_INDEXES:
@@ -1956,8 +2025,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             return await self.http_client.begin_transaction(read, write)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to begin transaction: {str(e)}")
+        except Exception:
             raise
 
     async def commit_transaction(self, transaction: str) -> None:
@@ -1969,15 +2037,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             await self.http_client.commit_transaction(transaction)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to commit transaction: {str(e)}")
+        except Exception:
             raise
 
     def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """A write-write conflict (errorNum 1200) with another writer, such as
         indexing updating the same record. A stream transaction rolls back
         whole, so the block can be re-run."""
-        return isinstance(error, Exception) and _is_write_conflict(error)
+        return isinstance(error, Exception) and (isinstance(error, RecordSchemaNarrowError) or _is_write_conflict(error))
 
     def is_write_conflict(self, error: BaseException) -> bool:
         return self.is_transient_error(error)
@@ -1991,8 +2058,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             await self.http_client.abort_transaction(transaction)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to rollback transaction: {str(e)}")
+        except Exception:
             raise
 
     # ==================== Document Operations ====================
@@ -2041,6 +2107,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Record | None:
         """
         Get record by internal ID (_key) with associated type document (file/mail/etc.).
@@ -2048,6 +2116,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             record_id: Internal record ID (_key)
             transaction: Optional transaction ID
+            raise_on_error: Propagate a failed read instead of answering None. A record
+                that will not build is still None.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
@@ -2073,15 +2143,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={"id": record_id},
                 transaction=transaction,
             )
-            if not results:
-                return None
-            result = results[0]
+        except Exception as e:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
+                raise
+            self.logger.error("Failed to get record by id %s: %s", record_id, type(e).__name__)
+            return None
+        if not results:
+            return None
+        result = results[0]
+        try:
             return self._create_typed_record_from_arango(
                 result["record"],
                 result.get("typeDoc"),
             )
         except Exception as e:
-            self.logger.error("❌ Failed to get record by id %s: %s", record_id, str(e))
+            # The builder's error quotes the whole type document.
+            self.logger.error("Failed to build record %s of type %s: %s",
+                              record_id, result["record"].get("recordType"), type(e).__name__)
             return None
 
     async def page_record_ids_by_type(
@@ -3063,32 +3141,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return
         coll = CollectionNames.RECORDS.value
         try:
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key IN @keys
-                RETURN doc
-            """
-            bind_vars = {"@collection": coll, "keys": unique_ids}
-            raw_docs = await self.execute_query(query, bind_vars=bind_vars)
-            if not raw_docs:
-                return
-
-            to_upsert: list[dict] = []
-            for arango_doc in raw_docs:
-                record = self._translate_node_from_arango(arango_doc)
-                rid = record.get("id") or record.get("_key")
-                if not rid:
-                    continue
-                if record.get("isInternal"):
-                    continue
-                if record.get("isPlaceholder"):
-                    continue
-                to_upsert.append({"_key": rid, "indexingStatus": status})
-
-            if to_upsert:
-                await self.batch_upsert_nodes(to_upsert, coll)
-                self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(to_upsert), status)
+            # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
+            lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status")
+            written = "{ indexingStatus: @status }" if patch == "{}" else f"MERGE({{ indexingStatus: @status }}, {patch})"
+            bind_vars = {"@collection": coll, "keys": unique_ids, "status": status}
+            if patch != "{}":
+                bind_vars["now"] = get_epoch_timestamp_in_ms()
+            updated = await self.http_client.execute_aql(
+                f"""
+                FOR doc IN @@collection
+                    FILTER doc._key IN @keys AND doc.isInternal != true AND doc.isPlaceholder != true
+                    {lets}
+                    UPDATE doc WITH {written} IN @@collection
+                    RETURN 1
+                """,
+                bind_vars,
+            )
+            if updated:
+                self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(updated), status)
         except Exception as e:
+            if isinstance(e, RecordSchemaNarrowError):
+                raise
             self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
 
     async def reset_indexing_status_for_connector(
@@ -3125,19 +3198,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             # AQL rejects a declared-but-unused bind var, so only bind it here.
             reason_field = ", reason: @reason" if reason is not None else ""
+            lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status")
+            written = f"{{ indexingStatus: @status{reason_field} }}"
+            if patch != "{}":
+                written = f"MERGE({written}, {patch})"
             query = f"""
             FOR doc IN @@collection
                 FILTER doc.connectorId == @connector_id
                 {exclude_clause}
                 {include_clause}
                 {visibility_clause}
-                UPDATE doc WITH {{ indexingStatus: @status{reason_field} }} IN @@collection
+                {lets}
+                UPDATE doc WITH {written} IN @@collection
             """
             bind_vars: dict = {
                 "@collection": coll,
                 "connector_id": connector_id,
                 "status": status,
             }
+            if patch != "{}":
+                bind_vars["now"] = get_epoch_timestamp_in_ms()
             if excluded:
                 bind_vars["exclude_statuses"] = excluded
             if included:
@@ -3145,15 +3225,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if reason is not None:
                 bind_vars["reason"] = reason
             await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-        except Exception as e:
+        except Exception:
             # Must not be swallowed: the rebuild drops the vector collection
             # straight after this, and a connector whose records kept their old
             # statuses is never re-indexed, so search stays silently empty.
-            self.logger.error(
-                "❌ Failed to reset indexing status for connector %s: %s",
-                connector_id,
-                str(e),
-            )
             raise
 
     @override
@@ -3257,12 +3332,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if new_status == ProgressStatus.QUEUED.value:
                 # AQL rejects a declared-but-unused bind var, so only bind it here.
                 update_fields = "{ indexingStatus: @new_status, queuedAtTimestamp: @now }"
+            # The run rule reads the stored record in this statement, not the status the caller expected.
+            lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@new_status")
+            if patch != "{}":
                 bind_vars["now"] = get_epoch_timestamp_in_ms()
+                update_fields = f"MERGE({update_fields}, {patch})"
             # FILTER + UPDATE in one statement; a read-then-write would let the
             # indexing service advance a record in between and get clobbered.
             query = f"""
             FOR doc IN @@collection
                 FILTER doc._key IN @keys AND doc.indexingStatus == @expected
+                {lets}
                 UPDATE doc WITH {update_fields} IN @@collection
                 RETURN NEW._key
             """
@@ -3273,13 +3353,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 len(updated_keys), len(unique_ids), expected, new_status,
             )
             return updated_keys
-        except Exception as e:
+        except Exception:
             # Raised, not answered as "no row matched": that answer reads as "the record moved on", and the caller then
             # drops the write for good (the final-attempt FAILED marking left the record in its old status).
-            self.logger.error(
-                "❌ Failed compare-and-set (%s -> %s): %s",
-                expected, new_status, str(e),
-            )
             raise
 
     async def list_unsupported_page(
@@ -3324,12 +3400,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         fields = "{ indexingStatus: @to, reason: null }"
         if to_status == ProgressStatus.QUEUED.value:
             fields = "{ indexingStatus: @to, reason: null, queuedAtTimestamp: @now }"
+        lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@to")
+        if patch != "{}":
             bind_vars["now"] = get_epoch_timestamp_in_ms()
+            fields = f"MERGE({fields}, {patch})"
         # One statement: the status is read where it is written, so a record the indexer moved on is not taken back.
         updated = await self.http_client.execute_aql(
             f"""
             FOR doc IN @@records
                 FILTER doc._key IN @keys AND doc.indexingStatus == @expected AND doc.isDeleted != true
+                {lets}
                 UPDATE doc WITH {fields} IN @@records
                 RETURN NEW._key
             """,
@@ -3379,7 +3459,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         arango_doc = {k: v for k, v in document.items() if k != "id"}
         arango_doc["_key"] = document["id"]
         try:
-            await self._stage_aql("INSERT @doc INTO @@collection RETURN NEW._key", {"doc": arango_doc})
+            # An existing key is the expected answer of a claim, so the client logs it at DEBUG, not as a WARNING failure.
+            with expecting(ARANGO_UNIQUE_CONSTRAINT_VIOLATED):
+                await self._stage_aql("INSERT @doc INTO @@collection RETURN NEW._key", {"doc": arango_doc})
         except ArangoQueryError as exc:
             if exc.error_num in (ARANGO_UNIQUE_CONSTRAINT_VIOLATED, ARANGO_CONFLICT):
                 return False
@@ -3518,7 +3600,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER (newest || 0) < @before
                         LET held = (
                             FOR record IN {CollectionNames.RECORDS.value}
-                                FILTER record.virtualRecordId == v AND record.contentRev == rev
+                                FILTER record.virtualRecordId == v
+                                    AND (record.contentRev == rev OR (record.hasIndexedCopy == true AND record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                                 LIMIT 1
                                 RETURN 1
                         )
@@ -3545,7 +3628,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR pair IN @pairs
                     LET held = (
                         FOR record IN {CollectionNames.RECORDS.value}
-                            FILTER record.virtualRecordId == pair[0] AND record.contentRev == pair[1]
+                            FILTER record.virtualRecordId == pair[0]
+                                AND (record.contentRev == pair[1] OR (record.hasIndexedCopy == true AND record.indexingStatus != null AND record.indexingStatus != "COMPLETED" AND record.isPlaceholder != true))
                             LIMIT 1
                             RETURN 1
                     )
@@ -3664,14 +3748,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
         # A write-write conflict here is usually an unrelated field update on the same
         # record (a connector sync), so it propagates for the caller to retry.
+        status = fields.get("indexingStatus")
+        lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status") if status is not None else ("", "{}")
+        binds: dict[str, Any] = {"@collection": CollectionNames.RECORDS.value, "keys": keys, "rev": content_rev, "fields": fields}
+        written = "@fields"
+        if patch != "{}":
+            binds.update(status=status, now=get_epoch_timestamp_in_ms())
+            written = f"MERGE(@fields, {patch})"
         rows = await self.http_client.execute_aql(
-            """
+            f"""
             FOR doc IN @@collection
                 FILTER doc._key IN @keys AND doc.contentRev == @rev
-                UPDATE doc WITH @fields IN @@collection
+                {lets}
+                UPDATE doc WITH {written} IN @@collection
                 RETURN NEW._key
             """,
-            {"@collection": CollectionNames.RECORDS.value, "keys": keys, "rev": content_rev, "fields": fields},
+            binds,
         )
         return [key for key in rows if isinstance(key, str)]
 
@@ -3947,8 +4039,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return result.get("errors", 0) == 0
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert failed: {str(e)}")
+        except Exception:
             raise
 
     async def _upsert_record_nodes_releasing_trash(
@@ -4032,8 +4123,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection, keys, txn_id=transaction
             )
             return deleted == len(keys)
-        except Exception as e:
-            self.logger.error(f"❌ Delete nodes failed: {str(e)}")
+        except Exception:
             raise
 
     async def update_node(
@@ -4060,9 +4150,54 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection, key, updates, txn_id=transaction
             )
             return result is not None
-        except Exception as e:
-            self.logger.error(f"❌ Update node failed: {str(e)}")
+        except Exception:
             raise
+
+    async def write_attempt_start(
+        self,
+        record_id: str,
+        fields: dict[str, Any],
+        now: int | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.write_attempt_start`."""
+        rev = fields.get("contentRev")
+        lets, patch = aql_parts("doc", WriteKind.ATTEMPT_START, rev="@rev" if rev is not None else None)
+        bind_vars: dict[str, Any] = {
+            "@collection": CollectionNames.RECORDS.value, "key": record_id, "fields": fields,
+            "now": now if now is not None else get_epoch_timestamp_in_ms(),
+        }
+        if rev is not None:
+            bind_vars["rev"] = rev
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@collection
+                FILTER doc._key == @key
+                {lets}
+                UPDATE doc WITH MERGE({patch}, @fields) IN @@collection
+                RETURN 1
+            """,
+            bind_vars, transaction,
+        )
+        return bool(rows)
+
+    async def update_node_if_unchanged(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        snapshot: dict[str, Any],
+        expected: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """The snapshot's revision is the guard: a document update with ``If-Match``, no AQL. Refused (False) when the snapshot
+        does not hold ``expected`` or the document changed since it was read; without a revision, the field-checked statement."""
+        revision = snapshot.get("_rev")
+        if not isinstance(revision, str):
+            return await self.update_node_fields_if_match(key, collection, updates, expected, transaction)
+        if any(snapshot.get(name) != value for name, value in expected.items()):
+            return False
+        return await self.http_client.patch_document_if_match(collection, key, updates, revision, txn_id=transaction)
 
     async def update_node_if_match(
         self,
@@ -4097,8 +4232,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction,
             )
             return bool(updated)
-        except Exception as e:
-            self.logger.error("❌ Conditional node update failed: %s", str(e))
+        except Exception:
             raise
 
     async def batch_update_nodes(
@@ -4161,8 +4295,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             
             return False
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch update failed: {str(e)}")
+        except Exception:
             raise
 
     # ==================== Edge Operations ====================
@@ -4269,8 +4402,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"✅ Created {len(hierarchy)} hierarchy edge(s) and {len(links)} link(s).")
             return created if count_created else True
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch edge creation failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_edges_if_absent(
@@ -4310,8 +4442,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             made = _created_ends(done, collection) if report else []
             return len(made) if count_created else None
 
-        except Exception as e:
-            self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
+        except Exception:
             raise
 
     async def _upsert_entity_relations(self, edges: list[dict], update: str, txn: str | None) -> list:
@@ -4410,8 +4541,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return True
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_upsert_node_relations(
@@ -4467,8 +4597,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"✅ Created {upserted} record relation edges.")
             return upserted if count_created else True
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch record relation upsert failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_edge(
@@ -4563,8 +4692,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return bool(removed)
-        except Exception as e:
-            self.logger.error(f"❌ Delete edge failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_delete_edges(
@@ -4606,8 +4734,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return len(results)
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch delete edges failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_edges_from(
@@ -4647,8 +4774,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 deleted += len(results)
             return deleted
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges from failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_edges_by_relationship_types(
@@ -4695,10 +4821,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 deleted += len(results)
             return deleted
-        except Exception as e:
-            self.logger.error(
-                f"❌ Delete edges by relationship types failed: {str(e)}"
-            )
+        except Exception:
             raise
 
     async def delete_edges_to(
@@ -4738,8 +4861,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 deleted += len(results)
             return deleted
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges to failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_all_edges_for_node(
@@ -4780,8 +4902,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return count
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete all edges for node failed: {str(e)}")
+        except Exception:
             raise
 
     async def _delete_all_edges_for_nodes(
@@ -4869,8 +4990,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars, txn_id=transaction,
                 **({"max_runtime": timeout_seconds} if timeout_seconds is not None else {}),
             )
-        except Exception as e:
-            self.logger.error(f"❌ Query execution failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_nodes_by_filters(
@@ -5133,8 +5253,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars={"node_ids": node_ids}, txn_id=transaction
             ) or []
             return len(rows)
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges touching nodes failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_edge_rollup_by_file_prefix(
@@ -5432,8 +5551,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars=bind_vars, txn_id=transaction
             ) or []
             return len(rows)
-        except Exception as e:
-            self.logger.error(f"❌ Delete edges by source keys failed: {str(e)}")
+        except Exception:
             raise
 
     async def count_nodes_by_filters(
@@ -5456,11 +5574,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars=bind_vars, txn_id=transaction
             ) or []
             return int(rows[0]) if rows else 0
-        except Exception as e:
+        except Exception:
             # Matches has_nodes_by_filters, and the reason is the same: callers
             # gate on the count, so a failure reading as 0 lets them act on a
             # repo that has not drained.
-            self.logger.error(f"❌ Count nodes by filters failed: {str(e)}")
             raise
 
     async def has_nodes_by_filters(
@@ -5483,8 +5600,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars=bind_vars, txn_id=transaction
             )
             return bool(rows)
-        except Exception as e:
-            self.logger.error(f"❌ Node existence check failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_nodes_updated_since(
@@ -5558,8 +5674,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
             return len(results)
-        except Exception as e:
-            self.logger.error(f"❌ Remove nodes by field failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_edges_to_node(
@@ -5919,7 +6034,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return [Record.from_arango_base_record(self._translate_node_from_arango(doc)) for doc in results or []]
         except Exception as e:
-            self.logger.error(f"❌ Get records by file path failed: {str(e)}")
             raise GraphQueryError(f"Could not look up records at path {path}: {e}") from e
 
     async def get_record_by_external_id(
@@ -5957,7 +6071,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             if raise_on_error:
                 raise
-            self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             raise GraphQueryError(
                 f"Could not look up record {external_id}: {e}"
             ) from e
@@ -6656,9 +6769,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return result[0]
             return None
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to retrieve record for path {path}: {str(e)}"
-            )
             raise GraphQueryError(f"Could not look up the record at path {path}: {e}") from e
 
     async def get_records_by_status(
@@ -6793,7 +6903,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
             raise GraphQueryError(
                 f"Could not list records for connector {connector_id}: {e}"
             ) from e
@@ -6861,6 +6970,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
@@ -6877,11 +6987,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars[f"v{i}"] = value
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
         newline = "\n                "
+        if unset:
+            # The named attributes go (never left null), by the update's own removal of a null: nested objects still merge as they do
+            # without ``unset``. A null in ``updates`` removes its attribute too, as on the other stores.
+            bind_vars["updates"] = {**bind_vars["updates"], **dict.fromkeys(unset)}
+            write = "UPDATE doc WITH @updates IN @@collection OPTIONS { keepNull: false }"
+        else:
+            write = "UPDATE doc WITH @updates IN @@collection"
         query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
-                UPDATE doc WITH @updates IN @@collection
+                {write}
                 RETURN 1
             """
         # Two writers racing on one document: ArangoDB fails the loser with a write-write conflict
@@ -6942,6 +7059,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
             elif cond.op == NULL_OR_EQ:
                 filters.append(f"FILTER doc[@f{i}] == null || doc[@f{i}] == @v{i}")
+            elif cond.op == ONE_OF:
+                filters.append(f"FILTER doc[@f{i}] IN @v{i}")
             else:
                 # AQL orders a boolean below every number, so the type is checked: a non-number is never "not newer".
                 filters.append(f"FILTER doc[@f{i}] == null || (IS_NUMBER(doc[@f{i}]) && doc[@f{i}] <= @v{i})")
@@ -6956,6 +7075,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         replace_objects: bool = False,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if`.
 
@@ -6967,11 +7087,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         bind_vars: dict[str, Any] = {"@collection": collection, "key": key, "updates": dict(updates), **condition_vars}
         options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else ""
         newline = "\n                "
+        if unset:
+            # The named attributes go (see update_node_fields_if_match); a sub-document still merges, or replaces, as it does without ``unset``
+            bind_vars["updates"] = {**bind_vars["updates"], **dict.fromkeys(unset)}
+            options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else " OPTIONS { keepNull: false }"
+        write = f"UPDATE doc WITH @updates IN @@collection{options}"
         query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
-                UPDATE doc WITH @updates IN @@collection{options}
+                {write}
                 RETURN 1
             """
         rows = await self._retry_write_conflicts(
@@ -7127,13 +7252,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {field: row.get(field) for field in PAGE_RECORD_FIELDS}
                 for row in results
             ]
-        except Exception as e:
-            self.logger.error(
-                "Failed to page records for vector membership backfill "
-                "connector %s: %s",
-                connector_id,
-                str(e),
-            )
+        except Exception:
             # Must not degrade to []: the backfill scanner reads an empty page as
             # "this connector is finished" and sets vectorMembershipBackfilled,
             # so a swallowed error would permanently mark it done having
@@ -7694,9 +7813,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             else:
                 raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:
-            self.logger.warning(
-                f"Failed to create typed record for {record_type}: {str(e)}"
-            )
             raise ValueError(
                 f"Failed to create typed record for {record_type}"
             ) from e
@@ -7919,8 +8035,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {"weburls": list(dict.fromkeys(weburls)), "org_id": org_id, "per_address": per_address},
                 txn_id=transaction,
             ) or []
-        except Exception as e:
-            self.logger.error("❌ get_records_by_weburls failed: %s", str(e))
+        except Exception:
             raise
 
     async def get_address_links_batch(
@@ -7969,8 +8084,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 row["id"]: {"mentioned_in": row.get("mentioned_in") or [], "links_to": row.get("links_to") or []}
                 for row in rows
             }
-        except Exception as e:
-            self.logger.error("❌ get_address_links_batch failed: %s", str(e))
+        except Exception:
             raise
 
     async def get_issue_sites(
@@ -8004,8 +8118,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 | ({"limit": limit} if limit is not None else {}),
                 txn_id=transaction,
             ) or []
-        except Exception as e:
-            self.logger.error("❌ get_issue_sites failed: %s", str(e))
+        except Exception:
             raise
 
     async def get_records_linking_to_weburls(
@@ -8049,8 +8162,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 },
                 txn_id=transaction,
             ) or []
-        except Exception as e:
-            self.logger.error("❌ get_records_linking_to_weburls failed: %s", str(e))
+        except Exception:
             raise
 
     async def get_records_by_parent(
@@ -8112,11 +8224,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return records
 
-        except Exception as e:
-            self.logger.error(
-                "❌ Failed to retrieve child records for parent %s %s: %s",
-                connector_id, parent_external_record_id, str(e)
-            )
+        except Exception:
             raise
 
     async def get_records_by_record_type(
@@ -8153,11 +8261,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 len(records), record_type, connector_id,
             )
             return records
-        except Exception as e:
-            self.logger.error(
-                "Failed to retrieve records of type %s for connector %s: %s",
-                record_type, connector_id, e,
-            )
+        except Exception:
             raise
 
     async def get_record_group_by_external_id(
@@ -8190,7 +8294,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
         except Exception as e:
-            self.logger.error(f"❌ Get record group by external ID failed: {str(e)}")
             raise GraphQueryError(
                 f"Could not look up record group {external_id}: {e}"
             ) from e
@@ -8250,7 +8353,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
             return None
         except Exception as e:
-            self.logger.error(f"❌ Get file record by ID failed: {str(e)}")
             raise GraphQueryError(f"Could not read file record {record_id}: {e}") from e
 
     async def get_users_by_emails(
@@ -8657,6 +8759,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         active: bool = True,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch all active users from the database who belong to the organization.
@@ -8664,6 +8767,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             org_id (str): Organization ID
             active (bool): Filter for active users only if True
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of user documents with their details
@@ -8675,6 +8779,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR edge IN {CollectionNames.BELONGS_TO.value}
                     FILTER edge._to == CONCAT('organizations/', @org_id)
                     AND edge.entityType == 'ORGANIZATION'
+                    AND IS_SAME_COLLECTION('{CollectionNames.USERS.value}', edge._from)
                     LET user = DOCUMENT(edge._from)
                     FILTER @active == false OR user.isActive == true
                     RETURN user
@@ -8691,6 +8796,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch users: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_user_by_email(
@@ -9012,8 +9119,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             self.logger.debug(f"Upserted {len(people)} people records")
 
-        except Exception as e:
-            self.logger.error(f"Error upserting people: {e}")
+        except Exception:
             raise
 
     async def get_person_by_email(
@@ -9182,8 +9288,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 },
                 txn_id=transaction,
             )
-        except Exception as e:
-            self.logger.error(f"❌ Ensure app membership failed: {str(e)}")
+        except Exception:
             raise
 
     def _external_grant_exists_aql(self, principal_id_expr: str, app_key_expr: str) -> str:
@@ -9369,13 +9474,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return mode
 
-        except Exception as e:
+        except Exception:
             if owns_transaction and txn is not None:
                 try:
                     await self.rollback_transaction(txn)
                 except Exception as rb_err:
                     self.logger.warning(f"⚠️ Rollback of person migration failed: {rb_err}")
-            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
             raise
 
     async def _move_entity_relations_to_user(self, person_id: str, user_id: str, txn: str | None) -> int:
@@ -9660,8 +9764,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug("✅ Successfully upserted records")
             return True
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert records failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_record_relation(
@@ -9713,8 +9816,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection=CollectionNames.RECORD_GROUPS.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert record groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_record_group_relation(
@@ -10059,8 +10161,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return {"migrated": migrated, "already_current": False}
 
-        except Exception as e:
-            self.logger.error(f"❌ Legacy relation edge migration failed: {str(e)}")
+        except Exception:
             raise
 
     async def migrate_legacy_kb_to_app(
@@ -10651,6 +10752,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
+                    **run_reference({}, WriteKind.STATUS_VAR, current_timestamp, status=new_indexing_status),
                 }
                 if reason:
                     dup_update["reason"] = reason
@@ -10710,8 +10812,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert record permissions failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_first_user_with_permission_to_node(
@@ -10962,8 +11063,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self.http_client.execute_aql(query, bind_vars, transaction)
             return True
 
-        except Exception as e:
-            self.logger.error(f"❌ Upsert sync point failed: {str(e)}")
+        except Exception:
             raise
 
     async def backfill_block_name_folded(self, limit: int = 5000) -> int:
@@ -11032,8 +11132,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             await self.http_client.execute_aql(query, bind_vars, transaction)
 
-        except Exception as e:
-            self.logger.error(f"❌ Remove sync point failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_upsert_app_users(
@@ -11140,8 +11239,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     transaction=transaction
                 )
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
+        except Exception:
             raise
 
     async def ensure_all_team_with_users(self, org_id: str) -> None:
@@ -11240,8 +11338,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 self.logger.debug(f"✅ Added user {user_key} to All team with role {role}")
 
-        except Exception as e:
-            self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
+        except Exception:
             raise
 
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
@@ -11325,8 +11422,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             self.logger.debug(f"Added user {user_key} to All team with role {role}")
 
-        except Exception as e:
-            self.logger.error(f"add_user_to_all_team failed for org {org_id}, user {user_key}: {e}", exc_info=True)
+        except Exception:
             raise
 
     async def ensure_team_app_edge(
@@ -11367,8 +11463,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction
             )
             self.logger.debug(f"Created team->app edge: teams/{team_key} -> apps/{connector_id}")
-        except Exception as e:
-            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
+        except Exception:
             raise
 
     async def upsert_authenticated_as(
@@ -11434,8 +11529,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection=CollectionNames.GROUPS.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert user groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_upsert_app_roles(
@@ -11455,8 +11549,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection=CollectionNames.ROLES.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert app roles failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_upsert_orgs(
@@ -11475,8 +11568,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert orgs failed: {str(e)}")
+        except Exception:
             raise
 
     async def batch_create_user_app_edges(
@@ -11494,8 +11586,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return len(edges)
 
-        except Exception as e:
-            self.logger.error(f"❌ Batch create user app edges failed: {str(e)}")
+        except Exception:
             raise
 
     async def get_entity_id_by_email(
@@ -11900,8 +11991,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.error(f"❌ Failed to delete record {external_id}: {error_reason}")
                 raise Exception(f"Deletion failed: {error_reason}")
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {external_id} from {connector_id}: {str(e)}")
+        except Exception:
             raise
 
     async def remove_user_access_to_record(
@@ -11960,8 +12050,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             else:
                 self.logger.debug(f"ℹ️ No permissions found for user {user_id} on record {record.id}")
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
+        except Exception:
             raise
 
     async def remove_user_access_to_connector(
@@ -11988,6 +12077,57 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return len(result or [])
+
+    async def remove_unlinked_user_access_to_connector(
+        self,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete every user's own PERMISSION edges to the connector's records, record groups, user groups and roles
+        when the user has no USER_APP_RELATION edge to the connector, checked in the same query."""
+        query = """
+        FOR perm IN permission
+            FILTER IS_SAME_COLLECTION(@users, perm._from)
+            FILTER PARSE_IDENTIFIER(perm._to).collection IN @targets
+            LET target = DOCUMENT(perm._to)
+            FILTER target != null AND target.connectorId == @connector_id
+            FILTER LENGTH(FOR rel IN @@relation FILTER rel._from == perm._from AND rel._to == @app LIMIT 1 RETURN 1) == 0
+            REMOVE perm IN permission
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"users": CollectionNames.USERS.value, "connector_id": connector_id,
+                       "app": f"{CollectionNames.APPS.value}/{connector_id}",
+                       "@relation": CollectionNames.USER_APP_RELATION.value,
+                       "targets": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
+                                   CollectionNames.GROUPS.value, CollectionNames.ROLES.value]},
+            txn_id=transaction,
+        )
+        return len(result or [])
+
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on."""
+        query = """
+        FOR perm IN permission
+            FILTER perm._from == @user
+            FILTER PARSE_IDENTIFIER(perm._to).collection == @records
+            LET r = DOCUMENT(perm._to)
+            FILTER r != null AND r.connectorId == @connector_id
+            RETURN DISTINCT {id: r._key, externalRecordId: r.externalRecordId, recordType: r.recordType}
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "records": CollectionNames.RECORDS.value},
+            txn_id=transaction,
+        )
+        return list(result or [])
 
     async def _collect_connector_entities(
         self,
@@ -14825,12 +14965,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return count
 
-        except Exception as e:
+        except Exception:
             # Raise, as the Neo4j provider does: a caller that took 0 for "deleted"
             # would move on as if the edges were gone.
-            self.logger.error(
-                f"❌ Failed to delete edges from {from_key} to {to_collection} in {edge_collection}: {str(e)}"
-            )
             raise
 
     async def _stop_inheriting_from_record_groups(
@@ -14979,13 +15116,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             self.logger.debug(f"✅ Successfully deleted {len(keys)} nodes and their associated edges from '{collection}'")
 
-        except Exception as e:
+        except Exception:
             if owns_transaction and txn is not None:
                 try:
                     await self.rollback_transaction(txn)
                 except Exception as rb_err:
                     self.logger.warning(f"⚠️ Rollback of node delete failed: {rb_err}")
-            self.logger.error(f"❌ Delete nodes and edges failed: {str(e)}")
             raise
 
     async def update_edge(
@@ -15317,10 +15453,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.debug(f"✅ Found permission: user {user_id} has role '{role}' on KB {kb_id}")
             return role
 
-        except Exception as e:
+        except Exception:
             # Raised, not None: a caller must answer 500 during an outage, not
             # a misleading 403 or 404.
-            self.logger.error(f"Failed to check KB permission: {e}")
             raise
 
     async def list_user_knowledge_bases(
@@ -15680,8 +15815,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return kbs, total_count, available_filters
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list knowledge bases with pagination: {str(e)}")
+        except Exception:
             # An empty list would read as "you have no collections".
             raise
 
@@ -16427,8 +16561,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if result:
                 self.logger.debug("✅ Knowledge base retrieved successfully")
             return result
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
+        except Exception:
             raise
 
     async def update_knowledge_base(
@@ -16461,8 +16594,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return True
             self.logger.warning("⚠️ Knowledge base not found")
             return False
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
+        except Exception:
             raise
 
 
@@ -16579,8 +16711,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+        except Exception:
             raise
 
     async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
@@ -16997,8 +17128,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if total:
                 self.logger.debug(f"🗑️ Deleted {total} block(s) from {blocks}")
             return total
-        except Exception as e:
-            self.logger.error(f"❌ Delete blocks failed: {str(e)}")
+        except Exception:
             raise
 
     async def delete_blocks_for_records(
@@ -17595,10 +17725,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self._abort_if_records_moved_in(found["root_keys"], found["tree_keys"], follow_types, connector_id)
             if transaction is None:
                 await self.commit_transaction(txn_id)
-        except Exception as e:
+        except Exception:
             if transaction is None and txn_id:
                 await self.rollback_transaction(txn_id)
-            self.logger.error("❌ Failed to move records to the trash: %s", e)
             raise
         return soft_delete_result(record_ids, found["root_keys"], marked, batch_id)
 
@@ -17830,7 +17959,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR row IN found
                     RETURN {{
                         key: row.r._key,
-                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now }}, row.fields),
+                        patch: MERGE(@cleared, {{ updatedAtTimestamp: @now, firstQueuedAt: (IS_NUMBER(row.fields.restoredAtTimestamp) ? MAX([@now, row.fields.restoredAtTimestamp + 1]) : @now), indexingAttempts: 0 }}, row.fields),
                         restored: true
                     }}
             ) : []
@@ -18539,8 +18668,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 elif perm.get("type") == "TEAM":
                     result["teams"][perm["id"]] = None
             return result
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get KB permissions: {str(e)}")
+        except Exception:
             raise
 
     async def update_kb_permission(
@@ -18891,8 +19019,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in count_results or []:
                 counts["mine" if row.get("owned") else "shared"] += int(row.get("total") or 0)
             return records or [], counts
-        except Exception as e:
-            self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
+        except Exception:
             raise
 
     async def get_artifact_detail(
@@ -18916,8 +19043,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not results:
                 return None
             return results[0]
-        except Exception as e:
-            self.logger.error("❌ Failed to get artifact detail: %s", str(e))
+        except Exception:
             raise
 
     async def list_kb_records(
@@ -19046,8 +19172,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             folder_list = folders_result[0] if folders_result and isinstance(folders_result[0], list) else []
             available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [user_perm] if user_perm else [], "folders": folder_list}
             return page["records"], page["total"], available
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
+        except Exception:
             raise
 
     def _validation_error(self, code: int, reason: str) -> dict:
@@ -19388,8 +19513,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     await self.http_client.execute_aql(
                         query, {"@edge_collection": collection, "record": record}, txn_id=transaction,
                     )
-                except Exception as e:
-                    self.logger.error(f"Failed to delete edges of record {record_id} from {collection}: {e}")
+                except Exception:
                     raise
 
     async def _delete_file_record(
@@ -20034,10 +20158,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             result = await self.http_client.execute_aql(
                 query, bind_vars=bind_vars, txn_id=transaction
             )
-        except Exception as e:
+        except Exception:
             # Raised, not an empty page: an empty listing reads as "you may see
             # nothing", so a failed permission query would look like a correct answer.
-            self.logger.error(f"Error in get_knowledge_hub_root_nodes_v2: {str(e)}")
             raise
 
         payload = result[0] if result else {}
@@ -20167,8 +20290,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, bind_vars={"user_key": user_key, "org_id": org_id},
                 txn_id=transaction,
             )
-        except Exception as e:
-            self.logger.error(f"Error in get_knowledge_hub_access_context_v2: {str(e)}")
+        except Exception:
             raise
         payload = result[0] if result else {}
         return {
@@ -20236,8 +20358,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             rows = await self.http_client.execute_aql(
                 query, bind_vars={"user_key": user_key, "org_id": org_id}, txn_id=transaction,
             )
-        except Exception as e:
-            self.logger.error(f"❌ get_knowledge_hub_access_v3 failed: {str(e)}")
+        except Exception:
             raise
         payload = rows[0] if rows else {}
         grantee_ids = [x for x in (payload.get("grantees") or []) if x]
@@ -21573,6 +21694,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             FILTER kh_pe.relationshipType IN {hierarchy}
                             FILTER IS_SAME_COLLECTION("{apps}", kh_p) OR IS_SAME_COLLECTION("{groups}", kh_p)
                                 OR IS_SAME_COLLECTION("{records}", kh_p)
+                            FILTER kh_p.accessOnly != true
                             RETURN kh_p._key
                     ),
                     ownGroups: (FOR kh_g IN {owns("kh_c")} RETURN {{id: kh_g._key, deleted: kh_g.isDeleted == true}})
@@ -23705,8 +23827,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction,
             )
             return [k for k in apps or [] if k]
-        except Exception as e:
-            self.logger.error("❌ Failed to get user app ids: %s", str(e))
+        except Exception:
             raise
 
     async def get_user_permission_app_ids(
@@ -23764,8 +23885,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction,
             )
             return list(results[0]) if results and results[0] else []
-        except Exception as e:
-            self.logger.error("❌ Failed to get user permission app ids: %s", str(e))
+        except Exception:
             raise
 
     async def get_knowledge_hub_context_permissions(
@@ -24736,8 +24856,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "permissions": permissions,
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to check record access: {str(e)}")
+        except Exception:
             raise
 
     async def get_account_type(
@@ -27009,11 +27128,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR seed IN seed_rgs
                 FILTER seed.hideChildren != true
                 FOR child IN 1..@inherit_max_depth INBOUND seed._id {inherit_permissions}
-                    PRUNE child.orgId != @org_id
+                    // The walk stays inside the seed's connector.
+                    PRUNE child.orgId != @org_id OR child.connectorId != seed.connectorId
                     OPTIONS {{ bfs: true, uniqueVertices: "global", vertexCollections: ["{record_groups}"] }}
                     FILTER child != null AND IS_SAME_COLLECTION("{record_groups}", child)
                     FILTER child.orgId == @org_id AND child.isDeleted != true
-                    FILTER child.connectorId IN record_level_app_ids
+                    FILTER child.connectorId == seed.connectorId AND child.connectorId IN record_level_app_ids
                     RETURN child._key
         )
 
@@ -27098,10 +27218,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not virtual_record_ids:
             return {}
         query = f"""
-        FOR r IN {CollectionNames.RECORDS.value}
-            FILTER r.virtualRecordId IN @vrids AND r.orgId == @org_id
+        FOR vid IN @vrids
+          FOR r IN {CollectionNames.RECORDS.value}
+            FILTER {aql_holds_vrid("r", "vid")} AND r.orgId == @org_id
             RETURN {{
-                vid: r.virtualRecordId, id: r._key, connectorId: r.connectorId,
+                vid: vid, id: r._key, connectorId: r.connectorId,
                 connectorName: r.connectorName, recordGroupId: r.recordGroupId,
                 recordName: r.recordName, webUrl: r.webUrl, contentRev: r.contentRev,
                 isDeleted: r.isDeleted == true
@@ -27134,7 +27255,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         FOR vrid IN @virtual_record_ids
             LET held = FIRST(
                 FOR record IN {CollectionNames.RECORDS.value}
-                    FILTER record.virtualRecordId == vrid
+                    FILTER {aql_holds_vrid("record", "vrid")}
                     AND {aql_record_visibility("record", visibility)}
                     LIMIT 1
                     RETURN 1
@@ -27209,7 +27330,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # AQL `!= true` is null-safe, so records predating the field pass.
             query = f"""
             FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.virtualRecordId == @virtual_record_id
+                FILTER {aql_holds_vrid("record", "@virtual_record_id")}
                 AND {aql_record_visibility("record", visibility)}
             """
 
@@ -27778,8 +27899,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction
             )
 
-        except Exception as e:
-            self.logger.error(f"Error in delete_all_team_permissions: {str(e)}", exc_info=True)
+        except Exception:
             raise
 
     async def get_team_owner_removal_info(
@@ -27830,8 +27950,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return {"owners_being_removed": [], "total_owner_count": 0}
 
-        except Exception as e:
-            self.logger.error(f"Error in get_team_owner_removal_info: {str(e)}", exc_info=True)
+        except Exception:
             raise
 
     async def get_team_permissions_and_owner_count(
@@ -27889,8 +28008,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return {"team": None, "permissions": {}, "owner_count": 0}
 
-        except Exception as e:
-            self.logger.error(f"Error in get_team_permissions_and_owner_count: {str(e)}", exc_info=True)
+        except Exception:
             raise
 
     # ==================== User Operations ====================
@@ -28032,8 +28150,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return dedupe_agents_by_id(agents)
 
-        except Exception as e:
-            self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
+        except Exception:
             raise
 
     async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
@@ -28076,8 +28193,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return dedupe_agents_by_id(agents)
 
-        except Exception as e:
-            self.logger.error(f"Failed to check MCP server instance usage: {str(e)}")
+        except Exception:
             raise
 
     async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
@@ -28121,8 +28237,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return dedupe_agents_by_id(agents)
 
-        except Exception as e:
-            self.logger.error(f"Failed to check connector usage: {str(e)}")
+        except Exception:
             raise
 
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:

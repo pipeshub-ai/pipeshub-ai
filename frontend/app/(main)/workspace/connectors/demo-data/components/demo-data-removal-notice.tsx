@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useDemoDataActive, useDemoDataStatus, useDemoRemovalNotice } from '../use-demo-data';
 import { useDemoSwitch } from '../use-demo-switch';
 import { RemoveDemoDataDialog } from './remove-demo-data-dialog';
+import { AboutDemoDataLink } from './about-demo-data-dialog';
 
 interface DemoDataRemovalNoticeProps {
   isAdmin: boolean | null;
@@ -45,7 +46,10 @@ export function DemoDataRemovalNotice({ isAdmin, style }: DemoDataRemovalNoticeP
             <Text size="2" weight="medium">
               {t('demoData.removalNotice.title')}
             </Text>
-            <Text size="2">{t('demoData.removalNotice.description')}</Text>
+            <Text size="2">
+              {t('demoData.removalNotice.description')}{' '}
+              <AboutDemoDataLink isAdmin={isAdmin} size="2" />
+            </Text>
             <Flex gap="2" wrap="wrap">
               <Button size="1" color="orange" disabled={busy} onClick={() => void setEnabledForEveryone(false)}>
                 {t('demoData.removalNotice.turnOff')}

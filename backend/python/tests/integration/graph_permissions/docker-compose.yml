@@ -17,27 +17,18 @@ services:
     ports:
       - "7475:7474"
       - "7688:7687"
-    # Neo4j sizes its heap and page cache from the RAM it detects, which on a
-    # developer laptop means it reserves far more than a fixture of ~60 nodes
-    # will ever touch — measured at 615 MiB against a machine with under 700 MiB
-    # free, which is enough on its own to get a pytest run killed. These caps
-    # are about leaving room for the test process beside the database, not about
-    # performance; raise them if the fixture ever grows real data.
-    # Raised from 1g/512m/64m: at those values this container ran at 99% of its
-    # cgroup limit and started dropping sockets mid-run -- tests failed with
-    # `WinError 64: the specified network name is no longer available` and
-    # `RuntimeError: Neo4j driver not connected`, which read like assertion
-    # failures in the summary but are transport errors. The fixture is no longer
-    # the "~60 nodes" these caps were sized for: it now carries a 25-deep chain,
-    # an org-B subgraph and the deleted-record cases.
-    mem_limit: 2g
+    # The same heap and page cache as CI (permission-conformance.yml): smaller caps made Neo4j drop
+    # connections near its cgroup limit or run out of heap partway through this suite and stall. The
+    # fixture now holds deep chains, a second org and deleted-record cases; the container peaked at
+    # 3.1-3.4 GB of this 4 GB limit across runs.
+    mem_limit: 4g
     environment:
       - NEO4J_AUTH=neo4j/khpermpass
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_server_memory_heap_initial__size=512m
-      - NEO4J_server_memory_heap_max__size=768m
-      - NEO4J_server_memory_pagecache_size=128m
+      - NEO4J_server_memory_heap_initial__size=1g
+      - NEO4J_server_memory_heap_max__size=2g
+      - NEO4J_server_memory_pagecache_size=1g
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 5s

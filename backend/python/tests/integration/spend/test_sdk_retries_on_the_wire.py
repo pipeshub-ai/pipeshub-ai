@@ -2,7 +2,8 @@
 
 The independent check behind the call-site contract: it does not read client attributes. ``tests/support/sdk_wire_probe.py``
 patches the HTTP transports in its own interpreter, builds every chat and embeddings provider through the factories with
-``sdk_retries=0`` and counts what each puts on the wire for a 500, a 429 and a dropped connection. Nothing leaves the process.
+``sdk_retries=0`` and counts what each puts on the wire for a 500, a 429 and a dropped connection, that the job's wire scope counts the same
+requests, and that a spent send allowance stops the request before it is sent. Nothing leaves the process.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ def test_every_provider_sends_one_request_per_call(status: str) -> None:
         [sys.executable, "-I", str(ROOT / "tests" / "support" / "sdk_wire_probe.py"), status],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=800,
     )
-    lines = [line for line in result.stdout.splitlines() if line.startswith(("OK", "UNSEEN", "SDK-RETRIES", "BUILD-ERR", "bad="))]
+    lines = [line for line in result.stdout.splitlines() if line.startswith(("OK", "UNSEEN", "SDK-RETRIES", "SENT-PAST-ALLOWANCE", "UNCOUNTED", "BUILD-ERR", "bad="))]
     assert "bad=0" in lines, "\n".join(lines) + result.stderr[-2000:]
     assert not any(line.startswith("BUILD-ERR") for line in lines), "\n".join(lines)
     ok = [line for line in lines if line.startswith("OK")]

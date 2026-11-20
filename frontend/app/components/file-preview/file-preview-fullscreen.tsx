@@ -44,6 +44,7 @@ export function FilePreviewFullscreen({
   highlightBox,
   citations,
   initialCitationId,
+  jumpSeq,
   showDownload,
   onDownload,
   onChat,
@@ -119,6 +120,7 @@ export function FilePreviewFullscreen({
     initialHighlightBox: highlightBox,
     initialPage,
     initialCitationId,
+    jumpSeq,
   });
 
   // Create pagination controls object

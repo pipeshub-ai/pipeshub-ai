@@ -76,7 +76,7 @@ export class MongoUserRepository implements UserRepository {
 
   async getAccountState(id: string): Promise<UserAccountState | null> {
     const row = await Users.findOne({ _id: id, isDeleted: false })
-      .select('kind isDisabled')
+      .select('-_id kind isDisabled')
       .lean()
       .exec();
     return row ? toPlain<UserAccountState>(row) : null;
@@ -102,7 +102,7 @@ export class MongoUserRepository implements UserRepository {
       orgId,
       isDeleted: { $ne: true },
     })
-      .select('role kind')
+      .select('-_id role kind')
       .lean();
     return row ? toPlain<UserRoleSnapshot>(row) : null;
   }

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.core import org_context
 from app.core.org_context import current_or_system, current_org_id
+from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 from app.services.graph_db.postgres.base import (
@@ -28,6 +29,7 @@ from app.services.graph_db.postgres.base import (
     _field,
     _j,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -276,7 +278,7 @@ async def _unheld_revisions(query: Callable[..., Awaitable[Any]], org: str, ids:
     rows = await query(lambda tx: tx.fetch("""/* pipeshub:graph.stage_states_unheld_revisions */ WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev,
             max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = $2
             AND s.doc->>'virtualRecordId' = ANY($3::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
-        SELECT g.v, g.rev FROM g WHERE g.newest < $4::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev""",
+        SELECT g.v, g.rev FROM g WHERE g.newest < $4::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev""",
                                               org, _STAGES, ids, updated_before_ms), None)
     return [(r["v"], r["rev"]) for r in rows]
 
@@ -716,11 +718,13 @@ class CodeGraphMixin(PgBase):
         if "indexingStatus" in fields:
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
         _VALIDATOR.validate_node_update("records", fields)
+        # The run rule reads the stored document in this statement; with no status in the fields the status is null and the patch is empty.
+        run = sql_patch("n.doc", WriteKind.STATUS_VAR, now="$6::bigint", status="$5::text")
         # Locks are taken in id order, and the revision is read after the lock.
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_record_fields */ WITH l AS (SELECT id FROM graph.nodes
+        rows = await self._q(lambda tx: tx.fetch(with_run_patch("""/* pipeshub:graph.compare_and_set_record_fields */ WITH l AS (SELECT id FROM graph.nodes
             WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[]) AND doc->>'contentRev' = $3 ORDER BY id FOR UPDATE)
-            UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM l WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = l.id RETURNING n.id""",
-                                                  org, keys, content_rev, _j(fields)), None, write=True)
+            UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || {RUN_PATCH} || $4::jsonb) AS _nv WHERE _nv.value <> 'null'::jsonb) FROM l WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = l.id RETURNING n.id""", run),
+                                                  org, keys, content_rev, _j(fields), fields.get("indexingStatus"), get_epoch_timestamp_in_ms()), None, write=True)
         return [r["id"] for r in rows]
 
     # ---- stage states --------------------------------------------------------------------------------------------
@@ -907,7 +911,7 @@ class CodeGraphMixin(PgBase):
                             (SELECT max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = $2
                                AND s.doc->>'virtualRecordId' = p.v AND s.doc->>'rev' = p.rev) AS newest
                           FROM unnest($3::text[], $4::text[]) AS p(v, rev)),
-                        ok AS (SELECT g.v, g.rev FROM g WHERE g.newest < $5::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev)),
+                        ok AS (SELECT g.v, g.rev FROM g WHERE g.newest < $5::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED' AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true')))),
                         d AS (DELETE FROM graph.nodes s USING ok WHERE s.org_id = $1 AND s.coll = $2 AND s.doc->>'virtualRecordId' = ok.v AND s.doc->>'rev' = ok.rev RETURNING 1)
                         SELECT count(*) FROM d""", org, _STAGES, vs, rs, updated_before_ms)
                 deleted += int(await self._q(run, None, write=True) or 0)

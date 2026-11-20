@@ -550,3 +550,57 @@ def test_a_large_record_that_inspection_makes_huge_keeps_its_place_in_a_full_big
 
     same, waited = asyncio.run(run())
     assert same and waited < 0.1  # kept, no timeout, no wait for a third place
+
+
+def _use() -> dict[str, int]:
+    return {n: a.stats()["in_use"] for n, a in wiring._Registry.ahead.get(asyncio.get_running_loop(), {}).items()}
+
+
+def test_two_records_crossing_between_full_download_pools_never_wait_on_each_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Small pool 1/1 and big pool 1/1, both held. One record moves small->huge, the other large->small: each holds
+    the pool the other needs. Neither may wait while holding its old place."""
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "1")
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD_SMALL", "1")
+
+    async def run() -> tuple[float, list[object], dict[str, int], dict[str, int]]:
+        h = host()
+        ctx = wiring.class_context(msg("pdf").payload)
+        a = await cc.acquire_download_slot(h, L, timeout=0.2, ctx=ctx, size_bytes=1 * MIB)  # small
+        b = await cc.acquire_download_slot(h, L, timeout=0.2, ctx=ctx, size_bytes=150 * MIB)  # large (big pool)
+        before = _use()
+        started = asyncio.get_running_loop().time()
+        results = await asyncio.gather(
+            cc.reclass_download_slot(a, ctx.inspected(1000, scanned=False), 80 * MIB, 2.0),  # small -> huge
+            cc.reclass_download_slot(b, ctx.inspected(1, scanned=False), 1 * MIB, 2.0),  # large -> small (measured: 1 page)
+            return_exceptions=True,
+        )
+        took = asyncio.get_running_loop().time() - started
+        after = _use()
+        for r in results:
+            if not isinstance(r, BaseException):
+                cc.release_admission(r)
+        return took, results, before, after
+
+    took, results, before, after = asyncio.run(run())
+    assert not any(isinstance(r, BaseException) for r in results), results  # no timeout
+    assert took < 0.5  # one service time, not the admission wait
+    assert before == after  # one place in each pool, none leaked or doubled
+
+
+def test_a_free_place_in_the_new_pool_is_taken_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD", "2")
+    monkeypatch.setenv("INDEX_HEAVY_DOWNLOAD_AHEAD_SMALL", "1")
+
+    async def run() -> tuple[dict[str, int], dict[str, int]]:
+        h = host()
+        ctx = wiring.class_context(msg("pdf").payload)
+        a = await cc.acquire_download_slot(h, L, timeout=0.2, ctx=ctx, size_bytes=1 * MIB)
+        before = _use()
+        moved = await cc.reclass_download_slot(a, ctx.inspected(1000, scanned=False), 80 * MIB, 0.0)  # no wait allowed at all
+        after = _use()
+        cc.release_admission(moved)
+        return before, after
+
+    before, after = asyncio.run(run())
+    assert before == {"small": 1, "big": 0} or sum(before.values()) == 1
+    assert sum(after.values()) == 1 and after.get("big") == 1 and after.get("small", 0) == 0

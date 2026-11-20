@@ -361,9 +361,9 @@ def _graph_providers() -> list[type]:
     return [cls for cls in found if not inspect.isabstract(cls) and cls.__module__.startswith("app.")]
 
 
-@pytest.mark.parametrize("method", ["get_record_path_segments", "get_record_group_path"])
+@pytest.mark.parametrize("method", ["get_record_path_segments", "get_record_group_path", "get_record_by_id"])
 def test_every_provider_accepts_raise_on_error(method):
-    # Storage paths and pattern-match scoping always pass it; a backend without
+    # Storage paths, pattern-match scoping and record-content reads always pass it; a backend without
     # it would fail every lookup with a TypeError.
     providers = _graph_providers()
     assert {ArangoHTTPProvider, Neo4jProvider} <= set(providers)

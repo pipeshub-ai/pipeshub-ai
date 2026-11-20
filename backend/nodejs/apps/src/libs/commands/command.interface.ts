@@ -103,7 +103,9 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       'authorization',
       HEADER_REQUEST_ID,
       HEADER_MCP_RELAY,
-      'client-name'
+      'client-name',
+      // Opts a record read into the stored-version checks (a deleted or disabled connector is refused).
+      'x-record-content-open',
     ]);
     // Normalize to lowercase keys so case-variants (e.g. content-type from
     // Express + Content-Type from the caller) collapse to one entry. fetch

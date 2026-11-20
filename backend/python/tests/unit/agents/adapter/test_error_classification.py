@@ -32,6 +32,28 @@ from app.agents.agent_loop.error_classification import classify_error
         ),
         ("Your credit balance is too low to access the Anthropic API", "quota_exceeded"),
         ("APIConnectionError: Connection error.", "server_error"),
+        # Azure OpenAI failures inside an open stream: no status code, only the wording.
+        (
+            "LLM call failed: OpenAI API error (stream): The system is currently "
+            "experiencing high demand and cannot process your request. Please try again later.",
+            "server_error",
+        ),
+        (
+            "LLM call failed: OpenAI API error (stream): The server had an error processing "
+            "your request. Sorry about that! You can retry your request.",
+            "server_error",
+        ),
+        (
+            "LLM call failed: OpenAI API error (stream): Your requests to gpt-5.4-mini for "
+            "gpt-5.4-mini in eastus2 have exceeded token rate limit.",
+            "rate_limit",
+        ),
+        (
+            "LLM call failed: OpenAI API error (stream): Your input exceeds the context "
+            "window of this model. Please adjust your input and try again.",
+            "request_too_large",
+        ),
+        ("Anthropic API error: overloaded_error: Overloaded", "server_error"),
         (
             # Real Azure OpenAI prompt-shield rejection body (400 with
             # code=content_filter / ResponsibleAIPolicyViolation).

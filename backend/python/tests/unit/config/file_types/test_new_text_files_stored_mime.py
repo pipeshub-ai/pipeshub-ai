@@ -14,7 +14,7 @@ _STORED_BEFORE = "text/plain"
 
 
 def _route(ext: str, mime: str) -> file_types.Dispatch | None:
-    return file_types.legacy_route(mime, ext, code_extension=ext, reads_as_code_file=False)
+    return file_types.legacy_route(mime, ext, code_ext=ext, reads_as_code_file=False)
 
 
 @pytest.mark.parametrize("ext", ["log", "cfg"])

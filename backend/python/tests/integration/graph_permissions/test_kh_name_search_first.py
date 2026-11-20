@@ -16,6 +16,7 @@ name no App at all, so only the walks can place them.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -162,6 +163,18 @@ async def test_a_name_search_is_the_full_listing_filtered(arms_graph, provider, 
         assert [r["id"] for r in got["rows"]] == expected_ids, term
         assert _without_parent(got["rows"], multi) == _without_parent(want["rows"], multi), term
         assert (got["total"], got.get("counts")) == (want["total"], want.get("counts")), term
+
+
+async def test_a_listing_reads_no_property_key_neo4j_has_never_stored(arms_graph, neo4j_provider, full_listing,
+                                                                      caplog) -> None:
+    """Neo4j attaches a notification to each query that reads a property key no node has ever held, and the driver logs it
+    with the whole query on every run. The schema registers ``accessOnly`` before any group carries it (this graph has
+    none)."""
+    caplog.set_level(logging.WARNING, logger="neo4j.notifications")
+    kwargs = {"filters": {"search_query": "item"}}
+    await _connector_page(neo4j_provider, APP, **kwargs)
+    await full_listing(lambda: _connector_page(neo4j_provider, APP, **kwargs))
+    assert not [r for r in caplog.records if "property `accessOnly` does not exist" in r.getMessage()]
 
 
 async def test_a_name_search_reads_separators_as_spaces(load_graph, provider, full_listing) -> None:

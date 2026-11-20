@@ -1,8 +1,9 @@
 import asyncio
+import gc
 import logging
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -39,6 +40,7 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.entity_tools import router as entity_tools_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.graph_view import router as graph_view_router  # noqa: E402
 from app.api.routes.health import router as health_router
 from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
@@ -361,6 +363,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # serves search never reaches the indexing write path that would
         # otherwise do it, so it has to happen here too.
         async def _reconcile_lexical_scoring() -> None:
+            # Same reason: the payload indexes of a collection from an older release are added here, not by a first write.
+            await retrieval_service.collection_registry.reconcile_payload_indexes()
             try:
                 changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
                 if changed:
@@ -445,6 +449,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mcp_registry.auto_discover_templates()
     app.state.mcp_registry = mcp_registry
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
+
+    # Each answer allocates and drops many short-lived objects; a gen-0 threshold
+    # of 10,000 (default 700) makes young collections rarer while generations 1
+    # and 2 keep their default ratios.
+    gc.set_threshold(10_000, 10, 10)
 
     yield
     # Shutdown
@@ -538,19 +547,36 @@ configure_app(app, "query")
 EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
 
 
-@app.middleware("http")
-async def authenticate_requests(request: Request, call_next) -> JSONResponse:
-    # Check if path should be excluded from authentication
-    if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
-        return await call_next(request)
+class AuthenticateRequests:
+    """Authenticates every request outside EXCLUDE_PATHS.
 
-    try:
-        authenticated_request = await authMiddleware(request)
-    except HTTPException as exc:
-        mark_request_failure(request, exc)
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    # A route's exception is logged and answered by http.request.end (request_log).
-    return await call_next(authenticated_request)
+    Plain ASGI rather than ``@app.middleware("http")``: ``BaseHTTPMiddleware``
+    pushes every chunk of a streamed answer through an anyio memory stream.
+    A route's exception is logged and answered by http.request.end (request_log).
+    """
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
+            await self.app(scope, receive, send)
+            return
+        try:
+            # request.state lives in the scope, so the route sees what auth set.
+            await authMiddleware(request)
+        except HTTPException as exc:
+            mark_request_failure(request, exc)
+            await JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(AuthenticateRequests)
 
 
 # Trace context and the request line — outside auth, so both see every request.
@@ -596,6 +622,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(knowledge_search_router, prefix="/api/v1")
+app.include_router(entity_tools_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
@@ -641,9 +668,13 @@ def configured_worker_count() -> int:
     return 1
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, *, workers: int | None = None, reload: bool = True) -> None:
     """Run the application"""
     import warnings
+
+    from app.utils.env_utils import bind_host, bind_port
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8000)
     workers = workers or configured_worker_count()
     if reload and workers > 1:
         warnings.warn(

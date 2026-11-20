@@ -23,6 +23,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from tests.unit.attempt_start import attempt_start_via
 
 RECORDS = CollectionNames.RECORDS.value
 APPS = CollectionNames.APPS.value
@@ -61,9 +62,11 @@ class Harness:
         graph = AsyncMock()
         graph.get_document = AsyncMock(side_effect=self._get)
         graph.update_node = AsyncMock(return_value=True)
+        graph.write_attempt_start = attempt_start_via(graph)
         graph.check_record_access_with_details = AsyncMock(return_value={"record": {}} if access else None)
         event_processor.graph_provider = graph
         event_processor.stage_ingress = None
+        event_processor.sink_orchestrator = None  # no vector store to ask about the weight precision
         event_processor.on_event = self._on_event
         pipeline = AsyncMock()
         pipeline.bulk_delete_embeddings = AsyncMock(return_value={"success": True})
@@ -217,12 +220,12 @@ class TestStoreOnlyRun:
         harness.pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert "forceReindex" not in harness.runs[0]["payload"]
 
-    async def test_a_normal_reindex_still_clears_the_embeddings_first(self) -> None:
+    async def test_a_normal_reindex_runs_in_full_without_taking_the_embeddings_out_first(self) -> None:
         harness = Harness(_record(indexingStatus="QUEUED"))
 
         await harness.run(_payload(parseNow=False, forceReindex=True))
 
-        harness.pipeline.bulk_delete_embeddings.assert_awaited_once()
+        harness.pipeline.bulk_delete_embeddings.assert_not_awaited()
         assert harness.runs[0]["run"] is None
 
     async def test_the_event_is_completed_from_the_record(self) -> None:
