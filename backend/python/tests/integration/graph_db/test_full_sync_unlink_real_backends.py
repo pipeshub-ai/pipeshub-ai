@@ -40,6 +40,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.services.event_service import EventService
+from app.connectors.sources.web.connector import WebConnector
 from app.models.entities import (
     AppUserGroup,
     FileRecord,
@@ -865,6 +866,26 @@ async def _browse(sync: _Sync, user_key: str, external_id: str) -> tuple[bool, s
     return opened is not None, parents
 
 
+def _web_connector(sync: _Sync) -> WebConnector:
+    """The web connector's relink, on the real processor: only what ``_link_stored_pages_under`` uses is set."""
+    connector = object.__new__(WebConnector)
+    connector.logger = logger
+    connector.data_entities_processor = sync.processor
+    connector.connector_id = sync.connector_id
+    connector._relink_pending = set()
+    connector._sync_point_base = {}
+    return connector
+
+
+async def _relink_as_the_connector_does(sync: _Sync, parent_external_id: str) -> None:
+    """Find the pages stored under the record and attach them, through the connector's own lookup."""
+    connector = _web_connector(sync)
+    above = await sync.graph.get_record_by_external_id(sync.connector_id, parent_external_id)
+    await connector._link_stored_pages_under(above)
+    # A lookup or attach that fails is logged and left for the next sync, not raised.
+    assert not connector._relink_pending, "the relink failed"
+
+
 async def _can_search(sync: _Sync, user_key: str, external_id: str) -> bool:
     record = await sync.graph.get_record_by_external_id(sync.connector_id, external_id)
     result = await sync.graph.check_access(user_key, sync.org_id, node_ids=[record.id])
@@ -883,8 +904,9 @@ async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_f
     An older build's full sync wrote the unchanged page (a permissions update) but not the record above
     it: a URL-path folder, or a parent page the site answered 304 for. The unlink at the end took that
     record's links and the page's links to it, and the page became unreadable. A full sync of the fixed
-    connector writes the record above again and attaches the pages stored under it, which must give the
-    page back to search and to the knowledge hub, under that record.
+    connector writes the record above again and attaches the pages stored under it, found through the
+    connector's own lookup, which must give the page back to search and to the knowledge hub, under that
+    record.
     """
     page_path, parent_path = "/guides/install.html", "/guides/"
     parent = _web_record(sync, parent_path, parent=None, internal=not parent_is_a_page)
@@ -906,6 +928,9 @@ async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_f
     task, _lease = await sync.full_sync(old_build)
     await asyncio.wait_for(task, timeout=60)
     assert not await _can_search(sync, sync.alice, page.external_record_id), "the reported damage"
+    damaged = await sync.links(RECORDS, page_id)
+    assert damaged["belongs_to"] == 1 and damaged["inherits"] == 0, damaged
+    assert await _browse(sync, sync.alice, page.external_record_id) == (False, set())
 
     async def fixed_build(s: _Sync) -> None:
         await s.processor.on_new_record_groups([_site_group(s)])
@@ -915,13 +940,13 @@ async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_f
         else:
             await s.processor.on_new_records([(above, [])])
         if relink_first:
-            await s.processor.on_records_attached_to_parent(parent_id, [page_id])
+            await _relink_as_the_connector_does(s, parent.external_record_id)
         # The connector passes the stored id of a page it already holds.
         await s.processor.on_updated_record_permissions(
             _web_record(s, page_path, parent=parent_path, internal=False, record_id=page_id), []
         )
         if not relink_first:
-            await s.processor.on_records_attached_to_parent(parent_id, [page_id])
+            await _relink_as_the_connector_does(s, parent.external_record_id)
 
     task, _lease = await sync.full_sync(fixed_build)
     await asyncio.wait_for(task, timeout=60)
