@@ -2,7 +2,7 @@
 
 A connector created on a PostgreSQL graph has nothing to copy: its app node is projected by the drain and the backfill finds an empty copy, verifies it and the promotion makes it
 ``enforce``. A connector that already has nodes (an install that ran with the projection off) is copied, verified and promoted the same way, by the same functions
-(``backfill.backfill``, ``backfill.promote``); nothing here writes a mode. A connector whose verify finds a difference stays on the walk (``backfill`` demotes it) and is logged; it is
+(``backfill.backfill``, which promotes in the unit of its verify); nothing here writes a mode. A connector whose verify finds a difference stays on the walk (``backfill`` demotes it) and is logged; it is
 not tried again until the process restarts (``shortcut: a retry is a restart or an operator's backfill, a scheduled re-verify is the drift sampler's job``). A connector that cannot be verified
 only because changes were still arriving (a sync running), or because its copy was cleared meanwhile, is tried again after ``RETRY_S``. A copy larger than ``BATCHES`` batches goes on at the next
 pass, from its cursor.
@@ -90,7 +90,7 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
                 due.pop((org, app), None)
                 progress += 1
                 continue
-            out = await bf.backfill(db, org, app, page=PAGE, max_batches=BATCHES, drain_rounds=DRAIN_ROUNDS, stop=stop, stamp_pages=STAMP_PAGES, stamp_page=STAMP_PAGE, stamp_after=_STAMP_AFTER.get((org, app)))
+            out = await bf.backfill(db, org, app, page=PAGE, max_batches=BATCHES, drain_rounds=DRAIN_ROUNDS, stop=stop, stamp_pages=STAMP_PAGES, stamp_page=STAMP_PAGE, stamp_after=_STAMP_AFTER.get((org, app)), enforce=True)
             _STAMP_AFTER[(org, app)] = out.stamp_after
             if not out.flipped:
                 if out.reason == "unfinished":
@@ -104,15 +104,10 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
                     due[(org, app)] = time.monotonic() + RETRY_S
                     PROMOTED.inc("waiting")
                 continue
-            await bf.promote(db, org, app)
             PROMOTED.inc("enforce")
             due.pop((org, app), None)                              # a later demotion makes it a candidate again
             _STAMP_AFTER.pop((org, app), None)
             progress += 1
-        except bf.Refused as e:
-            due[(org, app)] = time.monotonic() + RETRY_S
-            PROMOTED.inc("refused")
-            logger.warning("kg: connector %s was not promoted: %s", app, e)
         except Exception:
             due[(org, app)] = time.monotonic() + RETRY_S
             PROMOTED.inc("error")

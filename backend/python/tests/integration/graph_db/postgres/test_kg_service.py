@@ -4,9 +4,11 @@ at the same time."""
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import Counter
 
+import asyncpg
 import pytest
 
 from app.services.graph_db.postgres import access as access_sql
@@ -172,15 +174,31 @@ async def test_a_connector_with_nodes_before_the_worker_is_backfilled_once_and_a
     assert await _mode(p, other) != "enforce"
 
 
+async def test_the_bootstrap_verifies_a_connector_once_and_promotes_it_with_that_verify(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real, calls = bf.verify_app, []
+
+    async def counted(tx, o, app) -> object:
+        calls.append(app)
+        return await real(tx, o, app)
+    monkeypatch.setattr(bf, "verify_app", counted)
+    assert await bootstrap.bring_to_enforce(pg_db, org, {}) == 1
+    assert await _mode(p, org) == "enforce"
+    assert calls == ["drv"]                                                  # one full verify of the connector, not a second one at the promotion
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        assert await con.fetchval("SELECT count(*) FROM kg.analyze_requests WHERE org_id = $1", org) == 1      # as a promotion asks for its statistics
+    finally:
+        await con.close()
+
+
 async def test_a_connector_with_changes_still_arriving_is_tried_again_later(pg_db, monkeypatch) -> None:
     p, org = prov(pg_db), new_org()
     await _world(p, org)
-    real = bootstrap.bf.backfill
 
     async def pending(db, o, app, **k) -> object:
-        out = await real(db, o, app, **k)
-        out.flipped, out.pending = False, 3
-        return out
+        return bf.Outcome(False, 0, None, 3, "pending")
     due: dict = {}
     with monkeypatch.context() as m:
         m.setattr(bootstrap.bf, "backfill", pending)
@@ -190,16 +208,15 @@ async def test_a_connector_with_changes_still_arriving_is_tried_again_later(pg_d
     assert await bootstrap.bring_to_enforce(pg_db, org, due) == 1
 
 
-@pytest.mark.parametrize("failure", ["refused", "error"])
-async def test_a_promotion_that_is_refused_or_fails_is_logged_and_tried_again_later(pg_db, monkeypatch, caplog, failure) -> None:
+async def test_a_promotion_that_fails_is_logged_and_tried_again_later(pg_db, monkeypatch, caplog) -> None:
     p, org = prov(pg_db), new_org()
     await _world(p, org)
 
-    async def boom(db, o, app) -> None:
-        raise bootstrap.bf.Refused("changed meanwhile") if failure == "refused" else RuntimeError("database went away")
+    async def boom(db, o, app, **k) -> None:
+        raise RuntimeError("database went away")
     due: dict = {}
     with monkeypatch.context() as m, caplog.at_level("WARNING"):
-        m.setattr(bootstrap.bf, "promote", boom)
+        m.setattr(bootstrap.bf, "backfill", boom)
         assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0
     assert await _mode(p, org) != "enforce" and "kg: connector drv" in caplog.text
     assert 0 < due[(org, "drv")] - time.monotonic() <= bootstrap.RETRY_S
