@@ -201,18 +201,31 @@ def _build_online(c: Connection, modules: list, started: list[str]) -> None:
 
 
 def drop_online(c: Connection, qname: str) -> None:
-    """Drop an index and every leaf index a stopped build of it left unattached. A partitioned index cannot be dropped CONCURRENTLY, nor can a
-    leaf index while it is attached: its drop is a catalog change of a moment, under ddl._retry's 2 s lock_timeout."""
+    """Drop an index and every index of its tree a stopped or failed build left unattached, valid or not (dropping the parent takes only the
+    attached ones with it). ddl names a child's index after its tree path, ``<leaf>_<parent>_<name>``, so they are found by walking the table's
+    partitions from the parent index's table, never by a name pattern alone. A partitioned index (the parent, or an intermediate one such as
+    ``nodes_def_<name>``) cannot be dropped CONCURRENTLY: its drop is a catalog change of a moment, under ddl._retry's 2 s lock_timeout. A
+    leaf's index is dropped CONCURRENTLY."""
     schema, name = ddl._ident(qname).split(".")
-    stray = c.exec_driver_sql(
-        "SELECT c.oid::regclass::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE NOT i.indisvalid AND c.relnamespace = %s::regnamespace "
-        "AND c.relname LIKE %s AND NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid)", (schema, "%\\_" + name.replace("_", "\\_"))).scalars().all()
-    for leaf in stray:
-        c.exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS {leaf}")
-    if c.exec_driver_sql("SELECT relkind = 'I' FROM pg_class WHERE oid = to_regclass(%s)", (qname,)).scalar():
-        ddl._retry(c, lambda: c.exec_driver_sql(f"DROP INDEX IF EXISTS {qname}"), attempts=5)
-    else:
-        c.exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS {qname}")
+    tree: list[str] = []
+
+    def walk(table: str, idx: str) -> None:
+        for child in c.exec_driver_sql("SELECT inhrelid::regclass::text FROM pg_inherits WHERE inhparent = %s::regclass ORDER BY 1", (table,)).scalars().all():
+            child_idx = f"{child.split('.')[-1]}_{idx}"
+            tree.append(f"{schema}.{child_idx}")
+            walk(child, child_idx)
+    table = c.exec_driver_sql("SELECT indrelid::regclass::text FROM pg_index WHERE indexrelid = to_regclass(%s)", (qname,)).scalar()
+    if table:
+        walk(table, name)
+    for q in [*reversed(tree), qname]:                  # the leaves before their parents
+        row = c.exec_driver_sql("SELECT c.relkind, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid) FROM pg_class c "
+                                "WHERE c.oid = to_regclass(%s) AND c.relkind IN ('i', 'I')", (q,)).first()
+        if row is None or (row[1] and q != qname):     # not there, or attached: it goes with its parent
+            continue
+        if row[0] == "I":
+            ddl._retry(c, lambda q=q: c.exec_driver_sql(f"DROP INDEX IF EXISTS {q}"), attempts=5)
+        else:
+            c.exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS {q}")
 
 
 def _drop_all(engine: Engine, names: list[str] | frozenset[str], why: str, hint: str) -> None:

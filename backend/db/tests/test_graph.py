@@ -1605,6 +1605,12 @@ def _exists(c, index: str) -> bool:
     return c.execute("SELECT to_regclass(%s) IS NOT NULL", (f"graph.{index}",)).fetchone()[0]
 
 
+def _left_of(c, indexes) -> list[str]:
+    """Every index in schema graph named for one of these: the parent, an intermediate one (nodes_def_<name>) or a leaf's (<leaf>_nodes_def_<name>)."""
+    return [r[0] for r in c.execute("SELECT relname FROM pg_class WHERE relnamespace = 'graph'::regnamespace AND relkind IN ('i', 'I') "
+                                    "AND (relname = ANY(%s) OR relname LIKE ANY(%s))", (list(indexes), [f"%\\_{i}" for i in indexes]))]
+
+
 def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
     """From graph_0013 on a populated graph: every index of graph_0014..0018 is built before the upgrade's transaction, concurrently on the leaf
     that holds rows; the transaction itself runs no index statement at all (one there would keep the writers of graph.nodes waiting until the
@@ -1686,7 +1692,7 @@ def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tm
     assert run_migrate(url).returncode == 0
     assert run_migrate(url, "downgrade", "graph_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
     with connect(cluster, name) as c:
-        leaf = _populate(c)
+        _populate(c)
     extra = tmp_path / "surface.extra.txt"
     extra.write_text("index graph.nodes_never on graph.nodes unique=false exclusion=false valid=true def=0\n")
     r = run_migrate(url, PG_MIGRATE_SURFACE_FILES=str(extra))
@@ -1696,7 +1702,62 @@ def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tm
     with connect(cluster, name) as c:
         assert not any(_exists(c, i) for i in ONLINE)
         assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 13
-        assert not any(c.execute("SELECT to_regclass(%s) IS NOT NULL", (f"graph.{leaf.split('.')[1]}_{i}",)).fetchone()[0] for i in ONLINE)
+        assert _left_of(c, ONLINE) == []
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
 
+
+def test_a_build_that_failed_half_way_down_the_tree_is_dropped_whole(db):
+    """graph.nodes is LIST-partitioned with a HASH-partitioned default (nodes_def), so a build makes an intermediate partitioned index,
+    nodes_def_<name>, and the leaves' <leaf>_nodes_def_<name>. A build that fails on one leaf (its index is there with another definition, so ATTACH
+    refuses it) leaves the parent and nodes_def_<name> invalid and unattached and the leaves before it attached: all of them are dropped, the
+    intermediate one by a plain DROP INDEX (a partitioned index cannot be dropped CONCURRENTLY), so the build the database was on still starts."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        leaf = _populate(c)
+        parent = c.execute("SELECT inhparent::regclass::text FROM pg_inherits WHERE inhrelid = %s::regclass", (leaf,)).fetchone()[0]
+        assert parent == "graph.nodes_def"
+        c.execute(f"CREATE INDEX {leaf.split('.')[1]}_nodes_def_nodes_record_pending_vrid ON {leaf} (org_id)")      # valid, not this definition
+    r = run_migrate(url)
+    assert r.returncode == 1 and "index graph.nodes_record_pending_vrid: dropped (the upgrade did not commit)" in r.stdout, r.stdout + r.stderr
+    assert "WARNING" not in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        assert _left_of(c, ["nodes_record_pending_vrid"]) == []
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 14
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_an_online_build_never_runs_a_plain_build_on_a_leaf_that_holds_rows(db):
+    """An empty leaf gets a plain build (instant, and it waits for no snapshot). A row written after the first look must not get one: the
+    emptiness is checked again under the leaf's SHARE lock, held through the build, and a leaf that holds rows by then is built CONCURRENTLY."""
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.pool import NullPool
+
+    from db.lib import ddl
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    seen: list[str] = []
+
+    def spy(_conn, _cursor, statement, *_):
+        seen.append(" ".join(statement.split()))
+        if seen[-1].startswith("SELECT pg_relation_size") and sum(x.startswith("SELECT pg_relation_size") for x in seen) == 1:
+            with connect(cluster, name) as w:                  # a writer fills the leaf right after the first look
+                w.execute("INSERT INTO public.rt SELECT 1 FROM generate_series(1, 1000)")
+    event.listen(engine, "after_cursor_execute", spy)
+    try:
+        with engine.connect() as c:
+            ddl.ensure_partitioned_index(c, "public.rt", "rt_k", "k", blocking=False)
+    finally:
+        engine.dispose()
+    assert not any(re.match(r"CREATE INDEX IF NOT EXISTS rt_1_rt_k ON (public\.)?rt_1 ", s) for s in seen), seen
+    assert any(re.match(r"CREATE INDEX CONCURRENTLY rt_1_rt_k ON (public\.)?rt_1 ", s) for s in seen), seen
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT bool_and(i.indisvalid) FROM pg_partition_tree('public.rt_k') t JOIN pg_index i ON i.indexrelid = t.relid").fetchone()[0]
