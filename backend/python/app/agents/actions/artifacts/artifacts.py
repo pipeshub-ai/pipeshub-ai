@@ -40,6 +40,7 @@ from app.services.artifact_registry import (
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
 from app.utils.error_class import log_failure
+from app.web.own_files import remember_download_link
 
 logger = logging.getLogger(__name__)
 
@@ -521,7 +522,9 @@ class ArtifactManager:
             "For uploaded files (chat attachments, KB uploads), returns a short-lived signed "
             "download URL you can embed directly in artifacts. For connector records (Google "
             "Drive, Slack, etc.), returns the external source URL. Do NOT use this for "
-            "artifacts you created — use get_artifact_download_url for those."
+            "artifacts you created — use get_artifact_download_url for those. Do NOT use it to "
+            "read a file's content: read the record with the knowledge base tools, so the answer "
+            "cites the file itself."
         ),
         parameters=[
             ToolParameter(
@@ -587,6 +590,7 @@ class ArtifactManager:
                 logger.exception("[get_record_download_url] signed URL failed for %s", record_id)
                 return _result(False, {"success": False, "error": "Failed to generate a download URL"})
             if url:
+                remember_download_link(self.chat_state, url, record_id=record_id, file_name=record.record_name)
                 return _result(True, {
                     "success": True,
                     "record_id": record_id,
@@ -596,10 +600,12 @@ class ArtifactManager:
                     "url_type": "direct_download",
                     "note": "Short-lived signed URL for an uploaded file. Can be embedded directly in artifacts.",
                 })
+            stream_url = await blob_store.get_record_stream_url(record_id)
+            remember_download_link(self.chat_state, stream_url, record_id=record_id, file_name=record.record_name)
             return _result(True, {
                 "success": True,
                 "record_id": record_id,
-                "download_url": await blob_store.get_record_stream_url(record_id),
+                "download_url": stream_url,
                 "file_name": record.record_name,
                 "mime_type": record.mime_type,
                 "url_type": "authenticated_link",
