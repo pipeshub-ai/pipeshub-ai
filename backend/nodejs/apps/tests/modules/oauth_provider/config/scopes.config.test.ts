@@ -95,6 +95,15 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(compose.split('\n').filter((l) => l.includes('MCP_SCOPES=')).join('')).to.not.contain('code:write')
   })
 
+  // Opt-in for the presets, but not admin-only: a pushed repository becomes the pusher's own personal connector, which a
+  // member's session can already create, and the device login app (one for every user, cut to what a member may hold)
+  // would lose code:write for everyone, admins included, if it were admin-only.
+  it('code:write is a scope a member may register on an app and the device login app may carry', () => {
+    expect(AdminOnlyScopes.has('code:write')).to.equal(false)
+    expect(getAllowedScopeNamesForRole(false)).to.include('code:write')
+    expect(getAllowedScopeNamesForRole(true)).to.include('code:write')
+  })
+
   // MCP clients request every scope discovery lists, so it lists only what
   // the /mcp tools use, never more than MCP_SCOPES allows.
   it('mcpDiscoveryScopes keeps the MCP_SCOPES the tools use, in order', () => {
