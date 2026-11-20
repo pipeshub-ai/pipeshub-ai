@@ -547,7 +547,11 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
   The connector OAuth callback (`connectors/api/router.py`) does the same for its token exchange (`reason=server_error`, no text:
   the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
-  (`reason=instance_not_found`).
+  (`reason=instance_not_found`). Once the caller is allowed the connector, the line carries `connector_id` and `connector_type`;
+  a missing or unreadable OAuth configuration is then `misconfigured` (`reason=config_not_found`, `oauth_config_fetch_error`).
+  A successful sign-in is that line with `outcome=success` and `has_refresh_token`. No field of the provider's token answer
+  (scopes, `uid`, `account_id`, `team_id`, `token_type`) is logged: the route serves every connector and can't tell an opaque
+  id from a login.
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
