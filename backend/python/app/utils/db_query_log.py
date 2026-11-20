@@ -10,7 +10,8 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from types import FrameType
 from typing import Any, TypeVar
@@ -41,6 +42,20 @@ def slow_query_ms() -> int:
 
 CALLER_FRAME: ContextVar[FrameType | None] = ContextVar("db_query_caller_frame", default=None)
 """The caller of a call that runs in another task (a Postgres provider transaction): found while that caller's stack was live."""
+
+EXPECTED_CODES: ContextVar[frozenset[str | int]] = ContextVar("db_query_expected_codes", default=frozenset())
+"""Driver codes the caller expects as an ordinary answer (an insert that finds the row already there)."""
+
+
+@contextmanager
+def expecting(*codes: str | int) -> Iterator[None]:
+    """Within the block, a call that fails with one of ``codes`` is logged at DEBUG, not at its class's level: the caller treats
+    that failure as an answer. Any other failure keeps its level."""
+    token = EXPECTED_CODES.set(EXPECTED_CODES.get() | frozenset(codes))
+    try:
+        yield
+    finally:
+        EXPECTED_CODES.reset(token)
 
 
 # Between a caller and the client, walked through: `async with` around a unit of work, asyncio.wait_for / timeouts.
@@ -97,7 +112,8 @@ def query_ended(
         else:
             code, cls, extra, hide_text = _described(describe, exc)
             mark_error(exc, cls, hide_text=hide_text)
-            event, level = "db.query.failed", level_for(cls)
+            event = "db.query.failed"
+            level = logging.DEBUG if code is not None and code in EXPECTED_CODES.get() else level_for(cls)
             fields.update(extra)
             fields.update(code=code, error_class=cls, error_type=type(exc).__name__, outcome="failure")
         if not logger.isEnabledFor(level):

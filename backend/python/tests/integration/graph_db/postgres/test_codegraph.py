@@ -306,6 +306,13 @@ async def test_stage_states_by_revision_connector_age_and_what_no_record_holds(p
     assert await p.get_stage_states_with_records(p.org, "c", "entities", "PENDING", limit=1, after_key="s1") == [("s2", ["r1"])]
     assert await p.get_stage_states_with_records(p.org, "c", "entities", "PENDING", limit=10, exclude_indexing_statuses=["QUEUED"]) == [("s1", []), ("s2", [])]
     assert await p.get_stage_states_with_records(_other(p.org), "c", "entities", "PENDING", limit=10) == []
+    # r1 never served an indexed copy: it holds only its own revision
+    assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=100) == [("v1", "1"), ("v1", "3")]
+    # r1 serves an indexed copy and is QUEUED (replacing it, or failed doing so): its revision is the attempt's, so every revision of v1 is still held
+    assert await p.update_node("r1", "records", {"hasIndexedCopy": True})
+    assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=100) == []
+    assert await p.stage_states_delete_unheld_revisions([("v1", "1"), ("v1", "3")], updated_before_ms=100) == 0
+    assert await p.update_node("r1", "records", {"indexingStatus": "COMPLETED"})
     assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=100) == [("v1", "1"), ("v1", "3")]
     assert await p.stage_states_unheld_revisions(["v1"], updated_before_ms=6) == [("v1", "1")]
     assert await p.stage_states_delete_unheld_revisions([("v1", "1"), ("v1", "2")], updated_before_ms=100) == 1       # revision 2 is held again by the record

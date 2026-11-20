@@ -42,12 +42,21 @@ from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.pipeline.fingerprint import content_revision
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import locks as lock_limits
 from app.services.paid_cache.access import (
     abandon_run,
+    ambient_identity,
     claim_refresh,
     complete_run,
     start_run,
+)
+from app.services.paid_cache.orphan import (
+    OrphanFields,
+    RecordGone,
+    bind_guard,
+    guard_from_request,
+    orphan_check_enabled,
 )
 from app.services.parsing.interface import (
     ParseError,
@@ -277,6 +286,10 @@ async def parse_file(
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
     refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    orphan_guard: Annotated[bool, Form(description="The caller sent the delete markers its run started under")] = False,  # noqa: FBT002
+    record_marker: Annotated[str, Form(description="The record's delete marker as the run saw it at its start")] = "",
+    org_marker: Annotated[str, Form(description="The org's delete marker as the run saw it at its start")] = "",
+    stop_disabled: Annotated[bool, Form(description="Do not refuse this parse for a changed delete marker")] = False,  # noqa: FBT002
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -287,6 +300,7 @@ async def parse_file(
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
             provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token,
+            OrphanFields(orphan_guard, record_marker[:64], org_marker[:64], stop_disabled),
         )
     finally:
         load.leave()
@@ -310,6 +324,7 @@ async def _parse_file(
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
     refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    orphan_fields: OrphanFields | None = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -480,6 +495,17 @@ async def _parse_file(
                     content_revision(content), "parse", refresh=refresh_paid_outputs, stage_deadline_s=stage_limit,
                     reuse_prior_attempt=refresh_paid_outputs and not first_request,
                 )
+                # The caller's delete markers: a marker that changed since its run started refuses the parse (410), and
+                # the caller confirms with the graph. An older caller sends none: no check (fail open).
+                identity = ambient_identity()
+                if identity is not None and orphan_check_enabled() and orphan_fields is not None:
+                    orphan = guard_from_request(
+                        identity[0], identity[1], present=orphan_fields.present, record_marker=orphan_fields.record_marker,
+                        org_marker=orphan_fields.org_marker, stop_disabled=orphan_fields.stop_disabled,
+                    )
+                    if orphan is not None:
+                        orphan.backend_of = getattr(paid_cache_access.paid_cache_for(_config_service(request), logger), "_backend", None)
+                        bind_guard(orphan)
                 # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
                 # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget
                 # configured (never shorter than the client's own read timeout for the record), and only this
@@ -509,6 +535,16 @@ async def _parse_file(
                     "error": ParseError(
                         ParseErrorCode.PASSWORD_REQUIRED, exc.message, exc.details
                     ).to_dict(),
+                },
+            )
+        except RecordGone as exc:
+            # Not a fact about the file: the record's delete marker changed. The caller reads the record before it acts.
+            logger.info("Parse refused: record='%s' its delete marker changed", record_name)
+            return JSONResponse(
+                status_code=status.HTTP_410_GONE,
+                content={
+                    "success": False,
+                    "error": ParseError(ParseErrorCode.RECORD_GONE, exc.message, exc.details).to_dict(),
                 },
             )
         except MultimodalModelNotConfiguredError as exc:

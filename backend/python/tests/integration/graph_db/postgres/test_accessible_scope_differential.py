@@ -284,6 +284,20 @@ async def served(pg_db, org: str) -> set[str]:
 MEMBERS = ("uid-u1", "uid-u2", "uid-u3", "uid-nobody")
 
 
+async def widest_group(pg_db, org: str, app: str) -> tuple[str, str | None]:
+    """The live record group of ``app`` with the most records below it (hierarchy children and members, to any depth), and its access rule."""
+    async def go(tx: object) -> list:
+        return await tx.fetch("""WITH RECURSIVE d(g, id) AS (
+              SELECT n.id, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'recordGroups' AND n.doc->>'connectorId' = $2 AND NOT coalesce((n.doc->>'isDeleted')::boolean, false)
+              UNION SELECT d.g, x.id FROM d CROSS JOIN LATERAL (
+                SELECT e.to_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = d.id
+                UNION ALL SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id = d.id AND e.from_coll = 'records') x)
+            SELECT d.g, count(*) AS n, min(n.doc->>'accessRule') AS rule FROM d JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'recordGroups' AND n.id = d.g
+            GROUP BY d.g ORDER BY n DESC, d.g LIMIT 1""", org, app)
+    r = (await pg_db.run(go))[0]
+    return r["g"], r["rule"]
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("seed", range(4))
 async def test_a_membership_added_and_removed_while_kg_serves_never_restamps_a_connector_whole_and_ends_with_the_walks_answer(
@@ -356,5 +370,45 @@ async def test_a_read_while_a_restamp_is_under_way_never_admits_what_the_graph_d
             steps += 1
     assert steps > 2, steps
     assert await pg_db.run(lambda tx: restamp.pending(tx, w.org)) == []
+    for uid in MEMBERS:
+        assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], uid
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("change", ["share", "narrow"])
+@pytest.mark.parametrize("seed", range(4))
+async def test_a_connector_whose_rows_a_restamp_job_hides_stays_served_and_answers_exactly_what_the_graph_answers(
+        w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int, change: str) -> None:
+    """A grant on a record group that is already granted (a share), or the group narrowed, reaches more records than the restamp threshold of 3: a rows job. kg keeps serving
+    every connector it served while the job runs one small batch at a time; the rows it has not restamped yet are the walk's, the rest are their stamps', and after every batch
+    each user's search scope and per-record answers are exactly the graph's."""
+    monkeypatch.setenv("PG_KG_INLINE_MAX", "3")
+    recs = await build(w, random.Random(seed), w.org, n=40)
+    await extras(w, random.Random(seed), recs)
+    group, rule = await widest_group(pg_db, w.org, LVL)
+    await w.p.batch_create_edges([{"from_collection": "groups", "from_id": "g1", "to_collection": "recordGroups", "to_id": group, "type": "GROUP", "role": "READER"}], "permission")
+    assert (await flip(pg_db, w.org))[0], "the world was not promoted: the test proves nothing"
+    before = await served(pg_db, w.org)
+    assert LVL in before
+    if change == "share":
+        await w.p.batch_create_edges([{"from_collection": "users", "from_id": "u3", "to_collection": "recordGroups", "to_id": group, "type": "USER", "role": "READER"}], "permission")
+    else:
+        await w.nodes("recordGroups", {"_key": group, "accessRule": "RESTRICTED" if rule != "RESTRICTED" else "OPEN"})
+    await drain_org(pg_db, w.org)
+    queued = await pg_db.run(lambda tx: restamp.pending(tx, w.org))
+    assert queued and {j.kind for j in queued} == {"rows"}, queued
+    want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
+    steps = 0
+    while job := await restamp.claim(pg_db, w.org, "w1"):
+        done = False
+        while not done:
+            assert await served(pg_db, w.org) == before, steps
+            for uid in MEMBERS:
+                assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], (steps, uid)
+                assert await oracle(w, uid, recs) == want[uid], (steps, uid)
+            done, job = await restamp.run_batch(pg_db, w.org, job, "w1", batch=2)
+            steps += 1
+    assert steps > 2, steps
+    assert await pg_db.run(lambda tx: restamp.pending(tx, w.org)) == [] and await served(pg_db, w.org) == before
     for uid in MEMBERS:
         assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], uid

@@ -34,12 +34,14 @@ from app.events.dedup import (
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
     IndexingError,
+    PasswordProtectedError,
     ProcessingError,
     RecordDeletedError,
 )
 from app.models.entities import Record
-from app.modules.indexing import replay_set
+from app.modules.indexing import keep_old_copy, replay_set
 from app.modules.indexing.connector_off_events import (
     SAME_BYTES_SKIP_RETRY_DELAY_S,
     SameBytesSkipPending,
@@ -85,6 +87,7 @@ from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
+from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
@@ -103,6 +106,7 @@ from app.services.docling.client import (
 )
 from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.common.record_visibility import (
+    PENDING_VIRTUAL_RECORD_ID,
     RecordVisibility,
     indexed_copy_fields,
     is_live_record,
@@ -357,6 +361,44 @@ class EventProcessor:
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
 
+    async def _begin_swap(
+        self, doc: dict[str, Any], old_vrid: str, new_vrid: str, org_id: str, *, forced: bool,
+    ) -> None:
+        """Name the vrid this run writes as the record's pending one, leaving ``virtualRecordId`` on the old copy.
+
+        A compare-and-set against what this run read (the vrid it replaces and the pending one it takes over): when another run
+        committed or took over meanwhile, the write is refused and the event is retried from the record's current state.
+        The pending vrid of an earlier run is released only after the write won, through the holder-checked deleters."""
+        record_id = _record_key(doc)
+        earlier = keep_old_copy.pending_of(doc)
+        won = await self.graph_provider.update_node_fields_if_match(
+            record_id,
+            CollectionNames.RECORDS.value,
+            {PENDING_VIRTUAL_RECORD_ID: new_vrid},
+            {"virtualRecordId": old_vrid, PENDING_VIRTUAL_RECORD_ID: earlier},
+        )
+        if not won:
+            raise IndexingError(
+                "The record changed while its replacement copy was being started; the event is retried",
+                details={"record_id": record_id},
+            )
+        doc[PENDING_VIRTUAL_RECORD_ID] = new_vrid
+        keep_old_copy.begin_swap(keep_old_copy.SwapRun(record_id, org_id, old_vrid, new_vrid, forced))
+        if earlier and earlier not in (new_vrid, old_vrid):
+            self._spawn_abandoned_vrid_cleanup(org_id, earlier)
+            await self._rewrite_or_delete_vrid_vectors(earlier)
+
+    async def _clear_pending(self, doc: dict[str, Any]) -> None:
+        """The record ends this run as a copy of another record's, or without indexing: it has no replacement copy pending any more. The
+        field goes (never null), so a commit of an earlier run of the record, which expects it, is refused."""
+        pending = keep_old_copy.pending_of(doc)
+        if not pending:
+            return
+        await self.graph_provider.update_node_fields_if_match(
+            _record_key(doc), CollectionNames.RECORDS.value, {}, {PENDING_VIRTUAL_RECORD_ID: pending}, unset=[PENDING_VIRTUAL_RECORD_ID]
+        )
+        doc.pop(PENDING_VIRTUAL_RECORD_ID, None)
+
     async def _discard_embed_marker(self, doc: dict[str, Any], marker: dict[str, Any], org_id: str) -> None:
         """End an interrupted run's marker when the record turns out to need no indexing.
 
@@ -369,6 +411,7 @@ class EventProcessor:
             "Failed to clear the embedding marker of record",
             doc,
         )
+        await self._clear_pending(doc)
         orphaned = marker.get(EMBED_VRID)
         if orphaned and orphaned != doc.get("virtualRecordId"):
             self._spawn_abandoned_vrid_cleanup(org_id, orphaned)
@@ -521,6 +564,7 @@ class EventProcessor:
         # call per page: when Docling is not used or cannot read the file, the
         # local layout parser reads it instead.
         use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+        docling_unavailable: DoclingUnavailableError | None = None
         if use_pdfplumber:
             self.logger.debug("Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
@@ -559,6 +603,8 @@ class EventProcessor:
                     self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
                     status=exc.status_code, include_error_text=False,
                 )
+                if isinstance(exc, DoclingUnavailableError):
+                    docling_unavailable = exc
             else:
                 if not docling_failed:
                     return
@@ -573,17 +619,34 @@ class EventProcessor:
                 # The processor already wrote index.parse_fallback for this sentinel.
                 self.logger.debug("Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
-        async for event in self.processor.process_pdf_with_pdf_plumber(
-            recordName=record_name,
-            recordId=record_id,
-            pdf_binary=pdf_binary,
-            virtual_record_id=virtual_record_id,
-            event_type=event_type,
-            prev_virtual_record_id=prev_virtual_record_id,
-        ):
-            if event.event == IndexingEvent.PARSING_COMPLETE:
-                pdf_binary = inspected = None
-            yield event
+        parsed = False
+        retry: DoclingUnavailableError | None = None
+        try:
+            async for event in self.processor.process_pdf_with_pdf_plumber(
+                recordName=record_name,
+                recordId=record_id,
+                pdf_binary=pdf_binary,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                if event.event == IndexingEvent.PARSING_COMPLETE:
+                    parsed = True
+                    pdf_binary = inspected = None
+                yield event
+        except DocumentProcessingError as layout_exc:
+            if (
+                docling_unavailable is None
+                or parsed
+                or isinstance(layout_exc, PasswordProtectedError)
+                or worker_gave_up_on(layout_exc)
+            ):
+                raise
+            retry = docling_unavailable
+        if retry is not None:
+            # Docling may read what PdfPlumber could not: retry once it serves again, not a verdict on the file.
+            # Raised outside the handler, so the layout error is not its __context__ for the classifier to read.
+            raise retry
 
     @staticmethod
     def _reads_as_code_file(
@@ -742,25 +805,34 @@ class EventProcessor:
                 # As process_code_document does: an emptied file kept its last
                 # version's blocks, and their calls and imports stayed (B3).
                 await self.processor._drop_code_blocks(record_id)
-            if not store_only:
-                await self._drop_the_previous_vectors_of_an_emptied_record(
-                    record_doc, prev_virtual_record_id or virtual_record_id, event_type
-                )
-            self._require_persisted(
-                await self.update_record_fields(
+            empty_fields = {
+                # parsingStatus is already COMPLETED from the write above.
+                "indexingStatus": ProgressStatus.EMPTY.value,
+                **indexed_copy_fields(ProgressStatus.EMPTY),
+                **cleared_fields(),
+                "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                "isDirty": False,
+            }
+            swap_run = None if store_only else keep_old_copy.current_swap(record_id, virtual_record_id)
+            swap_committer = getattr(self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None), "swap", None)
+            if swap_run is not None and swap_committer is not None:
+                # A replacement is pending: the old copy stays until the empty result commits (the record moves to the empty copy and the
+                # old one is released after the grace), so a failed status write leaves the record on a copy that is still there.
+                self._require_persisted(
+                    await swap_committer.commit_document(record_doc, swap_run, shape_status_write(empty_fields)),
+                    "Failed to persist EMPTY status for record",
                     record_doc,
-                    {
-                        # parsingStatus is already COMPLETED from the write above.
-                        "indexingStatus": ProgressStatus.EMPTY.value,
-                        **indexed_copy_fields(ProgressStatus.EMPTY),
-                        **cleared_fields(),
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "isDirty": False,
-                    },
-                ),
-                "Failed to persist EMPTY status for record",
-                record_doc,
-            )
+                )
+            else:
+                if not store_only:
+                    await self._drop_the_previous_vectors_of_an_emptied_record(
+                        record_doc, prev_virtual_record_id or virtual_record_id, event_type
+                    )
+                self._require_persisted(
+                    await self.update_record_fields(record_doc, empty_fields),
+                    "Failed to persist EMPTY status for record",
+                    record_doc,
+                )
             if self.config_service is not None:
                 # The revision is complete: its paid calls (a scan's page OCR) are listed in a final manifest.
                 await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)
@@ -1286,8 +1358,13 @@ class EventProcessor:
 
         if force_index:
             self.logger.info("Forced reindex of %s: indexing it itself, not attaching to a twin", _record_key(doc))
+            # With the old copy kept the forced run writes its own copy (and re-points its twins at the commit): it never
+            # rebuilds the shared one in place, which emptied the twins' points while it ran.
+            keeps_old_copy = doc.get("hasIndexedCopy") is True and await keep_old_copy.swap_allowed(self.config_service)
             return DedupDecision(
-                rebuild_shared_vrid=bool(match.is_processed) and doc.get("virtualRecordId") == match.record.get("virtualRecordId"),
+                rebuild_shared_vrid=bool(match.is_processed)
+                and doc.get("virtualRecordId") == match.record.get("virtualRecordId")
+                and not keeps_old_copy,
             )
 
         if match.is_processed:
@@ -1394,6 +1471,7 @@ class EventProcessor:
         scans_for_secrets: bool = False,
     ) -> DedupDecision:
         attached_vrid = match.record.get("virtualRecordId")
+        keeps_old_copy = False
 
         if scans_for_secrets and match.record.get("secretsRedacted") is None:
             # Indexed before redaction existed: reusing it would keep the
@@ -1431,7 +1509,10 @@ class EventProcessor:
                 await before_reusing_status()
             await self._attach_to_finished_twin(match.record, doc, content_rev=content_rev)
         else:
-            if attached_vrid:
+            # With the old copy kept, the twin's vrid is not taken before the run: that write is what dropped the old copy.
+            # The record indexes under a vrid of its own and keeps serving its old copy until it commits.
+            keeps_old_copy = doc.get("hasIndexedCopy") is True and await keep_old_copy.swap_allowed(self.config_service)
+            if attached_vrid and not keeps_old_copy:
                 # Same content, different collection: reuse the content
                 # identity (and with it the stored blob), but leave
                 # indexingStatus alone so this record still gets vectors of its
@@ -1468,7 +1549,8 @@ class EventProcessor:
             match.same_collection,
         )
         return DedupDecision(
-            virtual_record_id=attached_vrid, skip_indexing=match.same_collection
+            virtual_record_id=None if (not match.same_collection and keeps_old_copy) else attached_vrid,
+            skip_indexing=match.same_collection,
         )
 
     async def _copy_twin_edges(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
@@ -1543,6 +1625,7 @@ class EventProcessor:
                 "Failed to persist duplicate record fields",
                 doc,
             )
+            await self._clear_pending(doc)
             if vrid:
                 # Set first: a sync that raises or is cancelled may already
                 # have written some of the points.
@@ -2010,12 +2093,23 @@ class EventProcessor:
                 and not rebuild_shared_vrid
                 and not dedup_decision.virtual_record_id
             )
+            keep_old_copy.end_swap()
+            # A run that replaces an indexed copy writes the new set under a fresh vrid and keeps the record on the old one until
+            # that set commits (keep_old_copy). Refused unless the fleet is confirmed; then the run keeps the order it always had.
+            swap_old_vrid = None
+            if (
+                not store_only
+                and doc.get("virtualRecordId")
+                and (doc.get("hasIndexedCopy") is True or doc.get("indexingStatus") == ProgressStatus.COMPLETED.value)
+                and await keep_old_copy.swap_allowed(self.config_service)
+            ):
+                swap_old_vrid = doc.get("virtualRecordId")
             checkpoint = None
             if resumable_kind and may_resume(
                 embed_marker,
                 delivery_id=delivery_id,
                 rev=content_rev,
-                node_vrid=doc.get("virtualRecordId"),
+                node_vrid=keep_old_copy.pending_of(doc) or doc.get("virtualRecordId"),
                 force_reindex=bool(event_data.get("forceReindex")),
             ):
                 checkpoint = await self.processor.load_checkpoint(embed_marker[EMBED_VRID], org_id, content_rev)
@@ -2083,6 +2177,27 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
+            swap_new = False
+            if swap_old_vrid and checkpoint is None and not rebuild_shared_vrid:
+                if virtual_record_id == swap_old_vrid and event_type in (
+                    EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value
+                ):
+                    # Kept in place for a diff: only a forced run (it re-embeds everything) and a first pass (no stored
+                    # reconciliation metadata to diff against) replace the copy. Both used to purge the old points first.
+                    replace = refresh_requested(event_data)
+                    if not replace:
+                        blob_storage = getattr(self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None), "blob_storage", None)
+                        if blob_storage is not None:
+                            # A failed read fails the event (it is retried): it is never read as "no metadata".
+                            replace = not await blob_storage.get_reconciliation_metadata(swap_old_vrid, org_id)
+                    if replace:
+                        prev_virtual_record_id = swap_old_vrid
+                        virtual_record_id = str(uuid4())
+                if virtual_record_id != swap_old_vrid:
+                    swap_new = True
+                    # The old copy is released after the commit, not before the parse.
+                    abandoned_virtual_record_id = None
+
             # Persist the vrid this attempt will index under *before* parsing
             # starts. If this attempt fails partway through (after vectors are
             # written but before indexingStatus=COMPLETED), the retry re-reads
@@ -2091,7 +2206,18 @@ class EventProcessor:
             # type diffs against its stored blocks) so the orphaned vectors are
             # not abandoned. A type that is not reconciled block by block and
             # is not resuming mints a new vrid below, and its old one is cleaned.
-            if virtual_record_id != doc.get("virtualRecordId"):
+            if swap_new:
+                await self._begin_swap(
+                    doc, swap_old_vrid, virtual_record_id, org_id, forced=refresh_requested(event_data)
+                )
+            elif (
+                swap_old_vrid
+                and checkpoint is not None
+                and keep_old_copy.pending_of(doc) == virtual_record_id
+            ):
+                # The same event again, resuming into the copy it was writing: the pending vrid already names it.
+                keep_old_copy.begin_swap(keep_old_copy.SwapRun(_record_key(doc), org_id, swap_old_vrid, virtual_record_id))
+            elif virtual_record_id != doc.get("virtualRecordId"):
                 await self.update_record_fields(
                     doc, {"virtualRecordId": virtual_record_id}
                 )

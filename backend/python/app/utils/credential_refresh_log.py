@@ -27,10 +27,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 
+# Not error_class's sys.modules lookup: that is for SDKs that may be absent, and every refresh path loads aiohttp.
+import aiohttp
+
 from app.core import org_context
 from app.services.messaging.error_classifier import extract_status_code
-from app.utils.error_class import classify_error, level_for, log_failure
+from app.utils.error_class import OUR_BUGS, classify_error, level_for, log_failure
 from app.utils.logging_fields import current_log_fields, log_event, log_fields, log_once
+from app.utils.oauth_errors import transient_error_class
 from app.utils.request_context import (
     get_context,
     new_system_root,
@@ -74,7 +78,13 @@ ERROR_CLASS_BY_REASON = {
     "no_refresh_token": "auth_expired", "invalid_token_record": "auth_expired", "no_token_url": "auth_expired",
     "no_credential": "not_found", "credential_removed": "conflict", "lock_contention": "unavailable",
     "url_blocked": "misconfigured", "host_unresolved": "unavailable",
+    # A 2xx answer with no access token (oauth_service.TokenResponseError, MCP oauth_client): the token URL or provider setup is wrong.
+    "no_access_token": "misconfigured",
 }
+
+# aiohttp refuses the token URL before sending, and its text is the URL, query included.
+# NonHttpUrlClientError (ftp://) is not an InvalidURL in aiohttp 3.14.
+_UNUSABLE_URL_ERRORS = (aiohttp.InvalidURL, aiohttp.NonHttpUrlClientError)
 
 
 # The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
@@ -274,8 +284,10 @@ def _logged_level(exc: BaseException) -> int | None:
 
 
 def refresh_error_class(exc: BaseException) -> str | None:
-    """The error_class a refresh ``end`` gives ``exc`` when its chain carries a refresh tag; None otherwise."""
-    return _classified(exc)[0] if _reason(exc) else None
+    """The error_class a refresh ``end`` gave ``exc``: a refresh tag, or the endpoint rule on a chain this module logged.
+    None otherwise, so a sign-in or route failure that never went through a refresh keeps its own class."""
+    cls = _classified(exc)[0]
+    return cls if _reason(exc) or (_logged_level(exc) is not None and cls != classify_error(exc)) else None
 
 
 def _classified(exc: BaseException) -> tuple[str, str | None]:
@@ -285,7 +297,24 @@ def _classified(exc: BaseException) -> tuple[str, str | None]:
     tagged = ERROR_CLASS_BY_REASON.get(reason)
     if cls == "misconfigured" and tagged not in (None, cls):
         return cls, None  # the provider rejected our client, not the grant the tag names
-    return tagged or cls, reason
+    cls = tagged or cls
+    if cls == "internal":
+        cls = _first(exc, _endpoint_class) or cls
+    return cls, reason
+
+
+def _endpoint_class(link: BaseException) -> str | None:
+    """What a link of an ``internal`` refresh failure says instead. Our bug stops the walk as ``internal``: raised while
+    handling a 2xx error, it is still ours. An unusable token URL, or a 2xx answer that is not a token, is ``misconfigured``
+    unless its error says the provider is busy or down."""
+    if isinstance(link, OUR_BUGS):
+        return "internal"
+    if isinstance(link, _UNUSABLE_URL_ERRORS):
+        return "misconfigured"
+    status = _status(link)
+    if status is not None and 200 <= status < 300:
+        return transient_error_class(_oauth_error(link)) or "misconfigured"
+    return None
 
 
 def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key: str, **fields: object) -> None:
@@ -322,7 +351,8 @@ def _oauth_error(link: BaseException) -> str | None:
 
 def _from_token_endpoint(link: BaseException) -> bool | None:
     tagged_rejection = _str_attr(link, "refresh_reason") == "invalid_grant"  # its message embeds the endpoint's answer
-    return True if _status(link) is not None or _oauth_error(link) or tagged_rejection else None
+    unusable_url = isinstance(link, _UNUSABLE_URL_ERRORS)  # its message is the token URL
+    return True if _status(link) is not None or _oauth_error(link) or tagged_rejection or unusable_url else None
 
 
 def _status(link: BaseException) -> int | None:
