@@ -96,7 +96,6 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       const a = adapter()
       await a.writeObject(key(1), Buffer.from('one'))
       const dir = path.join((a as any).mountPath, path.dirname(key(1)))
-      const lockPath = (): string => path.join(dir, fs.readdirSync(dir).find((f) => f.endsWith('.lock'))!)
       const name = `.${createHash('sha1').update(path.basename(key(1))).digest('hex')}.lock`
       fs.writeFileSync(path.join(dir, name), 'crashed holder')
       const old = new Date(Date.now() - 6 * 60 * 1000)
@@ -109,7 +108,6 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       const started = Date.now()
       await a.writeObject(key(1), Buffer.from('after the wait'))
       expect(Date.now() - started).to.be.greaterThan(60)
-      void lockPath
     })
 
     it('a holder that lost its lease does not delete: the file stays and is reported changed', async () => {
