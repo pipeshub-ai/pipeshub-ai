@@ -73,7 +73,6 @@ export const firstSendStream = (
     if (await refuseIfDraining(res)) return;
     const requestId = req.context?.requestId;
     const startTime = Date.now();
-    const streamRun = new ChatStreamRun(req, res);
     const body = req.body as FollowUpBody;
     if (!body.query) {
       throw new BadRequestError('Query is required');
@@ -92,6 +91,8 @@ export const firstSendStream = (
     // The heartbeat and the client's close can fire before the pump exists, so they reach it through this holder.
     const live: { pump?: TurnStreamPump; lost: boolean } = { lost: false };
     let gate: TurnGate = unleasedGate();
+    // Once the request is checked: a throw before this point reaches the error middleware as it is.
+    const streamRun = new ChatStreamRun(req, res);
     const upstreamAbort = attachUpstreamAbort(res, () => {
       void live.pump?.onDisconnect();
     });

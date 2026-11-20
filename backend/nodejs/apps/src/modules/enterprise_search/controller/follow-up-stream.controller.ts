@@ -70,8 +70,6 @@ export const followUpStream = (
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     const { conversationId, agentKey } = req.params;
-    const streamRun = new ChatStreamRun(req, res);
-    if (conversationId) streamRun.bind({ conversationId, agentKey });
     const body = req.body as FollowUpBody;
     if (!body.query) {
       throw new BadRequestError('Query is required');
@@ -99,6 +97,9 @@ export const followUpStream = (
       if (error instanceof LeaseLostError) return;
       throw error;
     }
+    // Once the request is checked: a throw before this point reaches the error middleware as it is.
+    const streamRun = new ChatStreamRun(req, res);
+    if (conversationId) streamRun.bind({ conversationId, agentKey });
     const upstreamAbort = attachUpstreamAbort(res, () => {
       void live.pump?.onDisconnect();
     });
