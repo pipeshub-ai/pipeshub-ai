@@ -145,9 +145,26 @@ async def test_a_request_without_enabled_still_flips(toggle_type: str, field: st
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enabled", ["true", 1, 0, "false", [], {}])
+@pytest.mark.parametrize("enabled", ["true", 1, 0, "false", [], {}, None])
 async def test_an_enabled_that_is_not_a_boolean_is_refused(enabled: object) -> None:
     with pytest.raises(HTTPException) as refused:
         await _toggle({"type": "sync", "enabled": enabled})
 
     assert refused.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_changes_nothing_succeeds_while_its_sync_holds_the_lock() -> None:
+    """The enable started a full sync, whose prep locks the connector; its retry still answers 200."""
+    result, request, graph = await _toggle({"type": "sync", "enabled": True}, isActive=True, isLocked=True, status="FULL_SYNCING")
+
+    assert result["changed"] is False and result["enabled"] is True
+    _assert_nothing_written(request, graph)
+
+
+@pytest.mark.asyncio
+async def test_a_change_to_a_locked_connector_is_refused() -> None:
+    with pytest.raises(HTTPException) as refused:
+        await _toggle({"type": "sync", "enabled": False}, isActive=True, isLocked=True, status="SYNCING")
+
+    assert refused.value.status_code == 409

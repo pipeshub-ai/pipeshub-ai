@@ -33,6 +33,7 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   CONNECTOR_TOGGLE_TIMEOUT_MS,
+  CONNECTOR_TOGGLE_READ_TIMEOUT_MS,
   getConnectorSchema,
   testConnectorConnection,
   getConnectorEgressIps,
@@ -2361,6 +2362,8 @@ describe('toggleConnectorInstance - requested state, timeout and retries', () =>
 
     await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
 
+    // The instance read before it is bounded too, so the two stay under the proxy's wait.
+    expect(execStub.firstCall.args[4]).to.deep.equal({ timeoutMs: CONNECTOR_TOGGLE_READ_TIMEOUT_MS })
     const toggle = execStub.secondCall
     expect(toggle.args[0]).to.match(/\/api\/v1\/connectors\/conn-1\/toggle$/)
     expect(toggle.args[3]).to.deep.equal({ type: 'sync', enabled: true })

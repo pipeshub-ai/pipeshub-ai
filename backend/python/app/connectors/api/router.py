@@ -8560,7 +8560,7 @@ async def _build_and_store_connector(
 # Connector Toggle Endpoint
 # ============================================================================
 
-@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked)])
+@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
@@ -8604,8 +8604,9 @@ async def toggle_connector_instance(
         # The state the caller wants. A request that names it can be sent twice
         # with the same result; one that does not flips the current state, which
         # a retried request undoes.
+        # Only an absent key flips: an explicit null is a malformed request, not an old client.
         requested_enabled = body.get("enabled")
-        if requested_enabled is not None and not isinstance(requested_enabled, bool):
+        if "enabled" in body and not isinstance(requested_enabled, bool):
             logger.error(f"Toggle 'enabled' must be a boolean. Got {type(requested_enabled).__name__}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
@@ -8701,6 +8702,9 @@ async def toggle_connector_instance(
                 "message": f"Connector instance {connector_id} {toggle_type} was already "
                 f"{'enabled' if target_status else 'disabled'}",
             }
+        # Checked here rather than as a route dependency, so a retried request that
+        # changes nothing still succeeds while a sync it started holds the lock.
+        _check_connector_not_locked(instance)
 
         owner_updates: dict[str, Any] = {}
         # Validate prerequisites when enabling

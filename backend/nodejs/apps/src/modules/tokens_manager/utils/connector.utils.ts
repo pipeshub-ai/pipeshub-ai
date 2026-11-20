@@ -109,11 +109,14 @@ export const fetchConnectorInstanceSummary = async (
   connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
+  options: Pick<ConnectorServiceCommandOptions, 'timeoutMs'> = {},
 ): Promise<ConnectorInstanceSummary> => {
   const response = await executeConnectorCommand(
     `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
     HttpMethod.GET,
     headers,
+    undefined,
+    options,
   );
 
   if (!(response.statusCode >= 200 && response.statusCode < 300)) {

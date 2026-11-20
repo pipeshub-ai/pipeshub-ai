@@ -4,8 +4,12 @@ import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 const toggleConnector = vi.fn();
+const getConnectorInstance = vi.fn();
 vi.mock('../../api', () => ({
-  ConnectorsApi: { toggleConnector: (...args: unknown[]) => toggleConnector(...args) },
+  ConnectorsApi: {
+    toggleConnector: (...args: unknown[]) => toggleConnector(...args),
+    getConnectorInstance: (...args: unknown[]) => getConnectorInstance(...args),
+  },
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
@@ -47,6 +51,7 @@ beforeEach(() => {
   useConnectorsStore.getState().reset();
   clearToasts();
   toggleConnector.mockReset().mockResolvedValue({});
+  getConnectorInstance.mockReset().mockResolvedValue(makeInstance({ isActive: true }));
 });
 afterEach(() => cleanup());
 
@@ -137,6 +142,33 @@ describe('DisableFirstDialog', () => {
     expect(onProceed).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
     expect(screen.getByRole('button', { name: 'Disable & proceed' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('marks the instance disabled when a disable that timed out landed anyway', async () => {
+    const instance = makeInstance({ isActive: true });
+    useConnectorsStore.setState({ panelConnector: instance, instances: [instance], activeConnectors: [instance] });
+    toggleConnector.mockRejectedValue({ type: 'SERVER_ERROR', message: 'This took longer than expected to respond.', statusCode: 504 });
+    getConnectorInstance.mockResolvedValue({ ...instance, isActive: false });
+    const { onProceed } = renderDialog();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
+
+    await waitFor(() => expect(useConnectorsStore.getState().instances[0].isActive).toBe(false));
+    expect(getConnectorInstance).toHaveBeenCalledWith('conn-1');
+    expect(useConnectorsStore.getState().panelConnector?.isActive).toBe(false);
+    expect(onProceed).not.toHaveBeenCalled();
+  });
+
+  it('leaves the instance as it is when the failed disable did not land', async () => {
+    const instance = makeInstance({ isActive: true });
+    useConnectorsStore.setState({ instances: [instance] });
+    toggleConnector.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down', statusCode: 504 });
+    renderDialog();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
+
+    await waitFor(() => expect(getConnectorInstance).toHaveBeenCalledWith('conn-1'));
+    expect(useConnectorsStore.getState().instances[0].isActive).toBe(true);
   });
 
   it('leaves a server failure to the app-wide error toast instead of adding a second one', async () => {

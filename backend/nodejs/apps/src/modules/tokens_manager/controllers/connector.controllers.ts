@@ -266,9 +266,12 @@ const fetchConnectorSnapshot = async (
 /** Waits (ms) before each attempt to read the connector settings for a schedule reconcile. */
 const RECONCILE_RETRY_WAITS_MS = [0, 5_000, 30_000];
 
-/** Under the ~90 s a browser or proxy waits, so the user gets an answer rather than a dropped
- * connection. A timed-out toggle is not retried: the connector service may still be writing it. */
+/** With the instance read before it, under the ~90 s a browser or proxy waits, so the user gets
+ * an answer rather than a dropped connection. A timed-out toggle is not retried: the connector
+ * service may still be writing it. */
 export const CONNECTOR_TOGGLE_TIMEOUT_MS = 60_000;
+/** The read a sync toggle makes before it; a plain lookup, so far shorter than the toggle. */
+export const CONNECTOR_TOGGLE_READ_TIMEOUT_MS = 10_000;
 
 const fireConnectorScheduleReconcile = (
   scheduler: CrawlingSchedulerService,
@@ -1439,6 +1442,7 @@ export const toggleConnectorInstance =
           connectorId,
           appConfig,
           headers,
+          { timeoutMs: CONNECTOR_TOGGLE_READ_TIMEOUT_MS },
         );
         ownerDeviceName = instance.ownerDeviceName;
         // An off connector asked to stay off is left alone by the service, so
