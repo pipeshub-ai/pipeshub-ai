@@ -58,7 +58,9 @@ step=other
 case "$args" in
   *" exec "*scram-verifier.pl*) step=verifier; echo 'SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy' ;;
   *" exec "*psql*) sql=$(cat); printf '%s\n' "$sql" >>"$SQL"
-                   case "$sql" in *NOLOGIN*) step=login-close ;; *LOGIN*) step=login-open ;; *) step=psql ;; esac ;;
+                   case "$sql" in *NOLOGIN*) step=login-close ;; *LOGIN*) step=login-open ;; *) step=psql ;; esac
+                   # STUB_CLOSE_FAIL=1 makes closing the import login fail
+                   [[ "$step" == login-close && -n "${STUB_CLOSE_FAIL:-}" ]] && { echo "login-close-failed" >>"$CALLS"; exit 1; } ;;
   *" stop "*) step="stop:${*: -1}" ;;
   # a read-only lookup, not a step: answers from STUB_VOLUMES
   *" volume inspect "*) echo "  argv: $*" >>"$ARGV"; [[ " ${STUB_VOLUMES:-} " == *" ${*: -1} "* ]]; exit ;;
@@ -428,6 +430,10 @@ check_eq "an online rollback the tool fails with an error exits 2, as the tool d
 new_install
 STUB_FAIL="rollback" STUB_RC=2 run_script "$ROLLBACK"
 check_eq "an offline rollback the tool fails with an error exits 2, not 1 (refused)" "$RC" 2
+new_install
+STUB_FAIL="rollback" STUB_RC=2 STUB_CLOSE_FAIL=1 run_script "$ROLLBACK"
+check_eq "and still exits 2 when closing the import login then fails" "$RC" 2
+check "which it reports" "$OUT" "the import login could not be closed"
 new_install "PG_IMPORT_PASSWORD=kept_for_reverse_5"
 run_script "$ROLLBACK" --online
 check "a successful online rollback closes it" "$(steps)" "login-close"

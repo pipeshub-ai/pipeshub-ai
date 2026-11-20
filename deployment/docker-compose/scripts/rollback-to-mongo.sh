@@ -32,7 +32,8 @@ done
 # PostgreSQL stays read-only), with the reverse follower still writing as the import login: it keeps that login and its password
 # then. Every other ending closes it.
 DONE=0
-trap '[ "$FLAG" = --online ] && [ "$DONE" = 0 ] || import_login_close' EXIT
+# The exit status stays the rollback's: a failed close prints its own warning and must not turn an error (2) into a refusal (1).
+trap 'rc=$?; { [ "$FLAG" = --online ] && [ "$DONE" = 0 ]; } || import_login_close || true; exit "$rc"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 import_login_open
