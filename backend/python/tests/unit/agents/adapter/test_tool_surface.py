@@ -269,7 +269,7 @@ class TestInternalToolsetKeys:
         """The fallback is only consulted before discovery runs, so nothing else
         would notice it drifting from the registry it stands in for."""
         from app.agents.registry.toolset_registry import get_toolset_registry
-        from app.modules.agents.context.tool_surface import _FALLBACK_INTERNAL_KEYS
+        from app.modules.agents.context.tool_surface import fallback_internal_keys
 
         registry = get_toolset_registry()
         # The registry is a process-wide singleton; discovery here must not
@@ -283,7 +283,7 @@ class TestInternalToolsetKeys:
             registry._toolsets.clear()
             registry._toolsets.update(snapshot)
         assert internal, "discovery registered nothing — the comparison is vacuous"
-        assert _FALLBACK_INTERNAL_KEYS == internal
+        assert fallback_internal_keys() == internal
 
     def test_no_real_internal_tool_reads_as_a_live_service(self) -> None:
         """Every tool path an internal toolset declares, as the agent names it."""

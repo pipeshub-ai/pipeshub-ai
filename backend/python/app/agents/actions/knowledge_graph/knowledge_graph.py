@@ -36,6 +36,8 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.agents.context.named_sources import nameable_source_ids
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
@@ -71,12 +73,18 @@ from .ops.scope import (
 from .ops.search_budget import RESPONSE_FORMATS
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
-from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
+from .views import (
+    render_lookup_result_with_ids,
+    render_navigation_view_with_ids,
+    unnamed_sources_note,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Part
     from app.agent_loop_lib.core.types import ToolResult
     from app.agent_loop_lib.tools.base import Tool
+
+    from .models import NodeRow
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +206,26 @@ def _record_ids_in_view(view: NavigationView) -> list[str]:
     if view.current and view.current.is_record and view.current.id:
         ids.append(view.current.id)
     return ids
+
+
+def _label_ids_in_view(view: NavigationView) -> dict[str, list[str]]:
+    """Everything a navigation names, for the answer's label: records and
+    folders by record id, apps and record groups as containers, the path to
+    the current node included."""
+    named = [*view.breadcrumbs, *view.rows, *view.related, *([view.current] if view.current else [])]
+    return {
+        "records": [n.id for n in named if n.id and n.is_record],
+        "nodes": [n.id for n in named if n.id and not n.is_record],
+    }
+
+
+def _nameable_rows(state: ChatState, rows: list[NodeRow]) -> tuple[list[NodeRow], int]:
+    """`rows` without the sources (apps) the run may not name, and how many it left out."""
+    nameable = nameable_source_ids(state)
+    if nameable is None:
+        return rows, 0
+    kept = [row for row in rows if row.node_type != "app" or row.id in nameable]
+    return kept, len(rows) - len(kept)
 
 
 def _listed_facts(view: NavigationView, fetchable: set[str]) -> dict[str, str]:
@@ -611,6 +639,7 @@ class KnowledgeGraph:
                 view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
             view.rows = [row for row in view.rows if row.id in rows]
             view.related = [row for row in view.related if row.id in related]
+            view.rows, unnamed_sources = _nameable_rows(state, view.rows)
             limit_sources = connection_sources_of(state.get("filters"))
             await keep_context_blocks_inside_connection(
                 [(view.current.id if view.current else None, view)], graph_provider,
@@ -640,6 +669,9 @@ class KnowledgeGraph:
             [rid for rid in emitted if rid in fetchable],
             names={n.id: n.name for n in (*view.rows, *view.related, *([view.current] if view.current else []))},
         )
+        note_shown(**_label_ids_in_view(view))
+        if unnamed_sources:
+            text += f"\n\n{unnamed_sources_note(unnamed_sources)}"
 
         # Sparse-result retry nudge: only fires when time filters were
         # actually applied, so a plain (unfiltered) empty/near-empty listing

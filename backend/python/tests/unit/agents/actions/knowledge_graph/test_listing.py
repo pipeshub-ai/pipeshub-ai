@@ -360,6 +360,33 @@ class TestExecuteListFiles:
         assert "Doc A" in text
 
     @pytest.mark.asyncio
+    async def test_in_a_turn_others_read_a_source_it_may_not_name_is_left_out_and_counted(self) -> None:
+        from app.modules.agents.context.named_sources import NAMED_SOURCES_KEY, NamedSources
+
+        scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())
+        record = _item_with_enum("record", "rec-1")
+        record.name = "Doc A"
+        app = _item_with_enum("app", "app-private")
+        app.name = "Dana private notes"
+        mock_service = AsyncMock()
+        mock_service.get_nodes = AsyncMock(return_value=_response(items=[record, app]))
+        state: dict[str, Any] = {
+            "graph_provider": AsyncMock(), "org_id": "org-1", "user_id": "u-1", "logger": MagicMock(),
+            NAMED_SOURCES_KEY: NamedSources(limited=True, unnamed=True),
+        }
+        with (
+            patch("app.agents.actions.knowledge_graph.ops.scope.resolve_scope", new_callable=AsyncMock, return_value=scope),
+            patch("app.agents.actions.knowledge_graph.ops.listing.KnowledgeHubService", return_value=mock_service),
+            patch("app.modules.agents.qna.chat_state.remember_record_ids"),
+            patch("app.utils.chat_helpers.get_record_id_shortener_if_enabled", return_value=None),
+        ):
+            ok, text = await execute_list_files(state)
+        assert ok is True
+        assert "Doc A" in text
+        assert "Dana private notes" not in text and "app-private" not in text
+        assert "1 other source not listed" in text
+
+    @pytest.mark.asyncio
     async def test_query_too_short_ignored(self) -> None:
 
         scope = KnowledgeScope(app_ids=("app-1",), kb_ids=())

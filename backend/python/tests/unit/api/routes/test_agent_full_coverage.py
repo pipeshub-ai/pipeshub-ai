@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.support.edition import (
+    org_wide_service_account_agents,  # noqa: F401 - fixture
+)
 from tests.support.bound_org import bind_test_org
 
 
@@ -807,6 +810,7 @@ class TestGetAssistantAgent:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("org_wide_service_account_agents")
 class TestUpdateAgentServiceAccountGuards:
     @pytest.mark.asyncio
     async def test_no_reasoning_model(self):

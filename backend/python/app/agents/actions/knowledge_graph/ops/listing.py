@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
 from app.agents.actions.knowledge_graph.navigator import cursor_keeps_to
-from app.agents.actions.knowledge_graph.views import CITE_NOTE, PREPARING
+from app.agents.actions.knowledge_graph.views import (
+    CITE_NOTE,
+    PREPARING,
+    unnamed_sources_note,
+)
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
@@ -553,13 +557,27 @@ async def execute_list_files(
                 # The cursor's own filters decide the page, so one issued for wider sources must not resume here.
                 return False, _NOT_THIS_LISTING_CURSOR
 
+        from app.modules.agents.context.named_sources import nameable_source_ids
+        from app.modules.agents.privacy.ledger import note_shown
         from app.modules.agents.qna.chat_state import remember_record_ids
+        nameable = nameable_source_ids(state)
+        unnamed_sources = 0
+        if nameable is not None and response.items:
+            # A source the run may not name is left out, and counted.
+            kept = [
+                item for item in response.items
+                if getattr(item.nodeType, "value", str(item.nodeType)) != NodeType.APP.value or item.id in nameable
+            ]
+            unnamed_sources = len(response.items) - len(kept)
+            response.items = kept
         fetchable = _record_ids_in_items(response.items)
         remember_record_ids(
             state,
             fetchable,
             names={item.id: item.name for item in response.items or []},
         )
+        # Containers are named too: folders' parents, record groups, collections, apps.
+        note_shown(nodes=[item.id for item in response.items or [] if item.id and item.id not in fetchable])
         # The listing states only names, so that is all a citation to one quotes.
         cite_refs = await cite_listed_records(state, graph_provider, org_id, dict.fromkeys(fetchable, ""))
 
@@ -567,6 +585,8 @@ async def execute_list_files(
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
         text = _render_flat_text(response, planned.query, record_id_shortener, cite_refs, page=page)
+        if unnamed_sources:
+            text = f"{text}\n{unnamed_sources_note(unnamed_sources)}"
         return True, "\n".join(part for part in (planned.note, text, hint) if part)
 
     except Exception as exc:

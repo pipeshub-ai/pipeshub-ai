@@ -8,15 +8,15 @@ from __future__ import annotations
 from app.modules.agents.qna.chat_state import ChatState
 
 
-def _format_user_context(state: ChatState) -> str:
-    """Format user information for planner"""
+def _format_user_context(state: ChatState, *, with_email: bool = True) -> str:
+    """Format user information for planner. `with_email=False` leaves the address out."""
     if state.get("send_user_info", True) is False:
         return ""
 
     user_info = state.get("user_info") or {}
     org_info = state.get("org_info") or {}
 
-    user_email = state.get("user_email") or user_info.get("userEmail") or user_info.get("email") or ""
+    user_email = (state.get("user_email") or user_info.get("userEmail") or user_info.get("email") or "") if with_email else ""
     user_name = (
         user_info.get("fullName") or
         user_info.get("name") or

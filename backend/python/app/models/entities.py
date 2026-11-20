@@ -2887,6 +2887,38 @@ def deserialize_artifact_versions(raw: Any) -> list[dict]:
     return parsed if isinstance(parsed, list) else []
 
 
+# Key of a `versions` entry naming the run that wrote that version. Present (even as None) means it was recorded.
+ARTIFACT_VERSION_RUN_KEY = "runId"
+
+
+class ArtifactVersionWriter(BaseModel):
+    """The run that wrote one version of an artifact; `run_id` is None for a version no run wrote."""
+
+    run_id: str | None = None
+
+
+def _run_id_value(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def artifact_version_writer(artifact_doc: dict | None, version: int) -> ArtifactVersionWriter | None:
+    """Who wrote `version` of the artifact whose `artifacts` document this is, or None when that is not known.
+
+    Version 1 is the creating run's (`runId`, set once at creation). A later version names its run in its
+    `versions` entry; an entry without the key (a file versioned before runs were kept per version, or
+    bookkeeping rebuilt after a lost write) and a version with no entry are not known.
+    """
+    doc = artifact_doc or {}
+    if version == 1:
+        return ArtifactVersionWriter(run_id=_run_id_value(doc.get("runId")))
+    if version < 1:
+        return None
+    for entry in deserialize_artifact_versions(doc.get("versions")):
+        if entry.get("registryVersion") == version and ARTIFACT_VERSION_RUN_KEY in entry:
+            return ArtifactVersionWriter(run_id=_run_id_value(entry.get(ARTIFACT_VERSION_RUN_KEY)))
+    return None
+
+
 class ArtifactRecord(Record):
     """Record class for Artifacts"""
     description: str = Field(description="Description of the artifact", default="")
@@ -2894,6 +2926,8 @@ class ArtifactRecord(Record):
     artifact_type: ArtifactType = Field(default=ArtifactType.OTHER, description="Type of artifact")
     source_tool: str | None = Field(default=None, description="Tool that generated this artifact (e.g. coding_sandbox.execute_python)")
     conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
+    run_id: str | None = Field(default=None, description="Node-minted runId of the agent run that created this artifact")
+    service_agent_run: bool = Field(default=False, description="Made by a service-account agent's run; such an artifact is never shared on")
     is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
     expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
     visibility: ArtifactVisibility = Field(
@@ -2935,6 +2969,7 @@ class ArtifactRecord(Record):
             "artifactType": self.artifact_type.value,
             "sourceTool": self.source_tool,
             "conversationId": self.conversation_id,
+            "runId": self.run_id,
             "isTemporary": self.is_temporary,
             "expiresAt": self.expires_at,
             "visibility": self.visibility.value,
@@ -2942,6 +2977,8 @@ class ArtifactRecord(Record):
             "contentHash": self.content_hash,
             "resultSchema": self.result_schema,
             "versions": serialize_artifact_versions(self.versions) if self.versions else None,
+            # Only when set: a collection whose schema predates the field still takes every other artifact.
+            **({"serviceAgentRun": True} if self.service_agent_run else {}),
         }
 
     @staticmethod
@@ -3001,6 +3038,8 @@ class ArtifactRecord(Record):
             artifact_type=artifact_type,
             source_tool=artifact_doc.get("sourceTool"),
             conversation_id=artifact_doc.get("conversationId"),
+            run_id=artifact_doc.get("runId"),
+            service_agent_run=artifact_doc.get("serviceAgentRun") is True,
             is_temporary=artifact_doc.get("isTemporary", False),
             expires_at=artifact_doc.get("expiresAt"),
             visibility=visibility,

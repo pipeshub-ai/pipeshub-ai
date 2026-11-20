@@ -64,6 +64,11 @@ UNSUPPORTED_PAGE_FIELDS = (
 # has to follow inheritance at least this far, or deeper records drop out unseen.
 ACCESS_WALK_MAX_DEPTH = 50
 
+# Seconds each statement of an access check behind a read may run (`check_access(timeout=)`):
+# someone is waiting for the page, and a check that runs out fails as unavailable, so the page
+# hides what it could not confirm. A check of 500 ids takes tens of milliseconds to a few hundred.
+ACCESS_CHECK_READ_TIMEOUT_SECONDS = 2.0
+
 FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
     "Records were moved into this folder while it was being deleted, so nothing was deleted. "
     "Try the delete again."
@@ -115,6 +120,8 @@ class AccessCheck:
     #: Asked nodes that are placeholder stubs. They are in ``node_ids`` so a
     #: browse can open them, and never in ``records_by_vrid``.
     placeholder_ids: frozenset[str] = frozenset()
+    #: Each accessible asked node's current name, read by the same query.
+    names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -7890,6 +7897,7 @@ class IGraphDBProvider(ABC):
         scopes: Iterable[RowScope] = (),
         access: dict[str, Any] | None = None,
         transaction: str | None = None,
+        timeout: float | None = None,
     ) -> AccessCheck:
         """The batch access check: which of these nodes and virtual record ids
         the user may access. Every permission decision goes through it.
@@ -7924,6 +7932,11 @@ class IGraphDBProvider(ABC):
             access: ``get_knowledge_hub_access_v3`` for this user, when the caller
                 already holds it; computed otherwise.
             transaction: Optional transaction ID.
+            timeout: Seconds each statement of the check (the user's grants
+                and the rows) may run, on the server and in the client's wait
+                for it; ``ACCESS_CHECK_READ_TIMEOUT_SECONDS`` behind a read.
+                None keeps the backend's own limits. Inside an explicit
+                transaction the transaction's own limit applies.
 
         Raises:
             PermissionVerificationUnavailableError: the graph could not answer.
@@ -7943,6 +7956,8 @@ class IGraphDBProvider(ABC):
             rows = await self._kh_v3_accessible_rows(
                 user_key, org_id, list(asked_nodes), list(asked_vrids),
                 access=access, transaction=transaction,
+                # Passed only when set, so a backend written before the limit still answers the rest.
+                **({"timeout": timeout} if timeout is not None else {}),
             )
         except NotImplementedError:
             raise
@@ -7979,6 +7994,7 @@ class IGraphDBProvider(ABC):
             placeholder_ids=frozenset(
                 row["id"] for row in accessible_nodes if row.get("isPlaceholder")
             ),
+            names={row["id"]: row.get("name") or "" for row in accessible_nodes},
         )
 
     async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
@@ -8079,12 +8095,15 @@ class IGraphDBProvider(ABC):
         *,
         access: dict[str, Any] | None,
         transaction: str | None,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         """The rows ``check_access`` decides from: one per accessible node among
         the asked ids and the records carrying the asked virtual record ids, as
-        ``{id, vrid, connectorId, indexingStatus, isInternal, isPlaceholder, groupIds}``
+        ``{id, name, vrid, connectorId, indexingStatus, isInternal, isPlaceholder, groupIds}``
         (``groupIds``: the record groups a record belongs to). ``isPlaceholder``
-        is true only for a stub the walk admitted because its id was asked."""
+        is true only for a stub the walk admitted because its id was asked.
+        ``timeout`` is ``check_access``'s limit per statement, the grants read
+        included when ``access`` is not given."""
         raise NotImplementedError
 
     async def get_selection_nodes(
@@ -8703,12 +8722,14 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         transaction: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Who the user is for the batch check and the v3 listing, resolved once per
         request: ``grantee_ids`` (the user, the groups, roles and teams it holds a
         USER permission on, its organization), ``gated_app_ids`` (the one connector
         gate) and ``by_connector`` (records and groups granted directly,
-        bucketed by connector)."""
+        bucketed by connector). ``timeout``: seconds each statement may run, as
+        ``check_access``'s; None keeps the backend's own limits."""
         raise NotImplementedError
 
     async def count_active_apps_by_type(self) -> dict[str, int]:

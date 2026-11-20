@@ -49,6 +49,13 @@ ON CONFLICT (key) DO UPDATE SET
   expires_at = CASE WHEN platform.kv_entries.expires_at <= now() THEN excluded.expires_at ELSE platform.kv_entries.expires_at END,
   updated_at = now()
 RETURNING convert_from(value, 'UTF8')::bigint AS n"""
+_INCR_FROM = """/* pipeshub:state.incrfrom */
+INSERT INTO platform.kv_entries (key, value, expires_at, updated_at)
+VALUES ($1, convert_to(($2::bigint + 1)::text, 'UTF8'), NULL, now())
+ON CONFLICT (key) DO UPDATE SET
+  value = convert_to((convert_from(platform.kv_entries.value, 'UTF8')::bigint + 1)::text, 'UTF8'),
+  expires_at = NULL, updated_at = now()
+RETURNING convert_from(value, 'UTF8')::bigint AS n"""
 _GET = """/* pipeshub:state.get */
 SELECT convert_from(value, 'UTF8') AS v FROM platform.kv_entries WHERE key = $1 AND (expires_at IS NULL OR expires_at > now())"""
 _SET = """/* pipeshub:state.set */
@@ -176,6 +183,12 @@ class PgState:
         """+1, creating the counter at 1. The expiry is fixed when the counter is created; ``None`` keeps it for ever."""
         async with await self._tx() as tx:
             return int(await tx.fetchval(_INCR, COUNTER_PREFIX + key, ttl_seconds))
+
+    async def incr_from(self, key: str, base: int) -> int:
+        """+1 on the counter stored under ``key`` (the whole key, no prefix added), creating it at ``base`` + 1. It never
+        expires. A counter lost and created again starts above ``base``, so it never returns to a value it had."""
+        async with await self._tx() as tx:
+            return int(await tx.fetchval(_INCR_FROM, key, base))
 
     async def get_int(self, key: str) -> int:
         async with await self._tx(write=False) as tx:

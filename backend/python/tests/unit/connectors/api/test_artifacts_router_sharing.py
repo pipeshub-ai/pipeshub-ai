@@ -17,7 +17,10 @@ from app.services.artifact_registry.access import (
     AccessDeniedError,
     ArtifactNotFoundError,
 )
-from app.services.artifact_registry.sharing import InvalidShareTargetError
+from app.services.artifact_registry.sharing import (
+    InvalidShareTargetError,
+    ShareNotAllowedError,
+)
 
 SHARE_URL = "/api/v1/artifacts/art-1/permissions"
 
@@ -106,6 +109,13 @@ def test_service_errors_map_to_status_codes(
     sharing.unshare.side_effect = error
     assert client.post(SHARE_URL, json={"userIds": ["u1"]}).status_code == status
     assert client.request("DELETE", SHARE_URL, json={"userIds": ["u1"]}).status_code == status
+
+
+def test_a_file_that_is_never_shared_on_is_refused_with_its_reason(client: TestClient, sharing: AsyncMock) -> None:
+    sharing.share.side_effect = ShareNotAllowedError("A file a service account agent made can't be shared.")
+    response = client.post(SHARE_URL, json={"userIds": ["u1"]})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "A file a service account agent made can't be shared."
 
 
 @pytest.mark.parametrize(("error", "status"), [(ArtifactNotFoundError("x"), 404), (AccessDeniedError("x"), 403)])

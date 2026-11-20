@@ -342,7 +342,7 @@ Each instance also has a connect timeout (15 s by default, at most 45 s) and a c
 ## Other behaviour worth knowing
 
 - **Tool approvals.** Each person decides which of their MCP tools run freely, which ask first and which never run (`/instances/{id}/my-tool-rules`). A tool's starting rule comes from `tool_kind.py`. A server's `readOnlyHint` makes a tool read-only, and `destructiveHint` marks it as deleting. A tool whose name says it deletes counts as deleting, whatever its hints say. A tool without hints counts as changing data, so it asks before it runs.
-- **Tool cache** (`tool_cache.py`). A server's tool list is cached per sign-in, so a chat turn doesn't connect to every attached server just to learn its tools.
+- **Tool cache** (`tool_cache.py`). A server's tool list is cached per sign-in, so a chat turn doesn't connect to every attached server just to learn its tools. A list an org server says is the same for everyone is shared between sign-ins, but only when its session sent no instructions: a server's instructions stay with the sign-in whose session got them.
 - **Errors.** `failure.py` gives each failure one code. The server listing, the model and the UI all use that code.
 - **Clean-up.** `lifecycle.py` removes the MCP data that belongs to an instance, a user, an agent or an org when it is deleted.
 

@@ -1,7 +1,8 @@
 """DELETE /api/v1/artifacts/{id} and DELETE /api/v1/artifacts/conversations/{id}:
 status codes, scopes, and that nothing is deleted on a refused request."""
 
-from unittest.mock import AsyncMock
+from collections.abc import Iterator
+from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
@@ -15,6 +16,7 @@ from app.connectors.api.artifacts_router import (
     get_graph_provider,
 )
 from app.models.entities import ArtifactType, ArtifactVisibility
+from app.modules.authz.chat_content_access import NoChatContentAccess
 from app.services.artifact_registry.models import Actor
 from app.services.artifact_registry.registry import ArtifactRegistryService
 from tests.unit.services.artifact_registry.fakes import FakeBlobStore, FakeGraphProvider
@@ -56,6 +58,13 @@ def blob() -> FakeBlobStore:
 @pytest.fixture
 def session() -> dict:
     return {"user": dict(OWNER_SESSION)}
+
+
+@pytest.fixture(autouse=True)
+def _graph_edges_grant() -> Iterator[None]:
+    # The gallery as the graph's own permissions grant it, whichever edition is installed.
+    with patch("app.services.artifact_registry.gallery.get_chat_content_access", return_value=NoChatContentAccess()):
+        yield
 
 
 @pytest.fixture

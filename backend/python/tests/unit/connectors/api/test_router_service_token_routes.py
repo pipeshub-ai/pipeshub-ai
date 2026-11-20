@@ -84,12 +84,12 @@ class TestGetRecordContentInternal:
         assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
         assert access.asked_about == []
 
-    async def test_acl_denied_raises_403(self):
+    async def test_acl_denied_raises_404(self) -> None:
         access = _access(readable=False)
         graph_provider = _graph_provider(_record(), access)
         with pytest.raises(HTTPException) as exc:
             await _get_content(_RECORD_CONTENT_CLAIMS, graph_provider)
-        assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
         assert access.asked_about == [("user-1", "org-1", "rec-1")]
 
     async def test_allowed_read_runs_as_the_requesting_user(self):

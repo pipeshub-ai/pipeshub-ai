@@ -322,6 +322,16 @@ class TestScheduleCSVExport:
         assert kwargs["source_tool"] == "database_sandbox.sqlite"
 
     @pytest.mark.asyncio
+    async def test_artifact_is_stamped_with_the_turn_run_id(self) -> None:
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        state = _make_state(blob_store=MagicMock(), user_id="user-1", run_id="run-9")
+        with patch.object(mod, "register_query_result_artifact", AsyncMock(return_value=None)) as reg:
+            await mod.DatabaseSandbox(state)._export_csv_artifact([{"id": "1"}], "sqlite_result")
+
+        assert reg.await_args.kwargs["run_id"] == "run-9"
+
+    @pytest.mark.asyncio
     async def test_csv_export_belongs_to_the_artifact_owner(self) -> None:
         """A service-account agent's run: the export is the chatting user's, not the creator's."""
         from app.agents.actions.database_sandbox import database_sandbox as mod

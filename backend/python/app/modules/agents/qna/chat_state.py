@@ -7,6 +7,9 @@ from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
+from app.modules.agents.chat_extension import get_chat_extension
+from app.modules.agents.context.named_sources import PICKED_SOURCES_KEY
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
@@ -94,6 +97,8 @@ class ChatState(TypedDict):
     user_email: str
     send_user_info: bool
     conversation_id: str | None
+    acl_version: int | None
+    run_id: str | None
 
     # Enhanced features
     system_prompt: str | None  # User-defined system prompt
@@ -107,6 +112,7 @@ class ChatState(TypedDict):
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
     kb: list[str] | None  # List of KB app IDs to search in (extracted from knowledge array)
     agent_knowledge: list[dict[str, Any]] | None
+    picked_source_ids: list[str] | None  # The sources the request picked (`named_sources.picked_source_ids`)
     agent_skills: list[str] | None  # Names of skills explicitly assigned to this agent (AGENT_HAS_SKILL edges) — see AgentContext.agent_skills
     connector_configs: dict[str, Any] | None  # Per-connector sync/indexing filter values from etcd (route pre-fetch)
     has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
@@ -137,6 +143,9 @@ class ChatState(TypedDict):
     api_toolset_tools: list[str] | None  # Attached API toolset operations, "<instanceId>:<toolName>"
     mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
     mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
+    # Attached toolsets/MCP servers the caller has not connected (`readiness.UnavailableTool` wire
+    # dicts, no credentials): left out of the run, named in the prompt and the completion.
+    unavailable_tools: list[dict[str, Any]] | None
 
     # Planner-based execution fields
     execution_plan: dict[str, Any] | None  # Planned execution from planner node
@@ -449,10 +458,10 @@ def remember_record_ids(
     Within one call the first id counts as the most recent: tools put what
     matters first, so a cap on the list must keep the top of a long listing.
     """
-    if state is None:
-        return
     ordered = list(dict.fromkeys(rid for rid in record_ids if rid))
-    if not ordered:
+    # Every record the model is shown is in the answer's label, whatever the state.
+    note_shown(records=ordered)
+    if state is None or not ordered:
         return
     existing = state.get("known_record_ids")
     if isinstance(existing, set):
@@ -480,13 +489,17 @@ def remember_shown_results(
     the results are trimmed, so it can hold records the model never saw.
     """
     names: dict[str, str] = {}
+    vrids: list[str] = []
     for entry in results:
-        record = virtual_record_id_to_result.get(entry.get("virtual_record_id") or "")
+        vrid = entry.get("virtual_record_id") or ""
+        record = virtual_record_id_to_result.get(vrid)
         if not isinstance(record, dict):
             continue
+        vrids.append(vrid)
         rid = record.get("id") or record.get("_key")
         if rid and rid not in names:
             names[rid] = record.get("record_name") or record.get("recordName") or ""
+    note_shown(vrids=vrids)
     remember_record_ids(state, names, names=names)
 
 
@@ -616,6 +629,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "limit": chat_query.get("limit", 50),
         "messages": [],  # Will be populated in prepare_prompt_node
         "previous_conversations": chat_query.get("previous_conversations") or chat_query.get("previousConversations") or [],
+        **get_chat_extension().chat_state_fields(chat_query),
         "quick_mode": chat_query.get("quickMode", False),
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
@@ -649,6 +663,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "harness_run_id": chat_query.get("harnessRunId"),
         "harness_checkpoint_store": chat_query.get("harnessCheckpointStore"),
         "virtual_filesystem": chat_query.get("harnessVirtualFileSystem"),
+        "acl_version": chat_query.get("aclVersion"),
+        "run_id": chat_query.get("runId"),
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,
@@ -671,6 +687,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
+        PICKED_SOURCES_KEY: chat_query.get("pickedSourceIds"),
         "agent_skills": chat_query.get("skills"),
         "connector_configs": chat_query.get("connector_configs") or {},
         "has_knowledge": has_knowledge,
@@ -722,6 +739,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "mcp_servers": chat_query.get("mcpServers", []),
         "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
         "api_toolset_tools": chat_query.get("apiToolsetTools", []),
+        "unavailable_tools": chat_query.get("unavailableTools") or [],
         # Deliberately NOT pre-seeded here (unlike most other fields above) — same reason
         # `toolset_load_failures` isn't: `AgentContext.model_post_init()`'s `setdefault()`
         # only makes this dict and `context.mcp_tool_load_failures` the SAME list object

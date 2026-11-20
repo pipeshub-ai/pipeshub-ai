@@ -78,6 +78,7 @@ async def create_artifact_record(
     org_id: str,
     user_id: str,
     conversation_id: str,
+    run_id: str | None = None,
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
     content_hash: str | None = None,
@@ -97,7 +98,7 @@ async def create_artifact_record(
     from app.services.artifact_registry import Actor, ArtifactRegistryService
 
     registry = ArtifactRegistryService(graph_provider, blob_store=None)
-    actor = Actor(org_id=org_id, user_id=user_id)
+    actor = Actor(org_id=org_id, user_id=user_id, run_id=run_id)
     metadata = await registry.register_existing(
         actor=actor,
         document_id=document_id,
@@ -129,6 +130,7 @@ async def save_query_result_csv(
     file_name: str,
     source_tool: str,
     provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
+    run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Store a SQL tool's full result as a CSV artifact record of the conversation.
 
@@ -140,10 +142,8 @@ async def save_query_result_csv(
     CSV is downloaded through the permission-checked record stream, follows the
     conversation when it is shared, and can take new versions like any other
     artifact. It skips the registry's size cap on purpose: a query export is
-    not a sandbox artifact. Without them it falls back to an unregistered
-    upload, which only cloud storage can link to (by signed URL).
-
-    An export left with neither a record nor a signed URL counts as failed.
+    not a sandbox artifact. Without a user and graph, or if the record cannot
+    be created, the export has no downloadable link and counts as failed.
 
     Returns a conversation-task result (``{"type": "artifacts", ...}``), or
     ``None`` on failure.
@@ -186,6 +186,7 @@ async def save_query_result_csv(
                     org_id=org_id,
                     user_id=user_id,
                     conversation_id=conversation_id,
+                    run_id=run_id,
                     connector_name=Connectors.DATABASE_SANDBOX,
                     source_tool=source_tool,
                     content_hash=compute_content_hash(csv_bytes),
@@ -225,6 +226,7 @@ async def upload_bytes_artifact(
     graph_provider: Any = None,
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Upload an in-memory artifact (already produced bytes) to blob storage.
 
@@ -255,7 +257,7 @@ async def upload_bytes_artifact(
         from app.services.artifact_registry import Actor, ArtifactRegistryService
 
         registry = ArtifactRegistryService(graph_provider, blob_store)
-        actor = Actor(org_id=org_id, user_id=user_id)
+        actor = Actor(org_id=org_id, user_id=user_id, run_id=run_id)
         try:
             metadata, version = await registry.register_output(
                 actor=actor,
@@ -319,6 +321,7 @@ async def upload_artifacts_to_blob(
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
     provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Upload a list of ArtifactOutput files to blob storage.
 
@@ -366,6 +369,7 @@ async def upload_artifacts_to_blob(
                             org_id=org_id,
                             user_id=user_id,
                             conversation_id=conversation_id,
+                            run_id=run_id,
                             connector_name=connector_name,
                             source_tool=source_tool,
                         )
@@ -396,6 +400,7 @@ def schedule_artifact_upload_task(
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
     provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
+    run_id: str | None = None,
 ) -> None:
     """Schedule artifact uploads as a background conversation task.
 
@@ -429,6 +434,7 @@ def schedule_artifact_upload_task(
                 connector_name=connector_name,
                 source_tool=source_tool,
                 provenance=provenance,
+                run_id=run_id,
             )
             if results:
                 return {"type": "artifacts", "artifacts": results}

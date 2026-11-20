@@ -44,6 +44,7 @@ from app.agent_loop_lib.tools.builtin.planning.critique_plan import CritiquePlan
 from app.agent_loop_lib.tools.builtin.planning.verify_result import VerifyResultTool
 from app.agent_loop_lib.tools.tags import TAG_SPAWN, TAG_UI_ONLY
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
+from app.modules.agents.privacy.ledger import note_tool_finished, note_tool_started
 from app.utils.error_class import log_failure
 from app.utils.logging_fields import log_event
 
@@ -396,6 +397,13 @@ def _step_goal_text(step: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _spawn_path(agent: "Agent") -> str:
+    """The path `spawn_agent` is registered at, which its label class is read from."""
+    registry = agent.runtime.tool_registry
+    path = registry.path_for_name("spawn_agent") if registry is not None else None
+    return path or DomainSpawnAgentTool().path
+
+
 async def _programmatic_dispatch(
     agent: "Agent",
     plan: "Plan",
@@ -433,6 +441,11 @@ async def _programmatic_dispatch(
 
     log_event(logger, "orchestrator.dispatch.start", level=logging.DEBUG, steps=len(synthetic_calls))
 
+    # No model asked for these calls and the executor never runs them, so they are tagged here, as
+    # the label hooks tag a model's own spawn_agent call: their results reach the next model call.
+    spawn_path = _spawn_path(agent)
+    for call in synthetic_calls:
+        note_tool_started(call.id, spawn_path, call.name)
     tasks = await schedule_spawn_batch(
         agent, agent.runtime, synthetic_calls, agent.scope,
         goal=goal, turn_index=turn_index, started_at=agent.started_at,
@@ -450,6 +463,8 @@ async def _programmatic_dispatch(
             results[call.id] = child_result_content(child_result)
         except Exception as e:
             results[call.id] = {"output": spawn_failure_text(e), "success": False}
+        else:
+            note_tool_finished(call.id)
 
     # Inject into the agent's conversation so Phase 3 (verify) sees the
     # spawn results in context — same shape as if the LLM had called

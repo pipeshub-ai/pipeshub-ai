@@ -1340,8 +1340,10 @@ class KnowledgeBaseService:
                     connector_id=kb_id, org_id=org_id
                 )
             finally:
-                # Whether or not it finished, the cascade may have removed the members' access.
+                # Whether or not it finished, the cascade may have removed the members' access: the collections'
+                # epoch moves too, so no reader check stored before it is used after it.
                 await notify_principals_changed(org_id)
+                await notify_kb_records_changed(kb_id, org_id)
 
             if result and result.get("success"):
                 # Vector cleanup for every record at once (one connector-scoped

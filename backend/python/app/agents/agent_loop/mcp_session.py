@@ -180,16 +180,15 @@ class MCPSessionManager:
         return await manager.fetch_tool_listing_in_session()
 
     async def _remember(self, server: "ResolvedMCPServer", listing: ToolListing, listed: list[MCPToolInfo]) -> None:
+        catalog = tool_cache.catalog_from_tools(listed, listing.instructions)
         pointer = await tool_cache.write(
             self._context.config_service, instance=server.instance, config=instance_config_from_dict(server.instance),
-            owner_id=server.owner_id, auth=server.auth,
-            catalog=tool_cache.catalog_from_tools(listed, listing.instructions),
+            owner_id=server.owner_id, auth=server.auth, catalog=catalog,
             server_ttl_seconds=listing.ttl_seconds, public=listing.public,
         )
         if pointer is not None:
-            public = listing.public and tool_cache.public_allowed(server.instance)
-            self._cache_keys[server.instance_id] = (
-                tool_cache.PUBLIC_OWNER if public else tool_cache.owner_key(server.instance, server.owner_id)
+            self._cache_keys[server.instance_id] = tool_cache.entry_owner(
+                server.instance, server.owner_id, catalog, public=listing.public,
             )
 
     @_asks_for_more_scopes

@@ -98,6 +98,7 @@ from app.modules.indexing.record_diagnostics import FIRST_QUEUED_AT, INDEXING_AT
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
+    notify_connector_slice_committed,
     notify_connector_sync_completed,
     notify_kb_records_changed,
     notify_principals_changed,
@@ -1736,6 +1737,49 @@ class DataSourceEntitiesProcessor:
             yield
         finally:
             await self._access_changed(connector_ids)
+
+    @contextlib.asynccontextmanager
+    async def _people_changed_after(self, people: list[str]) -> AsyncIterator[None]:
+        """Move the permission epoch of each person in ``people`` (their user ids, filled in inside this) once the
+        transaction inside this has ended, even when it raised: what they may open changed with a membership."""
+        try:
+            yield
+        finally:
+            if people:
+                await notify_principals_changed(self.org_id or None, user_ids=people)
+
+    @staticmethod
+    async def _member_user_ids(tx_store: TransactionStore, user_keys: Iterable[str]) -> list[str]:
+        """The user ids of these graph users: what a person's permission epoch is kept under.
+
+        Raising: people who could not be read are not nobody. Taken for nobody, their epochs would not move, and each
+        would go on reading what the change took away until the verdicts stored before it lapse."""
+        keys = sorted({k for k in user_keys if k})
+        if not keys:
+            return []
+        rows = await tx_store.get_nodes_by_field_in(
+            CollectionNames.USERS.value, "id", keys, return_fields=["id", "userId"], raise_on_error=True,
+        )
+        return sorted({str(r["userId"]) for r in rows or [] if isinstance(r, dict) and r.get("userId")})
+
+    @staticmethod
+    async def _group_member_keys(tx_store: TransactionStore, group_id: str) -> set[str]:
+        """The graph keys of a group's members: the users with an edge into it. Raising, as ``_member_user_ids``."""
+        users = CollectionNames.USERS.value
+        keys: set[str] = set()
+        edges = await tx_store.get_edges_to_node(
+            f"{CollectionNames.GROUPS.value}/{group_id}", CollectionNames.PERMISSION.value, raise_on_error=True,
+        ) or []
+        for edge in edges:
+            if not isinstance(edge, dict):
+                continue
+            if edge.get("_from"):
+                collection, _, key = edge["_from"].partition("/")
+            else:
+                collection, key = edge.get("from_collection", ""), edge.get("from_id", "")
+            if collection == users and key:
+                keys.add(key)
+        return keys
 
     async def _publish_membership_sync(
         self, membership_refreshes: Iterable[tuple[str, str | None]]
@@ -3673,6 +3717,9 @@ class DataSourceEntitiesProcessor:
             published = not pending_moves and await self._publish_with_commit(store, [
                 (r.id, self._record_event(r, "newRecord")) for r in records_to_publish if _requests_index_event(r)
             ])
+        # Committed: the slice may have rewritten its records' grants, and a saved verdict on them must not wait for
+        # the end of the sync to stop being used.
+        await notify_connector_slice_committed((record.connector_id for record, _ in batch_slice), self.org_id or None)
         return records_to_publish, pending_moves, moved_virtual_record_ids, title_changes, published
 
     def _quarantine_record(self, record: Record, error: SchemaValidationError) -> None:
@@ -6798,6 +6845,8 @@ class DataSourceEntitiesProcessor:
 
         if deleted:
             await self._access_changed([connector_id])
+            person = getattr(user, "user_id", None)
+            await notify_principals_changed(self.org_id or None, user_ids=[person] if person else [])
             self.logger.debug(
                 f"Successfully removed user {user_email} from group {user_group.name} "
                 f"(external_id: {external_group_id})"
@@ -6818,9 +6867,10 @@ class DataSourceEntitiesProcessor:
         permission_type: PermissionType,
         connector_id: str
     ) -> bool:
+        people: list[str] = []
         try:
             # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
-            async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after({connector_id}), self._people_changed_after(people), self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
                 user = await tx_store.get_user_by_email(user_email, org_id=self.org_id)
                 if not user:
@@ -6876,6 +6926,8 @@ class DataSourceEntitiesProcessor:
                     [permission_edge],
                     collection=CollectionNames.PERMISSION.value
                 )
+                if getattr(user, "user_id", None):
+                    people.append(user.user_id)
 
                 self.logger.debug(
                     f"Successfully added user {user_email} to group {user_group.name} "
@@ -6968,7 +7020,7 @@ class DataSourceEntitiesProcessor:
             members = run.group_memberships.get(external_id, {})
             async def give_members(
                 tx_store: TransactionStore, external_id: str, members: dict[str, tuple[str, str]]
-            ) -> list[str]:
+            ) -> tuple[list[str], list[str]]:
                 copies = await tx_store.get_nodes_by_filters(
                     groups,
                     {"connectorId": connector_id, "externalGroupId": external_id},
@@ -6979,7 +7031,10 @@ class DataSourceEntitiesProcessor:
                 if external_id in run.groups_members_unsure:
                     await self._give_every_copy_all_stored_members(tx_store, group_ids, pending)
                     pending = []
+                changed: set[str] = set()
                 for group_id in pending:
+                    # Whoever joins or leaves: what they may open changes with the group.
+                    changed |= await self._group_member_keys(tx_store, group_id) ^ set(members)
                     edges = [
                         Permission(
                             external_id=source_id,
@@ -6990,11 +7045,13 @@ class DataSourceEntitiesProcessor:
                         for user_id, (source_id, email) in members.items()
                     ]
                     await tx_store.replace_edges_to(group_id, groups, edges, CollectionNames.PERMISSION.value)
-                return group_ids
+                return group_ids, await self._member_user_ids(tx_store, changed)
 
-            group_ids = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
+            group_ids, people = await self.data_store_provider.execute_in_transaction(give_members, external_id, members)
             for group_id in group_ids:
                 run.add(groups, group_id)
+            if people:
+                await notify_principals_changed(self.org_id or None, user_ids=people)
         await self._access_changed([connector_id])
 
     @staticmethod
@@ -7110,12 +7167,17 @@ class DataSourceEntitiesProcessor:
 
             group_internal_id = user_group.id
             group_name = user_group.name
+            # Read before the edges go: each member loses what the group gave them.
+            members = await self._member_user_ids(
+                tx_store, await self._group_member_keys(tx_store, group_internal_id),
+            )
 
             self.logger.debug(f"Deleting user group: {group_name} (internal_id: {group_internal_id})")
 
             await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
 
         await self._access_changed([connector_id])
+        await notify_principals_changed(self.org_id or None, user_ids=members)
         self.logger.debug(
             f"Successfully deleted user group {group_name} "
             f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
@@ -7131,15 +7193,21 @@ class DataSourceEntitiesProcessor:
         Args:
             group_id: The internal ID of the user group to delete
         """
+        members: list[str] = []
         try:
             async with self.data_store_provider.transaction() as tx_store:
+                # Read before the edges go: each member loses what the group gave them.
+                members = await self._member_user_ids(
+                    tx_store, await self._group_member_keys(tx_store, group_id),
+                )
                 await tx_store.delete_user_group_by_id(group_id)
                 self.logger.debug(f"Successfully deleted user group with ID: {group_id}")
         except Exception as e:
             self._log_failure(f"Failed to delete user group {group_id}: {str(e)}", e,exc_info=True)
             raise
         finally:
-            await notify_principals_changed(self.org_id or None)      # a group that held access is gone (or may be)
+            # a group that held access is gone (or may be)
+            await notify_principals_changed(self.org_id or None, user_ids=members)
 
     @retry_on_deadlock()
     async def migrate_group_permissions_to_user(

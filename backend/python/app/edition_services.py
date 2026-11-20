@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 # administrator may move it, and which pool of lanes an org belongs in. An
 # edition can replace any of them: pin a connector to a lane of its own, weight
 # lanes, allow admin moves, or keep a group of orgs on lanes of their own.
+# Chat and agent-loop hooks (see app.modules.agents.chat_extension).
+from app.modules.agents.chat_extension import default_chat_extension
 from app.services.messaging.lanes.assignment_policy import (
     admin_lane_move_allowed as admin_lane_move_allowed,
 )
@@ -30,8 +32,6 @@ from app.services.messaging.lanes.assignment_policy import (
 from app.services.messaging.lanes.assignment_policy import (
     lane_pool_for_org as lane_pool_for_org,
 )
-# Chat and agent-loop hooks (see app.modules.agents.chat_extension).
-from app.modules.agents.chat_extension import default_chat_extension
 
 chat_extension = default_chat_extension
 

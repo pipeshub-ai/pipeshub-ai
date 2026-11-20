@@ -826,10 +826,12 @@ class ArangoHTTPClient:
         batch_size: int = 1000,
         options: dict | None = None,
         max_runtime: float | None = None,
+        client_timeout: float | None = None,
     ) -> list[Any]:
         """``_execute_aql``, bounded on a run's tool call by the call's remaining time (ERR-UX)."""
         return await bounded_read(
-            "graph", self._execute_aql(query, bind_vars, txn_id, batch_size, options, max_runtime)
+            "graph",
+            self._execute_aql(query, bind_vars, txn_id, batch_size, options, max_runtime, client_timeout),
         )
 
     async def _execute_aql(
@@ -840,6 +842,7 @@ class ArangoHTTPClient:
         batch_size: int = 1000,
         options: dict | None = None,
         max_runtime: float | None = None,
+        client_timeout: float | None = None,
     ) -> List[Any]:
         """
         Execute AQL query.
@@ -852,6 +855,9 @@ class ArangoHTTPClient:
             options: Cursor options, e.g. optimizer rules for one query
             max_runtime: Server-side limit in seconds; the server kills the
                 query past it
+            client_timeout: Seconds this client waits for the query and for
+                each further page of its cursor; a server that stops answering
+                cannot hold the caller, where ``max_runtime`` cannot fire.
 
         Returns:
             List[Dict]: Query results
@@ -876,9 +882,10 @@ class ArangoHTTPClient:
             }
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
+        limit = {"timeout": aiohttp.ClientTimeout(total=client_timeout)} if client_timeout is not None else {}
 
         session = await self._get_session()
-        async with session.post(url, json=payload, headers=headers) as resp:
+        async with session.post(url, json=payload, headers=headers, **limit) as resp:
             if resp.status not in [200, 201]:
                 error = await resp.text()
                 raise ArangoQueryError("Query failed", resp.status, error)
@@ -892,7 +899,7 @@ class ArangoHTTPClient:
                 cursor_id = result.get("id")
                 cursor_url = f"{self.base_url}/_db/{self.database}/_api/cursor/{cursor_id}"
 
-                async with session.put(cursor_url, headers=headers) as cursor_resp:
+                async with session.put(cursor_url, headers=headers, **limit) as cursor_resp:
                     if cursor_resp.status not in [200, 201]:
                         error = await cursor_resp.text()
                         raise ArangoQueryError("Cursor fetch failed", cursor_resp.status, error)

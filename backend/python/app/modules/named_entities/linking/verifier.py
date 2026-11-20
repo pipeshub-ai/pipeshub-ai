@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from app.modules.agents.privacy.ledger import CallKind, model_call_scope
 from app.modules.entity_resolution.gates import digit_guard
 from app.utils.aimodels import coerce_message_content_to_text
 
@@ -164,10 +165,13 @@ class LlmMentionVerifier:
         llm, model = await self._llm()
         if llm is None:
             return None, model
-        reply = await llm.ainvoke(
-            [SystemMessage(content=SYSTEM), HumanMessage(content=build_prompt(question, items))],
-            config={"callbacks": self._callbacks} if self._callbacks else None,
-        )
+        # Given candidate names spelled by readable records the linker has
+        # already put in the answer's label.
+        with model_call_scope("entity_verifier", CallKind.INSIDE_TOOL):
+            reply = await llm.ainvoke(
+                [SystemMessage(content=SYSTEM), HumanMessage(content=build_prompt(question, items))],
+                config={"callbacks": self._callbacks} if self._callbacks else None,
+            )
         return (reply if isinstance(reply, BaseMessage) else None), model
 
     def _note_usage(self, reply: BaseMessage) -> None:

@@ -563,6 +563,17 @@ class TestCreatorScoping:
         assert await someone_elses_view.get_skill("deploy-service") is not None
         assert {m.name for m in await someone_elses_view.list_skills()} == {"deploy-service"}
 
+    async def test_an_agents_assigned_skill_is_read_by_everyone_who_uses_the_agent(self) -> None:
+        graph = FakeGraphProvider()
+        creator_store = GraphSkillStore(graph, "org-1", "user-1")
+        await creator_store.create_skill("deploy-service", _SKILL_MD)
+        await creator_store.create_skill("release-notes", _SKILL_MD.replace("deploy-service", "release-notes"))
+
+        users_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2", also_visible={"deploy-service"})
+        assert await users_view.get_skill("deploy-service") is not None
+        assert await users_view.get_skill("release-notes") is None
+        assert {m.name for m in await users_view.list_skills()} == {"deploy-service"}
+
     async def test_scoped_history_reads_hidden_for_non_owner(self) -> None:
         graph = FakeGraphProvider()
         creator_store = GraphSkillStore(graph, "org-1", "user-1")

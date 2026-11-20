@@ -614,7 +614,14 @@ _OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
     ("app/api/routes/entity.py", "delete_nodes"): "a team node",
     # agent templates, tools, toolsets, knowledge links: the collection is a variable holding agent resources, never records or groups
     ("app/api/routes/agent.py", "delete_nodes"): "agent resources, not records or record groups (the collection is a variable)",
-    ("app/api/routes/agent.py", "delete_all_edges_for_node"): "edges of agent resources (servers, toolsets, templates, skills), never a record or group",
+    # the agent routes' bodies, moved into the agents service: the same agent resources
+    ("app/modules/agents/service/agent_service.py", "delete_nodes"): "agent resources, not records or record groups",
+    ("app/modules/agents/service/agent_service.py", "delete_all_edges_for_node"): "edges of agent resources (servers, toolsets, tools), never a record or group",
+    ("app/modules/agents/service/agent_service.py", "batch_create_edges"): "agent, toolset, tool and knowledge-link edges, and an agent's own permission edges",
+    ("app/modules/agents/service/agent_service.py", "batch_delete_edges"): "an agent's own org permission edge, not a record or group",
+    ("app/modules/agents/service/builders.py", "delete_nodes"): "agent resources, not records or record groups (the collection is a variable)",
+    ("app/modules/agents/service/builders.py", "delete_all_edges_for_node"): "edges of agent resources (servers, toolsets, knowledge, skills), never a record or group",
+    ("app/modules/agents/service/builders.py", "batch_create_edges"): "agent, toolset, tool, server, knowledge and skill links",
     ("app/modules/code_graph/block_projection.py", "delete_edges_touching_nodes"): "edges of code blocks, not records",
     ("app/modules/code_graph/edge_builder.py", "delete_edges_by_source_keys"): "code-block relations, not the hierarchy",
     ("app/api/routes/agent.py", "batch_create_edges"): "agent, toolset, tool and knowledge-link edges, and an agent's own permission edges",

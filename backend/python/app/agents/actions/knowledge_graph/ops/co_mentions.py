@@ -33,6 +33,7 @@ from app.agents.actions.knowledge_graph.ops.entity_search import (
 )
 from app.agents.actions.knowledge_graph.views import _short
 from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
@@ -229,6 +230,8 @@ async def _render(
     if entity_search_offered_in(state):
         hint += '; knowledgegraph__search_by_entities(mentions=[...], match="all") lists the records naming both'
     lines.append(hint + ".")
+    # The names and counts come from every readable record that mentions the entity.
+    note_shown(records=[str(r.get("_key") or r.get("id")) for r in readable.records if r.get("_key") or r.get("id")])
     # So a follow-up find_records_by_entity or search(entity_ids=...) knows these ids.
     remember_entities(state, [{"entityId": e, "entityType": NAMED_ENTITY_TYPE, "name": spelled[e]} for e in ranked])
     remember_record_ids(state, examples, names={r: by_key[r].get("recordName") or "" for r in examples})

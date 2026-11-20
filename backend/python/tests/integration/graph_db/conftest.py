@@ -3,11 +3,15 @@ collected on the ArangoDB leg.
 
 The backend-matrix job fails on any skip, because a skip is a test that did not run against the
 backend. A test that cannot apply to Neo4j is left out of its collection instead.
+
+``neo4j_env`` and ``arango_env`` read the backends' connection settings (``_backends.py``).
 """
 
 from __future__ import annotations
 
 import pytest
+
+from ._backends import ArangoEnv, Neo4jEnv, arango_env, neo4j_env
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -40,3 +44,13 @@ _SYNTHETIC_WORLD_MODULES = frozenset({
 def _synthetic_worlds_skip_schema_validation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     if request.module.__name__.rsplit(".", 1)[-1] in _SYNTHETIC_WORLD_MODULES:
         monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")
+
+
+@pytest.fixture(scope="session", name="neo4j_env")
+def _neo4j_env_fixture() -> Neo4jEnv:
+    return neo4j_env()
+
+
+@pytest.fixture(scope="session", name="arango_env")
+def _arango_env_fixture() -> ArangoEnv:
+    return arango_env()

@@ -135,9 +135,6 @@ SCOPED_SITES: Final[dict[str, ScopedSite]] = {
     "app/agents/actions/image_generator/image_generator.py": ScopedSite(
         "image_generation", CallKind.INSIDE_TOOL, "a model-written prompt; an edit's source image is read through the registry",
     ),
-    "app/agents/chat_modes/bridge.py": ScopedSite(
-        "no_tools_answer", CallKind.OBSERVED, "its prompt is the prefetch, the question and fixed text",
-    ),
 }
 
 

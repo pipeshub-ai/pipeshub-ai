@@ -217,6 +217,35 @@ class TestNavigateRoot:
         assert "app1" in text or "Jira" in text
 
 
+class TestTheRootInATurnOthersRead:
+    """Listing the root names only the sources the run's prompts name; the rest are counted."""
+
+    @pytest.mark.asyncio
+    async def test_a_source_it_may_not_name_is_left_out_and_counted(self):
+        from app.modules.agents.context.named_sources import NAMED_SOURCES_KEY, NamedSources
+
+        state = _make_state(**{NAMED_SOURCES_KEY: NamedSources(knowledge=({"connectorId": "app-board"},), limited=True)})
+        graph_provider = state["graph_provider"]
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        graph_provider.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        graph_provider.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        items = [
+            _make_node_item("app-board", "Bluebird board", node_type="app"),
+            _make_node_item("app-private", "Dana private notes", node_type="app"),
+        ]
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=items, total=2)),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate()
+
+        assert success
+        assert "Bluebird board" in text
+        assert "Dana private notes" not in text and "app-private" not in text
+        assert "1 other source not listed" in text
+
+
 class TestNavigateIssueKeyUnderASelection:
     """The same key can exist on more than one connector. The copy inside the
     conversation is the one navigate opens."""

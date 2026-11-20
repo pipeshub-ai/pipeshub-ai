@@ -49,6 +49,11 @@ from app.agents.chat_modes.prefetch import (
 )
 from app.core.org_context import current_org_id, spawn_in_request
 from app.harness.knowledge.caller import caller_user_id_of
+from app.modules.agents.context.named_sources import (
+    nameable_source_ids,
+    picked_source_ids,
+    without_unnamed_sources,
+)
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -385,6 +390,8 @@ async def prepare_chat_state(
                 user_id=user_info.get("userId") or "",
                 graph_provider=graph_provider,
                 is_service_account=bool(user_info.get("isServiceAccount")),
+                conversation_id=query_info.get("conversationId"),
+                acl_version=query_info.get("aclVersion"),
             ),
             # Pre-fetch user-visible connectors so the catalog
             # (ConnectorCatalog.build) and capability_summary can use them
@@ -409,7 +416,11 @@ async def prepare_chat_state(
         # didn't explicitly filter to.
         existing_kb = list(filters.get("kb") or [])
         filters["kb"] = list({*existing_kb, *resolved_attachments.virtual_record_ids})
-    query_info = {**query_info, "filters": filters, "chatMode": policy.loop_chat_mode}
+    query_info = {
+        **query_info, "filters": filters, "chatMode": policy.loop_chat_mode,
+        # From the request's own filters: the attachments added to `kb` above are part of the question, not a pick.
+        "pickedSourceIds": picked_source_ids(query_info.get("filters"), filters),
+    }
     query_info = exclude_from_query(query_info, demo_excluded)
 
     chat_state = build_initial_state(
@@ -606,6 +617,10 @@ def apply_prefetch(
     context_with_candidates = (
         incomplete_note + coverage_note + prefetch_result.formatted_context + candidate_suffix
     )
+    # The records' headers name their sources, as a search tool's results do.
+    nameable = nameable_source_ids(context.tool_state)
+    if nameable is not None:
+        context_with_candidates = without_unnamed_sources(context_with_candidates, nameable)
     goal.constraints.append(
         "Relevant internal knowledge base context retrieved for this query "
         f"(cite using the Citation IDs shown, e.g. [source](ref1)):\n{context_with_candidates}"

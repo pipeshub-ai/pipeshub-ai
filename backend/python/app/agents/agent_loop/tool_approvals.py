@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -40,7 +41,7 @@ from pydantic import Field, ValidationError
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
 from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
-from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
+from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval, PreDecision
 from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
 from app.agents.actions.util.read_only_sql import read_only_statement
 from app.agents.agent_loop import parked_turn
@@ -96,8 +97,13 @@ WAITING_PREFIX = "Waiting for your approval to run"
 
 Rule = Literal["allow", "ask", "block"]
 Decision = Literal["allow", "deny"]
-# Whose tool: an MCP server's, or a toolset's.
-Source = Literal["mcp", "toolset"]
+# Whose tool: an MCP server's, a toolset's, or (for a restricted card) any other registered tool.
+Source = Literal["mcp", "toolset", "tool"]
+# Set on a call's `ToolCallContext.metadata` by a check that will ask about it on a restricted
+# card: the gate then asks no card of its own for it.
+RESTRICTED_CALL = "_tool_approval_restricted"
+# A restricted card shows the whole call; a larger one isn't asked about.
+MAX_RESTRICTED_CARD_BYTES = 64 * 1024
 
 # `context.tool_state` keys.
 TOOLS_BY_PATH = "_mcp_tools_by_path"
@@ -139,6 +145,8 @@ class PendingCall(MCPCamelModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     # The model's id for the call: the answer becomes that call's result, on that call's row.
     tool_call_id: str = ""
+    # Asked on a restricted card: its answer never becomes a rule.
+    restricted: bool = False
     created_at: float
     expires_at: float
 
@@ -174,6 +182,14 @@ def organization_toolset_tool_rules() -> bool:
     from app import edition_config
 
     return bool(getattr(edition_config, "organization_toolset_tool_rules", False))
+
+
+def agent_credentials_admin_only() -> bool:
+    """Whether only an org admin sets a service account agent's own credentials and changes its
+    tools (an edition extension point): everyone who uses the agent acts with them."""
+    from app import edition_config
+
+    return bool(getattr(edition_config, "agent_credentials_admin_only", False))
 
 
 @dataclass(frozen=True)
@@ -461,6 +477,27 @@ def _identity(target: ApprovalTarget) -> tuple[str, str, str]:
     return target.source, target.instance_id, target.tool_name
 
 
+def call_target(context: "AgentContext", tool_path: str, tool: "Tool | None", name: str) -> ApprovalTarget:
+    """What a restricted card is asked about: the call's MCP server or toolset when it has one
+    (whatever its own approvals setting), else the registered tool `name` itself."""
+    adapter: Optional[MCPToolAdapter] = context.tool_state.get(TOOLS_BY_PATH, {}).get(tool_path)
+    if adapter is not None:
+        return _mcp_target(adapter)
+    target: Optional[ApprovalTarget] = context.tool_state.get(TOOLSET_TOOLS_BY_PATH, {}).get(tool_path)
+    if target is not None:
+        return target
+    display = getattr(tool, "display_name", None) if tool is not None else None
+    return ApprovalTarget(
+        source="tool", instance_id="", tool_name=name, owner=display if isinstance(display, str) and display else name,
+        kind="write", tool=tool,  # type: ignore[arg-type]
+    )
+
+
+def is_approved_call(context: "AgentContext", target: ApprovalTarget) -> bool:
+    """The call a person just approved on its card, run as they saw it."""
+    return context.tool_state.get(_APPROVED_CALL) == _identity(target)
+
+
 @dataclass
 class _InstanceRules:
     rules: ToolRules
@@ -522,13 +559,43 @@ def _card_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"arguments": None, "argumentsPreview": text[:_MAX_CARD_ARGUMENT_CHARS] + "…"}
 
 
+# Kept as they are on the card: line breaks and tabs.
+_SHOWN_CONTROLS = frozenset("\n\r\t")
+
+
+def _shown_text(text: str) -> str:
+    """`text` with every character a person can't see written out as `\\u{XXXX}`: format and control
+    characters (zero-width, bidirectional overrides, tags) and private-use ones."""
+    return "".join(
+        f"\\u{{{ord(ch):04X}}}"
+        if ch not in _SHOWN_CONTROLS and unicodedata.category(ch) in ("Cf", "Cc", "Co", "Cs")
+        else ch
+        for ch in text
+    )
+
+
+def shown_value(value: Any) -> Any:  # noqa: ANN401
+    """A JSON-like value as a restricted card shows it: every string through `_shown_text`."""
+    if isinstance(value, str):
+        return _shown_text(value)
+    if isinstance(value, dict):
+        return {_shown_text(str(k)): shown_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [shown_value(v) for v in value]
+    return value
+
+
+def restricted_card_too_large(arguments: dict[str, Any]) -> bool:
+    return len(json.dumps(arguments, default=str, ensure_ascii=False).encode()) > MAX_RESTRICTED_CARD_BYTES
+
+
 # `Verdict.reason` -> the `deny_reason` on the call's tool_call.end.
 _DENY_CODE = {"own": "rule", "default": "default_rule", "unattended": "unattended"}
 
 
 def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
-    """PreToolUse middleware; registered last, so nothing after it can still deny a call it
-    leaves pending."""
+    """PreToolUse middleware. It asks only once the middleware after it have passed the call, so
+    a call one of them denies never leaves a card waiting, whatever order they were added in."""
 
     async def _gate(ctx: "ToolCallContext", next_fn: Any) -> None:  # noqa: ANN401
         target = _target(context, ctx.tool_path)
@@ -558,14 +625,33 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         )
         if verdict.rule == "block":
             ctx.deny(_blocked_message(verdict.reason, target), code=_DENY_CODE.get(verdict.reason, verdict.reason))
-        elif verdict.rule == "ask":
-            await _ask(context, ctx, target)
         await next_fn()
+        # A restricted card asks about this call instead, and stands over any Allow.
+        if verdict.rule == "ask" and ctx.decision != PreDecision.DENY and not ctx.metadata.get(RESTRICTED_CALL):
+            await _ask(context, ctx, target)
 
     return _gate
 
 
-async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: ApprovalTarget) -> None:
+async def ask_restricted(
+    context: "AgentContext", ctx: "ToolCallContext", target: ApprovalTarget, *, card: dict[str, Any],
+) -> None:
+    """Holds the call on a restricted card: the whole payload, characters nobody can see written out,
+    `card`'s fields, and no "Don't ask again". A payload too large to show is refused instead."""
+    if restricted_card_too_large(ctx.tool_input):
+        ctx.deny(
+            f"{target.tool_name} on {target.owner} wasn't run: what it would send is too large to show the user "
+            "in full for approval. Tell the user what you wanted to send.",
+            code="restricted_card_too_large",
+        )
+        return
+    await _ask(context, ctx, target, restricted=card)
+
+
+async def _ask(
+    context: "AgentContext", ctx: "ToolCallContext", target: ApprovalTarget, *,
+    restricted: Optional[dict[str, Any]] = None,
+) -> None:
     tool_name, server = target.tool_name, target.owner
     if context.tool_state.get(_PENDING_IN_RUN):
         # The model reads this when the answer to the other card resumes the turn: it must ask again
@@ -583,7 +669,7 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         conversation_id=context.conversation_id or "", source=target.source, personal=target.personal,
         instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
-        created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
+        restricted=restricted is not None, created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
     # Taken before the write is awaited: calls in one wave run concurrently.
     context.tool_state[_PENDING_IN_RUN] = pending.approval_id
@@ -613,20 +699,25 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         return
     message = f"{WAITING_PREFIX} {tool_name} on {server}."
     context.tool_state[PENDING_MESSAGE] = message
+    shown = (
+        {"arguments": shown_value(pending.arguments), "restricted": True, **restricted}
+        if restricted is not None else _card_arguments(pending.arguments)
+    )
     ctx.ask_later(PendingApproval(
         message=message,
         details={
             "approvalId": pending.approval_id, "instanceId": target.instance_id, "serverName": server,
             "toolName": tool_name, "toolTitle": target.title, "readOnly": target.kind == "read", "kind": target.kind,
-            # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's.
-            "canRemember": target.own_rules,
-            "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
+            # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's. A
+            # restricted card is about this call's content, which no rule can approve ahead of time.
+            "canRemember": target.own_rules and restricted is None,
+            "expiresAt": int(pending.expires_at * 1000), **shown,
         },
     ))
     # The executor binds the call's tool, tool_call_id and server/toolset id; the arguments are never logged.
     log_event(
         logger, "tool_approval.requested", outcome="success", approval_id=pending.approval_id,
-        source=target.source, kind=target.kind, personal=target.personal,
+        source=target.source, kind=target.kind, personal=target.personal, restricted=restricted is not None,
     )
 
 
@@ -757,7 +848,9 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             level=logging.WARNING if other_user else logging.INFO, error_class="forbidden" if other_user else None,
         )
         return _Settled("", "", {}, "The approval request the user answered wasn't found, so nothing ran.", True)
-    target = _target_for(context, pending)
+    target = _target_for(context, pending, run)
+    # "Don't ask again" is never offered on a restricted card; an answer that asks for it anyway changes no rule.
+    remember = answer.remember and not pending.restricted
     call_id = pending.tool_call_id or f"approval_{pending.approval_id[:16]}"
     tool_name = target.tool.name if target is not None else pending.tool_name
     if claim.status == "used":
@@ -796,7 +889,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 # "That call", not the tool: another call of it may still be waiting to be asked for.
                 "Tell them you didn't do it because they declined, and don't make that call again unless they ask for it.",
             )
-            if answer.remember:
+            if remember:
                 remembered = await _remember(context, pending, "block")
         elif target is None:
             outcome = Outcome(
@@ -805,7 +898,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             )
         else:
             outcome = await _run(context, run, target, pending, call_id)
-            if answer.remember and outcome.status != "blocked":
+            if remember and outcome.status != "blocked":
                 remembered = await _remember(context, pending, "allow")
     finally:
         # Kept even when the run is stopped mid-call, so a later answer says what may have happened.
@@ -885,8 +978,14 @@ async def _remember_for_personal_toolset(context: "AgentContext", pending: Pendi
     return await _saved(save_instance_rules(context.config_service, rules.rules, instance_id=pending.instance_id), rule)
 
 
-def _target_for(context: "AgentContext", pending: PendingCall) -> Optional[ApprovalTarget]:
+def _target_for(context: "AgentContext", pending: PendingCall, run: Any = None) -> Optional[ApprovalTarget]:  # noqa: ANN401
     """The tool a saved call was for, as this request loaded it."""
+    if pending.source == "tool":
+        registry = getattr(getattr(run, "runtime", None), "tool_registry", None)
+        if registry is None or not registry.has(pending.tool_name):
+            return None
+        tool = registry.resolve_by_name(pending.tool_name)
+        return call_target(context, tool.path, tool, pending.tool_name)
     if pending.source == "mcp":
         targets = [_mcp_target(adapter) for adapter in context.tool_state.get(TOOLS_BY_PATH, {}).values()]
     else:

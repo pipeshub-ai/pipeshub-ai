@@ -99,6 +99,10 @@ async def cite_listed_records(
     listed = {rid: doc for rid, doc in listed.items() if urls[rid]}
     if not listed:
         return {}
+    from app.modules.agents.privacy.ledger import note_shown
+
+    # A citation quotes the listing's facts about each of these records.
+    note_shown(records=list(listed))
     await attach_connector_instance_names(graph_provider, listed.values(), connection_sources_of(state.get("filters")))
 
     ref_mapper = state.get("citation_ref_mapper")

@@ -55,6 +55,11 @@ SELECT n.cid, h.to_id AS id FROM hit h CROSS JOIN LATERAL (SELECT n.doc->>'conne
 WHERE n.cid IS NOT NULL AND (h.only_cid IS NULL OR n.cid = h.only_cid)"""
 
 
+def _timeout_ms(timeout: float | None) -> int | None:
+    """``check_access``'s per-statement limit, in the milliseconds a unit of work takes."""
+    return max(1, int(timeout * 1000)) if timeout is not None else None
+
+
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
 _KB_TYPE = Connectors.KNOWLEDGE_BASE.value
 _CTX_RANK = {"OWNER": 6, "ADMIN": 5, "EDITOR": 4, "WRITER": 3, "READER": 1}
@@ -174,7 +179,8 @@ class PermissionsMixin(PgBase):
             AND a.doc->>'orgId' = $1 AND a.id = ANY($2::text[])""", org, sorted(app_ids))]
         return grantees, gated, links
 
-    async def get_knowledge_hub_access_v3(self, user_key: str, org_id: str, *, transaction: str | None = None) -> dict[str, Any]:
+    async def get_knowledge_hub_access_v3(self, user_key: str, org_id: str, *, transaction: str | None = None,
+                                          timeout: float | None = None) -> dict[str, Any]:
         """Who this user is (the user, the groups, roles and teams they hold a USER permission on, their organization), the apps they pass the
         connector gate for, and the records and groups granted to them, per connector. An org other than the ambient one is nobody's."""
         org = current_org_id()
@@ -194,7 +200,7 @@ class PermissionsMixin(PgBase):
                     by_conn[r["cid"]].append(r["id"])
             return {"grantee_ids": grantees, "gated_app_ids": gated, "by_connector": {k: list(dict.fromkeys(v)) for k, v in by_conn.items()}}
         # one snapshot outside a transaction: the gate and the grants are one state of the graph
-        return await self._q(go, transaction, isolation="repeatable_read")
+        return await self._q(go, transaction, isolation="repeatable_read", timeout_ms=_timeout_ms(timeout))
 
     async def _linked_holders(self, tx: Tx, org: str, links: list[Any], gated: list[str]) -> dict[str, list[str]]:
         """Per gated connector, the source accounts the user authenticated it as and their groups, roles and teams: their grants count inside that connector only."""
@@ -217,7 +223,8 @@ class PermissionsMixin(PgBase):
         return {"grantee_ids": grantees, "gated_app_ids": gated, "linked": await self._linked_holders(tx, org, links, gated)}
 
     async def _kh_v3_accessible_rows(self, user_key: str, org_id: str, node_ids: list[str], virtual_record_ids: list[str], *,
-                                     access: dict[str, Any] | None, transaction: str | None) -> list[dict[str, Any]]:
+                                     access: dict[str, Any] | None, transaction: str | None,
+                                     timeout: float | None = None) -> list[dict[str, Any]]:
         """The asked nodes and virtual record ids the user may access, as the rows ``check_access`` reads. An org other than the ambient one admits nothing.
 
         One check reads one state of the graph: outside a transaction (and in a read-only snapshot) the gate, kg's classes, the walk and every grant it reads per node
@@ -228,10 +235,11 @@ class PermissionsMixin(PgBase):
         vrids = list(dict.fromkeys(v for v in virtual_record_ids if v))
         if (not ids and not vrids) or org_id != org:
             return []
+        timeout_ms = _timeout_ms(timeout)
         # an explicit transaction sees its own writes before kg has been given them (a read-only snapshot has none: kg answers in it); the system role has no read on kg
         snapshot = getattr(self._txns.get(transaction), "snapshot", False) if transaction else False
         if access is None and transaction and not snapshot:
-            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction, timeout=timeout)
         use_kg = (transaction is None or snapshot) and kg_read.enabled() and current_or_system().kind != "system"
 
         def unit(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
@@ -244,10 +252,12 @@ class PermissionsMixin(PgBase):
                 return await access_sql.accessible_rows(tx, org, i, v, a)
             if not use_kg:
                 return await walk(ids, vrids, acc)
-            # on the check's connection, in a savepoint: kg's settings end with its read. The samples run after the call, in units of their own.
+            # on the check's connection, in a savepoint: kg's settings end with its read. The samples run after the call, in units of their own,
+            # off the caller's wait, so they keep the class limits.
             return await kg_read.accessible_rows(lambda fn: kg_read.in_savepoint(tx, fn), org, ids, vrids, acc, walk, self._db, sample_run=unit)
-        # through _q, the provider's one way to the database, as every other read: a store that cannot answer fails the check (check_access raises)
-        return await self._q(check, transaction, isolation="repeatable_read")
+        # through _q, the provider's one way to the database, as every other read: a store that cannot answer fails the check (check_access raises).
+        # The check's deadline (``timeout``) bounds that unit; a caller's transaction keeps its own limit.
+        return await self._q(check, transaction, isolation="repeatable_read", timeout_ms=timeout_ms)
 
     async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],
                                   exact_record_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:

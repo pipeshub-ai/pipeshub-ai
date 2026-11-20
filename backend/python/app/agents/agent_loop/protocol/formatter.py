@@ -31,6 +31,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RETRIEVAL_CONTEXT_EVENT_NAME,
 )
 from app.agents.agent_loop.protocol.run_usage import RUN_USAGE_EVENT_NAME
+from app.modules.agents.privacy.ledger import with_provenance
 from app.modules.retrieval import degraded_notice
 
 if TYPE_CHECKING:
@@ -94,6 +95,10 @@ class ProtocolFormatter(ABC):
 
     @abstractmethod
     def artifact(self, context: "AgentContext", *, artifact_data: ArtifactSSEPayload) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    def custom_event(self, context: "AgentContext", *, name: str, value: dict[str, Any]) -> list[dict[str, Any]]:
+        """A named event the client renders on its own (no built-in frame)."""
 
     @abstractmethod
     def tool_unavailable(
@@ -170,13 +175,16 @@ class LegacyFormatter(ProtocolFormatter):
         return [{"event": "answer_chunk", "data": data}]
 
     def answer_final(self, context, *, completion_data):
-        return [{"event": "complete", "data": degraded_notice.flag(completion_data)}]
+        return [{"event": "complete", "data": with_provenance(degraded_notice.flag(completion_data))}]
 
     def ask_user_question(self, context, *, status, tool_data):
         return [{"event": "ask_user_question", "data": {"status": status, "toolData": tool_data}}]
 
     def artifact(self, context, *, artifact_data):
         return [{"event": "artifact", "data": artifact_data.to_wire_dict()}]
+
+    def custom_event(self, context: "AgentContext", *, name: str, value: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{"event": name, "data": value}]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [{
@@ -195,7 +203,7 @@ class LegacyFormatter(ProtocolFormatter):
         return [{"event": RUN_USAGE_EVENT_NAME, "data": payload.to_wire_dict()}]
 
     def error(self, context, *, message, code):
-        return [{"event": "error", "data": {"message": message, "type": code}}]
+        return [{"event": "error", "data": with_provenance({"message": message, "type": code})}]
 
     def provider_wait(self, context: "AgentContext", *, retry_at: str, message: str) -> list[dict[str, Any]]:
         return [{"event": "status", "data": {"status": "retrying", "message": message}}]
@@ -238,6 +246,8 @@ class AGUIFormatter(ProtocolFormatter):
 
     def answer_final(self, context, *, completion_data):
         degraded_notice.flag(completion_data)
+        # The label rides only the frame Node saves and never forwards; the
+        # snapshot goes on to the browser.
         return [
             # The browser swaps the snapshot in; the answer's label is Node's to record, never shown (FG2).
             frame(
@@ -247,7 +257,7 @@ class AGUIFormatter(ProtocolFormatter):
             ),
             frame(
                 AGUIEventType.RUN_FINISHED, runId=context.run_id, threadId=context.conversation_id,
-                result=completion_data,
+                result=with_provenance(completion_data),
             ),
         ]
 
@@ -269,6 +279,9 @@ class AGUIFormatter(ProtocolFormatter):
             runId=context.run_id,
             delta=[{"op": "add", "path": "/artifacts/-", "value": artifact_data.to_wire_dict()}],
         )]
+
+    def custom_event(self, context: "AgentContext", *, name: str, value: dict[str, Any]) -> list[dict[str, Any]]:
+        return [frame(AGUIEventType.CUSTOM, name=name, value=value, runId=context.run_id)]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [frame(
@@ -294,7 +307,7 @@ class AGUIFormatter(ProtocolFormatter):
         )]
 
     def error(self, context, *, message, code):
-        return [frame(AGUIEventType.RUN_ERROR, runId=context.run_id, message=message, code=code)]
+        return [frame(AGUIEventType.RUN_ERROR, **with_provenance({"runId": context.run_id, "message": message, "code": code}))]
 
     def context_compacted(
         self, context: "AgentContext", *, before_tokens: int, after_tokens: int, message: str,

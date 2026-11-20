@@ -39,6 +39,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.api import router as connector_router
 from app.models.entities import PullRequestRecord, RecordType
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.fetch_full_record import (
     NOT_INDEXED_YET,
     UNAVAILABLE,
@@ -245,7 +246,7 @@ class TestHttpRecordContent:
         with pytest.raises(HTTPException) as err:
             await self._content(graph)
 
-        assert err.value.status_code == 403
+        assert err.value.status_code == 404
         graph.get_record_by_id.assert_not_awaited()
 
     async def test_a_record_that_does_not_exist_is_still_refused(self) -> None:
@@ -257,7 +258,7 @@ class TestHttpRecordContent:
         with pytest.raises(HTTPException) as err:
             await self._content(graph)
 
-        assert err.value.status_code == 403
+        assert err.value.status_code == 404
         graph.get_record_by_id.assert_not_awaited()
 
     async def test_an_indexed_record_whose_content_will_not_load_is_not_found(self) -> None:

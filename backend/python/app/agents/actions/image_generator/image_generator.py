@@ -40,6 +40,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.modules.agents.privacy.ledger import CallKind, model_call_scope
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import upload_bytes_artifact
 from app.services.artifact_registry.models import artifact_owner_id
@@ -322,12 +323,15 @@ class ImageGenerator:
         )
 
         try:
-            if is_edit:
-                images = await adapter.edit(
-                    prompt, input_image=source_image, size=size, n=n,
-                )
-            else:
-                images = await adapter.generate(prompt, size=size, n=n)
+            # A model-written prompt; an edit's source image was read through the
+            # artifact registry, which names it for the answer's label.
+            with model_call_scope("image_generation", CallKind.INSIDE_TOOL):
+                if is_edit:
+                    images = await adapter.edit(
+                        prompt, input_image=source_image, size=size, n=n,
+                    )
+                else:
+                    images = await adapter.generate(prompt, size=size, n=n)
         except NotImplementedError as e:
             logger.warning(
                 "[generate_image] provider=%s does not support image editing: %s",
@@ -524,7 +528,8 @@ class ImageGenerator:
         from app.services.artifact_registry import Actor, ArtifactRegistryService
 
         registry = ArtifactRegistryService(graph_provider, blob_store)
-        actor = Actor(org_id=org_id, user_id=user_id)
+        # The new version is this run's: who may open it is judged by the answer it writes.
+        actor = Actor(org_id=org_id, user_id=user_id, run_id=(self.chat_state or {}).get("run_id"))
         try:
             version, metadata = await registry.add_version(
                 actor=actor,
@@ -671,6 +676,7 @@ class ImageGenerator:
                             graph_provider=graph_provider,
                             connector_name=Connectors.IMAGE_GENERATION,
                             source_tool="image_generator.generate_image",
+                            run_id=(self.chat_state or {}).get("run_id"),
                         )
                 except Exception:
                     logger.exception(

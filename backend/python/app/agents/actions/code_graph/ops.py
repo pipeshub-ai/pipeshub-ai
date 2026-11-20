@@ -17,6 +17,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.code_graph.synced_commit import LAST_SYNCED_COMMIT
 from app.modules.parsers.code_parser.lang_config import LANGUAGES
 from app.utils.error_class import log_failure
@@ -537,6 +538,9 @@ async def _user_can_read(
     except Exception as exc:
         log_failure(logger, "code_graph.access_check.failed", exc, record_id=record_id, include_error_text=False)
         return False
+    if access:
+        # A result row is shown only after this check admits its record.
+        note_shown(records=[record_id])
     return bool(access)
 
 
@@ -857,7 +861,10 @@ class RecordAccess:
             )
             for rid in unknown:
                 self._verdicts[rid] = rid in (allowed or ())
-        return {rid for rid in wanted if self._verdicts.get(rid)}
+        admitted = {rid for rid in wanted if self._verdicts.get(rid)}
+        # Rows are shown only for records this admits.
+        note_shown(records=admitted)
+        return admitted
 
 
 async def _record_in_connector(

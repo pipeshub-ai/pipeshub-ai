@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.finish_moves import TASK_COMPLETE
+from app.modules.agents.chat_extension import get_chat_extension
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
@@ -125,7 +126,10 @@ def build_user_context_block(context: "AgentContext") -> str:
     if not context.send_user_info:
         return ""
     user_info = context.user_info or {}
-    email = context.user_email or user_info.get("userEmail") or user_info.get("email") or ""
+    email = (
+        context.user_email or user_info.get("userEmail") or user_info.get("email") or ""
+        if get_chat_extension().shows_sender_email(context) else ""
+    )
     name = (
         user_info.get("fullName")
         or user_info.get("name")

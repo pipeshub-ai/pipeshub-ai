@@ -98,6 +98,14 @@ def _head_outside_url(text: str, size: int) -> str:
     return head
 
 
+def _is_hidden_tool(name: object) -> bool:
+    """Tools whose arguments and results are kept elsewhere, not in the transcript."""
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    suffixes = get_chat_extension().transcript_hidden_tool_suffixes()
+    return bool(suffixes) and isinstance(name, str) and name.endswith(suffixes)
+
+
 def serialize_tool_args(args: object) -> str:
     """Serialize tool arguments to JSON that always parses, however large the
     inputs were.
@@ -257,8 +265,9 @@ class TranscriptCollector(EventEmitter):
         # `_prenormalize_source_citations`, so a reply continued after the
         # output-token limit is rejoined from the model's own text.
         self._last_text: dict[str, tuple[MessagePart, str]] = {}
-        # run_id -> where the current model call's parts start in its container.
-        self._model_call_start: dict[str, int] = {}
+        # run_id -> the text part the run's latest model call starts at, kept after its message
+        # ends so a reply a hook overrules can still be dropped.
+        self._model_call_start: dict[str, MessagePart] = {}
         # The root run's id, so a final text part written after a retracted call names it as a streamed one does.
         self._root_run_id: str | None = None
         self._view_budget = ResultViewBudget()
@@ -407,11 +416,12 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TOOL_CALL_START:
             tool_call_id = payload.get("tool_call_id") or f"call_{event.event_id[:12]}"
+            tool_name = payload.get("tool", "tool")
             part: MessagePart = {
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
-                "toolName": payload.get("tool", "tool"),
-                "args": self._durable_args(payload.get("args", {}), tool_call_id),
+                "toolName": tool_name,
+                "args": "{}" if _is_hidden_tool(tool_name) else self._durable_args(payload.get("args", {}), tool_call_id),
                 "status": "running",
                 "runId": run_id,
             }
@@ -444,6 +454,9 @@ class TranscriptCollector(EventEmitter):
                 if part["status"] == "awaiting_approval" and isinstance(payload.get("approval"), dict):
                     # Kept with the conversation, so the card is there after a reload too.
                     part["approval"] = payload["approval"]
+            elif _is_hidden_tool(part.get("toolName")):
+                part["status"] = "failed" if payload.get("is_error") else "completed"
+                part["resultPreview"] = ""
             else:
                 part["status"] = "failed" if payload.get("is_error") else "completed"
                 part["resultPreview"] = self._durable(
@@ -466,9 +479,8 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TEXT_MESSAGE_START:
             text_part: MessagePart = {"type": "text", "content": "", "runId": run_id}
-            container = self._container_for(run_id)
-            self._model_call_start[run_id] = len(container)
-            container.append(text_part)
+            self._container_for(run_id).append(text_part)
+            self._model_call_start[run_id] = text_part
             self._open_turn_parts[(run_id, "text")] = text_part
             return
 
@@ -480,12 +492,15 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TEXT_MESSAGE_END:
             part = self._open_turn_parts.pop((run_id, "text"), None)
-            start = self._model_call_start.pop(run_id, None)
             if payload.get("discarded"):
-                # The model call failed mid-stream; none of it is in the history.
+                # The model call failed mid-stream, or a hook overruled the reply it ended with:
+                # the user sees none of it. Its parts start at its text part, open or ended.
                 self._open_turn_parts.pop((run_id, "reasoning"), None)
-                if part is not None and start is not None:
-                    del self._container_for(run_id)[start:]
+                start = self._model_call_start.pop(run_id, None)
+                container = self._container_for(run_id)
+                index = next((i for i, existing in enumerate(container) if existing is start), None)
+                if index is not None:
+                    del container[index:]
                 return
             if part is not None:
                 raw = part.get("content", "")

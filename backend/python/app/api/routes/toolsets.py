@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from app.agents import toolset_store
 from app.agents.agent_loop import tool_approvals
 from app.agents.actions.github import repository_picker
+from app.agents.agent_loop.tool_approvals import agent_credentials_admin_only
 from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.agents.capability_sync import sync_capabilities
@@ -2857,6 +2858,8 @@ async def handle_toolset_oauth_callback(
         updated_auth["updatedAt"] = get_epoch_timestamp_in_ms()
         if is_agent_flow:
             updated_auth["agentKey"] = agent_key_from_state
+            # Saved through the agent guard above, admin-only where agent credentials are.
+            updated_auth["setByAdmin"] = agent_credentials_admin_only()
         else:
             updated_auth["updatedBy"] = user_id
         await _save_auth_record(
@@ -3554,6 +3557,15 @@ async def _require_agent_edit_access(
             detail=f"Per-agent {feature_name} credentials only apply to service account agents. "
                    f"For regular agents, configure credentials in {settings_path}.",
         )
+    if agent_credentials_admin_only():
+        # Everyone who uses the agent acts with these credentials, so no single editor may choose them.
+        config_service = getattr(request.app.state, "config_service", None)
+        user_id = _get_user_context(request)["user_id"]
+        if config_service is None or not await _check_user_is_admin(user_id, request, config_service):
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail=f"Only an organization admin can manage {feature_name} credentials for a service account agent.",
+            )
     return agent
 
 
@@ -3669,6 +3681,8 @@ async def authenticate_agent_toolset(
         "credentials": {},
         "updatedAt": now,
         "agentKey": agent_key,
+        # Set through the admin-only guard: an agent's users act with credentials an admin chose.
+        "setByAdmin": agent_credentials_admin_only(),
     }
 
     try:
@@ -3711,6 +3725,7 @@ async def update_agent_toolset_credentials(
         existing_auth["auth"] = auth
         existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
         existing_auth["agentKey"] = agent_key  # track which agent these creds belong to
+        existing_auth["setByAdmin"] = agent_credentials_admin_only()
         await _save_auth_record(
             config_service, org_id, instance_id, agent_key, existing_auth, user_id=_get_user_context(request)["user_id"]
         )

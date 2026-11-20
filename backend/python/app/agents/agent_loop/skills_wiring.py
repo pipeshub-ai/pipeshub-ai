@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
@@ -91,6 +91,7 @@ if TYPE_CHECKING:
 __all__ = [
     "skills_enabled",
     "build_skill_manager",
+    "catalog_size",
     "register_skill_tools",
     "register_skill_preloading",
     "register_skill_learning",
@@ -100,6 +101,8 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+# The default assistant's agent key: not a saved agent, so it has no configuration to name.
+_ASSISTANT_PLACEHOLDER = "agentIdPlaceholder"
 _SKILL_READ_TOOL_NAMES = ("skills_list", "load_skill", "load_skill_resource", "skill_search")
 # Its own toolset, deliberately NOT in the essential/pinned set `factory.py`
 # builds: `skill_manage` is the write surface and its schema is the single
@@ -185,16 +188,48 @@ async def build_skill_manager(
     `ScopedSkillManager` (Phase 4 of the plan) so the prompt overview and
     all 5 skill tools only ever see/load that allowlist. An agent with NO
     explicit assignment (empty/None) sees the running user's own skills and
-    the builtins (`manager_factory.runtime_visibility`), never a co-worker's."""
-    manager = await build_runtime_skill_manager(context, transport_registry, provenance=provenance)
+    the builtins (`manager_factory.runtime_visibility`), never a co-worker's.
+
+    The outermost layer is `LedgerSkillManager`: every skill the run is
+    shown through it reaches the request's label with where it came from.
+    A run whose answer others read (the edition's `reads_own_skills`)
+    leaves out the person's own skills, which would make the answer theirs
+    alone."""
+    from app.agents.agent_loop.skills.ledger_manager import (
+        LedgerSkillManager,
+        SkillOrigins,
+    )
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    origins = SkillOrigins()
+    manager = await build_runtime_skill_manager(
+        context, transport_registry, provenance=provenance, origins=origins,
+        own_skills=get_chat_extension().reads_own_skills(context),
+    )
     if manager is None:
         return None
     agent_skill_names = getattr(context, "agent_skills", None)
     if agent_skill_names:
         from app.agents.agent_loop.skills.scoped_manager import ScopedSkillManager
 
-        return ScopedSkillManager(manager, set(agent_skill_names))
-    return manager
+        manager = ScopedSkillManager(manager, set(agent_skill_names))
+    return LedgerSkillManager(manager, origins, agent_key=_saved_agent_key(context))
+
+
+def _saved_agent_key(context: "AgentContext") -> str | None:
+    """The run's saved agent, which the skills assigned to it belong to; None for the assistant."""
+    key = getattr(context, "agent_key", None)
+    tool_state = getattr(context, "tool_state", None) or {}
+    if not key or key == _ASSISTANT_PLACEHOLDER or tool_state.get("is_placeholder_agent"):
+        return None
+    return key
+
+
+def catalog_size(manager: Any) -> int:  # noqa: ANN401
+    """How many skills the run's catalog advertises, for a log line: counted without telling the
+    label ledger, since no model is given the count."""
+    size = getattr(manager, "catalog_size", None)
+    return size() if callable(size) else len(manager.catalog_snapshot())
 
 
 def register_skill_tools(tool_registry: "ToolRegistry", manager: SkillManager) -> None:
@@ -232,10 +267,22 @@ def register_skill_preloading(hooks: "HookRegistry", manager: SkillManager) -> N
     ))
 
 
+class _GatedSkillLearning(SkillLearning):
+    """Records outcomes always; learns only from a run `may_learn` allows."""
+
+    def __init__(self, *args: Any, may_learn: "Callable[[], bool]", **kwargs: Any) -> None:  # noqa: ANN401
+        super().__init__(*args, **kwargs)
+        self._may_learn = may_learn
+
+    async def _learn(self, ctx: Any, result: Any) -> None:  # noqa: ANN401
+        if self._may_learn():
+            await super()._learn(ctx, result)
+
+
 def register_skill_learning(
     hooks: "HookRegistry", manager: SkillManager, runtime: "AgentRuntime",
     *, provider: str, model_name: str, context_window: int | None = None, conversation_id: str | None = None,
-    agent_key: str | None = None,
+    agent_key: str | None = None, context: "AgentContext | None" = None,
 ) -> None:
     """POST_AGENT — outcome tracking always runs; candidate extraction
     only actually does anything when `SkillManagerConfig.learning_enabled`
@@ -247,11 +294,21 @@ def register_skill_learning(
     already holds, so appending here is equivalent to having registered
     it earlier."""
 
-    hooks.on(HookEvent.POST_AGENT).use(SkillLearning(
-        manager=manager,
-        spawn_skill_writer=skill_writer(runtime, provider=provider, model_name=model_name, context_window=context_window),
-        source_session_id=conversation_id,
-        source_agent_key=agent_key,
+    learning: dict[str, Any] = {
+        "manager": manager,
+        "spawn_skill_writer": skill_writer(
+            runtime, provider=provider, model_name=model_name, context_window=context_window,
+        ),
+        "source_session_id": conversation_id,
+        "source_agent_key": agent_key,
+    }
+    if context is None:
+        hooks.on(HookEvent.POST_AGENT).use(SkillLearning(**learning))
+        return
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    hooks.on(HookEvent.POST_AGENT).use(_GatedSkillLearning(
+        **learning, may_learn=lambda: get_chat_extension().may_learn_skills(context),
     ))
 
 

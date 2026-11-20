@@ -7,9 +7,12 @@ Two kinds of key (`mcp_server_constants`):
   discovery produced, against which server target and which credential record;
 - a **blob** per catalog, keyed by its content hash, so identical catalogs are stored once.
 
-A reader only follows its own pointer, or the instance's `_public` one when the server declared its
-list the same for everyone (and an admin set the instance up). A blob is reached only through a
+A reader follows its own pointer first, then the instance's `_public` one when the server declared
+its list the same for everyone (and an admin set the instance up). A blob is reached only through a
 pointer whose discovery produced exactly those bytes, so nothing crosses between sign-ins.
+
+The `_public` entry never holds a server's instructions: they come from each sign-in's own session
+and can be written for that user, so a list that carries them stays with its sign-in.
 
 Nothing here raises: a store that doesn't answer is a miss, and a write that fails is logged.
 """
@@ -108,6 +111,15 @@ def public_allowed(instance: dict[str, Any]) -> bool:
     return not is_personal(instance)
 
 
+def entry_owner(instance: dict[str, Any], owner_id: str, catalog: "CachedCatalog", *, public: bool) -> str:
+    """The pointer a listing is kept under: `PUBLIC_OWNER` when the server said its list is the
+    same for everyone, it may (`public_allowed`) and its session sent no instructions; the
+    sign-in's own otherwise."""
+    if public and public_allowed(instance) and not catalog.instructions:
+        return PUBLIC_OWNER
+    return owner_key(instance, owner_id)
+
+
 def target_fingerprint(config: "MCPServerConfig") -> str:
     """What the server is and how it's reached: a template release or an edit that changes it
     makes every pointer to the old target a miss."""
@@ -160,12 +172,13 @@ async def read(
     owner_id: str,
     auth: Optional[dict[str, Any]],
 ) -> Optional[CacheHit]:
-    """The cached catalog this sign-in may use for the instance, or None."""
+    """The cached catalog this sign-in may use for the instance, or None. Its own entry comes
+    first: it carries the instructions its own session was sent."""
     if not enabled():
         return None
     keys = [owner_key(instance, owner_id)]
     if public_allowed(instance):
-        keys.insert(0, PUBLIC_OWNER)
+        keys.append(PUBLIC_OWNER)
     try:
         pointers = await asyncio.gather(*(
             config_service.get_config(
@@ -182,6 +195,9 @@ async def read(
             if key != PUBLIC_OWNER and pointer.credential_stamp != stamp:
                 continue
             catalog = await _read_blob(config_service, pointer.digest)
+            # A public entry written before instructions stayed with their sign-in can hold another user's.
+            if catalog is not None and key == PUBLIC_OWNER and catalog.instructions:
+                continue
             if catalog is not None:
                 return CacheHit(catalog=catalog, pointer=pointer, owner_key=key)
     except Exception as e:
@@ -267,13 +283,16 @@ async def write(
             digest=catalog_digest, target=target_fingerprint(config), credential_stamp=credential_stamp(auth),
             discovered_at=now, expires_at=now + ttl, tool_count=len(catalog.tools),
         )
-        written_for = PUBLIC_OWNER if public and public_allowed(instance) else sign_in
+        written_for = entry_owner(instance, owner_id, catalog, public=public)
         if not await config_service.set_config(
             get_mcp_tool_catalog_pointer_path(config.id, written_for), pointer.model_dump(by_alias=True),
             ttl_seconds=ttl, keep_in_cache=False,
         ):
             return None
-        if written_for != PUBLIC_OWNER and public_allowed(instance):
+        if written_for == PUBLIC_OWNER:
+            # This sign-in's own entry is read first: one left from when the list was private would hide this one.
+            await forget(config_service, instance_id=config.id, owner_key=sign_in)
+        elif not public and public_allowed(instance):
             # A server that went from public to private must not keep being served the public list.
             await forget(config_service, instance_id=config.id, owner_key=PUBLIC_OWNER)
         return pointer

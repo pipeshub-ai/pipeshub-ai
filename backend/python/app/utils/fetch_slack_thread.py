@@ -194,6 +194,16 @@ def _record_key(record: object) -> str | None:
     return meta.get("id") or meta.get("_key")
 
 
+def _note_shown_records(records: list[dict[str, Any]]) -> None:
+    """Every thread record returned is in the answer's label."""
+    from app.modules.agents.privacy.ledger import note_shown
+
+    note_shown(
+        records=[rid for r in records if (rid := _record_key(r))],
+        vrids=[str(r["virtual_record_id"]) for r in records if isinstance(r, dict) and r.get("virtual_record_id")],
+    )
+
+
 async def _fetch_record_by_id(
     record_id: str,
     graph_provider: Optional["IGraphDBProvider"],
@@ -700,6 +710,7 @@ async def _read_channel_record(
         record_id, len(threads), len(found_records), len(skipped),
     )
 
+    _note_shown_records(found_records)
     return {
         "ok": True,
         "records": found_records,
@@ -878,6 +889,7 @@ async def _fetch_thread_records_impl(
         thread_rg_id, len(found_records), len(skipped), record_id,
     )
 
+    _note_shown_records(found_records)
     return {
         "ok": True,
         "records": found_records,

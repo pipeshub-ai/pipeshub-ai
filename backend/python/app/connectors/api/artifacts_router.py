@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.services.artifact_registry.gallery import ArtifactGalleryService, ArtifactListQuery
@@ -19,6 +20,8 @@ from app.services.artifact_registry.sharing import (
     MAX_SHARE_TARGETS,
     ArtifactSharingService,
     InvalidShareTargetError,
+    ShareNotAllowedError,
+    ShareNotWidenableError,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -37,7 +40,23 @@ async def get_sharing_service(
 ) -> ArtifactSharingService:
     container = getattr(request.app, "container", None)
     notifications = container.connector_notification_service() if container else None
-    return ArtifactSharingService(graph_provider, notifications)
+
+    # What the credential says of itself: a grant is consent, which an edition may keep to the app's own sign-in.
+    user = getattr(request.state, "user", None) or {}
+    caller = {
+        "tokenClass": user.get("tokenClass"),
+        "isOAuth": user.get("isOAuth") is True,
+        "mcpRelay": bool(request.headers.get("x-pipeshub-mcp-relay")),
+    }
+
+    async def share_gate(actor: Actor, artifact_id: str, artifact: dict) -> str | None:
+        if container is None:
+            return "SHARE_NOT_WIDENABLE"
+        return await get_chat_extension().artifact_share_refusal(
+            actor, artifact_id, artifact, container.config_service(), caller
+        )
+
+    return ArtifactSharingService(graph_provider, notifications, share_gate=share_gate)
 
 
 class ArtifactShareRequest(BaseModel):
@@ -167,6 +186,12 @@ def _sharing_error(error: Exception) -> HTTPException:
             status_code=HttpStatusCode.FORBIDDEN.value,
             detail="Only the artifact's owner can manage its sharing",
         )
+    if isinstance(error, ShareNotAllowedError):
+        return HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail=str(error))
+    if isinstance(error, ShareNotWidenableError):
+        return HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value, detail={"code": error.code, "message": str(error)}
+        )
     return HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(error))
 
 
@@ -200,7 +225,13 @@ async def share_artifact(
     actor = _actor_from_request(request)
     try:
         shared = await sharing.share(actor, artifact_id, body.userIds)
-    except (ArtifactNotFoundError, AccessDeniedError, InvalidShareTargetError) as e:
+    except (
+        ArtifactNotFoundError,
+        AccessDeniedError,
+        InvalidShareTargetError,
+        ShareNotAllowedError,
+        ShareNotWidenableError,
+    ) as e:
         raise _sharing_error(e) from None
     return {"shared": shared}
 

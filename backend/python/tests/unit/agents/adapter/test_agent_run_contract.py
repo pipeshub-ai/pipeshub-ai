@@ -73,7 +73,8 @@ class TestScriptedToolCallLifecycle:
     async def test_successful_tool_call_then_final_text(self) -> None:
         from app.agent_loop_lib.core.types import Goal
 
-        context = make_context()
+        # The question the run answers, as a chat request carries it.
+        context = make_context(query="What is 3 + 4?")
         transport = ScriptedTransport()
         transport.add_tool_call(ToolCall(id="call-1", name=_CALC_TOOL_NAME, arguments={"a": 3, "b": 4}))
         transport.add_text("The sum is 7.")
@@ -92,7 +93,7 @@ class TestScriptedToolCallLifecycle:
     async def test_tool_error_does_not_crash_the_run(self) -> None:
         from app.agent_loop_lib.core.types import Goal
 
-        context = make_context()
+        context = make_context(query="What is 3 + ?")
         transport = ScriptedTransport()
         # Missing required "b" argument -> the underlying function raises.
         transport.add_tool_call(ToolCall(id="call-1", name=_CALC_TOOL_NAME, arguments={"a": 3}))

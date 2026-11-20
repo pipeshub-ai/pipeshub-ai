@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.chat_helpers import accessible_node_ids
 
 
@@ -13,7 +14,7 @@ def _provider() -> SimpleNamespace:
     return SimpleNamespace(
         get_user_by_user_id=AsyncMock(return_value={"id": "u-key"}),
         check_access=AsyncMock(
-            return_value=SimpleNamespace(node_ids=frozenset({"real", "stub"}), placeholder_ids=frozenset({"stub"}))
+            return_value=AccessCheck(node_ids=frozenset({"real", "stub"}), placeholder_ids=frozenset({"stub"}))
         ),
     )
 

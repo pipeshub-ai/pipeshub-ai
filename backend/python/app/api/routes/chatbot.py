@@ -22,9 +22,9 @@ from pydantic import (
     model_validator,
 )
 
+from app.agents.agent_loop.cancellation.policy import CancelRequester
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
-    RunOwner,
 )
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
@@ -62,6 +62,8 @@ from app.models.blocks import (
     DataFormat,
 )
 from app.models.record_convert import convert_record_dict_to_record
+from app.modules.agents.chat_extension import get_chat_extension
+from app.modules.agents.privacy.ledger import with_unopened_provenance
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseWorkerError
 from app.modules.parsers.parse_pool_lanes import interactive_parsing
@@ -74,6 +76,10 @@ from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
 )
 from app.modules.retrieval.filter_schema import validate_request_filters
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.modules.retrieval.selection_scope import (
+    SelectionTooLargeError,
+    outside_connection,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
@@ -81,7 +87,11 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
 )
-from app.services.artifact_registry.access import is_direct_share, reader_edge
+from app.services.artifact_registry.access import (
+    SHARED_VERSION,
+    is_direct_share,
+    reader_edge,
+)
 from app.services.artifact_registry.copies import (
     COPY_LIMIT,
     ArtifactCopier,
@@ -109,7 +119,10 @@ from app.services.chat_attachments.uploads import (
     write_attachment_graph,
 )
 from app.services.featureflag.platform_settings import is_user_context_enabled
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    ACCESS_CHECK_READ_TIMEOUT_SECONDS,
+    IGraphDBProvider,
+)
 from app.services.model_identity.boundary import (
     UNATTRIBUTED_SERVICE,
     principal_from_request_user,
@@ -132,7 +145,6 @@ from app.utils.attachment_mime_types import (
     TEXT_ATTACHMENT_MIME_TYPES,
 )
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
-from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.entity_vector_store import (  # noqa: F401 - warm_up is imported from here by query_main
     load_entity_vector_store,
@@ -220,6 +232,9 @@ class ChatQuery(BaseModel):
     # that predate this field or don't need cancellation (the agent loop
     # generates one itself — see `stream_bridge.py`).
     runId: str | None = None
+    # The chat's ACL version from Node (always present on Node requests).
+    # Keys the chat-content access cache; absent means "do not cache".
+    aclVersion: int | None = None
     # Set by Node for a project-scoped chat (see `applyProjectScope`,
     # project-context.ts). When true and the effective `filters` carry no
     # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
@@ -1162,13 +1177,16 @@ async def _grant_reader_permissions(
         if record_id in owned
     ]
     edges += [
-        reader_edge(user_key, record_id, direct=True, chat=True, now=ts, created_at=edge.get("createdAtTimestamp"))
+        reader_edge(
+            user_key, record_id, direct=True, chat=True, now=ts, created_at=edge.get("createdAtTimestamp"),
+            shared_version=edge.get(SHARED_VERSION),
+        )
         for (user_key, record_id), edge in direct_only
         if record_id in owned
     ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
-        await notify_principals_changed(org_id)  # a new READER grant
+        await notify_principals_changed(org_id, user_ids=user_ids)  # a new READER grant
     return len(edges)
 
 
@@ -1207,7 +1225,10 @@ async def _revoke_reader_permissions(
     )
     ts = get_epoch_timestamp_in_ms()
     direct_kept = [
-        reader_edge(user_key, record_id, direct=True, chat=False, now=ts, created_at=edge.get("createdAtTimestamp"))
+        reader_edge(
+            user_key, record_id, direct=True, chat=False, now=ts, created_at=edge.get("createdAtTimestamp"),
+            shared_version=edge.get(SHARED_VERSION),
+        )
         for (user_key, record_id), edge in also_direct
         if record_id in owned
     ]
@@ -1226,7 +1247,7 @@ async def _revoke_reader_permissions(
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
     if edges or direct_kept:
-        await notify_principals_changed(org_id)  # a narrowing PERMISSION write
+        await notify_principals_changed(org_id, user_ids=user_ids)  # a narrowing PERMISSION write
     return len(edges) + len(direct_kept)
 
 
@@ -1333,12 +1354,124 @@ async def _org_user_keys(
 # Records read per address; an address that fills it is treated as unreadable.
 _RECORDS_PER_URL_LIMIT = 50
 
+# The access route answers within this, or says the check is unavailable. A statement limit stops
+# work a slow graph is still doing; this also ends the wait on one that stopped answering at all
+# (a paused server, a dead connection), so abandoned checks don't pile up behind the readers.
+RECORD_ACCESS_BUDGET_SECONDS = 5.0
+
+# One request carries every record id one read of a reader needs, up to this many: the reader and their grants are
+# resolved once, and the ids are checked a chunk at a time, a few chunks at once.
+RECORD_ACCESS_MAX_IDS = 10_000
+_RECORD_ACCESS_CHUNK = 500
+_RECORD_ACCESS_PARALLEL = 4
+
+# How long a reader may rely on an answer of this route. A permission change that goes through the graph moves its
+# epochs sooner; this bounds the rest (a change made where no epoch moves).
+RECORD_ACCESS_VALID_MS = 30_000
+
+
+class KnowledgeLimitBody(BaseModel):
+    """What the token the reader's own request came with may reach (``KnowledgeLimit`` in the API): ids of whole apps
+    and collections, record groups, and records."""
+
+    apps: list[str] = Field(default_factory=list, max_length=50)
+    recordGroups: list[str] = Field(default_factory=list, max_length=50)
+    records: list[str] = Field(default_factory=list, max_length=50)
+
 
 class RecordAccessRequest(BaseModel):
-    recordIds: list[str] = Field(default_factory=list, max_length=500)
+    recordIds: list[str] = Field(default_factory=list, max_length=RECORD_ACCESS_MAX_IDS)
     # Addresses of records known only by link (a tool's reference data): readable
     # when every live record stored at the address is readable.
     webUrls: list[str] = Field(default_factory=list, max_length=500)
+    # The reader's own request came with a token limited to these sources (a connected app or a personal access
+    # token): what lies outside them is unreadable for this read, as for every other read by that token.
+    knowledgeLimit: KnowledgeLimitBody | None = None
+
+
+class InactiveReaderError(Exception):
+    """The reader's account was removed or switched off: nothing is theirs to read."""
+
+
+def _is_live_account(user: Mapping[str, Any]) -> bool:
+    # Soft-delete clears `isActive`; switching an account off sets `isDisabled`. Absence reads as live: nodes
+    # written before these fields carry neither.
+    return user.get("isActive") is not False and user.get("isDisabled") is not True
+
+
+async def readable_for_reader(
+    graph_provider: IGraphDBProvider,
+    node_ids: set[str],
+    user_id: str,
+    org_id: str,
+    *,
+    timeout: float | None = None,
+) -> dict[str, str]:
+    """The nodes among ``node_ids`` (records, record groups, apps) the reader may open, each with its
+    current name, by the same ``check_access`` as search. The reader and their grants are read once;
+    the ids are then checked ``_RECORD_ACCESS_CHUNK`` at a time, ``_RECORD_ACCESS_PARALLEL`` at once,
+    each statement under ``timeout``. A chunk that cannot be checked fails the whole answer
+    (``PermissionVerificationUnavailableError``), never a part of it; a removed or switched-off
+    account raises ``InactiveReaderError``. A placeholder is not a record to read."""
+    if not node_ids or not user_id or not org_id:
+        return {}
+    try:
+        user = await get_caller_user(graph_provider, user_id, raise_on_error=True, org_id=org_id)
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError(str(exc)) from exc
+    if user and not _is_live_account(user):
+        raise InactiveReaderError(user_id)
+    user_key = (user or {}).get("id") or (user or {}).get("_key")
+    if not user_key:
+        return {}
+    limit = {"timeout": timeout} if timeout is not None else {}
+    try:
+        access = await graph_provider.get_knowledge_hub_access_v3(user_key, org_id, **limit)
+    except PermissionVerificationUnavailableError:
+        raise
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError(str(exc)) from exc
+    ids = sorted(node_ids)
+    gate = asyncio.Semaphore(_RECORD_ACCESS_PARALLEL)
+
+    async def one(chunk: list[str]) -> dict[str, str]:
+        async with gate:
+            found = await graph_provider.check_access(user_key, org_id, node_ids=chunk, access=access, **limit)
+        return {node_id: found.names.get(node_id, "") for node_id in found.node_ids - found.placeholder_ids}
+
+    readable: dict[str, str] = {}
+    for part in await asyncio.gather(
+        *(one(ids[i : i + _RECORD_ACCESS_CHUNK]) for i in range(0, len(ids), _RECORD_ACCESS_CHUNK))
+    ):
+        readable.update(part)
+    return readable
+
+
+async def deleted_among(graph_provider: IGraphDBProvider, ids: list[str]) -> set[str]:
+    """Of ``ids`` (asked, and not readable), those whose record is marked deleted, and those that name
+    no record, record group or app at all: gone. Said apart from the ones the reader may not open, so an
+    answer whose only missing source was deleted stays with its asker. A lookup that fails says none."""
+    if not ids:
+        return set()
+    try:
+        rows = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.RECORDS.value, "id", ids, return_fields=["id", "isDeleted"], raise_on_error=True,
+        )
+        found = {str(r.get("id")): r for r in rows or [] if r.get("id")}
+        deleted = {i for i, r in found.items() if r.get("isDeleted") is True}
+        rest = [i for i in ids if i not in found]
+        for collection in (CollectionNames.RECORD_GROUPS.value, CollectionNames.APPS.value):
+            if not rest:
+                break
+            named = await graph_provider.get_nodes_by_field_in(
+                collection, "id", rest, return_fields=["id"], raise_on_error=True,
+            )
+            have = {str(r.get("id")) for r in named or [] if r.get("id")}
+            rest = [i for i in rest if i not in have]
+    except Exception:
+        logger.warning("record access: could not tell deleted records apart; none is excused", exc_info=True)
+        return set()
+    return deleted | set(rest)
 
 
 @router.post("/chat/records/access")
@@ -1351,33 +1484,52 @@ async def check_viewer_record_access(
     """Which of these records the viewer named in the service token may read, by
     the same `check_access` as search and `fetch_record`. Node signs the viewer's
     own ids after authenticating them, so a shared chat is rendered for the person
-    looking at it. An access check that cannot answer is a 503, never a guess."""
+    looking at it, each readable asked node under its current name. One request
+    answers for every id of one read (up to `RECORD_ACCESS_MAX_IDS`), says which of
+    the rest are deleted, and until when (`validUntil`, epoch ms) the answer holds.
+    An access check that cannot answer is a 503, never a guess; a viewer whose
+    account was removed or switched off is refused (403)."""
     org_id, viewer_id = _permission_grantor(claims)
     payload = await _parse_body(request, RecordAccessRequest, "Invalid request payload")
     ids = list(dict.fromkeys(r for r in payload.recordIds if r))
     urls = list(dict.fromkeys(u for u in payload.webUrls if u))
     by_url: dict[str, list[str]] = {}
-    if urls:
-        try:
-            # Deleted records too: a deleted record's address is that record's, as its id is.
-            # Known limit: a record removed outright leaves no row, so its address reads as unmatched
-            # (a web page). Answers that cite it by record id are still hidden; only one that names it
-            # by address alone is not.
-            rows = await graph_provider.get_records_by_weburls(
-                urls, org_id, per_address=_RECORDS_PER_URL_LIMIT, include_deleted=True,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="Access check unavailable") from exc
-        for row in rows:
-            by_url.setdefault(row.get("webUrl"), []).append(row["id"])
     try:
-        readable = await accessible_node_ids(
-            graph_provider, set(ids) | {r for rs in by_url.values() for r in rs}, viewer_id, org_id,
-        )
-    except PermissionVerificationUnavailableError as exc:
+        async with asyncio.timeout(RECORD_ACCESS_BUDGET_SECONDS):
+            if urls:
+                try:
+                    # Deleted records too: a deleted record's address is that record's, as its id is.
+                    # Known limit: a record removed outright leaves no row, so its address reads as unmatched
+                    # (a web page). Answers that cite it by record id are still hidden; only one that names it
+                    # by address alone is not.
+                    rows = await graph_provider.get_records_by_weburls(
+                        urls, org_id, per_address=_RECORDS_PER_URL_LIMIT, include_deleted=True,
+                    )
+                except Exception as exc:
+                    raise HTTPException(status_code=503, detail="Access check unavailable") from exc
+                for row in rows:
+                    by_url.setdefault(row.get("webUrl"), []).append(row["id"])
+            readable = await readable_for_reader(
+                graph_provider, set(ids) | {r for rs in by_url.values() for r in rs}, viewer_id, org_id,
+                timeout=ACCESS_CHECK_READ_TIMEOUT_SECONDS,
+            )
+            if payload.knowledgeLimit is not None and readable:
+                limit = payload.knowledgeLimit.model_dump()
+                # A limit that names nothing reaches nothing.
+                outside = (
+                    await outside_connection(graph_provider, viewer_id, org_id, list(readable), limit)
+                    if any(limit.values()) else set(readable)
+                )
+                readable = {r: name for r, name in readable.items() if r not in outside}
+            deleted = await deleted_among(graph_provider, [r for r in ids if r not in readable])
+    except InactiveReaderError as exc:
+        raise HTTPException(status_code=403, detail="The reader's account is not active") from exc
+    except (TimeoutError, PermissionVerificationUnavailableError, SelectionTooLargeError) as exc:
         raise HTTPException(status_code=503, detail="Access check unavailable") from exc
     return {
         "accessible": [r for r in ids if r in readable],
+        # Current names, only of the asked nodes the viewer may open, so a shared chat names them as they are now.
+        "names": {r: readable[r] for r in ids if r in readable},
         "accessibleUrls": [
             u for u in urls
             if by_url.get(u)
@@ -1387,6 +1539,8 @@ async def check_viewer_record_access(
         ],
         # An address no record is stored at (a public web page): not a record to lose.
         "unmatchedUrls": [u for u in urls if not by_url.get(u)],
+        "deleted": [r for r in ids if r in deleted],
+        "validUntil": get_epoch_timestamp_in_ms() + RECORD_ACCESS_VALID_MS,
     }
 
 
@@ -2016,6 +2170,16 @@ async def _stream_chat_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
+    chat_extension = get_chat_extension()
+    preflight = await chat_extension.preflight(
+        query_info, graph_provider=graph_provider, config_service=config_service,
+        user_id=user_id, org_id=org_id, logger=logger_,
+    )
+    if preflight is not None:
+        async for chunk in preflight:
+            yield chunk
+        return
+
     # LLM init, system prompts, user/org enrichment, and the entity vector
     # store are independent of each other and all sit before the first
     # streamed byte, so they run as one wave instead of serial round trips.
@@ -2054,10 +2218,12 @@ async def _stream_chat_via_agent_loop(
         if error_code == "unknown":
             user_message = CHAT_MODEL_START_FAILED
         if protocol == "agui":
-            evt = frame(AGUIEventType.RUN_ERROR, message=user_message, code="llm_initialization_failed")
+            evt = frame(AGUIEventType.RUN_ERROR, **with_unopened_provenance(
+                {"message": user_message, "code": "llm_initialization_failed"},
+            ))
             yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
         else:
-            yield create_sse_event("error", {"error": user_message})
+            yield create_sse_event("error", with_unopened_provenance({"error": user_message}))
         return
 
     system_prompts_config: dict[str, Any] = await prompts_task
@@ -2086,15 +2252,19 @@ async def _stream_chat_via_agent_loop(
     if query_info.strictScope:
         effective_filters["strictScope"] = True
 
+    extension_fields = chat_extension.query_fields(query_info)
     attachments, previous_conversations = await keep_accessible_attachments(
         graph_provider,
         org_id=org_id,
         user_id=user_id,
         is_service_account=bool(user.get("isServiceAccount")),
         attachments=query_info.attachments,
-        previous_conversations=query_info.previousConversations,
+        # The edition may rewrite the history the run reads (shared-chat rows): filter that copy.
+        previous_conversations=extension_fields.pop("previous_conversations", query_info.previousConversations),
         logger=logger_,
         connection_sources=connection_limit(user),
+        conversation_id=query_info.conversationId,
+        acl_version=query_info.aclVersion,
     )
     query_dict = {
         "query": query_info.query,
@@ -2116,9 +2286,11 @@ async def _stream_chat_via_agent_loop(
         "includeRetrievalContext": query_info.includeRetrievalContext,
         "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
+        "aclVersion": query_info.aclVersion,
         "is_service_account": bool(user.get("isServiceAccount")),
         "resolvedFlowRules": resolved.flow if resolved is not None else None,
     }
+    query_dict.update(extension_fields)
     user_info = {
         "userId": user_id,
         "orgId": org_id,
@@ -2170,6 +2342,13 @@ async def resolved_turn_or_401(
         raise HTTPException(status_code=refused.http_status, detail=refused.detail()) from None
 
 
+def _invalid_parameters(e: Exception) -> HTTPException:
+    """A 400 that names no field or value; the reason goes to the server log, without the values sent."""
+    reason = e.errors(include_url=False, include_input=False) if isinstance(e, ValidationError) else type(e).__name__
+    logger.warning("Invalid request parameters: %s", reason)
+    return HTTPException(status_code=400, detail="Invalid request parameters")
+
+
 async def _parse_chat_query(
     request: Request,
     cancellation_registry: RunCancellationRegistry,
@@ -2179,7 +2358,9 @@ async def _parse_chat_query(
     """Request prelude shared by `/chat` and `/chat/stream`: parse, validate,
     verify the turn Node resolved, reject a `runId` that is already running,
     and record the session."""
-    query_info = await _parse_body(request, ChatQuery, "Invalid request parameters")
+    query_info = await _parse_body(
+        request, get_chat_extension().chat_query_model(ChatQuery), "Invalid request parameters",
+    )
 
     resolved = await resolved_turn_or_401(request, agent_id=None, conversation_id=query_info.conversationId)
 
@@ -2235,7 +2416,9 @@ async def askAI(
         cancellation_registry=cancellation_registry,
         resolved=resolved,
     ))
-    outcome = await collect_stream_outcome(stream, request.is_disconnected)
+    outcome = await collect_stream_outcome(
+        stream, request.is_disconnected, keep_events=get_chat_extension().completion_events(),
+    )
     return outcome.to_response()
 
 
@@ -2309,7 +2492,7 @@ async def cancel_chat_stream(
     cancel_request = await _parse_body(request, CancelRunRequest, "Invalid request parameters")
 
     user = getattr(request.state, "user", {}) or {}
-    requester = RunOwner(
+    requester = CancelRequester(
         user_id=user.get("userId", ""),
         org_id=user.get("orgId", ""),
         conversation_id=cancel_request.conversationId,

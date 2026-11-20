@@ -256,7 +256,7 @@ class TestBuildRuntimeSkillManager:
         fake_manager.start = AsyncMock()
 
         context = SimpleNamespace(
-            graph_provider=MagicMock(), org_id="o", user_id="u", retrieval_service=MagicMock(),
+            graph_provider=MagicMock(), org_id="o", user_id="u", user_key="key-u", retrieval_service=MagicMock(),
             user_info={}, agent_skills=None,
         )
         registry = MagicMock()
@@ -297,6 +297,33 @@ class TestBuildRuntimeSkillManager:
         assert build.await_args.kwargs["visibility"] == SkillVisibility.of(
             ["colleague", "colleague-key"], shared=["authors-skill"]
         )
+
+
+    @pytest.mark.asyncio
+    async def test_a_run_reads_only_the_persons_own_skills_and_its_agents(self) -> None:
+        """A skill can hold what only its writer could open: another person's run never loads it,
+        unless the agent's creator assigned it to the agent."""
+        from types import SimpleNamespace
+
+        from app.agents.agent_loop.skills.manager_factory import (
+            build_runtime_skill_manager,
+        )
+
+        context = SimpleNamespace(
+            graph_provider=MagicMock(), org_id="o", user_id="u", user_key="key-u", retrieval_service=MagicMock(),
+            agent_skills=["team-playbook"],
+        )
+        with patch(
+            "app.agents.agent_loop.skills.manager_factory._build_manager", new_callable=AsyncMock,
+        ) as build, patch("app.agents.agent_loop.skills.manager_factory.schedule_builtin_skill_reconcile"):
+            await build_runtime_skill_manager(context, MagicMock())
+        args, kwargs = build.call_args
+        # Scoped and stamped by the graph user key, the kind a skill's `createdBy` holds; the account id
+        # only matches a skill an earlier run stamped with it.
+        assert args[2] == "key-u"
+        assert kwargs["visibility_scope"] == "key-u"
+        assert kwargs["account_id"] == "u"
+        assert kwargs["also_visible"] == frozenset({"team-playbook"})
 
 
 class TestBuildManagerInternal:

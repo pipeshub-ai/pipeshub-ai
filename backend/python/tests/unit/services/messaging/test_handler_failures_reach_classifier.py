@@ -175,7 +175,9 @@ class TestEntityFailuresRaise:
         assert caught.value is NOT_FOUND
         assert _classify(caught.value) == MessageErrorType.TERMINAL
         if event_type in entity_module.PRINCIPAL_EVENTS:
-            notify.assert_awaited_with(ORG)
+            # The person a user event names has their own epoch moved too.
+            named = [payload["userId"]] if event_type.startswith("user") else []
+            notify.assert_awaited_with(ORG, user_ids=named)
 
     async def test_principals_are_still_notified_when_a_user_event_raises(self, notify) -> None:
         graph = _graph()
@@ -184,7 +186,7 @@ class TestEntityFailuresRaise:
         message = StreamMessage(eventType="userAdded", payload={"orgId": ORG, "userId": "u-1", "email": "a@x.example"})
         with pytest.raises(ConnectionError):
             await handler(message)
-        notify.assert_awaited_once_with(ORG)
+        notify.assert_awaited_once_with(ORG, user_ids=["u-1"])
 
 
 # --- sync wrapper + EventService -----------------------------------------------------------------------------------

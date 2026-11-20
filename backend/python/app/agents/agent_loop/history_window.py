@@ -116,6 +116,10 @@ def reduce_exchange(exchange: Exchange) -> list[Row]:
                 answer = f"{answer}\n\n(Tools used: {', '.join(names)}.)" if answer else f"(Tools used: {', '.join(names)}.)"
             kept = {key: value for key, value in row.items() if key != "tool_results"}
             reduced.append({**kept, "content": answer})
+        else:
+            # A shared chat's notes, quotes and shared answers are what people told each other;
+            # reducing the exchange must not make them disappear.
+            reduced.append({**row, "content": _cut(content, REDUCED_ANSWER_CHARS)})
     return reduced
 
 

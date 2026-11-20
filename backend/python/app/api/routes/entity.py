@@ -1,7 +1,7 @@
 import json
 import re
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -288,14 +288,44 @@ async def _owner_rules_allow(
     return role_changes
 
 
-async def _principals_changed() -> None:
-    """Move the viewer-scope version after a team write. Runs in `finally`, so it must not raise: with no org bound
-    (`current_org_id` asserts one) the global counter moves, which is wider and therefore safe."""
+async def _principals_changed(user_ids: Iterable[str] = ()) -> None:
+    """Move the viewer-scope version after a team write, and the permission epoch of each person whose teams it
+    changed (`user_ids`, their user ids), so a reader check stored before it is not used after it. Runs in `finally`,
+    so it must not raise: with no org bound (`current_org_id` asserts one) the global counter moves, which is wider
+    and therefore safe."""
     try:
         org_id: str | None = current_org_id()
     except (MissingOrgContext, SystemContextNotAllowed, AssertionError):
         org_id = None
-    await notify_principals_changed(org_id)
+    await notify_principals_changed(org_id, user_ids=[u for u in user_ids if isinstance(u, str) and u])
+
+
+# A team's members are read this many at a time before it is deleted, to move each one's permission epoch.
+def _member_key(edge: Mapping[str, object]) -> str | None:
+    """The graph key of the user a permission edge comes from. ArangoDB names an end ``_from: "users/<key>"``, Neo4j
+    ``from_collection`` and ``from_id``; PostgreSQL gives both."""
+    users = CollectionNames.USERS.value
+    if edge.get("from_id"):
+        return str(edge["from_id"]) if edge.get("from_collection") == users else None
+    collection, _, key = str(edge.get("_from") or "").partition("/")
+    return key if collection == users and key else None
+
+
+async def _team_member_user_ids(graph_provider: "IGraphDBProvider", team_id: str) -> list[str]:
+    """The user ids of a team's members: the users with a permission edge into it, service accounts included.
+
+    Raising: members who could not be read are not none. Taken for none, their epochs would not move when the team
+    goes, and each would go on reading what it gave them until the verdicts stored before lapse."""
+    edges = await graph_provider.get_edges_to_node(
+        f"{CollectionNames.TEAMS.value}/{team_id}", CollectionNames.PERMISSION.value, raise_on_error=True,
+    )
+    keys = sorted({key for edge in edges or [] if (key := _member_key(edge))})
+    if not keys:
+        return []
+    users = await graph_provider.get_nodes_by_field_in(
+        CollectionNames.USERS.value, "id", keys, ["id", "userId"], raise_on_error=True,
+    )
+    return sorted({str(u["userId"]) for u in users or [] if isinstance(u, dict) and u.get("userId")})
 
 
 @router.post("/team", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
@@ -408,7 +438,7 @@ async def create_team(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail=action_failed("create this team")) from e
     finally:
         # Membership edges decide what people can read; the viewer-scope cache version moves with them.
-        await _principals_changed()
+        await _principals_changed([creator_mongo_id, *member_mongo_ids])
     logger.info(f"Team created successfully: {team_body}")
 
     # The team is committed by now. The providers answer None to a failed read, and
@@ -540,6 +570,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         updates["description"] = body_dict.get("description")
 
     members_written = False       # the version moves only when a membership write was attempted
+    changed_people: set[str] = set()
     try:
         # Handle member additions and removals (Mongo userId on wire; resolve once)
         add_user_roles = body_dict.get("addUserRoles", [])  # Array of {userId, role}
@@ -567,6 +598,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
             mongo_id = user_role.get("userId")
             if mongo_id:
                 unique_mongo_ids.add(mongo_id)
+        changed_people = unique_mongo_ids
 
         mongo_to_key: dict[str, str] = {}
         if unique_mongo_ids:
@@ -696,7 +728,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
     finally:
         # Members may have been added, removed or re-roled before an error: move the version either way.
         if members_written:
-            await _principals_changed()
+            await _principals_changed(changed_people)
 
 @router.delete("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def delete_team(request: Request, team_id: str) -> JSONResponse:
@@ -729,8 +761,10 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     )
 
     logger.info(f"Deleting team: {team_id}")
-
+    members: list[str] = []
     try:
+        # Read before the edges go: each member loses what the team gave them.
+        members = await _team_member_user_ids(graph_provider, team_id)
         # Delete all permission edges using interface method
         await graph_provider.delete_all_team_permissions(team_id=team_id)
 
@@ -754,7 +788,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
     finally:
-        await _principals_changed()
+        await _principals_changed(members)
 
 @router.get("/user/teams", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_teams(

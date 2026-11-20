@@ -16,9 +16,11 @@ cache entry and are dropped (search) or require an explicit type (find).
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import derive_scope
+from app.modules.agents.context.named_sources import nameable_source_ids
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.entity_permissions import (
     ORGANIZATION_ENTITY_TYPE,
@@ -80,11 +82,14 @@ async def load_entity_access_context(
     as content search does. Every app the turn touches is a source; a
     selection or bound that covers one only in part limits its records.
     ``source_ids`` replaces the apps and collections taken from the turn, for
-    a search the model narrowed to some of them."""
+    a search the model narrowed to some of them.
+
+    Its app names are only the sources the run may name (`nameable_source_ids`): an entity tool shows any other
+    app without its name."""
     scope = derive_scope(state)
     filters = state.get("filters") or {}
     try:
-        return await get_entity_access_context(
+        context = await get_entity_access_context(
             state,
             state.get("graph_provider"),
             org_id=state.get("org_id", ""),
@@ -97,6 +102,10 @@ async def load_entity_access_context(
     except SelectionTooLargeError as exc:
         # Fail closed: a limit too large to resolve never widens to its whole apps.
         raise EntityAccessError("The conversation's limit is too large to check") from exc
+    nameable = nameable_source_ids(state)
+    if nameable is None:
+        return context
+    return replace(context, app_names={k: v for k, v in context.app_names.items() if k in nameable})
 
 
 def is_filterable_entity(entity_type: str | None, entity_name: str | None) -> bool:
