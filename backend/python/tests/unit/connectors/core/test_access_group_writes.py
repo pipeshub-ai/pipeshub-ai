@@ -188,14 +188,3 @@ async def test_an_issue_under_its_level_never_inherits_its_project_on_the_way(ex
     await _processor()._link_record_to_group(_issue(access_group_external_id=""), "proj", plain, existing)
     (link,) = [entry for entry in plain.log if entry[0] == "link_record_to_group"]
     assert link[-1]["inherit"] is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("connector", [Connectors.JIRA, Connectors.JIRA_DATA_CENTER])
-async def test_a_jira_issue_written_with_no_group_named_keeps_the_stored_one(connector: Connectors) -> None:
-    """Both Jira connectors put a leveled issue on its level's group, so a write that names none keeps the stored one."""
-    processor = _processor()
-    processor._keep_access_group = AsyncMock()
-    processor._process_record_body = AsyncMock(return_value=(None, []))
-    await processor._process_record(_issue(access_group_external_id=None, connector_name=connector), [], _Store())
-    processor._keep_access_group.assert_awaited_once()

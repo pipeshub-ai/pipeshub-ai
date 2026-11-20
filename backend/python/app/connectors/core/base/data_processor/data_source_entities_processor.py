@@ -353,7 +353,7 @@ class _BatchLookups:
 
 #: Connectors whose records may take their access from a record group of their own (see `Record.access_group_external_id`): a write that
 #: names none keeps the stored one.
-ACCESS_GROUP_CONNECTORS = frozenset({Connectors.JIRA, Connectors.JIRA_DATA_CENTER})
+ACCESS_GROUP_CONNECTORS = frozenset({Connectors.JIRA})
 
 
 class AccessGroupMissing(RuntimeError):
@@ -2915,8 +2915,15 @@ class DataSourceEntitiesProcessor:
         filed under, it would be read by everyone who reads that. Filed in another record group now, it
         names none, and the edges to the old one go."""
         existing = await tx_store.get_record_by_external_id(connector_id=record.connector_id, external_id=record.external_record_id)
-        held = await self._held_access_groups(existing, tx_store)
-        if existing is None or not held:
+        if existing is None or not existing.record_group_id:
+            return
+        held = sorted({
+            gid for edge in await tx_store.get_edges_from_node(
+                f"{CollectionNames.RECORDS.value}/{existing.id}", CollectionNames.INHERIT_PERMISSIONS.value, raise_on_error=True,
+            ) or []
+            if (gid := _edge_group(edge, "_to")) and gid != existing.record_group_id
+        })
+        if not held:
             return
         if record.external_record_group_id:
             filed = await tx_store.get_record_group_by_external_id(
@@ -2932,27 +2939,6 @@ class DataSourceEntitiesProcessor:
         record.access_group_external_id = group.external_group_id
         if not record.rewrite_permissions:
             record.access_rule = existing.access_rule
-
-    @staticmethod
-    async def _held_access_groups(existing: Record | None, tx_store: TransactionStore) -> list[str]:
-        """The ids of the record groups a stored record inherits beside the one it is filed under: its access group."""
-        if existing is None or not existing.record_group_id:
-            return []
-        return sorted({
-            gid for edge in await tx_store.get_edges_from_node(
-                f"{CollectionNames.RECORDS.value}/{existing.id}", CollectionNames.INHERIT_PERMISSIONS.value, raise_on_error=True,
-            ) or []
-            if (gid := _edge_group(edge, "_to")) and gid != existing.record_group_id
-        })
-
-    async def get_record_access_group(self, connector_id: str, external_record_id: str) -> str | None:
-        """The external id of the record group a stored record takes its access from (``Record.access_group_external_id``),
-        or None when it takes it from where it is filed. A failed read raises."""
-        async with self.data_store_provider.transaction() as tx_store:
-            existing = await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
-            held = await self._held_access_groups(existing, tx_store)
-            group = await tx_store.get_record_group_by_id(held[0]) if held else None
-        return group.external_group_id if group is not None else None
 
     async def _apply_access_group(self, record: Record, tx_store: TransactionStore) -> None:
         """Make the record inherit its access group and no other record group, and hang under it, beside
@@ -6237,28 +6223,6 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_users_with_permission_to_node(
                 node_id, node_collection, raise_on_error=raise_on_error
             )
-
-    async def get_record_group_user_emails(self, connector_id: str, external_id: str) -> set[str]:
-        """The lowercased emails of the users a connector's record group grants directly (its own permission edges, not
-        an ancestor's). Empty when the group is not stored; a failed read raises."""
-        async with self.data_store_provider.transaction() as tx_store:
-            group = await tx_store.get_record_group_by_external_id(connector_id, external_id)
-            if group is None:
-                return set()
-            node = f"{CollectionNames.RECORD_GROUPS.value}/{group.id}"
-            edges = await tx_store.get_edges_to_node(node, CollectionNames.PERMISSION.value, raise_on_error=True)
-            # The user read also walks the ancestors the group inherits; only the group's own edges count.
-            direct = set()
-            for edge in edges:
-                # ArangoDB answers `_from`; Neo4j and PostgreSQL answer from_collection and from_id.
-                collection, _, key = str(edge.get("_from") or "").partition("/")
-                if edge.get("from_collection"):
-                    collection, key = edge["from_collection"], edge.get("from_id")
-                if collection == CollectionNames.USERS.value and key:
-                    direct.add(key)
-            users = await tx_store.get_users_with_permission_to_node(
-                group.id, CollectionNames.RECORD_GROUPS.value, raise_on_error=True) if direct else []
-        return {u.email.lower() for u in users if u.id in direct and u.email}
 
     async def get_groups_with_permission_to_node(
         self, node_id: str, node_collection: str, *, raise_on_error: bool = False

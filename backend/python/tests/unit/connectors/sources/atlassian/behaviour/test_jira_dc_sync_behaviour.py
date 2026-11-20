@@ -37,14 +37,7 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
     _parse_jira_dc_user_list_page,
 )
 from app.connectors.utils.record_ids import new_record_id
-from app.models.entities import (
-    AppUser,
-    FileRecord,
-    Record,
-    RecordGroup,
-    RecordType,
-    TicketRecord,
-)
+from app.models.entities import AppUser, FileRecord, Record, RecordType, TicketRecord
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.sources.client.http.http_client import HTTPClient
@@ -88,42 +81,6 @@ class JiraRecordsDb(FakeRecordsDb):
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
             self.app_roles[role.source_role_id] = list(members)
-
-    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> RecordGroup | None:
-        return self.record_groups.get(external_id)
-
-    async def get_record_group_user_emails(self, connector_id: str, external_id: str) -> set[str]:
-        return {p.email.lower() for p in self.record_group_permissions.get(external_id) or []
-                if p.entity_type == EntityType.USER and p.email}
-
-    async def get_record_access_group(self, connector_id: str, external_record_id: str) -> str | None:
-        return getattr(self.records.get(external_record_id), "access_group_external_id", None) or None
-
-    def _keep_stored_group(self, record: Record) -> None:
-        """As the processor's ``_keep_access_group``: a record written with no level group named (None) keeps the stored
-        one, and its stored rule when it keeps its stored grants; filed in another project now, it names none. An explicit
-        "" names none."""
-        old = self.records.get(record.external_record_id)
-        if getattr(record, "access_group_external_id", None) is not None or old is None \
-                or not getattr(old, "access_group_external_id", None):
-            return
-        if record.external_record_group_id and record.external_record_group_id != old.external_record_group_id:
-            record.access_group_external_id = ""
-            return
-        record.access_group_external_id = old.access_group_external_id
-        if not record.rewrite_permissions:
-            record.access_rule = old.access_rule
-
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
-        for record, _ in records_with_permissions:
-            self._keep_stored_group(record)
-        await super().on_new_records(records_with_permissions)
-
-    async def on_record_content_update(
-        self, record: Record, permissions: list[Any] | None = None, *, content_changed: bool = True,
-    ) -> None:
-        self._keep_stored_group(record)
-        await super().on_record_content_update(record, permissions, content_changed=content_changed)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         await super().on_new_user_groups(groups)

@@ -1,9 +1,9 @@
 """Jira Data Center issue security: the parts of the connector that are not a whole sync."""
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,13 +13,11 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
     apply_issue_access,
-    apply_issue_access_settled,
     plan_level_reread,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     NO_LEVEL_READ,
-    GroupPickerPage,
     JiraDataCenterConnector,
 )
 from app.connectors.sources.atlassian.jira_data_center_personal.connector import (
@@ -34,7 +32,6 @@ def _connector(cls=JiraDataCenterConnector) -> JiraDataCenterConnector:
     dep.org_id = "org"
     dep.on_new_records = AsyncMock()
     dep.on_record_content_update = AsyncMock()
-    dep.on_new_record_groups = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -124,7 +121,7 @@ class TestAncestorStub:
         await connector._sync_all_project_issues([], [], None)
         assert connector._issue_security == {}
 
-    async def test_a_stub_of_a_leveled_issue_is_granted_to_the_level_only(self) -> None:
+    def test_a_stub_of_a_leveled_issue_is_granted_to_the_level_only(self) -> None:
         connector = _connector()
         connector._issue_security["10"] = IssueSecurityContext(
             knowledge=SchemeKnowledge.PRESENT, members_readable=True,
@@ -136,10 +133,8 @@ class TestAncestorStub:
 
         grants = connector._secure_ancestor_stub(stub, issue, {"alice-key": _user("alice-key", "alice@example.com")})
 
-        # In its own project: its level's record group (RESTRICTED under the project) holds alice, as for the issue.
-        assert (stub.access_rule, stub.access_group_external_id, grants) == (AccessRule.STRICT, "level:10:1", [])
-        assert [g.email for g in await _stub_and_level_grants(
-            connector, issue, {"alice-key": _user("alice-key", "alice@example.com")})] == ["alice@example.com"]
+        assert stub.access_rule == AccessRule.RESTRICTED
+        assert [g.email for g in grants] == ["alice@example.com"]
 
     def test_a_leveled_stub_in_a_project_this_sync_did_not_read_is_closed_not_open(self) -> None:
         connector = _connector()
@@ -251,25 +246,13 @@ class TestParentGate:
         assert await connector._files_under_parent({"project": {"id": "10"}}, "5", security) is False
 
 
-def _issue(iid: str, key: str, *, level: str | None = None, subtask: bool = False) -> dict:
-    """``subtask``: a sub-task of P-1, which keeps a copy of its level's holders (other leveled issues take them from
-    their level's record group)."""
+def _issue(iid: str, key: str, *, level: str | None = None) -> dict:
     return {"id": iid, "key": key, "fields": {
         "summary": key, "status": {"name": "Open"}, "priority": {"name": "High"},
-        "issuetype": {"name": "Sub-task" if subtask else "Task", "subtask": subtask}, "project": {"id": "10", "key": "P"},
+        "issuetype": {"name": "Task", "subtask": False}, "project": {"id": "10", "key": "P"},
         "created": "2024-01-01T00:00:00.000+0000", "updated": "2024-01-02T00:00:00.000+0000",
         "reporter": None, "assignee": None, "creator": None, "attachment": [],
-        "security": {"id": level} if level else None, **({"parent": {"id": "1", "key": "P-1"}} if subtask else {})}}
-
-
-async def _stub_and_level_grants(c: JiraDataCenterConnector, issue: dict, users: dict) -> list:
-    """A stub's own grants and those its level's record group (level 1 of project 10) is written with by a sync."""
-    grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue, users)
-    c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
-    c.data_entities_processor.on_new_record_groups = AsyncMock()
-    await c._write_level_groups("10", "P", c._issue_security["10"], ["1"], c._grant_directory(users))
-    written = c.data_entities_processor.on_new_record_groups.await_args.args[0]
-    return [*grants, *(g for _, group_grants in written for g in group_grants)]
+        "security": {"id": level} if level else None}}
 
 
 class TestCostPerIssue:
@@ -290,15 +273,6 @@ class TestCostPerIssue:
         assert calls == [50], "one pass over the users for the batch of twenty issues"
 
 
-class TestGroupHolders:
-    def test_a_group_holder_is_the_group_named_in_parameter_as_the_permission_scheme_reads_it(self) -> None:
-        rows = [{"issueSecurityLevelId": "1", "holder": {"type": "group", "parameter": "devs", "value": "gid-7"}},
-                {"issueSecurityLevelId": "1", "holder": {"type": "projectLead"}}]
-        fixed = JiraDataCenterConnector._groups_by_name(rows)
-        assert fixed[0]["holder"]["value"] == "devs" and fixed[1] == rows[1]
-        assert rows[0]["holder"]["value"] == "gid-7", "the server's rows are not changed"
-
-
 class TestSkippedHoldersAreReportedOncePerLevel:
     async def test_a_holder_with_no_e_mail_is_one_warning_not_one_per_issue(self, caplog) -> None:
         connector = _connector()
@@ -306,9 +280,7 @@ class TestSkippedHoldersAreReportedOncePerLevel:
             knowledge=SchemeKnowledge.PRESENT, members_readable=True,
             members_by_level={"1": [{"type": "user", "parameter": "ghost", "user": {"name": "ghost"}}]})
         with caplog.at_level(logging.WARNING, logger="t"):
-            await connector._build_issue_records(
-                [_issue("1", "P-1", level="1"), *(_issue(str(n), f"P-{n}", level="1", subtask=True) for n in range(2, 7))],
-                "10", [])
+            await connector._build_issue_records([_issue(str(n), f"P-{n}", level="1") for n in range(1, 6)], "10", [])
         assert len([r for r in caplog.records if "were not granted" in r.getMessage()]) == 1
 
 
@@ -569,7 +541,7 @@ class TestWithdrawnAccounts:
 
     @pytest.mark.parametrize("flag", ["_user_read_unfinished", "_user_bulk_forbidden", "_user_bulk_refused",
                                       "_user_bulk_incomplete"])
-    async def test_a_directory_not_read_in_full_keeps_every_level_grant(self, flag: str) -> None:
+    def test_a_directory_not_read_in_full_keeps_every_level_grant(self, flag: str) -> None:
         """Of the level's members, a linked account the read missed keeps its grant; an account no longer linked
         (withdrawn) that only the payload names gets none."""
         c = _connector()
@@ -586,10 +558,11 @@ class TestWithdrawnAccounts:
         issue = {"id": "9", "key": "P-9", "fields": {
             "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
         setattr(c, flag, True)
-        grants = await _stub_and_level_grants(c, issue, {"alice-key": _user("alice-key", "alice@example.com")})
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
+                                         {"alice-key": _user("alice-key", "alice@example.com")})
         assert sorted(g.email for g in grants) == ["alice@example.com", "unresolved@x.com"]
 
-    async def test_a_level_member_outside_the_directory_is_not_granted(self) -> None:
+    def test_a_level_member_outside_the_directory_is_not_granted(self) -> None:
         c = _connector()
         c._listed_user_keys = {"alice-key"}
         c._issue_security["10"] = IssueSecurityContext(
@@ -601,10 +574,11 @@ class TestWithdrawnAccounts:
         )
         issue = {"id": "9", "key": "P-9", "fields": {
             "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
-        grants = await _stub_and_level_grants(c, issue, {"alice-key": _user("alice-key", "alice@example.com")})
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
+                                         {"alice-key": _user("alice-key", "alice@example.com")})
         assert [g.email for g in grants] == ["alice@example.com"]
 
-    async def test_a_synced_account_whose_directory_entry_has_no_email_keeps_its_level_grant_by_account(self) -> None:
+    def test_a_synced_account_whose_directory_entry_has_no_email_keeps_its_level_grant_by_account(self) -> None:
         c = _connector()
         c._listed_user_keys = {"bob-key"}
         c._issue_security["10"] = IssueSecurityContext(
@@ -614,7 +588,7 @@ class TestWithdrawnAccounts:
         )
         issue = {"id": "9", "key": "P-9", "fields": {
             "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
-        grants = await _stub_and_level_grants(c, issue, {"bob-key": _user("bob-key", "")})
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue, {"bob-key": _user("bob-key", "")})
         assert [(g.email, g.external_id) for g in grants] == [(None, "bob-key")]  # by account, reaching that user
 
     @pytest.mark.parametrize("listed", [True, False], ids=["listed", "not_listed"])
@@ -635,7 +609,7 @@ class TestWithdrawnAccounts:
             [Permission(entity_type=EntityType.USER, external_id="bob-key", type=PermissionType.READ)], {})
         assert ("bob-key" in users) is listed and bool(grants) is listed
 
-    async def test_a_level_holder_named_by_username_resolves_to_a_linked_account_with_a_hidden_email(self) -> None:
+    def test_a_level_holder_named_by_username_resolves_to_a_linked_account_with_a_hidden_email(self) -> None:
         """The level names bob by username; bob is linked with a hidden email, so only the extra accounts hold him. The
         username aliases cover them too."""
         c = _connector()
@@ -649,7 +623,7 @@ class TestWithdrawnAccounts:
         )
         issue = {"id": "9", "key": "P-9", "fields": {
             "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"}}}
-        grants = await _stub_and_level_grants(c, issue, c._users_with_usernames({}))
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue, c._users_with_usernames({}))
         assert [(g.email, g.external_id) for g in grants] == [(None, "bob-key")]
 
     def test_a_synced_users_username_never_takes_the_key_of_a_linked_account(self) -> None:
@@ -663,7 +637,7 @@ class TestWithdrawnAccounts:
         directory = c._grant_directory(c._users_with_usernames({"alice-key": alice}))
         assert directory["bob-key"] is bob and directory["alice-key"] is alice
 
-    async def test_a_level_member_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
+    def test_a_level_member_outside_the_directory_is_not_granted_through_an_email_a_synced_account_shares(self) -> None:
         """"left" has no access in Jira (not in the directory) but carries alice's email: alice must not get left's level."""
         c = _connector()
         c._listed_user_keys = {"alice-key"}
@@ -677,7 +651,8 @@ class TestWithdrawnAccounts:
         issue = {"id": "9", "key": "P-9", "fields": {
             "project": {"id": "10", "key": "P"}, "security": {"id": "1"}, "issuetype": {"name": "Epic"},
             "reporter": {"key": "left", "name": "left", "emailAddress": "alice@example.com"}}}
-        grants = await _stub_and_level_grants(c, issue, {"alice-key": _user("alice-key", "alice@example.com")})
+        grants = c._secure_ancestor_stub(_ticket(is_placeholder=True), issue,
+                                         {"alice-key": _user("alice-key", "alice@example.com")})
         assert grants == []
 
     @pytest.mark.parametrize(("complete", "shown"), [(True, False), (False, False), (False, True)],
@@ -686,8 +661,7 @@ class TestWithdrawnAccounts:
         self, complete: bool, shown: bool,
     ) -> None:
         """bob is linked but missing from a list cut short, and the level names him by key alone (no email); zed is
-        named by a username no listed or linked account has. bob keeps his grant; zed's issues are read again. A sub-task
-        keeps a copy of its level's holders (``_write_level_groups`` keeps a stored level group the same way)."""
+        named by a username no listed or linked account has. bob keeps his grant; zed's issues are read again."""
         c = _connector()
         c._listed_user_keys = {"alice-key"}
         c._stored_app_users = [_user("alice-key", "alice@example.com"), _user("bob-key", "bob@example.com")]
@@ -698,9 +672,9 @@ class TestWithdrawnAccounts:
             members_by_level={"1": [{"type": "user", "parameter": "bob-key", "user": {"key": "bob-key"}},
                                     {"type": "user", "parameter": "zed", "user": {"name": "zed"}}]})
         c._save_levels_retry = AsyncMock()
-        built = await c._build_issue_records([_issue("1", "P-1", level="1"), _issue("2", "P-2", level="1", subtask=True)],
-                                             "10", [_user("alice-key", "alice@example.com")])
-        grants = {p.email for r, perms in built if isinstance(r, TicketRecord) and r.external_record_id == "2" for p in perms}
+        built = await c._build_issue_records([_issue("2", "P-2", level="1")], "10",
+                                             [_user("alice-key", "alice@example.com")])
+        grants = {p.email for r, perms in built if isinstance(r, TicketRecord) for p in perms}
         # Read in full, bob is gone from Jira (deactivated or removed) and is granted nothing.
         assert grants == (set() if complete or shown else {"bob@example.com"})
         assert c._holders_unresolved is (not complete)
@@ -718,8 +692,7 @@ class TestWithdrawnAccounts:
             knowledge=SchemeKnowledge.PRESENT, members_readable=True,
             members_by_level={"1": [{"type": "user", "parameter": "zed", "user": {"name": "zed"}}]})
         c._save_levels_retry = AsyncMock()
-        await c._build_issue_records([_issue("1", "P-1", level="1"), _issue("2", "P-2", level="1", subtask=True)], "10",
-                                     [_user("alice-key", "alice@example.com")])
+        await c._build_issue_records([_issue("2", "P-2", level="1")], "10", [_user("alice-key", "alice@example.com")])
         assert c._holders_unresolved is False
         c._save_levels_retry.assert_not_awaited()
 
@@ -733,10 +706,8 @@ class TestWithdrawnAccounts:
             members_by_level={"1": [{"type": "user", "parameter": "zed", "user": {"name": "zed"}}]})
         c._get_project_sync_checkpoint = AsyncMock(return_value={"security_levels": '{"1": "d"}'})
         c._update_project_sync_checkpoint = AsyncMock(side_effect=ConnectionError("store unavailable"))
-        built = await c._build_issue_records([_issue("1", "P-1", level="1"), _issue("2", "P-2", level="1", subtask=True)],
-                                             "10", [_user("alice-key", "alice@example.com")])
-        assert not [r for r, _ in built if isinstance(r, TicketRecord) and r.external_record_id == "2"], \
-            "the issue waits for a sync that can save it"
+        built = await c._build_issue_records([_issue("2", "P-2", level="1")], "10", [_user("alice-key", "alice@example.com")])
+        assert not [r for r, _ in built if isinstance(r, TicketRecord)], "the issue waits for a sync that can save it"
         assert c._issue_build_failures == 1
 
     async def test_a_failed_read_of_the_linked_accounts_fails_the_user_read(self) -> None:
@@ -989,35 +960,6 @@ class TestSecuredSubtasks:
 
 
 
-class TestALevelHoldsItsHoldersOnce:
-    """A leveled issue takes the holders that name the same people on every issue from its level's record group, and
-    holds as its own grants only those it names itself. Jira shows it to someone Browse names on it (its reporter) whom
-    the level holds, without the project: Browse can be granted to "Reporter" and a level's members may be "Individual
-    users" (https://confluence.atlassian.com/adminjiraserver/managing-project-permissions-938847145.html,
-    https://confluence.atlassian.com/adminjiraserver/configuring-issue-level-security-938847117.html)."""
-
-    @staticmethod
-    async def _built(level: list[dict], reporter: str) -> tuple[TicketRecord, list]:
-        c = _connector()
-        c._issue_security["10"] = IssueSecurityContext(
-            knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": level},
-            browse_holders=[{"type": "reporter"}])
-        issue = _issue("2", "P-2", level="1")
-        issue["fields"]["reporter"] = {"key": reporter, "name": reporter}
-        built = await c._build_issue_records([issue], "10", [_user("rep-key", "rep@x.com"), _user("dev-key", "dev@x.com")])
-        return next((r, g) for r, g in built if isinstance(r, TicketRecord))
-
-    async def test_a_reporter_browse_names_whom_the_level_holds_reads_it_without_the_project(self) -> None:
-        record, grants = await self._built([{"type": "user", "parameter": "rep-key", "user": {"key": "rep-key"}},
-                                            {"type": "group", "parameter": "admins"}], "rep-key")
-        assert (record.access_rule, record.access_group_external_id) == (AccessRule.OPEN, "level:10:1")
-        assert [g.email for g in grants] == ["rep@x.com"]
-
-    async def test_a_reporter_the_level_does_not_hold_gets_nothing_and_the_group_needs_the_project(self) -> None:
-        record, grants = await self._built([{"type": "user", "parameter": "dev-key", "user": {"key": "dev-key"}}], "rep-key")
-        assert (record.access_rule, record.access_group_external_id, grants) == (AccessRule.STRICT, "level:10:1", [])
-
-
 class TestGroupsAreKeyedByName:
     """Data Center names a group by its name alone (``/groups/picker`` lists ``name``, ``html`` and ``labels``; members
     are read by ``groupname``). A picker row that also carries an id equal to another group's name must not put its
@@ -1038,18 +980,6 @@ class TestGroupsAreKeyedByName:
         written = {g.source_user_group_id: m for (g, m), in (call.args[0] for call in
                                                            c.data_entities_processor.on_new_user_groups.await_args_list)}
         assert written == {"beta": [bob], "alpha": [alice]}
-        # A level holding "beta", whose reporter is alice: alice is not in beta, so she does not read it alone.
-        assert c._group_members == {"beta": [bob], "alpha": [alice]}
-        context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True,
-                                       members_by_level={"1": [{"type": "group", "parameter": "beta", "value": "beta"}]},
-                                       browse_holders=[{"type": "reporter"}])
-        users = {"alice-key": alice, "bob-key": bob}
-        context.level_readers = c._level_readers(context, "P", users)
-        record = _ticket()
-        grants, skipped, _ = apply_issue_access_settled(
-            record, {"security": {"id": "1"}, "reporter": {"key": "alice-key"}}, is_subtask=False, project_key="P",
-            context=context, user_by_account_id=users, project_id="10")
-        assert (record.access_rule, grants, skipped) == (AccessRule.STRICT, [], [])
 
 
 class TestStoredNoLevelIssuesHealOnce:
@@ -1063,7 +993,7 @@ class TestStoredNoLevelIssuesHealOnce:
         connector._load_issue_security = AsyncMock(return_value=context)
         connector._get_project_sync_checkpoint = AsyncMock(return_value={
             "last_sync_time": 100, "last_issue_updated": 200,
-            "security_levels": json.dumps(context.level_fingerprints(split=True), sort_keys=True), **checkpoint})
+            "security_levels": json.dumps(context.level_fingerprints(), sort_keys=True), **checkpoint})
 
         async def no_changes(*_a: object, **_kw: object) -> AsyncIterator[None]:
             return
@@ -1100,109 +1030,9 @@ class TestStoredNoLevelIssuesHealOnce:
         assert not self._marked(update)
 
 
-class TestTheRetryListKeepsWhatAReindexAdds:
-    """An issue a reindex queues for the next sync survives any overlapping write; a sync removes a queued issue only for
-    the request its read covered, so one queued again after that read stays."""
-
-    @staticmethod
-    def _store(c: JiraDataCenterConnector, requests: dict | None = None) -> dict:
-        """A checkpoint store that yields between a read and a write, as a real one may."""
-        point: dict = {"reindex_retry": json.dumps(requests or {})}
-
-        async def read(_key: str) -> dict:
-            await asyncio.sleep(0)
-            return dict(point)
-
-        async def write(_key: str, data: dict) -> None:
-            await asyncio.sleep(0)
-            point.update(data)
-        c.issues_sync_point = MagicMock()
-        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=read)
-        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=write)
-        return point
-
-    @staticmethod
-    def _queued(point: dict) -> list[str]:
-        return sorted(json.loads(point["reindex_retry"]))
-
-    async def test_a_sync_write_after_a_reindex_add_keeps_the_issue(self) -> None:
-        c = _connector()
-        point = self._store(c)
-        await c._retry_in_next_sync("P", "9")
-        await c._update_project_sync_checkpoint("P", last_issue_updated=10)
-        assert self._queued(point) == ["9"]
-
-    async def test_overlapping_writes_keep_every_issue(self) -> None:
-        c = _connector()
-        point = self._store(c)
-        await asyncio.gather(c._retry_in_next_sync("P", "7"), c._retry_in_next_sync("P", "8"),
-                             c._update_project_sync_checkpoint("P", last_issue_updated=10))
-        assert self._queued(point) == ["7", "8"]
-
-    async def test_a_sync_removes_only_the_requests_it_read_and_one_queued_again_stays(self) -> None:
-        c = _connector()
-        point = self._store(c, {"3": "r3", "9": "r9"})
-        read = {"3": "r3", "9": "r9"}
-        await c._retry_in_next_sync("P", "9")  # queued again after the sync read it: a newer request
-        await c._update_project_sync_checkpoint("P", ack_retry=read)
-        assert self._queued(point) == ["9"]
-
-    async def test_the_retry_pass_reads_its_issues_without_date_filters_and_splits_a_refused_query(self) -> None:
-        """Jira refuses an ``id in (...)`` naming an issue it no longer knows (400): each id is read alone, and the gone
-        one is left to the audit log. The requests read are taken off the list."""
-        c = _connector()
-        point = self._store(c, {"5": "r5", "6": "r6"})
-        asked: list = []
-
-        async def fetch(*_a: object, extra_jql: str = "", stored_only: bool = False, **_kw: object) -> AsyncIterator:
-            asked.append((extra_jql, stored_only))
-            if extra_jql == "id in (5, 6)" or extra_jql == "id in (6)":
-                raise JiraReadError(400, "An issue with key '6' does not exist")
-            yield [], False, None
-        c._fetch_issues_batched = fetch
-        await c._retry_reindex_requests("P", "10", [], {"5": "r5", "6": "r6"})
-        assert asked == [("id in (5, 6)", True), ("id in (5)", True), ("id in (6)", True)]
-        assert self._queued(point) == []
-
-    async def test_a_retry_that_fails_to_build_keeps_every_request(self) -> None:
-        c = _connector()
-        point = self._store(c, {"5": "r5"})
-
-        async def fetch(*_a: object, **_kw: object) -> AsyncIterator:
-            c._issue_build_failures += 1
-            yield [], False, None
-        c._fetch_issues_batched = fetch
-        await c._retry_reindex_requests("P", "10", [], {"5": "r5"})
-        assert self._queued(point) == ["5"]
-
-
-class TestAHiddenEmailGroupMemberReadsByAccount:
-    async def test_a_reporter_whose_email_is_hidden_reads_it_alone_by_account(self) -> None:
-        """carol is listed with a hidden email (linked, stored without one) and is in the level's group: granted by account."""
-        c = _connector()
-        carol, alice = _user("carol-key", ""), _user("alice-key", "alice@x.com")
-        c._stored_app_users, c._listed_user_keys = [carol], {"carol-key", "alice-key"}
-        c._fetch_groups = AsyncMock(return_value=GroupPickerPage([{"name": "devs", "groupId": "devs"}]))
-        c._fetch_group_members = AsyncMock(return_value=["carol-key"])
-        c.data_entities_processor.on_new_user_groups = AsyncMock()
-        await c._sync_user_groups([alice])
-        assert c.data_entities_processor.on_new_user_groups.await_args.args[0][0][1] == []  # the graph holds the listed
-        context = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, members_readable=True,
-                                       members_by_level={"1": [{"type": "group", "parameter": "devs", "value": "devs"}]},
-                                       browse_holders=[{"type": "reporter"}])
-        users = c._grant_directory({"alice-key": alice})
-        context.level_readers = c._level_readers(context, "P", users)
-        record = _ticket()
-        grants, _, _ = apply_issue_access_settled(
-            record, {"security": {"id": "1"}, "reporter": {"key": "carol-key"}}, is_subtask=False, project_key="P",
-            context=context, user_by_account_id=users, project_id="10")
-        assert (record.access_rule, [(g.email, g.external_id) for g in c._directory_grants(grants, {"alice-key": alice})]) \
-            == (AccessRule.OPEN, [(None, "carol-key")])
-
-
 class TestARoleAnsweredWithoutItsActors:
     """ProjectRoleBean lists ``actors`` (Data Center 10.2 to 11.3 specifications): a role answered without that list has
-    unread members, not none, so its stored members stay and no level reads it as empty. ``[]`` is a role with none."""
+    unread members, not none, so its stored members stay. ``[]`` is a role with none."""
 
     @staticmethod
     async def _sync(body: dict) -> JiraDataCenterConnector:
@@ -1223,9 +1053,55 @@ class TestARoleAnsweredWithoutItsActors:
     async def test_its_members_are_unread_and_the_stored_role_stays(self, body: dict) -> None:
         c = await self._sync(body)
         c.data_entities_processor.on_new_app_roles.assert_not_called()
-        assert "P_10002" not in c._role_members and c._kept_unread_access
+        assert c._kept_unread_access
 
     async def test_an_empty_list_is_a_role_with_no_members(self) -> None:
         c = await self._sync({"name": "Developers", "id": 10002, "actors": []})
-        assert c._role_members == {"P_10002": []}
         assert c.data_entities_processor.on_new_app_roles.await_args.args[0][0][1] == []
+
+
+class TestViewersPastTheFirstHundred:
+    """GET /user/permission/search returns at most the first 100 results from Data Center 10.6 ("The combination of
+    maxResults and startAt is limited to the first 100 results"). A full page is split by the username filter along the
+    synced accounts' usernames only; every user granted was listed by Jira, so no split can grant more than it read."""
+
+    @staticmethod
+    def _jira(viewers: list[tuple[str, str]]) -> tuple[Any, list[str | None]]:
+        """A viewers route over ``viewers`` ((username, email)): the filter matches the start of any word of the
+        username or email, and a page holds the first 100."""
+        asked: list[str | None] = []
+
+        async def page(_issue_key: str, username: str | None) -> tuple[int, list[dict]]:
+            asked.append(username)
+            rows = [{"key": f"k-{name}", "name": name, "emailAddress": email} for name, email in viewers
+                    if not username or any(w.startswith(username) for w in [name, *email.replace("@", " ").split()])]
+            return 200, rows[:100]
+        return page, asked
+
+    async def test_a_full_page_is_split_along_synced_usernames_only(self) -> None:
+        c = _connector()
+        page, asked = self._jira([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        c._viewers_page = page
+        status, viewers = await c._issue_viewers("P-1", ["u001", "u120", "u149", "zed"])
+        assert status == 200
+        names = {v["name"] for v in viewers}
+        assert {"u001", "u120", "u149"} <= names and "zed" not in names
+        assert all(a is None or any(n.startswith(a) for n in ["u001", "u120", "u149", "zed"]) for a in asked)
+
+    async def test_a_username_whose_own_page_is_still_full_and_lacks_it_is_not_granted(self) -> None:
+        """Everyone's email shares a word with "ann", so her own page is full of others and she is not on it: she is
+        not granted (fewer readers, never more); someone listed on a page is."""
+        c = _connector()
+        page, _ = self._jira([(f"p{i:03}", f"p{i:03}@ann.example") for i in range(150)] + [("ann", "ann@x.com")])
+        c._viewers_page = page
+        status, viewers = await c._issue_viewers("P-1", ["ann", "p001"])
+        assert status == 200 and {v["name"] for v in viewers} >= {"p001"} and "ann" not in {v["name"] for v in viewers}
+
+    async def test_a_failed_page_fails_the_read(self) -> None:
+        c = _connector()
+        page, _ = self._jira([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+
+        async def failing(issue_key: str, username: str | None) -> tuple[int, list[dict] | None]:
+            return (503, None) if username else await page(issue_key, username)
+        c._viewers_page = failing
+        assert await c._issue_viewers("P-1", ["u120"]) == (503, None)  # u120 is past the first page
