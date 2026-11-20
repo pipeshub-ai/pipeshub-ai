@@ -394,6 +394,9 @@ class GitHubTeamsConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
+            # Earlier releases let the org's All team through the gate for public repos; nobody without a GitHub
+            # account reads them, so an edge left from then goes first, whatever the rest of the sync does.
+            await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()

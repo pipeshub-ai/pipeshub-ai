@@ -8,8 +8,9 @@ Responsibilities:
 - Map GitHub collaborator roles to USER ``Permission`` objects.
   ``affiliation=all`` already expands team members, outside collaborators,
   default-org-permission members, and owners — no separate team-as-group grant.
-- Grant visibility-derived read: ORG on public repos, per org-member USER on
-  internal repos. Private repos get only collaborator grants.
+- Grant visibility-derived read: ORG on public repos (linked GitHub accounts
+  only), per org-member USER on internal repos. Private repos get only
+  collaborator grants.
 """
 
 from __future__ import annotations
@@ -153,10 +154,7 @@ class ProjectsSync:
             if permissions is None:
                 return False
 
-        visibility_permissions = self._visibility_permissions(repo)
-        if any(p.entity_type == EntityType.ORG for p in visibility_permissions):
-            await c.data_entities_processor.ensure_team_app_edge(c.connector_id)
-        permissions.extend(visibility_permissions)
+        permissions.extend(self._visibility_permissions(repo))
         permissions = _dedupe_highest_permissions(permissions)
         # A personal repo hangs directly off the app. The team connector still
         # puts an org group above the repo and keeps that group's grants.
@@ -419,9 +417,11 @@ class ProjectsSync:
         enumerate all of GitHub as collaborators — so it has to be modelled from
         the visibility value itself.
 
-        ``public``: readable by anyone with a GitHub account, so mirroring it as
-        readable by the whole PipesHub org matches reality — those users could
-        open it on github.com regardless.
+        ``public``: "Public repositories are accessible to everyone on the internet"
+        (https://docs.github.com/en/repositories/creating-and-managing-repositories/about-repositories).
+        An ORG grant reaches only users who pass the connector gate, their own
+        link to a GitHub account: people without an account in GitHub read
+        nothing through it, whatever signed-out visitors see on github.com.
 
         ``internal``: "Organization members have read permissions to all internal
         repositories in an enterprise, including those in organizations they are

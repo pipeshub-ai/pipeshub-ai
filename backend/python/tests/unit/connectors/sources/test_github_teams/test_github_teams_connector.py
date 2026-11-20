@@ -43,20 +43,22 @@ def _runnable_connector() -> object:
 
 
 class TestTeamAppEdge:
-    async def test_run_sync_leaves_the_team_app_edge_to_the_repo_sync(
+    async def test_run_sync_withdraws_an_all_team_edge_before_anything_else(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The edge is conditional on a public repo, which only the per-repo
-        sync knows about (see test_projects.py::TestTeamAppEdge)."""
+        """Earlier releases let the org's All team through for public repos. The edge goes at the start of every
+        sync, before a step that can fail, so people without an account in GitHub lose it on upgrade."""
         c = _runnable_connector()
         monkeypatch.setattr(
             connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )
+        c.users.sync_users = AsyncMock(side_effect=ConnectionError("GitHub unavailable"))
 
-        await GitHubTeamsConnector.run_sync(c)
+        with pytest.raises(ConnectionError):
+            await GitHubTeamsConnector.run_sync(c)
 
+        c.data_entities_processor.withdraw_team_app_edge.assert_awaited_once_with(c.connector_id)
         c.data_entities_processor.ensure_team_app_edge.assert_not_awaited()
-        c.projects.sync_all_repos.assert_awaited_once()
 
 
 class TestInit:
