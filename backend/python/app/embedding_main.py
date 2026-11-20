@@ -60,7 +60,7 @@ from app.utils.embedding_precision import (
     PrecisionSelector,
     model_cache_state_path,
 )
-from app.utils.env_utils import bind_host, bind_port, env_positive_int
+from app.utils.env_utils import bind_host, bind_port, env_positive_int, hf_hub_offline
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1107,12 +1107,7 @@ class ModelManager:
                             model_name, status, self._download_status_lock
                         )
                     except Exception as download_exc:
-                        offline = os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
-                            "1",
-                            "true",
-                            "yes",
-                        }
-                        if offline:
+                        if hf_hub_offline():
                             err = RuntimeError(
                                 "HuggingFace offline mode is on (HF_HUB_OFFLINE=1), so "
                                 f"'{model_name}' cannot be downloaded. Set HF_HUB_OFFLINE=0 "
