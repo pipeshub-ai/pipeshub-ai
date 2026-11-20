@@ -23,6 +23,9 @@ HELM = sorted(
 )
 MODELS = PurePosixPath(DOCLING_ARTIFACTS_DEFAULT)
 DOCLING_OWN_VARIABLE = re.compile(r"(?<![A-Z_])DOCLING_ARTIFACTS_PATH")
+# Every spelling that turns the Hub offline: `HF_HUB_OFFLINE=1`, `HF_HUB_OFFLINE: "1"`, a default such as
+# `${HF_HUB_OFFLINE:-1}`, and Helm's `name: HF_HUB_OFFLINE` followed by `value: "1"`. Unset and empty stay valid.
+HUB_FORCED_OFFLINE = re.compile(r"HF_HUB_OFFLINE[\"']?\W+(?:value[\"']?\W+)?[\"']?(?:1|true|yes|on)\b", re.I)
 
 
 def _covers(target: str) -> bool:
@@ -73,7 +76,7 @@ def test_no_compose_file_covers_or_redirects_the_models() -> None:
     for path in COMPOSE:
         text = path.read_text()
         assert not DOCLING_OWN_VARIABLE.search(text) and DOCLING_ARTIFACTS_ENV not in text, f"{path}: an older image has no such directory"
-        assert not re.search(r"HF_HUB_OFFLINE=1\b", text), path
+        assert not HUB_FORCED_OFFLINE.search(text), path
         for target in _compose_targets(path):
             assert not _covers(target), (path, target)
         for mount in re.findall(r"pipeshub_hf_cache:(\S+)", text):
@@ -84,7 +87,7 @@ def test_the_helm_chart_needs_no_volume_or_env_for_the_models() -> None:
     for path in HELM:
         text = path.read_text()
         assert not DOCLING_OWN_VARIABLE.search(text) and DOCLING_ARTIFACTS_ENV not in text, path
-        assert not re.search(r"HF_HUB_OFFLINE\W+[\"']?1", text), path
+        assert not HUB_FORCED_OFFLINE.search(text), path
         for target in re.findall(r"mountPath:\s*(\S+)", text):
             assert not _covers(target), (path, target)
 
@@ -93,6 +96,28 @@ def test_the_guard_recognises_every_way_of_covering_the_models() -> None:
     covering = ["/opt", "/opt/", '"/opt"', "'/opt/docling-models'", "/opt/docling-models/x", "/"]
     assert all(_covers(t) for t in covering)
     assert not any(_covers(t) for t in ["/optional", "/opt/zammad/storage", "/root/.cache/huggingface", "relative/opt"])
+
+
+def test_the_offline_guard_recognises_every_way_of_forcing_the_hub_offline() -> None:
+    forcing = [
+        "- HF_HUB_OFFLINE=1",
+        'HF_HUB_OFFLINE: "1"',
+        "HF_HUB_OFFLINE: 1",
+        "- HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}",
+        "- name: HF_HUB_OFFLINE\n  value: \"1\"",
+        "- name: HF_HUB_OFFLINE\n  value: 'true'",
+        '- name: "HF_HUB_OFFLINE"\n  value: 1',
+    ]
+    assert all(HUB_FORCED_OFFLINE.search(t) for t in forcing), [t for t in forcing if not HUB_FORCED_OFFLINE.search(t)]
+    allowed = [
+        "- HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}",
+        "HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-}",
+        "- name: HF_HUB_OFFLINE\n  value: \"\"",
+        "- name: HF_HUB_OFFLINE\n  value: \"0\"",
+        "HF_HUB_OFFLINE: 0",
+        "# HF_HUB_OFFLINE is unset",
+    ]
+    assert not any(HUB_FORCED_OFFLINE.search(t) for t in allowed), [t for t in allowed if HUB_FORCED_OFFLINE.search(t)]
 
 
 def test_the_deployment_guide_names_the_directory() -> None:
