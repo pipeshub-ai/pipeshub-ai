@@ -1573,3 +1573,130 @@ def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements
         as_role(c, "pipeshub_connectors", A)
         assert sorted(r[0] for r in c.execute(AT, (["https://w/p7"],))) == ["r6007", "r7"]
         assert [r[0] for r in c.execute(SITES, (A, ["JIRA", "JIRA DATA CENTER"], None))] == [f"https://s{i}.atlassian.net" for i in range(3)]
+
+
+# ---- indexes built and dropped outside the upgrade's transaction (db.migrate's online step) ------------------------------------------------
+ONLINE = ("nodes_record_ticket_url", "nodes_record_pending_vrid", "nodes_record_weburl", "nodes_record_ticket_site", "nodes_block_record_seek",
+          "nodes_block_name_seek", "nodes_codefile_path_seek")
+_DDL = re.compile(r"^(CREATE (UNIQUE )?INDEX|DROP INDEX|ALTER INDEX|REINDEX)\b", re.I)
+
+
+def _populate(c, n: int = 3000) -> str:
+    """Rows every online index of graph_0014..0018 holds; returns the leaf they are in."""
+    as_role(c, "pipeshub_connectors", A)
+    c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'recordType', 'TICKET', "
+              "'webUrl', 'https://s.atlassian.net/browse/K-' || i, 'pendingVirtualRecordId', 'v' || i) FROM generate_series(1, %s) i", (A, A, n))
+    c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || i, jsonb_build_object('orgId', %s::text, 'recordId', 'r' || i, 'connectorId', 'c1', "
+              "'nameFolded', 'n' || i) FROM generate_series(1, %s) i", (A, A, n))
+    c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || i, jsonb_build_object('orgId', %s::text, 'filePath', 'src/p' || i || '.py') "
+              "FROM generate_series(1, %s) i", (A, A, n))
+    c.execute("RESET ROLE")
+    return c.execute("SELECT DISTINCT tableoid::regclass::text FROM graph.nodes WHERE org_id = %s", (A,)).fetchone()[0]
+
+
+def _whole_and_valid(c, index: str) -> bool:
+    """An index on every table of graph.nodes' tree, the root included, and every one valid."""
+    n, ok = c.execute("SELECT count(*), bool_and(i.indisvalid) FROM pg_partition_tree(%s::regclass) t JOIN pg_index i ON i.indexrelid = t.relid",
+                      (f"graph.{index}",)).fetchone()
+    return ok is True and n == c.execute("SELECT count(*) FROM pg_partition_tree('graph.nodes')").fetchone()[0]
+
+
+def _exists(c, index: str) -> bool:
+    return c.execute("SELECT to_regclass(%s) IS NOT NULL", (f"graph.{index}",)).fetchone()[0]
+
+
+def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
+    """From graph_0013 on a populated graph: every index of graph_0014..0018 is built before the upgrade's transaction, concurrently on the leaf
+    that holds rows; the transaction itself runs no index statement at all (one there would keep the writers of graph.nodes waiting until the
+    commit)."""
+    from sqlalchemy import Engine, event
+
+    from db import migrate
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "graph_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        leaf = _populate(c).split(".")[1]
+        assert not any(_exists(c, i) for i in ONLINE)
+    seen: list[tuple[bool, str]] = []
+
+    def spy(conn, _cursor, statement, *_):
+        seen.append((conn.connection.driver_connection.autocommit, " ".join(statement.split())))
+    monkeypatch.setenv("PG_MIGRATE_URL", url)
+    monkeypatch.setenv("PG_MIGRATE_RETRY_BASE_S", "0.1")
+    event.listen(Engine, "before_cursor_execute", spy)
+    try:
+        code = migrate.main(["upgrade"])
+    finally:
+        event.remove(Engine, "before_cursor_execute", spy)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert [s for auto, s in seen if not auto and _DDL.match(s)] == []
+    online = [s for auto, s in seen if auto and _DDL.match(s)]
+    for index in ONLINE:
+        assert any(re.match(rf"CREATE INDEX CONCURRENTLY {leaf}_\w*_{index} ON graph\.{leaf} ", s) for s in online), (index, online)
+        assert f"index graph.{index}: built in" in out
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in ONLINE)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 18
+
+
+def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
+    """A run stopped during CREATE INDEX CONCURRENTLY leaves the parent index invalid (ON ONLY, not every leaf attached) and the leaf's index
+    invalid. The next run drops the invalid leaf index, builds it again and attaches it; the catalog checks, which refuse an invalid index, pass."""
+    import runpy
+    from pathlib import Path
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    ix = runpy.run_path(str(Path(__file__).parents[1] / "versions" / "graph" / "0015_pending_virtual_record_index.py"))["ONLINE_INDEXES"][0]
+    with connect(cluster, name) as c:
+        leaf = _populate(c)
+        c.execute(f"CREATE INDEX {ix['name']} ON ONLY {ix['table']} ({ix['cols']}) WHERE {ix['where']}")
+        parent = c.execute("SELECT inhparent::regclass::text FROM pg_inherits WHERE inhrelid = %s::regclass", (leaf,)).fetchone()[0]
+        stub = ix["name"] if parent == "graph.nodes" else f"{parent.split('.')[1]}_{ix['name']}"       # ddl names a leaf's index after its tree path
+        if parent != "graph.nodes":
+            c.execute(f"CREATE INDEX {stub} ON ONLY {parent} ({ix['cols']}) WHERE {ix['where']}")
+        stub = f"{leaf.split('.')[1]}_{stub}"
+        with pytest.raises(psycopg.errors.UniqueViolation):          # a concurrent build that failed half way: left behind, invalid
+            c.execute(f"CREATE UNIQUE INDEX CONCURRENTLY {stub} ON {leaf} (org_id)")
+        assert c.execute("SELECT indisvalid FROM pg_index WHERE indexrelid = %s::regclass", (f"graph.{stub}",)).fetchone()[0] is False
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"index graph.{ix['name']}: built in" in r.stdout
+    with connect(cluster, name) as c:
+        assert _whole_and_valid(c, ix["name"])
+        assert "pendingVirtualRecordId" in c.execute("SELECT pg_get_indexdef(%s::regclass)", (f"graph.{stub}",)).fetchone()[0]
+
+
+def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tmp_path):
+    """The upgrade's checks refuse it (exit 4), so its revisions roll back: the indexes the online step built for them are dropped as well, and the
+    build the database was on runs against it unchanged."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        leaf = _populate(c)
+    extra = tmp_path / "surface.extra.txt"
+    extra.write_text("index graph.nodes_never on graph.nodes unique=false exclusion=false valid=true def=0\n")
+    r = run_migrate(url, PG_MIGRATE_SURFACE_FILES=str(extra))
+    assert r.returncode == 4, r.stdout + r.stderr
+    for index in ONLINE:
+        assert f"index graph.{index}: built in" in r.stdout and f"index graph.{index}: dropped (the upgrade did not commit)" in r.stdout
+    with connect(cluster, name) as c:
+        assert not any(_exists(c, i) for i in ONLINE)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 13
+        assert not any(c.execute("SELECT to_regclass(%s) IS NOT NULL", (f"graph.{leaf.split('.')[1]}_{i}",)).fetchone()[0] for i in ONLINE)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+

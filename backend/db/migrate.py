@@ -16,11 +16,13 @@ import psycopg
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import Connection, Engine, create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
 
 from db import surface
-from db.lib import vetted
+from db.lib import ddl, vetted
 from db.locations import DB_DIR, version_locations
 from db.schema_requirements import heads
 
@@ -72,12 +74,13 @@ def locked(url: str, wait_s: float | None = None) -> Iterator[psycopg.Connection
         pids = {conn.execute("SELECT pg_backend_pid()").fetchone()[0] for _ in range(3)}
         if len(pids) > 1:
             raise RunnerError(EXIT_CONFIG, "PG_MIGRATE_URL points at a connection pooler; use the direct address")
-        conn.execute(f"SET lock_timeout = '{int(wait_s * 1000)}ms'")
-        try:
-            conn.execute("SELECT pg_advisory_lock(hashtext(%s))", (LOCK_KEY,))
-        except psycopg.errors.LockNotAvailable as exc:
-            raise RunnerError(EXIT_LOCK, f"another migration run held the lock for {wait_s:g}s") from exc
-        conn.execute("RESET lock_timeout")
+        # Polled, not waited for in pg_advisory_lock: a waiting statement holds a snapshot, and the holder's CREATE INDEX CONCURRENTLY waits for
+        # every older snapshot, so the two runs would stall each other until this one gave up.
+        deadline = time.monotonic() + wait_s
+        while not conn.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (LOCK_KEY,)).fetchone()[0]:
+            if time.monotonic() >= deadline:
+                raise RunnerError(EXIT_LOCK, f"another migration run held the lock for {wait_s:g}s")
+            time.sleep(min(1.0, wait_s / 10))
         # A pooler can hand back the same backend and still drop a session lock at transaction end, so
         # prove the lock is held by looking at it from a separate statement. Fail closed.
         held = conn.execute("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted "
@@ -142,6 +145,79 @@ def _upgrade_with_retries(cfg: Config, target: str) -> None:
             log(f"lock timeout, retrying ({attempt + 1}/4)")
             time.sleep(base * 2**attempt)
     raise AssertionError("unreachable")
+
+
+def build_memory() -> str | None:
+    """``PG_INDEX_BUILD_MEMORY_MB``: ``maintenance_work_mem`` of the session that builds indexes online (the whole build's budget, workers
+    included); unset keeps the server's."""
+    raw = os.environ.get("PG_INDEX_BUILD_MEMORY_MB", "").strip()
+    if not raw:
+        return None
+    if not raw.isdigit() or not 1 <= int(raw) <= 2_000_000:
+        raise RunnerError(EXIT_CONFIG, f"PG_INDEX_BUILD_MEMORY_MB must be a whole number of megabytes from 1, got {raw!r}")
+    return f"{int(raw)}MB"
+
+
+def _online(url: str, memory: str | None) -> Engine:
+    """Sessions outside the upgrade's transaction, as the owner role, for index builds and drops. No statement_timeout (a build reads a whole
+    leaf) and no lock_timeout for CREATE INDEX CONCURRENTLY (its lock lets readers and writers through; it waits for older transactions, which a
+    timeout would turn into an invalid index); every statement that takes a lock writers wait for runs under ddl._retry's 2 s."""
+    opts = (f"-c role={OWNER_ROLE} -c statement_timeout=0 -c lock_timeout=0 -c client_connection_check_interval=5s"
+            + (f" -c maintenance_work_mem={memory}" if memory else ""))
+    return create_engine(url, poolclass=NullPool, isolation_level="AUTOCOMMIT", connect_args={"options": opts, **KEEPALIVES})
+
+
+def _modules(cfg: Config, conn: psycopg.Connection, *, pending: bool) -> list:
+    """The revision modules of this tree, oldest first: those the database has not applied (``pending``) or all of them. A revision
+    ``<branch>_<NNNN>`` is applied when the branch's epoch is at least NNNN (env.py writes the epoch with each revision)."""
+    epochs = dict(conn.execute("SELECT branch, epoch FROM kernel.schema_epoch").fetchall()) if pending else {}
+    revs = reversed(list(ScriptDirectory.from_config(cfg).walk_revisions()))
+    return [r.module for r in revs if int(r.revision.rsplit("_", 1)[1]) > epochs.get(r.revision.rsplit("_", 1)[0], 0)]
+
+
+def _build_online(c: Connection, modules: list, started: list[str]) -> None:
+    """Build the ``ONLINE_INDEXES`` of the pending revisions before their transaction, without blocking writers (``ensure_partitioned_index``:
+    ``ON ONLY`` the parent, CREATE INDEX CONCURRENTLY per leaf, ATTACH). The revision's own call then finds them valid and does nothing. An
+    index a stopped run left invalid is rebuilt. A table a pending revision creates is skipped: that revision builds on it, empty."""
+    for ix in (ix for m in modules for ix in getattr(m, "ONLINE_INDEXES", ())):
+        schema = ix["table"].split(".")[0]
+        qname = f"{schema}.{ix['name']}"
+        if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (ix["table"],)).scalar() or ddl._index_valid(c, qname):
+            continue
+        started.append(qname)
+        t0 = time.monotonic()
+        log(f"index {qname}: building online")
+        ddl.ensure_partitioned_index(c, **ix, blocking=False)
+        log(f"index {qname}: built in {time.monotonic() - t0:.1f}s")
+
+
+def drop_online(c: Connection, qname: str) -> None:
+    """Drop an index and every leaf index a stopped build of it left unattached. A partitioned index cannot be dropped CONCURRENTLY, nor can a
+    leaf index while it is attached: its drop is a catalog change of a moment, under ddl._retry's 2 s lock_timeout."""
+    schema, name = ddl._ident(qname).split(".")
+    stray = c.exec_driver_sql(
+        "SELECT c.oid::regclass::text FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE NOT i.indisvalid AND c.relnamespace = %s::regnamespace "
+        "AND c.relname LIKE %s AND NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid)", (schema, "%\\_" + name.replace("_", "\\_"))).scalars().all()
+    for leaf in stray:
+        c.exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS {leaf}")
+    if c.exec_driver_sql("SELECT relkind = 'I' FROM pg_class WHERE oid = to_regclass(%s)", (qname,)).scalar():
+        ddl._retry(c, lambda: c.exec_driver_sql(f"DROP INDEX IF EXISTS {qname}"), attempts=5)
+    else:
+        c.exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS {qname}")
+
+
+def _drop_all(engine: Engine, names: list[str] | frozenset[str], why: str, hint: str) -> None:
+    """Drop each of these indexes that exists. A failure is logged with ``hint``: it never fails a run that committed, nor hides the error
+    of one that did not."""
+    for q in sorted(set(names)):
+        try:
+            with engine.connect() as c:
+                if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (q,)).scalar():
+                    continue
+                drop_online(c, q)
+            log(f"index {q}: dropped ({why})")
+        except Exception as exc:
+            log(f"WARNING index {q} was not dropped ({why}): {str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__}; {hint}")
 
 
 def _has_revisions(conn: psycopg.Connection) -> bool:
@@ -223,6 +299,7 @@ def run(argv: list[str]) -> None:
     cmd = argv[0] if argv else "upgrade"
     url = migrate_url()
     kv_mode = kv_access_mode()
+    memory = build_memory()
     with locked(url) as conn:
         _ensure_kernel_schema(conn)
         cfg = alembic_config(url)
@@ -233,12 +310,26 @@ def run(argv: list[str]) -> None:
                 if kv_mode:            # the newer schema is compatible (checked above), and it holds the mode table this build knows
                     _set_kv_access(conn, kv_mode)
                 return
-            if _path["existing_install"]:
-                cfg.attributes["verify"] = _report
-                _upgrade_with_retries(cfg, "heads")
-            else:               # an empty database has nothing to protect, and all revisions in one transaction hold ~6,600 locks
-                _upgrade_with_retries(cfg, "heads")
-                _report(conn)
+            engine = _online(url, memory)
+            try:
+                if _path["existing_install"]:
+                    cfg.attributes["verify"] = _report
+                    started: list[str] = []
+                    try:
+                        with engine.connect() as c:
+                            _build_online(c, _modules(cfg, conn, pending=True), started)
+                        _upgrade_with_retries(cfg, "heads")
+                    except Exception:
+                        # Nothing of the upgrade stays, so neither do the indexes built for it: the build this one replaces refuses them
+                        # (unexpected surface lines) and would not start again.
+                        _drop_all(engine, started, "the upgrade did not commit",
+                                  "an earlier build refuses it as unexpected: run this build again, or drop it before going back")
+                        raise
+                else:           # an empty database has nothing to protect, and all revisions in one transaction hold ~6,600 locks
+                    _upgrade_with_retries(cfg, "heads")
+                    _report(conn)
+            finally:
+                engine.dispose()
             if kv_mode:
                 _set_kv_access(conn, kv_mode)
         elif cmd == "current":

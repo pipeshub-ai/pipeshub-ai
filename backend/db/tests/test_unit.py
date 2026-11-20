@@ -340,6 +340,17 @@ def test_lint_create_if_not_exists_of_another_modules_table(tmp_path, monkeypatc
     assert lint.lint_file(f) == []
 
 
+@pytest.mark.parametrize("raw,want", [("", None), (" ", None), ("512", "512MB"), ("0", 2), ("-1", 2), ("1.5", 2), ("1GB", 2), ("9999999", 2)])
+def test_the_index_build_memory_is_a_whole_number_of_megabytes(monkeypatch, raw, want):
+    monkeypatch.setenv("PG_INDEX_BUILD_MEMORY_MB", raw)
+    if want == 2:
+        with pytest.raises(migrate.RunnerError) as e:
+            migrate.build_memory()
+        assert e.value.code == migrate.EXIT_CONFIG and "PG_INDEX_BUILD_MEMORY_MB" in str(e.value)
+    else:
+        assert migrate.build_memory() == want
+
+
 @pytest.mark.parametrize("sql,flagged", [
     ("REVOKE CREATE ON SCHEMA a FROM pipeshub_vetted_a", False),
     ("REVOKE pipeshub_vetted_a, pipeshub_vetted_b FROM pipeshub_owner", False),
