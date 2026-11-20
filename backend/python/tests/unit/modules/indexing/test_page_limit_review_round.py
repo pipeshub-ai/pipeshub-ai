@@ -486,7 +486,7 @@ async def test_a_service_keep_in_keep_old_copy_mode_stays_on_the_old_copy_and_dr
     assert record["virtualRecordId"] == VRID and record["indexingStatus"] == COMPLETED
     assert PENDING_VIRTUAL_RECORD_ID not in record
     assert world.cleanup.call_args.args[1] == "v-pending"
-    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with(VRID)
 
 
 @pytest.mark.asyncio
@@ -632,7 +632,7 @@ async def test_a_routing_recount_over_the_limit_keeps_a_keep_eligible_record_on_
     assert record["contentRev"] == "other" and record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
     world.unindex.assert_not_awaited()
     restored = world.processor.indexing_pipeline.rewrite_or_delete_vector_membership
-    assert restored.await_count == (1 if shared else 0)
+    assert restored.await_count == 1, "every keep rewrites the membership of the copy it keeps"
 
 
 # --- the late keep's re-read and marker ----------------------------------------------------------------------------------------
@@ -704,3 +704,40 @@ async def test_a_late_refusal_hands_the_events_virtual_record_id_to_the_un_index
     await world.run()
     assert world.refused
     assert world.unindex.await_args.kwargs["fallback_vrid"] == "v-old"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_failed_membership_rewrite_settles_with_the_record_in_the_old_copys_points() -> None:
+    """The first run put the record back on its old id and the rewrite raised; the retry's early count is over the limit, so
+    it settles at the early gate. That keep must rewrite the membership too."""
+    first, _ = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
+    first.processor.indexing_pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
+    with patch("app.events.events.content_revision", return_value=REV), pytest.raises(RuntimeError):
+        await first.run(UPDATE)
+    stuck = dict(first.graph.record)
+    assert stuck["virtualRecordId"] == VRID
+
+    retry = World(stuck)
+    retry.count(600)  # the early gate decides this time
+    await retry.run(UPDATE)
+    assert not retry.refused
+    assert retry.graph.record["indexingStatus"] == COMPLETED and retry.graph.record["virtualRecordId"] == VRID
+    retry.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_with(VRID)
+
+
+@pytest.mark.asyncio
+async def test_an_early_keep_rewrites_the_membership_of_the_copy_it_keeps() -> None:
+    world = World(searchable(indexingStatus="QUEUED"))
+    world.count(600)
+    await world.run(UPDATE)
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with(VRID)
+
+
+@pytest.mark.asyncio
+async def test_a_keep_whose_membership_rewrite_fails_is_not_acknowledged() -> None:
+    world = World(searchable(indexingStatus="QUEUED"))
+    world.count(600)
+    world.processor.indexing_pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=RuntimeError("store down"))
+    with pytest.raises(RuntimeError):
+        await world.run(UPDATE)
+    assert world.graph.record["indexingStatus"] == "QUEUED" and "indexingNote" not in world.graph.record

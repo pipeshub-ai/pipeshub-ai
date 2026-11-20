@@ -1574,9 +1574,8 @@ class EventProcessor:
         )
         if not applied:
             return True
-        if moved:
-            # Raises when the store cannot do it, so the event is retried with the record already back on its old id.
-            await pipeline.rewrite_or_delete_vector_membership(old_vrid)
+        # The old id's membership is rewritten with the record holding it again by ``apply_keep`` below (every keep does it,
+        # so a retry after a failure there settles the same way). It raises when the store cannot, so the event is retried.
         for released in {v for v in (moved_to if moved else None, pending) if v and v != old_vrid}:
             self._spawn_abandoned_vrid_cleanup(org_id, released)
             await self._rewrite_or_delete_vrid_vectors(released)

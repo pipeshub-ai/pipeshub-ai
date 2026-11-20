@@ -1049,7 +1049,7 @@ its vectors exist.
 A file with no count from the early count is decided from the whole-file inspection; when that has none either (a file only pdfium
 can open), on the in-process pipeline pdfium counts the bytes that are parsed, and with the parsing service the page count the
 service returns decides, in both cases before anything is persisted or indexed. A keep at that point puts back what the event
-found while the record still holds the revision this run wrote: a record the run moved off a shared virtual record id goes back to it and that id's membership is rewritten with the record holding it again; a replacement copy pending under another id is dropped and released. It is refused only when the membership cannot be restored. A file no counter can count
+found while the record still holds the revision this run wrote: a record the run moved off a shared virtual record id goes back to it and that id's membership is rewritten with the record holding it again; a replacement copy pending under another id is dropped and released. It is refused only when the membership cannot be restored. Every keep rewrites the membership of the copy it keeps before it is acknowledged (a no-op for a record that was never taken out), so a retry after a failed rewrite settles the same way; a keep fails and is retried while the vector store cannot do it. A file no counter can count
 is still indexed. A lane
 admission timeout during the count is `Unavailable`. While the count is unknown and nothing is kept, deduplication reuses
 only a twin with a recorded `pageCount` of 1 to 500 and no page-limit note.

@@ -254,6 +254,13 @@ async def apply_keep(doc: LongDocument, keep: Keep) -> None:
     record_id = doc.record_id
     status = snapshot.get("indexingStatus")
     forced = bool(doc.force_reindex)
+    # The record is acknowledged as kept only once it is a member of its copy's points. An earlier run that put it back on
+    # this copy may have failed before rewriting the membership, and a retry settles here. The rewrite recomputes the
+    # membership from the records that hold the id, so it is idempotent and, for a record that was never taken out, a no-op.
+    vrid = snapshot.get("virtualRecordId")
+    pipeline = doc.host._indexing_pipeline() if hasattr(doc.host, "_indexing_pipeline") else None
+    if vrid and pipeline is not None:
+        await pipeline.rewrite_or_delete_vector_membership(vrid)
     restores = status in _RESTORABLE or (
         status == ProgressStatus.AUTO_INDEX_OFF.value and forced and snapshot.get(HAS_INDEXED_COPY) is True
     )
