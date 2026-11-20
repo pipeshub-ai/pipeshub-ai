@@ -33,6 +33,7 @@ export const INTERNAL_RECORD_FIELDS: ReadonlySet<string> = new Set([
   'propsGen',
   'propsSrc',
   'propsVer',
+  'pendingVirtualRecordId',
   'embedVrid',
   'embedRev',
   'embedKey',

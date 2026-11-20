@@ -5,18 +5,34 @@ import asyncio
 import uuid
 from typing import List
 
+import pytest
+
 from app.services.vector_db.models import (
     CollectionConfig,
     DistanceMetric,
     FieldCondition,
     FilterExpression,
-    HybridSearchRequest,
-    SparseVector,
     VectorPoint,
 )
 
-
 DIM = 8  # small fixed dimension for tests
+
+
+def strict_service(request: pytest.FixtureRequest, backend: str) -> object:
+    """The service fixture of a backend; in a run that selects integration tests, one that is down fails.
+
+    The shared service fixtures skip when their server is down, which is right for a developer running the
+    whole directory and for the general unit run that happens to collect this file. A job that runs
+    ``-m integration -k <backend>`` asked for that backend, and a skip would let it pass without running
+    the scenario.
+    """
+    try:
+        return request.getfixturevalue(f"{backend}_service")
+    except pytest.skip.Exception as skipped:
+        marker = (request.config.getoption("markexpr", default="") or "").replace("not integration", "")
+        if "integration" not in marker:
+            raise
+        pytest.fail(f"the {backend} service was selected but is unavailable: {skipped}", pytrace=False)
 
 
 def point_id(name: str) -> str:

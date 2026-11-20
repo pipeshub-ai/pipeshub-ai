@@ -748,6 +748,8 @@ column platform.outbox.topic type=text notnull=true identity= generated= default
 column platform.outbox.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column platform.outbox.value type=text notnull=true identity= generated= default=-
 column platform.outbox.version type=integer notnull=true identity= generated= default=0
+column platform.queue_deliveries.admission_mac type=text notnull=false identity= generated= default=-
+column platform.queue_deliveries.admission_ms type=bigint notnull=false identity= generated= default=-
 column platform.queue_deliveries.attempts type=integer notnull=true identity= generated= default=0
 column platform.queue_deliveries.consumer type=text notnull=false identity= generated= default=-
 column platform.queue_deliveries.group_id type=text notnull=true identity= generated= default=-
@@ -1265,7 +1267,7 @@ func graph.ref_links(text[],text,text,integer) owner=pipeshub_vetted_graph secde
 func graph.stage_states_by_revision(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=60eaee6b0646cff685230c159b49ebff ext=-
 func graph.stage_states_page(text,text,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a3208be1a7eb86259c302986beb3a97f ext=-
 func graph.stage_states_stale(text[],bigint,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=5bf31d0a9c981b840094d9d290c48b93 ext=-
-func graph.stage_states_unheld(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=728a7b7598098d4e7c698760a693996e ext=-
+func graph.stage_states_unheld(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ba9881d75c81ed3a8070a207d711a4a3 ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
@@ -1355,7 +1357,7 @@ func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
 func platform.kv_admin_or_credential(text) owner=pipeshub_owner secdef=false leakproof=false volatility=i language=sql config=- body=a3405d373ef3d98de71d39c5dca22bad ext=-
-func platform.kv_may(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=- body=caa4106c01dfac53a96a758004cc9009 ext=-
+func platform.kv_may(text,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=sql config=- body=1ecc75e6df474de697a5857fd32be1d7 ext=-
 func platform.kv_outside(text,text,timestamp with time zone) owner=pipeshub_owner secdef=false leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, pg_temp body=da3fbdc19817fc5f91e2cb37c013aba4 ext=-
 func retrieval.collection_create(text,boolean,boolean,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=6881aa406340bf1c4dcee0d6fc6c7b25 ext=-
 func retrieval.collection_get(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=14c63d7ec9cef2ed8b66e1241e62fd0d ext=-
@@ -1619,6 +1621,7 @@ index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=fals
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_external_any on graph.nodes unique=false exclusion=false valid=true def=6bf577338a8f5cc6491718d073f1ec00
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
+index graph.nodes_record_pending_vrid on graph.nodes unique=false exclusion=false valid=true def=e9cf8f4cc709d7da6cb0f813649cc954
 index graph.nodes_record_ticket_url on graph.nodes unique=false exclusion=false valid=true def=b7a08a810f598ec981d576195fd467ed
 index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid=true def=dfea55500a23daf82e044379884face6
 index graph.nodes_record_unsupported on graph.nodes unique=false exclusion=false valid=true def=7eaf118ae019fc9d31cd549544e76e1e
