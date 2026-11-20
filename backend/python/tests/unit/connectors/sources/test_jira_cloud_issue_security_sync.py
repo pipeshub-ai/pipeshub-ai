@@ -958,6 +958,24 @@ class TestAReindexReadsOnlyTheGroupsItsIssuesNeed:
         assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1002"]
 
     @pytest.mark.asyncio
+    async def test_a_sub_task_reads_no_level_members_and_leaves_the_cap_to_the_next_issue(self) -> None:
+        """A leveled sub-task holds a copy of its level's holders and never reads alone (``grouped``), so its level's
+        members change nothing for it. With room for one group, the issue after it still gets its reporter's grant."""
+        subtask = _issue({"id": "10103", "name": "Everyone"}, updated="2025-01-01T00:00:00.000+0000", issue_id="1003")
+        subtask["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        c, pages, point = self._reindex(subtask, [{"type": "reporter"}])
+        cache: dict = {}
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.REINDEX_GROUP_READS", 1):
+            await c._check_and_fetch_updated_issue(_stored_ticket(id="rid-3", external_record_id="1003"),
+                                                   {"acc-1": _users()[0]}, cache)
+            assert pages == []
+            c.data_source.get_issue = AsyncMock(return_value=_resp(200, TestReindexAppliesTheLevel.LEVELED))
+            record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]}, cache)
+        assert pages == ["group-1"]
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert "1001" not in TestTheRetryListKeepsWhatAReindexAdds._queued(point)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("browse", [[], None])
     async def test_no_group_is_read_when_browse_names_no_one_on_each_issue(self, browse: list | None) -> None:
         """With no per-issue Browse holder (or none read), no level member can read an issue alone, so nothing is read; the
@@ -1088,6 +1106,9 @@ def test_a_role_group_actor_is_found_by_the_documented_actor_group_id() -> None:
     assert ([u.source_user_id for u in members], unread) == (["acc-1"], None)
     assert c._role_actor_members("x", [{"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "g"}}],
                                  {}, {}, {"g": None})[1] == "g"
+    # Left out of the group read on purpose, as the sync does: app accounts, no people to grant.
+    assert c._role_actor_members("x", [{"type": "atlassian-group-role-actor", "actorGroup": {
+        "groupId": "g-addons", "name": "atlassian-addons-admin"}}], {}, {}, {}) == ([], None)
 
 
 

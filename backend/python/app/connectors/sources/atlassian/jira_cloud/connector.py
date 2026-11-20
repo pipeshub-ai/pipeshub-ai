@@ -4194,6 +4194,9 @@ class JiraConnector(BaseConnector):
                 else:
                     self.logger.debug(f"  {where}: User not found - accountId={account_id}, email={email}")
             elif actor_type == ROLE_ACTOR_TYPE_GROUP:
+                group = actor.get("actorGroup") if isinstance(actor.get("actorGroup"), dict) else {}
+                if str(group.get("name") or actor.get("name") or actor.get("displayName") or "").startswith("atlassian-addons"):
+                    continue  # left out of the group read on purpose (``_process_group``): app accounts, not people
                 # ProjectRoleGroup requires no field: a group with no id, or one outside the groups read, has members
                 # unknown, which is never "no members".
                 group_id = self._role_actor_group_id(actor)
@@ -8548,8 +8551,9 @@ class JiraConnector(BaseConnector):
                 )
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
-            await self._reindex_level_readers(
-                security, project.get("key") or project_ref, synced_user_by_account_id or {}, read_security_level(fields)[1])
+            if not (fields.get("issuetype") or {}).get("subtask"):  # a sub-task's level readers are never used (``grouped``)
+                await self._reindex_level_readers(
+                    security, project.get("key") or project_ref, synced_user_by_account_id or {}, read_security_level(fields)[1])
 
             # The epic's level may have changed since the last sync read it.
             await self._learn_parent_levels([issue], refresh=True, security=security)
