@@ -53,7 +53,10 @@ class _CountedSession:
 async def test_a_save_transaction_holds_a_bounded_number_of_round_trips_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """4 workers, each saving batches of 50 file records (base documents, type documents and edges)
     in one transaction, 40 batches each. Every transaction holds at most ``ROUND_TRIPS_PER_SAVE`` round trips open;
-    the measured p99 plus 1 s is X, printed for the record."""
+    the measured p99 plus 1 s is X, printed for the record. The bound is for the default save, without scope fields: with
+    them the store adds structure reads to the transaction, so both settings are pinned off rather than read from the host."""
+    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)
+    monkeypatch.delenv("ACL_FILTER_MODE", raising=False)
     try:
         provider = await connect_arango(logger, "record_diagnostics_stall_bound_it")
     except Exception as exc:
