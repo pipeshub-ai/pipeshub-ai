@@ -469,9 +469,12 @@ class TestServiceAccountKnowledge:
         )
         return graph
 
-    async def _kept(self, graph: MagicMock, *, bound: bool, knowledge: list | None = None) -> list[str]:
+    async def _kept(
+        self, graph: MagicMock, *, bound: bool, knowledge: list | None = None, licensed: bool = True,
+    ) -> list[str]:
         kept = await service_account_knowledge(
-            graph, self.KNOWLEDGE if knowledge is None else knowledge, "sa-1", ORG, logging.getLogger("t"), bound=bound,
+            graph, self.KNOWLEDGE if knowledge is None else knowledge, "sa-1", ORG, logging.getLogger("t"),
+            bound=bound, licensed=AsyncMock(return_value=licensed),
         )
         return [k["connectorId"] for k in kept]
 
@@ -495,6 +498,19 @@ class TestServiceAccountKnowledge:
         graph = self._graph(self.INSTANCES)
         assert await self._kept(graph, bound=True, knowledge=[{"connectorId": "kb-1", "type": "KB"}]) == ["kb-1"]
         graph.get_user_connector_instances.assert_not_awaited()
+
+    async def test_without_a_licence_an_unbound_agent_keeps_only_open_connectors(self) -> None:
+        instances = [*self.INSTANCES, {"_key": "s3-team", "scope": "team", "type": "S3"},
+                     {"_key": "azure-team", "scope": "team", "type": "Azure Blob"}]
+        instances[2] = {**instances[2], "type": "DRIVE WORKSPACE"}
+        knowledge = [{"connectorId": i, "type": "UNKNOWN"} for i in ("drive-team", "s3-team", "azure-team")]
+        kept = await self._kept(self._graph(instances), bound=False, knowledge=knowledge, licensed=False)
+        assert kept == ["s3-team", "azure-team"]
+
+    async def test_without_a_licence_a_bound_agent_keeps_the_orgs_connectors(self) -> None:
+        instances = [{**i, "type": "DRIVE WORKSPACE"} if i.get("_key") == "drive-team" else i for i in self.INSTANCES]
+        kept = await self._kept(self._graph(instances), bound=True, licensed=False)
+        assert kept == ["pg-team", "drive-team", "legacy", "kb-1"]
 
     async def test_what_is_left_out_is_logged_as_a_count(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.INFO, logger="t"):

@@ -492,6 +492,7 @@ class FakeConfigService:
 
     async def get_config(
         self, key: str, default: Any = None, use_cache: bool = True, *, raise_on_error: bool = False,  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
+        keep_in_cache: bool = True, max_age_seconds: float | None = None,
     ) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         return copy.deepcopy(self.values.get(key, default))
 

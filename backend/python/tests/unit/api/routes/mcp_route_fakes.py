@@ -16,7 +16,7 @@ class FakeConfigService:
 
     async def get_config(
         self, key: str, default: Any = None, use_cache: bool = False, *, raise_on_error: bool = False,  # noqa: ANN401
-        keep_in_cache: bool = True,
+        keep_in_cache: bool = True, max_age_seconds: float | None = None,
     ) -> Any:  # noqa: ANN401
         return self.data.get(key, default)
 

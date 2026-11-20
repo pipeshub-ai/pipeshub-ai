@@ -47,6 +47,10 @@ from app.config.constants.ai_models import (
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
+from app.connectors.core.base.data_processor.permission_sync_gate import (
+    gated as gated_connector,
+    permission_sync_licensed,
+)
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -1731,11 +1735,14 @@ def _assert_no_personal_toolsets(
 
 async def _assert_service_account_knowledge(
     connector_ids: Iterable[str], graph_provider: IGraphDBProvider, org_id: str, user_id: str, *, bound: bool,
+    licensed: Callable[[], Awaitable[bool]],
 ) -> None:
     """A service-account agent is run by anyone in the organisation on one identity, so it may
     only be given sources shared with the whole organisation: no personal connector, and a
-    collection only when it runs as a bound service account. A source that is not the
-    organisation's (or no longer exists) is refused too. The run applies the same rule."""
+    collection only when it runs as a bound service account. Without a licence key, an unbound
+    agent searches as its creator, so it may only be given the connectors everyone can already
+    see. A source that is not the organisation's (or no longer exists) is refused too. The run
+    applies the same rule."""
     ids = list(dict.fromkeys(connector_ids))
     if not ids:
         return
@@ -1769,6 +1776,15 @@ async def _assert_service_account_knowledge(
         raise InvalidRequestError(
             f"Collections ({', '.join(collections)}) can be attached to a service-account agent only when it is "
             "bound to a service account."
+        )
+    gated = [] if bound else [
+        label(a) for a in apps if a.get("type") != kb and gated_connector(a)
+    ]
+    if gated and not await licensed():
+        raise InvalidRequestError(
+            f"Without a licence key, an agent that isn't bound to a service account searches as its creator, so it "
+            f"can use only sources everyone in the organization can see. Remove {', '.join(gated)}, or bind the "
+            "agent to a service account."
         )
 
 
@@ -2869,6 +2885,7 @@ async def create_agent(request: Request) -> JSONResponse:
             await _assert_service_account_knowledge(
                 knowledge_sources, services["graph_provider"], org_key, user_context["userId"],
                 bound=bool(service_account_binding),
+                licensed=lambda: permission_sync_licensed(services["config_service"]),
             )
         api_toolset_tools = await _checked_api_toolset_tools(
             body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
@@ -3618,6 +3635,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 org_key,
                 user_context["userId"],
                 bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
+                licensed=lambda: permission_sync_licensed(services["config_service"]),
             )
         if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
             # Becoming a service account re-checks what is already attached.
@@ -4802,6 +4820,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     agent_knowledge = await service_account_knowledge(
                         graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
                         bound=collections_allowed,
+                        licensed=lambda: permission_sync_licensed(services["config_service"]),
                     )
                 caps = _parse_agent_capabilities(chat_query.agentCapabilities)
                 try:

@@ -44,6 +44,10 @@ KNOWLEDGE = CollectionNames.AGENT_KNOWLEDGE.value
 logger = logging.getLogger("service-account-knowledge-it")
 
 
+async def _licensed() -> bool:
+    return True
+
+
 async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
     run = uuid.uuid4().hex[:10]
     org, other_org = run.rjust(24, "0"), run.rjust(24, "1")
@@ -116,21 +120,21 @@ async def check_service_account_knowledge(graph: IGraphDBProvider) -> None:
         knowledge = [{"connectorId": app_key, "type": app_type} for app_key, app_type, *_ in apps.values()]
         with for_org(org, job="test"):
             own = await fetch_user_connector_instances(graph, creator, org, logger)
-            unbound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=False)
-            bound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=True)
+            unbound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=False, licensed=_licensed)
+            bound = await service_account_knowledge(graph, knowledge, creator, org, logger, bound=True, licensed=_licensed)
             # Saving: a personal source is refused, a collection too unless bound, the org's connectors pass.
             with pytest.raises(InvalidRequestError, match=f"Personal sources \\(Name {key['drive_mine']}\\)"):
-                await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, org, creator, bound=True)
+                await _assert_service_account_knowledge([key["drive_team"], key["drive_mine"]], graph, org, creator, bound=True, licensed=_licensed)
             # Someone else's source is not named.
             with pytest.raises(InvalidRequestError, match=r"Personal sources \(one that someone else owns\)"):
-                await _assert_service_account_knowledge([key["drive_colleague"]], graph, org, creator, bound=True)
+                await _assert_service_account_knowledge([key["drive_colleague"]], graph, org, creator, bound=True, licensed=_licensed)
             with pytest.raises(InvalidRequestError, match="Collections"):
-                await _assert_service_account_knowledge([key["collection"]], graph, org, creator, bound=False)
-            await _assert_service_account_knowledge([key["pg_team"], key["drive_team"], key["collection"]], graph, org, creator, bound=True)
+                await _assert_service_account_knowledge([key["collection"]], graph, org, creator, bound=False, licensed=_licensed)
+            await _assert_service_account_knowledge([key["pg_team"], key["drive_team"], key["collection"]], graph, org, creator, bound=True, licensed=_licensed)
             # Another organisation's connector, or an id that names nothing, is refused.
             for foreign in (key["other_org"], f"missing-{run}"):
                 with pytest.raises(InvalidRequestError, match="not found in your organization"):
-                    await _assert_service_account_knowledge([key["drive_team"], foreign], graph, org, creator, bound=True)
+                    await _assert_service_account_knowledge([key["drive_team"], foreign], graph, org, creator, bound=True, licensed=_licensed)
         # The creator reads their own sources when they run an agent themselves...
         assert {key["pg_mine"], key["drive_mine"]} <= {d.get("_key") or d.get("id") for d in own}
         # ...but an agent the whole org runs on their identity does not.
