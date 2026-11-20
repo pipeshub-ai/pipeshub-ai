@@ -3556,7 +3556,7 @@
         "off": "Vypnuto. Nic se nesynchronizuje.",
         "queued": "Čeká na volné místo pro synchronizaci",
         "notSyncedYet": "Zatím nesynchronizováno",
-        "noSyncRecorded": "Obsah je prohledávatelný · zatím nezaznamenána žádná synchronizace",
+        "noSyncRecorded": "Lze prohledávat · historie začne příští synchronizací",
         "upToDate": "Aktuální",
         "upToDateAgo": "Aktuální · synchronizováno {{time}}",
         "withFailures": "{{base}} · nelze indexovat: {{n, number}}",

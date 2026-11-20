@@ -3296,7 +3296,7 @@
         "off": "Aus. Es wird nichts synchronisiert.",
         "queued": "Wartet auf einen freien Synchronisierungsplatz",
         "notSyncedYet": "Noch nicht synchronisiert",
-        "noSyncRecorded": "Inhalte sind durchsuchbar · noch keine Synchronisierung erfasst",
+        "noSyncRecorded": "Durchsuchbar · der Verlauf beginnt mit der nächsten Synchronisierung",
         "upToDate": "Aktuell",
         "upToDateAgo": "Aktuell · synchronisiert {{time}}",
         "withFailures": "{{base}} · nicht indiziert: {{n, number}}",
