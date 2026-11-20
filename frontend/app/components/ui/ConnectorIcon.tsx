@@ -61,6 +61,7 @@ export type ConnectorType =
   | 'microsoft-learn'
   // Project & Issue Tracking
   | 'jira'
+  | 'instantly'
   | 'linear'
   | 'monday'
   | 'gitlab'
@@ -178,6 +179,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   // Project & Issue Tracking (keys sorted A–Z)
   'github': { svg: svg('github'), fallback: 'code', needDarkModeInvert: true },
   'gitlab': { svg: svg('gitlab'), fallback: 'code' },
+  'instantly': { svg: svg('instantly'), fallback: 'mail' },
   'jira': { svg: svg('jira'), fallback: 'bug_report' },
   'linear': { svg: svg('linear'), fallback: 'view_kanban', needDarkModeInvert: true },
   'monday': { svg: svg('monday'), fallback: 'view_kanban' },
@@ -274,6 +276,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['cifs', 'cifs'],
   // Dev tools & project tracking
   ['linear', 'linear'],
+  ['instantly', 'instantly'],
   ['monday.com', 'monday'],
   ['jira', 'jira'], ['confluence', 'confluence'],
   ['gitlab', 'gitlab'], ['slack', 'slack'],
