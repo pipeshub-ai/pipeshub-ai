@@ -391,10 +391,18 @@ def lint_file(path: Path) -> list[str]:
     return bad
 
 
+def retiring_violations() -> list[str]:
+    """Indexes a revision lists in ``ONLINE_DROPS`` are dropped by db.migrate, so no SQL of the revision shows the DROP: such a revision is a
+    contract like any other that drops an index."""
+    return [f"{f.name}: ONLINE_DROPS drops indexes: set min_code_epoch" for d in version_locations() for f in sorted(Path(d).glob("*.py"))
+            if _module_assign(t := f.read_text(encoding="utf-8"), "ONLINE_DROPS") is not None and not _contract(t)]
+
+
 def main(argv: list[str]) -> int:
     files = [Path(a) for a in argv] or sorted(f for d in version_locations() for g in ("*.sql", "vetted/*.sql") for f in Path(d).glob(g))
     bad = [msg for f in files for msg in lint_file(f)]
     if not argv:
+        bad += retiring_violations()
         from db.lib import vetted
         bad += vetted.callers_violations(vetted.load_all(vetted.manifest_files()), Path(__file__).resolve().parents[1])
     print("\n".join(bad) or "migration lint: OK")
