@@ -3425,6 +3425,22 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         await self._commit_offset(message)
         return True
 
+    async def __settle_noted(
+        self, message: ConsumerRecord, in_flight: "_InFlightOffset | None"
+    ) -> bool:
+        """``__settle_done``, with what went wrong noted for index.end. A failed commit is
+        written once, without its text, and raised: the offset is not settled. False when
+        the partition was revoked: its next owner reads the offset again."""
+        try:
+            settled = await self.__settle_done(message, in_flight)
+        except Exception as e:
+            timing.note(disposition="retry", reason="commit_failed")
+            log_failure(self.logger, "index.commit_failed", e, level=logging.WARNING, include_error_text=False)
+            raise
+        if not settled:
+            timing.note(disposition="retry", reason="claim_lost")
+        return settled
+
     async def __commit_if_appropriate(
         self,
         message: ConsumerRecord,
@@ -3509,15 +3525,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
 
         # ALWAYS commit - message is either done, dead-lettered, or re-queued
-        try:
-            settled = await self.__settle_done(message, in_flight)
-        except Exception as e:
-            timing.note(disposition="retry", reason="commit_failed")
-            log_failure(self.logger, "index.commit_failed", e, level=logging.WARNING, include_error_text=False)
-            raise
-        if not settled:
-            # The partition was revoked under this delivery: its next owner reads the offset again.
-            timing.note(disposition="retry", reason="claim_lost")
+        if not await self.__settle_noted(message, in_flight):
             return
         self.logger.debug(f"Committed offset for {message_id}")
         timing.note(**decision)
@@ -3614,7 +3622,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         suspect_held = False
         attempt_started = False
         abandoned = False
-        # Set once the handler returned cleanly: an exception after it is the commit's, not the handler's.
+        # Set once settlement starts: what it raises is already noted, so it propagates and is never settled again.
         settling = False
         parsing_held = False
         indexing_held = False
@@ -3685,7 +3693,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         )
 
         async def give_up(reason: str, attempts: int) -> None:
-            nonlocal abandoned
+            nonlocal abandoned, settling
+            settling = True
             # Our own record lease reads as a live holder, which keeps the
             # sink from failing a record left IN_PROGRESS.
             if distributed_leases.discard(record_pool) is not None:
@@ -3693,10 +3702,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.__abandon_message(
                 message_id, stable_message_id, parsed_message, reason=reason, attempts=attempts,
             )
-            if await self.__settle_done(message, in_flight):
+            if await self.__settle_noted(message, in_flight):
                 timing.note(disposition="dead_letter")
-            else:  # the partition was revoked: its next owner reads the offset again
-                timing.note(disposition="retry", reason="claim_lost")
             abandoned = True
 
         try:
@@ -3748,6 +3755,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     # Capacity leases only give up when self.running flips,
                     # so this is a clean shutdown: redeliver, do not commit.
                     outcome = "stopped"
+                    settling = True
                     await self.__resolve_offset(in_flight, done=False)
                     return False
                 lease_handle, renewal_task = concurrency.start_lease_guard(
@@ -3765,6 +3773,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 if not record_lease_held:
                     if not self.running:
                         outcome = "stopped"
+                        settling = True
                         await self.__resolve_offset(in_flight, done=False)
                         return False
                     # Re-published, not left unresolved: redelivery by offset
@@ -4031,6 +4040,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     end_progress()
             else:
                 self.logger.error(f"No message handler available for {message_id}")
+                settling = True
                 await self.__commit_if_appropriate(
                     message, parsed_message, success=False, is_terminal_error=True,
                     in_flight=in_flight,
@@ -4045,6 +4055,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.logger.debug(
                     f"Consumer stopping, abandoning {message_id} without commit"
                 )
+                settling = True
                 await self.__resolve_offset(in_flight, done=False)
                 return False
 
@@ -4107,21 +4118,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         message, parsed_message, in_flight, e.delay_s
                     )
                     return False
-            try:
-                settled = await self.__settle_done(message, in_flight)
-            except Exception as commit_error:
-                # Published again, but this offset is not settled: say so on index.end, not "requeued".
-                timing.note(disposition="retry", reason="commit_failed")
-                log_failure(
-                    self.logger, "index.commit_failed", commit_error, level=logging.WARNING, include_error_text=False,
-                )
-                raise
-            if not settled:  # revoked after the publish: the offset is its next owner's
-                timing.note(disposition="retry", reason="claim_lost")
+            # Published again: a failed commit or a revoked partition says so on index.end, not "requeued".
+            await self.__settle_noted(message, in_flight)
             return False
         except Exception as e:
             timing.note(exc=e)  # index.end writes it once, after the decision below
-            if success and not settling:
+            if settling:
+                raise  # settlement started: settling again would charge the handler and publish a copy
+            if success:
                 outcome = "failed"  # the handler raised after INDEXING_COMPLETE: a failed commit later does not make it a success
             concurrency.report_memory_incident_if_applicable(self, message_id, e)
 

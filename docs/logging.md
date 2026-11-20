@@ -437,8 +437,11 @@ Levels and outcome:
 - `timeout_s` is the record's configured processing budget. The embedding stall timer (`RecordProgress`) can end the same
   budget earlier; its `embed cut (stall)` line says so, and `duration_ms` is the time the attempt ran.
 - The ack or commit failed after the record was indexed (`reason=ack_failed` or `commit_failed`): `success` (or `skipped`,
-  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. A handler that raised after
-  `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. No attempt is counted and nothing is
+  re-published for it. A handler that raised after `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+  On Kafka in FIFO mode, a dead-letter whose commit fails (`reason=commit_failed`) is read again, so the sink can be told twice,
+  which is harmless; an `attempts_exhausted` one comes back with a fresh attempt count. Under fair scheduling it is not
+  read again: the next commit covers its offset.
 - A failure with no exception and no class is WARNING, except the dead-letters above (`unfinished_attempts`, `backstop`),
   which stay ERROR.
 - `error_class` is `classify_error`'s, except that a `DocumentProcessingError` whose direct cause is a programming error
