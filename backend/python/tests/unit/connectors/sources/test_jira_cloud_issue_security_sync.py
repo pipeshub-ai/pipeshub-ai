@@ -1013,6 +1013,34 @@ class TestAReindexResolvesProjectRolesAndLeads:
         assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
 
     @pytest.mark.asyncio
+    async def test_a_role_group_without_a_known_id_leaves_the_level_unknown_and_queues_the_issue(self) -> None:
+        """The reporter is a user actor of the role too, but the role's other group cannot be read: the level is unknown."""
+        _, ((record, perms),), pages, point = await self._run(self.ROLE, actors=[
+            {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}},
+            {"type": "atlassian-group-role-actor", "displayName": "Renamed devs"}])
+        assert (pages, record.access_rule, perms, record.source_updated_at) == ([], AccessRule.STRICT, [], 1)
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("level_a", "status", "named"), [
+        (LEAD, 403, "Get project PROJ"), (ROLE, 404, "Get project role PROJ_10002")])
+    async def test_a_refused_lead_or_role_read_is_logged_with_its_status_and_jira_s_message(
+        self, level_a: list, status: int, named: str, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """What failed, where, and Jira's own message (ErrorCollection.errorMessages), with an address in it masked."""
+        c, pages, point = TestAReindexReadsOnlyTheGroupsItsIssuesNeed._reindex(
+            TestReindexAppliesTheLevel.LEVELED, [{"type": "reporter"}], level_a)
+        refused = _resp(status, {"errorMessages": ["Caller rep@x.com may not administer PROJ"], "errors": {"k": "v@x.com"}})
+        c.data_source.get_project = c.data_source.get_project_role = AsyncMock(return_value=refused)
+        with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
+            record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert (record.access_rule, perms) == (AccessRule.STRICT, [])
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+        (line,) = [r.getMessage() for r in caplog.records if named in r.getMessage()]
+        assert f"HTTP {status}" in line and "may not administer PROJ" in line
+        assert "@x.com" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_a_reporter_in_the_level_s_role_as_a_user_reads_it(self) -> None:
         c, ((record, perms), _), _, _ = await self._run(
             self.ROLE, actors=[{"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}}], issues=2)
@@ -1060,6 +1088,36 @@ def test_a_role_group_actor_is_found_by_the_documented_actor_group_id() -> None:
     assert ([u.source_user_id for u in members], unread) == (["acc-1"], None)
     assert c._role_actor_members("x", [{"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "g"}}],
                                  {}, {}, {"g": None})[1] == "g"
+
+
+
+@pytest.mark.parametrize("actor", [
+    {"type": "atlassian-group-role-actor", "displayName": "Renamed devs"},  # no id, a name no group read resolves
+    {"type": "atlassian-group-role-actor", "actorGroup": {}},
+    {"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-not-read"}},  # an id outside the groups read
+])
+def test_a_role_group_actor_whose_members_are_not_known_leaves_the_role_unread(actor: dict) -> None:
+    """``actorGroup.groupId`` is not a required field (ProjectRoleGroup), so a group may come without one: its members are
+    not known, which is never "no members"."""
+    c = _connector()
+    members, unread = c._role_actor_members("PROJ/Developers", [actor], {}, {}, {"group-1": [_users()[0]]})
+    assert unread
+
+
+@pytest.mark.asyncio
+async def test_the_sync_keeps_a_role_whose_group_actor_it_cannot_resolve() -> None:
+    """The role is not written with that group's members missing: its stored members stay, the project counts as failed,
+    and the level readers hold no members for it (unknown, so no one reads a leveled issue alone through it)."""
+    c = _connector()
+    roles = _resp(200, {"Developers": "https://x.atlassian.net/rest/api/3/project/PROJ/role/10002"})
+    role = _resp(200, {"name": "Developers", "actors": [
+        {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}},
+        {"type": "atlassian-group-role-actor", "displayName": "Renamed devs"}]})
+    c._call_with_retry = AsyncMock(side_effect=[roles, role])
+    users = {u.source_user_id: u for u in _users()}
+    key, project_roles, failed = await c._fetch_project_roles("PROJ", {}, users, {"group-1": [_users()[0]]})
+    assert (key, project_roles, failed) == ("PROJ", [], True)
+    assert ("role", "PROJ_10002") in c._kept_after_refusal
 
 
 GROUP_ONLY_LEVEL = {"10102": [{"type": "group", "value": "group-1"}]}

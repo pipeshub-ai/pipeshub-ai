@@ -190,6 +190,7 @@ from app.sources.external.common.atlassian import (
 )
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
@@ -297,6 +298,8 @@ INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 ISSUE_PLACEMENT: str = "issues-under-readable-parent+restricted-comment-records"
 # Marks a group a level names by a name no read resolved to an id: it names no group read, so its members are unknown.
 _UNRESOLVED_GROUP: str = "unresolved-group-name:"
+# An address in a vendor's error message, masked before it is logged.
+_EMAIL_IN_TEXT = re.compile(r"[^\s@]+@[^\s@]+")
 # Groups a reindex reads again per project to apply its issues' levels (``_reindex_level_readers``).
 REINDEX_GROUP_READS: int = 20
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
@@ -4174,7 +4177,8 @@ class JiraConnector(BaseConnector):
         user_by_account_id: dict[str, AppUser], groups_members_map: dict[str, Optional[list[AppUser]]],
     ) -> tuple[list[AppUser], Optional[str]]:
         """A project role's members from its actors: users by account, then email; groups from ``groups_members_map``.
-        Returns ``(members, the first group whose members were not read)``; with a group named, the members are partial."""
+        Returns ``(members, the first group whose members are not known)``: one not read, without an id, or outside
+        ``groups_members_map``. With a group named, the members are partial and the caller treats the role as unread."""
         member_users: list[AppUser] = []
         for actor in actors:
             actor_type = actor.get("type", "")
@@ -4190,15 +4194,12 @@ class JiraConnector(BaseConnector):
                 else:
                     self.logger.debug(f"  {where}: User not found - accountId={account_id}, email={email}")
             elif actor_type == ROLE_ACTOR_TYPE_GROUP:
-                group_name = actor.get("name") or actor.get("displayName")
+                # ProjectRoleGroup requires no field: a group with no id, or one outside the groups read, has members
+                # unknown, which is never "no members".
                 group_id = self._role_actor_group_id(actor)
-                group_members: Optional[list[AppUser]] = []
-                if group_id and group_id in groups_members_map:
-                    group_members = groups_members_map[group_id]
-                else:
-                    self.logger.debug(f"  {where}: Group actor '{group_name}' (id: {group_id}) not found in synced groups")
+                group_members = groups_members_map.get(group_id) if group_id else None
                 if group_members is None:
-                    return member_users, group_name or group_id
+                    return member_users, group_id or actor.get("name") or actor.get("displayName") or "a group with no id"
                 member_users.extend(group_members)
         return member_users, None
 
@@ -5274,6 +5275,7 @@ class JiraConnector(BaseConnector):
                     lambda ds: ds.get_project(projectIdOrKey=project_key, expand="lead"), ctx=f"lead of project {project_key}")
                 body = response.json() if response.status == HttpStatusCode.OK.value else None
                 if not isinstance(body, dict):
+                    self._warn_reindex_read_failed(f"Get project {project_key}", response)
                     return None
                 lead = body.get("lead") if isinstance(body.get("lead"), dict) else {}
                 return [users[lead["accountId"]]] if lead.get("accountId") in users else []
@@ -5284,6 +5286,7 @@ class JiraConnector(BaseConnector):
             body = response.json() if response.status == HttpStatusCode.OK.value else None
             actors = body.get("actors") if isinstance(body, dict) else None
             if not isinstance(actors, list):
+                self._warn_reindex_read_failed(f"Get project role {role_id}", response)
                 return None
             actor_groups = {gid: await self._reindex_group_members(security, gid, users) for actor in actors
                             if isinstance(actor, dict) and actor.get("type") == ROLE_ACTOR_TYPE_GROUP
@@ -5291,10 +5294,27 @@ class JiraConnector(BaseConnector):
             members, unread = self._role_actor_members(
                 f"{project_key}/{role_id}", [a for a in actors if isinstance(a, dict)],
                 {u.email.lower(): u for u in users.values() if u.email}, users, actor_groups)
-            return None if unread else members
+            if unread:
+                self.logger.warning(f"Role {role_id} for a reindex: the members of its group {unread} are not known")
+                return None
+            return members
         except Exception as e:
             self.logger.warning(f"Could not read the members of {role_id} for a reindex: {e}")
             return None
+
+    def _warn_reindex_read_failed(self, operation: str, response: Any) -> None:  # noqa: ANN401
+        """Log a read a reindex could not use: the operation, its HTTP status and Jira's own error messages
+        (ErrorCollection.errorMessages, https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/#status-codes),
+        masked (``redact_error_for_log``) with any address in them replaced. ``errors`` is left out: it echoes input values."""
+        try:
+            messages = response.json().get("errorMessages")
+        except Exception:
+            messages = None
+        text = "; ".join(m for m in messages if isinstance(m, str)) if isinstance(messages, list) else ""
+        self.logger.warning(
+            "%s for a reindex: HTTP %s %s; its level grants no one alone until the next sync", operation,
+            getattr(response, "status", None), _EMAIL_IN_TEXT.sub("[email]", redact_error_for_log(text, max_len=300)),
+        )
 
     def _plan_level_reread(
         self, security: IssueSecurityContext, stored: dict[str, str] | None, *, is_new_project: bool,
