@@ -1105,3 +1105,48 @@ class TestViewersPastTheFirstHundred:
             return (503, None) if username else await page(issue_key, username)
         c._viewers_page = failing
         assert await c._issue_viewers("P-1", ["u120"]) == (503, None)  # u120 is past the first page
+
+
+class TestAFullPageWithNothingToSplitOn:
+    """A full first page lists only the first 100 viewers: with no username to split on (a reindex in a process that has
+    not read the user list), or a synced account whose username is not known, the read is unread and the issue closed,
+    never stored open to the first page alone."""
+
+    @staticmethod
+    def _page(viewers: list[tuple[str, str]]):  # noqa: ANN205
+        async def page(_key: str, username: str | None) -> tuple[int, list[dict]]:
+            rows = [{"key": f"k-{n}", "name": n, "emailAddress": e} for n, e in viewers if not username or n.startswith(username)]
+            return 200, rows[:100]
+        return page
+
+    async def test_no_username_to_split_on_is_unread(self) -> None:
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        assert await c._issue_viewers("P-1", []) == (200, None)
+
+    async def test_a_reindex_with_a_full_page_and_no_known_username_closes_the_issue(self) -> None:
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        c._dc_name_to_source_id = {}  # a reindex: no user list read in this process
+        record = _ticket()
+        grants = await c._viewer_grants(record, "P-1", "P", {"k-u120": _user("k-u120", "u120@x.com")})
+        assert grants == [] and record.access_rule == AccessRule.RESTRICTED
+
+    async def test_a_full_page_split_along_known_usernames_gives_the_whole_audience(self) -> None:
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        c._dc_name_to_source_id = {"u001": "k-u001", "u120": "k-u120"}
+        record = _ticket()
+        grants = await c._viewer_grants(record, "P-1", "P", {"k-u001": _user("k-u001", "u001@x.com"),
+                                                              "k-u120": _user("k-u120", "u120@x.com")})
+        assert {g.email for g in grants} == {"u001@x.com", "u120@x.com"} and record.access_rule == AccessRule.OPEN
+
+    async def test_a_synced_account_whose_username_is_not_known_makes_a_full_page_unread(self) -> None:
+        """The sync's case: a user list cut short leaves a linked account's username unknown."""
+        c = _connector()
+        c._viewers_page = self._page([(f"u{i:03}", f"u{i:03}@x.com") for i in range(150)])
+        c._dc_name_to_source_id = {"u001": "k-u001"}
+        record = _ticket()
+        grants = await c._viewer_grants(record, "P-1", "P", {"k-u001": _user("k-u001", "u001@x.com"),
+                                                              "k-u120": _user("k-u120", "u120@x.com")})
+        assert grants == [] and record.access_rule == AccessRule.RESTRICTED
