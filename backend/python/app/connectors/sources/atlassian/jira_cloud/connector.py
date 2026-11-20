@@ -256,6 +256,11 @@ HOLDER_TYPE_SD_PORTAL_CUSTOMER: str = "sd.customer.portal.only"
 # App-only project role: its members are Atlassian apps, not people, so it grants nobody.
 ATLASSIAN_ADDONS_PROJECT_ROLE: str = "atlassian-addons-project-access"
 
+
+def _is_app_group(name: object) -> bool:
+    """An ``atlassian-addons`` group, whose members are app accounts: left out of every group read, on sync and reindex."""
+    return str(name or "").startswith("atlassian-addons")
+
 # Synthetic ORG-scope external ids for grants not tied to a concrete group or user.
 ORG_SCOPE_ANYONE_AUTHENTICATED: str = "anyone_authenticated"
 
@@ -3770,7 +3775,7 @@ class JiraConnector(BaseConnector):
             if not group_id or not group_name:
                 return None
 
-            if group_name.startswith("atlassian-addons"):
+            if _is_app_group(group_name):
                 self.logger.debug("Skipping system group: %s", group_name)
                 return None
 
@@ -4276,14 +4281,18 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Could not record that the closed {what} were notified: {e}")
 
+    @staticmethod
+    def _role_actor_group_name(actor: dict[str, Any]) -> Optional[str]:
+        group = actor.get("actorGroup") if isinstance(actor.get("actorGroup"), dict) else {}
+        return group.get("name") or actor.get("name") or actor.get("displayName")
+
     def _role_actor_group_id(self, actor: dict[str, Any]) -> Optional[str]:
         """A group actor's id: ``actorGroup.groupId``, where Get project role for project documents it ("As a group's name can
         change, use of `groupId` is recommended to identify the group.",
         https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-roles/), else one given beside it or the
         id its name resolves to."""
         group = actor.get("actorGroup") if isinstance(actor.get("actorGroup"), dict) else {}
-        name = actor.get("name") or actor.get("displayName")
-        return group.get("groupId") or actor.get("groupId") or self._group_ids_by_name.get(name or "")
+        return group.get("groupId") or actor.get("groupId") or self._group_ids_by_name.get(self._role_actor_group_name(actor) or "")
 
     def _role_actor_members(
         self, where: str, actors: list[dict[str, Any]], user_by_email: dict[str, AppUser],
@@ -4309,8 +4318,7 @@ class JiraConnector(BaseConnector):
                 else:
                     self.logger.debug(f"  {where}: User not found - accountId={account_id}, email={email}")
             elif actor_type == ROLE_ACTOR_TYPE_GROUP:
-                group = actor.get("actorGroup") if isinstance(actor.get("actorGroup"), dict) else {}
-                if str(group.get("name") or actor.get("name") or actor.get("displayName") or "").startswith("atlassian-addons"):
+                if _is_app_group(self._role_actor_group_name(actor)):
                     continue  # left out of the group read on purpose (``_process_group``): app accounts, not people
                 # ProjectRoleGroup requires no field: a group with no id, or one outside the groups read, has members
                 # unknown, which is never "no members".
@@ -5511,6 +5519,7 @@ class JiraConnector(BaseConnector):
                 return None
             actor_groups = {gid: await self._reindex_group_members(security, gid, users) for actor in actors
                             if isinstance(actor, dict) and actor.get("type") == ROLE_ACTOR_TYPE_GROUP
+                            and not _is_app_group(self._role_actor_group_name(actor))
                             and (gid := self._role_actor_group_id(actor))}
             members, unread = self._role_actor_members(
                 f"{project_key}/{role_id}", [a for a in actors if isinstance(a, dict)],
