@@ -416,7 +416,7 @@ python -m app.scripts.record_diagnostics_contract --org ORG --check   # counts r
 python -m app.scripts.record_diagnostics_contract --org ORG --apply   # batched, resumable, ends with a check; exits 1 if any are left
 ```
 
-Stop every role that runs this release or a later one, run `--apply` for each organisation, then start the older image.
+Stop every role that runs this release or a later one, run `--apply` with `--org` for every organisation the store holds, then start the older image.
 
 ## 3. Light and heavy documents
 
