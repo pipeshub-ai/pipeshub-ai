@@ -350,7 +350,7 @@ async def test_a_comment_batch_that_fails_leaves_its_issue_to_be_read_again(site
     await connector.run_sync()
     write = db.on_new_records
 
-    async def fail_comments(items):  # noqa: ANN001, ANN202
+    async def fail_comments(items):
         if any(r.record_type == RecordType.COMMENT for r, _ in items):
             raise RuntimeError("database unavailable")
         await write(items)
