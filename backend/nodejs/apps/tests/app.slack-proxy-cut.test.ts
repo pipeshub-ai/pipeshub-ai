@@ -62,8 +62,6 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
   let logger: { error: sinon.SinonStub; warn: sinon.SinonStub; info: sinon.SinonStub; debug: sinon.SinonStub }
   let originalPort: string | undefined
   let mode: BotMode
-  let botClosed: () => void
-  let botClosedP: Promise<void>
 
   // The real proxy, mounted on a bare app; it reads SLACK_BOT_PORT when it is set up.
   const startGateway = async (botPort: number): Promise<void> => {
@@ -77,7 +75,6 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
 
   beforeEach(async () => {
     mode = 'fin'
-    botClosedP = new Promise<void>((r) => (botClosed = r))
     originalPort = process.env.SLACK_BOT_PORT
     logger = { error: sinon.stub(), warn: sinon.stub(), info: sinon.stub(), debug: sinon.stub() }
     bot = http.createServer((req, res) => {
@@ -87,7 +84,6 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
           // The bot answers part of its body and keeps the rest open; record when the gateway lets go.
           res.writeHead(200, { 'content-type': 'application/json' })
           res.write('{"ok":')
-          res.on('close', () => botClosed())
           return
         }
         res.writeHead(200, { 'content-type': 'application/json' })
@@ -100,6 +96,7 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
   })
 
   afterEach(async () => {
+    sinon.restore()
     if (originalPort === undefined) delete process.env.SLACK_BOT_PORT
     else process.env.SLACK_BOT_PORT = originalPort
     await close(gateway)
@@ -153,53 +150,66 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
     expect(logger.error.callCount).to.equal(1)
   })
 
+  // What the gateway sends to the bot: the real request, so its own state can be read after the client leaves.
+  const spyOnUpstream = () => {
+    const seen: { req?: http.ClientRequest; res?: http.IncomingMessage } = {}
+    const original = http.request
+    sinon.stub(http, 'request').callsFake(((...args: Parameters<typeof http.request>) => {
+      const req = original(...args)
+      // Only the gateway's own request: the test's clients use this function too, and go to 127.0.0.1.
+      if ((args[0] as http.RequestOptions).hostname === 'localhost') {
+        seen.req = req
+        req.once('response', (res) => (seen.res = res))
+      }
+      return req
+    }) as typeof http.request)
+    return seen
+  }
+
+  // Polls a condition; the limit only turns a hang into a failure.
+  const until = async (condition: () => boolean, limitMs = 5000): Promise<boolean> => {
+    const end = Date.now() + limitMs
+    while (!condition() && Date.now() < end) await new Promise((r) => setTimeout(r, 10))
+    return condition()
+  }
+
   it('closes the slack-bot read when the client leaves mid-answer', async () => {
     mode = 'hold'
-    const clientGone = new Promise<void>((resolve, reject) => {
-      const req = http.request(
-        { host: '127.0.0.1', port: gatewayPort, method: 'POST', path: '/slack/events', agent: false },
-        (res) => {
-          res.once('data', () => {
-            // The first bytes arrived: the client leaves while the bot's body is still open.
-            req.destroy()
-            resolve()
-          })
-        },
-      )
-      req.on('error', () => undefined)
-      req.end('{"type":"event_callback"}')
-      setTimeout(() => reject(new Error('no first bytes')), 3000).unref()
+    const upstream = spyOnUpstream()
+    const clientReq = http.request({ host: '127.0.0.1', port: gatewayPort, method: 'POST', path: '/slack/events', agent: false })
+    clientReq.on('error', () => undefined)
+    const firstBytes = new Promise<void>((resolve) => {
+      clientReq.on('response', (res) => res.once('data', () => resolve()))
     })
-    await clientGone
+    clientReq.end('{"type":"event_callback"}')
+    await firstBytes
+    expect(upstream.res, 'the bot answered').to.not.equal(undefined)
+    expect(upstream.res!.destroyed).to.equal(false)
 
-    const outcome = await Promise.race([
-      botClosedP.then(() => 'closed'),
-      new Promise((r) => setTimeout(() => r('leaked'), 2000).unref()),
-    ])
-    expect(outcome).to.equal('closed')
+    clientReq.destroy() // the client leaves while the bot's body is still open
+
+    expect(await until(() => upstream.res!.destroyed), 'the upstream read is released').to.equal(true)
+    expect(upstream.res!.socket.destroyed).to.equal(true)
   })
 
   it('closes the slack-bot request when the client leaves before the bot answers', async () => {
-    // The bot reads the request and never answers; its response closes only when the gateway drops the socket.
-    const silent = http.createServer((req, res) => {
-      req.resume()
-      res.on('close', () => botClosed())
-    })
+    // The bot reads the request and never answers.
+    const silent = http.createServer((req) => req.resume())
     const silentPort = await listen(silent)
     await close(gateway)
     await startGateway(silentPort)
-    const req = http.request({ host: '127.0.0.1', port: gatewayPort, method: 'POST', path: '/slack/events', agent: false })
-    req.on('error', () => undefined)
-    req.end('{"type":"event_callback"}')
-    await new Promise((r) => setTimeout(r, 200))
-    req.destroy()
+    const upstream = spyOnUpstream()
+    const clientReq = http.request({ host: '127.0.0.1', port: gatewayPort, method: 'POST', path: '/slack/events', agent: false })
+    clientReq.on('error', () => undefined)
+    clientReq.end('{"type":"event_callback"}')
+    // The upstream request is on its way once the gateway created it and sent its end.
+    expect(await until(() => upstream.req?.writableFinished === true), 'the gateway forwarded the request').to.equal(true)
+    expect(upstream.req!.destroyed).to.equal(false)
 
-    const outcome = await Promise.race([
-      botClosedP.then(() => 'closed'),
-      new Promise((r) => setTimeout(() => r('leaked'), 2000).unref()),
-    ])
+    clientReq.destroy()
+
+    expect(await until(() => upstream.req!.destroyed), 'the upstream request is released').to.equal(true)
     await close(silent)
-    expect(outcome).to.equal('closed')
     expect(logger.error.called).to.equal(false)
   })
 })
