@@ -23,6 +23,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     ensure_written,
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.harness.tool_identity.settings import instance_tool_ids_enabled
 from app.modules.agents.knowledge_scope import (
     UnreadableSourceLimitError,
     read_source_limit,
@@ -30,6 +31,7 @@ from app.modules.agents.knowledge_scope import (
 from app.modules.agents.service.errors import AgentError, InvalidRequestError
 from app.modules.retrieval.selection_scope import max_selection_nodes
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
 from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
@@ -142,10 +144,13 @@ def _format_web_search_for_response(raw_web_search: object) -> dict[str, Any] | 
 def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse toolsets with their tools.
 
-    The key of the returned dict is the toolset name (lowercase).
-    Each value carries the parsed fields including optional instanceId.
+    The key of the returned dict is the toolset name (lowercase); with
+    instance-scoped tool ids on (P2.2), a toolset bound to an instance is keyed
+    by name and instance, so two instances of one type stay two toolsets.
+    Each value carries the parsed fields: its ``name`` and optional instanceId.
     """
     toolsets_with_tools = {}
+    per_instance = instance_tool_ids_enabled()
 
     if not raw_toolsets or not isinstance(raw_toolsets, list):
         return toolsets_with_tools
@@ -165,24 +170,26 @@ def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
         instance_id = toolset_data.get("instanceId", None)
         instance_name = toolset_data.get("instanceName", None)
 
-        if toolset_name not in toolsets_with_tools:
-            toolsets_with_tools[toolset_name] = {
+        entry_key = f"{toolset_name}@{instance_id}" if per_instance and instance_id else toolset_name
+        if entry_key not in toolsets_with_tools:
+            toolsets_with_tools[entry_key] = {
+                "name": toolset_name,
                 "displayName": display_name,
                 "type": toolset_type,
                 "tools": [],
                 "instanceId": instance_id,
                 "instanceName": instance_name,
             }
-        elif instance_id and not toolsets_with_tools[toolset_name].get("instanceId"):
+        elif instance_id and not toolsets_with_tools[entry_key].get("instanceId"):
             # Update instanceId if not yet set
-            toolsets_with_tools[toolset_name]["instanceId"] = instance_id
-            toolsets_with_tools[toolset_name]["instanceName"] = instance_name
+            toolsets_with_tools[entry_key]["instanceId"] = instance_id
+            toolsets_with_tools[entry_key]["instanceName"] = instance_name
 
         for tool in tools_list:
             if isinstance(tool, dict):
                 tool_name = tool.get("name", "")
                 if tool_name:
-                    toolsets_with_tools[toolset_name]["tools"].append({
+                    toolsets_with_tools[entry_key]["tools"].append({
                         "name": tool_name,
                         "fullName": tool.get("fullName", f"{toolset_name}.{tool_name}"),
                         "description": tool.get("description", "")
@@ -290,7 +297,8 @@ async def _create_toolset_edges(
     toolset_nodes = []
     toolset_mapping = {}  # Map toolset_name to toolset_key
 
-    for toolset_name, toolset_data in toolsets_with_tools.items():
+    for entry_key, toolset_data in toolsets_with_tools.items():
+        toolset_name = toolset_data.get("name", entry_key)
         toolset_key = str(uuid.uuid4())
         if written_toolset_keys is not None:
             written_toolset_keys.append(toolset_key)
@@ -318,7 +326,8 @@ async def _create_toolset_edges(
             toolset_node["instanceName"] = instance_name
 
         toolset_nodes.append(toolset_node)
-        toolset_mapping[toolset_name] = {
+        toolset_mapping[entry_key] = {
+            "name": toolset_name,
             "key": toolset_key,
             "displayName": display_name,
             "tools": tools_list
@@ -340,7 +349,8 @@ async def _create_toolset_edges(
     toolset_tool_edges = []
     tool_mapping = {}  # Map full_name to tool_key
 
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
+        toolset_name = toolset_info["name"]
         for tool_data in toolset_info["tools"]:
             tool_name = tool_data["name"]
             full_name = tool_data["fullName"]
@@ -425,7 +435,8 @@ async def _create_toolset_edges(
         raise
 
     # Build response with created toolsets and tools
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
+        toolset_name = toolset_info["name"]
         created_tools = []
         for tool_data in toolset_info["tools"]:
             full_name = tool_data["fullName"]
@@ -494,7 +505,7 @@ def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
             continue
 
         type_id = mcp_data.get("typeId") or None
-        if type_id:
+        if type_id and not instance_tool_ids_enabled():
             existing_instance_id = seen_type_ids.get(type_id)
             if existing_instance_id and existing_instance_id != instance_id:
                 raise InvalidRequestError(
@@ -1310,11 +1321,11 @@ async def _create_skill_edges(
     never creates a skill node: skills are owned by the Skills management
     API, this only links to ones that already exist.
 
-    Defense in depth (`skill_visible_to`, the rule every skill read uses):
-    a name is only linked when it resolves to an existing skill in this org
-    AND (the acting user created it OR the seeder wrote it as a builtin) — a
-    user can only assign their own skills (or org-wide builtins) to an
-    agent, never a co-worker's. Any name that doesn't resolve is logged
+    A name is only linked when it resolves to an existing skill in this org
+    that the acting user's own view allows (`skill_visible_to`, the rule
+    every skill read uses: their skill or a builtin): assignment is how a
+    custom skill is shared, so only its owner can share it. Any name that
+    doesn't resolve is logged
     and skipped rather than failing the whole create/update — a stale
     skill reference in the payload should never block agent creation.
     """
@@ -1333,7 +1344,7 @@ async def _create_skill_edges(
             logger.warning(f"Skipping unknown skill '{name}' for agent {agent_key}")
             continue
         if not skill_visible_to(skill_doc, user_key):
-            logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
+            log_event(logger, "agent.skill.skipped", reason="not_owned", skill=name)
             continue
         if (skill_doc.get("status") or "active") != "active":
             # Mirrors the picker (`GET /skills?status=active`, see
@@ -1417,7 +1428,7 @@ async def _resolve_service_account_binding(
     # raise_on_error, so a database that is down surfaces as a failure rather
     # than as "no such account" — an administrator told the wrong one of those
     # goes looking for a problem that is not there.
-    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True, org_id=caller_org_id)
+    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True)
     caller_org = str(caller_org_id or "").strip()
     account_org = str((account or {}).get("orgId") or "").strip()
 

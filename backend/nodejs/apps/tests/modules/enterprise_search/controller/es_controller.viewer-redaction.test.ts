@@ -17,10 +17,11 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
-import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { chatArchivesScope, withListScope } from '../helpers/list-scope'
 
 /**
  * A shared conversation, archive or saved search shows each viewer only the
@@ -56,6 +57,20 @@ const chain = (value: unknown): any => {
   q.then = (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve(value).then(ok, bad)
   return q
 }
+
+/** `ChatSessionMessage.find` as a page reads it: each query gets the rows its `skip` and `limit` select. */
+const pageReads = (rows: any[]): sinon.SinonStub =>
+  (ChatSessionMessage.find as sinon.SinonStub).callsFake(() => {
+    let skip = 0
+    let limit: number | undefined
+    const q: any = chain(undefined)
+    q.skip = sinon.stub().callsFake((n: number) => ((skip = n), q))
+    q.limit = sinon.stub().callsFake((n: number) => ((limit = n), q))
+    const value = () => rows.slice(skip, limit === undefined ? undefined : skip + limit).map((m) => ({ ...m }))
+    q.exec = sinon.stub().callsFake(async () => value())
+    q.then = (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve(value()).then(ok, bad)
+    return q
+  })
 
 const citation = (id: string, recordId: string, content: string) => ({
   _id: id,
@@ -149,6 +164,14 @@ const req = (userId: string, extra: Record<string, unknown> = {}): any => ({
   ...extra,
 })
 
+type Handler = (req: never, res: never, next: never) => Promise<unknown>
+
+// Each handler runs behind the guard its route mounts, which also reads the chat with `ChatSession.findOne`.
+const getChat = () => behindGuard(realGuards(), 'read', getConversationById(appConfig) as Handler, 'chat') as any
+const getAgentChat = () => behindGuard(realGuards(), 'read', getAgentConversationById(appConfig) as Handler, 'agent') as any
+const listArchives = () => withListScope(listAllArchivesConversation(appConfig) as Handler, 'chat', chatArchivesScope) as any
+const searchArchives = () => withListScope(searchArchivedConversations(appConfig) as Handler, 'chat', chatArchivesScope) as any
+
 const res = (): any => {
   const r: any = { status: sinon.stub(), json: sinon.stub() }
   r.status.returns(r)
@@ -178,7 +201,7 @@ const stubConversation = (messages: unknown[]) => {
   sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
   sinon.stub(Users, 'find').returns(chain([]))
   sinon.stub(ChatSession, 'findOne').returns(
-    chain({ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+    chain({ _id: SESSION, orgId: ORG, userId: OWNER, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
   )
   sinon.stub(ChatSession, 'find').returns(chain([]))
   sinon.stub(ChatSessionMessage, 'countDocuments').resolves(messages.length)
@@ -195,7 +218,7 @@ const stubPeerConversation = (messages: unknown[]) =>
 const fetchConversation = async (userId: string) => {
   const r = res()
   const next = sinon.stub()
-  await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, next)
+  await getChat()(req(userId, { params: { conversationId: SESSION } }), r, next)
   sinon.assert.notCalled(next)
   return r.json.firstCall.args[0].conversation.messages[0]
 }
@@ -305,11 +328,11 @@ describe('shared chats: per-viewer citations', () => {
     expect(readable.ids.size).to.equal(0)
   })
 
-  it('access checks are batched at 500 ids per call and ids are checked once', async () => {
+  it('one read asks for its ids in one request, each id once', async () => {
     const asked = stubAccess([])
     const ids = Array.from({ length: 1203 }, (_, i) => `r${i % 1100}`)
     await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ids)
-    expect(asked.map((a) => a.length)).to.deep.equal([500, 500, 100])
+    expect(asked.map((a) => a.length)).to.deep.equal([1100])
     expect(new Set(asked.flat()).size).to.equal(1100)
   })
 
@@ -325,7 +348,7 @@ describe('shared chats: per-viewer citations', () => {
     const asked = stubAccess([])
     stubPeerConversation([answer()])
     ;(ChatSession.findOne as sinon.SinonStub).returns(
-      chain({ _id: SESSION, title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
+      chain({ _id: SESSION, orgId: ORG, userId: new Types.ObjectId(OWNER), title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
     )
     const message = await fetchConversation(OWNER)
     expect(message.citations[1].citationData.content).to.equal(SECRET)
@@ -337,13 +360,13 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
-    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, userId: OWNER, agentKey: 'agent-1', title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }))
     sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ ...richAnswer(), messageType: 'user_query' }]))
     const r = res()
     const next = sinon.stub()
-    await getAgentConversationById(appConfig)(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+    await getAgentChat()(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
 
     sinon.assert.notCalled(next)
     const message = r.json.firstCall.args[0].conversation.messages[0]
@@ -379,7 +402,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer(), messageType: 'user_query', citations: [], attachments: [] }]))
     const r = res()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), r, sinon.stub())
+    await listArchives()(req(VIEWER), r, sinon.stub())
 
     const message = r.json.firstCall.args[0].conversations[0].messages[0]
     // The archive list is redacted by record access only: the harness's artifact check runs on a conversation read.
@@ -410,7 +433,7 @@ describe('shared chats: per-viewer citations', () => {
     )
     const r = res()
     const next = sinon.stub()
-    await listAllArchivesConversation(appConfig)(req(VIEWER), r, next)
+    await listArchives()(req(VIEWER), r, next)
 
     sinon.assert.notCalled(next)
     const [citations] = [r.json.firstCall.args[0].conversations[0].messages[0].citations]
@@ -470,13 +493,17 @@ describe('shared chats: per-viewer citations', () => {
   it('archive search leaves owner-only fields out for a user the chat is shared with', async () => {
     const owned = { _id: SESSION, userId: OWNER, initiator: OWNER, title: 't', isShared: true, sharedWith: [{ userId: VIEWER, accessLevel: 'read' }], failReason: SECRET, compactedSummary: SECRET, conversationErrors: [{ message: SECRET }], source: 'assistant' }
     sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    // The caller's own matching answers, which the content search checks for them: none here.
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([]))
+    // The content search first reads the sessions the caller may see.
+    sinon.stub(ChatSession, 'find').returns(chain([{ _id: SESSION }]))
     sinon.stub(ChatSession, 'aggregate').resolves([owned] as never)
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
     sinon.stub(Users, 'find').returns(chain([]))
     const run = async (userId: string) => {
       const r = res()
       const next = sinon.stub()
-      await searchArchivedConversations(appConfig)(req(userId, { query: { search: 't' } }), r, next)
+      await searchArchives()(req(userId, { query: { search: 't' } }), r, next)
       sinon.assert.notCalled(next)
       return r.json.firstCall.args[0].conversations[0]
     }
@@ -492,7 +519,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ChatSessionMessage, 'find').returns(chain([]))
     const run = async (userId: string) => {
       const r = res()
-      await listAllArchivesConversation(appConfig)(req(userId), r, sinon.stub())
+      await listArchives()(req(userId), r, sinon.stub())
       return r.json.firstCall.args[0].conversations[0]
     }
     expect(JSON.stringify(await run(VIEWER))).to.not.contain(SECRET)
@@ -574,7 +601,7 @@ const asked = () => ({ messageType: 'user_query', content: QUESTION })
 const fetchAll = async (userId: string) => {
   const r = res()
   const next = sinon.stub()
-  await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, next)
+  await getChat()(req(userId, { params: { conversationId: SESSION } }), r, next)
   sinon.assert.notCalled(next)
   const messages: any[] = r.json.firstCall.args[0].conversation.messages
   return { question: messages.find((m) => m.messageType === 'user_query'), answer: messages.find((m) => m.messageType === 'bot_response') }
@@ -655,7 +682,7 @@ describe('lost access hides the whole answer, for the owner too', () => {
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...answer(), citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }], attachments: [] }]))
     const r = res()
-    await listAllArchivesConversation(appConfig)(req(OWNER), r, sinon.stub() as any)
+    await listArchives()(req(OWNER), r, sinon.stub())
     const m = r.json.firstCall.args[0].conversations[0].messages[0]
     expect(m.answerHidden).to.deep.equal(lost)
     expect(JSON.stringify(m)).to.not.contain(SECRET)
@@ -666,13 +693,13 @@ describe('lost access hides the whole answer, for the owner too', () => {
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
-    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', userId: OWNER, initiator: OWNER, status: 'complete' }))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', userId: OWNER, agentKey: 'agent-1', initiator: OWNER, status: 'complete' }))
     sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([answer()]))
     const r = res()
     const next = sinon.stub()
-    await getAgentConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+    await getAgentChat()(req(OWNER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
     sinon.assert.notCalled(next)
     expect(r.json.firstCall.args[0].conversation.messages[0].answerHidden).to.deep.equal(lost)
   })
@@ -687,6 +714,19 @@ describe('lost access hides the whole answer, for the owner too', () => {
     expect(sent[1]!.content).to.equal('')
     const wire = JSON.stringify(sent)
     for (const leaked of [SECRET, 'The answer', TOOL_TEXT, R_NO, 'rec-no', 'att-no']) expect(wire).to.not.contain(leaked)
+  })
+
+  it('each history row carries its row, version and public mark; a row nobody marked public is not', () => {
+    const sent = formatPreviousConversations([
+      { ...asked(), _id: 'q1' },
+      { ...answer(), _id: 'a1', labelVer: 'v1', _pub: true },
+      { ...answer(), _id: 'a2', labelVer: 'v2' },
+    ] as any)
+    expect(sent.map((m: any) => [m._ref, m._ver, m._pub])).to.deep.equal([
+      ['q1', 'legacy', false],
+      ['a1', 'v1', true],
+      ['a2', 'v2', false],
+    ])
   })
 
   it('the history keeps an answer whose records are all readable, as stored', async () => {
@@ -709,7 +749,7 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
   const card = (i: number) => ({ messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: { questions: [{ question: SECRET }] } }], ...at(i) })
   const fetchRows = async (userId: string) => {
     const r = res()
-    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub() as any)
+    await getChat()(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub())
     return r.json.firstCall.args[0].conversation.messages as any[]
   }
 
@@ -745,12 +785,9 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     ]
     stubConversation(rows)
     // Two rows a page: the second page holds only the card rows, the answer is on the first.
-    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: { skip?: number; limit?: number }) => {
-      const skip = q.skip ?? 0
-      return rows.slice(skip, skip + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any
-    })
+    pageReads(rows)
     const r = res()
-    await getConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION }, query: { page: '1', limit: '2' } }), r, sinon.stub() as any)
+    await getChat()(req(OWNER, { params: { conversationId: SESSION }, query: { page: '1', limit: '2' } }), r, sinon.stub())
     const page = r.json.firstCall.args[0].conversation.messages as any[]
 
     expect(page.map((m) => m.messageType)).to.deep.equal(['tool_call', 'tool_call'])
@@ -760,12 +797,9 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
 
   const pageOf = async (userId: string, rows: any[], query: Record<string, string>) => {
     stubConversation(rows)
-    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: { skip?: number; limit?: number }) => {
-      const skip = q.skip ?? 0
-      return rows.slice(skip, skip + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any
-    })
+    pageReads(rows)
     const r = res()
-    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION }, query }), r, sinon.stub() as any)
+    await getChat()(req(userId, { params: { conversationId: SESSION }, query }), r, sinon.stub())
     return r.json.firstCall.args[0].conversation.messages as any[]
   }
 
@@ -836,6 +870,19 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     ], { page: '1', limit: '2' })
     expect(page[1].answerHidden).to.deep.equal(lost)
     expect(JSON.stringify(page)).to.not.contain(SECRET)
+  })
+
+  it('a removed row is never taken for the question that decides a page', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    await pageOf(OWNER, [
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...answer(), ...at(1) },
+      { messageType: 'user_query', content: 'User selections: A', ...at(2) },
+      card(3),
+    ], { page: '1', limit: '2' })
+    const reads = (ChatSessionMessage.find as sinon.SinonStub).getCalls()
+    expect(reads.length, 'the page and the rows before it').to.be.at.least(2)
+    for (const call of reads) expect(call.args[0]).to.deep.include({ removedAt: { $exists: false } })
   })
 
   it('a page that ends on a card whose answer is on the next page hides the card', async () => {
@@ -949,7 +996,7 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
       { messageType: 'tool_call', content: 'kept card', tools: [{ toolName: 'ask_user_question', toolResult: 'kept' }], ...at(5) },
     ])
     const r = res()
-    await getConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION }, query: { sortBy: 'messageType' } }), r, sinon.stub() as any)
+    await getChat()(req(OWNER, { params: { conversationId: SESSION }, query: { sortBy: 'messageType' } }), r, sinon.stub())
     const rows = r.json.firstCall.args[0].conversation.messages as any[]
 
     // Sorted by type the plain answer comes between the lost answer and its card.

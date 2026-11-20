@@ -5,6 +5,7 @@ graph writes and their transaction boundaries live here."""
 import json
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from logging import Logger
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -77,6 +78,20 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
 
 
+@dataclass(frozen=True)
+class AgentWriteHooks:
+    """What the agents API checks and adds around a save; each may be absent.
+
+    `check_mcp_tools(servers)` refuses MCP tools the build does not let an agent attach, once the servers are bound
+    to their instances. `document_fields(org_id, agent_key, stored)` answers the agent document fields the save
+    sets besides the service's own (engine settings, role models, run gates, environment, owner team), or raises
+    to refuse the save: `stored` is None on a create; on an update it is the agent as stored, read once the caller
+    may edit it."""
+
+    check_mcp_tools: Callable[[dict[str, dict[str, Any]]], Awaitable[None]] | None = None
+    document_fields: Callable[[str, str, dict[str, Any] | None], Awaitable[dict[str, Any]]] | None = None
+
+
 class AgentService:
     spec_model: ClassVar[type[AgentSpec]] = AgentSpec
 
@@ -87,14 +102,27 @@ class AgentService:
         logger: Logger,
         *,
         admin_check: Callable[..., Awaitable[None]] | None = None,
+        hooks: AgentWriteHooks | None = None,
     ) -> None:
         """`admin_check` refuses a caller who does not administer the org; without one, nobody may
-        change the service account an agent searches as."""
+        change the service account an agent searches as. `hooks`: see `AgentWriteHooks`."""
         self._graph = graph
         self._config = config
         self._logger = logger
         self._access = AccessValidator(graph, config, logger)
         self._admin_check_fn = admin_check
+        self._hooks = hooks or AgentWriteHooks()
+
+    async def _check_mcp_tools(self, mcp_servers_with_tools: dict[str, dict[str, Any]]) -> None:
+        if self._hooks.check_mcp_tools is not None:
+            await self._hooks.check_mcp_tools(mcp_servers_with_tools)
+
+    async def _document_fields(
+        self, org_id: str, agent_key: str, stored: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if self._hooks.document_fields is None:
+            return {}
+        return await self._hooks.document_fields(org_id, agent_key, stored)
 
     async def _admin_check(self, **kwargs: str) -> None:
         """`kwargs` (`detail`) go to the check, to say what was refused."""
@@ -172,6 +200,7 @@ class AgentService:
             if mcp_servers_with_tools else {}
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+        await self._check_mcp_tools(mcp_servers_with_tools)
         knowledge_sources = _parse_knowledge_sources(spec.knowledge)
         await _refuse_limit_over_the_cap(knowledge_sources, graph_provider, org_key, logger)
         skill_names = _parse_skills(spec.skills)
@@ -231,6 +260,7 @@ class AgentService:
             "orgId": org_key,
             **(extra_fields or {}),
         }
+        agent.update(await self._document_fields(org_key, agent_key, None))
 
         # Everything but the MCP servers is written in one transaction; those are
         # attached after it commits (see _attach_mcp_servers_to_new_agent).
@@ -287,7 +317,8 @@ class AgentService:
                     toolset_nodes = []
 
                     # Prepare toolset nodes
-                    for toolset_name, toolset_data in toolsets_with_tools.items():
+                    for entry_key, toolset_data in toolsets_with_tools.items():
+                        toolset_name = toolset_data.get("name", entry_key)
                         from app.agents.constants.toolset_constants import (
                             normalize_app_name,
                         )
@@ -317,7 +348,8 @@ class AgentService:
                             toolset_node["instanceName"] = instance_name
 
                         toolset_nodes.append(toolset_node)
-                        toolset_mapping[toolset_name] = {
+                        toolset_mapping[entry_key] = {
+                            "name": toolset_name,
                             "key": toolset_key,
                             "displayName": display_name,
                             "tools": tools_list
@@ -345,7 +377,8 @@ class AgentService:
                     tool_nodes = []
                     toolset_tool_edges = []
 
-                    for toolset_name, toolset_info in toolset_mapping.items():
+                    for toolset_info in toolset_mapping.values():
+                        toolset_name = toolset_info["name"]
                         for tool_data in toolset_info["tools"]:
                             tool_name = tool_data["name"]
                             full_name = tool_data["fullName"]
@@ -387,7 +420,8 @@ class AgentService:
                         ensure_written(await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id), "the agent's tool links")
 
                     # Build response for created toolsets
-                    for toolset_name, toolset_info in toolset_mapping.items():
+                    for toolset_info in toolset_mapping.values():
+                        toolset_name = toolset_info["name"]
                         created_tools = []
                         for tool_data in toolset_info["tools"]:
                             full_name = tool_data["fullName"]
@@ -574,6 +608,7 @@ class AgentService:
             raise AgentNotFoundError(agent_id)
 
         agent.update(perm)
+        body.update(await self._document_fields(org_key, agent_id, agent))
 
         # Guard: once an agent is marked as a service account it cannot be downgraded.
         # Allowing the reverse would leave orphaned agent-scoped toolset credentials
@@ -632,6 +667,7 @@ class AgentService:
             if mcp_servers_with_tools else {}
         )
         mcp_servers_with_tools = _bind_mcp_attachments_to_instances(mcp_servers_with_tools, attached_mcp_instances)
+        await self._check_mcp_tools(mcp_servers_with_tools)
 
         if sharing_turned_on and "mcpServers" not in body:
             # An empty list here may only mean the read failed; it would let any server through.

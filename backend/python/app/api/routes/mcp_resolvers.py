@@ -42,6 +42,23 @@ async def mcp_instance_visible_to_org(
     return bool(org_id) and org_of(instance) == org_id
 
 
+async def unusable_agent_mcp_server_ids(
+    attached: list[dict[str, Any]],
+    config_service: ConfigurationService,
+    org_id: str,
+    user_id: str | None,
+) -> frozenset[str]:
+    """Ids of an agent's attached MCP servers that `user_id` may not use: none here."""
+    del attached, config_service, org_id, user_id
+    return frozenset()
+
+
+def keeps_attached_mcp_servers_on_edit() -> bool:
+    """Whether saving an agent keeps the MCP servers already on it without checking them again.
+    No here: every server in the edit must be one the editor can see."""
+    return False
+
+
 def mask_mcp_instance_for_response(
     instance: dict[str, Any],
     reveal: bool = False,

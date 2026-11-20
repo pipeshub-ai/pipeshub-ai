@@ -74,11 +74,11 @@ class AgentReadiness(BaseModel):
     unavailable_tools: list[UnavailableTool] = Field(default_factory=list)
     # None when the agent has no named toolset to check.
     configured_toolsets: list[dict[str, Any]] | None = Field(default=None, exclude=True, repr=False)
-    # SENSITIVE: holds credentials; never serialized.
+    # References to the caller's credentials (never their values); never serialized.
     toolset_configs: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
     # None when MCP servers were not checked.
     configured_mcp_servers: list[dict[str, Any]] | None = Field(default=None, exclude=True, repr=False)
-    # SENSITIVE: instance definitions and resolved credentials, keyed by instanceId.
+    # Instance definitions and references to the caller's credentials, keyed by instanceId; never serialized.
     mcp_server_configs: dict[str, dict[str, Any]] = Field(default_factory=dict, exclude=True, repr=False)
 
     @property
@@ -160,11 +160,16 @@ async def _toolset_readiness(
     config_service: ConfigurationService,
     executing_user_id: str,
     prefetched_auth: Mapping[str, dict[str, Any]] | None,
+    bound: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[str], list[str], list[UnavailableTool]]:
     from app.agents.constants.toolset_constants import get_toolset_config_path
+    from app.harness.credentials.tool_credentials import toolset_reference
 
     async def _fetch(toolset: Mapping[str, Any]) -> tuple[Mapping[str, Any], Any]:
         lookup_key = toolset.get("instanceId")
+        # The turn's resolution already holds this credential ready for the caller (CPD-10): no read.
+        if lookup_key in bound:
+            return toolset, {"isAuthenticated": True}
         # `get_assistant_agent` already read the executing user's config for each instance.
         prefetched = prefetched_auth.get(lookup_key) if prefetched_auth is not None else None
         if prefetched is not None:
@@ -192,7 +197,8 @@ async def _toolset_readiness(
             toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
         )
         if config and config.get("isAuthenticated", False):
-            toolset_configs[instance_id] = config
+            # A reference only: the record is resolved by handle when a client is created (P2.4a).
+            toolset_configs[instance_id] = toolset_reference(instance_id, executing_user_id)
             configured.append(toolset)
             continue
         if config:
@@ -226,23 +232,30 @@ async def _mcp_readiness(
     org_id: str,
     executing_user_id: str,
     prefetched_mcp: Mapping[str, dict[str, Any]] | None,
+    bound: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[UnavailableTool]]:
     """An MCP server also needs its org-level instance (transport/url/authMode), which the graph
-    node never stores, so each server is read in two steps: the instance, then its credential."""
+    node never stores, so each server is read in two steps: the instance, then its credential. A server
+    in ``bound`` is one whose credential the turn's resolution holds: its instance is still read (it holds
+    the transport), its credential record is not."""
     from app.agents.mcp import service as mcp_service
-    from app.edition_config import get_mcp_instance_resolved
+    from app.agents.mcp.instance_scope import get_instance_for_org
+    from app.harness.credentials.tool_credentials import REF_KEY, mcp_reference
 
     async def _fetch(server: Mapping[str, Any]) -> tuple[Mapping[str, Any], dict[str, Any] | None, Any]:
         instance_id = server["instanceId"]
         # Read once already for the assistant, always as the executing user.
         if prefetched_mcp and (prefetched := prefetched_mcp.get(instance_id)):
-            return server, prefetched["instance"], prefetched["auth"]
+            instance = prefetched["instance"]
+            return server, instance, {} if instance_id in bound else prefetched["auth"]
         try:
-            instance = await get_mcp_instance_resolved(
+            instance = await get_instance_for_org(
                 instance_id, config_service, org_id, executing_user_id,
             )
             if not instance:
                 return server, None, None
+            if instance_id in bound:
+                return server, instance, {}
             effective_auth = await mcp_service.resolve_effective_user_auth(
                 instance, executing_user_id, config_service,
             )
@@ -268,7 +281,12 @@ async def _mcp_readiness(
             ))
             continue
         if mcp_service.is_effective_auth_authenticated(effective_auth):
-            configs[instance_id] = {"instance": instance, "auth": effective_auth or {}, "ownerId": executing_user_id}
+            # The auth record is resolved by handle when the session opens (P2.4a).
+            configs[instance_id] = {
+                "instance": instance,
+                REF_KEY: mcp_reference(instance_id, executing_user_id),
+                "ownerId": executing_user_id,
+            }
             configured.append(dict(server))
             continue
         shared = mcp_service.uses_shared_credential(instance)
@@ -293,9 +311,11 @@ async def compute_agent_readiness(
     prefetched_auth: Mapping[str, dict[str, Any]] | None = None,
     mcp_servers: Sequence[Mapping[str, Any]] | None = None,
     prefetched_mcp: Mapping[str, dict[str, Any]] | None = None,
+    bound: frozenset[str] = frozenset(),
 ) -> AgentReadiness:
     """`toolsets` overrides the agent's own list (the chat route narrows it by the request's tool filter).
-    `mcp_servers` are checked only when given (None skips MCP).
+    `mcp_servers` are checked only when given (None skips MCP). `bound`: the instances whose credential the
+    turn's resolution already holds ready for the caller (CPD-10); their record is not read.
 
     Credentials are always read under the caller's own user id, for every agent: never under the
     agent key, and never another person's.
@@ -317,6 +337,7 @@ async def compute_agent_readiness(
             config_service=config_service,
             executing_user_id=executing_user_id,
             prefetched_auth=prefetched_auth,
+            bound=bound,
         )
         items.extend(toolset_items)
 
@@ -329,6 +350,7 @@ async def compute_agent_readiness(
             org_id=str(user.get("orgId") or ""),
             executing_user_id=executing_user_id,
             prefetched_mcp=prefetched_mcp,
+            bound=bound,
         ) if named_servers else (None, {}, [])
         items.extend(mcp_items)
 

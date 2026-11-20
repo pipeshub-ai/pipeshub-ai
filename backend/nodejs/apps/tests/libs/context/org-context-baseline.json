@@ -7,6 +7,7 @@
   "modules/crawling_manager/services/connector_schedule_sweep.ts": 1,
   "modules/crawling_manager/services/crawling_worker.ts": 1,
   "modules/desktop_proxy/socket/desktop-proxy.gateway.ts": 1,
+  "modules/enterprise_search/utils/turn-stream.ts": 1,
   "modules/enterprise_search/utils/utils.ts": 1,
   "modules/knowledge_base/controllers/kb_controllers.ts": 1,
   "modules/notification/service/notification.service.ts": 1,
@@ -14,6 +15,7 @@
   "modules/user_management/services/metrics.refresh.service.ts": 1
  },
  "direct_org_reads": {
+  "libs/types/caller-identity.ts": 1,
   "modules/artifacts/services/conversation-artifacts.service.ts": 1,
   "modules/auth/controller/userAccount.controller.ts": 8,
   "modules/auth/middlewares/userAuthentication.middleware.ts": 1,

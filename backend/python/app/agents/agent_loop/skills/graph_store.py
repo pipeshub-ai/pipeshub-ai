@@ -84,11 +84,13 @@ from app.agents.agent_loop.skills.provenance import (
 )
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import org_of
+from app.modules.agents.privacy.ledger import SkillOrigin
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Collection, Iterable, Mapping
 
+    from app.agents.agent_loop.skills.ledger_manager import SkillOrigins
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 __all__ = [
@@ -403,6 +405,12 @@ class SkillVisibility:
         return sharing.scope == SkillScope.ORG or (sharing.scope == SkillScope.TEAM and sharing.team_id in self.teams)
 
 
+def skill_visible_to(doc: Mapping[str, Any], viewer: str | None) -> bool:
+    """Whether `viewer` (a user key) may see this skill, by `SkillVisibility`'s rule: a builtin is the whole org's,
+    any other skill only its creator's. `None` is the org-wide view."""
+    return (SkillVisibility.everyone() if viewer is None else SkillVisibility.of([viewer])).allows(doc)
+
+
 class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
     def __init__(
         self,
@@ -415,6 +423,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         allow_builtin_writes: bool = False,
         rights: SharedSkillRights | None = None,
         provenance: Callable[[], SkillProvenance] | None = None,
+        also_visible: "Collection[str]" = (),
+        origins: "SkillOrigins | None" = None,
+        own_skills: bool = True,
+        account_id: str | None = None,
     ) -> None:
         self._graph = graph_provider
         self._org_id = org_id
@@ -426,6 +438,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         self._rights = rights or SharedSkillRights()
         # A run's store: every write is that run's model's, stamped with the run's label as it stands then.
         self._provenance = provenance
+        # Where each skill a run reads came from, for its answer's label: the agent's assignment, the person's own,
+        # a builtin, one this run wrote.
+        self._also_visible = frozenset(also_visible)
+        self._origins = origins
+        self._own_skills = own_skills
+        self._account_id = account_id
+        # (name, generation) of each skill this store created.
+        self._created: set[tuple[str, str]] = set()
 
     def _key(self, name: str) -> str:
         return f"{self._org_id}_{name}"
@@ -632,6 +652,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
     async def list_skills(self, filter: SkillFilter | None = None) -> list[SkillMetadata]:
         docs = await self._graph.get_nodes_by_filters(_SKILLS, {"orgId": self._org_id})
         docs = [d for d in docs if self._sees(d)]
+        for doc in docs:
+            self._seen(doc)
         metadatas = [self._doc_to_metadata(d) for d in docs]
         if filter is not None:
             metadatas = [m for m in metadatas if matches_filter(m, filter)]
@@ -845,6 +867,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             doc["approvedBy"] = approved_by
             doc["approvedAtTimestamp"] = now
         await self._graph.batch_upsert_nodes([doc], _SKILLS)
+        self._created.add((name, doc["generation"]))
+        self._seen(doc)
         await self._create_owner_permission_edge(name, now)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata

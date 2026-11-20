@@ -1,3 +1,4 @@
+import { withOwnerGrant } from '../helpers/conversation-grant'
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
@@ -12,9 +13,16 @@ import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import { setSlackUserLinkRepository } from '../../../../src/libs/repositories/slack-user-link'
 import { SLACK_LINK_REQUIRED_MESSAGE } from '../../../../src/modules/enterprise_search/utils/scoped-request'
 import { InMemorySlackUserLinks } from '../../../support/slack/in-memory-slack-links'
+import { chatListScope, withCallerScope, withListScope } from '../helpers/list-scope'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { Project } from '../../../../src/modules/projects/schema/project.schema'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { testAcl } from '../helpers/test-extensions'
+import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions'
+
+const chatList = withListScope(controller.getAllConversations as JsonHandler, 'chat', chatListScope)
 
 const appConfig = {
   aiBackend: 'http://ai.test',
@@ -46,7 +54,7 @@ async function call<T = Record<string, unknown>>(
 ): Promise<Outcome<T>> {
   const res = new FakeSSEResponse()
   const next = sinon.stub()
-  const req = { headers: { authorization: 'Bearer token' }, params, query, body, user, context: { requestId: 'req-list' } }
+  const req = withOwnerGrant({ headers: { authorization: 'Bearer token' }, params, query, body, user, context: { requestId: 'req-list' } })
   await handler(req as never, res as never, next as never)
   await settle()
   return { status: res.statusCode, body: res.jsonBody as T, error: next.firstCall?.args[0] as Outcome<T>['error'] }
@@ -63,6 +71,8 @@ function fresh(): { store: InMemoryChatStore; ai: FakeAIBackend } {
 describe('es_controller listing and paging', () => {
   beforeEach(() => registerAppUpstreams(appConfig))
   afterEach(() => registerUpstreams({}))
+  beforeEach(() => useConversationExtensions({ acl: testAcl }))
+  afterEach(() => useConversationExtensions(undefined))
 
   afterEach(() => {
     sinon.restore()
@@ -118,10 +128,10 @@ describe('es_controller listing and paging', () => {
       store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'archived', isArchived: true })
 
       const first = await call<{ conversations: Array<{ title: string }>; pagination: Record<string, unknown> }>(
-        controller.getAllConversations as JsonHandler,
+        chatList,
         { query: { page: '1', limit: '2' } },
       )
-      const second = await call<{ conversations: Array<{ title: string }> }>(controller.getAllConversations as JsonHandler, {
+      const second = await call<{ conversations: Array<{ title: string }> }>(chatList, {
         query: { page: '2', limit: '2' },
       })
 
@@ -136,7 +146,7 @@ describe('es_controller listing and paging', () => {
       store.addSession({ orgId: ORG, userId: OTHER, initiator: OTHER, title: 'shared with someone else', isShared: true, sharedWith: [{ userId: oid(), accessLevel: 'read' }] })
       store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'mine' })
 
-      const out = await call<{ conversations: Array<{ title: string }> }>(controller.getAllConversations as JsonHandler, {
+      const out = await call<{ conversations: Array<{ title: string }> }>(chatList, {
         query: { source: 'shared' },
       })
 
@@ -145,7 +155,7 @@ describe('es_controller listing and paging', () => {
 
     it('rejects an unknown source instead of guessing', async () => {
       fresh()
-      const out = await call(controller.getAllConversations as JsonHandler, { query: { source: 'everyone' } })
+      const out = await call(chatList, { query: { source: 'everyone' } })
       expect(out.error?.statusCode).to.equal(400)
     })
   })
@@ -160,7 +170,7 @@ describe('es_controller listing and paging', () => {
       store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, sessionType: 'agent', agentKey: 'agent-2', title: 'other agent', isArchived: true, archivedBy: OWNER })
       store.addSession({ orgId: ORG, userId: OTHER, initiator: OTHER, sessionType: 'agent', agentKey: AGENT_KEY, title: 'not mine', isArchived: true, archivedBy: OTHER })
 
-      const handler = controller.listAllArchivesAgentConversation() as JsonHandler
+      const handler = withListScope(controller.listAllArchivesAgentConversation() as JsonHandler, 'agent', { includeShared: false })
       const page1 = await call<{ conversations: Array<{ title: string }>; pagination: Record<string, unknown>; summary: Record<string, unknown> }>(handler, {
         params: { agentKey: AGENT_KEY },
         query: { page: '1', limit: '2' },
@@ -188,13 +198,13 @@ describe('es_controller listing and paging', () => {
       const aggregate = stubAggregate([{ agentKey: AGENT_KEY, conversations: [conversation], totalCount: 7 }], 12)
 
       const out = await call<{ groups: Array<Record<string, unknown>>; agentPagination: Record<string, unknown> }>(
-        controller.listAllAgentsArchivedConversationsGrouped(appConfig) as JsonHandler,
+        withCallerScope(controller.listAllAgentsArchivedConversationsGrouped(appConfig) as JsonHandler),
         { query: { agentPage: '2', agentLimit: '5' } },
       )
 
       const match = (aggregate.firstCall.args[0] as Array<{ $match?: Record<string, unknown> }>)[0]?.$match
       expect(match?.agentKey).to.deep.equal({ $nin: ['gone-1', '7', 'gone-2'] })
-      expect(String((match?.$or as Array<{ userId: unknown }>)[0]?.userId)).to.equal(String(OWNER))
+      expect(String(match?.userId)).to.equal(String(OWNER))
       expect(String(match?.orgId)).to.equal(String(ORG))
       const dataPipeline = aggregate.secondCall.args[0] as Array<Record<string, unknown>>
       expect(dataPipeline).to.deep.include({ $skip: 5 })
@@ -211,7 +221,7 @@ describe('es_controller listing and paging', () => {
       const aggregate = stubAggregate([], 0)
 
       const out = await call<{ agentPagination: Record<string, unknown> }>(
-        controller.listAllAgentsArchivedConversationsGrouped(appConfig) as JsonHandler,
+        withCallerScope(controller.listAllAgentsArchivedConversationsGrouped(appConfig) as JsonHandler),
         { query: { agentPage: '-3', agentLimit: '1000' } },
       )
 
@@ -286,7 +296,7 @@ describe('es_controller listing and paging', () => {
       const session = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER })
       ai.reply(/\/api\/v1\/chat\/cancel/, 200, { cancelled: true })
 
-      const out = await call(controller.cancelConversationStream(appConfig) as JsonHandler, {
+      const out = await call(behindGuard(realGuards(), 'cancel', controller.cancelConversationStream(appConfig) as JsonHandler), {
         params: { conversationId: String(session._id) },
         body: { runId: 'run-9' },
       })
@@ -302,14 +312,17 @@ describe('es_controller listing and paging', () => {
       const session = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER })
       const params = { conversationId: String(session._id) }
 
-      const refused = await call(controller.setConversationProjectVisibility as JsonHandler, { params, body: { visibility: 'project' } })
+      const refused = await call(behindGuard(realGuards(), 'linkProject', controller.setConversationProjectVisibility as JsonHandler), { params, body: { visibility: 'project' } })
       expect(refused.error?.statusCode).to.equal(400)
       expect(refused.error?.message).to.equal('Conversation is not linked to a project')
 
       session.set('projectId', oid())
-      const changed = await call(controller.setConversationProjectVisibility as JsonHandler, { params, body: { visibility: 'project' } })
+      sinon.stub(Project, 'findOne').returns({ lean: () => Promise.resolve(null) } as never)
+      const bump = sinon.spy(testAcl, 'versionBump')
+      const changed = await call(behindGuard(realGuards(), 'linkProject', controller.setConversationProjectVisibility as JsonHandler), { params, body: { visibility: 'project' } })
       expect(changed.body).to.deep.include({ projectVisibility: 'project' })
       expect(store.session(session._id)?.projectVisibility).to.equal('project')
+      expect(bump.calledOnce).to.equal(true)
     })
   })
 

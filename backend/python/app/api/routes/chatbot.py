@@ -1416,7 +1416,7 @@ async def readable_for_reader(
     if not node_ids or not user_id or not org_id:
         return {}
     try:
-        user = await get_caller_user(graph_provider, user_id, raise_on_error=True, org_id=org_id)
+        user = await get_caller_user(graph_provider, user_id, raise_on_error=True)
     except Exception as exc:
         raise PermissionVerificationUnavailableError(str(exc)) from exc
     if user and not _is_live_account(user):
