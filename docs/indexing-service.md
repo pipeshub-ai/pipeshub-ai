@@ -1022,7 +1022,7 @@ Two runs that index the same record (a retry, a replica that raced the first run
 A PDF over 500 pages is not indexed. `check_page_limit` (`app/modules/indexing/page_limit.py`) decides before dedup, resume and
 the `IN_PROGRESS` write, from the record as it was read and a page count taken in a parse pool worker
 (`app/modules/parsers/pdf/page_count.py`, pool-governed as `ParseKind.INSPECT`). The count is an `int`, `Unreadable`
-(pdfium cannot open the file) or `Unavailable` (a timeout, a dead worker, a closed pool, or no worker process: the count never runs on a thread, which its timeout cannot stop).
+(pdfium cannot open the file) or `Unavailable` (a timeout, a dead worker, a closed pool, or no worker process: the count never runs on a thread, which its timeout cannot stop). With `PARSE_POOL_WORKERS=0` (or no resource governor) the early count is off: the process logs one INFO line, counts no outage, and every PDF is decided after the parse as for `Unavailable`.
 
 The rule never deletes an index on uncertainty:
 
@@ -1035,7 +1035,7 @@ The rule never deletes an index on uncertainty:
 accepts it (the record schema and the record endpoint know it) and writes none, so a process of the previous release never
 meets a key it rejects; a later release writes it. The rule reads it when present and compares it with the md5 of the
 downloaded bytes, never with `md5Checksum`, which a connector sync overwrites with the source's value of the new file. A
-record without `indexedMd5`, which is every record until a release writes it, uses the older rule: only an md5 mismatch
+record without `indexedMd5`, which is every record until a release writes it, uses the stored `pageCount` first: a stored count of 500 or less with a fresh count over 500 means the bytes changed (a sync overwrites `md5Checksum` with the new file's), so the file is refused and un-indexed, not kept. `pageCount` is already read and written by this release, so this adds no field. Without a stored count it uses the older rule: only an md5 mismatch
 (hex, base64 of 16 bytes or 16 raw bytes, both sides known) proves a change, and a `contentRev` mismatch alone proves
 nothing, because a re-embed from stored blocks writes a revision of the same shape. Such a record keeps its index until a byte change is detectable (a changed md5 that the source reports); a file whose
 source has changed since, with no md5 to compare, keeps its index too. The start-up audit below only writes the note: it never

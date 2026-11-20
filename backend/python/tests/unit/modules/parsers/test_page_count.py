@@ -40,7 +40,7 @@ def _worker_runs_inline(request: pytest.FixtureRequest) -> Iterator[None]:
     async def inline(fn: object, *args: object, **_kw: object) -> object:
         return fn(*args)
 
-    with patch.object(parse_pool, "submit", new=inline):
+    with patch.object(parse_pool, "submit", new=inline), patch.object(parse_pool, "parse_pool_workers", return_value=1):
         yield
 
 
@@ -54,7 +54,7 @@ async def test_a_count_through_a_pool_is_an_int() -> None:
         assert kw["process_only"] is True
         return fn(*args)
 
-    with patch.object(parse_pool, "submit", new=through_pool):
+    with patch.object(parse_pool, "submit", new=through_pool), patch.object(parse_pool, "parse_pool_workers", return_value=1):
         assert await count_pdf_pages(text_pdf(4), "t.pdf") == 4
 
 
@@ -149,3 +149,28 @@ async def test_a_pool_that_closes_under_the_job_is_unavailable_not_a_thread_run(
 @pytest.mark.asyncio
 async def test_submit_without_process_only_still_falls_back_to_a_thread() -> None:
     assert await parse_pool.submit(len, [1, 2, 3]) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_process_with_no_pool_by_configuration_logs_one_info_line_and_no_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from app.modules.parsers.pdf import page_count
+
+    page_count._LOGGED["no_pool"] = False
+    with patch.object(parse_pool, "parse_pool_workers", return_value=0), caplog.at_level(logging.DEBUG, logger=page_count.__name__):
+        results = [await count_pdf_pages(text_pdf(2), "t.pdf") for _ in range(3)]
+    assert all(isinstance(r, Unavailable) and r.no_pool for r in results)
+    assert [r.levelno for r in caplog.records] == [logging.INFO]
+    assert caplog.records[0].exc_info is None
+
+
+@pytest.mark.asyncio
+async def test_a_worker_outage_is_still_unavailable_without_the_no_pool_mark() -> None:
+    with patch.object(parse_pool, "parse_pool_workers", return_value=1), patch.object(
+        parse_pool, "submit", new=AsyncMock(side_effect=parse_pool.ParseWorkerError("overran", "timeout"))
+    ):
+        result = await count_pdf_pages(b"x", "t.pdf")
+    assert isinstance(result, Unavailable) and not result.no_pool

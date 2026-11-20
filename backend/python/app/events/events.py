@@ -26,6 +26,7 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.file_types import Route
+from app.core.org_context import peek as peek_org_context
 from app.events.dedup import (
     DedupDecision,
     DuplicateMatch,
@@ -1383,10 +1384,11 @@ class EventProcessor:
         # event's own buffer, which the handler drops when parsing completes.
         del file_content
         md5 = await offload_if_large(self._hash_for_dedup, content, record_type, mime_type)
+        bound_org = peek_org_context()
         long_doc = LongDocument(
             record_id=record_id,
             snapshot=record,
-            org_id=org_id or doc.get("orgId") or "",
+            org_id=org_id or (bound_org.org_id if bound_org else None) or "",
             content=content,
             content_rev=content_rev,
             md5=md5,
@@ -1395,7 +1397,8 @@ class EventProcessor:
         )
         decision = await check_page_limit(long_doc)
         inspected: InspectedPdf | None = None
-        if isinstance(decision, Proceed) and decision.pages is None and decision.keep_eligible:
+        service = self._use_service_pipeline()
+        if isinstance(decision, Proceed) and decision.pages is None and decision.keep_eligible and not service:
             # The count could not be taken and the record has an index to protect. The whole-file inspection decides
             # now, before the record or its virtual record id is written: a keep then leaves everything as it was, and a
             # file within the limit goes on to be indexed from this same inspection.
@@ -1439,7 +1442,7 @@ class EventProcessor:
                 "Failed to clear the page-limit note of record",
                 doc,
             )
-        counted = decision.pages is not None or inspected is not None
+        counted = decision.pages is not None or (inspected is not None and isinstance(inspected.page_count, int))
         gate = PageLimitGate(md5=md5, skip_over_limit_twins=not counted, inspected=inspected)
         if not counted:
 
@@ -1453,12 +1456,46 @@ class EventProcessor:
                     md5=md5,
                     force_reindex=long_doc.force_reindex,
                     inspected=inspected,
-                    keep_eligible=False,
+                    keep_eligible=long_doc.keep_eligible and service,
                     host=self,
                 )
                 late_decision = await check_page_limit(late)
                 if isinstance(late_decision, Refuse):
                     await apply_refuse(late, late_decision)
+                    return True
+                if isinstance(late_decision, Keep):
+                    # Only the parsing-service path reaches this: the parser's count arrives after the run marked the
+                    # record IN_PROGRESS, so what the event found is put back, and only while the record still carries the
+                    # revision this run wrote. A record that moved on is left to its writer.
+                    restored = await self.graph_provider.update_node_fields_if_match(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        {
+                            "indexingStatus": record.get("indexingStatus"),
+                            "parsingStatus": record.get("parsingStatus"),
+                            "processingStartedAt": record.get("processingStartedAt"),
+                            "contentRev": record.get("contentRev"),
+                            "reason": record.get("reason"),
+                            "virtualRecordId": record.get("virtualRecordId"),
+                        },
+                        {"contentRev": content_rev},
+                    )
+                    if restored:
+                        await apply_keep(
+                            LongDocument(
+                                record_id=record_id, snapshot=record, org_id=long_doc.org_id, content=None,
+                                content_rev=content_rev, md5=md5, force_reindex=long_doc.force_reindex, host=self,
+                            ),
+                            late_decision,
+                        )
+                    if embed_marker:
+                        await self._discard_embed_marker(doc, embed_marker, org_id)
+                    await notify_record_indexed(
+                        connector_name=doc.get("connectorName"),
+                        connector_id=doc.get("connectorId"),
+                        external_record_group_id=doc.get("externalGroupId"),
+                        org_id=org_id,
+                    )
                     return True
                 if isinstance(late_decision, Proceed) and late_decision.clear_note:
                     self._require_persisted(

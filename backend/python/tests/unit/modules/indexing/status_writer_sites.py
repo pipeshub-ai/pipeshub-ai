@@ -40,6 +40,7 @@ SITES: dict[tuple[str, str, str], str] = {
     ("indexing_main.py", "_republish_stranded_records", "update_node"): NO_RUN_FIELDS,
     ("indexing_main.py", "recover_in_progress_records", "update_node"): QUEUE_NO_FILL,
     ("modules/indexing/duplicate_reconcile.py", "DuplicateReconciler.reconcile", "update_node_fields_if_match"): NO_RUN_FIELDS,
+    ("events/events.py", "EventProcessor._gate_page_limit.late_check", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/indexing/page_limit.py", "_write_if_same_revision", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/indexing/pdf_page_limit_audit.py", "_note", "update_node_fields_if_match"): NO_RUN_FIELDS,
     ("modules/indexing/duplicate_reconcile.py", "_retry_one", "update_node_fields_if_match"): NO_RUN_FIELDS,

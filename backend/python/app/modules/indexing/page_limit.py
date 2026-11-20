@@ -188,7 +188,19 @@ async def _stored_content_ok(doc: LongDocument) -> bool:
         return True
 
 
+def _grew_past_the_limit(snapshot: Mapping[str, Any], pages: int) -> bool:
+    """A stored count within the limit and a fresh count over it: the bytes changed since they were indexed.
+
+    ``pageCount`` is the count of the bytes last parsed, so it proves a change even where ``md5Checksum`` cannot (a connector
+    sync overwrites that with the source's value of the new file before the event). Absent, nothing is proven.
+    """
+    stored = snapshot.get("pageCount")
+    return isinstance(stored, int) and not isinstance(stored, bool) and 1 <= stored <= MAX_INDEXED_PDF_PAGES < pages
+
+
 async def _over_limit(doc: LongDocument, pages: int, *, eligible: bool) -> Keep | Refuse:
+    if eligible and _grew_past_the_limit(doc.snapshot, pages):
+        eligible = False
     if eligible and await _stored_content_ok(doc):
         return Keep(note=PDF_PAGE_LIMIT_NOTE, pages=pages)
     return Refuse(
@@ -219,7 +231,8 @@ async def check_page_limit(doc: LongDocument) -> Proceed | Keep | Refuse:
             return Proceed(pages=counted, clear_note=clears_note)
         return await _over_limit(doc, counted, eligible=await _keep_eligible(doc))
     if isinstance(counted, Unavailable):
-        PAGE_COUNT_UNAVAILABLE.inc()
+        if not counted.no_pool:
+            PAGE_COUNT_UNAVAILABLE.inc()
     else:
         assert isinstance(counted, Unreadable)
     # No count: the caller decides from the whole-file inspection (before it writes anything when ``keep_eligible``, so

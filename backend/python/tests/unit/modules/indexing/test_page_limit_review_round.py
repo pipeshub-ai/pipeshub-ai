@@ -4,7 +4,6 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,18 +12,17 @@ from app.config.constants.arangodb import ProgressStatus
 from app.events.events import EventProcessor
 from app.modules.indexing import page_limit
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
+from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf
 from app.services.messaging.config import IndexingEvent
 from app.utils.user_errors import PDF_PAGE_LIMIT_NOTE
 from tests.unit.modules.indexing.test_page_limit import (
     COMPLETED,
+    MD5,
     REV,
     VRID,
     World,
     searchable,
 )
-
-if TYPE_CHECKING:
-    from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf
 
 UPDATE = "updateRecord"
 
@@ -35,9 +33,12 @@ UPDATE = "updateRecord"
 @pytest.mark.asyncio
 async def test_an_event_without_an_org_id_refuses_under_the_stored_records_org() -> None:
     """The refusal's clean-up must look in the record's org, as the rest of the event does."""
+    from app.core.org_context import for_org
+
     world = World({"indexingStatus": "QUEUED"}, extra_payload={"orgId": None})
     world.count(600)
-    await world.run()
+    with for_org("org-1", job="test"):
+        await world.run()
     assert world.refused
     assert world.unindex.await_args.args[1] == "org-1"
 
@@ -285,3 +286,117 @@ def test_the_event_processor_no_longer_remembers_an_indexed_md5() -> None:
     with pytest.raises(ImportError):
         __import__("app.modules.indexing.indexed_bytes")
     assert ProgressStatus.COMPLETED.value == COMPLETED
+
+
+# --- the parsing-service path decides from the parser's count, not from a gate inspection ----------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [Unreadable(), Unavailable()])
+async def test_the_service_path_takes_no_gate_inspection_and_gets_the_late_check(count: object) -> None:
+    world = World(searchable(indexingStatus="QUEUED"))
+    world.count(count)
+    inspect = world.inspected(600)
+    world.ep.parsing_client = MagicMock(circuit_open=False)
+    captured: dict = {}
+
+    async def fake(**kwargs: object):  # noqa: ANN202
+        captured.update(kwargs)
+        return
+        yield
+
+    world.stack.enter_context(patch.object(world.ep, "_use_service_pipeline", return_value=True))
+    world.stack.enter_context(patch.object(world.ep, "_orchestrate_via_services", side_effect=fake))
+    await world.run(UPDATE)
+    inspect.assert_not_awaited()
+    assert callable(captured.get("late_page_limit"))
+
+
+@pytest.mark.asyncio
+async def test_the_late_keep_on_the_service_path_restores_only_the_revision_this_run_wrote() -> None:
+    world = World(searchable(indexingStatus="QUEUED", contentRev="r-old"))
+    world.count(Unavailable())
+    world.ep.parsing_client = MagicMock(circuit_open=False)
+    late: dict = {}
+
+    async def fake(**kwargs: object):  # noqa: ANN202
+        late["check"] = kwargs["late_page_limit"]
+        return
+        yield
+
+    world.stack.enter_context(patch.object(world.ep, "_use_service_pipeline", return_value=True))
+    world.stack.enter_context(patch.object(world.ep, "_orchestrate_via_services", side_effect=fake))
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
+    # The run marked the record IN_PROGRESS under its own revision; the parser then reports 600 pages.
+    world.graph.record.update(indexingStatus="IN_PROGRESS", contentRev=REV)
+    assert await late["check"](InspectedPdf(content=b"", needs_ocr=False, repaired=False, page_count=600)) is True
+    assert world.graph.record["indexingStatus"] == COMPLETED and world.graph.record["contentRev"] == "r-old"
+    assert world.graph.record["indexingNote"] == PDF_PAGE_LIMIT_NOTE and not world.refused
+
+    # A revision that landed meanwhile is never overwritten.
+    world.graph.record.update(indexingStatus="QUEUED", contentRev="r-newer")
+    assert await late["check"](InspectedPdf(content=b"", needs_ocr=False, repaired=False, page_count=600)) is True
+    assert world.graph.record["contentRev"] == "r-newer" and world.graph.record["indexingStatus"] == "QUEUED"
+
+
+# --- a file that grew past the limit is a changed file ---------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pages", [501, 600])
+async def test_a_stored_count_within_the_limit_and_a_fresh_count_over_it_is_refused(pages: int) -> None:
+    """The sync rewrote md5Checksum to the new file's, so only the count says the bytes changed."""
+    world = World(searchable(indexingStatus="QUEUED", contentRev="r1-indexed", md5Checksum=MD5, pageCount=300))
+    world.count(pages)
+    await world.run(UPDATE)
+    assert world.refused
+    world.unindex.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_stored_count_over_the_limit_or_none_still_keeps_the_index() -> None:
+    for stored in ({"pageCount": 700}, {}):
+        world = World(searchable(indexingStatus="QUEUED", **stored))
+        world.count(600)
+        await world.run(UPDATE)
+        assert not world.refused
+        assert world.graph.record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
+
+
+@pytest.mark.asyncio
+async def test_growth_past_the_limit_found_by_the_inspection_is_refused() -> None:
+    world = World(searchable(indexingStatus="QUEUED", pageCount=300))
+    world.count(Unreadable())
+    world.inspected(600)
+    await world.run(UPDATE)
+    assert world.refused
+
+
+# --- an inspection with no page count leaves the late check in place -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_inspection_without_a_page_count_does_not_count_the_file() -> None:
+    world = World(searchable(indexingStatus="QUEUED"))
+    world.count(Unreadable())
+    world.inspected(None)
+    gate_args: dict = {}
+    original = world.ep._check_duplicate_by_md5
+
+    async def spy(*a: object, **kw: object):  # noqa: ANN202
+        gate_args.update(kw)
+        return await original(*a, **kw)
+
+    world.stack.enter_context(patch.object(world.ep, "_check_duplicate_by_md5", side_effect=spy))
+    await world.run(UPDATE)
+    assert gate_args.get("skip_over_limit_twins") is True
+
+
+@pytest.mark.asyncio
+async def test_a_no_pool_process_does_not_count_the_outage_metric() -> None:
+    world = World({"indexingStatus": "QUEUED"})
+    world.count(Unavailable(no_pool=True))
+    with patch.object(page_limit.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
+        await world.run()
+    inc.assert_not_called()

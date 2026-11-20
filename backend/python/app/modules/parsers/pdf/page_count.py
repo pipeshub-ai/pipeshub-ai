@@ -21,12 +21,18 @@ class Unreadable:
 
 @dataclass(frozen=True)
 class Unavailable:
-    """The count could not be taken now: a timeout, a dead worker, a closed pool or no worker process."""
+    """The count could not be taken now: a timeout, a dead worker, a closed pool or no worker process.
+
+    ``no_pool`` marks a process that runs no worker processes by configuration: the early count is off there, which is not
+    an outage."""
+
+    no_pool: bool = False
 
 
 PageCount = int | Unreadable | Unavailable
 
 COUNT_TIMEOUT_SECONDS = 120.0
+_LOGGED = {"no_pool": False}
 
 # pdfium is not thread-safe: concurrent opens of the same file in one process fail with "Data format error". A worker
 # process runs one job at a time; the lock covers a caller that runs ``count_pages`` in its own process (a test).
@@ -61,6 +67,11 @@ async def count_pdf_pages(content: bytes, label: str = "") -> PageCount:
     from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
     from app.services.resource_governor.kinds import ParseKind
 
+    if parse_pool.parse_pool_workers() <= 0:
+        if not _LOGGED["no_pool"]:
+            _LOGGED["no_pool"] = True
+            _logger.info("no parse worker process runs here: PDF page counts are not taken before parsing")
+        return Unavailable(no_pool=True)
     try:
         pages = await parse_pool.submit(
             count_pages, content, label=label, size=len(content), kind=ParseKind.INSPECT, timeout=COUNT_TIMEOUT_SECONDS,
