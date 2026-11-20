@@ -766,17 +766,12 @@ class EventProcessor:
         *gate_route* is the reader the record handler's gate accepted the file for; it is used only
         where the labels name none, so a file the gate accepted is never refused here.
         """
-        # A CODE_FILE's mime is not trustworthy: connectors that walk a git
-        # tree default it to text/plain for anything they do not recognise,
-        # and they do not always populate `extension`. Derive a separate
-        # extension for code dispatch and language detection — the original
-        # value must stay intact for reconciliation, tier, and generic dispatch.
-        code_ext = parser_identity.code_extension_of(extension, file_path, record_name)
+        code_ext = file_types.code_extension(extension, file_path, record_name)
         reads_as_code_file = EventProcessor._reads_as_code_file(
             record_type, mime_type, code_ext, record_name
         )
         dispatch = file_types.legacy_route(
-            mime_type, extension, code_extension=code_ext, reads_as_code_file=reads_as_code_file,
+            mime_type, extension, code_ext=code_ext, reads_as_code_file=reads_as_code_file,
             is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
         )
         if dispatch is not None and dispatch.file_type is not None and dispatch.file_type.ext_wins:

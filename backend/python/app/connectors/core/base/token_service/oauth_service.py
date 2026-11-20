@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -14,8 +15,15 @@ from aiohttp import ClientSession
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.web.address_guard import guarded_session_kwargs
+from app.utils.logging_fields import log_event, log_once
 from app.utils.oauth_errors import is_permanent_grant_rejection, oauth_error_code
 from app.utils.url_fetcher import private_addresses_blocked
+
+logger = logging.getLogger(__name__)
+
+# created_at + timedelta(seconds=v) must stay inside datetime's range (10**12 s already overflows),
+# and no provider issues a token for a century.
+_MAX_LIFETIME_S = 100 * 365 * 24 * 3600
 
 
 class GrantType(Enum):
@@ -54,6 +62,50 @@ class TokenResponseError(ValueError):
 def _require_access_token(data: object) -> None:
     if not isinstance(data, dict) or "access_token" not in data:
         raise TokenResponseError("OAuth token response missing required 'access_token' field. ")
+
+
+class MalformedTokenError(ValueError):
+    """A token field is not what OAuth defines (a provider's answer or a saved record). Names the field, never its value."""
+
+    refresh_reason = "malformed_token"
+
+    def __init__(self, field_name: str) -> None:
+        super().__init__(f"OAuth token field '{field_name}' is malformed")
+        self.field_name = field_name
+
+
+def _is_empty(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _timestamp(value: object) -> datetime:
+    """created_at in OAuthToken's convention, a naive local datetime: ISO 8601 text, a Unix time (GitLab) or a datetime."""
+    try:
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = datetime.fromtimestamp(value)
+        # is_expired compares with the naive datetime.now(): an aware value would raise TypeError there.
+        # Converting goes through UTC, so an offset at either end of datetime's range overflows.
+        if isinstance(value, datetime) and value.tzinfo:
+            value = value.astimezone().replace(tzinfo=None)
+    except (ValueError, OverflowError, OSError):
+        value = None  # their text quotes the value
+    if not isinstance(value, datetime):
+        raise MalformedTokenError("created_at")
+    return value
+
+
+def _seconds(field_name: str, value: object) -> int | float:
+    if isinstance(value, str):
+        try:
+            value = int(value)  # some providers send "3599"
+        except ValueError:
+            pass
+    # NaN compares false and inf is past the bound, so both fail here too.
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) <= _MAX_LIFETIME_S:
+        return value
+    raise MalformedTokenError(field_name)
 
 
 class OAuthTokenRequestError(Exception):
@@ -213,16 +265,31 @@ class OAuthToken:
         """Create token from dictionary, filtering out unknown fields"""
         # Make a shallow copy to avoid mutating the caller's dict
         data = dict(data)
-        if 'created_at' in data:
-            if isinstance(data['created_at'], str):
-                data['created_at'] = datetime.fromisoformat(data['created_at'])
-            elif isinstance(data['created_at'], int):
-                # GitLab and others return Unix timestamp
-                data['created_at'] = datetime.fromtimestamp(data['created_at'])
+        for name in ("created_at", "expires_in", "refresh_token_expires_in"):
+            if name in data and _is_empty(data[name]):
+                del data[name]  # empty is absent: created_at defaults to now, the others to None
+        if "created_at" in data:
+            data["created_at"] = _timestamp(data["created_at"])
+        if "expires_in" in data:
+            data["expires_in"] = _seconds("expires_in", data["expires_in"])
+        if "refresh_token_expires_in" in data:
+            try:
+                data["refresh_token_expires_in"] = _seconds("refresh_token_expires_in", data["refresh_token_expires_in"])
+            except MalformedTokenError:
+                # Nothing reads it, and raising would lock out a saved record that works today.
+                data["refresh_token_expires_in"] = None
+                if log_once("oauth_service:field_ignored:refresh_token_expires_in", 3600):
+                    log_event(logger, "oauth_token.field_ignored", level=logging.WARNING, field="refresh_token_expires_in")
         # Filter to only known fields to handle varying OAuth provider responses
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in known_fields}
-        return cls(**filtered_data)
+        token = cls(**filtered_data)
+        if token.expires_in:
+            try:
+                token.created_at + timedelta(seconds=token.expires_in)  # is_expired's sum: a time at datetime's edge overflows
+            except OverflowError:
+                raise MalformedTokenError("created_at") from None
+        return token
 
 
 class OAuthProvider:
@@ -371,12 +438,6 @@ class OAuthProvider:
                         status=response.status,
                         error_code=error_code,
                     )
-                # Convert string numbers to integers for expires_in if present
-                if 'expires_in' in token_data and token_data['expires_in']:
-                    try:
-                        token_data['expires_in'] = int(token_data['expires_in'])
-                    except (ValueError, TypeError):
-                        pass
                 return token_data
             else:
                 return await response.json()

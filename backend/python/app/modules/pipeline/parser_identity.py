@@ -88,19 +88,6 @@ def is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
     )
 
 
-def code_extension_of(extension: str | None, file_path: str | None, record_name: str) -> str | None:
-    """The extension code dispatch reads: the record's own, else the file path's or the name's last suffix."""
-    if extension and extension != "unknown":
-        return extension
-    fp_base = (file_path or "").rsplit("/", 1)[-1]
-    rn_base = record_name.rsplit("/", 1)[-1]
-    if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
-        return fp_base.rsplit(".", 1)[-1].lower()
-    if "." in rn_base and rn_base.rsplit(".", 1)[-1]:
-        return rn_base.rsplit(".", 1)[-1].lower()
-    return extension
-
-
 def reads_as_code_file(record_type: str | None, mime_type: str, code_ext: str | None, record_name: str) -> bool:
     """True when ``Processor.process_code_document`` decides how a record is read (see ``EventProcessor._reads_as_code_file``)."""
     if is_code_file(mime_type, code_ext):
@@ -123,10 +110,10 @@ def parser_key(
     payload and the graph give the same answer for the same record. The file path is not an input for that reason.
     """
     mime, ext, name = _known(mime_type), _known(extension), record_name or ""
-    code_ext = code_extension_of(ext, None, name)
+    code_ext = file_types.code_extension(ext, None, name)
     as_code = reads_as_code_file(record_type, mime or "", code_ext, name)
     dispatch = file_types.legacy_route(
-        mime, ext, code_extension=code_ext, reads_as_code_file=as_code,
+        mime, ext, code_ext=code_ext, reads_as_code_file=as_code,
         is_code_file_record=record_type == RecordTypes.CODE_FILE.value,
     )
     if dispatch is None or dispatch.route in _UNTRACKED_ROUTES:

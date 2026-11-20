@@ -175,8 +175,8 @@ except Exception as e:
 - `classify_error(exc_or_status)` is one of `auth_expired`, `forbidden`, `not_found`, `rate_limited`, `timeout`, `upstream_5xx`,
   `bad_request`, `conflict`, `unavailable`, `cancelled`, `misconfigured`, `internal`. `misconfigured` is **our** configuration: the
   LLM provider rejected our key, no LLM is configured, an OAuth client registration was rejected, or a service token was refused.
-  A credential refresh also classes a token URL that cannot be sent to (no `https://`), or a token endpoint that answers 2xx
-  without a token, as `misconfigured` (see Credential refresh).
+  A credential refresh also classes a token URL that cannot be sent to (no `https://`), a token endpoint that answers 2xx
+  without a token, or a token field that is not a timestamp or a number of seconds, as `misconfigured` (see Credential refresh).
   `auth_expired` is a user's or a connector's grant that expired or was revoked. The first decisive exception in the chain wins,
   outermost first (`__cause__`, else `__context__` unless `from None`). OAuth error codes are read before the HTTP status, our
   own `HTTPException` 5xx counts as `internal`, and our programming errors (`KeyError`, `TypeError`, …) stop the walk. It never raises.
@@ -547,7 +547,11 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
   The connector OAuth callback (`connectors/api/router.py`) does the same for its token exchange (`reason=server_error`, no text:
   the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
-  (`reason=instance_not_found`).
+  (`reason=instance_not_found`). Once the caller is allowed the connector, the line carries `connector_id` and `connector_type`;
+  a missing or unreadable OAuth configuration is then `misconfigured` (`reason=config_not_found`, `oauth_config_fetch_error`).
+  A successful sign-in is that line with `outcome=success` and `has_refresh_token`. No field of the provider's token answer
+  (scopes, `uid`, `account_id`, `team_id`, `token_type`) is logged: the route serves every connector and can't tell an opaque
+  id from a login.
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
@@ -640,12 +644,13 @@ refresh of one credential reads the same everywhere:
 | --- | --- | --- |
 | `credential_refresh.scheduled` | INFO when the refresh time is new, DEBUG when a scan re-arms the same one | `next_refresh_at` (UTC), `delay_s` |
 | `credential_refresh.start` | DEBUG | |
-| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `no_access_token`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
+| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `no_access_token`, `malformed_token`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
 | `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
 | `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated; MCP adds `reason`: `rotated`, `within_window`, `not_saved`), the cause's `error_class` and `oauth_error` |
 | `credential_refresh.deauthenticated` | WARNING | `reason` (`refresh_token_invalid`; MCP also `oauth_client_rejected`), `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`) |
 | `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone; MCP adds `strike` |
 | `credential_refresh.skipped` | WARNING | `outcome=skipped`, `reason` (`lock_wait_timeout`: another refresh of the same credential holds its lock) |
+| `oauth_token.field_ignored` | WARNING, at most once an hour per process | `field` (`refresh_token_expires_in`): a value that is not a number of seconds was dropped to none. Nothing reads it, so the token still works |
 
 Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
 kind's ids (connectors: `connector_id`, `connector_type`; toolsets: `toolset_id` and `owner_id`, the user id or agent key the
@@ -653,7 +658,8 @@ sign-in belongs to; MCP: `mcp_server_id` and `owner_id`), `provider` (the connec
 `provider`), and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
-rejected our client, a token URL that cannot be sent to, or a 2xx answer with no token) is ERROR with a stack once per credential
+rejected our client, a token URL that cannot be sent to, a 2xx answer with no token, or a token whose `created_at` or
+`expires_in` cannot be parsed, `reason=malformed_token`) is ERROR with a stack once per credential
 per hour and DEBUG in between. A 2xx answer whose `error` is a dead-grant code (`invalid_grant`, `bad_refresh_token`, ...) is
 `auth_expired`, like the same code on a 400: the user signs in again. A 2xx answer whose `error` says the provider is busy or down is `unavailable`, `rate_limited` or `upstream_5xx`,
 and a programming error raised while handling one stays `internal`. `trigger` is set by the refresh
@@ -675,7 +681,9 @@ Nothing a token endpoint answered is logged as text: its body, and the token URL
 quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, or an unusable token URL
 (aiohttp's error text is the URL, query included), every failure line of
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
-`Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
+`Type: <message omitted>`) and logs `http_status` and `oauth_error` instead. A `created_at` or `expires_in` that cannot be parsed,
+or whose sum leaves the range of a date, is named (`OAuth token field 'created_at' is malformed`), never quoted, and the token is
+not saved. A `refresh_token_expires_in` that cannot be parsed is dropped and the token is saved (`oauth_token.field_ignored` above).
 
 ## Database queries (Python)
 
@@ -808,6 +816,42 @@ Refusals use the same tags as the auth events (`userRefusal` / `auditUserRefusal
 lists in `USER_AUDIT_REASONS`). Not audited: route-guard refusals (`userAdminCheck`, `userAdminOrSelfCheck`, …), validation 400s,
 display-picture changes, and system failures (the error middleware logs those once).
 
+## Org settings, team and service-account audit events (Node)
+
+The same mechanism and fields for changes to the org's own settings (`/api/v1/org`), to teams and to service accounts and their
+keys. Three more fields, each only on the lines it applies to:
+
+- `team_id`: the team, on team membership lines (the target is the user). The org's default All team is `all_<org id>`.
+- `key_id`: a service-account key's record id, never the key itself. It is the `id` that the mint answer and the key list show.
+- `scopes`: the scopes a key was issued with, sorted and comma-joined (`kb:read,semantic:write`).
+
+Team decisions are made by the team service (Python). Node writes the line from that service's answer: 2xx is a success, 403 is
+`not_owner`, 404 is `not_found` (the team, or the caller, is unknown to the team service), and 409 is `name_taken`.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `org.update`, `org.delete` | `success` | | the org is `org_id`; an update that names no known field is still written |
+| `org.logo.update` | `success` | `set`, `removed` | |
+| `org.onboarding.update` | `success` | `configured`, `not_configured`, `skipped` | |
+| `team.create` | `success`, `failure` | success: `no_team_id` (the team service's answer named no team: no target and no member lines); failure: `name_taken` | `target` = the new team; one `team.member.add` per member listed (the creator, who joins as owner, is not) |
+| `team.update` | `success`, `failure` | failure: `not_owner`, `not_found`, `name_taken` | success only when the name or description was sent (an empty description counts); a refused PUT writes one `team.update` failure, whatever it asked for |
+| `team.delete` | `success`, `failure` | failure: `not_owner`, `not_found`, `protected_team` (the All team) | |
+| `team.member.add`, `team.member.remove`, `team.member.role.change` | `success` | | one line per user; written from the request after the team service accepted it, so an owner's own add and an owner-to-owner role change, which the team service skips, still get a line |
+| `service_account.create` | `success`, `failure` | success: `restore` (a deleted account brought back under its name); failure: `name_taken` | written at the write, so it is there even when the request then fails publishing the change |
+| `service_account.update` | `success`, `failure` | success: `profile`, `disable`, `enable`; failure: `restoring` (enable during a restore), `not_found` | one PATCH can write two lines (`profile` and `disable`; or `enable` and then a `not_found` failure when the account is deleted between the two writes, since the enable was already saved); enabling an enabled account still writes `enable` |
+| `service_account.delete` | `success`, `failure` | failure: `not_found` | the key revocations it causes are part of this line |
+| `service_account.token.create` | `success`, `failure` | failure: `account_disabled`, `scope_denied` (`agent:execute`), `token_limit`, `not_found` | `key_id` and `scopes` on success |
+| `service_account.token.revoke` | `success`, `failure` | failure: `not_found` | `key_id` on both |
+
+A key rotation is a `service_account.token.create` followed by a `service_account.token.revoke` of the old `key_id` on the same
+target: no endpoint changes a key's scopes after it is minted. `not_found` on a service account also covers an id from another
+org, so a probe across orgs is audited.
+
+Not audited: route-guard refusals (`userAdminCheck`, `requireScopes`), validation 400s (including an unknown scope and the team
+service's 400s: no name, the last owner, people who are gone), and system failures. **Known gap:** the team service's
+`update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
+saved changes get no line here; the team service's own log has them.
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
@@ -850,9 +894,16 @@ their own HTTP clients.
   caller's signal, is spent, no further attempt starts, so a timed-out call writes one `timeout` line.
 - **Known gaps.** A caller that expects a 404 (an existence check) still gets a WARNING `not_found` line: the transport
   cannot know what the caller expects.
+- **Destination.** `upstreamFetch` (and so every service command) sends only to a registered PipesHub service
+  (`checkUpstreamUrl`): an `http:`/`https:` URL without credentials, on a registered origin and under its base path by whole
+  segments. A command checks in `buildUrl`, before its retry loop. A refused URL is never sent and writes no
+  `upstream.call.end`; the request's `http.request.error` reports it once (500, `internal`), without the URL. A redirect is
+  followed only to a URL that passes the same check. The registry is `registerAppUpstreams` in `loadAppConfig`; a reload adds
+  its bases and keeps the earlier ones, so a container built before it still reaches its service. Calls on an axios instance
+  are not checked; a third-party call uses axios or an SDK.
 - **New calls** use a command or axios, so they get the line; do not log the call again at the call site. A new raw `fetch`
-  goes through `upstreamFetch`, and adds `injectRequestHeaders` only when the target is a PipesHub service: it does not
-  check the destination, and the request id and MCP relay header must not reach a third party (the axios adapter adds them
+  to a PipesHub service goes through `upstreamFetch` and adds `injectRequestHeaders`; a third party is reached with axios
+  or an SDK, never `upstreamFetch`, and the request id and MCP relay header must not reach it (the axios adapter adds them
   only for registered internal targets).
 
 ## Chat streams (Node)

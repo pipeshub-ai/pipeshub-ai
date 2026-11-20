@@ -249,6 +249,10 @@ CALLBACK_CASES = {
                   logging.WARNING, "upstream_5xx", "server_error", None, "i1", None),
     "token-endpoint-down": (_token_endpoint(0, raises=_connect_error), {**_CODE, "state": _state()},
                             logging.WARNING, "unavailable", "server_error", None, "i1", None),
+    # F26c: the field is named in the exception, never its value (the route drops the text anyway).
+    "token-malformed-created-at": (_token_endpoint(200, '{"access_token": "at", "created_at": "' + SENTINEL + '"}'),
+                                   {**_CODE, "state": _state()},
+                                   logging.ERROR, "internal", "server_error", None, "i1", None),
     "instances-unreadable": (_instances_unreadable, {**_CODE, "state": _state()},
                              logging.WARNING, "unavailable", "auth_failed", None, "i1", None),
     "other-users-state": (_nothing, {**_CODE, "state": _state(user_id="65f0a1b2c3d4e5f6a7b8c9ff")},

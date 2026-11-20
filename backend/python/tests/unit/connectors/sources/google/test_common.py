@@ -181,6 +181,34 @@ class TestGoogleExceptions:
 class TestDatasourceRefresh:
     """Tests for refresh_google_datasource_credentials."""
 
+    @pytest.mark.parametrize(("credentials", "has_expiry"), [
+        ({"created_at": "not-a-time", "expires_in": 3600}, False),  # MalformedTokenError is a ValueError: still no expiry
+        ({"created_at": "2026-01-01T00:00:00", "expires_in": "3599"}, True),  # F26c: numeric text is a number
+        ({"created_at": "  ", "expires_in": 3600}, False),  # blank is missing: from_dict would default it to now
+    ], ids=["malformed_created_at", "numeric_text_expires_in", "blank_created_at"])
+    def test_saved_expiry_reads_what_oauth_token_can_parse(self, credentials: dict, has_expiry: bool) -> None:
+        from app.connectors.sources.google.common.datasource_refresh import (
+            _saved_expiry,
+        )
+
+        assert (_saved_expiry({"access_token": "a", **credentials}) is not None) is has_expiry
+
+    def test_a_blank_saved_created_at_never_beats_a_newer_token_in_memory(self) -> None:
+        from app.connectors.sources.google.common.datasource_refresh import (
+            _Action,
+            _choose,
+            _saved_state,
+            _TokenState,
+            _utc_now,
+        )
+
+        saved = {"access_token": "stale", "refresh_token": "r", "created_at": " ", "expires_in": 3600}
+        memory = _TokenState(access_token="fresh", refresh_token="r", expiry=_utc_now() + timedelta(minutes=30))
+
+        # The same stored record reads the same each time, so the post-refresh comparison settles.
+        assert _saved_state(saved) == _saved_state(dict(saved))
+        assert _choose(memory, _saved_state(saved), agreed_refresh_token="r") is _Action.SAVE_IN_MEMORY
+
     async def test_raises_auth_error_when_config_not_found(self):
         from app.connectors.sources.google.common.datasource_refresh import (
             refresh_google_datasource_credentials,
