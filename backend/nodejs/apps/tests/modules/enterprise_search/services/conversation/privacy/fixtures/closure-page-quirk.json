@@ -1,0 +1,1850 @@
+[
+ {
+  "seed": 49,
+  "reader": "e00000000000000000000004",
+  "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+  "member": true,
+  "rowId": "6abe3092000000000000000a",
+  "page": [
+   "6abe2f5e0000000000000002",
+   "6abe2f9c0000000000000004",
+   "6abe2fd90000000000000005",
+   "6abe30540000000000000008",
+   "6abe3092000000000000000a",
+   "6abe310d000000000000000d",
+   "6abe3186000000000000000e"
+  ],
+  "closures": {
+   "verdict": "visible",
+   "basis": "label"
+  },
+  "walk": {
+   "verdict": "unchecked",
+   "reason": "check_failed"
+  },
+  "world": {
+   "rows": [
+    {
+     "_id": "6abe2f5e0000000000000002",
+     "sessionId": "eeeeeeeeeeeeeeeeeeeeeeee",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 1,
+     "messageType": "bot_response",
+     "requestedBy": "d00000000000000000000001",
+     "content": "Answer 0 (changed behind its label)",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 0"
+      }
+     ],
+     "labelVer": "6abe2f5d0000000000000001",
+     "runId": "run-0",
+     "createdAt": "2026-10-01T10:01:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe2f5d0000000000000001",
+      "contentHash": "3527e947e83d6207676db49fb01ca843ff8a5747a6bbec9ab1273ae300d8c8d7",
+      "direct": {
+       "records": [],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [],
+      "complete": true,
+      "tagset": 1,
+      "pub": true
+     }
+    },
+    {
+     "_id": "6abe2f9c0000000000000004",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 2,
+     "messageType": "bot_response",
+     "requestedBy": "f00000000000000000000005",
+     "content": "Answer 1 (changed behind its label)",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 1"
+      }
+     ],
+     "labelVer": "6abe2f9b0000000000000003",
+     "runId": "run-1",
+     "createdAt": "2026-10-01T10:02:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe2f9b0000000000000003",
+      "contentHash": "b4c7989c8ea5dbd75fb2d5120934a3fbf6351b08a8047fef55c239845a56998b",
+      "direct": {
+       "records": [
+        "rec-d"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-1",
+        "kb-2"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2f5e0000000000000002",
+        "ver": "6abe2f5d0000000000000001",
+        "mode": "preswitch"
+       },
+       {
+        "id": "6abe2f5e0000000000000002",
+        "ver": "6abe2f5d0000000000000001",
+        "mode": "text"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     },
+     "consent": {
+      "by": "f00000000000000000000005",
+      "at": "2026-10-03T10:00:00.000Z",
+      "ver": "6abe2f9b0000000000000003",
+      "scope": "people"
+     },
+     "consentTo": []
+    },
+    {
+     "_id": "6abe2fd90000000000000005",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 3,
+     "messageType": "user_query",
+     "authorUserId": "b00000000000000000000003",
+     "content": "Q2",
+     "createdAt": "2026-10-01T10:03:00.000Z"
+    },
+    {
+     "_id": "6abe30160000000000000006",
+     "sessionId": "dddddddddddddddddddddddd",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 4,
+     "messageType": "user_query",
+     "authorUserId": "c00000000000000000000002",
+     "content": "Q3",
+     "createdAt": "2026-10-01T10:04:00.000Z"
+    },
+    {
+     "_id": "6abe30540000000000000008",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 5,
+     "messageType": "bot_response",
+     "requestedBy": "b00000000000000000000003",
+     "content": "Answer 4",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 4"
+      }
+     ],
+     "labelVer": "6abe30530000000000000007",
+     "runId": "run-4",
+     "createdAt": "2026-10-01T10:05:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe30530000000000000007",
+      "contentHash": "b587406e803b23594b023abc6a3b111ebc27bd8985360b690d5f828c6827f5b3",
+      "direct": {
+       "records": [],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [
+        {
+         "conversationId": "",
+         "recordId": "up-1"
+        }
+       ],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2f9c0000000000000004",
+        "ver": "6abe2f9b0000000000000003",
+        "mode": "text"
+       },
+       {
+        "id": "6abe2fd90000000000000005",
+        "ver": "legacy",
+        "mode": "text"
+       }
+      ],
+      "complete": false,
+      "tagset": 1,
+      "pub": false,
+      "incomplete": [
+       "untagged_prompt_part:tool"
+      ]
+     }
+    },
+    {
+     "_id": "6abe3092000000000000000a",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 6,
+     "messageType": "bot_response",
+     "requestedBy": "d00000000000000000000001",
+     "content": "Answer 5",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 5"
+      }
+     ],
+     "labelVer": "6abe30910000000000000009",
+     "runId": "run-5",
+     "createdAt": "2026-10-01T10:06:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe30910000000000000009",
+      "contentHash": "b0ab0f26b4bc734f7da95a29e708bbeceb2c6a3bd9954b80b63a831246232dad",
+      "direct": {
+       "records": [
+        "rec-a",
+        "rec-b",
+        "rec-d"
+       ],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2f9c0000000000000004",
+        "ver": "6abe2f9b0000000000000003",
+        "mode": "text"
+       },
+       {
+        "id": "6abe2f9c0000000000000004",
+        "ver": "6abe2f9b0000000000000003",
+        "mode": "text"
+       },
+       {
+        "id": "6abe30160000000000000006",
+        "ver": "legacy",
+        "mode": "text"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     },
+     "consent": {
+      "by": "d00000000000000000000001",
+      "at": "2026-10-03T10:00:00.000Z",
+      "ver": "6abe30910000000000000009",
+      "scope": "everyone"
+     }
+    },
+    {
+     "_id": "6abe30d0000000000000000c",
+     "sessionId": "dddddddddddddddddddddddd",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 7,
+     "messageType": "error",
+     "requestedBy": "c00000000000000000000002",
+     "content": "Answer 6",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 6"
+      }
+     ],
+     "labelVer": "6abe30cf000000000000000b",
+     "runId": "run-6",
+     "createdAt": "2026-10-01T10:07:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe30cf000000000000000b",
+      "contentHash": "f0ac5b58af400be284b055957e79cc943ebe229b7710eb080c9ce905c4ecf6f7",
+      "direct": {
+       "records": [
+        "rec-d"
+       ],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe3092000000000000000a",
+        "ver": "6abe30910000000000000009",
+        "mode": "full"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     }
+    },
+    {
+     "_id": "6abe310d000000000000000d",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 8,
+     "messageType": "user_query",
+     "authorUserId": "b00000000000000000000003",
+     "content": "Q7",
+     "createdAt": "2026-10-01T10:08:00.000Z",
+     "removedAt": "2026-10-01T10:09:00.000Z"
+    },
+    {
+     "_id": "6abe3186000000000000000e",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 9,
+     "messageType": "user_query",
+     "authorUserId": "f00000000000000000000005",
+     "content": "Q8",
+     "createdAt": "2026-10-01T10:10:00.000Z"
+    },
+    {
+     "_id": "6abe31c40000000000000010",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 10,
+     "messageType": "error",
+     "requestedBy": "d00000000000000000000001",
+     "content": "Answer again 1",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer again 1"
+      }
+     ],
+     "labelVer": "6abe32b90000000000000015",
+     "runId": "run-9-again-0-again-1",
+     "createdAt": "2026-10-01T10:11:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe32b90000000000000015",
+      "contentHash": "4d173e823d5ec6d86ad6063cab3e01c0b08667eb81666248887089eb97ba24b2",
+      "direct": {
+       "records": [
+        "rec-a"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-2"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2f9c0000000000000004",
+        "ver": "6abe2f9b0000000000000003",
+        "mode": "full"
+       },
+       {
+        "id": "6abe30540000000000000008",
+        "ver": "6abe30530000000000000007",
+        "mode": "grant"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     },
+     "labelHistory": [
+      {
+       "ver": "6abe31c3000000000000000f",
+       "runId": "run-9",
+       "provenance": {
+        "v": 5,
+        "ver": "6abe31c3000000000000000f",
+        "contentHash": "f78bcde07afe58cf3112e450703b018da42fbc147e35cf2c019b9ba3541a0f3e",
+        "direct": {
+         "records": [
+          "rec-c"
+         ],
+         "vrids": [],
+         "nodes": [],
+         "saVrids": [],
+         "personal": [],
+         "agents": [],
+         "chat": [],
+         "projects": [
+          "proj-open"
+         ],
+         "marks": []
+        },
+        "parents": [
+         {
+          "id": "",
+          "ver": "",
+          "mode": "full",
+          "artifactId": "art-2",
+          "runId": "run-4"
+         }
+        ],
+        "complete": true,
+        "tagset": 1,
+        "pub": false
+       }
+      },
+      {
+       "ver": "6abe327c0000000000000014",
+       "runId": "run-9-again-0",
+       "provenance": {
+        "v": 5,
+        "ver": "6abe327c0000000000000014",
+        "contentHash": "afe6a240fbfa89a50d64b2e60225a5fb1f4c7cee1d70ceb7109502c6878dcd0b",
+        "direct": {
+         "records": [
+          "rec-b",
+          "rec-c"
+         ],
+         "vrids": [],
+         "nodes": [],
+         "saVrids": [],
+         "personal": [],
+         "agents": [
+          {
+           "key": "agent-unknown",
+           "kind": "config"
+          }
+         ],
+         "chat": [
+          {
+           "conversationId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+           "recordId": "up-1"
+          }
+         ],
+         "projects": [],
+         "marks": []
+        },
+        "parents": [
+         {
+          "id": "6abe3092000000000000000a",
+          "ver": "6abe30910000000000000009",
+          "mode": "full"
+         },
+         {
+          "id": "6abe30160000000000000006",
+          "ver": "legacy",
+          "mode": "text"
+         },
+         {
+          "id": "6abe323f0000000000000013",
+          "ver": "legacy",
+          "mode": "text"
+         }
+        ],
+        "complete": true,
+        "tagset": 1,
+        "pub": true
+       },
+       "consent": {
+        "by": "d00000000000000000000001",
+        "at": "2026-10-03T10:00:00.000Z",
+        "ver": "6abe327c0000000000000014",
+        "scope": "everyone"
+       }
+      }
+     ]
+    },
+    {
+     "_id": "6abe32020000000000000012",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 11,
+     "messageType": "bot_response",
+     "requestedBy": "c00000000000000000000002",
+     "content": "Answer 10",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 10"
+      }
+     ],
+     "labelVer": "6abe32010000000000000011",
+     "runId": "run-10",
+     "createdAt": "2026-10-01T10:12:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe32010000000000000011",
+      "contentHash": "6d9d402322ce094acda0c9dad5b6c4a41ee76a67ae9e692aee5d6399edf9e102",
+      "direct": {
+       "records": [],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe3092000000000000000a",
+        "ver": "6abe30910000000000000009",
+        "mode": "text"
+       },
+       {
+        "id": "6abe30160000000000000006",
+        "ver": "legacy",
+        "mode": "text"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     }
+    },
+    {
+     "_id": "6abe323f0000000000000013",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 12,
+     "messageType": "bot_response",
+     "requestedBy": "c00000000000000000000002",
+     "content": "Old 11",
+     "referenceData": [
+      {
+       "id": "rec-b",
+       "recordId": "rec-b"
+      },
+      {
+       "id": "rec-e",
+       "recordId": "rec-e"
+      }
+     ],
+     "createdAt": "2026-10-01T10:00:00.000Z",
+     "consent": {
+      "by": "d00000000000000000000001",
+      "at": "2026-10-03T10:00:00.000Z",
+      "ver": "legacy",
+      "scope": "everyone",
+      "how": "earlier"
+     }
+    }
+   ],
+   "sessions": [
+    {
+     "_id": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "d00000000000000000000001",
+     "sharedWith": [
+      {
+       "userId": "c00000000000000000000002",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "b00000000000000000000003",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "e00000000000000000000004",
+       "accessLevel": "read",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "f00000000000000000000005",
+       "accessLevel": "write",
+       "addedAt": "2026-10-03T10:00:00.000Z"
+      }
+     ]
+    },
+    {
+     "_id": "dddddddddddddddddddddddd",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "c00000000000000000000002",
+     "parentId": "bbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+     "_id": "eeeeeeeeeeeeeeeeeeeeeeee",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "b00000000000000000000003",
+     "sharedWith": [
+      {
+       "userId": "d00000000000000000000001",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      }
+     ]
+    }
+   ],
+   "opens": {
+    "d00000000000000000000001": [
+     "rec-a",
+     "rec-b",
+     "rec-c",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ],
+    "c00000000000000000000002": [
+     "rec-a",
+     "rec-b",
+     "rec-c",
+     "rec-d",
+     "rec-e",
+     "kb-1"
+    ],
+    "b00000000000000000000003": [
+     "rec-a",
+     "rec-b",
+     "rec-c",
+     "rec-e",
+     "kb-2"
+    ],
+    "e00000000000000000000004": [
+     "rec-a",
+     "rec-b",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ],
+    "f00000000000000000000005": [
+     "rec-a",
+     "rec-b",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ],
+    "900000000000000000000006": [
+     "rec-b",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ]
+   },
+   "deleted": [],
+   "agents": {
+    "agent-open": [
+     "d00000000000000000000001",
+     "c00000000000000000000002",
+     "b00000000000000000000003",
+     "e00000000000000000000004",
+     "f00000000000000000000005",
+     "900000000000000000000006"
+    ],
+    "agent-closed": [
+     "c00000000000000000000002"
+    ],
+    "agent-unknown": null
+   },
+   "chatsRead": {
+    "d00000000000000000000001": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": null
+    },
+    "c00000000000000000000002": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "b00000000000000000000003": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "e00000000000000000000004": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": null
+    },
+    "f00000000000000000000005": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": false,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "900000000000000000000006": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": false,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    }
+   },
+   "projectsRead": {
+    "d00000000000000000000001": {
+     "proj-open": true,
+     "proj-closed": true,
+     "proj-unknown": null
+    },
+    "c00000000000000000000002": {
+     "proj-open": true,
+     "proj-closed": true,
+     "proj-unknown": null
+    },
+    "b00000000000000000000003": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "e00000000000000000000004": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "f00000000000000000000005": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "900000000000000000000006": {
+     "proj-open": true,
+     "proj-closed": true,
+     "proj-unknown": null
+    }
+   },
+   "failing": [],
+   "switchAt": null
+  }
+ },
+ {
+  "seed": 165,
+  "reader": "b00000000000000000000003",
+  "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+  "member": true,
+  "rowId": "6abe32010000000000000011",
+  "page": [
+   "6abe3148000000000000000c",
+   "6abe3185000000000000000d",
+   "6abe32010000000000000011",
+   "6abe323f0000000000000013"
+  ],
+  "closures": {
+   "verdict": "hidden",
+   "reason": "parent"
+  },
+  "walk": {
+   "verdict": "unchecked",
+   "reason": "check_failed"
+  },
+  "world": {
+   "rows": [
+    {
+     "_id": "6abe2f5d0000000000000001",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 1,
+     "messageType": "bot_response",
+     "requestedBy": "d00000000000000000000001",
+     "content": "Old 0",
+     "referenceData": [
+      {
+       "id": "rec-c",
+       "recordId": "rec-c"
+      },
+      {
+       "id": "rec-e",
+       "recordId": "rec-e"
+      }
+     ],
+     "createdAt": "2026-10-01T10:01:00.000Z"
+    },
+    {
+     "_id": "6abe2f9b0000000000000003",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 2,
+     "messageType": "bot_response",
+     "content": "Answer 1",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 1"
+      }
+     ],
+     "labelVer": "6abe2f9a0000000000000002",
+     "runId": "run-1",
+     "createdAt": "2026-10-01T10:02:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe2f9a0000000000000002",
+      "contentHash": "b4c7989c8ea5dbd75fb2d5120934a3fbf6351b08a8047fef55c239845a56998b",
+      "direct": {
+       "records": [
+        "rec-a",
+        "rec-d"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-1"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     }
+    },
+    {
+     "_id": "6abe2fd80000000000000004",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 3,
+     "messageType": "user_query",
+     "authorUserId": "d00000000000000000000001",
+     "content": "Q2",
+     "createdAt": "2026-10-01T10:03:00.000Z"
+    },
+    {
+     "_id": "6abe30160000000000000006",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 4,
+     "messageType": "bot_response",
+     "requestedBy": "e00000000000000000000004",
+     "content": "Answer 3",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 3"
+      }
+     ],
+     "labelVer": "6abe30150000000000000005",
+     "runId": "run-3",
+     "createdAt": "2026-10-01T10:04:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe30150000000000000005",
+      "contentHash": "0a56074d60572c3b3669088bbf403f210c793e6e373061d4bc76ee436bcef954",
+      "direct": {
+       "records": [],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2fd80000000000000004",
+        "ver": "legacy",
+        "mode": "text"
+       },
+       {
+        "id": "6abe2f9b0000000000000003",
+        "ver": "6abe2f9a0000000000000002",
+        "mode": "text"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     },
+     "consent": {
+      "by": "e00000000000000000000004",
+      "at": "2026-10-03T10:00:00.000Z",
+      "ver": "6abe30150000000000000005",
+      "scope": "people"
+     },
+     "consentTo": [
+      {
+       "userId": "e00000000000000000000004",
+       "memberSince": "direct:2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "f00000000000000000000005",
+       "memberSince": "owner"
+      }
+     ]
+    },
+    {
+     "_id": "6abe30530000000000000007",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 5,
+     "messageType": "shared_answer",
+     "authorUserId": "d00000000000000000000001",
+     "requestedBy": "d00000000000000000000001",
+     "content": "Copy 4",
+     "createdAt": "2026-10-01T10:05:00.000Z"
+    },
+    {
+     "_id": "6abe30900000000000000008",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 6,
+     "messageType": "user_query",
+     "authorUserId": "c00000000000000000000002",
+     "content": "Q5",
+     "createdAt": "2026-10-01T10:06:00.000Z",
+     "removedAt": "2026-10-01T10:07:00.000Z"
+    },
+    {
+     "_id": "6abe31090000000000000009",
+     "sessionId": "eeeeeeeeeeeeeeeeeeeeeeee",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 7,
+     "messageType": "bot_response",
+     "content": "Old 6",
+     "referenceData": [
+      {
+       "id": "rec-a",
+       "recordId": "rec-a"
+      },
+      {
+       "id": "rec-c",
+       "recordId": "rec-c"
+      },
+      {
+       "id": "rec-e",
+       "recordId": "rec-e"
+      }
+     ],
+     "createdAt": "2026-10-01T10:00:00.000Z",
+     "labelVer": "6abe310a000000000000000a",
+     "labelHistory": [
+      {
+       "ver": "legacy",
+       "consent": {
+        "by": "d00000000000000000000001",
+        "at": "2026-10-03T10:00:00.000Z",
+        "ver": "legacy",
+        "scope": "everyone"
+       }
+      }
+     ]
+    },
+    {
+     "_id": "6abe3148000000000000000c",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 8,
+     "messageType": "bot_response",
+     "requestedBy": "c00000000000000000000002",
+     "content": "Answer 7 (changed behind its label)",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 7"
+      }
+     ],
+     "labelVer": "6abe3147000000000000000b",
+     "runId": "run-7",
+     "createdAt": "2026-10-01T10:09:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe3147000000000000000b",
+      "contentHash": "9e81ad6cd29fcecae2c77b96d5c36537ddc824716c34bca31b7c847ca3d428d2",
+      "direct": {
+       "records": [
+        "rec-d"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-1"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2fd80000000000000004",
+        "ver": "legacy",
+        "mode": "text"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     }
+    },
+    {
+     "_id": "6abe3185000000000000000d",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 9,
+     "messageType": "shared_answer",
+     "authorUserId": "d00000000000000000000001",
+     "requestedBy": "d00000000000000000000001",
+     "content": "Copy 8",
+     "createdAt": "2026-10-01T10:10:00.000Z"
+    },
+    {
+     "_id": "6abe31c3000000000000000f",
+     "sessionId": "dddddddddddddddddddddddd",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 10,
+     "messageType": "error",
+     "requestedBy": "c00000000000000000000002",
+     "content": "Answer 9",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 9"
+      }
+     ],
+     "labelVer": "6abe31c2000000000000000e",
+     "runId": "run-9",
+     "createdAt": "2026-10-01T10:11:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe31c2000000000000000e",
+      "contentHash": "f78bcde07afe58cf3112e450703b018da42fbc147e35cf2c019b9ba3541a0f3e",
+      "direct": {
+       "records": [
+        "rec-c"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-1"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [
+        {
+         "conversationId": "dddddddddddddddddddddddd",
+         "recordId": "up-1"
+        }
+       ],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe3185000000000000000d",
+        "ver": "legacy",
+        "mode": "text"
+       },
+       {
+        "id": "6abe3185000000000000000d",
+        "ver": "legacy",
+        "mode": "text"
+       }
+      ],
+      "complete": false,
+      "tagset": 1,
+      "pub": true,
+      "incomplete": [
+       "untagged_prompt_part:tool"
+      ]
+     }
+    },
+    {
+     "_id": "6abe32010000000000000011",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 11,
+     "messageType": "bot_response",
+     "requestedBy": "b00000000000000000000003",
+     "content": "Answer 10",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 10"
+      }
+     ],
+     "labelVer": "6abe32000000000000000010",
+     "runId": "run-10",
+     "createdAt": "2026-10-01T10:12:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe32000000000000000010",
+      "contentHash": "6d9d402322ce094acda0c9dad5b6c4a41ee76a67ae9e692aee5d6399edf9e102",
+      "direct": {
+       "records": [
+        "rec-a",
+        "rec-c"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-1"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2fd80000000000000004",
+        "ver": "legacy",
+        "mode": "text"
+       },
+       {
+        "id": "",
+        "ver": "",
+        "mode": "full",
+        "artifactId": "art-1",
+        "runId": "run-7"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": true
+     }
+    },
+    {
+     "_id": "6abe323f0000000000000013",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 12,
+     "messageType": "error",
+     "requestedBy": "d00000000000000000000001",
+     "content": "Answer again 0",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer again 0"
+      }
+     ],
+     "labelVer": "6abe327c0000000000000014",
+     "runId": "run-11-again-0",
+     "createdAt": "2026-10-01T10:13:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe327c0000000000000014",
+      "contentHash": "afe6a240fbfa89a50d64b2e60225a5fb1f4c7cee1d70ceb7109502c6878dcd0b",
+      "direct": {
+       "records": [
+        "rec-c",
+        "rec-e"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-2"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [
+        {
+         "key": "agent-unknown",
+         "kind": "config"
+        }
+       ],
+       "chat": [
+        {
+         "conversationId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+         "recordId": "up-1"
+        }
+       ],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe30530000000000000007",
+        "ver": "legacy",
+        "mode": "text"
+       },
+       {
+        "id": "6abe2f5d0000000000000001",
+        "ver": "legacy",
+        "mode": "full"
+       },
+       {
+        "id": "6abe323f0000000000000013",
+        "ver": "6abe323e0000000000000012",
+        "mode": "full"
+       },
+       {
+        "id": "",
+        "ver": "",
+        "mode": "full",
+        "artifactId": "art-2",
+        "runId": "run-3"
+       }
+      ],
+      "complete": false,
+      "tagset": 1,
+      "pub": true,
+      "incomplete": [
+       "untagged_prompt_part:tool"
+      ]
+     },
+     "labelHistory": [
+      {
+       "ver": "6abe323e0000000000000012",
+       "runId": "run-11",
+       "provenance": {
+        "v": 5,
+        "ver": "6abe323e0000000000000012",
+        "contentHash": "d838168944c35dacb2e40b5107f2de94cb49379896119225ba3c1c40c62300fe",
+        "direct": {
+         "records": [
+          "rec-b",
+          "rec-c",
+          "rec-d"
+         ],
+         "vrids": [],
+         "nodes": [],
+         "saVrids": [],
+         "personal": [],
+         "agents": [],
+         "chat": [],
+         "projects": [],
+         "marks": []
+        },
+        "parents": [
+         {
+          "id": "6abe2f5d0000000000000001",
+          "ver": "legacy",
+          "mode": "full"
+         }
+        ],
+        "complete": true,
+        "tagset": 1,
+        "pub": false
+       }
+      }
+     ]
+    }
+   ],
+   "sessions": [
+    {
+     "_id": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "d00000000000000000000001",
+     "sharedWith": [
+      {
+       "userId": "c00000000000000000000002",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "b00000000000000000000003",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "e00000000000000000000004",
+       "accessLevel": "read",
+       "addedAt": "2026-10-03T10:00:00.000Z"
+      },
+      {
+       "userId": "f00000000000000000000005",
+       "accessLevel": "write",
+       "addedAt": "2026-10-03T10:00:00.000Z"
+      }
+     ]
+    },
+    {
+     "_id": "dddddddddddddddddddddddd",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "c00000000000000000000002",
+     "parentId": "bbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+     "_id": "eeeeeeeeeeeeeeeeeeeeeeee",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "b00000000000000000000003",
+     "sharedWith": [
+      {
+       "userId": "d00000000000000000000001",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      }
+     ]
+    }
+   ],
+   "opens": {
+    "d00000000000000000000001": [
+     "rec-a",
+     "rec-b",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ],
+    "c00000000000000000000002": [
+     "rec-b",
+     "rec-c",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ],
+    "b00000000000000000000003": [
+     "rec-a",
+     "rec-b",
+     "rec-c",
+     "rec-e",
+     "kb-1"
+    ],
+    "e00000000000000000000004": [
+     "rec-b",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ],
+    "f00000000000000000000005": [
+     "rec-b",
+     "rec-c",
+     "rec-d",
+     "kb-1",
+     "kb-2"
+    ],
+    "900000000000000000000006": [
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ]
+   },
+   "deleted": [],
+   "agents": {
+    "agent-open": [
+     "d00000000000000000000001",
+     "c00000000000000000000002",
+     "b00000000000000000000003",
+     "e00000000000000000000004",
+     "f00000000000000000000005",
+     "900000000000000000000006"
+    ],
+    "agent-closed": [
+     "d00000000000000000000001",
+     "e00000000000000000000004",
+     "f00000000000000000000005"
+    ],
+    "agent-unknown": null
+   },
+   "chatsRead": {
+    "d00000000000000000000001": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": null
+    },
+    "c00000000000000000000002": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": false,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "b00000000000000000000003": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "e00000000000000000000004": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "f00000000000000000000005": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": false,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "900000000000000000000006": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    }
+   },
+   "projectsRead": {
+    "d00000000000000000000001": {
+     "proj-open": true,
+     "proj-closed": true,
+     "proj-unknown": null
+    },
+    "c00000000000000000000002": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "b00000000000000000000003": {
+     "proj-open": true,
+     "proj-closed": true,
+     "proj-unknown": null
+    },
+    "e00000000000000000000004": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "f00000000000000000000005": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "900000000000000000000006": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    }
+   },
+   "failing": [],
+   "switchAt": 1790935200000
+  }
+ },
+ {
+  "seed": 277,
+  "reader": "c00000000000000000000002",
+  "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+  "member": true,
+  "rowId": "6abe30170000000000000007",
+  "page": [
+   "6abe2f5e0000000000000002",
+   "6abe2f9c0000000000000004",
+   "6abe30170000000000000007"
+  ],
+  "closures": {
+   "verdict": "visible",
+   "basis": "label"
+  },
+  "walk": {
+   "verdict": "unchecked",
+   "reason": "check_failed"
+  },
+  "world": {
+   "rows": [
+    {
+     "_id": "6abe2f5e0000000000000002",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 1,
+     "messageType": "bot_response",
+     "requestedBy": "e00000000000000000000004",
+     "content": "Answer again 2",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer again 2"
+      }
+     ],
+     "labelVer": "6abe30ce000000000000000a",
+     "runId": "run-0-again-0-again-1-again-2",
+     "createdAt": "2026-10-01T10:01:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe30ce000000000000000a",
+      "contentHash": "746f90f4ce4c692776455ead96031f3464c6846334363556338a27020afc58cb",
+      "direct": {
+       "records": [
+        "rec-d"
+       ],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe30170000000000000007",
+        "ver": "gone-85",
+        "mode": "full"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": true
+     },
+     "labelHistory": [
+      {
+       "ver": "6abe2f5d0000000000000001",
+       "runId": "run-0",
+       "provenance": {
+        "v": 6,
+        "ver": "6abe2f5d0000000000000001",
+        "contentHash": "3527e947e83d6207676db49fb01ca843ff8a5747a6bbec9ab1273ae300d8c8d7",
+        "direct": {
+         "records": [
+          "rec-d"
+         ],
+         "vrids": [],
+         "nodes": [],
+         "saVrids": [],
+         "personal": [],
+         "agents": [],
+         "chat": [],
+         "projects": [],
+         "marks": []
+        },
+        "parents": [],
+        "complete": true,
+        "tagset": 1,
+        "pub": false
+       }
+      },
+      {
+       "ver": "6abe30540000000000000008",
+       "runId": "run-0-again-0",
+       "provenance": {
+        "v": 5,
+        "ver": "6abe30540000000000000008",
+        "contentHash": "afe6a240fbfa89a50d64b2e60225a5fb1f4c7cee1d70ceb7109502c6878dcd0b",
+        "direct": {
+         "records": [
+          "rec-a",
+          "rec-b"
+         ],
+         "vrids": [],
+         "nodes": [],
+         "saVrids": [],
+         "personal": [],
+         "agents": [],
+         "chat": [],
+         "projects": [],
+         "marks": []
+        },
+        "parents": [],
+        "complete": true,
+        "tagset": 1,
+        "pub": false
+       }
+      },
+      {
+       "ver": "6abe30910000000000000009",
+       "runId": "run-0-again-0-again-1",
+       "provenance": {
+        "v": 5,
+        "ver": "6abe30910000000000000009",
+        "contentHash": "4d173e823d5ec6d86ad6063cab3e01c0b08667eb81666248887089eb97ba24b2",
+        "direct": {
+         "records": [],
+         "vrids": [],
+         "nodes": [],
+         "saVrids": [],
+         "personal": [],
+         "agents": [],
+         "chat": [],
+         "projects": [],
+         "marks": []
+        },
+        "parents": [],
+        "complete": true,
+        "tagset": 1,
+        "pub": false
+       }
+      }
+     ]
+    },
+    {
+     "_id": "6abe2f9c0000000000000004",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 2,
+     "messageType": "bot_response",
+     "requestedBy": "b00000000000000000000003",
+     "content": "Answer 1 (changed behind its label)",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 1"
+      }
+     ],
+     "labelVer": "6abe2f9b0000000000000003",
+     "runId": "run-1",
+     "createdAt": "2026-10-01T10:02:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe2f9b0000000000000003",
+      "contentHash": "b4c7989c8ea5dbd75fb2d5120934a3fbf6351b08a8047fef55c239845a56998b",
+      "direct": {
+       "records": [
+        "rec-b",
+        "rec-d"
+       ],
+       "vrids": [],
+       "nodes": [
+        "kb-1"
+       ],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     }
+    },
+    {
+     "_id": "6abe2fd90000000000000005",
+     "sessionId": "dddddddddddddddddddddddd",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 3,
+     "messageType": "tool_call",
+     "requestedBy": "c00000000000000000000002",
+     "content": "card",
+     "createdAt": "2026-10-01T10:03:00.000Z"
+    },
+    {
+     "_id": "6abe30170000000000000007",
+     "sessionId": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "seq": 4,
+     "messageType": "error",
+     "requestedBy": "c00000000000000000000002",
+     "content": "Answer 3",
+     "parts": [
+      {
+       "type": "text",
+       "content": "Answer 3"
+      }
+     ],
+     "labelVer": "6abe30160000000000000006",
+     "runId": "run-3",
+     "createdAt": "2026-10-01T10:04:00.000Z",
+     "provenance": {
+      "v": 5,
+      "ver": "6abe30160000000000000006",
+      "contentHash": "0a56074d60572c3b3669088bbf403f210c793e6e373061d4bc76ee436bcef954",
+      "direct": {
+       "records": [
+        "rec-a"
+       ],
+       "vrids": [],
+       "nodes": [],
+       "saVrids": [],
+       "personal": [],
+       "agents": [],
+       "chat": [],
+       "projects": [],
+       "marks": []
+      },
+      "parents": [
+       {
+        "id": "6abe2f9c0000000000000004",
+        "ver": "6abe2f9b0000000000000003",
+        "mode": "text"
+       }
+      ],
+      "complete": true,
+      "tagset": 1,
+      "pub": false
+     },
+     "consent": {
+      "by": "c00000000000000000000002",
+      "at": "2026-10-03T10:00:00.000Z",
+      "ver": "6abe30160000000000000006",
+      "scope": "people"
+     },
+     "consentTo": [
+      {
+       "userId": "e00000000000000000000004",
+       "memberSince": "direct:2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "f00000000000000000000005",
+       "memberSince": "direct:2026-10-01T10:00:00.000Z"
+      }
+     ]
+    }
+   ],
+   "sessions": [
+    {
+     "_id": "bbbbbbbbbbbbbbbbbbbbbbbb",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "d00000000000000000000001",
+     "sharedWith": [
+      {
+       "userId": "c00000000000000000000002",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "b00000000000000000000003",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      },
+      {
+       "userId": "e00000000000000000000004",
+       "accessLevel": "read",
+       "addedAt": "2026-10-03T10:00:00.000Z"
+      },
+      {
+       "userId": "f00000000000000000000005",
+       "accessLevel": "write",
+       "addedAt": "2026-10-03T10:00:00.000Z"
+      }
+     ]
+    },
+    {
+     "_id": "dddddddddddddddddddddddd",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "c00000000000000000000002",
+     "parentId": "bbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+     "_id": "eeeeeeeeeeeeeeeeeeeeeeee",
+     "orgId": "aaaaaaaaaaaaaaaaaaaaaaaa",
+     "userId": "b00000000000000000000003",
+     "sharedWith": [
+      {
+       "userId": "d00000000000000000000001",
+       "accessLevel": "write",
+       "addedAt": "2026-10-01T10:00:00.000Z"
+      }
+     ]
+    }
+   ],
+   "opens": {
+    "d00000000000000000000001": [
+     "rec-a",
+     "rec-b",
+     "rec-c",
+     "rec-d",
+     "kb-1",
+     "kb-2"
+    ],
+    "c00000000000000000000002": [
+     "rec-a",
+     "rec-b",
+     "rec-c",
+     "rec-d",
+     "kb-1",
+     "kb-2"
+    ],
+    "b00000000000000000000003": [
+     "rec-a",
+     "rec-c",
+     "rec-d",
+     "rec-e",
+     "kb-1"
+    ],
+    "e00000000000000000000004": [
+     "rec-a",
+     "rec-c",
+     "rec-e",
+     "kb-1"
+    ],
+    "f00000000000000000000005": [
+     "rec-a",
+     "rec-b",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ],
+    "900000000000000000000006": [
+     "rec-a",
+     "rec-c",
+     "rec-d",
+     "rec-e",
+     "kb-1",
+     "kb-2"
+    ]
+   },
+   "deleted": [
+    "rec-a"
+   ],
+   "agents": {
+    "agent-open": [
+     "d00000000000000000000001",
+     "c00000000000000000000002",
+     "b00000000000000000000003",
+     "e00000000000000000000004",
+     "f00000000000000000000005",
+     "900000000000000000000006"
+    ],
+    "agent-closed": [
+     "c00000000000000000000002",
+     "b00000000000000000000003",
+     "f00000000000000000000005"
+    ],
+    "agent-unknown": null
+   },
+   "chatsRead": {
+    "d00000000000000000000001": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "c00000000000000000000002": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": null
+    },
+    "b00000000000000000000003": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": false,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "e00000000000000000000004": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "f00000000000000000000005": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": true,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    },
+    "900000000000000000000006": {
+     "eeeeeeeeeeeeeeeeeeeeeeee": false,
+     "bbbbbbbbbbbbbbbbbbbbbbbb": true
+    }
+   },
+   "projectsRead": {
+    "d00000000000000000000001": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "c00000000000000000000002": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "b00000000000000000000003": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "e00000000000000000000004": {
+     "proj-open": true,
+     "proj-closed": false,
+     "proj-unknown": null
+    },
+    "f00000000000000000000005": {
+     "proj-open": true,
+     "proj-closed": true,
+     "proj-unknown": null
+    },
+    "900000000000000000000006": {
+     "proj-open": true,
+     "proj-closed": true,
+     "proj-unknown": null
+    }
+   },
+   "failing": [],
+   "switchAt": 1790935200000
+  }
+ }
+]

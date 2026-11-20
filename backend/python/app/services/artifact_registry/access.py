@@ -16,6 +16,10 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.authz.chat_content_access import (
+    ChatContentAccess,
+    get_chat_content_access,
+)
 from app.utils.user_lookup import get_caller_user
 
 from .models import Actor
@@ -24,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ARTIFACT_SHARE_GRANT",
+    "SHARED_VERSION",
     "AccessPolicy",
     "AccessDeniedError",
     "ArtifactNotFoundError",
@@ -38,6 +43,8 @@ __all__ = [
 # share sets `grantedVia` to this value, and `chatGranted` when a conversation
 # grant covers the same pair too, so taking either grant away keeps the other.
 ARTIFACT_SHARE_GRANT = "ARTIFACT_SHARE"
+# On a direct share: the artifact's version when the owner shared it, the one the share was checked on.
+SHARED_VERSION = "sharedVersion"
 
 
 def is_direct_share(edge: dict | None) -> bool:
@@ -52,6 +59,7 @@ def reader_edge(
     chat: bool,
     now: int,
     created_at: int | None = None,
+    shared_version: int | None = None,
 ) -> dict[str, Any]:
     """The READER edge for whichever grants remain. Unset flags are written as
     None, not left out: Arango merges an upserted edge's properties, so an omitted
@@ -65,9 +73,15 @@ def reader_edge(
         "role": "READER",
         "grantedVia": ARTIFACT_SHARE_GRANT if direct else None,
         "chatGranted": True if direct and chat else None,
+        SHARED_VERSION: shared_version if direct else None,
         "createdAtTimestamp": created_at or now,
         "updatedAtTimestamp": now,
     }
+
+
+def _current_version(record: dict) -> int:
+    version = record.get("version")
+    return version if isinstance(version, int) and not isinstance(version, bool) and version >= 1 else 1
 
 
 class AccessDeniedError(PermissionError):
@@ -94,8 +108,9 @@ class AccessPolicy:
     `COLLECTION_TO_LABEL`/`EDGE_COLLECTION_TO_RELATIONSHIP` mapping for
     `records`/`permission`)."""
 
-    def __init__(self, graph_provider: Any) -> None:
+    def __init__(self, graph_provider: Any, chat_access: ChatContentAccess | None = None) -> None:
         self._graph_provider = graph_provider
+        self._chat_access = chat_access
 
     async def resolve_user_key(self, actor: Actor) -> str:
         """`actor.user_id` is the external/auth `userId`; permission edges
@@ -111,26 +126,90 @@ class AccessPolicy:
             raise ArtifactNotFoundError(f"User record missing key for userId: {actor.user_id}")
         return user_key
 
-    async def authorize_read(self, actor: Actor, artifact_id: str) -> dict:
-        """Verify `actor` may read `artifact_id`'s base record. Returns the
-        base `records` document on success. Any `USER -> RECORD` PERMISSION
-        edge suffices: OWNER for the creator, READER for users a conversation
-        was shared with."""
-        return await self._authorize(actor, artifact_id, require_owner=False)
+    async def authorize_read(self, actor: Actor, artifact_id: str, *, version: int | None = None) -> dict:
+        """Verify `actor` may read `artifact_id`'s base record, at `version`
+        (its current version when None). Returns the base `records` document on
+        success. Any `USER -> RECORD` PERMISSION edge suffices (OWNER for the
+        creator, or a READER grant unless the installed `ChatContentAccess`
+        says graph edges do not grant chat content); without one, that
+        `ChatContentAccess` decides."""
+        record, _ = await self._authorize(actor, artifact_id, require_owner=False, version=version)
+        return record
+
+    async def authorize_version(
+        self, actor: Actor, artifact_id: str, version: int | None = None,
+    ) -> tuple[dict, int]:
+        """`authorize_read` that also says which version to give `actor`:
+        `version` itself, or with none asked the newest one they may open,
+        which for a reader `ChatContentAccess` decides can be older than the
+        current one. Raises as `authorize_read` does when they may open none."""
+        record, served = await self._authorize(actor, artifact_id, require_owner=False, version=version, newest=True)
+        return record, served if served is not None else _current_version(record)
+
+    async def readable_versions(self, actor: Actor, artifact_id: str) -> tuple[dict, list[int]]:
+        """The record and every version of it `actor` may open, oldest first.
+        Raises as `authorize_read` does when they may open none."""
+        record = await self._record(actor, artifact_id)
+        current = _current_version(record)
+        if await self._grants_by_edge(actor, artifact_id):
+            return record, list(range(1, current + 1))
+        access = self._chat_access or get_chat_content_access()
+        readable = [
+            v for v in await access.readable_chat_versions(
+                self._graph_provider, user_id=actor.user_id, org_id=actor.org_id, record=record,
+                conversation_id=actor.conversation_id, acl_version=actor.acl_version,
+            )
+            if 1 <= v <= current
+        ]
+        if not readable:
+            logger.warning("Access denied: user=%s may open no version of artifact=%s", actor.user_id, artifact_id)
+            raise AccessDeniedError(f"Not authorized for artifact: {artifact_id}")
+        return record, readable
 
     async def authorize_write(self, actor: Actor, artifact_id: str) -> dict:
         """Verify `actor` may create a new version of, or promote, `artifact_id`.
         Requires an OWNER edge, so a READER from a shared conversation cannot
         overwrite the owner's artifact through `update_artifact` and friends."""
-        return await self._authorize(actor, artifact_id, require_owner=True)
+        record, _ = await self._authorize(actor, artifact_id, require_owner=True)
+        return record
 
-    async def _authorize(self, actor: Actor, artifact_id: str, *, require_owner: bool) -> dict:
+    async def _record(self, actor: Actor, artifact_id: str) -> dict:
         record = await self._graph_provider.get_document(artifact_id, CollectionNames.RECORDS.value)
         if not record:
             raise ArtifactNotFoundError(f"Artifact not found: {artifact_id}")
         if record.get("orgId") != actor.org_id:
             # Same message as "not found" — never leak cross-org existence.
             raise ArtifactNotFoundError(f"Artifact not found: {artifact_id}")
+        return record
+
+    async def opens_every_version(self, actor: Actor, artifact_id: str) -> bool:
+        """Whether `actor` opens every version of `artifact_id` through their own
+        PERMISSION edge (the owner; any reader where graph edges grant chat
+        content), rather than version by version through `ChatContentAccess`."""
+        return await self._grants_by_edge(actor, artifact_id)
+
+    async def _grants_by_edge(self, actor: Actor, artifact_id: str) -> bool:
+        """Whether `actor`'s own PERMISSION edge lets them read every version: the
+        OWNER edge, or any edge where graph edges grant chat content."""
+        user_key = await self.resolve_user_key(actor)
+        edge = await self._graph_provider.get_edge(
+            from_id=user_key,
+            from_collection=CollectionNames.USERS.value,
+            to_id=artifact_id,
+            to_collection=CollectionNames.RECORDS.value,
+            collection=CollectionNames.PERMISSION.value,
+        )
+        access = self._chat_access or get_chat_content_access()
+        return bool(edge) and (edge.get("role") == "OWNER" or access.graph_grants_chat_content)
+
+    async def _authorize(
+        self, actor: Actor, artifact_id: str, *, require_owner: bool,
+        version: int | None = None, newest: bool = False,
+    ) -> tuple[dict, int | None]:
+        """The record, and the version to serve: `version` as asked (None for the
+        current one) unless `newest` lets a reader `ChatContentAccess` decides
+        be given the newest version they may open."""
+        record = await self._record(actor, artifact_id)
 
         user_key = await self.resolve_user_key(actor)
         edge = await self._graph_provider.get_edge(
@@ -140,7 +219,25 @@ class AccessPolicy:
             to_collection=CollectionNames.RECORDS.value,
             collection=CollectionNames.PERMISSION.value,
         )
+        access = self._chat_access or get_chat_content_access()
+        if not require_owner and edge and edge.get("role") != "OWNER" and not access.graph_grants_chat_content:
+            edge = None  # only the creator's edge grants; `access` decides every other reader
         if not edge:
+            if not require_owner:
+                lookup = {
+                    "user_id": actor.user_id,
+                    "org_id": actor.org_id,
+                    "record": record,
+                    "conversation_id": actor.conversation_id,
+                    "acl_version": actor.acl_version,
+                }
+                if await access.can_read_chat_content(self._graph_provider, **lookup, version=version):
+                    return record, version
+                if newest and version is None:
+                    # The current version is not theirs: the newest one that is.
+                    readable = await access.readable_chat_versions(self._graph_provider, **lookup)
+                    if readable:
+                        return record, readable[-1]
             logger.warning(
                 "Access denied: user=%s has no permission edge for artifact=%s",
                 actor.user_id, artifact_id,
@@ -152,7 +249,7 @@ class AccessPolicy:
                 actor.user_id, edge.get("role"), artifact_id,
             )
             raise AccessDeniedError(f"Not authorized to modify artifact: {artifact_id}")
-        return record
+        return record, version
 
     async def grant_owner_permission(self, actor: Actor, artifact_id: str, *, now: int) -> dict:
         """Build (not persist) the `USER -> RECORD` OWNER permission edge

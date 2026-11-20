@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.entities import ArtifactRecord, ArtifactType, ArtifactVisibility, deserialize_artifact_versions
+from app.modules.authz.chat_content_access import ChatContentAccess, get_chat_content_access
 from app.services.artifact_registry.access import ArtifactNotFoundError
 from app.services.artifact_registry.models import Actor
 from app.utils.user_lookup import get_caller_user
@@ -137,8 +138,9 @@ class ArtifactListPage(BaseModel):
 
 
 class ArtifactGalleryService:
-    def __init__(self, graph: Any) -> None:
+    def __init__(self, graph: Any, chat_access: ChatContentAccess | None = None) -> None:
         self._graph = graph
+        self._chat_access = chat_access
 
     async def list(self, actor: Actor, query: ArtifactListQuery) -> ArtifactListPage:
         user_key = await self._resolve_user_key(actor)
@@ -167,7 +169,12 @@ class ArtifactGalleryService:
         shared = int(role_counts.get("shared") or 0)
         counts = {"all": mine + shared, "mine": mine, "shared": shared}
         total = counts[ownership]
-        items = [self._to_list_item(row) for row in rows or []]
+        items: list[ArtifactListItem] = []
+        for row in rows or []:
+            newest = await self._newest_readable(actor, row)
+            if newest is None:
+                continue
+            items.append(self._to_list_item(row, at=newest))
         total_pages = (total + limit - 1) // limit if limit else 0
         return ArtifactListPage(
             items=items,
@@ -186,11 +193,52 @@ class ArtifactGalleryService:
         artifact_doc = row.get("artifactDoc") or {}
         if not ArtifactDisplayPolicy.is_user_visible_doc(artifact_doc):
             raise ArtifactNotFoundError(f"Artifact not found: {artifact_id}")
-        return self._to_detail(row)
+        readable = await self._readable_versions(actor, row)
+        if readable is not None and not readable:
+            raise ArtifactNotFoundError(f"Artifact not found: {artifact_id}")
+        return self._to_detail(row, readable)
 
     async def list_versions(self, actor: Actor, artifact_id: str) -> list[ArtifactGalleryVersion]:
         detail = await self.get(actor, artifact_id)
         return detail.versions
+
+    def _access(self) -> ChatContentAccess:
+        return self._chat_access or get_chat_content_access()
+
+    def _all_versions_granted(self, row: dict) -> bool:
+        """Whether the reader's own edge on the row opens every version: their OWNER
+        edge, or any edge where graph edges grant chat content. Anyone else (a direct
+        share, where they do not) opens what the installed access lets them."""
+        role = (row.get("permission") or {}).get("role")
+        return role == "OWNER" or self._access().graph_grants_chat_content
+
+    async def _readable_versions(self, actor: Actor, row: dict) -> list[int] | None:
+        """The versions of the row's artifact the reader may open, oldest first;
+        None when they may open every one."""
+        if self._all_versions_granted(row):
+            return None
+        record_id = str(row.get("id") or "")
+        if not record_id:
+            return []
+        return await self._access().readable_chat_versions(
+            self._graph, user_id=actor.user_id, org_id=actor.org_id, record=record_id,
+        )
+
+    async def _newest_readable(self, actor: Actor, row: dict) -> int | None:
+        """The version a listing shows the reader: the current one when they may open
+        it, else the newest they may open; None when they may open none."""
+        current = int(row.get("version") or 1)
+        if self._all_versions_granted(row):
+            return current
+        record_id = str(row.get("id") or "")
+        if not record_id:
+            return None
+        if await self._access().can_read_chat_content(
+            self._graph, user_id=actor.user_id, org_id=actor.org_id, record=record_id, version=current,
+        ):
+            return current
+        readable = await self._readable_versions(actor, row)
+        return readable[-1] if readable else None
 
     async def _resolve_user_key(self, actor: Actor) -> str:
         user = await get_caller_user(self._graph, actor.user_id)
@@ -236,30 +284,51 @@ class ArtifactGalleryService:
         return versions
 
     @classmethod
-    def _to_list_item(cls, row: dict) -> ArtifactListItem:
+    def _to_list_item(cls, row: dict, *, at: int | None = None) -> ArtifactListItem:
+        """The row as a listing shows it; `at` an older version than the current one
+        describes the file as of that version, for a reader who may open no later one."""
         art = row.get("artifactDoc") or {}
-        return ArtifactListItem(
+        current = int(row.get("version") or 1)
+        item = ArtifactListItem(
             artifact_id=str(row.get("id") or ""),
             name=art.get("name") or row.get("recordName") or "",
             logical_name=art.get("logicalName"),
             artifact_type=art.get("artifactType") or "OTHER",
             mime_type=art.get("mimeType") or row.get("mimeType"),
             size_in_bytes=art.get("sizeInBytes") if art.get("sizeInBytes") is not None else row.get("sizeInBytes"),
-            version=int(row.get("version") or 1),
+            version=current,
             content_hash=art.get("contentHash"),
             conversation_id=art.get("conversationId"),
             created_at=row.get("createdAtTimestamp"),
             updated_at=row.get("updatedAtTimestamp"),
             role=(row.get("permission") or {}).get("role"),
         )
+        if at is None or at == current:
+            return item
+        shown = next((v for v in cls._versions_from_doc(art, current) if v.version == at), None)
+        entry = next((e for e in deserialize_artifact_versions(art.get("versions")) if e.get("registryVersion") == at), {})
+        return item.model_copy(update={
+            "version": at,
+            "mime_type": entry.get("mimeType") or item.mime_type,
+            "size_in_bytes": shown.size_bytes if shown else None,
+            "content_hash": (shown.content_hash or None) if shown else None,
+            "updated_at": (shown.created_at or row.get("createdAtTimestamp")) if shown else row.get("createdAtTimestamp"),
+        })
 
     @classmethod
-    def _to_detail(cls, row: dict) -> ArtifactDetail:
-        item = cls._to_list_item(row)
+    def _to_detail(cls, row: dict, readable: list[int] | None = None) -> ArtifactDetail:
+        """The row with its versions; `readable` (None: every one) the versions the
+        reader may open, the newest of which the detail describes."""
         art = row.get("artifactDoc") or {}
+        current = int(row.get("version") or 1)
+        item = cls._to_list_item(row, at=readable[-1] if readable else None)
+        versions = cls._versions_from_doc(art, current)
+        if readable is not None:
+            allowed = set(readable)
+            versions = [v for v in versions if v.version in allowed]
         return ArtifactDetail(
             **item.model_dump(),
-            versions=cls._versions_from_doc(art, item.version),
+            versions=versions,
             description=art.get("description") or "",
             source_tool=art.get("sourceTool"),
         )

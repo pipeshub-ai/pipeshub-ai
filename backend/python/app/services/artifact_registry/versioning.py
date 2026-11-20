@@ -17,13 +17,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
 from app.models.entities import (
+    ARTIFACT_VERSION_RUN_KEY,
     ArtifactRecord,
     ArtifactType,
+    ArtifactVersionWriter,
     ArtifactVisibility,
     LifecycleStatus,
     RecordType,
@@ -35,7 +37,7 @@ from harness_core.engines.durable.inputs import input_name
 from harness_core.workspace.safe_names import safe_name
 
 from .access import AccessPolicy
-from .models import Actor, ArtifactMetadata, ArtifactVersion
+from .models import Actor, ArtifactMetadata, ArtifactVersion, written_by_service_agent
 
 
 def storage_file_name(name: str) -> str:
@@ -140,13 +142,26 @@ def recover_storage_version(current_version: int, storage_history_len: int, vers
     return version - 1
 
 
-def rebuild_version_bookkeeping(current_version: int) -> list[dict]:
+def rebuild_version_bookkeeping(current_version: int, existing: object = None) -> list[dict]:
     """The `versions` list implied by a length-verified storage history.
     Carries only the mapping itself — the per-version hash/size/timestamp
     the original entries would have had are unrecoverable, and nothing
     reads them (`resolve_storage_version` uses registryVersion ->
-    storageVersion alone)."""
-    return [{"registryVersion": v, "storageVersion": v - 1} for v in range(1, current_version + 1)]
+    storageVersion alone). The run an `existing` entry recorded is kept: who
+    may open a version depends on it."""
+    runs = {
+        entry.get("registryVersion"): entry.get(ARTIFACT_VERSION_RUN_KEY)
+        for entry in deserialize_artifact_versions(existing)
+        if ARTIFACT_VERSION_RUN_KEY in entry
+    }
+    return [
+        {
+            "registryVersion": v,
+            "storageVersion": v - 1,
+            **({ARTIFACT_VERSION_RUN_KEY: runs[v]} if v in runs else {}),
+        }
+        for v in range(1, current_version + 1)
+    ]
 
 
 async def recover_and_persist_version_mapping(
@@ -188,9 +203,11 @@ async def recover_and_persist_version_mapping(
         artifact_id, len(history), version, storage_version,
     )
     try:
+        artifact_doc = await graph_provider.get_document(artifact_id, CollectionNames.ARTIFACTS.value)
+        rebuilt = rebuild_version_bookkeeping(current_version, (artifact_doc or {}).get("versions"))
         await graph_provider.update_node(
             artifact_id, CollectionNames.ARTIFACTS.value,
-            {"versions": serialize_artifact_versions(rebuild_version_bookkeeping(current_version))},
+            {"versions": serialize_artifact_versions(rebuilt)},
         )
     except Exception:
         logger.warning(
@@ -265,6 +282,8 @@ class VersionManager:
             lifecycle_status=lifecycle_status,
             source_tool=source_tool,
             conversation_id=conversation_id,
+            run_id=actor.run_id,
+            service_agent_run=written_by_service_agent(actor),
             is_temporary=is_temporary,
             visibility=visibility,
             logical_name=logical_name or name,
@@ -343,6 +362,8 @@ class VersionManager:
             lifecycle_status=LifecycleStatus.PUBLISHED,
             source_tool=source_tool,
             conversation_id=conversation_id,
+            run_id=actor.run_id,
+            service_agent_run=written_by_service_agent(actor),
             visibility=visibility,
             logical_name=logical_name or name,
             content_hash=content_hash,
@@ -370,11 +391,18 @@ class VersionManager:
         content: bytes,
         mime_type: str | None = None,
         expected_version: int | None = None,
+        writer: ArtifactVersionWriter | None | Literal["actor"] = "actor",
     ) -> tuple[ArtifactVersion, ArtifactMetadata]:
         """Bump `artifact_id` to a new version, or return the current
         version unchanged (`ArtifactVersion.deduplicated=True`) when
         `content`'s hash matches what's already stored — makes re-running
-        the same code idempotent instead of accumulating no-op versions."""
+        the same code idempotent instead of accumulating no-op versions.
+
+        The new version records the run that wrote it: `actor`'s run unless
+        `writer` names another (a copy keeps its source version's), or None
+        to record none (a copy of a version whose writer was never kept)."""
+        if writer == "actor":
+            writer = ArtifactVersionWriter(run_id=actor.run_id)
         record = await self._access.authorize_write(actor, artifact_id)
         artifact_doc = await self._graph_provider.get_document(artifact_id, CollectionNames.ARTIFACTS.value)
         if not artifact_doc:
@@ -420,8 +448,12 @@ class VersionManager:
             prior_content_hash=artifact_doc.get("contentHash"),
             prior_size_bytes=artifact_doc.get("sizeInBytes"),
             prior_created_at=record.get("createdAtTimestamp") or now,
+            prior_run_id=artifact_doc.get("runId"),
+            prior_mime_type=record.get("mimeType"),
             new_content_hash=content_hash,
             new_size_bytes=len(content),
+            new_mime_type=effective_mime,
+            new_writer=writer,
             now=now,
         )
         try:
@@ -433,7 +465,9 @@ class VersionManager:
             await self._graph_provider.update_node(
                 artifact_id, CollectionNames.ARTIFACTS.value,
                 {"contentHash": content_hash, "sizeInBytes": len(content), "mimeType": effective_mime,
-                 "versions": serialize_artifact_versions(new_versions) if new_versions else None},
+                 "versions": serialize_artifact_versions(new_versions) if new_versions else None,
+                 # Never cleared: a later version still derives from what the agent wrote.
+                 **({"serviceAgentRun": True} if written_by_service_agent(actor) else {})},
             )
         except Exception:
             logger.critical(
@@ -478,13 +512,21 @@ class VersionManager:
         new_content_hash: str,
         new_size_bytes: int,
         now: int,
+        prior_run_id: str | None = None,
+        new_writer: ArtifactVersionWriter | None = None,
+        prior_mime_type: str | None = None,
+        new_mime_type: str | None = None,
     ) -> list[dict]:
         """Build the updated `versions` bookkeeping list for one `add_version`
         call. Storage indices come ONLY from `upload_result` (what Node's
         `uploadNextVersionDocument` response actually reported) — never
         computed from `new_version`/`len(existing_versions)`, since Node's
         `versionHistory` numbering is not guaranteed to track the registry's
-        1-based version 1:1 (see module docstring)."""
+        1-based version 1:1 (see module docstring).
+
+        Each entry names the run that wrote its version: version 1's is the
+        creating run, and `new_writer` None leaves the new version's unnamed,
+        so it reads as not known (`artifact_version_writer`)."""
         versions = list(existing_versions)
         storage_version = upload_result.get("storageVersion")
         prior_storage_version = upload_result.get("priorStorageVersion")
@@ -501,6 +543,9 @@ class VersionManager:
                 "contentHash": prior_content_hash,
                 "sizeBytes": prior_size_bytes,
                 "createdAt": prior_created_at,
+                **({"mimeType": prior_mime_type} if prior_mime_type else {}),
+                # The only version an artifact can have before its first bump is the one its creating run wrote.
+                **({ARTIFACT_VERSION_RUN_KEY: prior_run_id or None} if current_version == 1 else {}),
             })
         elif not versions:
             # The backfill above is the ONLY chance to record where version
@@ -521,6 +566,8 @@ class VersionManager:
                 "contentHash": new_content_hash,
                 "sizeBytes": new_size_bytes,
                 "createdAt": now,
+                **({"mimeType": new_mime_type} if new_mime_type else {}),
+                **({ARTIFACT_VERSION_RUN_KEY: new_writer.run_id} if new_writer is not None else {}),
             })
         else:
             logger.warning(
@@ -536,6 +583,7 @@ def to_metadata(record: ArtifactRecord, *, document_id: str) -> ArtifactMetadata
         artifact_id=record.id,
         org_id=record.org_id,
         conversation_id=record.conversation_id,
+        run_id=record.run_id,
         name=record.record_name,
         logical_name=record.logical_name or record.record_name,
         artifact_type=record.artifact_type,
@@ -566,6 +614,7 @@ def to_metadata_from_docs(record: dict[str, Any], artifact_doc: dict[str, Any]) 
         artifact_id=record.get("id") or record.get("_key"),
         org_id=record.get("orgId"),
         conversation_id=artifact_doc.get("conversationId"),
+        run_id=artifact_doc.get("runId"),
         name=record.get("recordName"),
         logical_name=artifact_doc.get("logicalName") or record.get("recordName"),
         artifact_type=ArtifactType(artifact_doc.get("artifactType") or ArtifactType.OTHER.value),

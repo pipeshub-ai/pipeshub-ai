@@ -150,6 +150,7 @@ AGENT = "agent and skill edges, not records: no viewer scope reads them"
 NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::_sync_relation_edges": AGENT,
     "agents/agent_loop/skills/graph_store.py::detach_from_agents": AGENT,
+    "modules/agents/service/agent_service.py::update": "agent sharing edges, not records: no viewer scope reads them",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_shared_groups": SYNC,
     "connectors/core/registry/connector_registry.py::discard_connector_instance":
         "takes back an instance its own create just wrote: it holds no permission edge yet and the create never bumped",
@@ -271,6 +272,9 @@ CREATE_NO_BUMP = {
     "api/routes/agent.py::_write_draft": AGENT,
     "api/routes/agent.py::create_agent_template": AGENT,
     "api/routes/agent.py::write_agent": AGENT,
+    "modules/agents/service/agent_service.py::_create_once": AGENT,
+    "modules/agents/service/agent_service.py::update": AGENT,
+    "modules/agents/service/agent_service.py::write_agent": AGENT,
     "services/chat_attachments/uploads.py::write_attachment_graph": NEW_RECORD,
     "api/routes/entity.py::write_team": HELPER,
     "api/routes/entity.py::write_update": HELPER,
