@@ -1433,7 +1433,7 @@ class TestRoleActors:
             {"type": "atlassian-user-role-actor", "actorUser": "not-a-dict", "key": "alice-key"},
             {"type": "atlassian-user-role-actor", "name": "Bob"},
             {"type": "atlassian-user-role-actor", "actorUser": {"key": "nobody"}},
-            {"type": "atlassian-group-role-actor", "groupId": "grp-1", "name": "renamed"},
+            {"type": "atlassian-group-role-actor", "name": "grp-1"},
         ]})
         connector, _ = await make_connector(db, store)
         connector._dc_name_to_source_id = {"bob": "bob-key"}
