@@ -19,12 +19,20 @@ from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.parsing import router as parsing_router
 from app.models.blocks import BlocksContainer
+from app.services.base_client import ServiceCallError
+from app.services.docling.client import DoclingUnavailableError
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
+from app.services.parsing.client import ParsingClient, ParsingClientError
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
     ParseResult,
     ParserProvider,
 )
+from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import Pool, ResourceGovernor
 from app.services.resource_governor.models import ResourceSnapshot
@@ -794,3 +802,63 @@ async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
     assert first_response.status_code == 200
     assert braked_elsewhere.status_code == 429
     assert same_memory_response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Docling down on the DEFAULT provider: the indexer's view (real route, real ParsingClient, real classifier)
+# ---------------------------------------------------------------------------
+
+
+def _default_pdf_provider(docling_error: Exception) -> tuple[SmartPDFParser, MagicMock]:
+    docling, layout, ocr = MagicMock(), MagicMock(), MagicMock()
+    docling.parse = AsyncMock(side_effect=docling_error)
+    layout.parse = AsyncMock(side_effect=ParseError(ParseErrorCode.PARSE_FAILED, "PdfPlumber+OpenCV failed"))
+    ocr.parse = AsyncMock(side_effect=ParseError(ParseErrorCode.PARSE_FAILED, "OCR could not read it"))
+    return SmartPDFParser(docling, ocr, large_pdf_parser=layout), ocr
+
+
+async def _indexer_parses(parser: SmartPDFParser) -> tuple[list[int], Exception]:
+    """Statuses the route answered and what ParsingClient raised for one parse."""
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(return_value=parser)
+    transport = ASGITransport(app=_build_app(registry))
+    statuses: list[int] = []
+
+    async def record(response: Response) -> None:
+        statuses.append(response.status_code)
+
+    client = ParsingClient(
+        service_url="http://parsing.test", max_retries=2, retry_delay=0.0, config_service=_SecretsConfigService()
+    )
+    client._make_client = lambda: AsyncClient(transport=transport, event_hooks={"response": [record]})
+    with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)), \
+            pytest.raises(Exception) as raised:
+        await client.parse(
+            file_content=b"%PDF-1.4", record_name="report.pdf", mime_type="application/pdf", extension="pdf",
+            provider=ParserProvider.DEFAULT,
+        )
+    return statuses, raised.value
+
+
+@pytest.mark.asyncio
+async def test_docling_down_and_pdfplumber_failing_is_retried_by_the_indexer() -> None:
+    parser, ocr = _default_pdf_provider(DoclingUnavailableError("Docling is not serving", status_code=503))
+
+    statuses, raised = await _indexer_parses(parser)
+
+    assert statuses == [500, 500]  # ParsingClient's two attempts; a 503 with Retry-After would pause every consumer
+    assert isinstance(raised, ServiceCallError)
+    assert MessageErrorClassifier.classify_by_exception(raised) == MessageErrorType.TRANSIENT
+    ocr.parse.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_no_parser_can_read_with_docling_up_still_fails_terminally() -> None:
+    parser, ocr = _default_pdf_provider(ParseError(ParseErrorCode.PARSE_FAILED, "Docling answered 422"))
+
+    statuses, raised = await _indexer_parses(parser)
+
+    assert statuses == [422]
+    assert isinstance(raised, ParsingClientError)
+    assert MessageErrorClassifier.classify_by_exception(raised) == MessageErrorType.TERMINAL
+    ocr.parse.assert_awaited_once()
