@@ -96,6 +96,8 @@ column conversation.chat_messages.applied_filters type=jsonb notnull=false ident
 column conversation.chat_messages.attachments type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column conversation.chat_messages.citations type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column conversation.chat_messages.confidence type=text notnull=false identity= generated= default=-
+column conversation.chat_messages.consent type=jsonb notnull=false identity= generated= default=-
+column conversation.chat_messages.consent_to type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column conversation.chat_messages.content type=text notnull=true identity= generated= default=''::text
 column conversation.chat_messages.content_format type=text notnull=false identity= generated= default=-
 column conversation.chat_messages.created_at type=timestamp with time zone notnull=true identity= generated= default=-
@@ -104,16 +106,20 @@ column conversation.chat_messages.follow_up_questions type=jsonb notnull=true id
 column conversation.chat_messages.harness type=jsonb notnull=false identity= generated= default=-
 column conversation.chat_messages.id type=conversation.oid24 notnull=true identity= generated= default=-
 column conversation.chat_messages.label type=jsonb notnull=false identity= generated= default=-
+column conversation.chat_messages.label_history type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.label_ver type=text notnull=false identity= generated= default=-
 column conversation.chat_messages.message_type type=text notnull=true identity= generated= default=-
 column conversation.chat_messages.metadata type=jsonb notnull=false identity= generated= default=-
 column conversation.chat_messages.model_info type=jsonb notnull=false identity= generated= default=-
 column conversation.chat_messages.org_id type=text notnull=true identity= generated= default=-
 column conversation.chat_messages.parts type=jsonb notnull=true identity= generated= default='[]'::jsonb
+column conversation.chat_messages.provenance type=jsonb notnull=false identity= generated= default=-
 column conversation.chat_messages.reasoning type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column conversation.chat_messages.reference_data type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column conversation.chat_messages.sender_id type=text notnull=false identity= generated= default=-
 column conversation.chat_messages.seq type=integer notnull=true identity= generated= default=-
 column conversation.chat_messages.session_id type=conversation.oid24 notnull=true identity= generated= default=-
+column conversation.chat_messages.share_requests type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column conversation.chat_messages.status type=text notnull=false identity= generated= default=-
 column conversation.chat_messages.tools type=jsonb notnull=true identity= generated= default='[]'::jsonb
 column conversation.chat_messages.updated_at type=timestamp with time zone notnull=true identity= generated= default=-

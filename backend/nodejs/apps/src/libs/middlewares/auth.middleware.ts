@@ -35,7 +35,10 @@ import {
   refusalOutcome,
 } from '../services/telemetry/telemetry-impl';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
-import { setContextIdentity } from '../context/request-context';
+import {
+  setContextIdentity,
+  setContextKnowledgeLimit,
+} from '../context/request-context';
 import { recordAgentCall } from './agent-call-recorder';
 import { MCP_PATH } from './rate-limit.middleware';
 import {
@@ -401,6 +404,8 @@ export class AuthMiddleware {
         : {}),
     };
     setContextIdentity({ orgId, userId });
+    // What the token may reach: the reader check holds this request's reads to it, as the AI backend does.
+    setContextKnowledgeLimit(payload.knowledgeLimit);
     // The web app's client name lets an agent run wait for a person to approve a tool call.
     // An OAuth or personal access token is a program, not the web app, so it can't claim it.
     if (

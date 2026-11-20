@@ -480,6 +480,34 @@ describe('FileProcessorService - rejectionMessage edge cases', () => {
     )
   })
 
+  it('rejects a file with no bytes as EMPTY_FILE when asked to, and keeps the others', () => {
+    const service = new FileProcessorService(createPartialConfig({ rejectEmptyFiles: true }))
+    const req = createMockRequest({
+      files: [makeFile('ok.pdf', 'KB/ok.pdf', 10), makeFile('empty.txt', 'KB/empty.txt', 0, 'text/plain')],
+    })
+    const next = createMockNext()
+
+    void service.processFiles()(req, createMockResponse(), next)
+
+    expect(next.firstCall.args).to.have.length(0)
+    expect(req.body.fileBuffers.map((f: any) => f.originalname)).to.deep.equal(['ok.pdf'])
+    expect(req.body.rejectedFiles).to.have.length(1)
+    expect(req.body.rejectedFiles[0].reason).to.equal(FileRejectionReason.EMPTY_FILE)
+    expect(req.body.rejectedFiles[0].error).to.equal(
+      'This file is empty. Add some content to it and upload it again.',
+    )
+  })
+
+  it('keeps accepting a file with no bytes when the route did not ask to reject them', () => {
+    const service = new FileProcessorService(createPartialConfig())
+    const req = createMockRequest({ files: [makeFile('empty.txt', 'KB/empty.txt', 0, 'text/plain')] })
+
+    void service.processFiles()(req, createMockResponse(), createMockNext())
+
+    expect(req.body.rejectedFiles).to.have.length(0)
+    expect(req.body.fileBuffers).to.have.length(1)
+  })
+
   it('reports EXCEEDS_SIZE_LIMIT with correct MB in the message', () => {
     const service = new FileProcessorService(createPartialConfig({
       maxFileSize: 5 * ONE_MB,

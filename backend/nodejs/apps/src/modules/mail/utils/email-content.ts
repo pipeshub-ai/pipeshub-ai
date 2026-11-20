@@ -23,6 +23,22 @@ import {
   suspiciousLoginAttempt,
 } from './emailTemplates';
 
+/** Renders one template's data; throws when the data has the wrong shape. */
+export type EmailTemplateRenderer = (
+  templateData: Record<string, unknown>,
+) => string;
+
+const extraTemplates = new Map<string, EmailTemplateRenderer>();
+
+/** Adds template types `getEmailContent` renders besides its own. */
+export function useEmailTemplates(
+  renderers: Readonly<Record<string, EmailTemplateRenderer>>,
+): void {
+  for (const [type, render] of Object.entries(renderers)) {
+    extraTemplates.set(type, render);
+  }
+}
+
 /** Renders a template by type. Throws for an unknown type — a caller bug. */
 export function getEmailContent(
   emailTemplateType: string,
@@ -92,8 +108,13 @@ export function getEmailContent(
     case EmailTemplateType.FeedbackCopy as string:
       return feedbackCopy(templateData);
 
-    default:
+    default: {
+      const render = extraTemplates.get(emailTemplateType);
+      if (render) {
+        return render(templateData);
+      }
       throw 'Unknown Template';
+    }
   }
 }
 

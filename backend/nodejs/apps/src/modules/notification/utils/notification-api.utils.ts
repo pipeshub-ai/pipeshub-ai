@@ -1,4 +1,6 @@
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { isValidId } from '../../../libs/repositories/ids';
+import type { NotificationScope } from '../../../libs/repositories/notification/types';
 
 export const NOTIFICATION_RETENTION_DAYS = 30;
 export const DEFAULT_PAGE_SIZE = 20;
@@ -44,6 +46,22 @@ export function resolveNotificationAuthContext(
     return null;
   }
   return { userId, orgId };
+}
+
+/**
+ * Chat notices quote chat titles and messages, so a token without `conversation:read` never sees
+ * or changes one. Browser sessions carry no scopes and see every notice.
+ */
+export function buildTokenScopeFilter(
+  user: Record<string, unknown> | undefined,
+): Pick<NotificationScope, 'hideChatNotices'> {
+  if (user?.isOAuth !== true) {
+    return {};
+  }
+  const scopes = Array.isArray(user.oauthScopes) ? user.oauthScopes : [];
+  return scopes.includes(OAuthScopeNames.CONVERSATION_READ)
+    ? {}
+    : { hideChatNotices: true };
 }
 
 export function clampPageSize(raw: unknown): number {

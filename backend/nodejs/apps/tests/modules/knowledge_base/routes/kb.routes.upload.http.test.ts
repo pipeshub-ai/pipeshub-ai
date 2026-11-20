@@ -194,6 +194,34 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
       expect(summary(events)).to.deep.equal({ total: 5, succeeded: 2, failed: 3 })
     })
 
+    it('turns away programs and libraries by extension, though the storage table knows them', async () => {
+      storageAccepts()
+      const r = await upload([
+        { name: 'setup.exe', type: 'application/x-msdownload' },
+        { name: 'lib.DLL', type: 'application/octet-stream' },
+        { name: 'ok.pdf' },
+      ])
+
+      const events = sseEvents(r.text)
+      const refused = byEvent(events, 'file:failed')
+      expect(refused.map((e) => e.fileName)).to.have.members(['setup.exe', 'lib.DLL'])
+      for (const e of refused) expect(e.reason).to.equal('UNSUPPORTED_TYPE')
+      expect(byEvent(events, 'file:succeeded').map((e) => e.filePath)).to.deep.equal(['ok.pdf'])
+      expect(h.backend.callsTo('POST', STORAGE_UPLOAD).map(uploadedName)).to.deep.equal(['ok.pdf'])
+    })
+
+    it('turns away a file with no bytes, in its own words, and stores nothing for it', async () => {
+      storageAccepts()
+      const r = await upload([{ name: 'empty.txt', bytes: 0, type: 'text/plain' }, { name: 'ok.pdf' }])
+
+      const events = sseEvents(r.text)
+      const [empty] = byEvent(events, 'file:failed')
+      expect(empty).to.include({ fileName: 'empty.txt', reason: 'EMPTY_FILE' })
+      expect(empty!.errors).to.deep.equal(['This file is empty. Add some content to it and upload it again.'])
+      expect(h.backend.callsTo('POST', STORAGE_UPLOAD).map(uploadedName)).to.deep.equal(['ok.pdf'])
+      expect(summary(events)).to.deep.equal({ total: 2, succeeded: 1, failed: 1 })
+    })
+
     it('reports every file as failed, and stores nothing, when none can be accepted', async () => {
       const r = await upload([{ name: 'a.xyz123' }, { name: 'b.qqq' }])
 

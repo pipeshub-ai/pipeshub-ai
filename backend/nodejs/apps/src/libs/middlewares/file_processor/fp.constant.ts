@@ -14,6 +14,7 @@ export enum FileProcessingMode {
 export enum FileRejectionReason {
   EXCEEDS_SIZE_LIMIT = 'EXCEEDS_SIZE_LIMIT',
   UNSUPPORTED_TYPE = 'UNSUPPORTED_TYPE',
+  EMPTY_FILE = 'EMPTY_FILE',
   DUPLICATE_NAME = 'DUPLICATE_NAME',
 }
 

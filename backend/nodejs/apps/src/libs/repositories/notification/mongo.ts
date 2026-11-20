@@ -31,6 +31,7 @@ function retentionFilter(
       : includeArchived
         ? {}
         : { status: { $ne: 'archived' } }),
+    ...(scope.hideChatNotices && { type: { $not: /^chat\./ } }),
   };
 }
 

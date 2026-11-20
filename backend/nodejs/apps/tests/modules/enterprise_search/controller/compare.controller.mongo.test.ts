@@ -184,9 +184,10 @@ describeIfMongo('Compare models branches on a real MongoDB', function () {
 
   it('works for the first question of a new chat (empty prefix) and inherits the project', async () => {
     const projectId = oid();
+    // Compare is refused while a chat is open to its project, so this one is in the project but private.
     const { session, ids } = await seedChat({
       projectId,
-      projectVisibility: 'project',
+      projectVisibility: 'private',
     });
     const r = await branchOf(String(session._id), ids[0]!);
     expect(r.status).to.equal(200);
@@ -195,7 +196,7 @@ describeIfMongo('Compare models branches on a real MongoDB', function () {
       await ChatSessionMessage.countDocuments({ sessionId: b!._id }),
     ).to.equal(0);
     expect(String(b!.projectId)).to.equal(String(projectId));
-    // A branch is never shared with the project, whatever the parent's visibility.
+    // A branch is never shared with the project.
     expect(b!.projectVisibility).to.equal('private');
   });
 
@@ -278,7 +279,7 @@ describeIfMongo('Compare models branches on a real MongoDB', function () {
     const projectId = oid();
     const { session, ids } = await seedChat({
       projectId,
-      projectVisibility: 'project',
+      projectVisibility: 'private',
       title: 'zebra planning',
     });
     const made = await branchOf(String(session._id), ids[2]!);

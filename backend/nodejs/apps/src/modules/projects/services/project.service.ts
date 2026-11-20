@@ -1,3 +1,4 @@
+import { QueryFilter, Types } from 'mongoose';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { isValidId } from '../../../libs/repositories/ids';
 import { getUserRepository } from '../../../libs/repositories/user';
@@ -24,6 +25,13 @@ import {
   ProjectRole,
 } from '../types/project.interfaces';
 import { envFlag } from '../../../libs/utils/env-flags';
+import { Project } from '../schema/project.schema';
+import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { IChatSession } from '../../enterprise_search/types/conversation.interfaces';
+import {
+  ConversationAclExtension,
+  conversationExtensions,
+} from '../../enterprise_search/services/conversation/conversation-extensions';
 
 /** The subset of project fields `computeRole` needs — satisfied by both a hydrated document and a `.lean()` result. */
 type ProjectAccessFields = Pick<
@@ -63,6 +71,14 @@ export type UpdateProjectInput = Partial<CreateProjectInput> & {
   chatSharing?: ProjectDto['chatSharing'];
 };
 
+/** Settings of an update that the shared fields do not cover. */
+export interface ProjectUpdateExtension {
+  /** The update changes settings only the owner may change. */
+  ownerOnly: boolean;
+  /** Runs after the shared fields are saved; returns the project the caller gets back. */
+  afterSave(saved: ProjectDto): Promise<ProjectDto>;
+}
+
 export interface ListProjectsOptions {
   page: number;
   limit: number;
@@ -70,6 +86,8 @@ export interface ListProjectsOptions {
   scope: 'mine' | 'shared' | 'all';
   includeArchived: boolean;
   isArchived?: boolean;
+  /** Conversations the caller may list; each project's count covers only these. */
+  visibleConversations: QueryFilter<IChatSession>;
 }
 
 const ROLE_RANK: Record<ProjectRole, number> = {
@@ -81,6 +99,27 @@ const ROLE_RANK: Record<ProjectRole, number> = {
 
 function hasAtLeastRole(role: ProjectRole, required: ProjectRole): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[required];
+}
+
+const acl = (): ConversationAclExtension => conversationExtensions().acl;
+
+/** Whether the edition keeps access versions; the default edition keeps none (an empty update). */
+const keepsAclVersions = (): boolean =>
+  Object.keys(acl().versionBump()).length > 0;
+
+/**
+ * Moves the access version of the matched projects or chats: cached access decisions are keyed on it, so a change to
+ * who reaches a project's chats must move it. Called after the change, so no reader caches the old state under the
+ * new version.
+ */
+async function bumpAclVersions(
+  kind: 'project' | 'chat',
+  filter: Record<string, unknown>,
+): Promise<void> {
+  if (!keepsAclVersions()) return;
+  const bump = acl().versionBump();
+  if (kind === 'project') await Project.updateMany(filter, bump).exec();
+  else await ChatSession.updateMany(filter, bump).exec();
 }
 
 /**
@@ -245,10 +284,24 @@ export class ProjectService {
     // Counts only the chats this caller can open, the same rows
     // GET /:projectId/conversations returns: their own, plus chats shared to
     // the project. Counting every chat leaked how many private chats exist.
-    const countByProject = await getConversationRepository().countByProject(
-      orgId,
-      userId,
-      projectIds.map(String),
+    const counts = projectIds.length
+      ? await ChatSession.aggregate<{ _id: unknown; count: number }>([
+          {
+            // `$match` skips the casting `find` does, so string ids would match nothing.
+            $match: ChatSession.where({
+              $and: [
+                opts.visibleConversations,
+                { projectId: { $in: projectIds } },
+                // A Compare models branch is opened by its id, never listed.
+                { compareOf: { $exists: false } },
+              ],
+            }).cast() as QueryFilter<IChatSession>,
+          },
+          { $group: { _id: '$projectId', count: { $sum: 1 } } },
+        ])
+      : [];
+    const countByProject = new Map<string, number>(
+      counts.map((c) => [String(c._id), c.count]),
     );
 
     const enriched: ProjectListItem[] = projects.map((p) => ({
@@ -266,6 +319,7 @@ export class ProjectService {
     projectId: string,
     patch: UpdateProjectInput,
     callerTeamIds: string[] = [],
+    extension?: ProjectUpdateExtension,
   ): Promise<ProjectDto> {
     const { role, project } = await this.assertAccess(
       orgId,
@@ -278,7 +332,9 @@ export class ProjectService {
     this.assertNotArchived(project);
 
     if (
-      (patch.visibility !== undefined || patch.chatSharing !== undefined) &&
+      (patch.visibility !== undefined ||
+        patch.chatSharing !== undefined ||
+        extension?.ownerOnly === true) &&
       role !== 'owner'
     ) {
       throw new ForbiddenError(
@@ -308,7 +364,14 @@ export class ProjectService {
     if (patch.chatSharing !== undefined)
       changes.chatSharing = patch.chatSharing;
 
-    return this.write(projectId, changes);
+    const saved = await this.write(projectId, changes);
+    if (
+      patch.visibility !== undefined &&
+      patch.visibility !== project.visibility
+    ) {
+      await bumpAclVersions('project', { _id: projectId });
+    }
+    return extension ? extension.afterSave(saved) : saved;
   }
 
   /** Applies the change to the live project; a project removed since the access check answers NotFoundError. */
@@ -428,11 +491,21 @@ export class ProjectService {
       return;
     }
     const project = found;
+    // Read before the unlink, which takes `projectId` off them.
+    const chatIds = keepsAclVersions()
+      ? (
+          await ChatSession.find({ projectId: project._id }, { _id: 1 })
+            .lean()
+            .exec()
+        ).map((c) => c._id)
+      : [];
 
     await unitOfWork.run(async (tx) => {
       await getConversationRepository().unlinkProject(project._id, tx);
       await getProjectRepository().markDeleted(project._id, userId, tx);
     });
+    await bumpAclVersions('chat', { _id: { $in: chatIds } });
+    await bumpAclVersions('project', { _id: project._id });
   }
 
   /** Assembled once per AI call site by `applyProjectScope`. Returns undefined fields rather than throwing on an empty project. */
@@ -540,6 +613,7 @@ export class ProjectService {
     if (!saved) {
       throw new NotFoundError('Project not found');
     }
+    await bumpAclVersions('project', { _id: projectId });
     return saved;
   }
 
@@ -590,6 +664,7 @@ export class ProjectService {
     if (!saved) {
       throw new NotFoundError('Project not found');
     }
+    await bumpAclVersions('project', { _id: projectId });
     return { project: saved, removed: true };
   }
 
@@ -625,7 +700,28 @@ export class ProjectService {
     orgId: string,
     userId: string,
   ): Promise<void> {
+    // Read before the pull, which takes the user off them.
+    const memberOf = keepsAclVersions()
+      ? (
+          await Project.find(
+            {
+              orgId: new Types.ObjectId(orgId),
+              // `principalId` is Mixed (a team's id is a string), so a user's id is not cast for us.
+              members: {
+                $elemMatch: {
+                  principalType: 'user',
+                  principalId: new Types.ObjectId(userId),
+                },
+              },
+            },
+            { _id: 1 },
+          )
+            .lean()
+            .exec()
+        ).map((p) => p._id)
+      : [];
     await getProjectRepository().removeUserFromAll(orgId, userId);
+    await bumpAclVersions('project', { _id: { $in: memberOf } });
   }
 
   /**

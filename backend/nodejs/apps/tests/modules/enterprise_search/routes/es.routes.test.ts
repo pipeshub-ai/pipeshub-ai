@@ -4,6 +4,9 @@ import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createConversationalRouter, createSemanticSearchRouter, createAgentConversationalRouter } from '../../../../src/modules/enterprise_search/routes/es.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
+import { turnDeps } from '../helpers/turn-deps'
+import { markingGuards } from '../helpers/guarded-chat'
+import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import {
   AGENT_HARNESS_RUN_ADMISSION_SERVICE,
@@ -37,10 +40,20 @@ describe('Enterprise Search Routes', () => {
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(markingGuards())
+    container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue(turnDeps())
   })
 
   afterEach(() => {
     sinon.restore()
+  })
+
+  it('both conversation routers refuse to build without the guards binding', () => {
+    const bare = new Container()
+    bare.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
+    bare.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    expect(() => createConversationalRouter(bare)).to.throw()
+    expect(() => createAgentConversationalRouter(bare)).to.throw()
   })
 
   it('should return a valid Express router', () => {
@@ -297,10 +310,10 @@ describe('Enterprise Search Routes', () => {
       expect(route, 'route is registered').to.exist
       expect(route.methods.get, 'not readable').to.equal(undefined)
       expect(route.methods.post, 'not a POST').to.equal(undefined)
-      // authenticate + scope check + param validation + handler: dropping one must fail here.
+      // authenticate + scope check + param validation + guard + handler: dropping one must fail here.
       // Archive also clears the Compare branches' artifacts first.
       expect(route.stack.length).to.equal(archive.stack.length - 1)
-      expect(route.stack.length).to.equal(4)
+      expect(route.stack.length).to.equal(5)
     })
   }
 
@@ -419,7 +432,8 @@ describe('Enterprise Search Routes', () => {
     )
 
     expect(layer).to.exist
-    expect(layer!.route!.stack.length).to.equal(4)
+    // authenticate, requireScopes, validate, guard, handler (the erasure-aware delete)
+    expect(layer!.route!.stack.length).to.equal(5)
   })
 
   it('should register internal agent stream route', () => {
@@ -795,11 +809,12 @@ describe('Enterprise Search Routes', () => {
       // authenticate, requireScopes, [create: rejectClientConversationHistory (CE-19)], validate, handler; a turn in
       // an existing conversation also passes the role guard (SS0). The streaming twin also has the durable
       // surface-run layer and the legacy turn metrics before its handler (C-5, DUR3), and the /command expansion (SLASH1).
-      for (const [path, guard, historyGuard] of [['/:agentKey/conversations', 0, 1], ['/:agentKey/conversations/:conversationId/messages', 1, 0]] as const) {
+      // The conversation guards add caller() to a create, and authorize() and runLease() to a follow-up.
+      for (const [path, guard, historyGuard, conversationGuards] of [['/:agentKey/conversations', 0, 1, 1], ['/:agentKey/conversations/:conversationId/messages', 1, 0, 2]] as const) {
         const nonStreaming = routes.find((r: any) => r.path === path && r.methods.post)
         const streaming = routes.find((r: any) => r.path === `${path}/stream` && r.methods.post)
-        expect(nonStreaming?.stack.length, path).to.equal(4 + guard + historyGuard)
-        expect(streaming?.stack.length, path).to.equal(7 + guard + historyGuard)
+        expect(nonStreaming?.stack.length, path).to.equal(4 + guard + historyGuard + conversationGuards)
+        expect(streaming?.stack.length, path).to.equal(7 + guard + historyGuard + conversationGuards)
       }
     })
 
@@ -868,6 +883,8 @@ describe('Enterprise Search Routes - handler coverage', () => {
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(markingGuards())
+    container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue(turnDeps())
   })
 
   afterEach(() => {

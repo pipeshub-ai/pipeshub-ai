@@ -435,16 +435,16 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(e).to.be.instanceOf(PermissionDenied);
       });
 
-      it('the content search answers only from the caller’s org, and finds a term in any message of the chat', async () => {
+      it('the content search answers only from the caller’s org, and finds a term in any of their messages in the chat', async () => {
         const a = newId(),
           b = newId(),
           v = newId();
         const sb = await open(b, v, {}, user('needle text'));
         await repo.appendMessages(sb._id, b, [bot('another Needle here')]);
-        expect((await repo.findIdsByContent(b, 'needle')).ids).to.deep.equal([
+        expect((await repo.findIdsByContent(b, v, 'needle')).ids).to.deep.equal([
           sb._id,
         ]);
-        expect((await repo.findIdsByContent(a, 'needle')).ids).to.deep.equal(
+        expect((await repo.findIdsByContent(a, v, 'needle')).ids).to.deep.equal(
           [],
         );
       });
@@ -454,16 +454,16 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           me = newId();
         await open(org, me, {}, user('100 percent'));
         const wild = await open(org, me, {}, user('100% sure_thing'));
-        expect((await repo.findIdsByContent(org, '100%')).ids).to.deep.equal([
+        expect((await repo.findIdsByContent(org, me, '100%')).ids).to.deep.equal([
           wild._id,
         ]);
-        expect((await repo.findIdsByContent(org, 'sure_t')).ids).to.deep.equal([
+        expect((await repo.findIdsByContent(org, me, 'sure_t')).ids).to.deep.equal([
           wild._id,
         ]);
-        const two = await repo.findIdsByContent(org, '100', 1);
+        const two = await repo.findIdsByContent(org, me, '100', 1);
         expect(two.ids).to.have.length(1);
         expect(two.truncated).to.equal(true);
-        expect((await repo.findIdsByContent(org, '100', 5)).truncated).to.equal(
+        expect((await repo.findIdsByContent(org, me, '100', 5)).truncated).to.equal(
           false,
         );
       });

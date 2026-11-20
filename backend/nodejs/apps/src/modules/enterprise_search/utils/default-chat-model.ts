@@ -1,4 +1,8 @@
 import { NextFunction, Request, Response } from 'express';
+import {
+  FAIL_FAST_CACHE_TIMEOUT_MS,
+  withTimeout,
+} from '../../../libs/services/cache/fail-fast-cache';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { AIModelConfiguration } from '../../configuration_manager/types/ai-models.types';
@@ -70,7 +74,11 @@ export const fillDefaultChatModel =
       return;
     }
     try {
-      const aiModels = await readStoredAiModelsConfig(keyValueStoreService);
+      // A hung store (Redis paused) must not hold the send; the AI backend then picks the model.
+      const aiModels = await withTimeout(
+        readStoredAiModelsConfig(keyValueStoreService),
+        FAIL_FAST_CACHE_TIMEOUT_MS,
+      );
       const model = pickDefaultChatModel(aiModels?.llm);
       if (model !== null) Object.assign(body, model);
     } catch (error: unknown) {

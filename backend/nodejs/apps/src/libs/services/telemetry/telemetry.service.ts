@@ -12,6 +12,7 @@ import {
 } from '../../context/request-context';
 import { metricsBackend } from './metrics-backend';
 import { setInstallInfo } from './modules/install-metrics';
+import { refreshMongoMissingIndexes } from './modules/mongo-index-metrics';
 import { createHash, randomUUID } from 'crypto';
 const SCHEMA_VERSION = 1;
 const METRICS_VERSION = '2';
@@ -216,6 +217,7 @@ export class TelemetryService implements ITelemetryService {
       this.stopMetricsPush();
       await new Promise((resolve) => setTimeout(resolve, START_DELAY_MS));
       this.pushInterval = setInterval(() => {
+        refreshMongoMissingIndexes();
         if (!this.isServerUrlValid()) {
           logger.debug(
             'Skipping telemetry push - metrics server URL not configured',

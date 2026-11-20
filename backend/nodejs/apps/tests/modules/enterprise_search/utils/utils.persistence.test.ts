@@ -2,18 +2,27 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
-import * as utilsModule from '../../../../src/modules/enterprise_search/utils/utils'
 import {
+  allocateSeq,
+  buildAIResponseMessage,
   appendMessages,
+  buildUserQueryMessage,
   attachSharedBy,
   attachSharedByIfRecipient,
   formatPreviousConversations,
   keepRunAlive,
+  markAgentConversationFailed,
+  markConversationFailed,
   releaseRun,
   reserveRun,
+  replaceMessageWithError,
+  saveCompleteAgentConversation,
+  saveCompleteConversation,
+  savePartialConversation,
   staleAskUserQuestionToolCallIds,
+  sanitizeMessageForPersistence,
+  updateMessageById,
 } from '../../../../src/modules/enterprise_search/utils/utils'
-import { useDocumentAsSession } from './doc-backed-repo'
 import { PassThrough } from 'stream'
 import { InMemoryChatStore } from '../controller/chat-test-harness'
 import { ConflictError, InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
@@ -32,6 +41,7 @@ import type {
 interface FakeConversation {
   _id: mongoose.Types.ObjectId
   orgId: mongoose.Types.ObjectId
+  userId?: mongoose.Types.ObjectId
   status: string
   failReason?: string
   agentKey?: string
@@ -66,24 +76,6 @@ const makeConversation = (overrides: Partial<FakeConversation> = {}): FakeConver
   return conversation
 }
 
-// The persistence helpers write the session through the repository; these run them with the
-// test's document-like conversation standing in for the stored row (its own `save` stub is the write).
-const onDoc = (fn: (...args: any[]) => Promise<any>) => async (...args: any[]): Promise<any> => {
-  const restore = useDocumentAsSession(args[0])
-  try {
-    return await fn(...args)
-  } finally {
-    restore()
-  }
-}
-const markAgentConversationFailed = onDoc(utilsModule.markAgentConversationFailed)
-const markConversationFailed = onDoc(utilsModule.markConversationFailed)
-const replaceMessageWithError = onDoc(utilsModule.replaceMessageWithError)
-const saveCompleteAgentConversation = onDoc(utilsModule.saveCompleteAgentConversation)
-const saveCompleteConversation = onDoc(utilsModule.saveCompleteConversation)
-const savePartialConversation = onDoc(utilsModule.savePartialConversation)
-const txOf = (session: unknown): any => ({ store: 'mongo', session })
-
 const asDoc = (conversation: FakeConversation): IChatSessionDocument =>
   conversation as unknown as IChatSessionDocument
 
@@ -95,7 +87,7 @@ const at = <T>(items: readonly T[], index = 0): T => {
 
 /** allocateSeq's `$inc` then insertMany, echoing the inserted rows back as documents. */
 const stubAppend = (nextSeq: number | null): { insert: sinon.SinonStub; allocate: sinon.SinonStub } => {
-  const allocate = sinon.stub(ChatSession, 'findOneAndUpdate').resolves(nextSeq === null ? null : { nextSeq })
+  const allocate = sinon.stub(ChatSession, 'findOneAndUpdate').resolves(nextSeq === null ? null : { nextSeq, rev: nextSeq })
   const insert = sinon.stub(ChatSessionMessage, 'insertMany').callsFake(
     (docs: unknown) =>
       Promise.resolve(
@@ -103,6 +95,14 @@ const stubAppend = (nextSeq: number | null): { insert: sinon.SinonStub; allocate
       ) as never,
   )
   return { insert, allocate }
+}
+
+/** The terminal session write: a conditional `updateOne`, never a full-document save of the in-memory copy. */
+const stubSessionUpdate = (result: number | Error = 1): sinon.SinonStub => {
+  const current = ChatSession.updateOne as unknown as Partial<sinon.SinonStub>
+  current.restore?.()
+  const stub = sinon.stub(ChatSession, 'updateOne')
+  return result instanceof Error ? stub.rejects(result) : stub.resolves({ matchedCount: result } as never)
 }
 
 const answer = (overrides: Partial<IAIResponse> = {}): IAIResponse => ({
@@ -120,9 +120,7 @@ const oneCitation = (): IAIResponse['citations'] =>
   ] as unknown as IAIResponse['citations']
 
 const stubCitationSave = (): sinon.SinonStub =>
-  sinon.stub(Citation.prototype, 'save').callsFake(function (this: unknown) {
-    return Promise.resolve(this)
-  })
+  sinon.stub(Citation, 'insertMany').callsFake(((docs: unknown) => Promise.resolve(docs)) as never)
 
 const rejection = async (promise: Promise<unknown>): Promise<unknown> => {
   try {
@@ -133,9 +131,142 @@ const rejection = async (promise: Promise<unknown>): Promise<unknown> => {
   throw new Error('expected the promise to reject')
 }
 
+describe('user_query authorship', () => {
+  it('carries only the author fields it was given, and nothing for a legacy caller', () => {
+    const author = new mongoose.Types.ObjectId()
+    const plain = buildUserQueryMessage('q')
+    const stamped = buildUserQueryMessage('q', undefined, 'quick', undefined, { authorUserId: author, clientMessageId: 'k', filesShared: false, runId: undefined })
+    expect(plain).to.not.have.any.keys('authorUserId', 'clientMessageId', 'filesShared', 'shareToolResults', 'runId')
+    expect(stamped).to.include({ authorUserId: author, clientMessageId: 'k', filesShared: false })
+    expect(stamped).to.not.have.any.keys('runId', 'shareToolResults')
+  })
+})
+
 describe('Saving chat answers (enterprise search utils)', () => {
+  beforeEach(() => {
+    stubSessionUpdate()
+  })
   afterEach(() => {
     sinon.restore()
+  })
+
+  describe('no signed URL is persisted on any assistant write path', () => {
+    const SIGNED = 'https://b.s3.amazonaws.com/x?X-Amz-Signature=abc123'
+    const text = `See [f](${SIGNED}) and bare ${SIGNED} but keep [docs](https://example.com/p?a=1).`
+    const assertClean = (content: unknown): void => {
+      expect(content).to.be.a('string')
+      expect(content).to.not.contain('X-Amz-Signature')
+      expect(content).to.contain('[docs](https://example.com/p?a=1)')
+      expect(content).to.contain('[link removed]')
+    }
+
+    it('saveCompleteConversation', async () => {
+      const { insert } = stubAppend(1)
+      await saveCompleteConversation(asDoc(makeConversation()), answer({ answer: text }), 'org')
+      assertClean(at(insert.firstCall.args[0] as InsertedMessage[]).content)
+    })
+
+    it('saveCompleteAgentConversation', async () => {
+      const { insert } = stubAppend(1)
+      await saveCompleteAgentConversation(asDoc(makeConversation({ agentKey: 'a' })), answer({ answer: text }), 'org')
+      assertClean(at(insert.firstCall.args[0] as InsertedMessage[]).content)
+    })
+
+    it('savePartialConversation (append)', async () => {
+      const { insert } = stubAppend(1)
+      await savePartialConversation(asDoc(makeConversation()), text)
+      assertClean(at(insert.firstCall.args[0] as InsertedMessage[]).content)
+    })
+
+    it('savePartialConversation (regenerate replace)', async () => {
+      const id = new mongoose.Types.ObjectId()
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ sessionId: 's', orgId: 'o', seq: 3 } as never)
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as never)
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({} as never)
+      await savePartialConversation(asDoc(makeConversation()), text, null, { replaceMessageId: id })
+      assertClean((replace.firstCall.args[1] as IMessage).content)
+    })
+
+    it('regenerate that replaces a message with a complete answer', async () => {
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({} as never)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ sessionId: 's', orgId: 'o', seq: 3 } as never)
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ rev: 1 } as never)
+      await updateMessageById(new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId(), buildAIResponseMessage({ statusCode: 200, data: { answer: text } } as any))
+      assertClean((replace.firstCall.args[1] as IMessage).content)
+    })
+
+    it('error rows carrying content', async () => {
+      const { insert } = stubAppend(1)
+      await markConversationFailed(asDoc(makeConversation()), text)
+      const doc = at(insert.firstCall.args[0] as InsertedMessage[])
+      expect(doc.messageType).to.equal('error')
+      assertClean(doc.content)
+    })
+
+    it('leaves user queries untouched', () => {
+      const msg = { messageType: 'user_query', content: text } as IMessage
+      expect(sanitizeMessageForPersistence(msg)).to.equal(msg)
+    })
+
+    describe('every persisted field (sanitizeMessageForPersistence)', () => {
+      const clean = (v: unknown): void => {
+        const json = JSON.stringify(v)
+        expect(json).to.not.contain('X-Amz-Signature')
+        expect(json).to.contain('[link removed]')
+      }
+      const bot = (extra: Record<string, unknown>): IMessage =>
+        ({ messageType: 'bot_response', content: 'ok', ...extra }) as unknown as IMessage
+      const out = (extra: Record<string, unknown>): any => sanitizeMessageForPersistence(bot(extra))
+
+      it('reasoning turns', () => clean(out({ reasoning: [{ turnIndex: 0, content: `see ${SIGNED}` }] }).reasoning))
+      it('tool results, nested', () =>
+        clean(out({ tools: [{ toolName: 't', toolResult: { a: [{ url: SIGNED }, `x ${SIGNED}`] } }] }).tools))
+      it('parts incl. nested sub_agent', () =>
+        clean(out({ parts: [{ type: 'sub_agent', parts: [{ type: 'text', text: SIGNED }] }] }).parts))
+      it('referenceData strings', () =>
+        clean(out({ referenceData: [{ name: 'f', webUrl: SIGNED, metadata: { k: SIGNED } }] }).referenceData))
+      it('citation excerpt and context', () =>
+        clean(out({ citations: [{ excerpt: `[a](${SIGNED})`, context: SIGNED }] }).citations))
+      it('follow-up questions', () => clean(out({ followUpQuestions: [{ question: SIGNED }] }).followUpQuestions))
+
+      it('leaves unsigned values, record markers, non-strings and structure intact', () => {
+        const id = new mongoose.Types.ObjectId()
+        const when = new Date()
+        const msg = bot({
+          content: '::artifact[a.csv](record:r1){text/csv|d|r1||1} https://example.com/a?b=1',
+          citations: [{ citationId: id, relevanceScore: 0.5, excerpt: 'https://example.com' }],
+          tools: [{ toolName: 't', toolResult: { n: 1, ok: true, none: null, list: [1, 'x'], when } }],
+          referenceData: [{ webUrl: 'http://h/record/r1/preview' }],
+        })
+        const result = sanitizeMessageForPersistence(msg) as any
+        expect(result).to.deep.equal(msg)
+        expect(result.citations[0].citationId).to.equal(id)
+        expect(result.tools[0].toolResult.when).to.equal(when)
+      })
+
+      it('does not mutate its input', () => {
+        const msg = bot({ tools: [{ toolName: 't', toolResult: SIGNED }] })
+        sanitizeMessageForPersistence(msg)
+        expect((msg as any).tools[0].toolResult).to.equal(SIGNED)
+      })
+
+      it('bounds deep and large objects without throwing', () => {
+        let deep: any = { s: SIGNED }
+        for (let i = 0; i < 5000; i++) deep = { d: deep }
+        const wide = Array.from({ length: 200_000 }, () => SIGNED)
+        const started = Date.now()
+        const result = sanitizeMessageForPersistence(bot({ tools: [{ toolName: 't', toolResult: deep }], parts: wide })) as any
+        expect(Date.now() - started).to.be.lessThan(5000)
+        expect(JSON.stringify(result)).to.not.contain('X-Amz-Signature')
+      })
+    })
+
+    it('keeps citations and normal links', async () => {
+      const { insert } = stubAppend(1)
+      const kept = 'Fact [1](http://h/record/r1/preview#blockIndex=0) https://example.com/a'
+      await savePartialConversation(asDoc(makeConversation()), kept)
+      expect(at(insert.firstCall.args[0] as InsertedMessage[]).content).to.equal(kept)
+    })
   })
 
   describe('allocateSeq / appendMessages', () => {
@@ -152,14 +283,21 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(insert.called).to.equal(false)
     })
 
+    it('takes one rev per row with the sequence block, in the same atomic update', async () => {
+      const { allocate } = stubAppend(2)
+
+      await allocateSeq(new mongoose.Types.ObjectId(), 2)
+
+      expect((allocate.firstCall.args[1] as { $inc: unknown }).$inc).to.deep.equal({ nextSeq: 2, rev: 2 })
+    })
+
     it('allocates against the given session id only', async () => {
       const sessionId = new mongoose.Types.ObjectId()
       const { allocate } = stubAppend(3)
-      const m = { messageType: 'bot_response', content: 'x' } as IMessage
 
-      await appendMessages(sessionId.toString(), new mongoose.Types.ObjectId().toString(), [m, m, m])
-      const [filter, update] = allocate.firstCall.args as [{ _id: string }, { $inc: { nextSeq: number } }]
-      expect(filter).to.deep.equal({ _id: sessionId.toString() })
+      expect(await allocateSeq(sessionId, 3)).to.equal(3)
+      const [filter, update] = allocate.firstCall.args as [{ _id: mongoose.Types.ObjectId }, { $inc: { nextSeq: number } }]
+      expect(filter).to.deep.equal({ _id: sessionId })
       expect(update.$inc.nextSeq).to.equal(3)
     })
   })
@@ -172,36 +310,40 @@ describe('Saving chat answers (enterprise search utils)', () => {
       it('saves citations under the caller org and appends the answer after the last message', async () => {
         const conversation = makeConversation({ agentKey: 'agent-7' })
         const { insert } = stubAppend(12)
+        const update = stubSessionUpdate()
         const citationSave = stubCitationSave()
         const orgId = new mongoose.Types.ObjectId().toString()
         const mongoSession = { id: 'txn' } as unknown as mongoose.ClientSession
-        const tx = txOf(mongoSession)
 
         const response = (await save(
           asDoc(conversation),
           answer({ citations: oneCitation() }),
           orgId,
-          tx,
+          mongoSession,
           { modelKey: 'k2', modelName: 'm2', modelProvider: 'p2', chatMode: 'deep', modelFriendlyName: 'Model Two' },
         )) as { title: string; messages: Array<{ content: string; citations: Array<{ citationData?: { metadata: { orgId: string } } }> }> }
 
-        expect(citationSave.firstCall.args[0]).to.deep.equal({ session: mongoSession })
+        expect(citationSave.firstCall.args[1]).to.deep.equal({ session: mongoSession })
         const [docs, options] = insert.firstCall.args as [InsertedMessage[], { session: unknown }]
         expect(options.session).to.equal(mongoSession)
-        expect(at(docs).sessionId).to.equal(String(conversation._id))
-        expect(at(docs).orgId).to.equal(String(conversation.orgId))
+        expect(at(docs).sessionId).to.equal(conversation._id)
+        expect(at(docs).orgId).to.equal(conversation.orgId)
         expect(at(docs).seq).to.equal(12)
         expect(at(docs).content).to.equal('Ship the connector in Q4.')
         expect(conversation.status).to.equal(CONVERSATION_STATUS.COMPLETE)
         expect(conversation.modelInfo).to.include({ modelKey: 'k2', modelFriendlyName: 'Model Two' })
-        expect(conversation.save.firstCall.args[0]).to.deep.equal({ session: mongoSession })
+        const [filter, change, updateOptions] = update.firstCall.args as [Record<string, unknown>, { $set: Record<string, unknown> }, unknown]
+        expect(filter).to.deep.equal({ _id: conversation._id, isDeleted: false })
+        expect(change.$set).to.include({ status: CONVERSATION_STATUS.COMPLETE, 'modelInfo.modelKey': 'k2', 'modelInfo.chatMode': 'deep' })
+        expect(updateOptions).to.deep.equal({ session: mongoSession })
         expect(response.title).to.equal('Roadmap')
         expect(at(at(response.messages).citations).citationData?.metadata.orgId).to.equal(orgId)
       })
 
-      it(`throws "${failText}" when the conversation save returns nothing`, async () => {
-        const conversation = makeConversation({ save: sinon.stub().resolves(null) })
+      it(`throws "${failText}" when no live session matches the write`, async () => {
+        const conversation = makeConversation()
         stubAppend(1)
+        stubSessionUpdate(0)
 
         const error = await rejection(save(asDoc(conversation), answer(), 'org'))
 
@@ -212,19 +354,44 @@ describe('Saving chat answers (enterprise search utils)', () => {
       it('leaves the conversation unsaved when the answer cannot be appended', async () => {
         const conversation = makeConversation()
         stubAppend(null)
+        const update = stubSessionUpdate()
 
         const error = await rejection(save(asDoc(conversation), answer(), 'org'))
 
         expect(error).to.be.instanceOf(NotFoundError)
-        expect(conversation.save.called).to.equal(false)
+        expect(update.called).to.equal(false)
+      })
+
+      it("a turn requested by someone other than the owner keeps the conversation's stored model; the owner's own turn sets it", async () => {
+        const owner = new mongoose.Types.ObjectId()
+        const modelInfo: IAIModel = { modelKey: 'k2', modelName: 'm2', modelProvider: 'p2', chatMode: 'deep' }
+        for (const [requestedBy, sets] of [
+          [new mongoose.Types.ObjectId(), false],
+          [owner, true],
+        ] as const) {
+          const conversation = makeConversation({ userId: owner })
+          stubAppend(3)
+          const update = stubSessionUpdate()
+
+          await save(asDoc(conversation), answer(), 'org', null, modelInfo, { requestedBy })
+
+          const [, change] = update.firstCall.args as [unknown, { $set: Record<string, unknown> }]
+          const written = Object.keys(change.$set).filter((field) => field.startsWith('modelInfo'))
+          expect(written, `the owner's turn: ${String(sets)}`).to.deep.equal(
+            sets ? ['modelInfo.modelKey', 'modelInfo.modelName', 'modelInfo.modelProvider', 'modelInfo.chatMode'] : [],
+          )
+          expect(conversation.modelInfo).to.include(sets ? modelInfo : { modelKey: 'k', chatMode: 'quick' })
+          sinon.restore()
+        }
       })
     })
   }
 
   describe('failure and partial saves that the database silently drops', () => {
-    it('markConversationFailed still records the failure locally when save returns nothing', async () => {
-      const conversation = makeConversation({ save: sinon.stub().resolves(null) })
+    it('markConversationFailed still records the failure locally when no live session matches', async () => {
+      const conversation = makeConversation()
       const { insert } = stubAppend(2)
+      stubSessionUpdate(0)
 
       await markConversationFailed(asDoc(conversation), 'PipesHub could not answer right now.')
 
@@ -233,9 +400,10 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(conversation.conversationErrors).to.have.length(1)
     })
 
-    it('markAgentConversationFailed does not throw when save returns nothing', async () => {
-      const conversation = makeConversation({ agentKey: 'agent-1', save: sinon.stub().resolves(null) })
+    it('markAgentConversationFailed does not throw when no live session matches', async () => {
+      const conversation = makeConversation({ agentKey: 'agent-1' })
       stubAppend(2)
+      stubSessionUpdate(0)
 
       await markAgentConversationFailed(asDoc(conversation), 'failed', null, 'llm_error')
 
@@ -244,17 +412,19 @@ describe('Saving chat answers (enterprise search utils)', () => {
     })
 
     it('markAgentConversationFailed passes a database error on to the caller', async () => {
-      const conversation = makeConversation({ agentKey: 'agent-1', save: sinon.stub().rejects(new Error('disk full')) })
+      const conversation = makeConversation({ agentKey: 'agent-1' })
       stubAppend(2)
+      stubSessionUpdate(new Error('disk full'))
 
       const error = await rejection(markAgentConversationFailed(asDoc(conversation), 'failed'))
 
       expect((error as Error).message).to.equal('disk full')
     })
 
-    it('savePartialConversation keeps what the user saw even when save returns nothing', async () => {
-      const conversation = makeConversation({ save: sinon.stub().resolves(null) })
+    it('savePartialConversation keeps what the user saw even when no live session matches', async () => {
+      const conversation = makeConversation()
       const { insert } = stubAppend(5)
+      stubSessionUpdate(0)
 
       await savePartialConversation(asDoc(conversation), 'Ship the conn')
 
@@ -276,6 +446,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
     it('replaceMessageWithError still marks the conversation failed when the message is gone', async () => {
       const conversation = makeConversation()
+      const sessionWrite = stubSessionUpdate()
       sinon.stub(ChatSessionMessage, 'findOne').resolves(null)
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace')
       const messageId = new mongoose.Types.ObjectId()
@@ -284,7 +455,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
       expect(replace.called).to.equal(false)
       expect(conversation.status).to.equal(CONVERSATION_STATUS.FAILED)
-      expect(conversation.save.calledOnce).to.equal(true)
+      expect(sessionWrite.calledOnce).to.equal(true)
     })
   })
 
@@ -292,13 +463,6 @@ describe('Saving chat answers (enterprise search utils)', () => {
     const ORG = new mongoose.Types.ObjectId()
     const USER = new mongoose.Types.ObjectId()
     const mine = (id: unknown): Record<string, unknown> => ({ _id: id, orgId: ORG, userId: USER, isDeleted: false })
-    const reserve = (filter: Record<string, unknown>, settleMs?: number) =>
-      reserveRun(
-        { kind: 'chat' },
-        String(filter._id),
-        { orgId: String(filter.orgId), userId: String(filter.userId) },
-        settleMs,
-      )
 
     let store: InMemoryChatStore
     const addThread = (fields: Record<string, unknown> = {}): ReturnType<InMemoryChatStore['addSession']> =>
@@ -306,6 +470,8 @@ describe('Saving chat answers (enterprise search utils)', () => {
     const fakeClock = (): sinon.SinonFakeTimers => sinon.useFakeTimers({ now: Date.now() })
 
     beforeEach(() => {
+      // The in-memory store stubs `updateOne` itself.
+      ;(ChatSession.updateOne as unknown as Partial<sinon.SinonStub>).restore?.()
       store = new InMemoryChatStore()
       store.install()
     })
@@ -313,7 +479,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
     it('marks an idle thread in progress and remembers what it was', async () => {
       const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
 
-      const reservation = await reserve(mine(thread._id))
+      const reservation = await reserveRun(mine(thread._id))
 
       expect(reservation?.previousStatus).to.equal(CONVERSATION_STATUS.COMPLETE)
       expect(String(reservation?.sessionId)).to.equal(String(thread._id))
@@ -323,7 +489,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
     it('returns null for a thread the caller does not own, and leaves it alone', async () => {
       const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
 
-      const reservation = await reserve({ ...mine(thread._id), userId: new mongoose.Types.ObjectId() })
+      const reservation = await reserveRun({ ...mine(thread._id), userId: new mongoose.Types.ObjectId() })
 
       expect(reservation).to.equal(null)
       expect(thread.status).to.equal(CONVERSATION_STATUS.COMPLETE)
@@ -333,8 +499,8 @@ describe('Saving chat answers (enterprise search utils)', () => {
       const clock = fakeClock()
       const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
 
-      const first = reserve(mine(thread._id), 1000)
-      const second = reserve(mine(thread._id), 1000)
+      const first = reserveRun(mine(thread._id), 1000)
+      const second = reserveRun(mine(thread._id), 1000)
       const outcomes = Promise.allSettled([first, second])
       await clock.tickAsync(1500)
       const results = await outcomes
@@ -349,7 +515,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
       const clock = fakeClock()
       const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
 
-      const outcome = rejection(reserve(mine(thread._id), 1000))
+      const outcome = rejection(reserveRun(mine(thread._id), 1000))
       await clock.tickAsync(1500)
 
       expect(await outcome).to.be.instanceOf(ConflictError)
@@ -360,7 +526,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
       const clock = fakeClock()
       const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
 
-      const reserved = reserve(mine(thread._id), 5000)
+      const reserved = reserveRun(mine(thread._id), 5000)
       await clock.tickAsync(500)
       thread.set('status', CONVERSATION_STATUS.STOPPED)
       await clock.tickAsync(500)
@@ -373,7 +539,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
     it('does not treat a stale in-progress status as a live run (a crashed server must not lock the thread)', async () => {
       const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() - 2 * 60 * 60 * 1000 })
 
-      const reservation = await reserve(mine(thread._id))
+      const reservation = await reserveRun(mine(thread._id))
 
       expect(reservation?.previousStatus, 'the abandoned run is recorded as failed, not as in progress').to.equal(
         CONVERSATION_STATUS.FAILED,
@@ -383,14 +549,14 @@ describe('Saving chat answers (enterprise search utils)', () => {
     it('does not block a thread that has no activity timestamp', async () => {
       const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: null })
 
-      expect(await reserve(mine(thread._id))).to.not.equal(null)
+      expect(await reserveRun(mine(thread._id))).to.not.equal(null)
     })
 
     it('does not read the thread inside a transaction, which would never see a status change', async () => {
       const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
       const update = ChatSession.findOneAndUpdate as unknown as sinon.SinonStub
 
-      await reserve(mine(thread._id))
+      await reserveRun(mine(thread._id))
 
       expect(update.firstCall.args[2]).to.not.have.property('session')
     })
@@ -402,12 +568,12 @@ describe('Saving chat answers (enterprise search utils)', () => {
       it('keeps a long-running run looking alive, so another request cannot take its thread', async () => {
         const clock = beat()
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const reservation = await reserve(mine(thread._id))
+        const reservation = await reserveRun(mine(thread._id))
         const stream = new PassThrough()
-        keepRunAlive(stream, String(thread._id), reservation?.runId)
+        keepRunAlive(stream, thread._id, reservation?.runId)
 
         await clock.tickAsync(45 * 60 * 1000)
-        const takeover = rejection(reserve(mine(thread._id), 1000))
+        const takeover = rejection(reserveRun(mine(thread._id), 1000))
         await clock.tickAsync(1500)
 
         expect(await takeover).to.be.instanceOf(ConflictError)
@@ -418,9 +584,9 @@ describe('Saving chat answers (enterprise search utils)', () => {
       it('stops when the stream closes, and no longer changes the thread', async () => {
         const clock = beat()
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const reservation = await reserve(mine(thread._id))
+        const reservation = await reserveRun(mine(thread._id))
         const stream = new PassThrough()
-        keepRunAlive(stream, String(thread._id), reservation?.runId)
+        keepRunAlive(stream, thread._id, reservation?.runId)
         stream.destroy()
         await clock.tickAsync(0)
         const stamped = thread.lastActivityAt
@@ -433,12 +599,12 @@ describe('Saving chat answers (enterprise search utils)', () => {
       it('ignores a thread that has since been taken over by another run', async () => {
         const clock = beat()
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const older = await reserve(mine(thread._id))
+        const older = await reserveRun(mine(thread._id))
         thread.set('status', CONVERSATION_STATUS.COMPLETE)
-        await reserve(mine(thread._id))
+        await reserveRun(mine(thread._id))
         const stamped = thread.lastActivityAt
         const stream = new PassThrough()
-        keepRunAlive(stream, String(thread._id), older?.runId)
+        keepRunAlive(stream, thread._id, older?.runId)
 
         await clock.tickAsync(5 * 60 * 1000)
 
@@ -449,9 +615,9 @@ describe('Saving chat answers (enterprise search utils)', () => {
       it('never records an update as a change to the conversation itself', async () => {
         const clock = beat()
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const reservation = await reserve(mine(thread._id))
+        const reservation = await reserveRun(mine(thread._id))
         const stream = new PassThrough()
-        keepRunAlive(stream, String(thread._id), reservation?.runId)
+        keepRunAlive(stream, thread._id, reservation?.runId)
 
         await clock.tickAsync(61 * 1000)
 
@@ -464,7 +630,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
     describe('releaseRun', () => {
       it('puts the thread back to what it was when the run never took it over', async () => {
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const reservation = await reserve(mine(thread._id))
+        const reservation = await reserveRun(mine(thread._id))
 
         await releaseRun(reservation)
 
@@ -473,7 +639,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
       it('does not overwrite the outcome a run has already saved', async () => {
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const reservation = await reserve(mine(thread._id))
+        const reservation = await reserveRun(mine(thread._id))
         thread.set('status', CONVERSATION_STATUS.STOPPED)
 
         await releaseRun(reservation)
@@ -483,9 +649,9 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
       it('does not touch a newer request\'s run when an older reservation is released late', async () => {
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const older = await reserve(mine(thread._id))
+        const older = await reserveRun(mine(thread._id))
         thread.set('status', CONVERSATION_STATUS.COMPLETE) // the older run saved its answer
-        const newer = await reserve(mine(thread._id))
+        const newer = await reserveRun(mine(thread._id))
 
         await releaseRun(older)
 
@@ -504,7 +670,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
       it('never throws if the database is unreachable, so it cannot mask the original error', async () => {
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
-        const reservation = await reserve(mine(thread._id))
+        const reservation = await reserveRun(mine(thread._id))
         sinon.restore()
         sinon.stub(ChatSession, 'findOneAndUpdate').throws(new Error('connection lost'))
 
@@ -702,7 +868,7 @@ describe('Saving chat answers (enterprise search utils)', () => {
 
       const stale = staleAskUserQuestionToolCallIds(messages, bot._id)
 
-      expect(stale.map((id) => id)).to.have.members([
+      expect(stale).to.have.members([
         before._id.toString(),
         after._id.toString(),
       ])
@@ -773,6 +939,65 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(at(result, 2).sharedBy).to.deep.equal({ userId: unknown.toString(), name: unknown.toString() })
       expect(result[3]).to.not.have.property('sharedBy')
       expect(result[4]).to.not.have.property('sharedBy')
+    })
+
+    it('queries Users with the exact org-scoped filter and projection', async () => {
+      const orgId = new mongoose.Types.ObjectId().toString()
+      const initiator = new mongoose.Types.ObjectId()
+      const chain = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([{ _id: initiator, email: 'a@b.c' }]),
+      }
+      const find = sinon.stub(Users, 'find').returns(chain as never)
+
+      await attachSharedBy([{ initiator }], orgId)
+
+      expect(find.calledOnce).to.equal(true)
+      expect(find.calledWithMatch({ isDeleted: false })).to.equal(true)
+      const [filter] = find.firstCall.args as [Record<string, any>]
+      expect(Object.keys(filter).sort()).to.deep.equal(['_id', 'isDeleted', 'orgId'])
+      expect(filter.orgId).to.be.instanceOf(mongoose.Types.ObjectId)
+      expect(filter._id.$in[0]).to.be.instanceOf(mongoose.Types.ObjectId)
+      expect(chain.select.calledOnceWithExactly('fullName firstName lastName email')).to.equal(true)
+      expect(chain.lean.calledOnce).to.equal(true)
+    })
+
+    it('prefers fullName, trims it, and falls back to the id when the user row is missing', async () => {
+      const full = new mongoose.Types.ObjectId()
+      const missing = new mongoose.Types.ObjectId()
+      stubUsers([{ _id: full, fullName: '  Ada Lovelace  ', firstName: 'X', lastName: 'Y', email: 'e@x.y' }])
+
+      const result = await attachSharedBy([{ initiator: full }, { initiator: missing }], new mongoose.Types.ObjectId().toString())
+
+      expect(at(result).sharedBy).to.deep.equal({ userId: full.toString(), name: 'Ada Lovelace' })
+      expect(at(result, 1).sharedBy).to.deep.equal({ userId: missing.toString(), name: missing.toString() })
+    })
+
+    it('does not query when every conversation is owned by the caller', async () => {
+      const find = stubUsers([])
+      const owned = [
+        { initiator: new mongoose.Types.ObjectId(), isOwner: true },
+        { initiator: new mongoose.Types.ObjectId(), access: { isOwner: true } },
+      ]
+
+      const result = await attachSharedBy(owned, new mongoose.Types.ObjectId().toString())
+
+      expect(find.called).to.equal(false)
+      expect(result).to.deep.equal(owned)
+      expect(result[0]).to.not.have.property('sharedBy')
+    })
+
+    it('leaves an invalid initiator out of the query but still labels it by id', async () => {
+      const valid = new mongoose.Types.ObjectId()
+      const find = stubUsers([{ _id: valid, fullName: 'Valid' }])
+
+      const result = await attachSharedBy([{ initiator: 'nope' }, { initiator: valid }], new mongoose.Types.ObjectId().toString())
+
+      const [filter] = find.firstCall.args as [{ _id: { $in: unknown[] } }]
+      expect(filter._id.$in).to.have.length(1)
+      expect(at(result).sharedBy).to.deep.equal({ userId: 'nope', name: 'nope' })
+      expect(at(result, 1).sharedBy?.name).to.equal('Valid')
     })
 
     it('skips the lookup when no initiator is a valid id', async () => {

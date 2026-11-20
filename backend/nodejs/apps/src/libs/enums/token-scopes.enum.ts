@@ -42,6 +42,9 @@ export const TokenScopes = Object.freeze({
   // Node user and org deletion -> connectors: erase the principal's personal
   // toolset and MCP instances (C-14); the org is the token's.
   PRINCIPAL_ERASE: 'principal:erase',
+  // Held only by the Python services, to ask whether a file may be granted to someone (the answer that made it may
+  // be shown outside its chat). Never accepted by them.
+  ARTIFACT_SHARE_CHECK: 'artifact:share-check',
 } as const);
 
 // Create a type for the TokenScopes keys

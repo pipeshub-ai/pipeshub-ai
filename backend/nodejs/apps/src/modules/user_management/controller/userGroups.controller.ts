@@ -22,6 +22,12 @@ import { auditMemberships, foundGroupIds } from '../utils/user-audit';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
 const GROUP_EXISTS_MESSAGE = 'Group already exists';
+// Names the input the sentence belongs to, so the form marks it instead of toasting.
+const GROUP_EXISTS_FIELD_ERRORS = {
+  fieldErrors: [
+    { field: 'name', message: GROUP_EXISTS_MESSAGE, code: 'DUPLICATE_NAME' },
+  ],
+};
 
 // Two requests can both pass the name check; the unique index on
 // (orgId, name) then rejects the second write.
@@ -33,7 +39,10 @@ async function saveGroupName<T>(write: () => Promise<T>): Promise<T> {
       error instanceof UniqueConstraintError &&
       String(error.metadata?.key ?? '').includes('name')
     ) {
-      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
+      throw new BadRequestError(
+        GROUP_EXISTS_MESSAGE,
+        GROUP_EXISTS_FIELD_ERRORS,
+      );
     }
     throw error;
   }
@@ -112,7 +121,10 @@ export class UserGroupController {
 
     const groups = getGroupRepository();
     if (await groups.nameTaken(req.user?.orgId as string, name)) {
-      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
+      throw new BadRequestError(
+        GROUP_EXISTS_MESSAGE,
+        GROUP_EXISTS_FIELD_ERRORS,
+      );
     }
 
     const group = await saveGroupName(() =>
@@ -259,7 +271,10 @@ export class UserGroupController {
         );
       }
       if (await groups.nameTaken(orgId, normalizedName, groupId)) {
-        throw new BadRequestError(GROUP_EXISTS_MESSAGE);
+        throw new BadRequestError(
+          GROUP_EXISTS_MESSAGE,
+          GROUP_EXISTS_FIELD_ERRORS,
+        );
       }
     }
 

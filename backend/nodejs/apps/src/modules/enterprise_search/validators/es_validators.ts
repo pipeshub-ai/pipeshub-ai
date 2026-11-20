@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z, ZodRawShape } from 'zod';
 import { sessionRepositorySchema } from '../../agent-harness/domain/repository';
 import { runGatesSchema } from '../../agent-harness/domain/run-gates';
 import { contract } from '../../agent-harness/contracts/zod-contract';
@@ -48,6 +48,18 @@ const objectId = (label: string) =>
   z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
 
 const appOrKbIdSchema = z.string().check(guidCheck('Must be a valid UUID'));
+
+/** The same request schema with more `body` fields; the schema itself when there are none. */
+export function withBodyFields(
+  schema: z.ZodObject,
+  fields: ZodRawShape,
+): z.ZodObject {
+  if (Object.keys(fields).length === 0) {
+    return schema;
+  }
+  const body = (schema.shape as ZodRawShape).body as z.ZodObject;
+  return schema.extend({ body: body.extend(fields) });
+}
 
 /** Common pagination preprocessor: coerce string -> number with bounds. */
 const pageSchema = z.preprocess(
@@ -101,7 +113,7 @@ const appliedFilterNodeSchema = z.object({
   mentioned: z.boolean().optional(),
 });
 
-const appliedFiltersSchema = z
+export const appliedFiltersSchema = z
   .object({
     apps: z.array(appliedFilterNodeSchema).optional(),
     kb: z.array(appliedFilterNodeSchema).optional(),
@@ -696,6 +708,25 @@ export const agentAddMessageParamsSchema = z.object({
   }),
   body: agentAddMessageBodySchema,
 });
+
+/**
+ * Internal (scoped-token) agent stream routes. Slack forwards the caller's
+ * identity to the AI backend (ai-chat-payload.ts::assignCallerContextToAiPayload);
+ * the public schemas strip those keys on purpose, so only these variants keep them.
+ */
+const internalCallerContextSchema = {
+  callerDisplayName: z.string().optional(),
+  callerEmail: z.string().optional(),
+};
+
+export const agentInternalStreamCreateSchema = agentStreamCreateSchema.extend({
+  body: agentStreamCreateBodySchema.extend(internalCallerContextSchema),
+});
+
+export const agentInternalAddMessageParamsSchema =
+  agentAddMessageParamsSchema.extend({
+    body: agentAddMessageBodySchema.extend(internalCallerContextSchema),
+  });
 
 // ---------------------------------------------------------------------------
 // Agent non-streaming: create + add message (`chatMode` defaults to `quick`)
@@ -1595,21 +1626,39 @@ export const searchShareParamsSchema = searchIdParamsSchema.extend({
 // Conversation list / archive query schemas
 // ---------------------------------------------------------------------------
 
+/**
+ * A list's `search` with `conversationId` would be a search inside that one chat: whether it holds
+ * the words, even where its messages are not the caller's to read. A list searches by title, and
+ * message text only in the caller's own chats (`findSessionIdsMatchingContent`).
+ */
+const notWithinOneChat = {
+  check: (query: { conversationId?: string; search?: string }): boolean =>
+    query.conversationId === undefined ||
+    query.search === undefined ||
+    query.search === '',
+  refusal: {
+    message: "'search' can't be combined with 'conversationId'",
+    path: ['search'],
+  },
+};
+
 /** Schema for GET /conversations — list all conversations with filters. */
 export const getAllConversationsQuerySchema = z.object({
-  query: z.object({
-    source: z.enum(['owned', 'shared']).optional().default('owned'),
-    page: pageSchema,
-    limit: limitSchema,
-    sortBy: z.enum(['createdAt', 'lastActivityAt', 'title']).optional(),
-    sortOrder: z.enum(['asc', 'desc']).optional(),
-    conversationId: objectId('conversation ID').optional(),
-    search: z.string().max(1000).optional(),
-    startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-    endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-    shared: z.enum(['true', 'false', '1', '0']).optional(),
-    projectId: projectIdQuerySchema,
-  }),
+  query: z
+    .object({
+      source: z.enum(['owned', 'shared']).optional().default('owned'),
+      page: pageSchema,
+      limit: limitSchema,
+      sortBy: z.enum(['createdAt', 'lastActivityAt', 'title']).optional(),
+      sortOrder: z.enum(['asc', 'desc']).optional(),
+      conversationId: objectId('conversation ID').optional(),
+      search: z.string().max(1000).optional(),
+      startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+      endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+      shared: z.enum(['true', 'false', '1', '0']).optional(),
+      projectId: projectIdQuerySchema,
+    })
+    .refine(notWithinOneChat.check, notWithinOneChat.refusal),
 });
 
 /** Schema for GET /:agentKey/conversations — list agent conversations with filters. */
@@ -1768,20 +1817,22 @@ export const listAllArchivesAgentConversationQuerySchema = z.object({
 
 /** Schema for GET /conversations/show/archives — list archived conversations. */
 export const listAllArchivesConversationQuerySchema = z.object({
-  query: z.object({
-    page: archivePageSchema,
-    limit: archiveLimitSchema,
-    sortBy: z
-      .enum(['createdAt', 'lastActivityAt', 'title'])
-      .optional()
-      .default('lastActivityAt'),
-    sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
-    search: z.string().max(1000).optional(),
-    shared: z.enum(['true', 'false', '1', '0']).optional(),
-    startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-    endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
-    conversationId: objectId('conversation ID').optional(),
-  }),
+  query: z
+    .object({
+      page: archivePageSchema,
+      limit: archiveLimitSchema,
+      sortBy: z
+        .enum(['createdAt', 'lastActivityAt', 'title'])
+        .optional()
+        .default('lastActivityAt'),
+      sortOrder: z.enum(['asc', 'desc']).optional().default('desc'),
+      search: z.string().max(1000).optional(),
+      shared: z.enum(['true', 'false', '1', '0']).optional(),
+      startDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+      endDate: z.string().check(datetimeWithOffsetCheck()).optional(),
+      conversationId: objectId('conversation ID').optional(),
+    })
+    .refine(notWithinOneChat.check, notWithinOneChat.refusal),
 });
 
 /** Schema for GET /agents/conversations/show/archives — grouped archived agent conversations. */

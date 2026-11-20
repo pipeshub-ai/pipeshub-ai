@@ -12,6 +12,8 @@ import {
   LargePayloadError,
   UnsupportedMediaTypeError,
 } from '../errors/http.errors';
+import { DomainHttpError } from '../errors/domain-http.error';
+import { publicFieldErrors } from '../utils/field-errors';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
 import { jsonResponse } from '../utils/error.middleware.utils';
 import { classifyRequestError, levelFor } from '../utils/error-class';
@@ -270,6 +272,9 @@ export class ErrorMiddleware {
       REASON_CODE_PATTERN.test(reasonCode)
         ? reasonCode
         : undefined;
+    const fieldErrors = isInternalPlumbing
+      ? undefined
+      : publicFieldErrors(error);
 
     const errorResponse = {
       error: {
@@ -279,6 +284,12 @@ export class ErrorMiddleware {
           : error.message,
         ...(relayedCode && { reasonCode: relayedCode }),
         ...(requestId && { requestId }),
+        // Which input each problem belongs to, so a form can mark the field
+        // instead of showing the sentence as a toast.
+        ...(fieldErrors && { fieldErrors }),
+        ...(error instanceof DomainHttpError &&
+          error.publicDetails &&
+          !isInternalPlumbing && { details: error.publicDetails }),
         // Only include metadata in development, and never for a failure whose
         // details describe our internals.
         // The access notices are sent at the top level; left out here, the sanitizer would meet the same array twice and

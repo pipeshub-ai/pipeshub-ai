@@ -235,6 +235,15 @@ export function createMessageAdmin(
 
 const NOTIFICATION_CONSUMER_GROUP = 'notification-consumer-group';
 const NOTIFICATION_CLIENT_ID = 'notification-consumer';
+// Above the longest one message can take: the consumer retries a failed
+// delivery for about 30 s, then tries once more and re-queues it.
+const NOTIFICATION_CONSUMER_LIVENESS_MS = 120_000;
+
+/** Settings a dedicated consumer adds to its broker's (none by default). */
+export interface DedicatedConsumerTuning {
+  kafka?: Partial<KafkaConfig>;
+  redis?: Partial<RedisBrokerConfig>;
+}
 
 /** A consumer in its own consumer group (Kafka) / stream group (Redis), so it sees every message. */
 export function createDedicatedMessageConsumer(
@@ -242,6 +251,7 @@ export function createDedicatedMessageConsumer(
   logger: Logger,
   clientId: string,
   groupId: string,
+  tuning: DedicatedConsumerTuning = {},
 ): IMessageConsumer {
   const resolved = resolveMessageBrokerConfig(appConfig);
   if (resolved.type === MessageBrokerType.POSTGRES) {
@@ -257,7 +267,12 @@ export function createDedicatedMessageConsumer(
     );
   }
   if (resolved.type === MessageBrokerType.KAFKA) {
-    const kafka: KafkaConfig = { ...resolved.kafka, clientId, groupId };
+    const kafka: KafkaConfig = {
+      ...resolved.kafka,
+      clientId,
+      groupId,
+      ...tuning.kafka,
+    };
     return createMessageConsumerByParts(
       MessageBrokerType.KAFKA,
       kafka,
@@ -265,7 +280,10 @@ export function createDedicatedMessageConsumer(
       logger,
     );
   }
-  const redis = buildRedisBrokerConfig(appConfig.redis, { clientId, groupId });
+  const redis: RedisBrokerConfig = {
+    ...buildRedisBrokerConfig(appConfig.redis, { clientId, groupId }),
+    ...tuning.redis,
+  };
   return createMessageConsumerByParts(
     MessageBrokerType.REDIS,
     undefined,
@@ -284,6 +302,18 @@ export function createNotificationMessageConsumer(
     logger,
     NOTIFICATION_CLIENT_ID,
     NOTIFICATION_CONSUMER_GROUP,
+    {
+      kafka: {
+        manualCommit: true,
+        sessionTimeout: NOTIFICATION_CONSUMER_LIVENESS_MS,
+        rebalanceTimeout: NOTIFICATION_CONSUMER_LIVENESS_MS,
+      },
+      redis: {
+        claimMinIdleMs: NOTIFICATION_CONSUMER_LIVENESS_MS,
+        // As for mail: a batch would idle later entries into a reclaim while one is retried.
+        readCount: 1,
+      },
+    },
   );
 }
 

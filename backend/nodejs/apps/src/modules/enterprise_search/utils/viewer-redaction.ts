@@ -33,8 +33,25 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { Logger } from '../../../libs/services/logger.service';
 import { apiStoredRecords } from './internal-record-fields';
+import {
+  accessCheckBreaker,
+  CheckOutcome,
+  timeoutOutcome,
+} from './access-check-breaker';
+import {
+  knowledgeLimitOf,
+  type KnowledgeLimitClaim,
+} from '../../../libs/context/request-context';
 import type { AppConfig } from '../../tokens_manager/config/config';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
+import {
+  idOf as idOfValue,
+  readerView,
+  rowAuthorOf,
+  unlabelledAnswers,
+  type ReaderRow,
+  type ReaderSession,
+} from '../services/conversation/privacy/visibility';
 
 const logger = Logger.getInstance({ service: 'Viewer Redaction' });
 
@@ -51,11 +68,84 @@ export const ANSWER_UNCONFIRMED = {
 } as const;
 const ANSWER_LOST_TEXT = 'This answer used content you can no longer access.';
 const ANSWER_UNCONFIRMED_TEXT = "We couldn't confirm your access. Try again.";
-const ACCESS_CHECK_BATCH = 500;
+// One request asks for every record id of a read, up to this many: the query service resolves the
+// reader and their grants once and splits the ids itself.
+export const ACCESS_CHECK_BATCH = 10_000;
+// Addresses are looked up one by one, so a request carries fewer of them.
+export const ACCESS_CHECK_URL_BATCH = 500;
+// Calls one read keeps in flight: its chunks are checked side by side, but no read takes more of
+// the query service's single worker than this.
+const ACCESS_CHECK_PARALLEL = 4;
+// When the service gives no `validUntil`, an answer is relied on this long at most.
+const ACCESS_ANSWER_TTL_MS = 30_000;
 /** `metadata.origin` of a citation that is a web page found by web search. */
 const WEB_SEARCH_ORIGIN = 'WEB_SEARCH';
 /** `metadata.origin` of a file of a public repository a run fetched: stored as a web page is. */
 const REPOSITORY_ORIGIN = 'REPOSITORY';
+
+/** The read's one deadline passed before every chunk of its check answered. */
+class AccessCheckDeadline extends Error {
+  constructor() {
+    super('the access check ran past its deadline');
+    this.name = 'AccessCheckDeadline';
+  }
+}
+
+const isTimeout = (error: unknown): boolean => {
+  const name = (error as { name?: unknown } | null)?.name;
+  return (
+    error instanceof AccessCheckDeadline ||
+    name === 'TimeoutError' ||
+    name === 'AbortError'
+  );
+};
+
+/** `fn` over `items`, at most `limit` at a time, in order; the first failure fails it, and nothing more starts. */
+const inParallel = async <T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await fn(items[index] as T);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return results;
+};
+
+/** `work`, or `AccessCheckDeadline` once `deadline` (epoch ms) has passed, whichever comes first. */
+const beforeDeadline = async <T>(
+  deadline: number,
+  work: Promise<T>,
+): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => {
+        reject(new AccessCheckDeadline());
+      },
+      Math.max(0, deadline - Date.now()),
+    );
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 type Viewer = { userId: string; orgId: string };
 
@@ -77,6 +167,16 @@ export interface Readable {
   asked: Set<string>;
   /** The check could not answer: what was not asked before is unknown, not a verdict. */
   failed?: boolean;
+  /** Each readable id's current name. */
+  names: Map<string, string>;
+  /** Asked ids whose record is deleted or gone: not readable, and said apart from the forbidden ones. */
+  deleted?: Set<string>;
+  /** Epoch milliseconds: the soonest any answer settled here may change. */
+  validUntil?: number;
+  /** Epoch milliseconds: the read's one deadline. Past it nothing more is asked, and what is left stays unknown. */
+  deadline?: number;
+  /** Put to the query service in this read without an answer: not asked again, and still unknown. */
+  unsettled?: Set<string>;
 }
 
 export const newReadable = (): Readable => ({
@@ -84,15 +184,101 @@ export const newReadable = (): Readable => ({
   urls: new Set(),
   unmatched: new Set(),
   asked: new Set(),
+  names: new Map(),
+  deleted: new Set(),
 });
 
 const isStringList = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((v) => typeof v === 'string');
 
+const isNameMap = (value: unknown): value is Record<string, string> =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every((v) => typeof v === 'string');
+
+interface AccessAnswer {
+  accessible: string[];
+  accessibleUrls: string[];
+  unmatchedUrls: string[];
+  names: Record<string, string>;
+  deleted: string[];
+  validUntil?: number;
+}
+
+/** One chunk of a read's check, given only what is left of the read's deadline. */
+const askAccess = async (
+  appConfig: AppConfig,
+  token: string,
+  chunk: {
+    recordIds: string[];
+    webUrls: string[];
+    knowledgeLimit?: KnowledgeLimitClaim;
+  },
+  deadline: number,
+): Promise<AccessAnswer> => {
+  const left = deadline - Date.now();
+  if (left <= 0) throw new AccessCheckDeadline();
+  const response = await new AIServiceCommand<{
+    accessible?: string[];
+    accessibleUrls?: string[];
+    unmatchedUrls?: string[];
+    names?: Record<string, string>;
+    deleted?: string[];
+    validUntil?: number;
+  }>({
+    uri: `${appConfig.aiBackend}/api/v1/chat/records/access`,
+    method: HttpMethod.POST,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: chunk,
+    timeoutMs: left,
+  }).execute();
+  if (response.statusCode !== 200) {
+    throw new Error(`record access returned ${String(response.statusCode)}`);
+  }
+  const accessible: unknown = response.data?.accessible ?? [];
+  const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+  // Node and the query service ship in one image, so this is not version skew in practice; a
+  // service that omits `unmatchedUrls` reads as no unmatched address, so a web link counts as a
+  // record and the answer is hidden (fails closed, never shown).
+  const unmatchedUrls: unknown = response.data?.unmatchedUrls ?? [];
+  const names: unknown = response.data?.names ?? {};
+  // An older service says nothing about deleted records: none is said apart, so none is excused.
+  const deleted: unknown = response.data?.deleted ?? [];
+  const validUntil: unknown = response.data?.validUntil;
+  // Only lists of strings: a string is read per character, String(['id']) is 'id'.
+  if (
+    !isStringList(accessible) ||
+    !isStringList(accessibleUrls) ||
+    !isStringList(unmatchedUrls) ||
+    !isNameMap(names) ||
+    !isStringList(deleted) ||
+    (validUntil !== undefined &&
+      (typeof validUntil !== 'number' || !Number.isFinite(validUntil)))
+  ) {
+    throw new Error('record access returned a malformed body');
+  }
+  return {
+    accessible,
+    accessibleUrls,
+    unmatchedUrls,
+    names,
+    deleted,
+    ...(validUntil !== undefined && { validUntil }),
+  };
+};
+
 /**
- * Record ids and record addresses the viewer may read, from the query
- * service's `check_access`, asking only what `known` has not already settled
- * (and adding the answer to it). Fails closed: an error leaves the new ones
+ * Record ids and record addresses the viewer may read, each readable id with its
+ * current name, from the query service's `check_access`: one request for up to
+ * `ACCESS_CHECK_BATCH` ids (and `ACCESS_CHECK_URL_BATCH` addresses), more four at a
+ * time, asking only what `known` has not already settled (and adding the answer to
+ * it), with the ids that are deleted said apart and how long the answers hold.
+ * `timeoutMs` is one deadline for the whole read, never one per query. Fails closed:
+ * an error, the deadline, or the breaker (`accessCheckBreaker`) leaves the new ones
  * unknown, which nothing treats as readable.
  */
 export const readableRecordIds = async (
@@ -103,14 +289,37 @@ export const readableRecordIds = async (
   known: Readable = newReadable(),
   timeoutMs = 15000,
 ): Promise<Readable> => {
-  const ids = [...new Set(recordIds.filter(Boolean))].filter(
-    (i) => !known.asked.has(`i:${i}`),
+  const unsettled = known.unsettled ?? new Set<string>();
+  known.unsettled = unsettled;
+  const wanted = [
+    ...[...new Set(recordIds.filter(Boolean))].map((i) => `i:${i}`),
+    ...[...new Set(webUrls.filter(Boolean))].map((u) => `u:${u}`),
+  ];
+  const fresh = wanted.filter((k) => !known.asked.has(k) && !unsettled.has(k));
+  const ids = fresh.filter((k) => k.startsWith('i:')).map((k) => k.slice(2));
+  const urls = fresh.filter((k) => k.startsWith('u:')).map((k) => k.slice(2));
+  if (ids.length === 0 && urls.length === 0) {
+    return { ...known, failed: wanted.some((k) => unsettled.has(k)) };
+  }
+  /** What this read leaves unknown: never asked again in it, so it can't wait out a second deadline. */
+  const giveUp = (): Readable => {
+    for (const k of fresh) unsettled.add(k);
+    return { ...known, failed: true };
+  };
+  const deadline = Math.min(
+    Date.now() + timeoutMs,
+    known.deadline ?? Number.POSITIVE_INFINITY,
   );
-  const urls = [...new Set(webUrls.filter(Boolean))].filter(
-    (u) => !known.asked.has(`u:${u}`),
-  );
-  if (ids.length === 0 && urls.length === 0) return { ...known, failed: false };
-  const found = newReadable();
+  if (deadline <= Date.now()) return giveUp();
+  const ticket = accessCheckBreaker.allow();
+  if (ticket === undefined) {
+    logger.debug(
+      'Viewer access check not asked while it keeps failing; redacting every source',
+    );
+    return giveUp();
+  }
+  let outcome: CheckOutcome = 'failed';
+  let leftAtSend = 0;
   try {
     const token = new AuthTokenService(
       appConfig.jwtSecret,
@@ -123,63 +332,86 @@ export const readableRecordIds = async (
       },
       '5m',
     );
-    for (
-      let i = 0;
-      i < Math.max(ids.length, urls.length);
-      i += ACCESS_CHECK_BATCH
-    ) {
-      const response = await new AIServiceCommand<{
-        accessible?: string[];
-        accessibleUrls?: string[];
-        unmatchedUrls?: string[];
-      }>({
-        uri: `${appConfig.aiBackend}/api/v1/chat/records/access`,
-        method: HttpMethod.POST,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: {
-          recordIds: ids.slice(i, i + ACCESS_CHECK_BATCH),
-          webUrls: urls.slice(i, i + ACCESS_CHECK_BATCH),
-        },
-        timeoutMs,
-      }).execute();
-      if (response.statusCode !== 200) {
-        throw new Error(
-          `record access returned ${String(response.statusCode)}`,
-        );
-      }
-      const accessible: unknown = response.data?.accessible ?? [];
-      const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
-      // Node and the query service ship in one image, so this is not version skew in practice; a
-      // service that omits `unmatchedUrls` reads as no unmatched address, so a web link counts as a
-      // record and the answer is hidden (fails closed, never shown).
-      const unmatchedUrls: unknown = response.data?.unmatchedUrls ?? [];
-      // Only lists of strings: a string is read per character, String(['id']) is 'id'.
-      if (
-        !isStringList(accessible) ||
-        !isStringList(accessibleUrls) ||
-        !isStringList(unmatchedUrls)
-      ) {
-        throw new Error('record access returned a malformed body');
-      }
-      for (const id of accessible) found.ids.add(id);
-      for (const u of accessibleUrls) found.urls.add(u);
-      for (const u of unmatchedUrls) found.unmatched.add(u);
+    // A read made with a token limited to some sources (the viewer's own request) is held to them: the query
+    // service counts what lies outside as unreadable, as it does for every other read by that token.
+    const knowledgeLimit = knowledgeLimitOf(viewer.userId);
+    const chunks: Array<{
+      recordIds: string[];
+      webUrls: string[];
+      knowledgeLimit?: KnowledgeLimitClaim;
+    }> = [];
+    const count = Math.max(
+      Math.ceil(ids.length / ACCESS_CHECK_BATCH),
+      Math.ceil(urls.length / ACCESS_CHECK_URL_BATCH),
+    );
+    for (let n = 0; n < count; n += 1) {
+      chunks.push({
+        recordIds: ids.slice(
+          n * ACCESS_CHECK_BATCH,
+          (n + 1) * ACCESS_CHECK_BATCH,
+        ),
+        webUrls: urls.slice(
+          n * ACCESS_CHECK_URL_BATCH,
+          (n + 1) * ACCESS_CHECK_URL_BATCH,
+        ),
+        ...(knowledgeLimit !== undefined && { knowledgeLimit }),
+      });
     }
-    // Settled only when every batch answered.
+    leftAtSend = deadline - Date.now();
+    const answers = await beforeDeadline(
+      deadline,
+      inParallel(chunks, ACCESS_CHECK_PARALLEL, (chunk) =>
+        askAccess(appConfig, token, chunk, deadline),
+      ),
+    );
+    // Settled only when every chunk answered.
+    const deletedIds = known.deleted ?? new Set<string>();
+    known.deleted = deletedIds;
+    let validUntil = known.validUntil ?? Date.now() + ACCESS_ANSWER_TTL_MS;
+    for (const {
+      accessible,
+      accessibleUrls,
+      unmatchedUrls,
+      names,
+      deleted,
+      validUntil: until,
+    } of answers) {
+      for (const id of deleted) deletedIds.add(id);
+      if (until !== undefined) validUntil = Math.min(validUntil, until);
+      for (const id of accessible) {
+        known.ids.add(id);
+        const name = Object.prototype.hasOwnProperty.call(names, id)
+          ? names[id]
+          : undefined;
+        if (name !== undefined) known.names.set(id, name);
+      }
+      for (const u of accessibleUrls) known.urls.add(u);
+      for (const u of unmatchedUrls) known.unmatched.add(u);
+    }
     for (const id of ids) known.asked.add(`i:${id}`);
     for (const u of urls) known.asked.add(`u:${u}`);
-    for (const id of found.ids) known.ids.add(id);
-    for (const u of found.urls) known.urls.add(u);
-    for (const u of found.unmatched) known.unmatched.add(u);
+    known.validUntil = validUntil;
+    outcome = 'ok';
     return { ...known, failed: false };
   } catch (error: unknown) {
+    // A timeout is seen in the turn of the event loop its timer fired in: this is how late it fired.
+    outcome = isTimeout(error)
+      ? timeoutOutcome(leftAtSend, Date.now() - deadline)
+      : 'failed';
     logger.error('Viewer access check failed; redacting every source', {
       error: error instanceof Error ? error.message : String(error),
+      outcome,
     });
-    return { ...known, failed: true };
+    return giveUp();
+  } finally {
+    const change = accessCheckBreaker.record(ticket, outcome);
+    if (change === 'opened') {
+      logger.warn(
+        'Viewer access check keeps failing; reads hide sourced answers without asking for 15 s',
+      );
+    } else if (change === 'closed') {
+      logger.info('Viewer access check answers again');
+    }
   }
 };
 
@@ -676,8 +908,11 @@ export const historyForModel = async <M extends ViewerMessage>(
 
 /**
  * A conversation about to leave in a response or an event (the final conversation
- * of a turn, the one an error event carries): its stored messages go through the
- * same hiding as a fetch. `freshIds` are the answers the run just produced.
+ * of a turn, the one an error event carries), as the viewer may see it: each answer
+ * judged by its label for them (`readerView`), another person's steps left out, and
+ * the per-record view over the rest, with one access request for both. `freshIds`
+ * are the answers the run just produced: a check that fails never hides those from
+ * their own asker.
  */
 export const redactConversationFor = async <C extends { messages?: unknown }>(
   appConfig: AppConfig,
@@ -687,24 +922,42 @@ export const redactConversationFor = async <C extends { messages?: unknown }>(
 ): Promise<C> => {
   if (!Array.isArray(conversation.messages)) return conversation;
   const fresh = new Set((opts.freshIds ?? []).map(String));
-  // A message with no sender is the initiator's (as a fetch reads it), never the viewer's by default.
-  const { initiator } = conversation as { initiator?: unknown };
-  const owner = messageActor({ senderId: initiator }, viewer.userId);
-  return {
-    ...conversation,
-    messages: await redactMessagesFor(
-      appConfig,
-      viewer,
-      conversation.messages as ViewerMessage[],
-      (m) => messageActor(m, owner),
-      {
-        known: opts.known,
-        fresh: (m) =>
-          m._id !== undefined &&
-          fresh.has((m._id as { toString(): string }).toString()),
-      },
-    ),
+  const chat = conversation as unknown as ReaderSession & {
+    initiator?: unknown;
   };
+  // A message with no sender is the initiator's (as a fetch reads it), never the viewer's by default.
+  const ownerId =
+    idOfValue(chat.initiator) ?? idOfValue(chat.userId) ?? viewer.userId;
+  const { rows } = await readerView(
+    { ...viewer, member: true },
+    chat,
+    conversation.messages as object[],
+    {
+      member: true,
+      appConfig,
+      ownerId,
+      ...(opts.known && { known: opts.known }),
+      ...(opts.freshIds && { freshIds: opts.freshIds }),
+      // The answers no label decided alone pass the per-record view; questions, notes and cards are shaped for the
+      // reader where the frame is built.
+      perRecordFor: unlabelledAnswers,
+      perRecordView: async <R extends object>(list: R[], known: Readable) =>
+        (await redactMessagesFor(
+          appConfig,
+          viewer,
+          list as unknown as ViewerMessage[],
+          // Whose turn a row is: who wrote or asked for it, else its sender, else the owner's.
+          (m) => rowAuthorOf(m as ReaderRow, messageActor(m, ownerId)),
+          {
+            known,
+            fresh: (m) =>
+              m._id !== undefined &&
+              fresh.has((m._id as { toString(): string }).toString()),
+          },
+        )) as unknown as R[],
+    },
+  );
+  return { ...conversation, messages: rows };
 };
 
 const plain = (s: ViewerSearch): ViewerSearch =>

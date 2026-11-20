@@ -97,5 +97,15 @@ describe('enterprise_search/utils/default-chat-model', () => {
 
       expect(body).to.deep.equal({ query: 'hi' })
     })
+
+    it('lets the chat through within 250 ms when the settings store hangs (Redis paused)', async () => {
+      sinon.stub(configUtil, 'readStoredAiModelsConfig').returns(new Promise(() => undefined))
+
+      const started = Date.now()
+      const body = await run({ query: 'hi' })
+
+      expect(Date.now() - started).to.be.lessThan(1_000)
+      expect(body).to.deep.equal({ query: 'hi' })
+    })
   })
 })

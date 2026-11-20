@@ -4,7 +4,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
-import { MigrationService } from '../../../../src/modules/configuration_manager/services/migration.service'
+import { MigrationService, useConversationMigrations } from '../../../../src/modules/configuration_manager/services/migration.service'
 
 describe('MigrationService', () => {
   let mockLogger: any
@@ -77,8 +77,14 @@ describe('MigrationService', () => {
       const serviceAccountKindStub = sinon.stub(service, 'serviceAccountKindBackfillMigration' as any).resolves()
       const instanceAppStub = sinon.stub(service, 'instanceAppOwnerMigration' as any).resolves()
       const dynamicClientOrg = async () => 'org-1'
+      const conversationMigration = sinon.stub().resolves()
+      const removeMigration = useConversationMigrations(conversationMigration)
 
-      await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any, dynamicClientOrg })
+      try {
+        await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any, dynamicClientOrg })
+      } finally {
+        removeMigration()
+      }
 
       // Before anything that waits: a metadata document client consented to before it runs would lose its creator.
       expect(instanceAppStub.calledOnceWithExactly(dynamicClientOrg)).to.be.true
@@ -94,6 +100,9 @@ describe('MigrationService', () => {
       expect(chatStub.calledOnce).to.be.true
       expect(chatSessionsStub.calledOnce).to.be.true
       expect(chatStub.calledBefore(chatSessionsStub)).to.be.true
+      expect(conversationMigration.calledOnceWith(mockLogger, mockKeyValueStore)).to.be.true
+      expect(chatSessionsStub.calledBefore(conversationMigration)).to.be.true
+      expect(conversationMigration.calledBefore(adminStub)).to.be.true
       expect(adminStub.calledOnce).to.be.true
       expect(documentOrgIdStub.calledOnce).to.be.true
       expect(groupNameIndexStub.calledOnce).to.be.true

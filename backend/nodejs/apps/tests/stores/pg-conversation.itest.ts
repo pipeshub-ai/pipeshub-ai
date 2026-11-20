@@ -30,7 +30,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       describeConversationContract({
         repo: scoped(new PgConversationRepository(), ledger, {
           findIdsByContent: 0, listArtifactMarkerContents: 1, updateUserQueryContent: 1, listVisibleSummaries: 0, appendMessages: 1, replaceMessage: 1, deleteMessages: 1,
-          appendFeedback: 1, findMessage: 1, countMessages: 1, getCitations: 1, deleteCitations: 1, discardSession: 1,
+          appendFeedback: 1, findMessage: 1, findOpeningMessage: 1, replaceTitle: 1, countMessages: 1, getCitations: 1, deleteCitations: 1, discardSession: 1,
+          listMessageLabels: 0, listMessagesOfRuns: 0, listAnswerClosures: 0, saveAnswerClosures: 0, listShareMarks: 0,
           findHarnessSession: 1, setHarnessFields: 1, listIdleSessions: 0, expireIdleSession: 0, sessionDeletionStates: 0,
           listUserSessionsAfter: 0, markAttachmentsRemoved: 0, findAttachmentCarriers: 0,
           listOwnedForHandover: 0, transferOwners: 0, markDeletedForErasure: 0, listSessionIdsAfter: 0, deleteOrgCitations: 0,

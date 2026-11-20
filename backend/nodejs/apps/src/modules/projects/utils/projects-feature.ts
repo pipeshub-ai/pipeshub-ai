@@ -3,6 +3,7 @@ import { ForbiddenError } from '../../../libs/errors/http.errors';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
+import { IFeatureFlags } from '../../configuration_manager/services/platform-feature-flags.service';
 import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
 
 const logger = Logger.getInstance({ service: 'ProjectsFeature' });
@@ -63,6 +64,9 @@ export function setProjectsSettingsSource(
   cached.clear();
 }
 
+/** A flag source that answers for the caller's own workspace; it does its own caching. */
+let flagSource: IFeatureFlags | null = null;
+
 /**
  * Whether the ENABLE_PROJECTS Labs flag is on. Turning it off used to hide
  * only the UI while the API kept creating projects and running project chats.
@@ -76,7 +80,27 @@ export const ProjectsFeature = {
     return KeyValueStoreService.getInstance(loadConfigurationManagerConfig());
   },
 
+  /**
+   * Reads the flag from `flags` instead of the shared settings, for deployments that keep the flag per
+   * workspace. The source sees the caller's context, so its answer is neither cached nor shared here.
+   * Pass nothing to go back to the shared settings.
+   */
+  useFlags(flags?: IFeatureFlags): void {
+    flagSource = flags ?? null;
+  },
+
   async isEnabled(): Promise<boolean> {
+    if (flagSource) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare -- only a real true turns Projects on
+        return (await flagSource.isEnabled('ENABLE_PROJECTS')) === true;
+      } catch (error) {
+        logger.warn('Could not read the Projects flag; leaving Projects on', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return true;
+      }
+    }
     try {
       const source = resolveSource();
       if (!source) {

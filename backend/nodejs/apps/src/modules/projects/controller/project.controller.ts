@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -14,7 +15,6 @@ import {
   markClientSafe,
   serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
-import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
   CreateProjectInput,
@@ -23,7 +23,18 @@ import {
 } from '../services/project.service';
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
 import { IProject, ProjectDto, ProjectRole } from '../types/project.interfaces';
+import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { IChatSessionDocument } from '../../enterprise_search/types/conversation.interfaces';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
 import { resolveCallerTeamIds } from '../utils/team-membership';
+import {
+  conversationContextOf,
+  listFilterOf,
+} from '../../enterprise_search/services/conversation/http/conversation-context';
+import {
+  conversationExtensions,
+  ProjectSettingsExtension,
+} from '../../enterprise_search/services/conversation/conversation-extensions';
 
 /** A project as the caller sees it (their own pin, their role), for JSON responses. */
 function projectWithRole(
@@ -53,7 +64,9 @@ export const createProject = async (
       userId,
       req.body as CreateProjectInput,
     );
-    res.status(201).json({ project: projectWithRole(project, 'owner', userId) });
+    res
+      .status(201)
+      .json({ project: projectWithRole(project, 'owner', userId) });
   } catch (error) {
     next(error);
   }
@@ -80,7 +93,15 @@ export const listProjects =
       const { projects, totalCount } = await ProjectService.list(
         orgId,
         userId,
-        { page, limit, search, scope, includeArchived, isArchived },
+        {
+          page,
+          limit,
+          search,
+          scope,
+          includeArchived,
+          isArchived,
+          visibleConversations: listFilterOf(req),
+        },
         callerTeamIds,
       );
       res.status(200).json({
@@ -119,7 +140,10 @@ export const getProjectById =
   };
 
 export const updateProject =
-  (appConfig: AppConfig): ProjectRouteHandler =>
+  (
+    appConfig: AppConfig,
+    settings?: ProjectSettingsExtension,
+  ): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
     try {
       const userId = req.user?.userId as string;
@@ -163,6 +187,7 @@ export const updateProject =
         projectId,
         patch,
         callerTeamIds,
+        await settings?.forUpdate(req),
       );
       const role = ProjectService.computeRole(
         project,
@@ -200,7 +225,11 @@ export const deleteProject =
       const userId = req.user?.userId as string;
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
-      const project = await ProjectService.loadForDelete(orgId, userId, projectId);
+      const project = await ProjectService.loadForDelete(
+        orgId,
+        userId,
+        projectId,
+      );
       if (project) {
         await ProjectKnowledgeBaseService.deleteLinkedKb(
           appConfig,
@@ -230,7 +259,12 @@ export const archiveProject =
         true,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -252,7 +286,12 @@ export const unarchiveProject =
         false,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -274,7 +313,12 @@ export const pinProject =
         true,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -296,7 +340,12 @@ export const unpinProject =
         false,
         callerTeamIds,
       );
-      const role = ProjectService.computeRole(project, userId, orgId, callerTeamIds);
+      const role = ProjectService.computeRole(
+        project,
+        userId,
+        orgId,
+        callerTeamIds,
+      );
       res.status(200).json({ project: projectWithRole(project, role, userId) });
     } catch (error) {
       next(error);
@@ -306,7 +355,8 @@ export const unpinProject =
 /**
  * GET /:projectId/conversations — chat + agent sessions in this project that
  * the caller may see: rows they own, plus rows with `projectVisibility:
- * 'project'` if they have at least viewer access to the project itself.
+ * 'project'` if they have at least viewer access to the project itself, plus
+ * any other rows the conversation guard's list filter lets them see.
  * Access to the project has already been asserted, so a private chat that
  * belongs to a *different* project member never leaks here.
  */
@@ -317,6 +367,7 @@ export const getProjectConversations =
       const userId = req.user?.userId as string;
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
+      const lists = conversationExtensions().lists;
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
       await ProjectService.assertAccess(
         orgId,
@@ -332,18 +383,38 @@ export const getProjectConversations =
       };
       const skip = (page - 1) * limit;
 
-      const { rows: conversations, total: totalCount } =
-        await getConversationRepository().listByProject({
-          orgId,
-          projectId,
-          userId,
-          skip,
-          limit,
-        });
+      const filter = {
+        $and: [
+          listFilterOf(req),
+          { projectId: new mongoose.Types.ObjectId(projectId) },
+          // A Compare models branch is opened by its id, never listed.
+          { compareOf: { $exists: false } },
+        ],
+      };
 
+      const [conversations, totalCount] = await Promise.all([
+        ChatSession.find(asQueryFilter<IChatSessionDocument>(filter))
+          .sort({ lastActivityAt: -1, _id: -1 })
+          .skip(skip)
+          .limit(limit)
+          .select(lists.select(conversationContextOf(req)))
+          .lean()
+          .exec(),
+        ChatSession.countDocuments(asQueryFilter<IChatSessionDocument>(filter)),
+      ]);
+
+      const ctx = conversationContextOf(req);
+      const decorate = await lists.rowDecorator(ctx, conversations);
       res.status(200).json({
-        conversations: conversations.map((c) =>
-          c.userId === userId ? c : withoutOwnerOnlyFields(c),
+        conversations: conversations.map((row) =>
+          decorate(
+            lists.redactRecipients(
+              ctx,
+              String(row.userId) === userId
+                ? conversationExtensions().views.viewRunFailures(row, userId)
+                : withoutOwnerOnlyFields(row),
+            ),
+          ),
         ),
         pagination: {
           page,
@@ -447,7 +518,9 @@ export const upsertProjectMembers =
           .filter((member) => member.principalType === 'team')
           .map(async (member) => {
             if (!(await teamExists(appConfig, req, member.principalId))) {
-              throw new BadRequestError(`Team not found: ${member.principalId}`);
+              throw new BadRequestError(
+                `Team not found: ${member.principalId}`,
+              );
             }
           }),
       );

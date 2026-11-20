@@ -16,6 +16,7 @@ import {
   agentConversationUnshareParamsSchema,
   forkConversationParamsSchema,
   forkAgentConversationParamsSchema,
+  conversationUnshareParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
   REQUEST_FILTER_KEYS,
@@ -2230,6 +2231,16 @@ describe('enterprise_search/validators/es_validators', () => {
       modelName: 'mn1',
       isReasoning: true,
     }
+
+    it('should accept a leading @ and omit the handle when absent', () => {
+      const withAt = createAgentSchema.safeParse({
+        body: { name: 'My Agent', handle: '@my-agent' },
+      })
+      const without = createAgentSchema.safeParse({ body: { name: 'My Agent' } })
+      expect(withAt.success).to.be.true
+      expect(without.success).to.be.true
+      if (without.success) expect(without.data.body).to.not.have.property('handle')
+    })
 
     it('should accept minimal valid body', () => {
       const result = createAgentSchema.safeParse({

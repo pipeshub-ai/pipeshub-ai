@@ -8,6 +8,8 @@ import yaml from 'js-yaml'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { agentListScope, chatListScope, withListScope } from '../helpers/list-scope'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
@@ -123,6 +125,13 @@ function request(user: User, params: Record<string, string>, body: Record<string
 
 type JsonHandler = (req: never, res: never, next: never) => Promise<unknown>
 
+/** Each route as the agent router mounts it: the guard, then the handler. */
+const getAgent = () => behindGuard(realGuards(), 'read', controller.getAgentConversationById(appConfig) as JsonHandler, 'agent') as JsonHandler
+const shareAgent = () => behindGuard(realGuards(), 'manageSharing', controller.shareAgentConversation(appConfig) as JsonHandler, 'agent') as JsonHandler
+const unshareAgent = () => behindGuard(realGuards(), 'manageSharing', controller.unshareAgentConversation(appConfig) as JsonHandler, 'agent') as JsonHandler
+const listAgent = () => withListScope(controller.getAllAgentConversations as JsonHandler, 'agent', agentListScope)
+const listAll = () => withListScope(controller.getAllConversations as JsonHandler, 'any', chatListScope)
+
 async function call(handler: JsonHandler, req: never): Promise<{ status: number | undefined; body: any }> {
   const res = new FakeSSEResponse()
   const next = sinon.stub()
@@ -197,7 +206,7 @@ describe('agent-chat sharing answers what the spec says', () => {
   it('the owner’s by-id answer fits AgentConversationDetail, and includes who it is shared with', async () => {
     const { chatId } = setup()
 
-    const out = await call(controller.getAgentConversationById(appConfig) as JsonHandler, request(owner, params(chatId), {}, detailQuery))
+    const out = await call(getAgent(), request(owner, params(chatId), {}, detailQuery))
 
     expect(problems('AgentConversationDetail', out.body.conversation)).to.deep.equal([])
     expect(out.body.conversation.sharedWith).to.have.length(1)
@@ -206,7 +215,7 @@ describe('agent-chat sharing answers what the spec says', () => {
   it('a recipient’s by-id answer fits AgentConversationDetail, with sharedBy and without sharedWith', async () => {
     const { chatId } = setup()
 
-    const out = await call(controller.getAgentConversationById(appConfig) as JsonHandler, request(recipient, params(chatId), {}, detailQuery))
+    const out = await call(getAgent(), request(recipient, params(chatId), {}, detailQuery))
 
     expect(problems('AgentConversationDetail', out.body.conversation)).to.deep.equal([])
     expect(onTheWire(out.body.conversation)).to.not.have.property('sharedWith')
@@ -217,7 +226,7 @@ describe('agent-chat sharing answers what the spec says', () => {
     setup()
 
     for (const user of [owner, recipient]) {
-      const out = await call(controller.getAllAgentConversations as JsonHandler, request(user, { agentKey: AGENT_KEY }, {}, { limit: '20' }))
+      const out = await call(listAgent(), request(user, { agentKey: AGENT_KEY }, {}, { limit: '20' }))
       const rows = [...out.body.conversations, ...out.body.sharedWithMeConversations]
       expect(rows.length, `rows for ${user === owner ? 'the owner' : 'the recipient'}`).to.be.greaterThan(0)
       for (const row of rows) {
@@ -229,7 +238,7 @@ describe('agent-chat sharing answers what the spec says', () => {
   it('a shared row in the list names who shared it', async () => {
     setup()
 
-    const out = await call(controller.getAllAgentConversations as JsonHandler, request(recipient, { agentKey: AGENT_KEY }, {}, { limit: '20' }))
+    const out = await call(listAgent(), request(recipient, { agentKey: AGENT_KEY }, {}, { limit: '20' }))
 
     const row = onTheWire(out.body.sharedWithMeConversations[0])
     expect(row.sharedBy).to.have.property('userId')
@@ -240,7 +249,7 @@ describe('agent-chat sharing answers what the spec says', () => {
     const { chatId } = setup()
 
     const out = await call(
-      controller.shareAgentConversation(appConfig) as JsonHandler,
+      shareAgent(),
       request(owner, params(chatId), { userIds: [String(RECIPIENT)] }),
     )
 
@@ -251,7 +260,7 @@ describe('agent-chat sharing answers what the spec says', () => {
     const { chatId } = setup()
 
     const out = await call(
-      controller.unshareAgentConversation(appConfig) as JsonHandler,
+      unshareAgent(),
       request(owner, params(chatId), { userIds: [String(RECIPIENT)] }),
     )
 
@@ -262,7 +271,7 @@ describe('agent-chat sharing answers what the spec says', () => {
   it('the global shared list fits ConversationListItem, with agentKey on an agent chat', async () => {
     setup()
 
-    const out = await call(controller.getAllConversations as JsonHandler, request(recipient, {}, {}, { source: 'shared', limit: '20' }))
+    const out = await call(listAll(), request(recipient, {}, {}, { source: 'shared', limit: '20' }))
 
     expect(out.body.conversations.length).to.be.greaterThan(0)
     for (const row of out.body.conversations) {

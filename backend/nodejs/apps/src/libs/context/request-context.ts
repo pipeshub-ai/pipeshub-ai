@@ -21,11 +21,23 @@ export interface RequestContextStore {
   mcpRelay?: string;
   /** Set with `orgId`, from the same verified token, and shown the same way. */
   userId?: string;
+  /**
+   * The sources the verified token may reach (a connected app's or a personal access token's knowledge limit), set
+   * by the auth layer with `userId`. Absent for a session or a token with no limit.
+   */
+  knowledgeLimit?: KnowledgeLimitClaim;
   /** Ids bound with `bindLogContext`, added to every later line of this context. */
   logFields?: LogContextFields;
 }
 
 export const HEADER_MCP_RELAY = 'x-pipeshub-mcp-relay';
+
+/** A token's knowledge limit as it is signed (`KnowledgeLimit` in the API): ids of apps, record groups and records. */
+export interface KnowledgeLimitClaim {
+  apps: string[];
+  recordGroups: string[];
+  records: string[];
+}
 
 /**
  * The ids a request may add to its log lines; the names match the Python
@@ -103,6 +115,45 @@ export function setContextIdentity(ids: {
     typeof ids.userId === 'string' ? sanitizeRootId(ids.userId) : undefined;
   if (orgId) ctx.orgId = orgId;
   if (userId) ctx.userId = userId;
+}
+
+const idList = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === 'string' && v !== '')
+    : [];
+
+/**
+ * Attach the verified token's knowledge limit to the in-flight context (no-op without a context or a limit). Called by
+ * the auth layer with `setContextIdentity`, from the same verified token. A limit that names nothing is kept as such:
+ * it lets the token reach nothing, never everything.
+ */
+export function setContextKnowledgeLimit(limit: unknown): void {
+  const ctx = storage.getStore();
+  if (!ctx || typeof limit !== 'object' || limit === null) return;
+  const claim = limit as Record<string, unknown>;
+  ctx.knowledgeLimit = {
+    apps: idList(claim.apps),
+    recordGroups: idList(claim.recordGroups),
+    records: idList(claim.records),
+  };
+}
+
+/**
+ * The knowledge limit of the request in flight when it is `userId`'s own: a check made in it for someone else (who is
+ * told of a notice, for example) is not bound by the caller's token.
+ */
+export function knowledgeLimitOf(
+  userId: string,
+): KnowledgeLimitClaim | undefined {
+  const ctx = storage.getStore();
+  return ctx?.knowledgeLimit !== undefined && ctx.userId === userId
+    ? ctx.knowledgeLimit
+    : undefined;
+}
+
+/** Whether the request in flight came with a token limited to some sources. */
+export function requestHasKnowledgeLimit(): boolean {
+  return storage.getStore()?.knowledgeLimit !== undefined;
 }
 
 /**

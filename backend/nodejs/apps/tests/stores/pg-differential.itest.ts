@@ -191,11 +191,12 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
   await step('deleteMessages', conv.deleteMessages([doomed[0]!._id], ORG));
 
   // ---- content search
-  await step('search content', sorted(conv.findIdsByContent(ORG, 'hello')));
-  await step('search content in an answer', sorted(conv.findIdsByContent(ORG, 'q3')));
-  await step('search content is case blind', sorted(conv.findIdsByContent(ORG, 'QUARTER')));
-  await step('search content escapes', sorted(conv.findIdsByContent(ORG, '100\\%')));
-  await step('search content other org', sorted(conv.findIdsByContent(OTHER_ORG, 'hello')));
+  await step('search content', sorted(conv.findIdsByContent(ORG, ALICE, 'hello')));
+  await step('search content in an answer', sorted(conv.findIdsByContent(ORG, ALICE, 'q3')));
+  await step('search content is case blind', sorted(conv.findIdsByContent(ORG, ALICE, 'QUARTER')));
+  await step('search content escapes', sorted(conv.findIdsByContent(ORG, ALICE, '100\\%')));
+  await step('search content other org', sorted(conv.findIdsByContent(OTHER_ORG, ALICE, 'hello')));
+  await step('search content of chats another user owns', sorted(conv.findIdsByContent(ORG, BOB, 'hello')));
   const marked = await step('append artifact markers', conv.appendMessages(s2._id, ORG, [botMsg('see ::artifact[a1] here'), botMsg('plain'), botMsg('and ::artifact[a2]')]));
   await step('listArtifactMarkerContents', conv.listArtifactMarkerContents(s2._id, ORG, 100));
   await step('listArtifactMarkerContents up to', conv.listArtifactMarkerContents(s2._id, ORG, 2));

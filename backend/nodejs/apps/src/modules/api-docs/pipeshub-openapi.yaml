@@ -769,6 +769,18 @@ components:
         over a `pipeshub://` link instead of finishing the sign-in in the browser.
       schema:
         type: string
+    StreamFrame:
+      name: frame
+      in: query
+      required: false
+      description: |
+        `turn` makes the final `RUN_FINISHED` carry only the rows this turn wrote, marked
+        `frame: turn`, for a client that merges them by id into the rows it has. On a regenerate
+        those are the new answer plus `removedIds`, the cards it removed. Without it the final
+        frame carries the newest 1,000 rows of the conversation.
+      schema:
+        type: string
+        enum: [turn]
   headers:
     X-Conversation-Id:
       description: |
@@ -6084,7 +6096,8 @@ components:
             code:
               type: string
               description: |
-                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
+                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`.
+                Domain errors carry their own unprefixed code (for example `CONVERSATION_BUSY`).
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
               example: HTTP_FORBIDDEN
             message:
@@ -6101,6 +6114,34 @@ components:
                 names its quota: `active_runs_user`, `active_runs_org`, `admission_rate_user` or
                 `admission_rate_org`). Present only for such a refusal; `code` still names the HTTP class.
               example: mcp_manifest_stale
+            fieldErrors:
+              type: array
+              description: |
+                Which request fields a client error (4xx) is about, so a form can mark the field.
+                Present for validation failures and for conflicts tied to one field (for example a
+                group name that is already taken); absent otherwise. At most one entry per field,
+                in the wording of `message`.
+              items:
+                type: object
+                additionalProperties: false
+                required: [field, message]
+                properties:
+                  field:
+                    type: string
+                    description: Request body property, dot-separated when nested (`name`, `settings.url`)
+                    example: name
+                  message:
+                    type: string
+                    example: Name must be at most 100 characters.
+                  code:
+                    type: string
+                    example: TOO_BIG
+            details:
+              type: object
+              additionalProperties: true
+              description: |
+                Public, structured context for a domain error (for example the run that holds a
+                conversation). Present in every environment, only for domain errors; absent otherwise.
             metadata:
               type: object
               description: Additional context (only present in development environments)
@@ -11498,14 +11539,16 @@ components:
         failure originated elsewhere (e.g. a storage-upload error or a
         downstream indexing error with no specific code).
 
-        - `EXCEEDS_SIZE_LIMIT` / `UNSUPPORTED_TYPE` — rejected up front by the
-          file processor.
+        - `EXCEEDS_SIZE_LIMIT` / `UNSUPPORTED_TYPE` / `EMPTY_FILE` — rejected up
+          front by the file processor. Programs and libraries (`.exe`, `.dll`,
+          `.so`, `.dylib`) are `UNSUPPORTED_TYPE`; a file with no bytes is `EMPTY_FILE`.
         - `DUPLICATE_NAME` — skipped because a record with the same name already
           exists in the target KB/folder (or collided with another file in the
           same upload). The file was not added.
       enum:
         - EXCEEDS_SIZE_LIMIT
         - UNSUPPORTED_TYPE
+        - EMPTY_FILE
         - DUPLICATE_NAME
     UploadFailedFileDetail:
       type: object
@@ -14431,6 +14474,49 @@ components:
           description: Nested transcript of a `sub_agent` part.
           items:
             $ref: '#/components/schemas/MessagePart'
+
+    UnavailableTool:
+      type: object
+      additionalProperties: false
+      description: |
+        An agent tool the requester could not use: an action (`toolset`) or an
+        MCP server (`mcp`). Holds no credentials.
+      required:
+        - kind
+        - instanceId
+        - displayName
+        - problem
+        - sharedCredential
+        - userCanConnect
+      properties:
+        kind:
+          type: string
+          enum: [toolset, mcp]
+        instanceId:
+          type: string
+        displayName:
+          type: string
+        name:
+          type: string
+          nullable: true
+          description: The toolset type or MCP server name.
+        problem:
+          type: string
+          enum: [not_configured, not_authenticated, not_found]
+          description: |
+            `not_configured`: no credentials yet. `not_authenticated`: set up but
+            not signed in. `not_found`: the MCP server was removed.
+        authMode:
+          type: string
+          nullable: true
+          description: How an MCP server signs in (`none`, `api_token`, `oauth`, `headers`).
+        sharedCredential:
+          type: boolean
+          description: One credential an administrator enters for everyone.
+        userCanConnect:
+          type: boolean
+          description: The requester can connect it themselves.
+
     Message:
       type: object
       additionalProperties: false
@@ -14513,6 +14599,15 @@ components:
             and only when the model emitted a trailing confidence block.
 
             This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
+        errorCode:
+          type: string
+          description: |
+            Present only on an `error` message whose run the AI service refused with a code. The same request gets the same refusal, so clients should not offer to try again; `content` says what to do instead.
+        answerMatchType:
+          type: string
+          enum: [Capability Card]
+          description: |
+            Present only on an answer produced by an extension instead of the model. It is not a search answer, so clients should not show confidence or sources for it.
         followUpQuestions:
           type: array
           items:
@@ -14602,6 +14697,15 @@ components:
             $ref: '#/components/schemas/MessagePart'
         answerHidden:
           $ref: '#/components/schemas/HiddenAnswer'
+        unavailableTools:
+          type: array
+          description: |
+            Tools the agent has that the requester could not use on this turn
+            (not set up, not signed in, or removed). The answer ran without them.
+            Absent when there were none.
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/UnavailableTool'
         createdAt:
           type: string
           format: date-time
@@ -16042,6 +16146,16 @@ components:
           minItems: 1
           description: IDs of users to share with
           example: ["507f1f77bcf86cd799439011"]
+        accessLevel:
+          type: string
+          enum: [read, write]
+          default: read
+          description: |
+            Permission level for shared users:
+
+            - `read` — Can view only
+            - `write` — Stored as `read`; the response carries an `ACCESS_LEVEL_DOWNGRADED` warning
+
     RetrieveRequest:
       type: object
       required: [query]
@@ -19842,6 +19956,9 @@ components:
           allOf:
             - $ref: '#/components/schemas/AgentHarnessConversationRunState'
           description: "ADR-UI-01 D2: the conversation's run state for the caller (working, needs you, finished unseen); absent while the agent harness is off or the state could not be read"
+        rev:
+          type: integer
+          description: The conversation's change counter.
         _id:
           type: string
           format: objectId
@@ -19885,6 +20002,10 @@ components:
               accessLevel:
                 type: string
                 enum: [read, write]
+              addedAt:
+                type: string
+                format: date-time
+                description: When the person was given access.
         isArchived:
           type: boolean
         archivedBy:
@@ -19983,6 +20104,7 @@ components:
         the same agent. Both arrays use the same pagination and sort inputs,
         but `pagination.totalCount` and `totalPages` are computed only from
         `conversations` because the handler counts the owned-query filter only.
+        `totalCount` stops at 1,000; `hasNextPage` is exact past that.
       required:
         - conversations
         - sharedWithMeConversations
@@ -20313,6 +20435,9 @@ components:
         _id:
           type: string
           format: objectId
+        schemaVersion:
+          type: integer
+          description: Version of the stored message shape.
         messageType:
           type: string
           enum: [user_query, bot_response, error, feedback, system, tool_call]
@@ -20413,6 +20538,15 @@ components:
             kept, but it names none of the original's runs.
         answerHidden:
           $ref: '#/components/schemas/HiddenAnswer'
+        unavailableTools:
+          type: array
+          description: |
+            Tools the agent has that the requester could not use on this turn
+            (not set up, not signed in, or removed). The answer ran without them.
+            Absent when there were none.
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/UnavailableTool'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -20534,6 +20668,10 @@ components:
               accessLevel:
                 type: string
                 enum: [read, write]
+              addedAt:
+                type: string
+                format: date-time
+                description: When the person was given access.
         status:
           type: string
           enum: [None, Inprogress, Complete, Failed, Stopped]
@@ -20563,6 +20701,11 @@ components:
           $ref: '#/components/schemas/AgentConversationDetailPagination'
         access:
           $ref: '#/components/schemas/AgentConversationDetailAccess'
+        rev:
+          type: integer
+          description: |
+            The conversation's change counter when the page was read. A client that follows
+            changes asks for those after this value.
     AgentConversationDetailMeta:
       type: object
       additionalProperties: false
@@ -20715,6 +20858,17 @@ components:
         treated as informational updates. Those forwarded lifecycle and
         child-run events may contain `runId`, `threadId`, and `parentRunId`;
         the gateway-generated root terminal event does not.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -20756,9 +20910,10 @@ components:
         object that includes a `"type"` field matching `event`, plus
         type-specific fields. Stable gateway-generated top-level outcomes:
 
-        - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
-          persisted `conversation` and a `meta` block with `requestId`,
-          `timestamp` and `duration`.
+        - `RUN_FINISHED` — `{ type, result }`; `result` carries the
+          persisted `conversation` (which rows: see the `frame` query
+          parameter) and a `meta` block with `requestId`, `timestamp` and
+          `duration`.
           Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
           marked FAILED before the stream closes.
@@ -20766,6 +20921,17 @@ components:
         Forwarded upstream lifecycle or child-run events may contain `runId`,
         `threadId`, and `parentRunId`. Gateway-generated root terminal events
         do not. Clients should ignore unknown event names.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -20815,8 +20981,9 @@ components:
           `title` so the client can link the stream to the new row before
           any tokens arrive.
         - `RUN_FINISHED` — fired once after the AI backend finishes.
-          The gateway emits `{ type, result }`; `result` carries the full
-          persisted `conversation` and a `meta` block.
+          The gateway emits `{ type, result }`; `result` carries the
+          persisted `conversation` (which rows: see the `frame` query
+          parameter) and a `meta` block.
           Optional `result.meta.searchDegraded` (`true`) is present only when a search behind the answer was answered from a partial search.
         - `RUN_ERROR` — fired when the stream fails. Carries a `message`
           and optional `code`; the conversation row is marked FAILED
@@ -20827,6 +20994,17 @@ components:
         do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -20888,6 +21066,17 @@ components:
         do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -20938,6 +21127,17 @@ components:
         as errors.
         Optional `result.meta.searchDegraded` (`true`) is present on `RUN_FINISHED` only when a search behind the
         answer was answered from a partial search.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -20996,6 +21196,17 @@ components:
         `threadId`, or `parentRunId`.
         Clients should ignore unknown event names rather than treating them
         as errors.
+
+        An agent run that can't use some of its tools for this requester
+        (an action or MCP server they have not connected) still answers with
+        the rest, and says so in a forwarded `CUSTOM` event named
+        `tools_unavailable` whose `value` is
+        `{ agentId, serviceAccount, items: UnavailableTool[] }`; the saved
+        answer carries the same `items` as `unavailableTools`. A
+        service-account agent missing its own tools is refused instead:
+        `RUN_ERROR` with `code` `toolset_config_missing` or
+        `mcp_server_config_missing` and
+        `details: { agentId, serviceAccount: true, items: UnavailableTool[], servers }`.
       properties:
         event:
           type: string
@@ -22914,6 +23125,11 @@ components:
         description:
           type: string
           description: Feature flag description
+        descriptionKey:
+          type: string
+          description: |
+            Optional translation key for the description. Labs shows its translation instead, falling back to
+            `description`; the translated text can include `{{description}}`.
         defaultEnabled:
           type: boolean
           description: Default enabled state
@@ -24948,6 +25164,9 @@ components:
             connectorId: "conn-abc123"
             connectorName: "S3"
             errorCode: "FORBIDDEN"
+        dedupeKey:
+          type: string
+          description: Per-recipient delivery key; an event with the same key is delivered at most once
         isDeleted:
           type: boolean
           default: false
@@ -32117,6 +32336,9 @@ paths:
         Returns a cursor-paginated list of notifications assigned to the authenticated user
         from the last 30 days, newest first. Default page size is 20; at most 50 are returned per page.
         Query parameters other than the ones listed are ignored.
+
+        An OAuth token or personal access token without `conversation:read` gets no chat notifications
+        (types starting with `chat.`), and the other notification routes treat them as not found for it.
       operationId: listInAppNotifications
       security:
         - bearerAuth: []
@@ -32224,7 +32446,8 @@ paths:
       description: |
         Returns per-status notification counts for the authenticated user within the
         30-day retention window. Counts are always global — independent of the `status`
-        filter used on the list endpoint. The query string is not read.
+        filter used on the list endpoint. The query string is not read. For an OAuth token or personal
+        access token without `conversation:read`, chat notifications are not counted.
       operationId: getNotificationStats
       security:
         - bearerAuth: []
@@ -38679,6 +38902,76 @@ paths:
               description: Seconds to wait before retrying.
               schema:
                 type: integer
+  /users/bulk/invite/check:
+    post:
+      tags:
+        - Users
+      summary: Check which addresses already belong to the organization
+      description: |
+        Tells an invite form which of the given addresses are already in the organization, before
+        anything is sent. Nothing is created or changed, and no email is sent.
+
+        Addresses are trimmed and lower-cased before they are matched. Addresses that are not valid,
+        that belong to a service account, or that would receive a fresh invitation are left out of
+        the answer. A deleted account counts as new (an invitation restores it).
+
+        An organization admin or a member may call it, on the same terms as `POST /users/bulk/invite`.
+      operationId: checkBulkInvite
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emails]
+              properties:
+                emails:
+                  type: array
+                  maxItems: 1000
+                  items:
+                    type: string
+                    maxLength: 320
+      responses:
+        '200':
+          description: The addresses that already belong to the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [existing]
+                properties:
+                  existing:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [email, status]
+                      properties:
+                        email:
+                          type: string
+                        status:
+                          type: string
+                          enum: [member, invited]
+                          description: |
+                            `member` has signed in; `invited` has an invitation that is still pending.
+        '400':
+          description: Invalid request (`emails` missing, not an array, or over 1000 entries)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: An OAuth access token without the `user:invite` scope
           content:
             application/json:
               schema:
@@ -46728,6 +47021,7 @@ paths:
             Forbidden — one of:
             - the OAuth token lacks the `kb:write` or `connector:write` scope
             - the caller does not own the artifact
+            - the artifact may not be shared on; when the service names why, `error.code` carries it
           content:
             application/json:
               schema:
@@ -51636,9 +51930,15 @@ paths:
             starting). The conversation is marked `Failed`; that save is best
             effort, so if it fails the conversation keeps its previous status.
             Sending the message again may repeat work the AI service had started.
+            The same status, with `Retry-After`, while the server is shutting
+            down: it starts no new answers, and another server takes the request
+            after that many seconds.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -51715,7 +52015,8 @@ paths:
         3. AI-backend events stream through (token chunks, tool calls,
            status, etc.).
         4. On success a single root `RUN_FINISHED` event is emitted carrying
-           the full persisted conversation in `result`.
+           the persisted conversation in `result`; the `frame` query
+           parameter says which of its rows.
         5. On failure a root `RUN_ERROR` event is emitted and the
            conversation is marked FAILED before the stream closes.
 
@@ -51751,6 +52052,7 @@ paths:
         - oauth2: [conversation:chat]
       parameters:
         - $ref: '#/components/parameters/ChatTurnIdempotencyKey'
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: "Request payload"
@@ -51816,8 +52118,19 @@ paths:
             example, the initial conversation row could not be persisted).
             Once the stream is open, terminal failures are surfaced as a
             `RUN_ERROR` SSE event instead of an HTTP status change.
-
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -52172,14 +52485,20 @@ paths:
         - name: conversationId
           in: query
           required: false
-          description: When set, restricts results to that conversation ID (if visible under the chosen `source`).
+          description: |
+            When set, restricts results to that conversation ID (if visible under the chosen `source`).
+            Can't be combined with `search` (`400 VALIDATION_ERROR`).
           schema:
             type: string
             pattern: ^[0-9a-fA-F]{24}$
         - name: search
           in: query
           required: false
-          description: Case-insensitive match on title and message content (max 1000 characters).
+          description: |
+            Case-insensitive match (max 1000 characters) on the title of every listed conversation, and
+            on message content only in the caller's own conversations: their own questions and answers,
+            never tool output. A conversation shared with the caller or visible through a project
+            matches by title alone. Can't be combined with `conversationId` (`400 VALIDATION_ERROR`).
           schema:
             type: string
             maxLength: 1000
@@ -52257,6 +52576,7 @@ paths:
                         type: integer
                       totalCount:
                         type: integer
+                        description: Matches, counted up to 1,000. `hasNextPage` is exact past that.
                       totalPages:
                         type: integer
                       hasNextPage:
@@ -52668,9 +52988,12 @@ paths:
           in: query
           required: false
           description: |
-            Case-insensitive substring match against title and message content
-            (max 1000 chars). A value holding markup is refused by the
-            controller with `400 HTTP_BAD_REQUEST`.
+            Case-insensitive substring match (max 1000 chars) against the title,
+            and against message content only in the caller's own conversations:
+            their own questions and answers, never tool output. A conversation
+            shared with the caller matches by title alone. A value holding
+            markup is refused by the controller with `400 HTTP_BAD_REQUEST`.
+            Can't be combined with `conversationId` (`400 VALIDATION_ERROR`).
           schema:
             type: string
             maxLength: 1000
@@ -52708,7 +53031,9 @@ paths:
         - name: conversationId
           in: query
           required: false
-          description: Restrict results to a single conversation by identifier
+          description: |
+            Restrict results to a single conversation by identifier. Can't be combined with
+            `search` (`400 VALIDATION_ERROR`).
           schema:
             type: string
             format: objectId
@@ -53069,8 +53394,10 @@ paths:
 
         **Overview:**
 
-        Performs a case-insensitive substring match against conversation titles and message content
-        across both assistant (`Conversation`) and agent (`AgentConversation`) archived collections.
+        Performs a case-insensitive substring match against conversation titles, and against message
+        content only in the caller's own conversations (their own questions and answers, never tool
+        output), across both assistant (`Conversation`) and agent (`AgentConversation`) archived
+        collections. A conversation shared with the caller matches by title alone.
         Results are merged server-side and sorted by `lastActivityAt` descending.
 
         **Search parameter:**
@@ -53102,7 +53429,9 @@ paths:
         - name: search
           in: query
           required: true
-          description: Search term to match against conversation titles and message content (max 1000 chars)
+          description: |
+            Search term to match against conversation titles, and against the message content of the
+            caller's own conversations (max 1000 chars)
           schema:
             type: string
             minLength: 1
@@ -53542,6 +53871,15 @@ paths:
                               description: Ordered agent-activity transcript for this turn.
                               items:
                                 $ref: '#/components/schemas/MessagePart'
+                            unavailableTools:
+                              type: array
+                              description: |
+                                Tools the agent has that the requester could not use on this turn
+                                (not set up, not signed in, or removed). The answer ran without them.
+                                Absent when there were none.
+                              maxItems: 50
+                              items:
+                                $ref: '#/components/schemas/UnavailableTool'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -53605,6 +53943,13 @@ paths:
                             enum: [owner, collaborator, viewer]
                       sharedBy:
                         $ref: '#/components/schemas/ConversationSharedBy'
+                      rev:
+                        type: integer
+                        minimum: 0
+                        description: |
+                          Change counter of the conversation, read before its messages. It moves on
+                          every change to the conversation or its messages, so a later read showing a
+                          higher value means something changed since this response.
                   filters:
                     type: object
                     additionalProperties: false
@@ -53922,7 +54267,8 @@ paths:
         **Permissions:**
 
         Only the conversation's owner (its initiator) can delete it. A share
-        never grants deletion, whatever its `accessLevel`.
+        never grants deletion, whatever its `accessLevel`; anyone else gets
+        `404` (`CONVERSATION_NOT_FOUND`).
 
         **Artifacts:** before the conversation is marked deleted, every artifact
         the caller created in it is deleted for good (every version and stored
@@ -54168,9 +54514,15 @@ paths:
             starting). The conversation is marked `Failed`; that save is best
             effort, so if it fails the conversation keeps its previous status.
             Sending the message again may repeat work the AI service had started.
+            The same status, with `Retry-After`, while the server is shutting
+            down: it starts no new answers, and another server takes the request
+            after that many seconds.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -54277,6 +54629,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: "Request payload"
@@ -54339,8 +54692,19 @@ paths:
             conversation). Once the stream is open, terminal failures are
             surfaced as a `RUN_ERROR` SSE event instead of an HTTP status
             change.
-
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -54421,9 +54785,8 @@ paths:
 
         **Permissions:**
 
-        Only the conversation's initiator can share. A missing, deleted or
-        agent conversation, or one the caller did not start (even one
-        shared with them at `write` access), is `404`.
+        Only the conversation owner can share; anyone else gets `404`. Users
+        must belong to the same organization.
       operationId: shareConversation
       security:
         - bearerAuth: []
@@ -54485,6 +54848,26 @@ paths:
                           type: string
                           format: objectId
                           description: Subdocument identifier auto-assigned by MongoDB.
+                  warnings:
+                    type: array
+                    description: Present only when `write` was requested; access is stored as `read`.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - code
+                        - requested
+                        - applied
+                      properties:
+                        code:
+                          type: string
+                          enum: [ACCESS_LEVEL_DOWNGRADED]
+                        requested:
+                          type: string
+                          enum: [write]
+                        applied:
+                          type: string
+                          enum: [read]
                   meta:
                     type: object
                     additionalProperties: false
@@ -55521,6 +55904,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         description: "Request payload"
         content:
@@ -55584,12 +55968,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation or message not found
         '409':
           description: |
             The durable agent harness refused the regenerate before any SSE
             byte (`error.code`): `HTTP_AGENT_HARNESS_REGENERATE_NOT_LAST`
             (not the conversation's last answer) or
             `HTTP_AGENT_HARNESS_RUN_ACTIVE` (a turn is still running).
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -55609,7 +56007,11 @@ paths:
         including every message up to and including `messageId`. The original
         conversation is left unchanged.
 
-        Only the owner of the conversation can fork it. A shared recipient or a
+        Only the owner of the conversation can fork it, unless collaborative
+        chats are on: then a member of a shared chat may fork it too, and the
+        fork holds only the chat's own questions and answers, never anyone's
+        private thread, an agent's thread or the notes members left. Anyone
+        else gets 404. Without collaborative chats a shared recipient or a
         project member gets 404, because their access to the original's
         attachments and artifacts is revoked on unshare. The fork does not
         inherit share settings. If the source is linked to a project the caller
@@ -58488,6 +58890,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -58524,6 +58930,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -58559,6 +58969,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -58601,6 +59015,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -60553,6 +60971,7 @@ paths:
           schema:
             type: string
             minLength: 1
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: Initial turn payload for the new agent conversation stream.
@@ -60608,6 +61027,18 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: The `projectId` names an archived project (`HTTP_CONFLICT`); unarchive it to start chats in it. Returned before the SSE stream opens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -60696,6 +61127,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: Follow-up message payload for the agent conversation stream.
@@ -60746,6 +61178,18 @@ paths:
             exist, is deleted, belongs to another user or belongs to another
             agent, including an `agentKey` that names no agent
             (`HTTP_NOT_FOUND`, "Conversation not found").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -60897,6 +61341,7 @@ paths:
           schema:
             type: string
             format: objectId
+        - $ref: '#/components/parameters/StreamFrame'
       requestBody:
         required: true
         description: |
@@ -60964,6 +61409,18 @@ paths:
             byte (`error.code`): `HTTP_AGENT_HARNESS_REGENERATE_NOT_LAST`
             (not the conversation's last answer) or
             `HTTP_AGENT_HARNESS_RUN_ACTIVE` (a turn is still running).
+        '503':
+          description: |
+            The server is shutting down and starts no new answers. Retry after the
+            `Retry-After` seconds; another server takes the request.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -60983,7 +61440,9 @@ paths:
         caller, including every message up to and including `messageId`. The
         original conversation is left unchanged.
 
-        Only the owner of the conversation can fork it; anyone else gets 404.
+        Only the owner of the conversation can fork it, unless collaborative
+        chats are on, where the rules of `forkConversation` apply. Anyone else
+        gets 404.
 
         The copy stands on its own. Copied messages keep their text, saved
         steps (`parts`) and attachments and are marked `copied: true`, but
@@ -61459,9 +61918,15 @@ paths:
             starting). The conversation is marked `Failed`; that save is best
             effort, so if it fails the conversation keeps its previous status.
             Sending the message again may repeat work the AI service had started.
+            The same status, with `Retry-After`, while the server is shutting
+            down: it starts no new answers, and another server takes the request
+            after that many seconds.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -61735,6 +62200,10 @@ paths:
         recipients are also granted read access to the conversation's artifacts
         and chat attachments. Recipients see the full transcript, including
         citations and tool output, as the owner sees it.
+
+        With collaborative chats on, this route follows the chat's sharing
+        rules instead, as `/conversations/{conversationId}/share` does: who may
+        share, and the access level stored, are those of a shared chat.
       operationId: shareAgentConversation
       x-pipeshub-sdk: false
       security:
@@ -62759,19 +63228,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
-  # ==================== CONNECTOR MANAGER ENDPOINTS ====================
-
-  # -------------------- Connector Registry --------------------
         '503':
           description: |
             The AI service could not be reached (for example, it is still
             starting). The conversation is marked `Failed`; that save is best
             effort, so if it fails the conversation keeps its previous status.
             Sending the message again may repeat work the AI service had started.
+            The same status, with `Retry-After`, while the server is shutting
+            down: it starts no new answers, and another server takes the request
+            after that many seconds.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -62789,6 +63260,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== CONNECTOR MANAGER ENDPOINTS ====================
+
+  # -------------------- Connector Registry --------------------
   /connectors/registry:
     get:
       tags:

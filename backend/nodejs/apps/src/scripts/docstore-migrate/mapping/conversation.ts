@@ -246,6 +246,12 @@ export const chatSessionMessages: CollectionMapping = {
     { col: 'harness', path: '', type: 'json', spread: MESSAGE_HARNESS_FIELDS },
     { col: 'created_at', path: 'createdAt', type: 'date' },
     { col: 'updated_at', path: 'updatedAt', type: 'date' },
+    { col: 'label_ver', path: 'labelVer', type: 'text' },
+    { col: 'provenance', path: 'provenance', type: 'json' },
+    jsonArray('label_history', 'labelHistory'),
+    { col: 'consent', path: 'consent', type: 'json' },
+    jsonArray('consent_to', 'consentTo'),
+    jsonArray('share_requests', 'shareRequests'),
   ],
   derived: [],
   // An answer with no confidence is saved with `confidence: null` (the legacy chat and the durable projection both; R48MIGFIX-1):
@@ -365,6 +371,11 @@ export const CONVERSATION_IGNORED: IgnoredCollection[] = [
     collection: 'agentconversations',
     reason:
       'boot migration chat_sessions must have run; preflight is red while they hold documents',
+  },
+  {
+    collection: 'chatAnswerClosures',
+    reason:
+      "the reader check's closures of answer versions; PostgreSQL keeps none and makes them from the labels on each read",
   },
 ];
 

@@ -344,6 +344,60 @@ describe('compare.controller', () => {
     expect(skipped.calledOnce).to.equal(true);
   });
 
+  describe('a chat others can read or write in', () => {
+    const OTHER = '999999999999999999999999';
+    const artifacts = () => ({
+      copier: () => ({} as never),
+      remove: sinon.stub().resolves(),
+      removeOne: sinon.stub().resolves(),
+    });
+
+    for (const [label, shared] of [
+      ['shared with someone', { sharedWith: [{ userId: OTHER, accessLevel: 'read' }] }],
+      ['open to its project', { projectId: 'ffffffffffffffffffffffff', projectVisibility: 'project' }],
+    ] as const) {
+      it(`refuses a branch in a chat ${label}`, async () => {
+        (repo.findOwned as sinon.SinonStub).resolves(parent(shared as never));
+        const out = await call(
+          createCompareBranchHandler(artifacts()),
+          { conversationId: PARENT },
+          { userMessageId: MSG },
+        );
+        expect(out.error?.statusCode).to.equal(400);
+        expect((fork.createCompareBranch as sinon.SinonStub).called).to.equal(false);
+        expect((repo.discardBranches as sinon.SinonStub).called).to.equal(false);
+      });
+
+      it(`refuses to choose a branch in a chat ${label}, and still lets its owner discard theirs`, async () => {
+        (repo.findOwned as sinon.SinonStub).resolves(parent(shared as never));
+        (repo.listBranches as sinon.SinonStub).resolves([branch()]);
+        const out = await call(chooseCompare(artifacts()), { conversationId: PARENT }, { choice: BRANCH });
+        expect(out.error?.statusCode).to.equal(400);
+        expect((fork.replaceTurnWithBranch as sinon.SinonStub).called).to.equal(false);
+        const discarded = await call(chooseCompare(artifacts()), { conversationId: PARENT }, { choice: 'primary' });
+        expect(discarded.status).to.equal(200);
+      });
+    }
+
+    it("refuses to choose, before copying anything, when a row from the compared question on is someone else's", async () => {
+      // Shared once and unshared since: the later turn is still the other person's.
+      (repo.listBranches as sinon.SinonStub).resolves([branch()]);
+      (repo.listMessages as sinon.SinonStub).callsFake(async (_id: string, opts: { skip?: number }) =>
+        (opts.skip ?? 0) >= 2
+          ? [
+              { dto: { _id: 'q-mine', messageType: 'user_query', content: 'Mine', authorUserId: USER } },
+              { dto: { _id: 'q-theirs', messageType: 'user_query', content: 'Theirs', authorUserId: OTHER } },
+              { dto: { _id: 'a-theirs', messageType: 'bot_response', content: 'For them', requestedBy: OTHER } },
+            ]
+          : [],
+      );
+      const out = await call(chooseCompare(artifacts()), { conversationId: PARENT }, { choice: BRANCH });
+      expect(out.error?.statusCode).to.equal(409);
+      expect((fork.copyBranchTurnArtifacts as sinon.SinonStub).called).to.equal(false);
+      expect((fork.replaceTurnWithBranch as sinon.SinonStub).called).to.equal(false);
+    });
+  });
+
   it('forwards a listBranches failure from the purge guard', async () => {
     const boom = new Error('mongo down');
     (repo.listBranches as sinon.SinonStub).rejects(boom);

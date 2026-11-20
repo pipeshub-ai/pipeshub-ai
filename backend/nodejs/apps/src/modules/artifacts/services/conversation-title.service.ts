@@ -1,6 +1,7 @@
-import { getConversationRepository } from '../../../libs/repositories/conversation';
-import { isValidId } from '../../../libs/repositories/ids';
-import { ProjectService } from '../../projects/services/project.service';
+import { QueryFilter, Types } from 'mongoose';
+import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { IChatSession } from '../../enterprise_search/types/conversation.interfaces';
+import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 
 /** What the artifacts gallery shows about an artifact's conversation. */
 export interface ConversationSummary {
@@ -13,55 +14,77 @@ export interface ConversationSummary {
   conversationArchived?: true;
 }
 
+/** The caller's conversation list scope, as the conversation guards resolved it. */
+export interface ConversationTitleScope {
+  readFilter: QueryFilter<IChatSession>;
+  userId: string;
+  accessibleProjectIds: readonly string[];
+}
+
 /**
- * Display-only conversation titles for the artifacts gallery.
- * Authorization for the files themselves lives on the graph record ACL;
- * this join never grants access and omits titles the caller cannot see.
- *
- * The access predicate matches the conversation list: owner, a chat that is
- * both `isShared` and listed in `sharedWith` for this user, or a
- * project-visible chat in a project the caller can view. `isShared` alone is
- * not enough: unshare removes the viewer from `sharedWith` while leaving the
- * chat shared with others.
+ * Display-only conversation titles for the artifacts gallery. The join never
+ * grants access: a title is returned only for a conversation `readFilter`
+ * matches, which is the conversation guards' list filter for the caller.
  *
  * An archived chat is listed only where the archive can open it: for its
- * owner, and for `sharedWith` viewers of an assistant chat.
+ * owner, and for people an assistant chat is shared with.
  */
 export class ConversationTitleService {
   static async batchTitles(
     conversationIds: string[],
-    orgId: string,
-    userId: string,
+    scope: ConversationTitleScope,
   ): Promise<Map<string, ConversationSummary>> {
-    const uniqueIds = [...new Set(conversationIds.filter(Boolean))];
-    const validIds = uniqueIds.filter((id) => isValidId(id));
-    if (!validIds.length) {
+    const objectIds = [...new Set(conversationIds.filter(Boolean))]
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+    if (!objectIds.length) {
       return new Map();
     }
 
-    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
-      orgId,
-      userId,
-    );
+    const userObjectId = new Types.ObjectId(scope.userId);
+    const sessions = await ChatSession.find(
+      {
+        $and: [
+          scope.readFilter,
+          { _id: { $in: objectIds } },
+          {
+            $or: [
+              { isArchived: { $ne: true } },
+              { userId: userObjectId },
+              {
+                sessionType: { $ne: 'agent' },
+                'sharedWith.userId': userObjectId,
+              },
+            ],
+          },
+          // A Compare models branch is opened by its id, never listed.
+          { compareOf: { $exists: false } },
+        ],
+      },
+      {
+        _id: 1,
+        title: 1,
+        sessionType: 1,
+        agentKey: 1,
+        projectId: 1,
+        isArchived: 1,
+      },
+    ).lean();
 
-    const sessions = await getConversationRepository().listVisibleSummaries(
-      orgId,
-      userId,
-      validIds,
-      accessibleProjectIds.map(String),
-    );
-
-    const accessibleProjects = new Set(accessibleProjectIds.map(String));
+    const accessibleProjects = new Set(scope.accessibleProjectIds.map(String));
     return new Map(
       sessions.map((session) => [
-        session._id,
+        String(session._id),
         {
-          title: session.title ?? 'Untitled',
+          title:
+            conversationExtensions().views.displayTitle(session.title) ??
+            'Untitled',
           ...(session.sessionType === 'agent' && session.agentKey
             ? { agentKey: session.agentKey }
             : {}),
-          ...(session.projectId && accessibleProjects.has(session.projectId)
-            ? { projectId: session.projectId }
+          ...(session.projectId &&
+          accessibleProjects.has(String(session.projectId))
+            ? { projectId: String(session.projectId) }
             : {}),
           ...(session.isArchived
             ? { conversationArchived: true as const }

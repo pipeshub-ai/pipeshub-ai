@@ -81,6 +81,8 @@ export interface MessageSqlRow {
   tools: unknown[];
   reasoning: unknown[];
   parts: unknown[];
+  /** The version of the stored content; its label columns are never selected with it. */
+  label_ver: string | null;
   created_at: Date;
   updated_at: Date;
   sender_id?: string | null;
@@ -306,6 +308,8 @@ export function messageDto(
   put(o, 'senderId', r.sender_id);
   if (r.harness) Object.assign(o, r.harness);
   put(o, 'label', r.label);
+  // The answer's provenance and its label history stay in their columns: a row read back never carries them.
+  put(o, 'labelVer', r.label_ver);
   return { dto: o as unknown as MessageDto };
 }
 

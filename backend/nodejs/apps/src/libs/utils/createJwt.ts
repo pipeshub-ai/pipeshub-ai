@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { deriveUserActionSecret } from './jwtKeys';
+import { TOKEN_CLASS, TOKEN_CLASS_CLAIM } from '../services/token-class';
 
 const signUserActionToken = (
   payload: object,
@@ -287,6 +288,7 @@ export const authJwtGenerator = (
   if (role === 'admin' || role === 'member') {
     payload.role = role;
   }
+  payload[TOKEN_CLASS_CLAIM] = TOKEN_CLASS.session;
 
   return jwt.sign(payload, scopedJwtSecret, {
     expiresIn: expiryTime,

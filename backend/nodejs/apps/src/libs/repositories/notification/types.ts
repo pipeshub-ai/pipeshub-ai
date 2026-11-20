@@ -36,6 +36,8 @@ export interface NotificationRow {
 export interface NotificationScope {
   orgId: string;
   userId: string;
+  /** Chat notices (`chat.*`) are neither read nor changed: a token without `conversation:read`. */
+  hideChatNotices?: boolean;
 }
 
 /** A notification to store; ids are strings. */

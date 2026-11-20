@@ -85,8 +85,12 @@ describe('TokenScopes', () => {
     expect(TokenScopes.CONTROL_PLANE_BINDINGS).to.equal('control-plane:bindings');
   });
 
-  it('should have exactly 25 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(25);
+  it('should have ARTIFACT_SHARE_CHECK as "artifact:share-check"', () => {
+    expect(TokenScopes.ARTIFACT_SHARE_CHECK).to.equal('artifact:share-check');
+  });
+
+  it('should have exactly 26 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(26);
   });
 
   it('should contain only the expected keys', () => {
@@ -116,6 +120,7 @@ describe('TokenScopes', () => {
       'DIRECTORY_READ',
       'CAPABILITIES_SYNC',
       'PRINCIPAL_ERASE',
+      'ARTIFACT_SHARE_CHECK',
     ];
     expect(Object.keys(TokenScopes)).to.have.members(expectedKeys);
   });
@@ -163,6 +168,7 @@ describe('isUserActionScope', () => {
       TokenScopes.CONTROL_PLANE_BINDINGS,
       TokenScopes.ENTITY_USER_WRITE,
       TokenScopes.PRINCIPAL_ERASE,
+      TokenScopes.ARTIFACT_SHARE_CHECK,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });
