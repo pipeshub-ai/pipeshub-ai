@@ -3061,6 +3061,9 @@ class VectorStore(Transformer):
             todo = documents
             present = set()
         else:
+            # An attempt stopped before its full delete leaves the older revision's points, under the ids this one wants (the id
+            # follows the block and its text, not the revision). Counted as present, they would be skipped and then fenced.
+            await self._drop_points_of_other_runs(attempt, key, virtual_record_id, collection_name, org_id)
             with stage("vector.exists"):
                 present = await self._existing_ids(collection_name, list(dict.fromkeys(point_ids)))
             todo = [d for d, pid in zip(documents, point_ids) if pid not in present]
@@ -3087,6 +3090,21 @@ class VectorStore(Transformer):
             attempt, key, point_ids, record_id, virtual_record_id, collection_name, org_id
         )
 
+    async def _drop_points_of_other_runs(
+        self, attempt: EmbedAttempt, key: str, virtual_record_id: str, collection_name: str, org_id: str | None,
+    ) -> None:
+        """Delete the virtual record's points of another revision or embedding setup; a missing field counts as different. Both
+        deletes pin the org and the virtual record."""
+        org = org_for_filter(org_id, match_bound=True)
+        with stage("vector.delete"):
+            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
+                stale = await self.vector_db_service.filter_collection(
+                    must={"orgId": org, "virtualRecordId": virtual_record_id},
+                    must_not={field: value},
+                )
+                async with _fenced("the fence of a resumed run"):
+                    await self.vector_db_service.delete_points(collection_name, stale)
+
     async def _fence_and_verify(
         self,
         attempt: EmbedAttempt,
@@ -3101,17 +3119,9 @@ class VectorStore(Transformer):
 
         A pod that lost its lease can still land a write after this run began, and points written
         before the revision and setup were recorded on them carry neither field; a missing field
-        counts as different. Both deletes pin the org and the virtual record.
+        counts as different.
         """
-        org = org_for_filter(org_id, match_bound=True)
-        with stage("vector.delete"):
-            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
-                stale = await self.vector_db_service.filter_collection(
-                    must={"orgId": org, "virtualRecordId": virtual_record_id},
-                    must_not={field: value},
-                )
-                async with _fenced("the fence of a resumed run"):
-                    await self.vector_db_service.delete_points(collection_name, stale)
+        await self._drop_points_of_other_runs(attempt, key, virtual_record_id, collection_name, org_id)
         wanted = list(dict.fromkeys(point_ids))
         with stage("vector.exists"):
             present = await self._existing_ids(collection_name, wanted)
