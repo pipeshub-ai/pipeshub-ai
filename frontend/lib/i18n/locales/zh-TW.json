@@ -3226,7 +3226,8 @@
             "max_pages": "已達到最大頁數限制",
             "time_limit": "已達到時間限制；下次同步將繼續",
             "stalled": "網站停止回應；下次同步將繼續",
-            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續",
+            "start_not_recorded": "同步無法儲存其開始記錄，因此未執行；下次同步將重試"
           },
           "pagesSaved": "已儲存 {{count}} 個頁面",
           "failed": "{{count}} 個頁面失敗",

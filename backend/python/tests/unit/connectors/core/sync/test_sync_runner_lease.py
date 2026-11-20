@@ -86,7 +86,7 @@ class TestStartStatusWrite:
         # Visible even when the store keeps refusing the app document: the store's error, a counter, and the summary the finalizer writes.
         assert str(raised.value.__cause__) == "rejected"
         assert counted.call_args.args[:2] == ("connector_service", "sync_start_not_recorded")
-        assert connector.last_sync_summary == {"error": "could not record the sync start"}
+        assert connector.last_sync_summary == {"stopReason": "start_not_recorded"}      # the connector page shows it
 
     @pytest.mark.asyncio
     async def test_a_run_whose_start_is_not_recorded_does_not_reissue_a_pending_resync(self) -> None:

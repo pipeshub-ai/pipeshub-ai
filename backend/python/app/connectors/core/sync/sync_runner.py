@@ -861,7 +861,7 @@ async def run_sync_task(
             )
             name = getattr(getattr(connector, "connector_name", None), "value", None)
             record_service_activity("connector_service", "sync_start_not_recorded", connector=name if isinstance(name, str) else "unknown", status="failed")
-            connector.last_sync_summary = {"error": "could not record the sync start"}
+            connector.last_sync_summary = {"stopReason": "start_not_recorded"}
             start_failed = True
             raise not_recorded
         # A resync asked for before this run began is served by it. Left set, the

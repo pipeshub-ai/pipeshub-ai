@@ -671,7 +671,7 @@ export interface LastSyncSummary {
   deferred?: number;
   pruned?: number;
   sitemapUrls?: number;
-  stopReason?: 'max_pages' | 'time_limit' | 'stalled' | 'rate_limited' | null;
+  stopReason?: 'max_pages' | 'time_limit' | 'stalled' | 'rate_limited' | 'start_not_recorded' | null;
   resumed?: boolean;
 }
 

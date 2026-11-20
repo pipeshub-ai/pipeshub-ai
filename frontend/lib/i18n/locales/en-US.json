@@ -3245,7 +3245,8 @@
             "max_pages": "Reached the maximum pages limit",
             "time_limit": "Reached its time limit; the next sync carries on",
             "stalled": "The site stopped answering; the next sync carries on",
-            "rate_limited": "The site kept asking for fewer requests; the next sync carries on"
+            "rate_limited": "The site kept asking for fewer requests; the next sync carries on",
+            "start_not_recorded": "The sync could not save its start, so it did not run; the next sync tries again"
           },
           "pagesSaved": "{{count}} pages saved",
           "failed": "{{count}} pages failed",

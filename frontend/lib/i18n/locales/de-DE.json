@@ -3084,7 +3084,8 @@
             "max_pages": "Seitenlimit erreicht",
             "time_limit": "Zeitlimit erreicht; die nächste Synchronisierung macht weiter",
             "stalled": "Die Website antwortete nicht mehr; die nächste Synchronisierung macht weiter",
-            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter"
+            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter",
+            "start_not_recorded": "Die Synchronisierung konnte ihren Start nicht speichern und lief daher nicht; die nächste Synchronisierung versucht es erneut"
           },
           "pagesSaved": "{{count}} Seiten gespeichert",
           "failed": "{{count}} Seiten fehlgeschlagen",
