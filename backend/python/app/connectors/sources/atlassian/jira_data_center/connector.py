@@ -605,7 +605,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._user_bulk_refused: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
-        # Project role name -> id, from this sync's role lists: a restricted comment names its role by name.
+        # Project role name -> id, from the roles this sync read: a restricted comment names its role by name.
         self._role_ids: dict[str, str] = {}
         self._stored_app_users: list[AppUser] = []  # read by _fetch_users
         self._newly_listed_user_keys: set[str] = set()
@@ -3012,8 +3012,6 @@ class JiraDataCenterConnector(BaseConnector):
                 role_detail_failed = False
                 for role_name, role_url in roles_dict.items():
                     try:
-                        # Project roles are defined for the whole site; each project names them all.
-                        self._role_ids[role_name] = role_url.rstrip('/').split('/')[-1]
                         # Skip app-only roles
                         if role_name == "atlassian-addons-project-access":
                             continue
@@ -3040,6 +3038,11 @@ class JiraDataCenterConnector(BaseConnector):
 
                         # Extract available fields from role_data
                         role_name_display = role_data.get("name", role_name)
+                        if isinstance(role_data.get("name"), str):
+                            # A restricted comment names its role by name (ProjectRoleBean ``name``, 10.2 to 11.3
+                            # specs). Roles are defined for the whole site, so one project's read names it for all; the
+                            # id is the one the role is synced under.
+                            self._role_ids[role_data["name"]] = role_id
 
                         # Build AppRole with external_id matching Permission format
                         app_role = AppRole(
@@ -5758,7 +5761,7 @@ class JiraDataCenterConnector(BaseConnector):
         """Who Jira shows a restricted comment to, among the readers of its issue: the members of the group, or of the
         project role in the issue's project, that its ``visibility`` names. Data Center names both by name
         (VisibilityJsonBean: ``type`` group|role and ``value``, in the 10.2, 10.7, 11.0 and 11.3 specifications); a group's
-        name is its id here, and a role's name resolves through this sync's role lists. Anything else grants nobody."""
+        name is its id here, and a role's name resolves through the roles this sync read. Anything else grants nobody."""
         visibility = comment.get("visibility")
         kind, value = (visibility.get("type"), str(visibility.get("value") or "")) if isinstance(visibility, dict) else (None, "")
         if kind == "group" and value:

@@ -172,8 +172,12 @@ async def test_comments_that_cannot_be_read_in_full_take_no_audience_and_the_iss
     assert held(store) == {}
 
 
-async def test_a_role_whose_list_cannot_be_read_grants_nobody_until_a_sync_reads_it(site, db, store, search) -> None:
-    site.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["no"]}, status=403))
+@pytest.mark.parametrize("unread", ["role list", "role"])
+async def test_a_role_that_cannot_be_read_grants_nobody_until_a_sync_reads_it(site, db, store, search, unread) -> None:
+    """The role's name is read from the role itself (ProjectRoleBean ``name``), which needs both reads."""
+    path = f"{API}/project/ENG/role" + ("/10002" if unread == "role" else "")
+    good = next(r for m, p, r in site._routes if (m, p) == ("GET", path))  # the stub site's answer
+    site.on("GET", path, json_response({"errorMessages": ["no"]}, status=403))
     search.add("ENG", 0, [with_comments(ts(2), [comment("502", role="Developers")])])
     connector, _ = await make_connector(db, store)
 
@@ -182,7 +186,7 @@ async def test_a_role_whose_list_cannot_be_read_grants_nobody_until_a_sync_reads
     assert grants(db, "comment_502") == set(), "an unresolved role grants nobody"
     assert held(store) == {"1001": 1}
 
-    site.on("GET", f"{API}/project/ENG/role", {"Developers": f"{BASE}{API}/project/ENG/role/10002"})
+    site.on("GET", path, good)
     await connector.run_sync()
     assert grants(db, "comment_502") == {(EntityType.ROLE, "ENG_10002")}
     assert held(store) == {}
