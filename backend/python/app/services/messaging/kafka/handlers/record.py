@@ -2043,8 +2043,11 @@ class RecordEventHandler(BaseEventService):
                 payload.get(replay_set.DELIVERY_ID_KEY) or payload.get(replay_set.EVENT_ID_KEY) or uuid.uuid4().hex
             )
             if stored is None:
-                await self._store_intent(record_id, record, candidate, now_ms)
-                stored = candidate
+                # The id that is on the record afterwards: this delivery's, or the one that won a race for it (then this delivery
+                # refreshes under that one, which is the request that will be cleared). None when the record is gone.
+                landed = await self._store_intent(record_id, record, candidate, now_ms)
+                stored = landed
+                candidate = landed or candidate
             payload[refresh_intent.PAYLOAD_ID_KEY] = stamped = candidate
         if payload.get(refresh_intent.FROM_INTENT_KEY) is True and (stored is None or stamped != stored):
             # Built from a request that has been served (or replaced) since: it was satisfied meanwhile.
@@ -2071,9 +2074,10 @@ class RecordEventHandler(BaseEventService):
             superseded=superseded, adopted=refresh and not sent_as_refresh,
         )
 
-    async def _store_intent(self, record_id: str, record: dict, intent_id: str, now_ms: int) -> None:
+    async def _store_intent(self, record_id: str, record: dict, intent_id: str, now_ms: int) -> str | None:
         """Write the request on a record that holds none (or an expired one). A lost race re-reads once; a failure raises,
-        so the event is retried like a failed purge."""
+        so the event is retried like a failed purge. Returns the id the record holds afterwards: ``intent_id`` when this write landed, the
+        id of the live request that won the race, or None when the record is gone."""
         graph = self.event_processor.graph_provider
         expected = record.get(refresh_intent.ID_FIELD)
         for _ in range(2):
@@ -2082,10 +2086,13 @@ class RecordEventHandler(BaseEventService):
                 {refresh_intent.ID_FIELD: expected},
             ):
                 refresh_intent.REFRESH_INTENT_EVENTS.inc("written")
-                return
+                return intent_id
             latest = await graph.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
-            if latest is None or refresh_intent.live_intent(latest, now_ms) is not None:
-                return                    # gone, or another request was stored meanwhile: it is the one served
+            if latest is None:
+                return None
+            winner = refresh_intent.live_intent(latest, now_ms)
+            if winner is not None:
+                return winner             # another request was stored meanwhile: it is the one served
             expected = (latest or {}).get(refresh_intent.ID_FIELD)
         raise IndexingError(
             f"Could not store the refresh request of record {record_id}", details={"record_id": record_id},

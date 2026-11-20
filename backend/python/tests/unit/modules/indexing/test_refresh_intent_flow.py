@@ -309,6 +309,36 @@ async def test_the_backstop_stores_the_request_of_an_unstamped_refresh_and_never
     assert w.row.get(ri.ID_FIELD) is None, "a cleared request must not be written back"
 
 
+async def test_an_unstamped_refresh_whose_write_loses_the_race_runs_under_the_id_on_the_record(w: World) -> None:
+    """The compare-and-set loses to a different live request: this delivery refreshes under the winner's id (the one that is cleared),
+    never under an id that was not stored (which would leave the winner to be served, and paid for, again)."""
+    real = w.graph.update_node_fields_if_match
+    calls = 0
+
+    async def loses_once(key: str, collection: str, updates: dict, expected: dict, *a: object, **kw: object) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            w.row.update(ri.intent_fields("winner", w.now_ms))                          # another delivery stored its request first
+            return False
+        return await real(key, collection, updates, expected, *a, **kw)
+
+    w.graph.update_node_fields_if_match = loses_once                                     # type: ignore[method-assign]
+    unstamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, "_delivery_id": "mine"}
+    run = await w.handler._settle_refresh_intent(EventTypes.NEW_RECORD.value, unstamped, dict(w.row), KEY, parse_now=False)
+    assert run is not None and run.refresh and run.intent_id == "winner" and run.seen == "winner"
+    assert unstamped[ri.PAYLOAD_ID_KEY] == "winner" and w.row[ri.ID_FIELD] == "winner"
+
+
+async def test_an_unstamped_refresh_for_a_record_that_is_gone_keeps_its_own_id(w: World) -> None:
+    w.graph.docs.pop(KEY)
+    unstamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, "_delivery_id": "mine"}
+    run = await w.handler._settle_refresh_intent(
+        EventTypes.NEW_RECORD.value, unstamped, {"_key": KEY, "orgId": ORG}, KEY, parse_now=False,
+    )
+    assert run is not None and run.intent_id == "mine" and run.seen is None
+
+
 async def test_nothing_is_written_while_the_flag_is_off(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REFRESH_INTENT_WRITE")
     unstamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, "_delivery_id": "d-1"}
