@@ -15,6 +15,9 @@ const domainLimitReachedTemplate = loadTemplate('src/modules/mail/views/layouts/
 const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
 const joinRequestNotifyTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestNotify.hbs');
 const joinRequestDecisionTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/joinRequestDecision.hbs');
+const connectorAccountConnectTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/connectors/connectAccount.hbs',
+);
 const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
 const sandboxCapacityAlertTemplate = loadTemplate('src/modules/mail/views/layouts/system/sandboxCapacityAlert.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
@@ -173,3 +176,6 @@ export const sandboxCapacityAlertText = (
 export const sandboxCapacityAlert = (
   templateData: SandboxCapacityAlertData,
 ): string => compileTemplate(sandboxCapacityAlertTemplate, { ...templateData });
+export const connectorAccountConnect = (
+  templateData: Record<string, unknown>,
+): string => compileTemplate(connectorAccountConnectTemplate, templateData);

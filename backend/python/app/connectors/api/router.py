@@ -7317,6 +7317,18 @@ async def handle_oauth_callback(
                 "redirect_url": f"{base_url}/connectors/oauth/callback?oauth_error=invalid_state"
             }
 
+        # A user signing in with their own account to a per-user connector, not the connector's own sign-in.
+        from app.connectors.api.user_access_router import (
+            complete_user_sign_in,
+            is_user_sign_in_state,
+        )
+
+        if is_user_sign_in_state(state_data):
+            return await complete_user_sign_in(
+                request, graph_provider, connector_id=connector_id, state=original_state, code=code,
+                base_url=base_url, settings_url=f"{base_url}{settings_base_path}",
+            )
+
         # ============================================================
         # 3. Authorization & Configuration Retrieval
         # ============================================================

@@ -322,6 +322,14 @@ class PermissionsMixin(PgBase):
                               AND l.from_coll = 'users' AND l.from_id = p.from_id AND l.to_coll = 'apps' AND l.to_id = $2)
             RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), connector_id), transaction, write=True) or 0
 
+    async def get_user_granted_records(self, connector_id: str, user_id: str, transaction: str | None = None) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on; grants held by a group, a team or the organization are not included."""
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_granted_records */ SELECT DISTINCT n.id, n.doc->>'externalRecordId' AS ext,
+            n.doc->>'recordType' AS rtype FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = 'records' AND n.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'records'
+              AND n.doc->>'connectorId' = $3""", current_org_id(), user_id, connector_id), transaction)
+        return [{"id": r["id"], "externalRecordId": r["ext"], "recordType": r["rtype"]} for r in rows]
+
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
         """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""

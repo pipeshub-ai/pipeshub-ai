@@ -12106,6 +12106,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return len(result or [])
 
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on."""
+        query = """
+        FOR perm IN permission
+            FILTER perm._from == @user
+            FILTER PARSE_IDENTIFIER(perm._to).collection == @records
+            LET r = DOCUMENT(perm._to)
+            FILTER r != null AND r.connectorId == @connector_id
+            RETURN DISTINCT {id: r._key, externalRecordId: r.externalRecordId, recordType: r.recordType}
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "records": CollectionNames.RECORDS.value},
+            txn_id=transaction,
+        )
+        return list(result or [])
+
     async def _collect_connector_entities(
         self,
         connector_id: str,

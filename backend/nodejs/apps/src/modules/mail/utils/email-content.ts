@@ -3,6 +3,7 @@ import { EmailTemplateType } from '../middlewares/types';
 import {
   accountCreation,
   appUserInvite,
+  connectorAccountConnect,
   domainLimitReached,
   emailChangeNotice,
   isEmailChangeNoticeData,
@@ -71,6 +72,8 @@ export function getEmailContent(
         );
       }
       return sandboxCapacityAlert(templateData);
+    case EmailTemplateType.ConnectorAccountConnect as string:
+      return connectorAccountConnect(templateData);
 
     default:
       throw 'Unknown Template';

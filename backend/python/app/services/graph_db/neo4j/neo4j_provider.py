@@ -11505,6 +11505,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         results = await self.client.execute_query(query, parameters={"connector_id": connector_id}, txn_id=transaction)
         return int((results or [{}])[0].get("removed") or 0)
 
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on."""
+        query = """
+        MATCH (u:User {id: $user_id})-[:PERMISSION]->(r:Record)
+        WHERE r.connectorId = $connector_id
+        RETURN DISTINCT r.id AS id, r.externalRecordId AS externalRecordId, r.recordType AS recordType
+        """
+        results = await self.client.execute_query(
+            query, parameters={"user_id": user_id, "connector_id": connector_id}, txn_id=transaction
+        )
+        return [dict(row) for row in results or []]
+
     # ==================== Connector Deletion Helper Methods ====================
 
     async def _collect_connector_entities(

@@ -6015,6 +6015,17 @@ class IGraphDBProvider(ABC):
         edges were deleted."""
         raise NotImplementedError
 
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on, as ``{id, externalRecordId, recordType}``.
+        Grants through groups, teams, the organization or inheritance are not included. A failed read raises: an
+        empty list must mean the user holds no such grant, since callers add and remove grants from it."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_uploaded_document_ids(
         self,
