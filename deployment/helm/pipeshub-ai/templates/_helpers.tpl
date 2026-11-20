@@ -1072,49 +1072,74 @@ adds what is specific to its role after it.
 {{- end }}
 
 {{/*
+.value times ten to the power .exp ("9", "+009", "-3"), as a float. Leading
+zeros in the exponent are allowed, as both Kubernetes and Neo4j allow them.
+The loop is bounded: an exponent above 30 fails the render with .what, and
+one below -30 is zero for any value a size can take.
+*/}}
+{{- define "pipeshub-ai.timesPow10" -}}
+{{- $digits := regexReplaceAll "^0+" (trimPrefix "-" (trimPrefix "+" (toString .exp))) "" | default "0" -}}
+{{- if gt (len $digits) 2 }}{{ $digits = "99" }}{{ end -}}
+{{- $exp := atoi $digits -}}
+{{- $v := float64 .value -}}
+{{- if hasPrefix "-" (toString .exp) -}}
+{{- if gt $exp 30 }}{{ $v = 0.0 }}{{ else }}{{ range until $exp }}{{ $v = divf $v 10 }}{{ end }}{{ end -}}
+{{- else -}}
+{{- if gt $exp 30 }}{{ fail .what }}{{ end -}}
+{{- range until $exp }}{{ $v = mulf $v 10 }}{{ end -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
+
+{{/*
 A Kubernetes memory quantity in whole MiB, following the apimachinery grammar:
 a number ("8", "8.5", ".5") and one suffix, binary ("Ki" to "Ei"), decimal
-("m", "k" to "E") or a signed exponent ("e9", "e+9", "E-3"). A large integer in
-a values file arrives as a float and prints as "8.589934592e+09". The sum is
-kept in bytes and divided once: sprig's mulf and divf keep 16 digits, so a
-factor like 1/1048576 would make 8589934592 bytes 8191 MiB.
+("m", "k" to "E") or a signed exponent ("e9", "e+9", "E-3", "e+009"). A large
+integer in a values file arrives as a float and prints as "8.589934592e+09".
+The sum is kept in bytes and divided once: sprig's mulf and divf keep 16
+digits, so a factor like 1/1048576 would make 8589934592 bytes 8191 MiB.
 */}}
 {{- define "pipeshub-ai.memoryMiB" -}}
 {{- $q := trimPrefix "+" (toString .) -}}
 {{- $n := regexFind "^([0-9]+(\\.[0-9]*)?|\\.[0-9]+)" $q -}}
 {{- $suffix := trimPrefix $n $q -}}
 {{- $perUnit := dict "" 1 "m" 0.001 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "P" 1000000000000000 "E" 1000000000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "Pi" 1125899906842624 "Ei" 1152921504606846976 -}}
+{{- $unreadable := printf "neo4j.resources.limits.memory %q is not a memory quantity the chart can read; set the NEO4J_server_memory_* sizes in neo4j.env" (toString .) -}}
 {{- $bytes := 0.0 -}}
-{{- if and $n (regexMatch "^[eE][+-]?[0-9]{1,2}$" $suffix) -}}
-{{- $exp := regexFind "[0-9]+$" $suffix | trimPrefix "0" | default "0" | atoi -}}
-{{- $bytes = float64 $n -}}
-{{- range until $exp -}}
-{{- if contains "-" $suffix }}{{ $bytes = divf $bytes 10 }}{{ else }}{{ $bytes = mulf $bytes 10 }}{{ end -}}
-{{- end -}}
+{{- if and $n (regexMatch "^[eE][+-]?[0-9]+$" $suffix) -}}
+{{- $bytes = include "pipeshub-ai.timesPow10" (dict "value" $n "exp" (substr 1 -1 $suffix) "what" $unreadable) | float64 -}}
 {{- else if and $n (hasKey $perUnit $suffix) -}}
 {{- $bytes = mulf $n (get $perUnit $suffix) -}}
 {{- else -}}
-{{- fail (printf "neo4j.resources.limits.memory %q is not a memory quantity the chart can read; set the NEO4J_server_memory_* sizes in neo4j.env" (toString .)) -}}
+{{- fail $unreadable -}}
 {{- end -}}
 {{- divf $bytes 1048576 | floor | int64 -}}
 {{- end -}}
 
 {{/*
 A Neo4j byte size in whole MiB, rounded up, read as Neo4j 5's ByteUnit.parse
-does: a number, optional blanks, then one of its unit names, case-sensitive
-and binary ("B", "k"/"K"/"KB"/"KiB", "m"/"MB"/"MiB", "g"/"GB"/"GiB", "TB"/"TiB",
-"PB"/"PiB", "EB"/"EiB"). A size Neo4j would refuse fails the render instead.
+does. The number is Java's English NumberFormat: grouping commas, a fraction,
+and an exponent only as an uppercase "E" with an optional "-" ("3E9", "3E-3";
+"3e9" and "3E+9" are refused). Then optional blanks and one of its unit names,
+case-sensitive and binary ("B", "k"/"K"/"KB"/"KiB", "m"/"MB"/"MiB",
+"g"/"GB"/"GiB", "TB"/"TiB", "PB"/"PiB", "EB"/"EiB"), and at most
+Long.MAX_VALUE bytes. A size Neo4j would refuse fails the render instead.
 */}}
 {{- define "pipeshub-ai.neo4jSizeMiB" -}}
 {{- $q := trim (toString .value) -}}
+{{- $unreadable := printf "neo4j.env.%s %q is not a size the chart can read; set the heap maximum in neo4j.env too" .name (toString .value) -}}
 {{- $n := regexFind "^([0-9][0-9,]*(\\.[0-9]*)?|\\.[0-9]+)" $q -}}
-{{- $unit := trim (trimPrefix $n $q) -}}
+{{- $exp := regexFind "^E-?[0-9]+" (trimPrefix $n $q) -}}
+{{- $unit := trim (trimPrefix $exp (trimPrefix $n $q)) -}}
 {{- $k := 1024 -}}{{- $m := 1048576 -}}{{- $g := 1073741824 -}}
 {{- $perUnit := dict "" 1 "B" 1 "KiB" $k "KB" $k "K" $k "kB" $k "kb" $k "k" $k "MiB" $m "MB" $m "M" $m "mB" $m "mb" $m "m" $m "GiB" $g "GB" $g "G" $g "gB" $g "gb" $g "g" $g "TiB" 1099511627776 "TB" 1099511627776 "PiB" 1125899906842624 "PB" 1125899906842624 "EiB" 1152921504606846976 "EB" 1152921504606846976 -}}
 {{- if or (not $n) (not (hasKey $perUnit $unit)) -}}
-{{- fail (printf "neo4j.env.%s %q is not a size the chart can read; set the heap maximum in neo4j.env too" .name .value) -}}
+{{- fail $unreadable -}}
 {{- end -}}
-{{- divf (mulf (replace "," "" $n) (get $perUnit $unit)) 1048576 | ceil | int64 -}}
+{{- $number := include "pipeshub-ai.timesPow10" (dict "value" (replace "," "" $n) "exp" (trimPrefix "E" $exp | default "0") "what" $unreadable) | float64 -}}
+{{- $bytes := mulf $number (get $perUnit $unit) -}}
+{{- if gt $bytes 9223372036854775807.0 }}{{ fail $unreadable }}{{ end -}}
+{{- divf $bytes 1048576 | ceil | int64 -}}
 {{- end -}}
 
 {{/*
