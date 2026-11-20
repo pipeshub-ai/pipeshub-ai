@@ -25,6 +25,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     SchemeKnowledge,
     apply_issue_access_settled,
     browse_issue_holders,
+    picker_group_external_id,
     unreadable_reason,
     user_grant_key,
 )
@@ -3524,7 +3525,8 @@ class TestLevelReadersFollowTheMembersRead:
         assert self._reporter_grant(c)[0] == ["rep@x.com"]  # read in full: the reporter reads it alone
         self._group_read(c, None, cut_short=False)  # the group's member read fails
         await c._sync_user_groups([self.REP, self.OTHER])
-        assert "group-1" not in c._group_members
+        assert c._group_members.get("group-1") is None  # listed and not read: unknown, never "no member"
+        assert c._groups_complete is True
         c._role_members = {"PROJ_10003": [], "PROJ_projectLead": []}
         assert self._reporter_grant(c) == ([], [LEVEL_MEMBERS_UNREAD])
 
@@ -3773,3 +3775,245 @@ class TestTheRetryReplay:
         c, asked = self._connector_with(point, ["1001", "1002"], cut_short=False)
         await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
         assert asked[0] == ["1001", "1002"] and json.loads(point["reindex_retry"]) == {}
+
+
+PICKER = "customfield_10050"
+# A level holding only a group custom field: "Grant for a user in the group selected in the specified custom field
+# (`parameter` : custom field ID, `value` : custom field ID)" (api-group-permission-schemes).
+PICKER_LEVEL = {"10102": [{"type": "groupCustomField", "parameter": PICKER, "value": PICKER}]}
+PICKED = {"groupId": "g-pick", "name": "approvers", "self": "https://x.atlassian.net/rest/api/3/group?groupId=g-pick"}
+OTHER = {"groupId": "g-other", "name": "others", "self": "https://x.atlassian.net/rest/api/3/group?groupId=g-other"}
+
+
+def _picked_issue(value: object, updated: str = "2024-06-15T10:00:00.000+0000") -> dict:
+    """Issue 1001 in level 10102, reported by acc-1 (rep@x.com), whose group picker holds ``value``."""
+    issue = _issue({"id": "10102", "name": "Leadership"}, updated=updated)
+    issue["fields"][PICKER] = value
+    return issue
+
+
+def _picker_context(group_members: dict | None, *, complete: bool = True) -> IssueSecurityContext:
+    ctx = _present({lid: list(holders) for lid, holders in PICKER_LEVEL.items()})
+    ctx.browse_holders, ctx.level_readers = [{"type": "reporter"}], {}
+    ctx.group_members, ctx.groups_complete = group_members, complete
+    return ctx
+
+
+class TestAGroupPickerOnALeveledIssue:
+    """A level's ``groupCustomField`` holder grants "anyone listed in a Group picker (single or multi-select) type field on
+    a work item" (Atlassian admin guide). Someone Browse names on the issue (its reporter here) who is in a selected group
+    reads it in Jira without browsing the project, so they get a grant of their own; anyone else does not."""
+
+    @staticmethod
+    async def _access(value: object, group_members: dict | None, *, complete: bool = True) -> tuple:
+        record, perms, _ = await _build(_connector(), _picked_issue(value), _picker_context(group_members, complete=complete))
+        return record.access_rule, sorted((str(p.entity_type), p.email or p.external_id) for p in perms)
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_in_the_selected_group_reads_it_after_a_sync(self) -> None:
+        """OPEN with the reporter's own grant; the group's other members read it with the project, through a record group
+        under the project that holds the group (RESTRICTED there, as the level's own record group is)."""
+        c = _connector()
+        record, perms, _ = await _build(c, _picked_issue(PICKED), _picker_context({"g-pick": [_users()[0]]}))
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert record.access_group_external_id == picker_group_external_id(PROJECT_ID, "10102", {"g-pick"})
+        (group, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert (group.external_group_id, group.parent_external_group_id, group.access_rule, group.access_only) == (
+            record.access_group_external_id, PROJECT_ID, AccessRule.RESTRICTED, True)
+        assert [(p.entity_type, p.external_id) for p in grants] == [(EntityType.GROUP, "g-pick")]
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_outside_the_selected_group_gets_no_grant(self) -> None:
+        assert await self._access(PICKED, {"g-pick": [_users()[1]]}) == (AccessRule.STRICT, [])
+
+    @pytest.mark.asyncio
+    async def test_the_record_group_is_written_once_per_sync_and_holds_the_level_s_other_holders(self) -> None:
+        c = _connector()
+        ctx = _picker_context({"g-pick": [_users()[0]]})
+        ctx.members_by_level["10102"].append({"type": "group", "value": "group-1"})
+        await _build(c, _picked_issue(PICKED), ctx)
+        await _build(c, _picked_issue(PICKED, updated="2024-06-16T10:00:00.000+0000"), ctx)
+        (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert c.data_entities_processor.on_new_record_groups.await_count == 1
+        assert sorted(p.external_id for p in grants) == ["g-pick", "group-1"]
+
+    @pytest.mark.asyncio
+    async def test_without_per_issue_browse_holders_the_issue_keeps_its_level_s_record_group(self) -> None:
+        """No one reads it alone, so nothing changes: the level's record group and a group grant on the issue (STRICT)."""
+        ctx = _picker_context({"g-pick": [_users()[0]]})
+        ctx.browse_holders = []
+        c = _connector()
+        record, perms, _ = await _build(c, _picked_issue(PICKED), ctx)
+        assert (record.access_rule, record.access_group_external_id, [p.external_id for p in perms]) == (
+            AccessRule.STRICT, "level:p-1:10102", ["g-pick"])
+        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_multi_group_picker_counts_every_group_it_selects(self) -> None:
+        members = {"g-other": [_users()[1]], "g-pick": [_users()[0]]}
+        assert await self._access([OTHER, PICKED], members) == (AccessRule.OPEN, [("EntityType.USER", "rep@x.com")])
+        assert (await self._access([OTHER], members))[0] == AccessRule.STRICT
+
+    @pytest.mark.asyncio
+    async def test_an_unread_group_grants_nobody_alone_and_says_so(self) -> None:
+        """Never read as "not a member" nor as "a member": the issue is written without the reporter's grant, and the
+        level's members are reported unread (``LEVEL_MEMBERS_UNREAD``)."""
+        for members, complete in (({"g-pick": None}, True), ({}, False)):
+            ctx = _picker_context(members, complete=complete)
+            record = _stored_ticket()
+            perms, skipped, settled = apply_issue_access_settled(
+                record, _picked_issue(PICKED)["fields"], is_subtask=False, project_key="PROJ", context=ctx,
+                user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+            assert (record.access_rule, perms, settled) == (AccessRule.STRICT, [], True)
+            assert LEVEL_MEMBERS_UNREAD in skipped
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_group_has_no_member(self) -> None:
+        """Every group was listed and this one was not: it was deleted, so no one is in it (and nothing waits for it)."""
+        ctx = _picker_context({"g-other": [_users()[0]]})
+        record = _stored_ticket()
+        _, skipped, _ = apply_issue_access_settled(
+            record, _picked_issue(PICKED)["fields"], is_subtask=False, project_key="PROJ", context=ctx,
+            user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+        assert (record.access_rule, skipped) == (AccessRule.STRICT, [])
+
+    @pytest.mark.asyncio
+    async def test_a_renamed_group_is_matched_by_its_id_and_a_name_alone_never(self) -> None:
+        """``groupId`` "uniquely identifies the group" (GroupName); a name may be another group's id, so an entry with a
+        name only is not known: no grant, members unread."""
+        renamed = {**PICKED, "name": "approvers-renamed"}
+        assert (await self._access(renamed, {"g-pick": [_users()[0]]}))[0] == AccessRule.OPEN
+        ctx = _picker_context({"approvers": [_users()[0]]})
+        record = _stored_ticket()
+        _, skipped, _ = apply_issue_access_settled(
+            record, _picked_issue({"name": "approvers"})["fields"], is_subtask=False, project_key="PROJ", context=ctx,
+            user_by_account_id={u.source_user_id: u for u in _users()}, project_id=PROJECT_ID)
+        assert (record.access_rule, record.access_group_external_id) == (AccessRule.STRICT, "level:p-1:10102")
+        assert LEVEL_MEMBERS_UNREAD in skipped
+
+
+class TestAGroupPickerMembershipChange:
+    """Who is in a selected group changes no issue's `updated` and no level digest. The sync keeps a digest of the members
+    of the groups the pickers of each such level's issues select, and reads the level's issues again when one changes."""
+
+    @staticmethod
+    async def _sync(c: JiraConnector, point: dict, members: list[AppUser], ctx: IssueSecurityContext | None = None,
+                    ) -> tuple[list, list]:
+        """One incremental sync of PROJ with g-pick holding ``members``; every pass builds issue 1001."""
+        c._group_members, c._groups_complete = {"g-pick": members}, True
+        c._load_issue_security = AsyncMock(return_value=ctx or _present(PICKER_LEVEL))
+        c._browse_issue_holders["PROJ"] = [{"type": "reporter"}]
+        calls: list = []
+        built: list = []
+
+        async def fetch(*_a: object, level_ids: list | None = None, leveled_only: bool = False, **_kw: object) -> AsyncIterator:
+            calls.append((level_ids, leveled_only))
+            if len(calls) > 1:  # a re-read pass: the stored issue is read again
+                c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+                (record, perms, _), *_ = (await c._build_issue_records([_picked_issue(PICKED)], PROJECT_ID, _users(), True))[0]
+                built.append((record.access_rule, sorted(p.email or p.external_id for p in perms)))
+            return
+            yield
+        c._fetch_issues_batched = fetch
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        return calls[1:], built
+
+    @pytest.mark.asyncio
+    async def test_a_member_who_leaves_the_group_loses_it_at_the_next_sync_and_regains_it_on_joining(self) -> None:
+        c = _connector()
+        point = TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+        point.update({"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                      "browse_holders": IssueSecurityContext(SchemeKnowledge.PRESENT, browse_holders=[{"type": "reporter"}])
+                      .browse_fingerprint()})
+        # First sync after the upgrade: every leveled issue is read again and the picked groups are saved.
+        rereads, built = await self._sync(c, point, [_users()[0]])
+        assert rereads == [(None, True)] and built == [(AccessRule.OPEN, ["rep@x.com"])]
+        assert set(json.loads(point["level_field_groups"])["10102"]) == {"g-pick"}
+        # Nothing changed: no second pass.
+        assert await self._sync(c, point, [_users()[0]]) == ([], [])
+        # The reporter leaves g-pick in Jira: only that level is read again, and they lose the issue.
+        rereads, built = await self._sync(c, point, [_users()[1]])
+        assert rereads == [(["10102"], False)] and built == [(AccessRule.STRICT, [])]
+        # They join again: read again, and they regain it.
+        rereads, built = await self._sync(c, point, [_users()[1], _users()[0]])
+        assert rereads == [(["10102"], False)] and built == [(AccessRule.OPEN, ["rep@x.com"])]
+
+    @pytest.mark.asyncio
+    async def test_a_change_to_a_group_no_issue_selects_costs_nothing(self) -> None:
+        c = _connector()
+        point = TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+        point.update({"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                      "browse_holders": IssueSecurityContext(SchemeKnowledge.PRESENT, browse_holders=[{"type": "reporter"}])
+                      .browse_fingerprint()})
+        await self._sync(c, point, [_users()[0]])
+        c._group_members = {"g-pick": [_users()[0]], "g-elsewhere": []}
+        assert await self._sync(c, point, [_users()[0]]) == ([], [])
+
+    @pytest.mark.asyncio
+    async def test_a_sync_that_cannot_read_the_levels_keeps_the_saved_groups(self) -> None:
+        c = _connector()
+        point = TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+        point.update({"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                      "browse_holders": IssueSecurityContext(SchemeKnowledge.PRESENT, browse_holders=[{"type": "reporter"}])
+                      .browse_fingerprint()})
+        await self._sync(c, point, [_users()[0]])
+        saved = point["level_field_groups"]
+        transient = IssueSecurityContext(SchemeKnowledge.PRESENT, scheme_id="10002", defer_checkpoint=True, read_status=503)
+        await self._sync(c, point, [_users()[1]], transient)
+        assert point["level_field_groups"] == saved
+        # The next settled sync reads every leveled issue (the retry marker), so the reporter, out of g-pick, loses it.
+        assert await self._sync(c, point, [_users()[1]]) == ([(None, True)], [(AccessRule.STRICT, [])])
+
+    @pytest.mark.asyncio
+    async def test_a_failed_issue_keeps_the_saved_digests_so_the_next_sync_reads_the_level_again(self) -> None:
+        c = _connector()
+        point = TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+        point.update({"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                      "browse_holders": IssueSecurityContext(SchemeKnowledge.PRESENT, browse_holders=[{"type": "reporter"}])
+                      .browse_fingerprint()})
+        await self._sync(c, point, [_users()[0]])
+        saved = point["level_field_groups"]
+        build = c._build_issue_records
+
+        async def failing(*a: object, **kw: object) -> tuple:
+            c._issue_build_failures += 1
+            return await build(*a, **kw)
+        c._build_issue_records = failing
+        await self._sync(c, point, [_users()[1]])
+        assert point["level_field_groups"] == saved
+        c._build_issue_records = build
+        assert (await self._sync(c, point, [_users()[1]]))[0] == [(["10102"], False)]
+
+
+class TestAReindexReadsTheGroupsAPickerSelects:
+    MEMBERS = {"isLast": True, "values": [{"issueSecurityLevelId": "10102", "holder": h} for h in PICKER_LEVEL["10102"]]}
+
+    def _reindex(self, members: tuple[list[str], bool], value: object = PICKED) -> tuple[JiraConnector, dict]:
+        c = _reindex_connector(_picked_issue(value, updated="2025-01-01T00:00:00.000+0000"),
+                               [_resp(200, SCHEME), _resp(200, self.MEMBERS)])
+        c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
+        c._fetch_group_members = AsyncMock(return_value=members)
+        return c, TestTheRetryListKeepsWhatAReindexAdds._store(c, [])
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_in_the_selected_group_reads_it_after_a_reindex_and_the_sync_tracks_the_group(self) -> None:
+        c, point = self._reindex((["acc-1"], True))
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert (record.access_rule, [p.email for p in perms]) == (AccessRule.OPEN, ["rep@x.com"])
+        assert c._fetch_group_members.await_args.args[0] == "g-pick"
+        # The next sync reads it, so the group's later member changes re-read it.
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]
+
+    @pytest.mark.asyncio
+    async def test_a_reporter_outside_the_selected_group_gets_no_grant_from_a_reindex(self) -> None:
+        c, _ = self._reindex((["acc-2"], True))
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0], "acc-2": _users()[1]})
+        assert record.access_rule == AccessRule.STRICT and all(p.entity_type != EntityType.USER for p in perms)
+
+    @pytest.mark.asyncio
+    async def test_a_selected_group_read_that_fails_grants_nobody_alone_and_queues_the_issue(self) -> None:
+        c, point = self._reindex(([], False))
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert (record.access_rule, record.source_updated_at) == (AccessRule.STRICT, 1)
+        assert all(p.entity_type != EntityType.USER for p in perms)
+        assert TestTheRetryListKeepsWhatAReindexAdds._queued(point) == ["1001"]

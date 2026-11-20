@@ -94,6 +94,7 @@ from app.connectors.sources.atlassian.core.html_utils import (
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     BROWSE_ISSUE_HOLDER_TYPES,
     HOLDER_GROUP,
+    HOLDER_GROUP_FIELD,
     HOLDER_USER,
     HOLDER_USER_FIELD,
     LEVEL_MEMBERS_UNREAD,
@@ -108,6 +109,8 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     closed_level_groups,
     collect_paged_values,
     custom_field_ids_from_members,
+    field_group_ids,
+    group_members_digest,
     http_status_is_transient,
     index_members,
     level_group_external_id,
@@ -116,6 +119,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     level_reads_alike,
     levels_after_walk,
     plan_level_reread,
+    picker_group_external_id,
     pre_walk_marker,
     read_security_level,
     refuses_a_scope,
@@ -605,8 +609,14 @@ class JiraConnector(BaseConnector):
         # The role list security levels apply: the one read this sync, or the last one kept (``roles_for_levels``).
         self._level_roles: dict[str, list[dict[str, Any]]] = {}
         # Members of each group (by id and name) and role (``<key>_<role id>``, ``<key>_projectLead``) read in full by the
-        # last group and role read, so a level's members are known (``level_readers``). One not read then is unknown.
-        self._group_members: dict[str, list[AppUser]] = {}
+        # last group and role read, so a level's members are known (``level_readers``). One not read then is unknown (None).
+        self._group_members: dict[str, list[AppUser] | None] = {}
+        # The last group read listed every group, so a group it did not list has no member (``groups_complete``).
+        self._groups_complete: bool = False
+        # Level id -> the groups the group pickers of the issues this project sync wrote select (``_save_field_groups``).
+        self._field_groups_seen: dict[str, set[str]] = {}
+        # The record groups of picked groups (``picker_group_external_id``) this project sync wrote.
+        self._picker_groups_written: set[str] = set()
         self._role_members: dict[str, list[AppUser]] = {}
         # True when the group list stopped on something other than 401/403 (rate limit, outage,
         # dropped connection): the groups are there and could not be read this time.
@@ -1749,6 +1759,7 @@ class JiraConnector(BaseConnector):
         issues_to_retry: str | None = None,
         people_reread: str | None = None,
         people_read: int | None = None,
+        level_field_groups: str | None = None,
         *,
         add_retry: str | None = None,
         ack_retry: dict[str, str] | None = None,
@@ -1787,6 +1798,7 @@ class JiraConnector(BaseConnector):
                 "issues_to_retry": issues_to_retry if issues_to_retry is not None else existing.get("issues_to_retry"),
                 "people_reread": people_reread if people_reread is not None else existing.get("people_reread"),
                 "people_read": people_read if people_read is not None else existing.get("people_read"),
+                "level_field_groups": level_field_groups if level_field_groups is not None else existing.get("level_field_groups"),
                 "reindex_retry": json.dumps(requests, sort_keys=True),
             }
 
@@ -3807,6 +3819,7 @@ class JiraConnector(BaseConnector):
         self._group_ids_by_name = {}
         # A group this read leaves unread is unknown to level readers, though the graph keeps its stored members.
         self._group_members = {}
+        self._groups_complete = False
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
 
@@ -3831,6 +3844,7 @@ class JiraConnector(BaseConnector):
                 return None
             if not groups:
                 self.logger.info("ℹ️ No groups found in Jira")
+                self._groups_complete = True
                 return {}
 
             self.logger.info(f"👥 Found {len(groups)} groups. Fetching members...")
@@ -3862,7 +3876,7 @@ class JiraConnector(BaseConnector):
                 # Add group to batch (with or without members)
                 user_groups_batch.append((user_group, _listed(app_users, listed)))
 
-            self._group_members = {k: v for k, v in groups_members_map.items() if v is not None}
+            self._group_members = groups_members_map
 
             if self._user_read_unfinished:
                 user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
@@ -3878,6 +3892,7 @@ class JiraConnector(BaseConnector):
 
             # A list cut short may miss a group that took a name since: no name resolves then.
             self._group_ids_by_name = {} if fetch_failed else group_ids_by_name
+            self._groups_complete = not fetch_failed
             return None if fetch_failed else groups_members_map
 
         except StoredAccessReadError:
@@ -4870,6 +4885,8 @@ class JiraConnector(BaseConnector):
         self._issue_security[project_id] = security
         security.level_readers = self._level_readers(
             security, project_key, self._grant_directory({u.source_user_id: u for u in jira_users if u.source_user_id}))
+        security.group_members, security.groups_complete = self._group_members, self._groups_complete
+        self._field_groups_seen, self._picker_groups_written = {}, set()
         self._issue_build_failures = 0
         self._parents_to_retry = set()
         self._issues_to_retry = set()
@@ -4895,6 +4912,20 @@ class JiraConnector(BaseConnector):
         browse = security.browse_fingerprint()
         if not is_new_project and browse not in ("?", stored_browse):
             reread, changed_levels = "project", None
+        field_levels = self._field_group_levels(security) if readable and not security.defer_checkpoint else []
+        try:
+            stored_field_groups = json.loads((project_sync_data or {}).get("level_field_groups") or "{}")
+        except (TypeError, ValueError):
+            stored_field_groups = {}
+        if not isinstance(stored_field_groups, dict):
+            stored_field_groups = {}
+        # Who is in a group a group picker selects moves no issue's `updated` and no level digest: a level whose picked
+        # groups gained or lost a member (or that no sync tracked yet) reads its issues again.
+        moved = [lid for lid in field_levels if not isinstance(stored_field_groups.get(lid), dict) or any(
+            digest != group_members_digest(self._group_members.get(gid, [] if self._groups_complete else None))
+            for gid, digest in stored_field_groups[lid].items())]
+        if moved and not is_new_project and reread in (None, "levels"):
+            reread, changed_levels = "levels", sorted({*(changed_levels or []), *moved})
         browse_to_save = browse
         if browse == "?" and stored_browse != "?":
             # Saved before the walk, as the level marker is: issues written meanwhile keep their stored grants, and
@@ -5092,6 +5123,9 @@ class JiraConnector(BaseConnector):
                     f"Some issues of {project_key} could not be read again; re-reading them next sync"
                 )
 
+        if readable and not security.defer_checkpoint:  # otherwise nothing was settled: the saved groups stay
+            await self._save_field_groups(project_key, field_levels, stored_field_groups, is_new_project or reread in (
+                "leveled", "project") or placement_reread, set(changed_levels or []) if reread == "levels" else set())
         saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
@@ -5192,6 +5226,36 @@ class JiraConnector(BaseConnector):
                 grants, self._group_members, self._role_members)
         return out
 
+    @staticmethod
+    def _field_group_levels(security: IssueSecurityContext) -> list[str]:
+        """The levels where a group picker can make someone Browse names on an issue read it alone (``_reads_alone``): a
+        ``groupCustomField`` holder, in a project whose Browse holders name people on each issue."""
+        if not security.browse_holders:
+            return []
+        return sorted(lid for lid, holders in security.members_by_level.items()
+                      if any(isinstance(h, dict) and h.get("type") == HOLDER_GROUP_FIELD for h in holders))
+
+    async def _save_field_groups(
+        self, project_key: str, field_levels: list[str], stored: dict[str, Any], every_issue: bool, reread_levels: set[str],
+    ) -> None:
+        """Save, per level of ``field_levels``, the groups the group pickers of its issues select with a digest of their
+        members, so the next sync reads the level's issues again when one of those groups changes (and only then).
+        A level whose every stored issue was read this sync holds only the groups seen; any other adds them to those
+        saved. After a failed issue the saved digests stay and a group first seen is saved unread, so the next sync
+        reads the level again."""
+        to_save: dict[str, dict[str, str]] = {}
+        for lid in field_levels:
+            kept = stored.get(lid) if isinstance(stored.get(lid), dict) else {}
+            seen = self._field_groups_seen.get(lid, set())
+            if self._issue_build_failures:
+                to_save[lid] = {**{gid: "?" for gid in seen}, **kept}
+                continue
+            groups = seen if every_issue or lid in reread_levels else {*kept, *seen}
+            to_save[lid] = {gid: group_members_digest(self._group_members.get(gid, [] if self._groups_complete else None))
+                            for gid in sorted(groups)}
+        if to_save != stored:
+            await self._update_project_sync_checkpoint(project_key, level_field_groups=json.dumps(to_save, sort_keys=True))
+
     def _by_group_id(self, holders: list[Any]) -> list[Any]:
         """A level's holders with each group named only by its name resolved to its id (``_group_ids_by_name``): members are
         held by group id, and a name may equal another group's id. One that does not resolve names no group read."""
@@ -5212,7 +5276,8 @@ class JiraConnector(BaseConnector):
 
     async def _reindex_level_readers(
         self, security: IssueSecurityContext, project_key: str, synced: dict[str, AppUser], level_id: str | None,
-    ) -> None:
+        fields: dict[str, Any] | None = None,
+    ) -> set[str]:
         """Add the readers of ``level_id`` (``_level_readers``) to ``security`` for a reindex, from members read now: the
         sync's are as old as the last sync, and a person Jira removed since must not read an issue alone through them.
 
@@ -5222,20 +5287,25 @@ class JiraConnector(BaseConnector):
         a sync would hold (``_member_directory``) and as the sync resolves them (``_role_actor_members``, the lead's account),
         groups at most ``REINDEX_GROUP_READS`` per project. One not read in full, or a group past the cap (a role's too), is
         unknown: its level grants no one alone (``LEVEL_MEMBERS_UNREAD``), and the issue waits for the next sync. The sync's
-        member maps are left as they are."""
+        member maps are left as they are. The groups the issue's group pickers select for the level are read the same way
+        (``group_members``); returns their ids."""
         if not security.browse_holders or level_id not in security.members_by_level:
-            return
+            return set()
+        users = {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **synced}
+        picked, _ = field_group_ids(security.members_by_level[level_id], fields or {})
+        for group_id in sorted(picked):
+            await self._reindex_group_members(security, group_id, users)
+        security.group_members = security.reindex_groups
         if security.level_readers is None:
             security.level_readers = {}
         if level_id in security.level_readers:
-            return
+            return picked
         grants, skipped = level_group_grants(
             self._by_group_id(security.members_by_level[level_id]), project_key=project_key,
             user_by_id=self._grant_directory(synced), app_roles_mapping=self._level_roles_by_id())
         if set(skipped) - {HOLDER_USER}:
             security.level_readers[level_id] = None
-            return
-        users = {**{u.source_user_id: u for u in self._listed_without_email() if u.source_user_id}, **synced}
+            return picked
         for grant in grants:
             if grant.entity_type == EntityType.GROUP:
                 await self._reindex_group_members(security, str(grant.external_id), users)
@@ -5243,6 +5313,7 @@ class JiraConnector(BaseConnector):
                 security.reindex_roles[str(grant.external_id)] = await self._reindex_role_members(
                     security, project_key, str(grant.external_id), users)
         security.level_readers[level_id] = level_readers(grants, security.reindex_groups, security.reindex_roles)
+        return picked
 
     async def _reindex_group_members(
         self, security: IssueSecurityContext, group_id: str, users: dict[str, AppUser],
@@ -5305,21 +5376,26 @@ class JiraConnector(BaseConnector):
 
     async def _write_level_groups(
         self, project_id: str, project_key: str, security: IssueSecurityContext, level_ids: list[str],
-        user_by_account_id: dict[str, AppUser],
+        user_by_account_id: dict[str, AppUser], picked: set[str] | None = None,
     ) -> None:
         """Write the record group of each level: its holders that name the same people on every
         issue, once (``level_group_grants``). A level the scheme no longer lists is written with
-        none, so its issues close at once. One write per level, whatever the number of its issues."""
+        none, so its issues close at once. One write per level, whatever the number of its issues.
+        With ``picked``, the record group of the level's issues whose group pickers select those groups
+        (``picker_group_external_id``): the same holders, and those groups."""
         groups: list[tuple[RecordGroup, list[Permission]]] = []
         for level_id in level_ids:
             grants, skipped = level_group_grants(
                 security.members_by_level.get(level_id, []), project_key=project_key,
                 user_by_id=user_by_account_id, app_roles_mapping=self._level_roles,
             )
+            external_id = picker_group_external_id(project_id, level_id, picked) if picked \
+                else level_group_external_id(project_id, level_id)
+            grants += [Permission(entity_type=EntityType.GROUP, external_id=gid, type=PermissionType.READ)
+                       for gid in sorted(picked or ()) if gid not in {g.external_id for g in grants}]
             if skipped:
                 self.logger.warning(
                     f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
-                external_id = level_group_external_id(project_id, level_id)
                 # Only an unfinished user read leaves a user holder unknown; a role holder resolves (or not) from the role
                 # list the levels apply (``roles_for_levels``), so past its bound the group drops the roles' groups.
                 if self._user_read_unfinished and HOLDER_USER in skipped and await \
@@ -5330,7 +5406,7 @@ class JiraConnector(BaseConnector):
             groups.append((RecordGroup(
                 id=str(uuid4()),
                 org_id=self.data_entities_processor.org_id,
-                external_group_id=level_group_external_id(project_id, level_id),
+                external_group_id=external_id,
                 parent_external_group_id=project_id,
                 connector_id=self.connector_id,
                 connector_name=self.connector_name,
@@ -5359,6 +5435,21 @@ class JiraConnector(BaseConnector):
         if not skipped and level_id:
             await self._write_level_groups(project_id, project_key, security, [level_id], user_by_account_id)
         return skipped
+
+    async def _ensure_picker_group(
+        self, record: Record, project_id: str, project_key: str, security: IssueSecurityContext, fields: dict[str, Any],
+        user_by_account_id: dict[str, AppUser], *, once: bool = True,
+    ) -> None:
+        """Write the record group a leveled issue inherits when its group pickers select groups (``picker_group_external_id``)
+        before the issue is written; ``once`` per project sync."""
+        level_id = read_security_level(fields)[1]
+        picked, _ = field_group_ids(security.members_by_level.get(level_id or "", []), fields)
+        if not level_id or not picked or record.access_group_external_id != picker_group_external_id(project_id, level_id, picked):
+            return
+        if once and record.access_group_external_id in self._picker_groups_written:
+            return
+        await self._write_level_groups(project_id, project_key, security, [level_id], user_by_account_id, picked=picked)
+        self._picker_groups_written.add(record.access_group_external_id)
 
     async def _record_security_levels(
         self, project_key: str, levels: dict[str, str], *, force: bool = False,
@@ -6485,6 +6576,12 @@ class JiraConnector(BaseConnector):
                                                                  existing_record.access_rule)), None),
             )
             permissions = self._directory_grants(permissions, user_by_account_id)
+            level_id = read_security_level(fields)[1]
+            if security.browse_holders and level_id:
+                self._field_groups_seen.setdefault(level_id, set()).update(
+                    field_group_ids(security.members_by_level.get(level_id, []), fields)[0])
+                await self._ensure_picker_group(issue_record, project_id, project_key, security, fields,
+                                                self._grant_directory(user_by_account_id))
             if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
                     not in self._skipped_holders_logged:
                 self._skipped_holders_logged.add(logged)
@@ -8528,8 +8625,9 @@ class JiraConnector(BaseConnector):
                 )
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
-            await self._reindex_level_readers(
-                security, project.get("key") or project_ref, synced_user_by_account_id or {}, read_security_level(fields)[1])
+            picked_groups = await self._reindex_level_readers(
+                security, project.get("key") or project_ref, synced_user_by_account_id or {}, read_security_level(fields)[1],
+                fields)
 
             # The epic's level may have changed since the last sync read it.
             await self._learn_parent_levels([issue], refresh=True, security=security)
@@ -8609,13 +8707,19 @@ class JiraConnector(BaseConnector):
             permissions = self._directory_grants(permissions, synced_user_by_account_id or {})
             # The level's members are not known in this process yet (no sync since it started): written without a grant
             # through them, never wider, and read again by the next sync.
-            members_pending = LEVEL_MEMBERS_UNREAD in skipped_holders
+            # Or its group pickers select groups the next sync must track (``_save_field_groups``): a later change of who is
+            # in them moves neither its `updated` nor a level digest.
+            members_pending = LEVEL_MEMBERS_UNREAD in skipped_holders or bool(picked_groups)
             skipped_holders = [h for h in skipped_holders if h != LEVEL_MEMBERS_UNREAD]
             if settled and not skipped_holders and issue_record.access_group_external_id:
                 skipped_holders = await self._ensure_level_group(
                     project_id, project.get("key") or project_ref,
                     security, read_security_level(fields)[1], self._grant_directory(synced_user_by_account_id or {}),
                 )
+                if not skipped_holders:
+                    await self._ensure_picker_group(
+                        issue_record, project_id, project.get("key") or project_ref, security, fields,
+                        self._grant_directory(synced_user_by_account_id or {}), once=False)
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder
                 # did not resolve (application roles are read by the sync): writing would
