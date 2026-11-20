@@ -616,3 +616,24 @@ async def test_a_search_that_ends_short_of_its_total_drops_no_issue_from_the_ret
 
     assert to_retry(store) == ["1001", "1002"]
     assert grants(db, "comment_602") == set(), "1002 was not read"
+
+
+@pytest.mark.parametrize(("pages", "kept"), [
+    # An opening empty page while Jira counts 2: nothing was read, so nothing leaves the list.
+    ({0: {"issues": [], "total": 2}}, ["1001", "1002"]),
+    # Jira counts what it gave: a complete answer, and the id it did not return (moved away) leaves the list.
+    ({0: {"total": 1}}, []),
+    # A total of 0 is a complete answer of none: both leave the list.
+    ({0: {"issues": [], "total": 0}}, []),
+])
+async def test_the_retry_list_keeps_what_a_search_did_not_answer_for(site, db, store, search, pages, kept) -> None:
+    connector = await retry_list_of_two(site, search, db, store)
+    search.pages.clear()
+    for start, page in pages.items():
+        if "issues" not in page:  # the first issue alone, with the given total
+            page = {"issues": two_issues_with_role_comments()[:1], **page}
+        search.pages[("ENG", start)] = page
+
+    await connector.run_sync()
+
+    assert to_retry(store) == kept
