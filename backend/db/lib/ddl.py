@@ -9,8 +9,8 @@ import re
 import time
 from collections.abc import Callable
 from datetime import date, datetime, timezone
-from typing import Any
 
+import psycopg
 from sqlalchemy import Connection
 from sqlalchemy.exc import OperationalError
 
@@ -93,15 +93,36 @@ def _build(conn: Connection, table: str, schema: str, idx: str, cols: str, u: st
             if not attached:
                 run(f"ALTER INDEX {schema}.{idx} ATTACH PARTITION {schema}.{child_idx}")
     else:
-        if blocking or conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar():
-            # A leaf that never held a row (a new install): a plain build takes its lock for no time and, unlike CONCURRENTLY, does not wait
-            # for every other session's snapshot.
-            run(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON {table} {using}({cols}){w}")
-        else:
+        plain = f"CREATE {u}INDEX IF NOT EXISTS {idx} ON {table} {using}({cols}){w}"
+        if blocking:
+            conn.exec_driver_sql(plain)
+        elif not (conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar() and _retry(conn, lambda: _plain_if_empty(conn, table, plain))):
             ensure_index(conn, f"{schema}.{idx}", f"CREATE {u}INDEX CONCURRENTLY {idx} ON {table} {using}({cols}){w}")
 
 
-def _retry(conn: Connection, step: Callable[[], Any], attempts: int = 3, backoff: float = 0.5) -> None:
+def _plain_if_empty(conn: Connection, table: str, plain: str) -> bool:
+    """A leaf that never held a row (a new organisation's): a plain build is instant and, unlike CONCURRENTLY, does not wait for every other
+    session's snapshot. It is made under the leaf's SHARE lock, taken before the leaf is looked at again, so no writer can fill it in between and
+    have the build read its rows with every writer waiting. False when the leaf holds rows by then (the caller builds it CONCURRENTLY). Inside a
+    revision's transaction (a new install's baseline) the lock lasts to that commit and no transaction of its own is opened."""
+    own = conn.connection.driver_connection.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    if own:
+        conn.exec_driver_sql("BEGIN")
+    try:
+        conn.exec_driver_sql(f"LOCK TABLE {table} IN SHARE MODE")
+        empty = conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar()
+        if empty:
+            conn.exec_driver_sql(plain)
+        if own:
+            conn.exec_driver_sql("COMMIT")
+    except BaseException:
+        if own:
+            conn.exec_driver_sql("ROLLBACK")
+        raise
+    return bool(empty)
+
+
+def _retry[T](conn: Connection, step: Callable[[], T], attempts: int = 3, backoff: float = 0.5) -> T:
     """Run ``step`` under a 2 s lock_timeout; a lock timeout is retried with backoff."""
     conn.exec_driver_sql("SET lock_timeout = '2s'")
     try:
