@@ -16,9 +16,20 @@ from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.connectors.sources.zammad.connector import ZammadConnector, ZammadSyncIncompleteError
+from zammad_behaviour_fakes import (
+    FakeConfigService,
+    FakeDirectory,
+    FakeHttpResponse,
+    FakeStore,
+    FakeZammadPeople,
+)
+
+from app.connectors.sources.zammad.connector import (
+    ZammadConnector,
+    ZammadSyncIncompleteError,
+)
+from app.sources.client.http.http_request import HTTPRequest
 from app.sources.external.zammad.zammad import ZammadDataSource
-from zammad_behaviour_fakes import FakeConfigService, FakeDirectory, FakeStore, FakeZammadPeople
 
 CONNECTOR_ID = "zm-departed"
 SUPPORT = 1
@@ -114,7 +125,7 @@ async def test_an_account_missing_from_the_list_but_still_in_zammad_keeps_the_co
     hidden = world.zammad.users.pop(55)
     real_execute = world.zammad.execute
 
-    async def execute(request):  # the list misses 55, a read of 55 still finds it
+    async def execute(request: HTTPRequest) -> FakeHttpResponse:  # the list misses 55, a read of 55 still finds it
         if request.url.endswith("/api/v1/users/55"):
             world.zammad.users[55] = hidden
             try:

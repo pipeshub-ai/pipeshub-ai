@@ -855,7 +855,7 @@ class ZammadConnector(BaseConnector):
         me = await datasource.get_current_user()
         my_id = str(me.data.get("id")) if me.success and isinstance(me.data, dict) else None
         if my_id is None or not self._listed_user_ids - {my_id}:
-            self.logger.warning("⚠️ The user list holds only the token's own account; nobody loses access this sync")
+            self.logger.warning("The user list holds only the token's own account; nobody loses access this sync")
             if my_id is None:
                 self._incomplete.append("the token's own account")
             return
