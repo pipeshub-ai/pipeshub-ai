@@ -146,11 +146,10 @@ async def test_a_record_that_is_not_indexed_is_left_to_a_later_pass_by_the_named
     from unittest.mock import AsyncMock, MagicMock
 
     from app.modules.indexing.named_entity_completion import _complete_one
-    from app.modules.indexing.named_entity_persist_retry import _BUSY
 
     graph = MagicMock()
     graph.get_document = AsyncMock(return_value={"virtualRecordId": "x", "indexingStatus": "IN_PROGRESS", "orgId": "o"})
-    assert await _complete_one(graph, MagicMock(), MagicMock(), "r1", "o", 0, 0) is _BUSY
+    assert await _complete_one(graph, MagicMock(), MagicMock(), "r1", "o", 0, 0) == "not_indexed"
 
 
 def test_idle_consumers_count_as_live_for_the_strict_fleet_verdict() -> None:
@@ -189,7 +188,7 @@ async def test_a_record_failing_for_good_releases_its_pending_copy_through_the_h
     handler.event_processor = MagicMock()
     handler.event_processor.processor.sink_orchestrator.swap = swap
     await handler._release_pending_copy("r1", "o1")
-    swap.release_failed.assert_awaited_once_with("r1", "o1")
+    swap.release_failed.assert_awaited_once_with("r1", "o1", None)
     swap.release_failed = AsyncMock(side_effect=RuntimeError("down"))
     await handler._release_pending_copy("r1", "o1")  # logged, never raised: the orphan sweep reclaims the copy
     handler.logger.warning.assert_called()

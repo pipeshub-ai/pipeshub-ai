@@ -148,3 +148,18 @@ def test_only_the_indexing_service_sweeps_virtual_records_from_their_mapping_row
     sweeps = ("get_virtual_record_ids_in_use", "stage_states_unheld_revisions", "stage_states_delete_unheld_revisions",
               "_sweep_orphaned_virtual_record_mappings")
     assert _referenced_in(sweeps, ("connectors", "connectors_main.py", "query_main.py", "agents", "api", "agent_loop_lib", "modules/retrieval")) == []
+
+
+@pytest.mark.asyncio
+async def test_the_orphan_sweep_reads_the_retired_mark_again_before_it_deletes() -> None:
+    """A copy retired after the page of mapping rows was read must not be deleted on the stale row."""
+    from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+    rows = [{"_key": "just-retired", "orgId": "o1"}]  # no mark on the page the sweep read
+    graph = _paged_graph(rows)
+    graph.get_document = AsyncMock(return_value={"retiredAtMs": time.time() * 1000})  # the mark is there now
+    pipeline = AsyncMock()
+    pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
+    swept = await _sweep_orphaned_virtual_record_mappings(graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100, org_id="o1")
+    assert swept == 0
+    pipeline.rewrite_or_delete_vector_membership.assert_not_called()

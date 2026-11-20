@@ -81,6 +81,8 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         client = qdrant_client.QdrantClient(url=URL, timeout=30, prefer_grpc=False)
         client.get_collections()
     except Exception as exc:
+        if not (os.environ.get("QDRANT_REST_URL") or os.environ.get("QDRANT_IT_HOST")):
+            pytest.skip("no Qdrant is configured for this job (QDRANT_REST_URL or QDRANT_IT_HOST)")  # the offline job; a job that names one must reach it
         missing(f"Qdrant is not reachable at {URL}: {exc}")
     try:
         graph = await (connect_neo4j(logger, monkeypatch) if request.param == "neo4j" else connect_arango(logger, "keep_old_copy_search_it"))

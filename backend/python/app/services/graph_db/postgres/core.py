@@ -312,7 +312,7 @@ class CoreMixin(PgBase):
             WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3 AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset($5::jsonb) AS c(f text, op text, v jsonb) WHERE NOT CASE
                 WHEN coalesce(n.doc->c.f, 'null'::jsonb) = 'null'::jsonb THEN c.op NOT IN ('eq', 'one_of')
                 WHEN c.op IN ('eq', 'null_or_eq') THEN n.doc->c.f = c.v
-                WHEN c.op = 'one_of' THEN c.v ? (n.doc->>c.f)
+                WHEN c.op = 'one_of' THEN jsonb_typeof(n.doc->c.f) = 'string' AND c.v ? (n.doc->>c.f)
                 WHEN c.op = 'null_or_le' THEN jsonb_typeof(n.doc->c.f) = 'number' AND (n.doc->c.f)::numeric <= c.v::numeric
                 ELSE false END) RETURNING 1) SELECT count(*) FROM u""", org, collection, key, _j(upd), conds, list(unset))
         return bool(await self._q(go, transaction, write=True))

@@ -319,3 +319,101 @@ async def test_finish_retires_the_membership_of_the_old_copy() -> None:
          patch("app.modules.transformers.swap_commit.spawn_detached", lambda coro, name=None: coro.close()):
         await swap.finish(ctx_for("A", "Y"), run())
     swap._retire_membership.assert_awaited_once_with(run())
+
+
+@pytest.mark.asyncio
+async def test_a_block_that_goes_between_the_read_and_the_write_undoes_the_commit_too() -> None:
+    """The read after the write checks every block that was given a point, not only that something is there."""
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    reads = iter([["b1", "b2"], ["b1"]])
+    swap, _ = committer(g, view=lambda vrid: next(reads))
+    with pytest.raises(IndexingError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1", "b2"]), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_attaches_while_the_membership_is_taken_off_gets_it_back() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    swap, vs = committer(g)
+    vs.vector_db_service.set_payload = AsyncMock()
+    vs.collection_locator.all_collections = AsyncMock(return_value=["c1"])
+
+    async def attach(*_a: object, **_k: object) -> None:
+        g.records["B"] = rec("X", "COMPLETED")  # a duplicate attaches to the old copy during the write
+
+    vs.vector_db_service.set_payload = AsyncMock(side_effect=attach)
+    with patch("app.modules.transformers.swap_commit.org_for_filter", return_value="o"), \
+         patch("app.modules.transformers.swap_commit.mark_scope_stale", AsyncMock()), \
+         patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()) as sync:
+        await swap._retire_membership(run())
+    sync.assert_awaited_once()  # the arrays are recomputed from the holders that are there now
+
+
+@pytest.mark.asyncio
+async def test_twins_are_not_moved_onto_a_copy_the_record_has_already_left() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({
+        "A": {"orgId": "o", "virtualRecordId": "Z", "indexingStatus": "COMPLETED", "md5Checksum": "m", "connectorId": "k1"},  # a later run moved it on
+        "B": rec("X", "COMPLETED", connectorId="k1"),
+    })
+    swap, _ = committer(g)
+    with patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()):
+        await swap._repoint_twins(ctx_for("A", "Y"), run(forced=True))
+    assert g.records["B"]["virtualRecordId"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_a_twin_goes_back_when_the_record_moves_on_while_it_is_moved() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    g = FakeGraph({
+        "A": {"orgId": "o", "virtualRecordId": "Y", "indexingStatus": "COMPLETED", "md5Checksum": "m", "connectorId": "k1"},
+        "B": rec("X", "COMPLETED", connectorId="k1"),
+    })
+    swap, _ = committer(g)
+    real = g.update_node_fields_if
+
+    async def move_then_a_later_run_commits(key: str, collection: str, updates: dict, conditions: list, *a: object, **k: object) -> bool:
+        moved = await real(key, collection, updates, conditions, *a, **k)
+        if key == "B" and moved:
+            g.records["A"]["virtualRecordId"] = "Z"  # the record's later run committed while the twin was being moved
+        return moved
+
+    g.update_node_fields_if = move_then_a_later_run_commits  # type: ignore[method-assign]
+    with patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()):
+        await swap._repoint_twins(ctx_for("A", "Y"), run(forced=True))
+    assert g.records["B"]["virtualRecordId"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_a_holder_that_attaches_before_the_purge_keeps_the_old_copys_points() -> None:
+    g = FakeGraph({"A": rec("Y", "COMPLETED"), "C": rec("X", "COMPLETED", connectorId="k2")})
+    swap, vs = committer(g, collections={"k1": "c1", "k2": "c2"})
+    calls = {"n": 0}
+    real = g.get_records_by_virtual_record_id
+
+    async def lookup(vrid: str, *a: object, **k: object) -> list[str]:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            g.records["D"] = rec("X", "COMPLETED", connectorId="k1")  # attaches in this record's collection after the first read
+        return await real(vrid, *a, **k)
+
+    g.get_records_by_virtual_record_id = lookup  # type: ignore[method-assign]
+    from unittest.mock import AsyncMock, patch
+
+    with patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock()):
+        await swap.release_old_copy(run(), ctx_for("A", "Y").record)
+    vs.purge_record_vectors.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_failure_releases_only_the_copy_its_own_attempt_wrote() -> None:
+    g = FakeGraph({"A": rec("X", "FAILED", pendingVirtualRecordId="Y2")})  # another consumer's attempt has named its own copy since
+    swap, _ = committer(g)
+    await swap.release_failed("A", "o", attempt_pending="Y1")
+    assert g.records["A"]["pendingVirtualRecordId"] == "Y2"
+    swap._release_unheld.assert_not_called()

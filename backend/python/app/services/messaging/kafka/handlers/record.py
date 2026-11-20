@@ -820,8 +820,9 @@ class RecordEventHandler(BaseEventService):
         swap = getattr(orchestrator, "swap", None)
         if swap is None or not org_id:
             return
+        attempt = keep_old_copy.current_swap(record_id)
         try:
-            await swap.release_failed(record_id, org_id)
+            await swap.release_failed(record_id, org_id, attempt.new_vrid if attempt is not None else None)
         except Exception as exc:
             self.logger.warning("Replacement copy of record %s not released: %s", record_id, type(exc).__name__)
 

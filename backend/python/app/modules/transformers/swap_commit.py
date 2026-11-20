@@ -116,16 +116,8 @@ class SwapCommitter:
         return committed
 
     async def _confirm_after_commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> None:
-        """The record names the copy now. When nothing of it is in the store (a sweep took it between the read and the write, with the
-        record in a status that does not hold it), the move is undone while the old copy is still there, and the run is retried."""
-        if not self._pointed(ctx):
-            return
-        vs = self.o.vector_store
-        collection = vs.collection_registry.resolve_write_collection(vs._record_context(swap.org_id, ctx.record))
-        flt = await vs.vector_db_service.filter_collection(
-            must={"orgId": org_for_filter(swap.org_id, match_bound=True), "virtualRecordId": swap.new_vrid}
-        )
-        if await vs.vector_db_service.count_points(collection, flt) > 0:
+        """The record names the copy now. When it is not whole in the store (a sweep, or anything else, took it between the read and the write), the move is undone while the old copy is still there, and the run is retried."""
+        if await self._complete_set(ctx, swap):
             return
         await self.o.graph_provider.update_node_fields_if(
             swap.record_id, _RECORDS,
@@ -165,21 +157,14 @@ class SwapCommitter:
         pointed = (rc.new_metadata or {}).get("pointedBlocks") if rc is not None and isinstance(rc.new_metadata, dict) else None
         return frozenset(pointed or ())
 
-    async def _require_points(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
-        """Defense in depth: a copy is committed only with a point for every block that was given one, whatever removed the rest.
-
-        The holder rule is what keeps a running copy from being swept; this read turns a missing or partial set into a retry instead of a
-        COMPLETED record that cannot be found. A listing that stops at its bound (a very large record) proves only that something is there."""
-        pointed = self._pointed(ctx)
-        if not pointed:
-            return
+    async def _blocks_in_store(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> tuple[set[str], bool]:
+        """The block ids the new copy has points for, and whether the listing was whole (it stops at its bound for a very large record)."""
         vs = self.o.vector_store
         db = vs.vector_db_service
         collection = vs.collection_registry.resolve_write_collection(vs._record_context(swap.org_id, ctx.record))
         flt = await db.filter_collection(must={"orgId": org_for_filter(swap.org_id, match_bound=True), "virtualRecordId": swap.new_vrid})
         seen: set[str] = set()
         offset: str | None = None
-        complete = False
         limit = sweep_max_points()
         scanned = 0
         while True:
@@ -189,23 +174,34 @@ class SwapCommitter:
                     offset=offset, with_payload=[VIRTUAL_RECORD_ID_FIELD, BLOCK_ID_FIELD],
                 )
             except ScrollWindowExceededError:
-                break
+                return seen, False
             for point in page.points or []:
                 scanned += 1
                 if block_id := VectorChunkPayload.from_dict(point.payload or {}).metadata.blockId:
                     seen.add(block_id)
             if not page.next_offset or page.next_offset == offset:
-                complete = True
-                break
+                return seen, True
             offset = page.next_offset
             if scanned >= limit:
-                break
-        missing = pointed - seen
-        if not seen or (complete and missing):
+                return seen, False
+
+    async def _complete_set(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> bool:
+        """Whether every block that was given a point has one. A listing that stops at its bound proves only that something is there."""
+        pointed = self._pointed(ctx)
+        if not pointed:
+            return True
+        seen, complete = await self._blocks_in_store(ctx, swap)
+        return bool(seen) and not (complete and pointed - seen)
+
+    async def _require_points(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
+        """Defense in depth: a copy is committed only with a point for every block that was given one, whatever removed the rest.
+
+        The holder rule is what keeps a running copy from being swept; this read turns a missing or partial set into a retry instead of a
+        COMPLETED record that cannot be found."""
+        if not await self._complete_set(ctx, swap):
             raise IndexingError(
-                "The replacement copy is " + ("missing from" if not seen else "incomplete in")
-                + " the vector store; it is not committed and the run is retried",
-                details={"record_id": swap.record_id, "virtual_record_id": swap.new_vrid, "missing_blocks": len(missing)},
+                "The replacement copy is missing from or incomplete in the vector store; it is not committed and the run is retried",
+                details={"record_id": swap.record_id, "virtual_record_id": swap.new_vrid},
             )
 
     # ------------------------------------------------------------------ after the commit
@@ -257,6 +253,10 @@ class SwapCommitter:
         for collection in await vs.collection_locator.all_collections(fresh=True, strict=True):
             await db.set_payload(collection, empty, flt)
         await mark_scope_stale(db, vs.collection_locator, swap.old_vrid, self.logger)
+        # A record that attached to the old copy while its membership was being taken off keeps its own: the holders are read again after
+        # the write, and recomputing the arrays from them puts that record back.
+        if await graph.get_records_by_virtual_record_id(swap.old_vrid, raise_on_error=True):
+            await sync_vector_membership(db, vs.collection_locator, graph, swap.old_vrid, self.logger)
 
     async def _repoint_twins(self, ctx: TransformContext, swap: keep_old_copy.SwapRun) -> None:
         """Move the records that held the old copy with the same bytes, and the same write collection, to the new one.
@@ -268,6 +268,8 @@ class SwapCommitter:
         mine = vs.collection_registry.resolve_write_collection(vs._record_context(swap.org_id, record))
         keys = await graph.get_records_by_virtual_record_id(swap.old_vrid, raise_on_error=True)
         me = await graph.get_document(record.id, _RECORDS, raise_on_error=True) or {}
+        if me.get("virtualRecordId") != swap.new_vrid:
+            return  # a later run moved the record on: the copy it committed is retired, and twins are not moved onto it
         gate = asyncio.Semaphore(TWIN_CONCURRENCY)
 
         async def one(key: str) -> bool:
@@ -295,6 +297,13 @@ class SwapCommitter:
                          Cond("indexingStatus", EQ, ProgressStatus.COMPLETED.value),
                          Cond(PENDING_VIRTUAL_RECORD_ID, "is_null")],
                     )
+                if moved and ((await graph.get_document(record.id, _RECORDS)) or {}).get("virtualRecordId") != swap.new_vrid:
+                    # The record moved on while this twin was moved (its copy is retired and may go): the twin goes back to the old copy.
+                    await graph.update_node_fields_if(
+                        key, _RECORDS, {"virtualRecordId": swap.old_vrid},
+                        [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", EQ, ProgressStatus.COMPLETED.value)],
+                    )
+                    return False
                 if moved:
                     try:
                         await sync_vector_membership(vs.vector_db_service, vs.collection_locator, graph, swap.new_vrid, self.logger)
@@ -349,6 +358,10 @@ class SwapCommitter:
                 return  # unknown: nothing is deleted
             if theirs == mine:
                 return  # a holder uses this collection's points
+        # Read again right before the delete: a record that attached to the old copy meanwhile keeps its points.
+        for key in await graph.get_records_by_virtual_record_id(swap.old_vrid, raise_on_error=True):
+            if key not in holders:
+                return
         await vs.purge_record_vectors(swap.org_id, swap.old_vrid, record)
 
     async def _release_unheld(self, org_id: str, vrid: str) -> None:
@@ -359,12 +372,15 @@ class SwapCommitter:
 
     # ------------------------------------------------------------------ failure
 
-    async def release_failed(self, record_id: str, org_id: str) -> None:
-        """A record failed for good: drop its pending field, then release the copy it was writing."""
+    async def release_failed(self, record_id: str, org_id: str, attempt_pending: str | None = None) -> None:
+        """A record failed for good: drop its pending field, then release the copy it was writing.
+
+        ``attempt_pending`` is the copy the failed attempt wrote: only that one is released, never one that another consumer's attempt named
+        after the failure (the field is cleared by compare-and-set on that value)."""
         graph = self.o.graph_provider
         doc = await graph.get_document(record_id, _RECORDS)
         pending = keep_old_copy.pending_of(doc or {})
-        if not pending:
+        if not pending or (attempt_pending is not None and pending != attempt_pending):
             return
         # The field goes first (the FAILED write already released the copy for every holder lookup); then the holder-checked deleters.
         await graph.update_node_fields_if_match(record_id, _RECORDS, {}, {PENDING_VIRTUAL_RECORD_ID: pending}, unset=[PENDING_VIRTUAL_RECORD_ID])

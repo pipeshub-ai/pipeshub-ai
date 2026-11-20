@@ -276,3 +276,16 @@ async def test_a_swapped_record_stays_writable_under_the_older_strict_schema(wor
     finally:
         async with session.put(url, json={"schema": record_schema}) as resp:
             assert resp.status == 200
+
+
+@pytest.mark.arango_only  # a sub-document merges on ArangoDB's update; the other stores keep their own rules for it
+async def test_a_write_that_removes_the_pending_field_still_merges_a_sub_document_and_removes_a_null(world) -> None:
+    provider, run = world
+    key = f"{run}-a"
+    await _put(provider, key, f"{run}-x", "IN_PROGRESS", pendingVirtualRecordId=f"{run}-y", recordProps={"a": 1, "b": 2}, reason="r")
+    assert await provider.update_node_fields_if_match(
+        key, RECORDS, {"recordProps": {"a": 3}, "reason": None}, {"pendingVirtualRecordId": f"{run}-y"}, unset=["pendingVirtualRecordId"]
+    )
+    doc = await provider.get_document(key, RECORDS)
+    assert doc["recordProps"] == {"a": 3, "b": 2}  # merged, as without unset
+    assert "reason" not in doc and "pendingVirtualRecordId" not in doc

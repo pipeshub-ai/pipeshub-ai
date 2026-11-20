@@ -74,6 +74,14 @@ async def test_a_record_with_no_status_never_matches_a_one_of_condition(pg_provi
         assert not await pg_provider.update_node_fields_if("a", "records", {"virtualRecordId": "y"}, [Cond("indexingStatus", ONE_OF, RUNNING)])
 
 
+async def test_one_of_matches_a_string_only(pg_provider, org, org_ctx) -> None:
+    """A number or a boolean that prints like a listed string is not a match (the other stores compare typed values)."""
+    with org_ctx(org):
+        assert await pg_provider.batch_upsert_nodes([{"_key": "a", "orgId": org, "version": 1, "flag": True}], "records")
+        assert not await pg_provider.update_node_fields_if("a", "records", {"x": 1}, [Cond("version", ONE_OF, ["1"])])
+        assert not await pg_provider.update_node_fields_if("a", "records", {"x": 1}, [Cond("flag", ONE_OF, ["true"])])
+
+
 async def test_the_pending_write_is_a_compare_and_set(pg_provider, org, org_ctx) -> None:
     with org_ctx(org):
         await _put(pg_provider, org, "a", "x", "COMPLETED")

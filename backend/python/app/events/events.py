@@ -752,25 +752,34 @@ class EventProcessor:
                 # As process_code_document does: an emptied file kept its last
                 # version's blocks, and their calls and imports stayed (B3).
                 await self.processor._drop_code_blocks(record_id)
-            if not store_only:
-                await self._drop_the_previous_vectors_of_an_emptied_record(
-                    record_doc, prev_virtual_record_id or virtual_record_id, event_type
-                )
-            self._require_persisted(
-                await self.update_record_fields(
+            empty_fields = {
+                # parsingStatus is already COMPLETED from the write above.
+                "indexingStatus": ProgressStatus.EMPTY.value,
+                **indexed_copy_fields(ProgressStatus.EMPTY),
+                **cleared_fields(),
+                "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                "isDirty": False,
+            }
+            swap_run = None if store_only else keep_old_copy.current_swap(record_id, virtual_record_id)
+            swap_committer = getattr(self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None), "swap", None)
+            if swap_run is not None and swap_committer is not None:
+                # A replacement is pending: the old copy stays until the empty result commits (the record moves to the empty copy and the
+                # old one is released after the grace), so a failed status write leaves the record on a copy that is still there.
+                self._require_persisted(
+                    await swap_committer.commit_document(record_doc, swap_run, shape_status_write(empty_fields)),
+                    "Failed to persist EMPTY status for record",
                     record_doc,
-                    {
-                        # parsingStatus is already COMPLETED from the write above.
-                        "indexingStatus": ProgressStatus.EMPTY.value,
-                        **indexed_copy_fields(ProgressStatus.EMPTY),
-                        **cleared_fields(),
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "isDirty": False,
-                    },
-                ),
-                "Failed to persist EMPTY status for record",
-                record_doc,
-            )
+                )
+            else:
+                if not store_only:
+                    await self._drop_the_previous_vectors_of_an_emptied_record(
+                        record_doc, prev_virtual_record_id or virtual_record_id, event_type
+                    )
+                self._require_persisted(
+                    await self.update_record_fields(record_doc, empty_fields),
+                    "Failed to persist EMPTY status for record",
+                    record_doc,
+                )
             if self.config_service is not None:
                 # The revision is complete: its paid calls (a scan's page OCR) are listed in a final manifest.
                 await complete_run(paid_run, self.config_service, self.logger, sweep=not store_only)

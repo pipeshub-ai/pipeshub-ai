@@ -2578,8 +2578,8 @@ class IGraphDBProvider(ABC):
         it, so a value computed from an earlier read of that clock is never
         written later than the caller allowed. ``unset`` names fields the same
         write removes (the attribute is gone, never left null: an older strict
-        schema rejects a stored null it does not list) and only those: other
-        null-valued fields are not touched.
+        schema rejects a stored null it does not list); a ``None`` in ``updates``
+        removes its field in that write, as on every store.
 
         Returns:
             True iff the write applied.

@@ -117,6 +117,8 @@ def test_search_with_the_old_copy_kept_is_no_worse_than_without_it_during_a_bulk
         client = qdrant_client.QdrantClient(url=URL, timeout=60, prefer_grpc=False)
         client.get_collections()
     except Exception as exc:
+        if not (os.environ.get("QDRANT_REST_URL") or os.environ.get("QDRANT_IT_HOST")):
+            pytest.skip("no Qdrant is configured for this job (QDRANT_REST_URL or QDRANT_IT_HOST)")  # the offline job; a job that names one must reach it
         missing(f"Qdrant is not reachable at {URL}: {exc}")
     chunks = _corpus()
     off, swap, control = (_measure(client, kind, chunks) for kind in ("off", "swap", "control"))
@@ -125,5 +127,5 @@ def test_search_with_the_old_copy_kept_is_no_worse_than_without_it_during_a_bulk
     assert swap["recall"] >= off["recall"] - 0.01, (off, swap)
     assert (swap["inflight_recall"] or 0) >= (off["inflight_recall"] or 0), (off, swap)
     # the control bites where the retired copies are a large share of the corpus: with the membership left on, most searches fall back
-    if N <= 5000:
+    if int(RATE * GRACE) >= 0.2 * N:  # enough records retired at once for the control to crowd
         assert control["fallback_share"] > swap["fallback_share"] + 0.2, (swap, control)

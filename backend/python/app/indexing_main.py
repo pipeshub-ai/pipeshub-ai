@@ -1298,6 +1298,11 @@ async def _sweep_orphaned_virtual_record_mappings(
             if (org_of[vrid], vrid) in _orphan_kept_until:
                 continue
             retired = retired_at.get(vrid)
+            if retired is None:
+                # A copy may have been retired after this page was read: the mark is read again right before the delete.
+                with contextlib.suppress(Exception):
+                    row = await graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+                    retired = (row or {}).get(keep_old_copy.RETIRED_AT_FIELD)
             if isinstance(retired, (int, float)) and time.time() * 1000 - retired < keep_old_copy.grace_seconds() * 1000:
                 continue
             try:

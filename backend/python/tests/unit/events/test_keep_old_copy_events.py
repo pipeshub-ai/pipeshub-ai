@@ -259,3 +259,29 @@ async def test_a_record_that_is_replacing_its_copy_has_nothing_to_parse_now() ->
               "indexingStatus": "IN_PROGRESS", "contentRev": "r2"}
     refusal = await handler._parse_now_refusal(record, {"recordId": "r1", "orgId": "o1"})
     assert refusal == ("the record is already readable", True)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_parse_result_commits_through_the_swap_and_does_not_delete_the_old_copy_first() -> None:
+    """The service path: while a replacement is pending the old copy must stay until the empty result commits."""
+    from app.models.blocks import BlocksContainer
+
+    ep, processor, gp = _processor()
+    ep.parsing_client = MagicMock(circuit_open=False)
+    ep.parsing_client.parse = AsyncMock(return_value=MagicMock(block_container=BlocksContainer(blocks=[], block_groups=[]), provider_used=MagicMock(value="t")))
+    ep.extraction_client = MagicMock()
+    ep.sink_orchestrator = MagicMock()
+    ep.sink_orchestrator.swap.commit_document = AsyncMock(return_value=True)
+    ep._drop_the_previous_vectors_of_an_emptied_record = AsyncMock()
+    gp.get_document.return_value = _doc()
+    keep_old_copy.begin_swap(keep_old_copy.SwapRun("rec-1", "org-1", "X", "Y"))
+    with patch.dict("os.environ", {"USE_PARSING_SERVICE": "true"}):
+        events = [e async for e in ep._orchestrate_via_services(
+            record_id="rec-1", org_id="org-1", virtual_record_id="Y", record_name="a.txt", mime_type="text/plain", extension="txt",
+            event_type=EventTypes.REINDEX_RECORD.value, prev_virtual_record_id="X", file_content=b"hello",
+        )]
+    assert events
+    ep.sink_orchestrator.swap.commit_document.assert_awaited_once()
+    ep._drop_the_previous_vectors_of_an_emptied_record.assert_not_awaited()
+    fields = ep.sink_orchestrator.swap.commit_document.await_args.args[2]
+    assert fields["indexingStatus"] == "EMPTY"

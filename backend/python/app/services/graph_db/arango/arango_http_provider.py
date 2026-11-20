@@ -7017,9 +7017,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
         newline = "\n                "
         if unset:
-            # Only the named attributes go (keepNull: false would also drop every other null-valued key of the document).
-            bind_vars["unset"] = ["_id", "_key", "_rev", *unset]
-            write = "REPLACE doc WITH MERGE(UNSET(doc, @unset), @updates) IN @@collection"
+            # The named attributes go (never left null), by the update's own removal of a null: nested objects still merge as they do
+            # without ``unset``. A null in ``updates`` removes its attribute too, as on the other stores.
+            bind_vars["updates"] = {**bind_vars["updates"], **dict.fromkeys(unset)}
+            write = "UPDATE doc WITH @updates IN @@collection OPTIONS { keepNull: false }"
         else:
             write = "UPDATE doc WITH @updates IN @@collection"
         query = f"""
@@ -7116,11 +7117,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else ""
         newline = "\n                "
         if unset:
-            # Only the named attributes go (see update_node_fields_if_match)
-            bind_vars["unset"] = ["_id", "_key", "_rev", *unset]
-            write = "REPLACE doc WITH MERGE(UNSET(doc, @unset), @updates) IN @@collection"
-        else:
-            write = f"UPDATE doc WITH @updates IN @@collection{options}"
+            # The named attributes go (see update_node_fields_if_match); a sub-document still merges, or replaces, as it does without ``unset``
+            bind_vars["updates"] = {**bind_vars["updates"], **dict.fromkeys(unset)}
+            options = " OPTIONS { mergeObjects: false, keepNull: false }" if replace_objects else " OPTIONS { keepNull: false }"
+        write = f"UPDATE doc WITH @updates IN @@collection{options}"
         query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
