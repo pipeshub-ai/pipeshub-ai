@@ -1,6 +1,6 @@
 # Knowledge Hub browse on Neo4j: the split browse
 
-Status: implemented behind `KH_BROWSE_MODE` (default `legacy`). Read it before touching `get_knowledge_hub_connector_page_v3` (browse, `flatten=false`) on Neo4j.
+Status: the default. `KH_BROWSE_MODE=legacy` opts out (see Rollout). Read it before touching `get_knowledge_hub_connector_page_v3` (browse, `flatten=false`) on Neo4j.
 
 ## Why
 
@@ -112,10 +112,10 @@ Each difference is where legacy breaks the definition above and the split browse
 ## Correctness
 
 1. **The real-store permission suite** (`tests/integration/graph_permissions/`): its 18 browse, arrow, stub, chain-top, declared, seed,
-   placeholder, sidebar and parity modules pass with `KH_BROWSE_MODE=split`. The modules that pin legacy's statement text or its
-   gaps say so.
+   placeholder, sidebar and parity modules pass with the default, split, and with `KH_BROWSE_MODE=legacy`. The modules that pin
+   legacy's statement text or its gaps set `KH_BROWSE_MODE=legacy` themselves.
 2. **The conformance layer** (`tests/permissions/test_conformance_kh.py`): golden worlds, review shapes and generated worlds against the oracle.
-   CI runs it a second time with Neo4j on split (`permission-conformance.yml`, shards 8 and 9).
+   CI runs it with Neo4j on the default, split, and a second time on legacy (`permission-conformance.yml`, shards 8 and 9).
 3. **Live data.** A read-only copy of the demo server's graph: 33,096 nodes, 66,685 relationships, its 163 indexes and constraints. All 11 active
    users were taken through `KnowledgeHubService.get_nodes`, 40 opens each, every page, as a listing and as a sidebar, in both modes. Over 440
    opens and 789 reads, no row, order, arrow, stub flag, total or count differed. From a cold start the worst open took 70.2 s on legacy and
@@ -127,16 +127,17 @@ Each difference is where legacy breaks the definition above and the split browse
 
 `KH_BROWSE_MODE`:
 
-- **`legacy`** (the default): today's statement, byte for byte.
+- **`split`** (the default; also what an unset, empty or unknown value means, an unknown one with a warning logged once): the split browse.
+- **`legacy`** (the opt-out): the one-statement browse, byte for byte as before.
 - **`shadow`:** answers with legacy. For a sampled fraction of browses (`KH_BROWSE_SHADOW_SAMPLE`, default 0.1), it also runs the split browse in
   a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids. At most
   `_KH_SHADOW_MAX_RUNNING` (2) comparisons run at once per process; a sampled browse past that is not compared, so shadow adds a bounded
   load however busy the server is. A legacy page cut by its time budget is not compared: split has no budget, so they differ by construction.
   Nor is a page split would hand to legacy (past its bounds): its replay runs as `split-compare`, which reports that instead of answering
   with legacy. Arrow and stub flags are compared on every row both pages hold.
-- **`split`:** the split browse.
 
-Switch a deployment to `split` after shadow reports no differences over a representative period. The demo server first.
+Split became the default after the live-data comparison above (440 opens, 789 reads, no differences). To go back to the one-statement browse,
+set `KH_BROWSE_MODE=legacy` on the services that serve the Knowledge Hub and restart them; `shadow` compares the two on a running server.
 
 ## Out of scope
 

@@ -5244,6 +5244,11 @@ class TestExternalCollaboratorBrowse:
     ``tests/unit/test_kh_chain_tops.py``. These pin what feeds that for an external
     collaborator: the gate, the grants and the two parent directions."""
 
+    @pytest.fixture(autouse=True)
+    def _legacy_browse(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The browse statements pinned here are the legacy browse's; split is the default (docs/knowledge-hub-browse.md).
+        monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
+
     @pytest.fixture
     def provider(self):
         from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider

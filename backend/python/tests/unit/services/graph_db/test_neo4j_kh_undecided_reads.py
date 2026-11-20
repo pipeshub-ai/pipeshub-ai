@@ -6,8 +6,16 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+
+@pytest.fixture(autouse=True)
+def _legacy_browse(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The undecided-children reads are the legacy browse's; split is the default (docs/knowledge-hub-browse.md).
+    monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
 
 
 def _payload(undecided: list[str], probes: list | None = None) -> list[dict]:
