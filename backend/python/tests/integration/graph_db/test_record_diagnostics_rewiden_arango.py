@@ -449,8 +449,10 @@ async def test_the_poll_repairs_an_apps_schema_an_older_image_narrowed(cluster: 
     assert await cluster.client.create_document(APPS, {
         "_key": key, "name": "a", "type": "t", "appGroup": "g", "scope": "team", "isActive": True, "createdAtTimestamp": 1,
     })
+    # ensure_schema (in connect_arango) already started the 10 s poll; a new one starts the measured window with a full interval.
+    await cluster.client.apps_guard.stop()
     assert await cluster.client.update_collection_schema(APPS, _older_apps_schema())
-    cluster.provider.start_record_schema_poll(interval=0.5)
+    cluster.provider.start_record_schema_poll()
     started = time.monotonic()
     try:
         while True:
@@ -459,13 +461,17 @@ async def test_the_poll_repairs_an_apps_schema_an_older_image_narrowed(cluster: 
                 break
             except Exception as error:
                 assert "1620" in str(error)
-                assert time.monotonic() - started < 10, "still refused after many poll intervals"
-                await asyncio.sleep(0.2)
+                assert time.monotonic() - started < 15, "still refused after the poll interval"
+                await asyncio.sleep(0.5)
+        window = time.monotonic() - started
+        assert await _apps_generation(cluster) == APP_SCHEMA_GENERATION, "the poll must put back this process's apps schema"
     finally:
         await cluster.client.record_guard.stop()
         await cluster.client.apps_guard.stop()
         assert await cluster.client.update_collection_schema(APPS, app_schema)
-    assert await _apps_generation(cluster) == APP_SCHEMA_GENERATION
+    print(f"old-image apps window: {window:.1f}s")
+    # the poll interval, plus the request and the widening it issues
+    assert window <= 10.0 + 2.0
 
 
 # ---- the rerun owners: one forced 1620 each ----------------------------------------------------------------------------
