@@ -51,7 +51,8 @@ export class PgIdentityLookup implements IdentityLookup {
               scopes: r.scopes,
               expiresAt: r.expires_at,
               lastUsedAt: r.last_used_at ?? undefined,
-              ...(r.knowledge_limit
+              // Passed on as stored, even when malformed, so the caller can refuse it.
+              ...(r.knowledge_limit != null
                 ? { knowledgeLimit: r.knowledge_limit }
                 : {}),
             }

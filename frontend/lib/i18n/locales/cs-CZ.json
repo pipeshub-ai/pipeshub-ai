@@ -2333,6 +2333,7 @@
         "errorDescription": "Nic se nezměnilo. Zkuste to znovu.",
         "unknownTitle": "Změnu se nepodařilo potvrdit",
         "unknownDescription": "Možná byla uložena. Než to zkusíte znovu, zkontrolujte zde zobrazený přístup.",
+        "unknownReloadFailedDescription": "Možná byla uložena, ale aktuální přístup se nepodařilo načíst. Než se na zobrazené údaje spolehnete, načtěte stránku znovu.",
         "rowAction": "Změnit přístup",
         "rowActionAria": "Změnit, co {{name}} uvidí",
         "rowActionTooltip": "Změnit přístup: vyberte, co tento token uvidí"

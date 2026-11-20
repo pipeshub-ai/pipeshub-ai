@@ -62,11 +62,20 @@ export function EditPatAccessPanel({ token, onOpenChange, onSaved, onReload }: E
   useEffect(() => {
     session.current += 1;
   }, [tokenId]);
-  // Re-seed on another token, and when the server reports a new limit for this
-  // one (an Undo or a reload), so the panel never shows a stale choice.
+  // Seed on every opening. When the server then reports a new limit for the
+  // open token (an Undo, a reload, an earlier save landing), follow it only
+  // while the user has not changed the choice in this session.
   const storedKey = JSON.stringify(token?.knowledgeLimit ?? null);
+  const seeded = useRef<{ id?: string; limit?: KnowledgeLimit }>({});
   useEffect(() => {
-    setValue(selectionFromLimit(token?.knowledgeLimit));
+    const before = seeded.current;
+    const stored = token?.knowledgeLimit;
+    seeded.current = { id: tokenId, limit: stored };
+    setValue((current) =>
+      before.id !== tokenId || sameKnowledgeLimit(knowledgeLimitForApi(current), before.limit)
+        ? selectionFromLimit(stored)
+        : current
+    );
   }, [tokenId, storedKey]);
 
   const next = knowledgeLimitForApi(value);
@@ -84,11 +93,17 @@ export function EditPatAccessPanel({ token, onOpenChange, onSaved, onReload }: E
   // No answer (network, timeout, 5xx) means the change may have landed. Show
   // the token as the server has it instead of claiming nothing changed.
   const reportUnknown = useCallback(async () => {
-    await onReload().catch(() => undefined);
+    const reloaded = await onReload().then(
+      () => true,
+      () => false
+    );
     addToast({
       variant: 'error',
       title: t('workspace.personalAccessTokens.access.unknownTitle'),
-      description: t('workspace.personalAccessTokens.access.unknownDescription'),
+      // If the re-read failed too, what the panel shows may be stale.
+      description: reloaded
+        ? t('workspace.personalAccessTokens.access.unknownDescription')
+        : t('workspace.personalAccessTokens.access.unknownReloadFailedDescription'),
       duration: 8000,
     });
   }, [addToast, onReload, t]);

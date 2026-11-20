@@ -197,4 +197,46 @@ describe('Changing what a personal access token can see', () => {
     await waitFor(() => expect(onReload).toHaveBeenCalled());
     await waitFor(() => expect(lastToast()?.title).toBe(text.unknownTitle));
   });
+
+  it("keeps a reopened panel's new choice when an earlier save then lands", async () => {
+    let finish: (value: { token: PatListItem }) => void = () => {};
+    updateKnowledgeLimit.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    // A parent that keeps the token as the server last reported it, as the page does.
+    function Parent() {
+      const [current, setCurrent] = React.useState<PatListItem | null>(token);
+      return (
+        <>
+          <button type="button" onClick={() => setCurrent(null)}>close</button>
+          <button type="button" onClick={() => setCurrent((c) => c ?? token)}>reopen</button>
+          <EditPatAccessPanel token={current} onOpenChange={() => {}} onSaved={setCurrent} onReload={async () => {}} />
+        </>
+      );
+    }
+    renderInTheme(<Parent />);
+
+    fireEvent.click(everything());
+    fireEvent.click(save());
+    fireEvent.click(screen.getByText('close'));
+    fireEvent.click(screen.getByText('reopen'));
+    expect(only().checked).toBe(true);
+    fireEvent.click(everything());
+    await act(async () => {
+      finish({ token: { ...token, knowledgeLimit: { apps: ['app-9'], recordGroups: [], records: [] } } });
+    });
+
+    expect(everything().checked).toBe(true);
+    expect(save().disabled).toBe(false);
+  });
+
+  it('says to reload when the re-read after an unknown outcome fails too', async () => {
+    updateKnowledgeLimit.mockRejectedValue(noAnswer);
+    const { onReload } = open();
+    onReload.mockRejectedValue(noAnswer);
+
+    fireEvent.click(everything());
+    fireEvent.click(save());
+
+    await waitFor(() => expect(lastToast()?.title).toBe(text.unknownTitle));
+    expect(lastToast()?.description).toBe(text.unknownReloadFailedDescription);
+  });
 });

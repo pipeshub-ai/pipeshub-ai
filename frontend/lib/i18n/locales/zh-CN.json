@@ -2219,6 +2219,7 @@
         "errorDescription": "未做任何更改。请重试。",
         "unknownTitle": "无法确认更改",
         "unknownDescription": "更改可能已保存。请先检查此处显示的访问范围，再重试。",
+        "unknownReloadFailedDescription": "更改可能已保存，但无法加载最新的访问范围。请先重新加载页面，再以显示内容为准。",
         "rowAction": "更改访问权限",
         "rowActionAria": "更改 {{name}} 可以查看的内容",
         "rowActionTooltip": "更改访问权限：选择此令牌可以查看的内容"

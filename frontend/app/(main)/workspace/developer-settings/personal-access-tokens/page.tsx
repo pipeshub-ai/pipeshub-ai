@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useCallback, useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Flex, Heading, IconButton, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
@@ -59,12 +59,17 @@ function PersonalAccessTokensPageContent() {
   const accessTarget = tokens.find((tok) => tok.id === accessTargetId) ?? null;
   const [isRevoking, setIsRevoking] = useState(false);
 
+  // Bumped by every change the server confirms. A list read that started
+  // before one is older than the row that change put on screen, so it is dropped.
+  const listVersion = useRef(0);
+
   const fetchTokens = useCallback(async () => {
     setIsLoading(true);
     setError(null);
+    const started = listVersion.current;
     try {
       const data = await PatApi.listTokens();
-      setTokens(data.tokens ?? []);
+      if (listVersion.current === started) setTokens(data.tokens ?? []);
     } catch (err: unknown) {
       const message =
         err instanceof Error
@@ -78,8 +83,9 @@ function PersonalAccessTokensPageContent() {
 
   // A quiet re-read that keeps the list on screen, for when a change's outcome is unknown.
   const reloadTokens = useCallback(async () => {
+    const started = listVersion.current;
     const data = await PatApi.listTokens();
-    setTokens(data.tokens ?? []);
+    if (listVersion.current === started) setTokens(data.tokens ?? []);
   }, []);
 
   useEffect(() => {
@@ -113,6 +119,7 @@ function PersonalAccessTokensPageContent() {
   // The server's answer is the whole row. Merging it instead would keep the old
   // limit when the new answer has none ("everything").
   const handleAccessSaved = useCallback((updated: PatListItem) => {
+    listVersion.current += 1;
     setTokens((prev) => prev.map((tok) => (tok.id === updated.id ? updated : tok)));
   }, []);
 

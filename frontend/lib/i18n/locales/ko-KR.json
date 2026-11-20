@@ -2219,6 +2219,7 @@
         "errorDescription": "변경된 내용이 없습니다. 다시 시도하세요.",
         "unknownTitle": "변경 사항을 확인할 수 없음",
         "unknownDescription": "저장되었을 수 있습니다. 다시 시도하기 전에 여기에 표시된 액세스를 확인하세요.",
+        "unknownReloadFailedDescription": "저장되었을 수 있지만 최신 액세스를 불러오지 못했습니다. 표시된 내용을 믿기 전에 페이지를 새로 고치세요.",
         "rowAction": "액세스 변경",
         "rowActionAria": "{{name}}이(가) 볼 수 있는 항목 변경",
         "rowActionTooltip": "액세스 변경: 이 토큰이 볼 수 있는 항목 선택"

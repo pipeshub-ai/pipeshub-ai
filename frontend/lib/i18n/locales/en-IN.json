@@ -4578,6 +4578,7 @@
         "errorDescription": "Nothing changed. Try again.",
         "unknownTitle": "Couldn't confirm the change",
         "unknownDescription": "It may have been saved. Check the access shown here before you try again.",
+        "unknownReloadFailedDescription": "It may have been saved, and the latest access couldn't be loaded. Reload the page before you rely on what's shown.",
         "rowAction": "Change access",
         "rowActionAria": "Change what {{name}} can see",
         "rowActionTooltip": "Change access: pick what this token can see"

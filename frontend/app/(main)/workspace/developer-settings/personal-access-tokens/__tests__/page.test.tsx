@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { en } from '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -12,24 +12,30 @@ vi.mock('@/lib/store/user-store', () => ({
   selectIsProfileInitialized: () => true,
 }));
 vi.mock('@/chat/components/chat-panel/expansion-panels/connectors-collections', () => ({
-  CollectionsTab: () => null,
+  CollectionsTab: ({ onSelectionChange }: { onSelectionChange: (next: unknown) => void }) => (
+    <button type="button" onClick={() => onSelectionChange({ apps: ['a9'], kb: [], recordGroups: [], records: [] })}>
+      pick a9
+    </button>
+  ),
 }));
 const updateKnowledgeLimit = vi.hoisted(() => vi.fn());
+const listed = vi.hoisted(() => ({
+  tokens: [
+    { id: 't1', name: 'No scopes token', createdAt: '2026-01-01', expiresAt: '2026-06-01' },
+    {
+      id: 't2',
+      name: 'CI token',
+      scopes: ['kb:read'],
+      createdAt: '2026-01-01',
+      expiresAt: '2026-06-01',
+      knowledgeLimit: { apps: ['a1'], recordGroups: [], records: [] },
+    },
+  ],
+}));
+const listTokens = vi.hoisted(() => vi.fn());
 vi.mock('../api', () => ({
   PatApi: {
-    listTokens: vi.fn().mockResolvedValue({
-      tokens: [
-        { id: 't1', name: 'No scopes token', createdAt: '2026-01-01', expiresAt: '2026-06-01' },
-        {
-          id: 't2',
-          name: 'CI token',
-          scopes: ['kb:read'],
-          createdAt: '2026-01-01',
-          expiresAt: '2026-06-01',
-          knowledgeLimit: { apps: ['a1'], recordGroups: [], records: [] },
-        },
-      ],
-    }),
+    listTokens,
     getScopes: vi.fn().mockResolvedValue({ scopes: [] }),
     revokeToken: vi.fn(),
     updateKnowledgeLimit,
@@ -41,6 +47,10 @@ const access = en.workspace.personalAccessTokens.access;
 
 import PersonalAccessTokensPage from '../page';
 
+beforeEach(() => {
+  listTokens.mockReset();
+  listTokens.mockResolvedValue(listed);
+});
 afterEach(cleanup);
 
 describe('personal access tokens page', () => {
@@ -98,6 +108,51 @@ describe('personal access tokens page', () => {
     });
 
     await waitFor(() => expect(radio('only').checked).toBe(true));
+  });
+
+  it('does not let an older reload undo a newer change in the list', async () => {
+    installBrowserShims();
+    useToastStore.setState({ toasts: [] });
+    const ci = listed.tokens[1];
+    let finishReload: (value: unknown) => void = () => {};
+    listTokens
+      .mockResolvedValueOnce(listed)
+      .mockReturnValueOnce(new Promise((resolve) => { finishReload = resolve; }));
+    updateKnowledgeLimit.mockReset();
+    updateKnowledgeLimit
+      .mockResolvedValueOnce({ token: { ...ci, knowledgeLimit: undefined } })
+      .mockRejectedValueOnce({ type: 'NETWORK_ERROR', message: 'Network error.' })
+      .mockResolvedValueOnce({ token: ci });
+    renderInTheme(<PersonalAccessTokensPage />);
+    await screen.findByText('CI token');
+    const radio = (choice: string) =>
+      document.getElementById(`pat-access-knowledge-limit-${choice}`) as HTMLInputElement;
+    const openCi = () => fireEvent.click(screen.getByRole('button', { name: 'Change what CI token can see' }));
+
+    // A first change succeeds and offers Undo.
+    openCi();
+    fireEvent.click(radio('everything'));
+    fireEvent.click(screen.getByRole('button', { name: access.save }));
+    await waitFor(() => expect(useToastStore.getState().toasts[0]?.action).toBeTruthy());
+    const undo = useToastStore.getState().toasts[0]?.action;
+
+    // A second change gets no answer, so the page starts re-reading the list.
+    openCi();
+    fireEvent.click(radio('only'));
+    fireEvent.click(screen.getByText('pick a9'));
+    fireEvent.click(screen.getByRole('button', { name: access.save }));
+    await waitFor(() => expect(listTokens).toHaveBeenCalledTimes(2));
+
+    // The first change is undone while that read is still out, then the read lands.
+    await act(async () => {
+      undo?.onClick?.();
+    });
+    await waitFor(() => expect(screen.getByText('Can see: 1 picked item')).toBeTruthy());
+    await act(async () => {
+      finishReload({ tokens: [listed.tokens[0], { ...ci, knowledgeLimit: undefined }] });
+    });
+
+    expect(screen.getByText('Can see: 1 picked item')).toBeTruthy();
   });
 
   it('tells you a new token\'s access can be changed later', async () => {

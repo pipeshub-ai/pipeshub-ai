@@ -4587,6 +4587,7 @@
         "errorDescription": "Es wurde nichts geändert. Versuche es erneut.",
         "unknownTitle": "Änderung konnte nicht bestätigt werden",
         "unknownDescription": "Sie wurde möglicherweise gespeichert. Prüfen Sie den hier angezeigten Zugriff, bevor Sie es erneut versuchen.",
+        "unknownReloadFailedDescription": "Sie wurde möglicherweise gespeichert, und der aktuelle Zugriff konnte nicht geladen werden. Laden Sie die Seite neu, bevor Sie sich auf die Anzeige verlassen.",
         "rowAction": "Zugriff ändern",
         "rowActionAria": "Ändern, was {{name}} sehen kann",
         "rowActionTooltip": "Zugriff ändern: festlegen, was dieses Token sehen kann"

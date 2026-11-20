@@ -32,12 +32,10 @@ export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix, forAp
   const { t } = useTranslation();
   const size = value === null ? 0 : limitSize(limitFromSelection(value));
   const copy = forApp ? 'knowledgeLimit.app' : 'knowledgeLimit';
-  // Switching to "everything" and back must not lose what was picked.
+  // Switching to "everything" and back must not lose what was picked, nor a
+  // selection the parent filled in after mounting (a saved limit loading in).
   const [lastPick, setLastPick] = useState(value ?? EMPTY_SELECTION);
-  const pick = (next: KnowledgeLimitValue) => {
-    if (next !== null) setLastPick(next);
-    onChange(next);
-  };
+  if (value !== null && value !== lastPick) setLastPick(value);
   const options = [
     { key: 'everything', checked: value === null, select: () => onChange(null), label: t(`${copy}.everything`), hint: t(`${copy}.everythingHint`) },
     { key: 'only', checked: value !== null, select: () => value === null && onChange(lastPick), label: t('knowledgeLimit.only'), hint: t('knowledgeLimit.onlyHint') },
@@ -84,7 +82,7 @@ export function KnowledgeLimitChoice({ appName, value, onChange, idPrefix, forAp
               padding: 'var(--space-2)',
             }}
           >
-            <CollectionsTab selection={value} onSelectionChange={pick} />
+            <CollectionsTab selection={value} onSelectionChange={onChange} />
           </Box>
           <Text
             size="1"

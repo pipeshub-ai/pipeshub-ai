@@ -19,6 +19,7 @@ import {
 import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
 import {
   isKnowledgeLimitWithin,
+  readStoredKnowledgeLimit,
   toKnowledgeLimit,
 } from '../types/knowledge_limit';
 import {
@@ -468,7 +469,10 @@ export class OAuthTokenService {
       // signed, so the stored one is the limit. An OAuth app's token keeps the
       // limit its user agreed to, which is the one it was signed with.
       if (isPatClientId(payload.client_id)) {
-        const stored = toKnowledgeLimit(storedToken.knowledgeLimit);
+        const stored = readStoredKnowledgeLimit(storedToken.knowledgeLimit);
+        if (stored === 'unreadable') {
+          throw new InvalidTokenError("Token's access limit could not be read");
+        }
         if (stored) {
           payload.knowledgeLimit = stored;
         } else {
