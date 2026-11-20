@@ -1066,22 +1066,38 @@ def _widened_route(mime_type: object, extension: object) -> Dispatch | None:
     return found
 
 
+def code_extension(extension: object, file_path: object, record_name: object) -> object:
+    """The extension the dispatch reads a record by: its own, else its path's or its name's (lower case).
+
+    A CODE_FILE's mime is not trustworthy (repository walkers default it to text/plain) and a
+    connector does not always fill `extension`, so the path and the name stand in for it. The
+    record's own value stays intact for reconciliation, tier and generic dispatch.
+    """
+    if extension and extension != "unknown":
+        return extension
+    for label in (file_path, record_name):
+        base = label.rsplit("/", 1)[-1] if isinstance(label, str) else ""
+        if "." in base and base.rsplit(".", 1)[-1]:
+            return base.rsplit(".", 1)[-1].lower()
+    return extension
+
+
 def legacy_route(
     mime_type: str | None,
     extension: str | None,
     *,
-    code_extension: str | None,
+    code_ext: str | None,
     reads_as_code_file: bool,
     is_code_file_record: bool = False,
 ) -> Dispatch | None:
     """The in-process parser a file goes to, or None when there is none.
 
     Whatever the dispatch routed before keeps its route. A type the extension decides (from
-    *code_extension*, the extension with the file name as fallback) is read as itself where the
+    *code_ext*, the extension with the path and the file name as fallback) is read as itself where the
     mime named nothing read before, and a package stored as text/plain is read as itself, not as
     text. What still has no route is matched in any case, with parameters and alias spellings.
     """
-    winner = _ext_type(code_extension)
+    winner = _ext_type(code_ext)
     if (
         winner is not None
         and winner.ext_wins
@@ -1092,7 +1108,17 @@ def legacy_route(
     main = _main_route(mime_type, extension, reads_as_code_file=reads_as_code_file)
     if main is not None:
         return main
-    return _widened_route(mime_type, extension)
+    found = _widened_route(mime_type, extension)
+    if found is None and _names_nothing(mime_type):
+        # The name decides only where the mime says nothing about the bytes: the gate accepts a
+        # file by its name, and a specific mime, readable or not, is never overruled by it.
+        found = _widened_route(mime_type, code_ext)
+    return found
+
+
+def _names_nothing(mime_type: object) -> bool:
+    """Whether a mime says nothing about the bytes: absent, or a placeholder (`_UNNAMED_MIMES`)."""
+    return mime_type is None or (isinstance(mime_type, str) and normalize_mime(mime_type) in _UNNAMED_MIMES)
 
 
 GateRefusal = Literal["type", "disabled", "too_large"]
@@ -1159,6 +1185,7 @@ def gate_decision(
     record_name: str | None,
     is_code_file: bool,
     code_file_extension: str | None,
+    file_path: object = None,
     size_bytes: object = None,
     disabled: frozenset[str] = frozenset(),
 ) -> GateDecision:
@@ -1171,8 +1198,9 @@ def gate_decision(
     anything is downloaded.
     """
     # The size rule follows the file's name when the record has no extension of its own (an
-    # event may carry an empty one); the reader is still chosen by the mime, as before.
+    # event may carry an empty one); the reader is the dispatch's, judged below.
     unlabelled = extension is None or extension in ("", "unknown")
+    own_extension = extension  # what the dispatch reads; the guesses below only decide acceptance
     if (extension is None or extension == "unknown") and mime is not None and mime != "unknown":
         derived = extension_for_mime(mime)  # type: ignore[arg-type]
         if derived:
@@ -1199,21 +1227,25 @@ def gate_decision(
             by_mime = _BY_MIME.get(normalize_mime(mime))  # type: ignore[arg-type]
         ext_ok = by_ext is not None and by_ext.ext_indexable
         if from_name and ext_ok and not by_ext.ext_wins and extension not in GATE_EXTENSIONS:
-            # The dispatch never sees an extension taken from the name, only the record's own:
-            # beyond the types the extension decides, the name is matched as it always was.
+            # Acceptance by the name's extension: beyond the types the extension decides, the name is
+            # matched as it always was.
             ext_ok = False
         supported = ext_ok or by_mime is not None
-        # The refusals below are for the reader the dispatch will pick, not for either label alone.
+        # The refusals below are for the reader the dispatch will pick, from the dispatch's own inputs:
+        # the extension guessed above from the hint or the name decides acceptance, never the reader.
+        code_ext = code_extension(own_extension, file_path, record_name)
         dispatch = legacy_route(
-            mime, extension, code_extension=extension,  # type: ignore[arg-type]
-            reads_as_code_file=reads_as_source(mime, extension),
+            mime, own_extension, code_ext=code_ext,  # type: ignore[arg-type]
+            reads_as_code_file=reads_as_source(mime, code_ext),
         )
         if dispatch is not None and dispatch.file_type is not None:
             decisive = dispatch.file_type
         elif dispatch is not None and dispatch.route is Route.CODE:
             # Read as source because one of its labels is a source type (`reads_as_source`): that
             # type is the reader, not the owner of the other label.
-            decisive = next((t for t in (by_ext, by_mime) if t is not None and t.route is Route.CODE), None)
+            decisive = next(
+                (t for t in (_ext_type(code_ext), by_mime) if t is not None and t.route is Route.CODE), None
+            )
         else:
             decisive = by_mime if by_mime is not None else (by_ext if ext_ok else None)
     limited_as = _limited_as(judged, record_name if unlabelled else None)
@@ -1268,7 +1300,7 @@ def stored_mime_for_new_file(mime_type: str | None, name: str | None) -> str | N
     ft = _ext_type(extension)
     if ft is None or not ft.ext_wins or ft.wins_over_text_plain or ft.canonical_mime is None:
         return mime_type
-    if mime_type is None or (isinstance(mime_type, str) and normalize_mime(mime_type) in _UNNAMED_MIMES):
+    if _names_nothing(mime_type):
         return ft.canonical_mime
     return mime_type
 

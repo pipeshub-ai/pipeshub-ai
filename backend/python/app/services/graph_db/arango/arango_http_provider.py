@@ -2098,9 +2098,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return self._translate_node_from_arango(doc)
             return None
         except Exception as e:
-            self.logger.error(f"❌ Failed to get document: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            self.logger.error(f"❌ Failed to get document: {str(e)}")
             return None
 
     async def get_record_by_id(
@@ -8525,9 +8525,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return result[0] if result else None
         except Exception as e:
-            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
     async def apply_verified_user_email(
@@ -8749,9 +8749,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
         except Exception as e:
-            self.logger.error("❌ Failed to get user app ids: %s", str(e))
-            if raise_on_error:
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
                 raise
+            self.logger.error("❌ Failed to get user app ids: %s", str(e))
             return []
 
     async def get_users(
@@ -12105,6 +12105,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return len(result or [])
+
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on."""
+        query = """
+        FOR perm IN permission
+            FILTER perm._from == @user
+            FILTER PARSE_IDENTIFIER(perm._to).collection == @records
+            LET r = DOCUMENT(perm._to)
+            FILTER r != null AND r.connectorId == @connector_id
+            RETURN DISTINCT {id: r._key, externalRecordId: r.externalRecordId, recordType: r.recordType}
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "records": CollectionNames.RECORDS.value},
+            txn_id=transaction,
+        )
+        return list(result or [])
 
     async def _collect_connector_entities(
         self,
@@ -24355,21 +24378,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"🚀 Checking record access for user {user_id}, record {record_id}")
 
             # Get user document to verify user exists
-            user = await self.get_user_by_user_id(user_id)
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
             if not user:
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return None
 
             # Get user's accessible apps and extract connector IDs (_key)
             # Note: _get_user_app_ids accepts external userId and converts to user_key internally
-            user_apps_ids = await self._get_user_app_ids(user_id, org_id)
+            user_apps_ids = await self._get_user_app_ids(user_id, org_id, raise_on_error=True)
 
             # Get record to verify it exists before running complex query
-            record_doc = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
-            if not record_doc:
+            record = await self.get_document(
+                record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True,
+            )
+            if not record:
                 self.logger.warning(f"⚠️ Record not found: {record_id}")
                 return None
-            if not is_live_record(record_doc):
+            if not is_live_record(record):
                 self.logger.info("Record %s is in the trash; no access", record_id)
                 return None
 
@@ -24637,28 +24662,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # access, and the UI shows a null role as Owner.
                 access_result = [{"type": "CONNECTOR", "role": "READER"}]
 
-            # If we have access, get the complete record details
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
-            if not record:
-                return None
-
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                return None
-
             # Get file or mail details based on record type
             additional_data = None
             if record.get("recordType") == RecordTypes.FILE.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.FILES.value, transaction
+                    record_id, CollectionNames.FILES.value, transaction, raise_on_error=True,
                 )
             elif record.get("recordType") == RecordTypes.MAIL.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.MAILS.value, transaction
+                    record_id, CollectionNames.MAILS.value, transaction, raise_on_error=True,
                 )
             elif record.get("recordType") == RecordTypes.TICKET.value:
                 additional_data = await self.get_document(
-                    record_id, CollectionNames.TICKETS.value, transaction
+                    record_id, CollectionNames.TICKETS.value, transaction, raise_on_error=True,
                 )
 
             connector_name = record.get("connectorName")
@@ -27786,28 +27802,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Delete edges to remove team members.
         """
-        try:
-            delete_query = f"""
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            REMOVE permission IN {CollectionNames.PERMISSION.value}
-            RETURN OLD
-            """
+        delete_query = f"""
+        FOR permission IN {CollectionNames.PERMISSION.value}
+        FILTER permission._to == @teamId
+        FILTER SPLIT(permission._from, '/')[1] IN @userIds
+        REMOVE permission IN {CollectionNames.PERMISSION.value}
+        RETURN OLD
+        """
 
-            deleted_list = await self.execute_query(
-                delete_query,
-                bind_vars={
-                    "userIds": user_ids,
-                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-                },
-                transaction=transaction
-            )
-            return deleted_list if deleted_list else []
-
-        except Exception as e:
-            self.logger.error(f"Error in delete_team_member_edges: {str(e)}", exc_info=True)
-            return []
+        deleted_list = await self.execute_query(
+            delete_query,
+            bind_vars={
+                "userIds": user_ids,
+                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+            },
+            transaction=transaction
+        )
+        return deleted_list if deleted_list else []
 
     async def batch_update_team_member_roles(
         self,
@@ -27819,40 +27830,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         Batch update user roles in a team.
         """
-        try:
-            batch_update_query = f"""
-            FOR user_role IN @user_roles
-                LET user_id = user_role.userId
-                LET new_role = user_role.role
-                FOR permission IN {CollectionNames.PERMISSION.value}
-                    FILTER permission._to == @team_id
-                    FILTER SPLIT(permission._from, '/')[1] == user_id
-                    UPDATE permission WITH {{
-                        role: new_role,
-                        updatedAtTimestamp: @timestamp
-                    }} IN {CollectionNames.PERMISSION.value}
-                    RETURN {{
-                        _key: NEW._key,
-                        _from: NEW._from,
-                        role: NEW.role,
-                        updatedAt: NEW.updatedAtTimestamp
-                    }}
-            """
+        batch_update_query = f"""
+        FOR user_role IN @user_roles
+            LET user_id = user_role.userId
+            LET new_role = user_role.role
+            FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == @team_id
+                FILTER SPLIT(permission._from, '/')[1] == user_id
+                UPDATE permission WITH {{
+                    role: new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    role: NEW.role,
+                    updatedAt: NEW.updatedAtTimestamp
+                }}
+        """
 
-            updated_permissions = await self.execute_query(
-                batch_update_query,
-                bind_vars={
-                    "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-                    "user_roles": user_roles,
-                    "timestamp": timestamp
-                },
-                transaction=transaction
-            )
-            return updated_permissions if updated_permissions else []
-
-        except Exception as e:
-            self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
-            return []
+        updated_permissions = await self.execute_query(
+            batch_update_query,
+            bind_vars={
+                "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
+                "user_roles": user_roles,
+                "timestamp": timestamp
+            },
+            transaction=transaction
+        )
+        return updated_permissions if updated_permissions else []
 
     async def delete_all_team_permissions(
         self,
@@ -28507,123 +28513,115 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_agents_by_web_search_provider(
         self, org_id: str, provider: str
     ) -> list[dict]:
-        try:
-            query = f"""
-            // Collect user keys that belong to this org
-            LET org_user_keys = (
-                FOR bt IN {CollectionNames.BELONGS_TO.value}
-                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
-                    RETURN PARSE_IDENTIFIER(bt._from).key
-            )
+        query = f"""
+        // Collect user keys that belong to this org
+        LET org_user_keys = (
+            FOR bt IN {CollectionNames.BELONGS_TO.value}
+                FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                RETURN PARSE_IDENTIFIER(bt._from).key
+        )
 
-            // Find agents owned by those users that use this web search provider
-            LET user_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm.type == 'USER'
-                    FILTER perm.role == 'OWNER'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
-                    FILTER owner_key IN org_user_keys
-                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
-            )
+        // Find agents owned by those users that use this web search provider
+        LET user_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm.type == 'USER'
+                FILTER perm.role == 'OWNER'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                FILTER owner_key IN org_user_keys
+                RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+        )
 
-            // Also include agents shared directly with the org
-            LET org_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER perm.type == 'ORG'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    RETURN PARSE_IDENTIFIER(perm._to).key
-            )
+        // Also include agents shared directly with the org
+        LET org_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER perm.type == 'ORG'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN PARSE_IDENTIFIER(perm._to).key
+        )
 
-            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+        LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
 
-            FOR agent_key IN all_agent_keys
-                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
-                FILTER agent != null
-                FILTER agent.isDeleted != true
-                FILTER agent.webSearch == @provider
-                LET creator = agent.createdBy != null
-                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
-                    : null
-                RETURN {{
-                    name: agent.name,
-                    _key: agent._key,
-                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
-                }}
-            """
-            result = await self.execute_query(
-                query, bind_vars={"org_id": org_id, "provider": provider}
-            )
-            return result or []
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
-            return []
+        FOR agent_key IN all_agent_keys
+            LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+            FILTER agent != null
+            FILTER agent.isDeleted != true
+            FILTER agent.webSearch == @provider
+            LET creator = agent.createdBy != null
+                ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                : null
+            RETURN {{
+                name: agent.name,
+                _key: agent._key,
+                creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+            }}
+        """
+        result = await self.execute_query(
+            query, bind_vars={"org_id": org_id, "provider": provider}
+        )
+        return result or []
 
     async def get_agents_by_model_key(
         self, org_id: str, model_key: str
     ) -> list[dict]:
-        try:
-            query = f"""
-            // Collect user keys that belong to this org
-            LET org_user_keys = (
-                FOR bt IN {CollectionNames.BELONGS_TO.value}
-                    FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
-                    RETURN PARSE_IDENTIFIER(bt._from).key
-            )
+        query = f"""
+        // Collect user keys that belong to this org
+        LET org_user_keys = (
+            FOR bt IN {CollectionNames.BELONGS_TO.value}
+                FILTER bt._to == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER STARTS_WITH(bt._from, '{CollectionNames.USERS.value}/')
+                RETURN PARSE_IDENTIFIER(bt._from).key
+        )
 
-            // Find agents owned by those users
-            LET user_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm.type == 'USER'
-                    FILTER perm.role == 'OWNER'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    LET owner_key = PARSE_IDENTIFIER(perm._from).key
-                    FILTER owner_key IN org_user_keys
-                    RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
-            )
+        // Find agents owned by those users
+        LET user_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm.type == 'USER'
+                FILTER perm.role == 'OWNER'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                LET owner_key = PARSE_IDENTIFIER(perm._from).key
+                FILTER owner_key IN org_user_keys
+                RETURN DISTINCT PARSE_IDENTIFIER(perm._to).key
+        )
 
-            // Also include agents shared directly with the org
-            LET org_agents = (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
-                    FILTER perm.type == 'ORG'
-                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    RETURN PARSE_IDENTIFIER(perm._to).key
-            )
+        // Also include agents shared directly with the org
+        LET org_agents = (
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', @org_id)
+                FILTER perm.type == 'ORG'
+                FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN PARSE_IDENTIFIER(perm._to).key
+        )
 
-            LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
+        LET all_agent_keys = UNION_DISTINCT(user_agents, org_agents)
 
-            LET model_key_prefix = CONCAT(@model_key, "_")
+        LET model_key_prefix = CONCAT(@model_key, "_")
 
-            FOR agent_key IN all_agent_keys
-                LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
-                FILTER agent != null
-                FILTER agent.isDeleted != true
-                FILTER LENGTH(
-                    FOR m IN (agent.models != null ? agent.models : [])
-                        FILTER m == @model_key OR STARTS_WITH(m, model_key_prefix)
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-                LET creator = agent.createdBy != null
-                    ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
-                    : null
-                RETURN {{
-                    name: agent.name,
-                    _key: agent._key,
-                    creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
-                }}
-            """
-            result = await self.execute_query(
-                query, bind_vars={"org_id": org_id, "model_key": model_key}
-            )
-            return result or []
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by model key: {str(e)}")
-            return []
+        FOR agent_key IN all_agent_keys
+            LET agent = DOCUMENT(CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', agent_key))
+            FILTER agent != null
+            FILTER agent.isDeleted != true
+            FILTER LENGTH(
+                FOR m IN (agent.models != null ? agent.models : [])
+                    FILTER m == @model_key OR STARTS_WITH(m, model_key_prefix)
+                    LIMIT 1
+                    RETURN 1
+            ) > 0
+            LET creator = agent.createdBy != null
+                ? DOCUMENT(CONCAT('{CollectionNames.USERS.value}/', agent.createdBy))
+                : null
+            RETURN {{
+                name: agent.name,
+                _key: agent._key,
+                creatorName: creator != null ? (creator.fullName != null ? creator.fullName : creator.name) : null
+            }}
+        """
+        result = await self.execute_query(
+            query, bind_vars={"org_id": org_id, "model_key": model_key}
+        )
+        return result or []
 
     async def get_all_agents(
         self,

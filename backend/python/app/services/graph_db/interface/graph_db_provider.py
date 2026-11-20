@@ -5476,7 +5476,8 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with record, knowledgeBase, folder, metadata, permissions if accessible;
-            None if not, and always None for a record in the trash.
+            None if not, and always None for a record in the trash. Any failure to read
+            the graph raises: a read that failed is never None.
         """
         pass
 
@@ -6013,6 +6014,17 @@ class IGraphDBProvider(ABC):
         linked meanwhile, say by a verified email taking over a stub, keeps them). Before the org's All team passes
         the connector gate, no grant may wait there for a person the connector does not link. Returns how many
         edges were deleted."""
+        raise NotImplementedError
+
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on, as ``{id, externalRecordId, recordType}``.
+        Grants through groups, teams, the organization or inheritance are not included. A failed read raises: an
+        empty list must mean the user holds no such grant, since callers add and remove grants from it."""
         raise NotImplementedError
 
     @abstractmethod
@@ -7456,6 +7468,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of deleted permission edges (OLD values)
+
+        Raises:
+            Exception: the delete failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7478,6 +7493,9 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of updated permission edges
+
+        Raises:
+            Exception: the update failed. Inside a transaction a write conflict must reach its owner to re-run the block.
         """
         pass
 
@@ -7648,6 +7666,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 
@@ -7671,6 +7693,10 @@ class IGraphDBProvider(ABC):
         Returns:
             List of dicts with ``{name, _key, creatorName}`` for each matching
             agent.  Returns an empty list when no agents match.
+
+        Raises:
+            Exception: the store's error when it cannot be read. Deletes are
+            refused on this answer, so a failure must never read as no agents.
         """
         pass
 

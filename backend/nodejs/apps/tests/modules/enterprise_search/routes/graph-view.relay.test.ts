@@ -12,6 +12,8 @@ import { xssSanitizationMiddleware } from '../../../../src/libs/middlewares/xss-
 import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 type Who = { mode: 'ok'; user: any } | { mode: 'deny' }
 let who: Who = { mode: 'ok', user: { userId: 'u1', orgId: 'o1' } }
@@ -61,6 +63,9 @@ const BODY = { source: 'code', nodeIds: ['block:9f2c'] }
 const text = (r: { body: Buffer }) => r.body.toString()
 
 describe('Graph relay through Express', () => {
+  beforeEach(() => registerAppUpstreams({ aiBackend: 'http://query:8000' }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
   beforeEach(() => {
     who = { mode: 'ok', user: { userId: 'u1', orgId: 'o1' } }

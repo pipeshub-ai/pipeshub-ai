@@ -15,6 +15,7 @@ import math
 import os
 import statistics
 from dataclasses import replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, NamedTuple
 
 from app.modules.parsers.excel.limits import excel_document_memory_bytes
@@ -1030,6 +1031,17 @@ def _latency_hold(state: PoolState) -> bool:
     return state.hold_ewma > DOWNSTREAM_LATENCY_HOLD_FACTOR * state.hold_baseline
 
 
+# A reporter only one index tier calls. Docling parses PDF-route records, which classify heavy unless their extension
+# and mime disagree: narrowing the light pool for its outage takes no load off it and only queues Jira/Slack records.
+# Every other reporter is called by both tiers.
+_SERVICE_POOL: Mapping[str, Pool] = MappingProxyType({"DoclingService": Pool.INDEX_HEAVY})
+
+
+def _feedback_for(pool: Pool, feedback: FeedbackWindow) -> FeedbackWindow:
+    """What *pool* is braked by: the window minus the services only the other tier calls."""
+    return feedback.without({name for name, owner in _SERVICE_POOL.items() if owner is not pool})
+
+
 def _downstream_shrink_target(
     current: int, floor: int, feedback: FeedbackWindow
 ) -> tuple[int | None, bool]:
@@ -1078,7 +1090,7 @@ def _next_pool_limit(
     # The downstream brake is for the index pools: they are what fans out to
     # the services that reported, and the parse pools sit *behind* an index
     # permit, so narrowing index alone is what reduces the load.
-    downstream = feedback if _is_index_pool(pool) and feedback is not None else None
+    downstream = _feedback_for(pool, feedback) if _is_index_pool(pool) and feedback is not None else None
     # The holdoff is judged on its value *entering* this sample, so a clean
     # window counts toward growth only from the next sample on: two clean
     # samples means two full intervals with no symptoms before the pool grows.

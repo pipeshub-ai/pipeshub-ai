@@ -2709,7 +2709,9 @@
           "pipeshub_code_impact": "Muestra lo que depende de un símbolo: todo lo que lo llama, lo importa o se basa en él, con las pruebas que lo alcanzan. Responde quién lo llama y qué se rompe si cambia.",
           "pipeshub_code_impact_of_diff": "Recibe un diff unificado, como la salida de git diff o el diff de una pull request, y muestra los símbolos que cambia, los archivos y las pruebas que los alcanzan, y los llamadores que ninguna prueba cubre.",
           "pipeshub_code_history": "Enumera las pull requests indexadas que modificaron un archivo, con autor, revisores, quién la fusionó y las incidencias que menciona.",
-          "pipeshub_code_entry_points": "Enumera por dónde entra la ejecución en un repositorio, como rutas, herramientas de línea de comandos, tareas y hooks. Un punto de partida para leer código desconocido."
+          "pipeshub_code_entry_points": "Enumera por dónde entra la ejecución en un repositorio, como rutas, herramientas de línea de comandos, tareas y hooks. Un punto de partida para leer código desconocido.",
+          "pipeshub_entities": "Encuentra personas, equipos, temas, proyectos, carpetas, clientes y títulos de documentos en el grafo de conocimiento del espacio de trabajo, enumera los registros relacionados con uno de ellos y las personas, empresas o productos que se mencionan junto a él. La búsqueda y el listado se ofrecen cuando ya hay entidades indexadas; la lista de menciones conjuntas necesita además la extracción de entidades con nombre. Una aplicación OAuth o un token de acceso necesita además el permiso semantic:read o semantic:write.",
+          "pipeshub_find_records": "Enumera registros según a quién pertenecen o qué mencionan, no según sus palabras: los registros que una persona tiene asignados, ha creado, ha escrito o posee, los registros que mencionan un importe, una fecha, una cantidad o un porcentaje, y fragmentos de los registros que nombran a determinadas personas, empresas o productos. Los importes y las fechas necesitan la extracción de entidades con nombre, y los fragmentos solo se ofrecen donde la implementación también activa la búsqueda de entidades. Una aplicación OAuth o un token de acceso necesita además el permiso semantic:read o semantic:write."
         }
       },
       "appliesNote": "Los cambios se aplican a las nuevas solicitudes MCP en unos segundos.",
@@ -3577,6 +3579,99 @@
           "other": "Algo en los permisos de este conector requiere que una persona lo revise.",
           "unreadable": "No se puede leer la lista de carpetas que esperan una actualización. Pida a quien administra PipesHub que reconstruya el índice de permisos de este conector. Mientras tanto, la búsqueda comprueba cada resultado."
         }
+      },
+      "userAccess": {
+        "connect": "Conectar",
+        "reconnect": "Volver a conectar",
+        "connected": "Conectada",
+        "connectedAs": "Conectada como {{account}}",
+        "connectDialog": {
+          "title": "Conecta tu cuenta a {{name}}",
+          "description": "Pega un token de acceso personal de tu propia cuenta de {{source}}. PipesHub te mostrará solo las páginas que tu cuenta puede abrir.",
+          "howTo": "Cómo crear un token de acceso personal",
+          "tokenLabel": "Token de acceso personal",
+          "submitting": "Conectando…",
+          "errorFallback": "No se pudo conectar tu cuenta. Inténtalo de nuevo.",
+          "signInHint": "{{source}} solo muestra las páginas a las que tienes acceso completo. Las subpáginas de una página que elijas se incluyen, también las nuevas. Para añadir más páginas después, vuelve a iniciar sesión.",
+          "signingIn": "Esperando a {{source}}…",
+          "signInFailed": "El inicio de sesión no se completó. Inténtalo de nuevo.",
+          "popupBlocked": "Tu navegador bloqueó la ventana de inicio de sesión. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."
+        },
+        "admin": {
+          "title": "Usuarios conectados",
+          "description": "Este conector muestra a cada persona solo lo que su propia cuenta puede abrir. Quien no se haya conectado no verá nada de él.",
+          "remove": "Quitar",
+          "removeTitle": "¿Quitar la conexión de {{email}}?",
+          "removeMessage": "Dejará de ver resultados de este conector hasta que se vuelva a conectar.",
+          "removing": "Quitando…",
+          "removed": "Conexión quitada",
+          "status": {
+            "connected": "Conectado",
+            "needs_reconnect": "Debe volver a conectar",
+            "invited": "Invitado",
+            "not_invited": "Sin invitar",
+            "opted_out": "No quiere recordatorios",
+            "no_account": "Sin cuenta de PipesHub"
+          },
+          "noAccountHint": "Invítalo primero a PipesHub",
+          "invite": "Invitar",
+          "remind": "Recordar",
+          "sent_one": "Enviado a {{count}} persona",
+          "sent_many": "Enviado a {{count}} de personas",
+          "sent_other": "Enviado a {{count}} personas",
+          "notEmailed_one": "No se pudo enviar el correo a {{count}} persona; aun así recibió una notificación en la aplicación.",
+          "notEmailed_many": "No se pudo enviar el correo a {{count}} de personas; aun así recibieron una notificación en la aplicación.",
+          "notEmailed_other": "No se pudo enviar el correo a {{count}} personas; aun así recibieron una notificación en la aplicación.",
+          "lastSent": "Último envío {{time}}",
+          "connectedAt": "Conectado {{time}}",
+          "membersUpdated": "Lista de miembros leída por última vez {{time}}",
+          "membersPending": "La lista de miembros aparece tras la próxima sincronización",
+          "queued_one": "Enviando a {{count}} persona. Recibirá una notificación y un correo.",
+          "queued_many": "Enviando a {{count}} de personas. Recibirán una notificación y un correo.",
+          "queued_other": "Enviando a {{count}} personas. Recibirán una notificación y un correo.",
+          "nothingSent": "No se envió nada",
+          "skipReason": {
+            "connected": "Ya está conectado.",
+            "not_found": "Ya no es miembro.",
+            "opted_out": "No quiere recordatorios.",
+            "recently_sent": "Ya se le envió algo en el último día.",
+            "not_sent": "No se pudo enviar. Inténtalo más tarde."
+          },
+          "inviteWho": "Invitar a {{name}}",
+          "remindWho": "Recordar a {{name}}",
+          "removeWho": "Quitar la conexión de {{name}}",
+          "yourAccount": "Tu cuenta",
+          "connectedOf": "{{connected}} de {{total}} personas conectadas",
+          "needReconnect_one": "{{count}} tiene que volver a conectarse",
+          "needReconnect_many": "{{count}} tienen que volver a conectarse",
+          "needReconnect_other": "{{count}} tienen que volver a conectarse",
+          "search": "Buscar personas por nombre o correo",
+          "inviteEveryoneHint": "Todas las personas que aún no se han conectado",
+          "inviteEveryone": "Invitar a todos ({{count}})",
+          "noMatches": "Nadie coincide con «{{q}}»",
+          "nobody": "Aún no hay nadie. Las personas aparecen tras la próxima sincronización."
+        },
+        "link": {
+          "title": "Conecta tu cuenta de {{source}}",
+          "forEmail": "para {{email}}",
+          "continue": "Continuar a {{source}}",
+          "loading": "Comprobando tu enlace…",
+          "alreadyConnected": "Tu cuenta de {{source}} ya está conectada.",
+          "openApp": "Abrir PipesHub",
+          "expired": "Este enlace ha caducado o ya se usó. Pide uno nuevo a tu administrador o conéctate desde Tus conectores personales en PipesHub.",
+          "optedOut": "No recibirás más recordatorios para este conector.",
+          "error": "Algo salió mal. Inténtalo de nuevo en un minuto.",
+          "noSignIn": "Este conector usa tokens de acceso personal. Abre PipesHub y selecciona Conectar en la notificación para pegar el tuyo.",
+          "done": "{{name}} está conectado. Tus páginas aparecerán en la búsqueda de PipesHub en unos minutos.",
+          "doneUnnamed": "Tu cuenta está conectada. Tus páginas aparecerán en la búsqueda de PipesHub en unos minutos.",
+          "failedTitle": "No se pudo conectar",
+          "failedRetry": "Usa el enlace de tu correo para intentarlo de nuevo.",
+          "confirmOptOut": "¿Dejar de recibir recordatorios de {{name}}?",
+          "stopReminders": "Dejar de recordar",
+          "rateLimited": "Demasiados intentos, inténtalo de nuevo en un minuto.",
+          "cancelled": "Cancelaste el inicio de sesión.",
+          "signInFailed": "El inicio de sesión no terminó. Inténtalo de nuevo."
+        }
       }
     },
     "mcpServers": {
@@ -3601,7 +3696,6 @@
         "confirm": "Guardar y eliminar inicios de sesión"
       },
       "cta": {
-        "manage": "Gestionar",
         "delete": "Eliminar",
         "reauthenticate": "Reautenticar",
         "reconnect": "Volver a conectar",
@@ -3623,6 +3717,18 @@
         "needsAuth": "Requiere autenticación",
         "disabled": "Deshabilitado"
       },
+      "filters": {
+        "label": "Filtrar por estado",
+        "needsAction": "Requiere acción",
+        "unavailable": "No disponible"
+      },
+      "catalog": {
+        "title": "Añadir más servidores",
+        "description": "Servidores listos para usar. Añade uno y luego inicia sesión en él.",
+        "personalDescription": "Solo tú verás los servidores que añadas aquí.",
+        "added": "Añadido",
+        "addAnother": "Añadir otro"
+      },
       "team": {
         "title": "Servidores MCP",
         "subtitle": "Conecta servidores Model Context Protocol para ampliar lo que pueden hacer los agentes de tu equipo.",
@@ -3634,37 +3740,16 @@
         "subtitle": "Conéctate a los servidores MCP que tu administrador ha puesto a disposición o añade los tuyos.",
         "emptyTitle": "No hay servidores MCP disponibles",
         "emptyDescription": "Añade uno propio o pide a tu administrador que añada uno para todos.",
-        "yourServersDescription": "Servidores que has añadido. Solo tú puedes verlos y usarlos, y no se pueden añadir a agentes compartidos con tu organización.",
         "tabs": {
           "all": "Todos",
-          "connected": "Conectados",
-          "notConnected": "No conectados"
+          "connected": "Conectados"
         },
         "yours": "Tuyo",
         "noneInTab": "No hay servidores MCP aquí."
       },
       "details": {
         "breadcrumbLabel": "Servidores MCP",
-        "refreshAll": "Actualizar todo",
-        "addInstance": "Añadir otra instancia",
-        "configuration": "CONFIGURACIÓN",
-        "transport": "TRANSPORTE",
-        "tools": "HERRAMIENTAS",
-        "discoverTools": "Descubrir herramientas",
-        "discoveredTools_one": "{{count}} herramienta disponible",
-        "discoveredTools_other": "{{count}} herramientas disponibles",
-        "discovering": "Descubriendo herramientas…",
-        "discoveryError": "Error al descubrir herramientas",
-        "discoveryNeedsAuth": "Autentícate para descubrir herramientas",
-        "retry": "Reintentar",
-        "noInstances": "No hay instancias configuradas",
-        "authBannerTitle": "Se requiere autenticación",
-        "authBannerDescription": "Autentica este servidor MCP para que los agentes de tu equipo puedan usarlo.",
-        "authBannerAuthenticatedTitle": "Conectado",
-        "reconnectBannerDescription": "El inicio de sesión de este servidor caducó o fue rechazado. Vuelve a conectarlo para seguir usándolo.",
-        "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP.",
-        "createdBy": "Creado por",
-        "discoveredTools_many": "{{count}} de herramientas disponibles"
+        "tools": "HERRAMIENTAS"
       },
       "deleteDialog": {
         "title": "¿Eliminar el servidor MCP?",
@@ -3724,27 +3809,28 @@
         "tokenUrl": "URL del token",
         "scopes": "Ámbitos",
         "scopesPlaceholder": "Añadir un ámbito",
-        "useAdminAuth": "Usar autenticación de administrador compartida para todos los usuarios",
         "headerValue": "{{headerName}}",
         "apiToken": "Token de API",
         "credentialsHeading": "Credenciales (opcional)",
-        "credentialsHint": "Añade las credenciales ahora, o sáltalo y conéctate más tarde desde la pestaña Conexión y herramientas.",
+        "credentialsHint": "Añádelas ahora o inicia sesión más tarde desde la página del servidor.",
         "multiEnvIncomplete": "Completa todas las variables de entorno obligatorias, o déjalas todas en blanco para conectar más tarde.",
         "oauthPairRequired": "Introduce tanto el ID de cliente como el secreto de cliente, o deja ambos vacíos.",
-        "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo.",
         "timeoutsHeading": "Tiempos de espera",
         "connectTimeout": "Tiempo de espera de conexión (segundos)",
         "callTimeout": "Tiempo de espera de las llamadas a herramientas (segundos)",
-        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado."
+        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado.",
+        "whoSignsIn": "Cómo inician sesión las personas",
+        "signIn": {
+          "personal": "Cada persona usa las suyas",
+          "personalHint": "Cada persona inicia sesión con sus propias credenciales y solo obtiene el acceso que estas tienen.",
+          "shared": "Una credencial compartida para todos",
+          "sharedHint": "La añades una vez, abajo. Todos actúan con su acceso."
+        },
+        "advanced": "Avanzado"
       },
       "configPanel": {
         "editTitle": "Editar servidor MCP",
         "createTitle": "Nuevo servidor MCP",
-        "tabs": {
-          "configuration": "Configuración",
-          "tools": "Herramientas y aprobaciones",
-          "toolList": "Herramientas"
-        },
         "synced": "Sincronizado {{time}}",
         "refreshTools": "Actualizar la lista de herramientas",
         "signInForTools": "Inicia sesión para ver las herramientas de este servidor.",
@@ -3786,7 +3872,8 @@
           "remove": "Eliminar servidor",
           "removeHint": "Lo elimina para todos.",
           "removeHintPersonal": "Lo elimina junto con tu inicio de sesión."
-        }
+        },
+        "addTemplateTitle": "Añadir {{name}}"
       },
       "oauthConfig": {
         "saved": "App de OAuth guardada",
@@ -3821,7 +3908,6 @@
         "noState": "No se devolvió ningún parámetro de estado.",
         "backendRejected": "El servidor rechazó la solicitud de autorización."
       },
-      "deleteDisabledTooltip": "Este servidor no se puede eliminar",
       "toolsCount_many": "{{count}} de herramientas",
       "stdioPolicy": {
         "disabledTitle": "Deshabilitado en esta instalación",
@@ -3836,8 +3922,6 @@
         "customDescription": "Cualquier servidor MCP remoto, mediante su URL."
       },
       "toolRules": {
-        "open": "Aprobaciones de herramientas",
-        "title": "Aprobaciones de herramientas: {{name}}",
         "description": {
           "personal": "Elige qué ocurre cuando un asistente o agente quiere usar una de estas herramientas en tus chats."
         },
@@ -3892,6 +3976,12 @@
         "orgRulesDescription": "Decide qué herramientas se ejecutan, piden aprobación o nunca se ejecutan para toda tu organización. Aquí, cada persona define sus propias reglas desde su página de servidores MCP.",
         "userServersTitle": "Servidores MCP propios de las personas",
         "userServersDescription": "Revisa y elimina los servidores MCP que las personas de tu organización añaden para sí mismas."
+      },
+      "added": {
+        "ready": "{{name}} se ha añadido y está listo para usar.",
+        "signIn": "{{name}} se ha añadido. Inicia sesión abajo para que sus herramientas puedan funcionar.",
+        "other": "{{name}} se ha añadido, pero aún no funciona. Abajo verás por qué.",
+        "dismiss": "Listo"
       }
     },
     "bots": {

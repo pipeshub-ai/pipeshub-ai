@@ -10,8 +10,16 @@ import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './cha
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
 import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+
+// What agui_emitter.py sends when a sub-agent (child run) fails; the parent run carries on.
+const subAgentError = { runId: 'run-child', parentRunId: RUN, message: 'Sub-agent failed: tool timeout', code: 'agent_error' }
 
 describe('es_controller streaming answers', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })
@@ -236,22 +244,157 @@ describe('es_controller streaming answers', () => {
         expect(run.conversation().status).to.equal('Complete')
       })
 
-      if (!flow.regenerate) {
-        it('passes a sub-agent’s RUN_FINISHED through without treating it as the final answer', async () => {
+      it('passes a sub-agent’s RUN_FINISHED through without treating it as the final answer', async () => {
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_FINISHED', { runId: 'run-child', parentRunId: RUN })
+        run.ai.send('RUN_FINISHED', finalAnswer('Done.'))
+        run.ai.finish()
+        await run.res.ended
+
+        const finished = run.res.eventsOf('RUN_FINISHED')
+        expect(finished).to.have.length(2)
+        expect(finished[0]?.data.runId).to.equal('run-child')
+        expect(finished[1]?.data.result).to.have.property('conversation')
+        expect(run.answer()?.content).to.equal('Done.')
+      })
+
+      it('reports an interrupted answer when the AI stream ends after only a sub-agent finished', async () => {
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_FINISHED', { runId: 'run-child', parentRunId: RUN })
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([CHAT_ERROR_MESSAGES.interrupted])
+        expect(run.conversation().status).to.equal('Failed')
+        expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+      })
+
+      it('keeps the answer and a clean conversation when a sub-agent fails and the agent still answers', async () => {
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_ERROR', subAgentError)
+        run.ai.send('RUN_FINISHED', finalAnswer('Recovered answer.'))
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.runId), 'only the sub-agent’s own frame').to.deep.equal(['run-child'])
+        expect(run.answer()?.content).to.equal('Recovered answer.')
+        expect(run.conversation().status).to.equal('Complete')
+        expect(run.conversation().conversationErrors ?? []).to.have.length(0)
+        expect(run.conversation().failReason ?? null).to.equal(null)
+      })
+
+      it('never writes a failure for a sub-agent error, however slow the store is', async () => {
+        // Holds any Failed write until the final save is done: the order that left the conversation Failed.
+        const real = MongoConversationRepository.prototype.recordRunState
+        let release: () => void = () => undefined
+        const gate = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        const statuses: unknown[] = []
+        sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
+          statuses.push(args[1]?.status)
+          if (args[1]?.status === 'Failed') await gate
+          return real.apply(this, args)
+        })
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_ERROR', subAgentError)
+        run.ai.send('RUN_FINISHED', finalAnswer('Recovered answer.'))
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+        release()
+        await settle(20)
+
+        expect(statuses, 'the final save went through the stub').to.include('Complete')
+        expect(statuses.filter((s) => s === 'Failed'), 'Failed writes').to.have.length(0)
+        expect(run.answer()?.content).to.equal('Recovered answer.')
+        expect(run.conversation().status).to.equal('Complete')
+      })
+
+      it('reports an interrupted answer, not the sub-agent’s error, when the stream ends after a sub-agent failed', async () => {
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_ERROR', subAgentError)
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([
+          subAgentError.message,
+          CHAT_ERROR_MESSAGES.interrupted,
+        ])
+        expect(run.conversation().status).to.equal('Failed')
+        expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+      })
+
+      it('ends a run whose RUN_ERROR has no data as interrupted: the failure is saved before the stream closes, and the browser gets its text', async () => {
+        const real = MongoConversationRepository.prototype.recordRunState
+        let release: () => void = () => undefined
+        const gate = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
+          if (args[1]?.status === 'Failed') await gate
+          return real.apply(this, args)
+        })
+        const run = await startStream(flow)
+
+        run.ai.sendRaw('event: RUN_ERROR\ndata: null\n\n')
+        run.ai.finish()
+        await settle(20)
+        expect(run.res.writableEnded, 'still open while the failure is being saved').to.equal(false)
+
+        release()
+        await run.res.ended
+        await settle()
+
+        expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.message), 'only Node’s error, with the saved text').to.deep.equal([
+          CHAT_ERROR_MESSAGES.interrupted,
+        ])
+        expect(run.conversation().status).to.equal('Failed')
+        expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+        const errors = (run.conversation().conversationErrors ?? []) as Array<{ errorType?: string }>
+        expect(errors.map((e) => e.errorType)).to.deep.equal(['no_response'])
+      })
+
+      for (const [what, result] of [
+        ['no answer text', { citations: [] }],
+        ['citations that are not a list', { answer: 'Done.', citations: {} }],
+      ] as const) {
+        it(`ends a run whose final result has ${what} as interrupted, without letting the browser settle the turn from it`, async () => {
           const run = await startStream(flow)
 
-          run.ai.send('RUN_FINISHED', { runId: 'run-child', parentRunId: RUN })
-          run.ai.send('RUN_FINISHED', finalAnswer('Done.'))
+          run.ai.send('RUN_FINISHED', { runId: RUN, result })
           run.ai.finish()
           await run.res.ended
+          await settle()
 
-          const finished = run.res.eventsOf('RUN_FINISHED')
-          expect(finished).to.have.length(2)
-          expect(finished[0]?.data.runId).to.equal('run-child')
-          expect(finished[1]?.data.result).to.have.property('conversation')
-          expect(run.answer()?.content).to.equal('Done.')
+          expect(run.res.eventsOf('RUN_FINISHED'), 'the unreadable result is not forwarded').to.deep.equal([])
+          expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([CHAT_ERROR_MESSAGES.interrupted])
+          expect(run.conversation().status).to.equal('Failed')
+          expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
         })
+      }
 
+      it('reads a RUN_ERROR with empty data as unreadable: not forwarded, and the run ends interrupted', async () => {
+        const run = await startStream(flow)
+
+        run.ai.sendRaw('event: RUN_ERROR\ndata:\n\n')
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([CHAT_ERROR_MESSAGES.interrupted])
+        expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+      })
+
+      if (!flow.regenerate) {
         it('saves a question the agent asks the user, so it is still there after a reload', async () => {
           const run = await startStream(flow)
 
@@ -395,6 +538,42 @@ describe('es_controller streaming answers', () => {
         await settle()
         expect(run.conversation().status).to.equal('Complete')
       })
+
+      if (flow.regenerate) {
+        it('holds the conversation until a run that ended with an unreadable RUN_ERROR has saved its failure', async () => {
+          const clock = fakeClock()
+          const real = MongoConversationRepository.prototype.recordRunState
+          let release: () => void = () => undefined
+          const gate = new Promise<void>((resolve) => {
+            release = resolve
+          })
+          sinon.stub(MongoConversationRepository.prototype, 'recordRunState').callsFake(async function (this: MongoConversationRepository, ...args: Parameters<typeof real>) {
+            if (args[1]?.status === 'Failed') await gate
+            return real.apply(this, args)
+          })
+          const run = await startStream(flow)
+          run.ai.sendRaw('event: RUN_ERROR\ndata: null\n\n')
+          run.ai.finish()
+          await settle(20)
+
+          const second = sendAgain(flow, run)
+          await clock.tickAsync(1000)
+          expect(second.res.writableEnded, 'the second regenerate waits for the failure write').to.equal(false)
+          expect(run.res.writableEnded).to.equal(false)
+
+          release()
+          await run.res.ended
+          await clock.tickAsync(1000)
+          await second.done
+
+          // Only now does it see the saved failure, which is no longer an answer it can regenerate.
+          expect(second.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([
+            'Can only regenerate the last message in the conversation',
+          ])
+          expect(run.ai.streamCalls, 'no second run was started').to.have.length(1)
+          expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+        })
+      }
 
       it('goes ahead once the previous run has finished saving, so a quick Stop-then-send is not refused', async () => {
         const clock = fakeClock()

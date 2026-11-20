@@ -6,6 +6,8 @@ import { Container } from 'inversify'
 import { createGraphViewRouter } from '../../../../src/modules/enterprise_search/routes/graph-view.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -57,6 +59,9 @@ const validate = (path: string, body: unknown) =>
   })
 
 describe('Graph view routes', () => {
+  beforeEach(() => registerAppUpstreams({ aiBackend: 'http://query:8000' }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {

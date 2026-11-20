@@ -21,6 +21,8 @@ import {
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../constants/constants';
 import { getUserRepository } from '../../../libs/repositories/user';
+import { audit } from '../../../libs/services/audit';
+import { userRefusal } from '../../user_management/utils/user-audit';
 
 const CLIENT_SECRET_BYTES = 32;
 const SECONDS_PER_DAY = 86400;
@@ -189,7 +191,10 @@ export class ServiceTokenService {
     options: { mustBeEnabled: boolean },
   ): Promise<{ id: string; fullName?: string }> {
     if (!isValidId(serviceAccountId)) {
-      throw new NotFoundError('Service account not found');
+      throw userRefusal(
+        new NotFoundError('Service account not found'),
+        'not_found',
+      );
     }
     const account = await getUserRepository().getLiveFields(
       orgId,
@@ -199,14 +204,20 @@ export class ServiceTokenService {
     );
 
     if (!account) {
-      throw new NotFoundError('Service account not found');
+      throw userRefusal(
+        new NotFoundError('Service account not found'),
+        'not_found',
+      );
     }
     // Only minting requires the account to be enabled. Listing and revoking
     // must keep working while it is disabled, or an administrator who has just
     // switched one off could not then clean up the tokens it still holds.
     if (options.mustBeEnabled && account.isDisabled === true) {
-      throw new BadRequestError(
-        'This service account is disabled. Enable it before issuing a token.',
+      throw userRefusal(
+        new BadRequestError(
+          'This service account is disabled. Enable it before issuing a token.',
+        ),
+        'account_disabled',
       );
     }
     return { id: serviceAccountId, fullName: account.fullName };
@@ -227,8 +238,11 @@ export class ServiceTokenService {
       SERVICE_TOKEN_DENIED_SCOPES.includes(scope),
     );
     if (denied.length > 0) {
-      throw new BadRequestError(
-        `Service tokens are read-only and cannot hold: ${denied.join(', ')}`,
+      throw userRefusal(
+        new BadRequestError(
+          `Service tokens are read-only and cannot hold: ${denied.join(', ')}`,
+        ),
+        'scope_denied',
       );
     }
 
@@ -321,18 +335,20 @@ export class ServiceTokenService {
         actingUserId,
         'Exceeded the active token limit',
       );
-      throw new BadRequestError(
-        `This service account already holds ${String(SERVICE_TOKEN_MAX_ACTIVE)} active tokens. Revoke one before issuing another.`,
+      throw userRefusal(
+        new BadRequestError(
+          `This service account already holds ${String(SERVICE_TOKEN_MAX_ACTIVE)} active tokens. Revoke one before issuing another.`,
+        ),
+        'token_limit',
       );
     }
 
-    this.logger.info('Service token created', {
-      orgId,
-      serviceAccountId: account.id,
-      mintedBy: actingUserId,
-      name: request.name,
+    audit('service_account.token.create', {
+      target: account.id,
+      targetIsUser: true,
+      key: tokens.accessTokenId,
       scopes,
-      expiryDays,
+      outcome: 'success',
     });
 
     return {
@@ -486,7 +502,10 @@ export class ServiceTokenService {
     const clientId = serviceTokenClientId(orgId);
     const app = await getOAuthAppRepository().findByClientId(clientId);
     if (!app) {
-      throw new NotFoundError('Service token not found');
+      throw userRefusal(
+        new NotFoundError('Service token not found'),
+        'not_found',
+      );
     }
 
     const revoked = await this.oauthTokenService.revokeAccessTokenById(
@@ -497,14 +516,17 @@ export class ServiceTokenService {
       reason ?? 'Revoked by administrator',
     );
     if (!revoked) {
-      throw new NotFoundError('Service token not found');
+      throw userRefusal(
+        new NotFoundError('Service token not found'),
+        'not_found',
+      );
     }
 
-    this.logger.info('Service token revoked', {
-      orgId,
-      serviceAccountId: account.id,
-      revokedBy: actingUserId,
-      tokenId,
+    audit('service_account.token.revoke', {
+      target: account.id,
+      targetIsUser: true,
+      key: tokenId,
+      outcome: 'success',
     });
   }
 }

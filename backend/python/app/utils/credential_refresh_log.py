@@ -80,6 +80,8 @@ ERROR_CLASS_BY_REASON = {
     "url_blocked": "misconfigured", "host_unresolved": "unavailable",
     # A 2xx answer with no access token (oauth_service.TokenResponseError, MCP oauth_client): the token URL or provider setup is wrong.
     "no_access_token": "misconfigured",
+    # A token field we cannot parse (oauth_service.MalformedTokenError): a provider answer or a saved record.
+    "malformed_token": "misconfigured",
 }
 
 # aiohttp refuses the token URL before sending, and its text is the URL, query included.

@@ -47,6 +47,8 @@ import * as orgRepo from '../../../src/libs/repositories/org';
 import * as oauthAppRepo from '../../../src/libs/repositories/oauth-app';
 import * as oauthTokenRepo from '../../../src/libs/repositories/oauth-token';
 import { ProjectService } from '../../../src/modules/projects/services/project.service';
+import { registerUpstreams } from '../../../src/libs/http/upstream-call';
+import { registerAppUpstreams } from '../../../src/modules/tokens_manager/config/config';
 
 const JWT_SECRET = 'user-audit-jwt-secret';
 const SCOPED_SECRET = 'user-audit-scoped-secret';
@@ -245,6 +247,8 @@ describe('user and group audit lines (HTTP)', function () {
     nock(CM).persist().get(/smtpConfig/).reply(200, { host: 'smtp.acme.test', port: 25, fromEmail: 'noreply@acme.test' });
 
     const config: Row = { jwtSecret: JWT_SECRET, scopedJwtSecret: SCOPED_SECRET, cmBackend: CM, communicationBackend: COMM, frontendUrl: 'http://app.user-audit.test', rsAvailable: 'false' };
+
+    registerAppUpstreams(config as never);
     const logger = Logger.getInstance({ service: 'UserManagement' });
     const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => { if (publishFails) throw new Error('outbox down'); } };
     const mailProducer = { publishEvent: async () => { if (mailQueueFails) throw new Error('broker unavailable'); } };
@@ -281,6 +285,7 @@ describe('user and group audit lines (HTTP)', function () {
 
   afterEach(async () => {
     sinon.restore();
+    registerUpstreams({});
     nock.cleanAll();
     await new Promise((resolve) => server.close(resolve));
   });

@@ -84,6 +84,9 @@ CASES = [
     ("postgres", "get_records_by_file_path", ("c1", "/a/b.txt"), {}),
     ("postgres", "batch_upsert_people", ([MagicMock()],), {}),
     ("postgres", "migrate_person_to_user", (SENTINEL, "u1", "org-1"), {}),
+    # the agent-usage reads a model or web search provider delete is refused on: a failure raises, never reads as no agents
+    *[(backend, method, ("org-1", SENTINEL), {}) for backend in ("neo4j", "arango", "postgres")
+      for method in ("get_agents_by_model_key", "get_agents_by_web_search_provider")],
 ]
 
 

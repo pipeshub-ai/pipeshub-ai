@@ -1,7 +1,7 @@
 import json
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -76,6 +76,7 @@ async def get_services(request: Request) -> Dict[str, Any]:
 
 TEAM_NAME_TAKEN = "A team with this name already exists. Choose a different name."
 TEAM_NAME_REQUIRED = "Give the team a name."
+ROLE_WRITE_FAILED = action_failed("update these people's roles")
 
 
 def _clean_team_name(raw: object) -> str:
@@ -148,19 +149,23 @@ async def _validate_owner_removal(
     graph_provider,
     team_id: str,
     user_ids_to_remove: list,
-    logger
-) -> None:
+    logger,
+    transaction: str | None = None,
+) -> int:
     """
     Validate that removing owners won't leave the team without any owners.
-    Raises HTTPException if validation fails.
+    Raises HTTPException if validation fails; returns how many owners the removal takes.
     """
     if not user_ids_to_remove:
-        return
+        return 0
+    # The check inside the transaction repeats this decision on every attempt; the early check logs it.
+    log = logger.info if transaction is None else logger.debug
 
     # Get owner removal info using graph provider
     validation_data = await graph_provider.get_team_owner_removal_info(
         team_id=team_id,
-        user_ids=user_ids_to_remove
+        user_ids=user_ids_to_remove,
+        transaction=transaction,
     )
 
     owners_being_removed = validation_data.get("owners_being_removed", [])
@@ -173,32 +178,42 @@ async def _validate_owner_removal(
                 status_code=400,
                 detail="Cannot remove all owners from the team. At least one owner must remain."
             )
-        logger.info(f"Removing {len(owners_being_removed)} Owner(s) from team {team_id} (remaining owners: {remaining_owners})")
+        log(f"Removing {len(owners_being_removed)} Owner(s) from team {team_id} (remaining owners: {remaining_owners})")
+    return len(owners_being_removed)
 
 
 async def _validate_and_filter_owner_updates(
     graph_provider,
     team_id: str,
     valid_user_roles: list,
-    logger
+    logger,
+    *,
+    removing: Collection[str] = (),
+    owners_removed: int = 0,
+    transaction: str | None = None,
 ) -> tuple[list, int]:
     """
     Validate owner role updates and filter out unchanged owners.
     Returns (filtered_updates, total_owner_count).
     Raises HTTPException if validation fails.
     """
+    log = logger.info if transaction is None else logger.debug  # as in _validate_owner_removal
     # Get team info, current permissions, and owner count using graph provider
     user_ids_to_check = [ur.get("userId") for ur in valid_user_roles]
     result_data = await graph_provider.get_team_permissions_and_owner_count(
         team_id=team_id,
-        user_ids=user_ids_to_check
+        user_ids=user_ids_to_check,
+        transaction=transaction,
     )
 
     if not result_data or not result_data.get("team"):
         raise HTTPException(status_code=404, detail="Team not found")
 
-    current_permissions = result_data.get("permissions", {})
-    total_owner_count = result_data.get("owner_count", 0)
+    # Judged as the team will be once this request's removals are made: a removed person has no role left to change.
+    current_permissions = {
+        user_id: role for user_id, role in result_data.get("permissions", {}).items() if user_id not in removing
+    }
+    total_owner_count = result_data.get("owner_count", 0) - owners_removed
 
     # Filter out unchanged Owners and validate
     filtered_updates = []
@@ -221,7 +236,7 @@ async def _validate_and_filter_owner_updates(
 
     # Early exit if no updates needed
     if not filtered_updates:
-        logger.info("No user role updates needed (all Owners unchanged)")
+        log("No user role updates needed (all Owners unchanged)")
         return [], total_owner_count
 
     # Bulk Operation Prevention: Cannot perform bulk operations on Owner permissions
@@ -242,9 +257,29 @@ async def _validate_and_filter_owner_updates(
                     status_code=400,
                     detail="Cannot remove all owners from the team. At least one owner must remain."
                 )
-            logger.info(f"Downgrading Owner {owner_user_id} to {owner_update.get('role')} on team {team_id} (remaining owners: {total_owner_count - 1})")
+            log(f"Downgrading Owner {owner_user_id} to {owner_update.get('role')} on team {team_id} (remaining owners: {total_owner_count - 1})")
 
     return filtered_updates, total_owner_count
+
+
+async def _owner_rules_allow(
+    graph_provider: "IGraphDBProvider",
+    team_id: str,
+    remove_keys: list,
+    valid_user_roles: list,
+    logger: "Logger",
+    transaction: str | None = None,
+) -> list:
+    """The role changes to write, once removing these people and making these changes still leaves the team an owner.
+    Raises the owner rules' 400s (and 404 for a team that is gone)."""
+    owners_removed = await _validate_owner_removal(graph_provider, team_id, remove_keys, logger, transaction)
+    if not valid_user_roles:
+        return []
+    role_changes, _ = await _validate_and_filter_owner_updates(
+        graph_provider, team_id, valid_user_roles, logger,
+        removing=set(remove_keys), owners_removed=owners_removed, transaction=transaction,
+    )
+    return role_changes
 
 
 async def _principals_changed() -> None:
@@ -482,7 +517,6 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
     body = await request.body()
     body_dict = json.loads(body.decode('utf-8'))
-    logger.info(f"Updating team: {body_dict}")
 
     # Filter out None values to avoid overwriting with null
     updates = {
@@ -498,11 +532,6 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
     members_written = False       # the version moves only when a membership write was attempted
     try:
-        # Update team basic info (always update timestamp)
-        result = await graph_provider.update_node(team_id, CollectionNames.TEAMS.value, updates)
-        if not result:
-            raise HTTPException(status_code=404, detail="Team not found")
-
         # Handle member additions and removals (Mongo userId on wire; resolve once)
         add_user_roles = body_dict.get("addUserRoles", [])  # Array of {userId, role}
         remove_user_mongo_ids = [
@@ -513,6 +542,11 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         if not add_user_roles and body_dict.get("addUserIds"):
             default_role = body_dict.get("role", "READER")
             add_user_roles = [{"userId": uid, "role": default_role} for uid in body_dict.get("addUserIds", [])]
+        # Counts only: the body holds the team's name, its description and people's ids.
+        logger.info(
+            "Updating team %s: rename=%s, adding %d, removing %d, changing %d roles", team_id, "name" in updates,
+            len(add_user_roles), len(remove_user_mongo_ids), len(update_user_roles),
+        )
 
         unique_mongo_ids: set[str] = set()
         unique_mongo_ids.update(remove_user_mongo_ids)
@@ -537,75 +571,96 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                 logger.error("Team member lookup failed: %s", exc, exc_info=True)
                 raise HTTPException(status_code=400, detail=PEOPLE_GONE) from exc
 
-        # Remove users if specified
-        if remove_user_mongo_ids:
-            remove_graph_keys = [mongo_to_key[mid] for mid in remove_user_mongo_ids]
-            await _validate_owner_removal(graph_provider, team_id, remove_graph_keys, logger)
-            members_written = True
-            deleted_list = await graph_provider.delete_team_member_edges(
-                team_id=team_id,
-                user_ids=remove_graph_keys
-            )
-            if deleted_list:
-                logger.info(f"Removed {len(deleted_list)} users from team {team_id}")
-
-        # Update individual user roles if specified (batch update)
-        if update_user_roles:
-            valid_user_roles = [
-                {
-                    "userId": mongo_to_key[user_role.get("userId")],
-                    "role": user_role.get("role"),
-                }
-                for user_role in update_user_roles
-                if user_role.get("userId") and user_role.get("role")
-            ]
-
-            if not valid_user_roles:
-                logger.warning("No valid user roles to update")
-            else:
-                filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
-                    graph_provider, team_id, valid_user_roles, logger
-                )
-
-                if filtered_updates:
-                    try:
-                        members_written = True
-                        updated_permissions = await graph_provider.batch_update_team_member_roles(
-                            team_id=team_id,
-                            user_roles=filtered_updates,
-                            timestamp=get_epoch_timestamp_in_ms()
-                        )
-                        logger.info(f"Updated {len(updated_permissions)} user roles in batch")
-                    except Exception as e:
-                        logger.error(f"Error updating user roles in batch: {str(e)}")
-                        raise HTTPException(status_code=500, detail=action_failed("update these people's roles"))
+        # Every check runs before the first write, so a refused request changes nothing.
+        remove_graph_keys = [mongo_to_key[mid] for mid in remove_user_mongo_ids]
+        valid_user_roles = [
+            {
+                "userId": mongo_to_key[user_role.get("userId")],
+                "role": user_role.get("role"),
+            }
+            for user_role in update_user_roles
+            if user_role.get("userId") and user_role.get("role")
+        ]
+        if update_user_roles and not valid_user_roles:
+            logger.warning("No valid user roles to update")
+        await _owner_rules_allow(graph_provider, team_id, remove_graph_keys, valid_user_roles, logger)
 
         # Add users if specified, skipping the caller's own edge so their role is
         # kept; an administrator who is not yet in the team has none to keep.
-        if add_user_roles:
-            caller_mongo_id = user_info.get("userId")
-            user_team_edges = []
-            for user_role in add_user_roles:
-                mongo_id = user_role.get("userId")
-                role = user_role.get("role", "READER")
-                if not mongo_id or (mongo_id == caller_mongo_id and permission):
-                    continue
-                user_team_edges.append({
-                    "from_id": mongo_to_key[mongo_id],
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": team_id,
-                    "to_collection": CollectionNames.TEAMS.value,
-                    "type": "USER",
-                    "role": role,
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                })
+        caller_mongo_id = user_info.get("userId")
+        user_team_edges = []
+        for user_role in add_user_roles:
+            mongo_id = user_role.get("userId")
+            role = user_role.get("role", "READER")
+            if not mongo_id or (mongo_id == caller_mongo_id and permission):
+                continue
+            user_team_edges.append({
+                "from_id": mongo_to_key[mongo_id],
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_id,
+                "to_collection": CollectionNames.TEAMS.value,
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            })
 
+        applied: list[str] = []       # logged once the transaction commits, not for an attempt it rolls back
+        role_conflict: BaseException | None = None
+
+        async def write_update(tx_store: "TransactionStore") -> None:
+            nonlocal members_written, role_conflict
+            applied.clear()
+            txn = tx_store.txn
+            # The team node first: every team edit writes it before anything else, so its write lock (Neo4j, PostgreSQL)
+            # or write conflict (ArangoDB) fences the owner rules below against another edit of the same team.
+            if not await graph_provider.update_node(team_id, CollectionNames.TEAMS.value, updates, transaction=txn):
+                raise HTTPException(status_code=404, detail="Team not found")
+            # Judged again on what this attempt commits against: a re-run must not replay a decision another edit has since made wrong.
+            role_changes = await _owner_rules_allow(graph_provider, team_id, remove_graph_keys, valid_user_roles, logger, txn)
+            if remove_graph_keys:
+                members_written = True
+                deleted_list = await graph_provider.delete_team_member_edges(
+                    team_id=team_id, user_ids=remove_graph_keys, transaction=txn,
+                )
+                if deleted_list:
+                    applied.append(f"Removed {len(deleted_list)} users from team {team_id}")
+            if role_changes:
+                members_written = True
+                try:
+                    updated_permissions = await graph_provider.batch_update_team_member_roles(
+                        team_id=team_id,
+                        user_roles=role_changes,
+                        timestamp=get_epoch_timestamp_in_ms(),
+                        transaction=txn,
+                    )
+                except Exception as e:
+                    if graph_provider.is_write_conflict(e):
+                        role_conflict = e
+                        raise  # the transaction's owner runs the whole block again
+                    raise HTTPException(status_code=500, detail=ROLE_WRITE_FAILED) from e
+                applied.append(f"Updated {len(updated_permissions)} user roles in batch")
             if user_team_edges:
                 members_written = True
-                result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
-                if result:
-                    logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
+                if await graph_provider.batch_create_edges(
+                    user_team_edges, CollectionNames.PERMISSION.value, transaction=txn,
+                ):
+                    applied.append(f"Added {len(user_team_edges)} users to team {team_id}")
+
+        # One unit: a write that fails partway leaves the team as it was. Each write is keyed by the
+        # team and the person, so a re-run after a write conflict ends in the same change.
+        # shortcut: NEO4J_CREATE_TRANSACTIONS=false commits each write alone, so a failed one keeps the earlier ones; upgrade if that mode is run on purpose.
+        try:
+            await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_update, explicit=True)
+        except HTTPException:
+            raise
+        except Exception as e:
+            # The transaction already logged the failure when it rolled back. A role write that kept
+            # colliding answers what main answered for it.
+            detail = ROLE_WRITE_FAILED if e is role_conflict else "Failed to update team"
+            raise HTTPException(status_code=500, detail=detail) from e
+        for line in applied:
+            logger.info(line)
 
         # Return updated team with users
         updated_team = await graph_provider.get_team_with_users(
