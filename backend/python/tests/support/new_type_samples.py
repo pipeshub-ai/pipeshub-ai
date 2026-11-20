@@ -21,6 +21,7 @@ _VBA_REL = "http://schemas.microsoft.com/office/2006/relationships/vbaProject"
 DOCM_MAIN = "application/vnd.ms-word.document.macroEnabled.main+xml"
 DOTX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"
 POTX_MAIN = "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"
+PPTM_MAIN = "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml"
 XLSM_MAIN = "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
 _DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 _PPTX_MAIN = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
@@ -76,16 +77,25 @@ def make_dotx(text: str) -> bytes:
     return _rewrite(_docx(text), plain_main=_DOCX_MAIN, main=DOTX_MAIN, vba_dir=None)
 
 
-def make_potx(text: str) -> bytes:
+def _deck(text: str, *, title: str, main: str, vba_dir: str | None) -> bytes:
     import pptx
 
     presentation = pptx.Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[1])
-    slide.shapes.title.text = "Template title"
+    slide.shapes.title.text = title
     slide.placeholders[1].text = text
     buffer = io.BytesIO()
     presentation.save(buffer)
-    return _rewrite(buffer.getvalue(), plain_main=_PPTX_MAIN, main=POTX_MAIN, vba_dir=None)
+    return _rewrite(buffer.getvalue(), plain_main=_PPTX_MAIN, main=main, vba_dir=vba_dir)
+
+
+def make_potx(text: str) -> bytes:
+    return _deck(text, title="Template title", main=POTX_MAIN, vba_dir=None)
+
+
+def make_pptm(text: str) -> bytes:
+    """A macro-enabled deck, with a VBA project: python-pptx opens it as it is."""
+    return _deck(text, title="Deck title", main=PPTM_MAIN, vba_dir="ppt")
 
 
 def make_xlsm(text: str) -> bytes:
