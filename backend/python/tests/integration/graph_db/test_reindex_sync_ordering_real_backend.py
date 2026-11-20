@@ -39,9 +39,11 @@ from app.connectors.core.sync.sync_runner import run_sync_task, write_app_status
 from app.connectors.services.event_service import EventService
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.core.org_context import for_org
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import AppUserGroup, FileRecord, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.messaging.kafka.handlers import entity as entity_handler
+from app.services.messaging.kafka.handlers.entity import EntityEventService
 from tests.integration.real_graph import (
     backend_unavailable,
     connect_arango,
@@ -220,6 +222,117 @@ async def test_a_sync_a_webhook_starts_during_a_reindex_keeps_the_access_it_took
     await world.reindex(Connector())
 
     assert await world.readers() == {world.users["alice"]}
+
+
+async def test_a_user_link_pass_in_another_process_during_a_reindex_keeps_the_grant_it_moved(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bob's address was hidden, so the record was shared with a stand-in group for his account; a user-link pass learns his
+    address and moves the group's grant onto him. A reindex that read the source before the pass must not take it away."""
+    group = AppUserGroup(
+        app_name=Connectors.CONFLUENCE, connector_id=world.conn, source_user_group_id=f"acct-{world.run}",
+        name=f"[Pseudo-User] acct-{world.run}", org_id=world.org,
+    )
+    await world.processor.on_new_user_groups([(group, [])])
+    stand_in = Permission(external_id=group.source_user_group_id, type=PermissionType.READ, entity_type=EntityType.GROUP)
+    await world.processor.on_new_records([(world.record(), [*world.grants("alice"), stand_in])], replace_permissions=True)
+    assert await world.readers() == {world.users["alice"]}
+
+    async def link_new_users() -> None:
+        await world.processor.migrate_group_to_user_by_external_id(group.source_user_group_id, world.users["bob"], world.conn)
+
+    # As from another process: the reindex sees neither the pass's sync lock (released before it writes) nor its count of started syncs.
+    monkeypatch.setattr(connector_service, "syncs_started", lambda _connector_id: 0)
+    linking = SimpleNamespace(
+        app_container=SimpleNamespace(connectors_map={world.conn: SimpleNamespace(link_new_users=link_new_users)}),
+        graph_provider=world.graph, logger=logger,
+    )
+
+    async def link_elsewhere() -> bool:
+        with for_org(world.org, job="test"):
+            return await EntityEventService._link_connector(linking, world.conn)
+
+    class Connector:
+        data_entities_processor = SimpleNamespace(reindex_existing_records=AsyncMock())  # the superseded batch is re-queued as stored
+
+        async def reindex_records(self, records: list) -> None:
+            read = [*world.grants("alice"), stand_in]  # the source as this reindex read it, before the pass
+            assert await asyncio.create_task(link_elsewhere(), context=contextvars.Context())
+            assert await world.readers() == {world.users["alice"], world.users["bob"]}
+            await world.processor.on_new_records([(world.record(), read)], replace_permissions=True)
+
+    await world.reindex(Connector())
+
+    assert await world.readers() == {world.users["alice"], world.users["bob"]}
+
+
+@pytest.mark.parametrize("meanwhile", ["a sync elsewhere started and ended", "an overlapping pass elsewhere ended"])
+async def test_a_reindex_that_began_during_a_user_link_pass_in_another_process_keeps_the_moved_grant(
+    world: _World, monkeypatch: pytest.MonkeyPatch, meanwhile: str,
+) -> None:
+    """Before the reindex begins, a sync in a third process starts after the pass did and ends, or another pass of the
+    connector ends; the reindex then reads the source, and writes while the pass is still running, after it moved the grant."""
+    group = AppUserGroup(
+        app_name=Connectors.CONFLUENCE, connector_id=world.conn, source_user_group_id=f"acct-{world.run}",
+        name=f"[Pseudo-User] acct-{world.run}", org_id=world.org,
+    )
+    await world.processor.on_new_user_groups([(group, [])])
+    stand_in = Permission(external_id=group.source_user_group_id, type=PermissionType.READ, entity_type=EntityType.GROUP)
+    await world.processor.on_new_records([(world.record(), [*world.grants("alice"), stand_in])], replace_permissions=True)
+
+    # As from other processes: neither the reindex nor another pass sees a pass's sync lock, nor the reindex its count of started syncs.
+    monkeypatch.setattr(connector_service, "syncs_started", lambda _connector_id: 0)
+    for module in (connector_service, entity_handler):
+        monkeypatch.setattr(module, "connector_sync_lock", lambda _connector_id: asyncio.Lock())
+    pass_started, reindex_read, moved, reindex_wrote = (asyncio.Event() for _ in range(4))
+
+    async def link_new_users() -> None:
+        pass_started.set()
+        await reindex_read.wait()
+        await world.processor.migrate_group_to_user_by_external_id(group.source_user_group_id, world.users["bob"], world.conn)
+        moved.set()
+        await reindex_wrote.wait()
+
+    async def link_elsewhere(link: object) -> bool:
+        linking = SimpleNamespace(
+            app_container=SimpleNamespace(connectors_map={world.conn: SimpleNamespace(link_new_users=link)}),
+            graph_provider=world.graph, logger=logger,
+        )
+        with for_org(world.org, job="test"):
+            return await EntityEventService._link_connector(linking, world.conn)
+
+    link_pass = asyncio.create_task(link_elsewhere(link_new_users), context=contextvars.Context())
+    await pass_started.wait()
+    with for_org(world.org, job="test"):
+        if meanwhile == "a sync elsewhere started and ended":
+            await asyncio.sleep(0.01)      # its start time is after the pass's
+            await write_app_status(world.graph, logger, world.conn, AppStatus.SYNCING.value, run_started=True, raise_on_error=True)
+            await world.graph.batch_upsert_nodes([{
+                "id": world.conn, "status": AppStatus.IDLE.value,
+                ConnectorStateKeys.LAST_SYNC_FINISHED_AT: (await world.graph.get_document(world.conn, APPS))["updatedAtTimestamp"] + 1,
+            }], APPS)
+        else:
+            async def no_users() -> None:
+                return None
+
+            assert await asyncio.create_task(link_elsewhere(no_users), context=contextvars.Context())
+
+    class Connector:
+        data_entities_processor = SimpleNamespace(reindex_existing_records=AsyncMock())  # the superseded batch is re-queued as stored
+
+        async def reindex_records(self, records: list) -> None:
+            read = [*world.grants("alice"), stand_in]  # read while the pass runs, before it moved the grant
+            reindex_read.set()
+            await moved.wait()
+            try:
+                await world.processor.on_new_records([(world.record(), read)], replace_permissions=True)
+            finally:
+                reindex_wrote.set()
+
+    await world.reindex(Connector())
+    assert await link_pass
+
+    assert await world.readers() == {world.users["alice"], world.users["bob"]}
 
 
 async def test_without_a_sync_the_reindex_writes_what_it_read(world: _World) -> None:

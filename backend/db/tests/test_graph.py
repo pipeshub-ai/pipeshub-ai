@@ -1161,7 +1161,8 @@ STALE_PLAIN = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.
 UNHELD_PLAIN = """WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev, max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s
                     WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(%s::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
                  SELECT g.v, g.rev FROM g WHERE g.newest < %s::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = current_setting('app.org_id') AND r.coll = 'records'
-                    AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev"""
+                    AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED'
+                       AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev"""
 
 
 UNHELD_NEW = """SELECT virtual_record_id, revision FROM graph.stage_states_unheld(%s::text[]) GROUP BY 1, 2 HAVING max(coalesce(updated_at_ms::numeric, 0)) < %s::bigint ORDER BY 1, 2"""      # the caller's grouping
@@ -1332,3 +1333,126 @@ def test_the_link_read_uses_its_two_indexes_where_the_plain_statement_cannot(rdb
         plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' "
                                                                            "AND n.doc->>'externalRecordId' = 'e777'")
         assert not any(re.search(r"Index Cond: .*externalRecordId", p) for p in plain), plain[0]
+
+
+# ---- records by web address and the Jira sites of the org (graph_0017) ---------------------------------------------------------------------
+# 6,421 characters that compress poorly: more than a btree row holds, so the index keys the address by its md5
+LONG = "https://long.example/" + "".join(f"{i:08x}{(i * 2654435761) % 2**32:08x}" for i in range(400))
+OLD_AT = "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'webUrl' = ANY(%s::text[])"
+AT = "SELECT node_id FROM graph.records_by_weburl(%s::text[])"
+# the provider's statement before graph_0017
+OLD_SITES = ("SELECT site FROM (SELECT DISTINCT (regexp_match(n.doc->>'webUrl', '^(.*)/browse/'))[1] AS site FROM graph.nodes n "
+             "WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'orgId' = %s AND n.doc->>'recordType' = 'TICKET' "
+             "AND n.doc->>'connectorName' = ANY(%s::text[]) AND n.doc->>'webUrl' LIKE '%%/browse/%%' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false) q "
+             "WHERE site <> '' ORDER BY site LIMIT %s")
+SITES = "SELECT site_url FROM graph.ticket_sites(%s, %s::text[], %s)"
+
+
+def _seed_addresses(c):
+    rows = {"p1": {"webUrl": "https://w/1", "recordType": "WEBPAGE"}, "p1att": {"webUrl": "https://w/1", "recordType": "FILE", "isDependentNode": True},
+            "p1link": {"webUrl": "https://w/1", "recordType": "LINK", "connectorName": "SLACK WORKSPACE"}, "p1slash": {"webUrl": "https://w/1/"},
+            "pdel": {"webUrl": "https://w/2", "isDeleted": True}, "plong": {"webUrl": LONG}, "pempty": {"webUrl": ""}, "pnone": {"recordType": "FILE"}}
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for rid, doc in rows.items():
+            if not (org == B and rid == "p1slash"):                                  # the address with a slash is A's alone
+                c.execute(NODE, (org, "records", rid, json.dumps({"orgId": org, **doc})))
+        c.execute(NODE, (org, "files", "f1", json.dumps({"webUrl": "https://w/1"})))      # not a record
+
+
+def test_the_records_at_an_address_are_every_record_of_the_org_stored_there(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_addresses(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for urls in (["https://w/1"], ["https://w/1/"], ["https://w/1", "https://w/2", LONG, ""], ["https://W/1", "https://w/1?x", "nope"], [LONG[:-1]], ["https://w/1"] * 3, []):
+                new = [r[0] for r in c.execute(AT, (urls,))]
+                assert len(new) == len(set(new)) and set(new) == {r[0] for r in c.execute(OLD_AT, (urls,))}, (org, urls, new)
+        as_role(c, "pipeshub_connectors", A)
+        assert {r[0] for r in c.execute(AT, (["https://w/1"],))} == {"p1", "p1att", "p1link"}
+        assert [r[0] for r in c.execute(AT, ([LONG],))] == ["plong"] and [r[0] for r in c.execute(AT, ([""],))] == ["pempty"]
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert c.execute("SELECT count(*) FROM graph.records_by_weburl(%s::text[])", (["https://w/1", ""],)).fetchone()[0] == 0, org
+        as_role(c, "pipeshub_connectors", A)
+        for args in (None, [None], ["x" * 100001], ["u"] * 1001):
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(AT, (args,))
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            assert c.execute("SELECT has_function_privilege(%s, 'graph.records_by_weburl(text[])', 'EXECUTE')", (role,)).fetchone()[0] is ok, role
+
+
+TICKET_ROWS = {   # id -> (connectorName, webUrl, extra): sites the old statement told apart, and tickets it left out
+    "t1": ("JIRA", "https://x.atlassian.net/browse/ENG-1", {}), "t2": ("JIRA", "https://x.atlassian.net/browse/ENG-2", {}),
+    "t3": ("JIRA", "https://y.atlassian.net/browse/OPS-1", {"isDeleted": False}), "t4": ("JIRA DATA CENTER", "https://jira.corp.example/jira/browse/DC-7", {}),
+    "tgone": ("JIRA", "https://gone.atlassian.net/browse/G-1", {"isDeleted": True}), "tdup": ("JIRA", "https://h.example/browse/x/browse/K-1", {}),
+    "troot": ("JIRA", "/browse/E-1", {}), "tgh": ("GITHUB", "https://gh.example/browse/Z-1", {}), "tnokey": ("JIRA", "https://z.atlassian.net/projects/ENG", {}),
+    "towner": ("JIRA", "https://owner.atlassian.net/browse/O-1", {"orgId": "c" * 24}), "tfile": ("JIRA", "https://file.atlassian.net/browse/F-1", {"recordType": "FILE"}),
+    "tnl": ("JIRA", "https://nl.example/a\nb/browse/N-1", {}), "tnone": ("JIRA", None, {}),
+}
+
+
+def test_the_ticket_sites_are_what_the_plain_statement_read_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for rid, (conn, url, extra) in TICKET_ROWS.items():
+                if org == B and rid in ("t1", "t2", "t4"):
+                    continue                                                        # B has the y site only of these
+                c.execute(NODE, (org, "records", rid, json.dumps({"orgId": org, "recordType": "TICKET", "connectorName": conn, **({"webUrl": url} if url else {}), **extra})))
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for owner in (A, B, "c" * 24):
+                for names in (["JIRA"], ["JIRA", "JIRA DATA CENTER"], ["JIRA", "JIRA"], ["GITHUB"], ["nope"]):
+                    for limit in (None, 0, 1, 2, 100):
+                        old = [r[0] for r in c.execute(OLD_SITES, (owner, names, limit))]
+                        assert [r[0] for r in c.execute(SITES, (owner, names, limit))] == old, (org, owner, names, limit)
+        as_role(c, "pipeshub_connectors", A)
+        got = [r[0] for r in c.execute(SITES, (A, ["JIRA", "JIRA DATA CENTER"], None))]
+        assert set(got) == {"https://x.atlassian.net", "https://y.atlassian.net", "https://jira.corp.example/jira", "https://h.example/browse/x", "https://nl.example/a\nb"}, got
+        as_role(c, "pipeshub_connectors", B)
+        assert [r[0] for r in c.execute(SITES, (B, ["JIRA", "JIRA DATA CENTER"], None))] == [r[0] for r in c.execute(OLD_SITES, (B, ["JIRA", "JIRA DATA CENTER"], None))]
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert c.execute("SELECT count(*) FROM graph.ticket_sites(%s, %s::text[], NULL)", (A, ["JIRA"])).fetchone()[0] == 0, org
+        as_role(c, "pipeshub_connectors", A)
+        for args in ((None, ["JIRA"], None), ("", ["JIRA"], None), ("o" * 201, ["JIRA"], None), (A, None, None), (A, [None], None), (A, [""], None),
+                     (A, ["J"] * 101, None), (A, ["JIRA"], -1)):
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(SITES, args)
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            assert c.execute("SELECT has_function_privilege(%s, 'graph.ticket_sites(text, text[], int)', 'EXECUTE')", (role,)).fetchone()[0] is ok, role
+
+
+def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements_read_the_org(rdb):
+    """12,000 records two to an address and 12,000 tickets on three sites of two connectors, on a leaf the planner expects to hold 4 billion rows."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'webUrl', 'https://w/p' || (i %% 6000)) "
+                  "FROM generate_series(1, 12000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 't' || i, jsonb_build_object('orgId', %s::text, 'recordType', 'TICKET', 'connectorName', "
+                  "CASE WHEN i %% 2 = 0 THEN 'JIRA' ELSE 'JIRA DATA CENTER' END, 'webUrl', 'https://s' || (i %% 3) || '.atlassian.net/browse/K-' || i) "
+                  "FROM generate_series(1, 12000) i", (A, A))
+        _big_leaf(c, A)
+        for urls in (["https://w/p7"], ["https://w/p7", "nope"], [f"https://w/p{i}" for i in range(1000)]):
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, AT, (urls,))
+            for i in (0, 6):
+                assert "nodes_record_weburl" in plans[i] and not _reads_by(plans[i], "nodes_record_weburl", "webUrl"), (len(urls), i, plans[i])
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, SITES, (A, ["JIRA", "JIRA DATA CENTER", "JIRA PERSONAL"], None))
+        for i in (0, 6):
+            assert "nodes_record_ticket_site" in plans[i] and not _reads_by(plans[i], "nodes_record_ticket_site", "connectorName"), (i, plans[i])
+            # each probe reads the index in order and stops at its first row; a sort under the LIMIT would read every ticket of the connector
+            assert not re.search(r"Sort Key: \(?md5", plans[i]), (i, plans[i])
+        # what the provider sent before: a read of the org
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, OLD_AT, (["https://w/p7"],))
+        assert _reads_by(plain[6], "nodes_record_weburl", "webUrl"), plain[6]
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, OLD_SITES, (A, ["JIRA"], None))
+        assert _reads_by(plain[6], "nodes_record_ticket_site", "connectorName"), plain[6]
+        as_role(c, "pipeshub_connectors", A)
+        assert sorted(r[0] for r in c.execute(AT, (["https://w/p7"],))) == ["r6007", "r7"]
+        assert [r[0] for r in c.execute(SITES, (A, ["JIRA", "JIRA DATA CENTER"], None))] == [f"https://s{i}.atlassian.net" for i in range(3)]

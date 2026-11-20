@@ -9,6 +9,9 @@ from collections.abc import Iterator
 import pytest
 
 from tests.support.edition_defaults import unit_test_fixtures
+from tests.support.mock_config_epoch import (
+    _epoch_of_a_collection_whose_config_is_a_mock,  # noqa: F401  (autouse)
+)
 
 
 @pytest.fixture(autouse=True)

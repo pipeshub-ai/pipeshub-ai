@@ -1070,3 +1070,129 @@ adds what is specific to its role after it.
             - name: ADDRESS_RATE_LIMIT_PER_MINUTE
               value: {{ .Values.addressRateLimitPerMinute | default 60 | quote }}
 {{- end }}
+
+{{/*
+.value ("8", "8.5", ".5") times ten to the power .exp ("9", "+009", "-3"), as a
+float. Leading zeros in the exponent are allowed, as both Kubernetes and Neo4j
+allow them. The value is first written as 0.<digits> x 10^m, so the bounds
+apply to the number's size, not to the exponent as written:
+"85899345920000000000000000000000000000000e-31" is 8Gi. A number of 1e31 or
+more fails the render with .what, one below 1e-30 is zero, and the loop runs
+at most 31 times.
+*/}}
+{{- define "pipeshub-ai.timesPow10" -}}
+{{- $expText := toString .exp -}}
+{{- $expDigits := regexReplaceAll "^0+" (trimPrefix "-" (trimPrefix "+" $expText)) "" | default "0" -}}
+{{- if gt (len $expDigits) 4 }}{{ $expDigits = "9999" }}{{ end -}}
+{{- $exp := atoi $expDigits -}}
+{{- if hasPrefix "-" $expText }}{{ $exp = sub 0 $exp }}{{ end -}}
+{{- $parts := splitList "." (toString .value) -}}
+{{- $whole := first $parts -}}
+{{- $all := join "" $parts -}}
+{{- $significant := regexReplaceAll "^0+" $all "" -}}
+{{- $v := 0.0 -}}
+{{- if $significant -}}
+{{- $m := add $exp (sub (len $whole) (sub (len $all) (len $significant))) -}}
+{{- if gt $m 31 }}{{ fail .what }}{{ end -}}
+{{- if ge $m -29 -}}
+{{- $v = float64 (printf "0.%s" (trunc 17 $significant)) -}}
+{{- if lt $m 0 -}}
+{{- range until (int (sub 0 $m)) }}{{ $v = divf $v 10 }}{{ end -}}
+{{- else -}}
+{{- range until (int $m) }}{{ $v = mulf $v 10 }}{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
+
+{{/*
+A Kubernetes memory quantity in whole MiB, following the apimachinery grammar:
+a number ("8", "8.5", ".5") and one suffix, binary ("Ki" to "Ei"), decimal
+("m", "k" to "E") or a signed exponent ("e9", "e+9", "E-3", "e+009"). A large
+integer in a values file arrives as a float and prints as "8.589934592e+09".
+The sum is kept in bytes and divided once: sprig's mulf and divf keep 16
+digits, so a factor like 1/1048576 would make 8589934592 bytes 8191 MiB.
+*/}}
+{{- define "pipeshub-ai.memoryMiB" -}}
+{{- $q := trimPrefix "+" (toString .) -}}
+{{- $n := regexFind "^([0-9]+(\\.[0-9]*)?|\\.[0-9]+)" $q -}}
+{{- $suffix := trimPrefix $n $q -}}
+{{- $perUnit := dict "" 1 "m" 0.001 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "P" 1000000000000000 "E" 1000000000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "Pi" 1125899906842624 "Ei" 1152921504606846976 -}}
+{{- $unreadable := printf "neo4j.resources.limits.memory %q is not a memory quantity the chart can read; set the NEO4J_server_memory_* sizes in neo4j.env" (toString .) -}}
+{{- $bytes := 0.0 -}}
+{{- if and $n (regexMatch "^[eE][+-]?[0-9]+$" $suffix) -}}
+{{- $bytes = include "pipeshub-ai.timesPow10" (dict "value" $n "exp" (substr 1 -1 $suffix) "what" $unreadable) | float64 -}}
+{{- else if and $n (hasKey $perUnit $suffix) -}}
+{{- $bytes = mulf $n (get $perUnit $suffix) -}}
+{{- else -}}
+{{- fail $unreadable -}}
+{{- end -}}
+{{- divf $bytes 1048576 | floor | int64 -}}
+{{- end -}}
+
+{{/*
+A Neo4j byte size in whole MiB, rounded up, read as Neo4j 5's ByteUnit.parse
+does. The number is Java's English NumberFormat: grouping commas, a fraction,
+and an exponent only as an uppercase "E" with an optional "-" ("3E9", "3E-3";
+"3e9" and "3E+9" are refused). Then optional blanks and one of its unit names,
+case-sensitive and binary ("B", "k"/"K"/"KB"/"KiB", "m"/"MB"/"MiB",
+"g"/"GB"/"GiB", "TB"/"TiB", "PB"/"PiB", "EB"/"EiB"), and at most
+Long.MAX_VALUE bytes. A size Neo4j would refuse fails the render instead.
+*/}}
+{{- define "pipeshub-ai.neo4jSizeMiB" -}}
+{{- $q := trim (toString .value) -}}
+{{- $unreadable := printf "neo4j.env.%s %q is not a size the chart can read; set the heap maximum in neo4j.env too" .name (toString .value) -}}
+{{- $n := regexFind "^([0-9][0-9,]*(\\.[0-9]*)?|\\.[0-9]+)" $q -}}
+{{- $exp := regexFind "^E-?[0-9]+" (trimPrefix $n $q) -}}
+{{- $unit := trim (trimPrefix $exp (trimPrefix $n $q)) -}}
+{{- $k := 1024 -}}{{- $m := 1048576 -}}{{- $g := 1073741824 -}}
+{{- $perUnit := dict "" 1 "B" 1 "KiB" $k "KB" $k "K" $k "kB" $k "kb" $k "k" $k "MiB" $m "MB" $m "M" $m "mB" $m "mb" $m "m" $m "GiB" $g "GB" $g "G" $g "gB" $g "gb" $g "g" $g "TiB" 1099511627776 "TB" 1099511627776 "PiB" 1125899906842624 "PB" 1125899906842624 "EiB" 1152921504606846976 "EB" 1152921504606846976 -}}
+{{- if or (not $n) (not (hasKey $perUnit $unit)) -}}
+{{- fail $unreadable -}}
+{{- end -}}
+{{- $number := include "pipeshub-ai.timesPow10" (dict "value" (replace "," "" $n) "exp" (trimPrefix "E" $exp | default "0") "what" $unreadable) | float64 -}}
+{{- $bytes := mulf $number (get $perUnit $unit) -}}
+{{- if gt $bytes 9223372036854775807.0 }}{{ fail $unreadable }}{{ end -}}
+{{- divf $bytes 1048576 | ceil | int64 -}}
+{{- end -}}
+
+{{/*
+Neo4j does not size its heap or page cache from the container, so with only
+the defaults a smaller limit gets settings that no longer fit and the pod is
+OOM-killed. Each setting not given in neo4j.env (under its dbms_ or server_
+name) is derived from the memory limit: heap maximum half (never below a
+starting heap the user set, which the JVM would refuse), starting heap an
+eighth (only when the maximum is derived too), page cache a quarter. The limit
+is read only when something is derived.
+*/}}
+{{- define "pipeshub-ai.neo4jMemoryEnv" -}}
+{{- $env := .Values.neo4j.env | default dict -}}
+{{- $given := dict -}}
+{{- range $name := list "heap_initial__size" "heap_max__size" "pagecache_size" -}}
+{{- range $prefix := list "NEO4J_dbms_memory_" "NEO4J_server_memory_" -}}
+{{- if hasKey $env (print $prefix $name) -}}
+{{- $_ := set $given $name (dict "name" (print $prefix $name) "value" (get $env (print $prefix $name))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $limit := dig "limits" "memory" "" (.Values.neo4j.resources | default dict) -}}
+{{- if and $limit (or (not (hasKey $given "heap_max__size")) (not (hasKey $given "pagecache_size"))) -}}
+{{- $mib := include "pipeshub-ai.memoryMiB" $limit | int64 -}}
+{{- if not (hasKey $given "heap_max__size") }}
+{{- $max := div $mib 2 -}}
+{{- if hasKey $given "heap_initial__size" -}}
+{{- $max = max $max (include "pipeshub-ai.neo4jSizeMiB" (get $given "heap_initial__size") | int64) -}}
+{{- else }}
+- name: NEO4J_server_memory_heap_initial__size
+  value: "{{ div $mib 8 }}m"
+{{- end }}
+- name: NEO4J_server_memory_heap_max__size
+  value: "{{ $max }}m"
+{{- end }}
+{{- if not (hasKey $given "pagecache_size") }}
+- name: NEO4J_server_memory_pagecache_size
+  value: "{{ div $mib 4 }}m"
+{{- end }}
+{{- end }}
+{{- end -}}
