@@ -344,10 +344,10 @@ async def test_the_late_keep_on_the_service_path_restores_only_the_revision_this
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pages", [501, 600])
-async def test_a_stored_count_within_the_limit_and_a_fresh_count_over_it_is_refused(pages: int) -> None:
+@pytest.mark.parametrize(("stored", "pages"), [(300, 501), (300, 600), (500, 501), (1, 501)])
+async def test_a_stored_count_within_the_limit_and_a_fresh_count_over_it_is_refused(stored: int, pages: int) -> None:
     """The sync rewrote md5Checksum to the new file's, so only the count says the bytes changed."""
-    world = World(searchable(indexingStatus="QUEUED", contentRev="r1-indexed", md5Checksum=MD5, pageCount=300))
+    world = World(searchable(indexingStatus="QUEUED", contentRev="r1-indexed", md5Checksum=MD5, pageCount=stored))
     world.count(pages)
     await world.run(UPDATE)
     assert world.refused
@@ -400,3 +400,70 @@ async def test_a_no_pool_process_does_not_count_the_outage_metric() -> None:
     with patch.object(page_limit.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
         await world.run()
     inc.assert_not_called()
+
+
+# --- the service-path keep on a shared virtual record id; the org fails closed --------------------------------------------------
+
+
+def _service_world(record: dict, *, shared: bool) -> tuple[World, dict]:
+    world = World(record)
+    world.count(Unavailable())
+    world.ep.parsing_client = MagicMock(circuit_open=False)
+    if shared:
+        world.gp.get_records_by_virtual_record_id = AsyncMock(return_value=[{"id": "rec-1"}, {"id": "rec-2"}])
+    world.rewrite = world.stack.enter_context(
+        patch.object(world.ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock)
+    )
+    world.cleanup = world.stack.enter_context(patch.object(world.ep, "_spawn_abandoned_vrid_cleanup"))
+    seen: dict = {}
+
+    async def fake(**kwargs: object):  # noqa: ANN202 - stands in for the parsing service: it reports 600 pages
+        seen["vrid_at_parse"] = world.graph.record.get("virtualRecordId")
+        await kwargs["late_page_limit"](InspectedPdf(content=b"", needs_ocr=False, repaired=False, page_count=600))
+        return
+        yield
+
+    world.stack.enter_context(patch.object(world.ep, "_use_service_pipeline", return_value=True))
+    world.stack.enter_context(patch.object(world.ep, "_orchestrate_via_services", side_effect=fake))
+    return world, seen
+
+
+@pytest.mark.asyncio
+async def test_a_service_keep_after_the_run_left_the_shared_virtual_record_id_is_a_refusal() -> None:
+    """The run isolated the record under a new id and stripped it from the old one's points: it cannot be kept on the old."""
+    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=True)
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
+    record = world.graph.record
+    assert seen["vrid_at_parse"] != VRID
+    assert world.refused
+    assert record["indexingStatus"] != COMPLETED and record.get("hasIndexedCopy") is not True
+    world.unindex.assert_awaited_once()
+    assert world.unindex.await_args.args[0]["virtualRecordId"] == seen["vrid_at_parse"], "what the record holds now is cleaned"
+
+
+@pytest.mark.asyncio
+async def test_a_service_keep_on_an_unshared_virtual_record_id_stays_on_it_and_touches_no_membership() -> None:
+    world, seen = _service_world(searchable(indexingStatus="QUEUED", pageCount=700), shared=False)
+    with patch("app.events.events.content_revision", return_value=REV):
+        await world.run(UPDATE)
+    record = world.graph.record
+    assert seen["vrid_at_parse"] == VRID and record["virtualRecordId"] == VRID
+    world.rewrite.assert_not_awaited()
+    assert record["indexingStatus"] == COMPLETED and record["indexingNote"] == PDF_PAGE_LIMIT_NOTE and not world.refused
+
+
+@pytest.mark.asyncio
+async def test_an_event_with_no_org_anywhere_fails_instead_of_deciding_under_an_empty_org() -> None:
+    from app.core.org_context import MissingOrgContext
+
+    world = World(searchable(indexingStatus=COMPLETED, pageCount=700), extra_payload={"orgId": None})
+    blob = MagicMock()
+    blob.get_actual_content_path = AsyncMock(return_value=None)
+    world.processor.sink_orchestrator = MagicMock(blob_storage=blob)
+    world.count(600)
+    with pytest.raises(MissingOrgContext):
+        await world.run(UPDATE)
+    assert not world.refused
+    blob.get_actual_content_path.assert_not_awaited()
+    world.unindex.assert_not_awaited()

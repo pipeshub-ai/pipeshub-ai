@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.file_types import Route
-from app.core.org_context import peek as peek_org_context
+from app.core.org_context import current_org_id
 from app.events.dedup import (
     DedupDecision,
     DuplicateMatch,
@@ -156,6 +156,7 @@ from app.utils.user_errors import (
     PDF_PAGE_LIMIT_NOTE,
     RETRY_SCHEDULED,
     binary_text_file,
+    pdf_over_page_limit,
 )
 
 # The readers that take a file's bytes as text, which the .log/.cfg size cap applies to.
@@ -1384,11 +1385,12 @@ class EventProcessor:
         # event's own buffer, which the handler drops when parsing completes.
         del file_content
         md5 = await offload_if_large(self._hash_for_dedup, content, record_type, mime_type)
-        bound_org = peek_org_context()
         long_doc = LongDocument(
             record_id=record_id,
             snapshot=record,
-            org_id=org_id or (bound_org.org_id if bound_org else None) or "",
+            # With no org in the event, the org the message is bound to. Nothing bound raises, so the event fails and is
+            # retried: an empty org would look up nothing and could take back an index that is there.
+            org_id=org_id or current_org_id(),
             content=content,
             content_rev=content_rev,
             md5=md5,
@@ -1467,7 +1469,25 @@ class EventProcessor:
                     # Only the parsing-service path reaches this: the parser's count arrives after the run marked the
                     # record IN_PROGRESS, so what the event found is put back, and only while the record still carries the
                     # revision this run wrote. A record that moved on is left to its writer.
-                    restored = await self.graph_provider.update_node_fields_if_match(
+                    current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
+                    if current.get("contentRev") != content_rev:
+                        pass  # the record moved on (or is gone): left to its writer
+                    elif current.get("virtualRecordId") != record.get("virtualRecordId"):
+                        # This run isolated the record under a new virtual record id and stripped it from the old one's
+                        # points before the count arrived: the copy it would be kept on is already gone. Refuse, and
+                        # un-index what the record holds now (nothing is indexed under the new id yet).
+                        pages = late_decision.pages
+                        await apply_refuse(
+                            LongDocument(
+                                record_id=record_id, snapshot=current, org_id=long_doc.org_id, content=None,
+                                content_rev=content_rev, md5=md5, force_reindex=long_doc.force_reindex, host=self,
+                            ),
+                            Refuse(
+                                status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                                reason=pdf_over_page_limit(pages), pages=pages,
+                            ),
+                        )
+                    elif await self.graph_provider.update_node_fields_if_match(
                         record_id,
                         CollectionNames.RECORDS.value,
                         {
@@ -1476,11 +1496,9 @@ class EventProcessor:
                             "processingStartedAt": record.get("processingStartedAt"),
                             "contentRev": record.get("contentRev"),
                             "reason": record.get("reason"),
-                            "virtualRecordId": record.get("virtualRecordId"),
                         },
-                        {"contentRev": content_rev},
-                    )
-                    if restored:
+                        {"contentRev": content_rev, "virtualRecordId": record.get("virtualRecordId")},
+                    ):
                         await apply_keep(
                             LongDocument(
                                 record_id=record_id, snapshot=record, org_id=long_doc.org_id, content=None,
@@ -2230,6 +2248,18 @@ class EventProcessor:
 
                 before_reusing_status = _project_duplicate_code
 
+            if self._use_service_pipeline():
+                # The parsing and extraction services act for the org named in
+                # the service token, and refuse a token that names none.
+                org_id = org_id or doc.get("orgId")
+                if not org_id:
+                    raise ProcessingError(
+                        f"Record {record_id} has no organisation: neither the event "
+                        "nor the stored record carries an orgId",
+                        record_id=record_id,
+                        details={"event_type": event_type},
+                    )
+
             # The page limit decides before dedup, resume and the IN_PROGRESS write, from the record as it was read.
             page_gate = await self._gate_page_limit(
                 record=record, doc=doc, record_id=record_id, org_id=org_id, file_content=file_content,
@@ -2305,18 +2335,6 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
-
-            if self._use_service_pipeline():
-                # The parsing and extraction services act for the org named in
-                # the service token, and refuse a token that names none.
-                org_id = org_id or doc.get("orgId")
-                if not org_id:
-                    raise ProcessingError(
-                        f"Record {record_id} has no organisation: neither the event "
-                        "nor the stored record carries an orgId",
-                        record_id=record_id,
-                        details={"event_type": event_type},
-                    )
 
             # Fail fast, before writing IN_PROGRESS, if the parsing service's
             # circuit breaker is already open. This is an in-memory check (no
