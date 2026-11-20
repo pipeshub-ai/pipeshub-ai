@@ -1,0 +1,97 @@
+name: table-structure-model
+
+# The tests that load the real table-structure model (same-job parity of the request the parser builds against the
+# library call, the step cap that binds). They need its weights, so they are not in the unit shards: they run when a file
+# of the feature changes, nightly, and by hand. Without the weights they fail (REQUIRE_TABLE_MODEL), never skip.
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/python/app/services/docling/table_structure*.py'
+      - 'backend/python/app/modules/parsers/pdf/table_hybrid*.py'
+      - 'backend/python/app/modules/parsers/pdf/layout_pages.py'
+      - 'backend/python/app/modules/parsers/pdf/opencv_layout_analyzer.py'
+      - 'backend/python/tests/table_model/**'
+      - 'backend/python/tests/fixtures/table_hybrid/**'
+      - 'backend/python/pyproject.toml'
+      - '.github/workflows/table-structure-model.yml'
+  schedule:
+    - cron: '45 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: table-structure-model-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      REQUIRE_TABLE_MODEL: '1'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      # The revision the service pins (MODEL_REVISION in app/services/docling/table_structure.py).
+      - name: Cache the model weights
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.HF_HOME }}
+          key: table-structure-weights-v2.3.0
+
+      - name: Fetch the model weights
+        id: weights
+        run: |
+          for attempt in 1 2 3 4; do
+            if path=$(python3 -c "from app.services.docling.table_structure import MODEL_REPO, MODEL_REVISION; from huggingface_hub import snapshot_download; print(snapshot_download(repo_id=MODEL_REPO, revision=MODEL_REVISION, allow_patterns=['model_artifacts/tableformer/*']))"); then
+              echo "path=$path" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt $attempt failed; retrying" >&2
+            sleep $((attempt * 10))
+          done
+          echo "Could not fetch the model weights" >&2
+          exit 1
+        working-directory: backend/python
+
+      - name: Run the real-model tests
+        working-directory: backend/python
+        env:
+          DOCLING_ARTIFACTS_PATH: ${{ steps.weights.outputs.path }}
+          HF_HUB_OFFLINE: '1'
+          # the hybrid emit phase may add at most this much worker wall per table page at 2 worker threads (a bar, not a measurement of load)
+          TABLE_EMIT_WALL_BAR_S: '1.0'
+        run: |
+          pytest tests/table_model -p no:cacheprovider --timeout=600 -v --junitxml="$RUNNER_TEMP/table-model.xml"
+
+      - name: Fail if the tests skipped
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/table-model.xml" --min-tests 16
