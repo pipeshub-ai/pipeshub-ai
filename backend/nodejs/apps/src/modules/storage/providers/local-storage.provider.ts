@@ -1,4 +1,4 @@
-import { constants as fsConstants } from 'fs';
+import { constants as fsConstants, readFileSync, readlinkSync } from 'fs';
 import fs, { FileHandle } from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -35,6 +35,24 @@ import { withDeadline } from '../utils/call-deadline';
 const KEY_LOCK_LEASE_MS = 5 * 60 * 1000;
 const KEY_LOCK_WAIT_MS = 15_000;
 const KEY_LOCK_POLL_MS = 10;
+
+/**
+ * Who a process is, for a lock on a mount other processes share: the boot and the PID namespace its pid belongs to. A
+ * pid means something only inside one PID namespace of one boot, and two containers on a shared mount can have the same
+ * hostname and unrelated pids, so a lock's owner is checked for liveness by pid only when it names the same boot and the
+ * same PID namespace as this process; otherwise the lease alone decides. Unreadable (not Linux): no identity, no pid trust.
+ */
+function readProcessIdentity(): { boot?: string; pidNs?: string } {
+  try {
+    return {
+      boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      pidNs: readlinkSync('/proc/self/ns/pid'),
+    };
+  } catch {
+    return {};
+  }
+}
+const PROCESS_IDENTITY = readProcessIdentity();
 /** A locked section (a conditional delete, a bump, a write of one key) that takes longer fails: it is a few file operations. */
 const KEY_SECTION_DEADLINE_MS = 60_000;
 /** A reclaim guard older than this was left by a contender that stopped. */
@@ -736,6 +754,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       token,
       pid: process.pid,
       host: os.hostname(),
+      ...PROCESS_IDENTITY,
     });
     const deadline = Date.now() + KEY_LOCK_WAIT_MS;
     for (;;) {
@@ -844,11 +863,18 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const held = JSON.parse(await fs.readFile(lockPath, 'utf8')) as {
         pid?: unknown;
         host?: unknown;
+        boot?: unknown;
+        pidNs?: unknown;
       };
       if (
         typeof held.pid === 'number' &&
         held.host === os.hostname() &&
-        held.pid !== process.pid
+        held.pid !== process.pid &&
+        // Only an owner that provably shares this PID namespace and boot can be judged by its pid.
+        PROCESS_IDENTITY.boot !== undefined &&
+        PROCESS_IDENTITY.pidNs !== undefined &&
+        held.boot === PROCESS_IDENTITY.boot &&
+        held.pidNs === PROCESS_IDENTITY.pidNs
       ) {
         try {
           process.kill(held.pid, 0);
@@ -913,7 +939,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       } catch {
         // Not an answer about the file system: asked again on the next call.
         LOCAL_CAPABILITY_MEMO.delete(this.mountPath);
-        return { conditionalDelete: false, bump: false, inconclusive: true };
+        return { conditionalDelete: false, bump: false };
       }
     })();
     LOCAL_CAPABILITY_MEMO.set(this.mountPath, asked);

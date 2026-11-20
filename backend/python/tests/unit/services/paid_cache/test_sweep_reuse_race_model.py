@@ -137,6 +137,11 @@ def _advance(store: VersionedStore) -> Callable[[float], Awaitable[None]]:
     return sleep
 
 
+@pytest.fixture(autouse=True)
+def _writes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")
+
+
 TRIALS = 150
 SEEDS = (5150, 77731)
 

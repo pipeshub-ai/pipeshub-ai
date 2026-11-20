@@ -1281,7 +1281,6 @@ export class StorageController {
         recordId,
         expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
         capabilities: capabilities.list,
-        ...(capabilities.inconclusive && { capabilitiesInconclusive: true }),
         files: signed,
       });
     } catch (error) {
@@ -1296,7 +1295,7 @@ export class StorageController {
   private async paidResultCapabilities(
     req: AuthenticatedServiceRequest,
     remote?: StorageServiceAdapter | null,
-  ): Promise<{ list: string[]; inconclusive: boolean }> {
+  ): Promise<{ list: string[] }> {
     const adapter = remote ?? (await this.initializeStorageAdapter(req));
     const caps = await adapter.conditionalCapabilities();
     return {
@@ -1304,9 +1303,6 @@ export class StorageController {
         ...(caps.conditionalDelete ? ['conditionalDelete'] : []),
         ...(caps.bump ? ['bump'] : []),
       ],
-      // A probe that could not tell is not the same answer as one that said no, or as a replica that names none: the
-      // client retries a sweep on it instead of deleting without a version.
-      inconclusive: caps.inconclusive === true,
     };
   }
 
@@ -1497,7 +1493,6 @@ export class StorageController {
             ...(o.etag !== undefined && { etag: o.etag }),
           })),
         capabilities: capabilities.list,
-        ...(capabilities.inconclusive && { capabilitiesInconclusive: true }),
         ...(page.next !== undefined && { next: page.next }),
       });
     } catch (error) {
@@ -1552,11 +1547,6 @@ export class StorageController {
       const root = paidResultsRecordRoot(orgId, recordParam);
       const adapter = await this.initializeStorageAdapter(req);
       const caps = await adapter.conditionalCapabilities();
-      if (caps.inconclusive === true) {
-        throw new ServiceUnavailableError(
-          'The store could not say whether it deletes by version; try again',
-        );
-      }
       if (!caps.conditionalDelete) {
         res
           .status(HTTP_STATUS.OK)
@@ -1702,12 +1692,7 @@ export class StorageController {
     root: string,
     before: number,
   ): Promise<void> {
-    await purgePaidResultsOlderThan(
-      adapter,
-      root,
-      before,
-      ServiceUnavailableError,
-    );
+    await purgePaidResultsOlderThan(adapter, root, before);
   }
 
   /**

@@ -16,22 +16,17 @@ import { REFRESH_MARKER_FOLDER } from './paid-results';
  *   it is a bump, a re-store or a refresh's own result: the delete names keys, not versions. For a bump or a re-store the
  *   refresh marker and a result's `originMs` make the next reader compute again; for a refresh's own result the cost
  *   is one more paid call. A store that deletes by version has no such window.
- * - A probe that could not tell answers 503 (`unavailable`): purging unconditionally on an unknown is never done.
+ * - A probe that is denied or cannot tell reads as "cannot delete by version" for a while (see the S3 provider), which
+ *   is the second case above: the purge never waits on a probe and never fails because of one.
  */
 export async function purgePaidResultsOlderThan(
   adapter: StorageServiceAdapter,
   root: string,
   before: number,
-  unavailable: new (message: string) => Error,
   pageSize: number = PAID_RESULT_LIST_PAGE,
 ): Promise<void> {
   let after: string | undefined;
   const capabilities = await adapter.conditionalCapabilities();
-  if (capabilities.inconclusive === true) {
-    throw new unavailable(
-      'The store could not say whether it deletes by version; try again',
-    );
-  }
   const conditional = capabilities.conditionalDelete;
   type Listed = { key: string; lastModifiedMs: number; etag?: string };
   const doomedOf = (objects: Listed[]): Listed[] =>

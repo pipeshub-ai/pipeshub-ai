@@ -46,11 +46,19 @@ import { escapeRegExp } from '../../../utils/escape-regexp';
 /** A folder outside every record's, where the conditional-write probe puts its random sentinels. */
 const PROBE_FOLDER = 'paid-results-conditional-probe';
 
-/** Per (endpoint, bucket): the probe's answer, shared by concurrent callers; `null` = inconclusive, never kept. */
+/**
+ * Per (endpoint, bucket): the probe's answer, shared by concurrent callers, kept until `until` (ms since the epoch;
+ * Infinity for a definitive answer about the store). A denied probe and one that could not tell are kept for a while
+ * too, as "not supported", so the sweep and the purge take their safe path meanwhile and the probe is asked again after.
+ */
 const CONDITIONAL_MEMO = new Map<
   string,
-  Promise<ConditionalCapabilities | null>
+  { answer: Promise<ConditionalCapabilities>; until: number }
 >();
+/** How long a denied probe (a 403 on its prefix) reads as "not supported" before it is asked again. */
+const PROBE_DENIED_TTL_MS = 10 * 60 * 1000;
+/** How long a probe that could not tell (after its retries) reads as "not supported" before it is asked again. */
+const PROBE_UNSURE_TTL_MS = 30 * 1000;
 
 /**
  * Implementation of StorageServiceInterface for Amazon S3
@@ -822,28 +830,28 @@ class AmazonS3Adapter implements StorageServiceInterface {
    */
   async conditionalCapabilities(): Promise<ConditionalCapabilities> {
     const memoKey = `${process.env.AWS_ENDPOINT_URL_S3 ?? ''}|${this.bucketName}`;
-    // One resolution (the probe and its retries with backoff) is shared by every caller that arrives meanwhile, and
-    // only a definitive answer stays: a transient failure (a 5xx, SlowDown, a timeout) answers "inconclusive" for those
-    // callers and is asked again at the next call.
-    let pending = CONDITIONAL_MEMO.get(memoKey);
-    if (pending === undefined) {
-      const resolution = this.resolveConditionalSupport();
-      pending = resolution;
-      CONDITIONAL_MEMO.set(memoKey, resolution);
-      void resolution.then((answer) => {
-        if (answer === null && CONDITIONAL_MEMO.get(memoKey) === resolution)
-          CONDITIONAL_MEMO.delete(memoKey);
-      });
-    }
-    const answer = await pending;
-    if (answer === null) {
-      return { conditionalDelete: false, bump: false, inconclusive: true };
-    }
-    return answer;
+    // Never an error and never a wait without end: a probe that is denied or cannot tell answers "not supported" for a
+    // while (the sweep and the purge then take their safe re-list path, as before conditional deletes existed) and is
+    // asked again afterwards. Callers arriving meanwhile share the attempt in flight.
+    const known = CONDITIONAL_MEMO.get(memoKey);
+    if (known !== undefined && known.until > Date.now()) return known.answer;
+    const holder: { answer: Promise<ConditionalCapabilities>; until: number } = {
+      answer: Promise.resolve({ conditionalDelete: false, bump: false }),
+      until: Number.POSITIVE_INFINITY,
+    };
+    holder.answer = this.resolveConditionalSupport().then((resolved) => {
+      holder.until = resolved.ttlMs === Number.POSITIVE_INFINITY ? resolved.ttlMs : Date.now() + resolved.ttlMs;
+      return resolved.capabilities;
+    });
+    CONDITIONAL_MEMO.set(memoKey, holder);
+    return holder.answer;
   }
 
-  private async resolveConditionalSupport(): Promise<ConditionalCapabilities | null> {
-    let answer: ConditionalCapabilities | null;
+  private async resolveConditionalSupport(): Promise<{
+    capabilities: ConditionalCapabilities;
+    ttlMs: number;
+  }> {
+    let answer: ConditionalCapabilities | null = null;
     for (let attempt = 0; ; attempt += 1) {
       answer = await this.probeConditionalSupport();
       if (answer !== null) break;
@@ -851,13 +859,29 @@ class AmazonS3Adapter implements StorageServiceInterface {
       if (delay === undefined) break;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    if (answer !== null && (!answer.conditionalDelete || !answer.bump)) {
+    if (answer === null) {
+      this.logger.warn(
+        'The object store could not say whether it honours conditional paid-result writes; they are treated as not supported for now',
+        { retryAfterMs: this.probeUnsureTtlMs },
+      );
+      return {
+        capabilities: { conditionalDelete: false, bump: false },
+        ttlMs: this.probeUnsureTtlMs,
+      };
+    }
+    if (answer.denied === true) {
+      return {
+        capabilities: { conditionalDelete: false, bump: false },
+        ttlMs: this.probeDeniedTtlMs,
+      };
+    }
+    if (!answer.conditionalDelete || !answer.bump) {
       this.logger.warn(
         'The object store does not honour conditional paid-result writes; falling back to unconditional sweeps',
         { conditionalDelete: answer.conditionalDelete, bump: answer.bump },
       );
     }
-    return answer;
+    return { capabilities: answer, ttlMs: Number.POSITIVE_INFINITY };
   }
 
   /** Waits between the attempts of a probe that met a transient failure (tests shorten it). */
@@ -865,6 +889,10 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
   /** The deadline of each storage call this adapter makes on the paid-result sweep path (tests shorten it). */
   callDeadlineMs = PAID_RESULT_CALL_DEADLINE_MS;
+
+  /** How long a denied probe, and one that could not tell, read as "not supported" (tests shorten them). */
+  probeDeniedTtlMs = PROBE_DENIED_TTL_MS;
+  probeUnsureTtlMs = PROBE_UNSURE_TTL_MS;
 
   /** The deadline of the probe's conditional PUT (request and body). */
   probeTimeoutMs = 10_000;
@@ -1045,11 +1073,13 @@ class AmazonS3Adapter implements StorageServiceInterface {
       // A denial is logged wherever it happens, the sentinel upload included: it is the operator's one signal that the
       // probe prefix must be allowed, and it is not remembered, so it is asked (and logged) again on the next call.
       if (httpStatus === 403 || errorCode === 'AccessDenied') {
+        // A fixed policy, not a blip: "not supported" for a while, so the sweep and the purge keep working on their safe
+        // path instead of waiting on a probe that will keep being denied. Logged once per window (the answer is kept).
         this.logger.warn(
-          'The object store denied the conditional-write probe; paid-result sweeps wait until it is allowed. Allow PutObject, GetObject and DeleteObject on the probe prefix',
-          { probePrefix: PROBE_FOLDER },
+          'The object store denied the conditional-write probe; conditional paid-result writes are treated as not supported until it is asked again. Allow PutObject, GetObject and DeleteObject on the probe prefix to enable them',
+          { probePrefix: PROBE_FOLDER, retryAfterMs: this.probeDeniedTtlMs },
         );
-        return null;
+        return { conditionalDelete: false, bump: false, denied: true };
       }
       // A failure before any conditional request (the sentinel upload, a 501 on it included) says nothing about the
       // store's conditions.

@@ -733,13 +733,14 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect((await call('POST', `/internal/paid-results/${REC}/delete`, { paths: [page('a')] })).status).to.equal(200)
     })
 
-    it('a store whose probe cannot tell answers 503 on the guarded route and deletes nothing', async () => {
+    it('a store whose capability check fails (statfs) answers "unsupported" on the guarded route, never 503, and deletes nothing', async () => {
       await store(page('a'), 'one')
       const etag = (await list())[0]!.etag!
       LocalStorageAdapter.clearCapabilityMemo()
       ;(fsp.statfs as sinon.SinonStub).rejects(new Error('EIO'))
       const r = await guarded([{ path: page('a'), etag }])
-      expect(r.status).to.equal(503)
+      expect(r.status).to.equal(200)
+      expect(r.body).to.deep.equal({ unsupported: true, deleted: 0, changed: [] })
       expect(filesOnDisk()).to.deep.equal([onDisk(ORG_A, REC, page('a'))])
     })
 
@@ -772,28 +773,18 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       expect((await read(page('a'))).text).to.equal('replaced')
     })
 
-    it('a probe that cannot tell (statfs fails) is its own answer on the listing, and a cutoff purge is refused (503)', async () => {
+    it('a cutoff purge never waits on, or fails because of, the capability check: with statfs failing it still purges, by the look', async () => {
       await store(page('a'), 'one')
       await new Promise((resolve) => setTimeout(resolve, 20))
       const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
       LocalStorageAdapter.clearCapabilityMemo()
       ;(fsp.statfs as sinon.SinonStub).rejects(new Error('EIO'))
       const listed = await call('GET', `/internal/paid-results/${REC}`)
+      expect(listed.status).to.equal(200)
       expect(listed.body.capabilities).to.deep.equal([])
-      expect(listed.body.capabilitiesInconclusive, 'an inconclusive probe looked like a confirmed "no"').to.equal(true)
       const r = await call('DELETE', `/internal/paid-results/${REC}?before=${(cut.body as { cutoff: number }).cutoff + 1000}`)
-      expect(r.status).to.equal(503)
-      expect(filesOnDisk().filter((f) => f.includes('ocr_page'))).to.have.length(1)
-    })
-
-    it('a cutoff purge is refused (503) while the probe cannot tell, and deletes nothing', async () => {
-      await store(page('a'), 'one')
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      const cut = await call('POST', `/internal/paid-results/${REC}/purge-cutoff`)
-      sinon.stub(StorageServiceAdapter.prototype, 'conditionalCapabilities').resolves({ conditionalDelete: false, bump: false, inconclusive: true })
-      const r = await call('DELETE', `/internal/paid-results/${REC}?before=${(cut.body as { cutoff: number }).cutoff + 1000}`)
-      expect(r.status).to.equal(503)
-      expect(filesOnDisk().filter((f) => f.includes('ocr_page'))).to.have.length(1)
+      expect(r.status).to.equal(200)
+      expect(filesOnDisk().filter((f) => f.includes('ocr_page'))).to.have.length(0)
     })
 
     it('deletes an object whose etag is the listed one and keeps one that changed, naming it in `changed`', async () => {

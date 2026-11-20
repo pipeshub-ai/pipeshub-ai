@@ -56,8 +56,6 @@ class FakePaidResultStorage:
     conflict_all_bumps: bool = False
     #: False: this replica has no delete-by-version route (404), as one of an earlier release.
     guard_route: bool = True
-    #: The storage could not tell what it honours (a failed probe): named apart from "none" in listings and presigns.
-    capabilities_inconclusive: bool = False
     #: False: the storage service has no purge-cutoff route at all (404).
     cutoff_route: bool = True
     clock_ms: int = 1_700_000_000_000
@@ -176,8 +174,6 @@ class FakePaidResultStorage:
         reply: dict[str, Any] = {"recordId": record, "expiresInSeconds": 900, "files": files}
         if self.capabilities is not None:
             reply["capabilities"] = list(self.capabilities)
-            if self.capabilities_inconclusive:
-                reply["capabilitiesInconclusive"] = True
         return web.json_response(reply)
 
     async def _put(self, request: web.Request) -> web.Response:
@@ -229,8 +225,6 @@ class FakePaidResultStorage:
         }
         if self.capabilities is not None:
             body["capabilities"] = list(self.capabilities)
-            if self.capabilities_inconclusive:
-                body["capabilitiesInconclusive"] = True
         if len(keys) > self.list_page:
             body["next"] = page[-1]
         return web.json_response(body)
@@ -255,8 +249,6 @@ class FakePaidResultStorage:
         await self._hook("delete")
         if self.capabilities is None or not self.guard_route:
             return web.json_response({"error": {"message": "not found"}}, status=404)
-        if self.capabilities_inconclusive:
-            return web.json_response({"error": {"message": "cannot tell yet"}}, status=503)
         if "conditionalDelete" not in self.capabilities:
             return web.json_response({"unsupported": True, "deleted": 0, "changed": []})
         changed: list[str] = []

@@ -254,8 +254,8 @@ export interface ConditionalCapabilities {
   conditionalDelete: boolean;
   /** A PUT conditional on the current ETag, which changes the ETag when the bytes change. */
   bump: boolean;
-  /** The probe could not tell (a transient failure): neither a yes nor a no, to be asked again. */
-  inconclusive?: boolean;
+  /** The probe was denied (a 403 on its prefix): kept for a while as "not supported", then asked again. Internal. */
+  denied?: boolean;
 }
 
 /** The result of a conditional delete: keys left in place because the object changed since it was listed. */

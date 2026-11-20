@@ -33,8 +33,9 @@ OLD = b'{"v":1,"kind":"ocr_page","value":"OLD"}'
 
 
 @pytest.fixture(autouse=True)
-def _routes_available() -> None:
+def _routes_available(monkeypatch: pytest.MonkeyPatch) -> None:
     store_module.PAID_RESULT_ROUTES.reset()
+    monkeypatch.setenv("PAID_CACHE_WRITE", "true")      # the guarded delete is for a cache that writes (see the off test)
 
 
 @pytest.fixture
@@ -737,21 +738,25 @@ async def test_a_bump_is_not_undone_by_an_unconditional_delete_on_a_store_withou
     assert deleted == [], "a delete that cannot name the version was sent"
 
 
-async def test_a_sweep_is_retried_not_run_while_the_storage_could_not_tell_what_it_honours(storage: FakePaidResultStorage) -> None:
-    """The storage answers the guarded delete itself: 503 while it cannot tell (raised, retried), "unsupported" once it
-    confirmed it ignores the condition (the fallback). The sweep keeps no capability state of its own."""
+async def test_a_storage_that_cannot_delete_by_version_for_any_reason_sweeps_by_the_look_and_never_fails(storage: FakePaidResultStorage) -> None:
+    """A probe that is denied or cannot tell reads as "unsupported" at the storage: the sweep takes its look and goes on."""
     store = _store(storage)
     await _doomed_setup(storage, store)
-    storage.capabilities_inconclusive = True
-    plain_before = [b for b in storage.delete_bodies if "paths" in b]
-    with pytest.raises(Exception):  # noqa: B017 - a JSON value or opaque signed-URL entry of any shape
-        await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
-    assert K in storage.stored(ORG, REC)
-    assert [b for b in storage.delete_bodies if "paths" in b] == plain_before, "a plain delete followed an inconclusive answer"
-    storage.capabilities_inconclusive = False
-    storage.capabilities = ("bump",)                              # now confirmed: it ignores the condition
+    storage.capabilities = ("bump",)
     await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
     assert K not in storage.stored(ORG, REC)
+
+
+async def test_with_writes_off_the_sweep_sends_no_guarded_delete_and_behaves_as_before(
+    storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAID_CACHE_WRITE", "off")
+    store = _store(storage)
+    await _doomed_setup(storage, store)
+    seen = len(storage.calls)
+    await sweep_record(store, ORG, REC, now_ms=storage.clock_ms)
+    assert K not in storage.stored(ORG, REC)
+    assert not any(c[0] == "delete_if_match" for c in storage.calls[seen:]), "a guarded delete was sent with writes off"
 
 
 # -- review round 3 ----------------------------------------------------------------------------------------------------
@@ -938,6 +943,8 @@ async def test_a_restore_reads_the_refresh_marker_again_before_it_stores(storage
     queue.offer(_entry(storage, etag="old", origin_ms=storage.clock_ms - 2 * HOUR))     # the object is gone: 404
     await queue.drain_once()
     assert [p for p in storage.stored(ORG, REC) if not p.startswith("refreshed/")] == [], "pre-refresh bytes were restored"
+    # Not "restored and then removed by the post-check": never sent. Only the re-read of the marker stops it.
+    assert not any(h.get("If-None-Match") == "*" for h in storage.put_headers), "the restore was sent before the marker was re-read"
 
 
 async def test_an_undo_the_store_reports_as_changed_is_not_counted_as_done() -> None:
@@ -1100,3 +1107,57 @@ async def test_no_bump_attempt_starts_after_the_stage_deadline(storage: FakePaid
     assert outcome == "deadline"
     attempts = len([h for h in storage.put_headers if "If-Match" in h])
     assert attempts == 1, f"{attempts} attempts were sent: one started after the deadline"
+
+
+async def test_two_encodings_of_the_same_result_are_different_bytes() -> None:
+    from app.services.paid_cache.cache import _encode
+    from app.services.paid_cache.keys import CacheKey
+
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    assert _encode(key, "same") != _encode(key, "same"), "a delete naming a version could match a later identical write"
+
+
+async def test_a_non_rejecting_marker_read_is_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+    from tests.support.versioned_store import VersionedStore
+
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    store = VersionedStore(stamp_ms=1000)
+    store.begin_refresh(ORG, REC)                         # an old refresh, before the object
+    store.now_ms += 10_000
+    raw = touched_bytes(_encode(key, "text"), 1, origin_ms=store.now_ms) or b""
+    store.write(ORG, REC, key.relative_path(), raw)
+    cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
+    assert await cache._predates_refresh(key, raw) is False
+    assert cache._markers == {}, "a read that did not reject was kept"
+    store.now_ms += 10_000
+    store.begin_refresh(ORG, REC)                         # a newer refresh begins
+    assert await cache._predates_refresh(key, raw) is True, "an earlier 'no refresh' read hid a later refresh"
+
+
+async def test_with_writes_off_a_reuse_creates_no_queue_and_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services.paid_cache.bump import BUMP_AFTER_MS
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+    from app.services.paid_cache.run import begin_run, clear_run
+    from tests.support.paid_cache import record_in_flight
+    from tests.support.versioned_store import VersionedStore
+
+    monkeypatch.setenv("PAID_CACHE_WRITE", "off")
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    store = VersionedStore(stamp_ms=1)
+    store.write(ORG, REC, key.relative_path(), _encode(key, "text"), age_ms=BUMP_AFTER_MS + 5 * 60_000)
+    cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
+    try:
+        with record_in_flight(ORG, REC):
+            begin_run(ORG, REC, "rev1", "parse")
+            assert await cache.get_or_compute(key, AsyncMock()) == "text"
+    finally:
+        clear_run()
+    assert cache._bumps == {}, "a bump queue was made with writes off"
+    assert "bump_put" not in store.ops and "presign" not in store.ops

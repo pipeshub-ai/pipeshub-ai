@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.paid_cache.cache import ResultStore
+from app.services.paid_cache.cache import ResultStore, writes_enabled
 from app.services.paid_cache.run import OPEN_PROTECTS_MS
 from app.services.paid_cache.store import MAX_FILES_PER_CALL, GuardUnsupported
 from app.telemetry.backend import METRICS_BACKEND
@@ -167,7 +167,11 @@ async def sweep_record(
             if path in still_unprotected and path in second and first.get(path) == (second[path].etag, second[path].last_modified_ms)
         ]
         # Each delete names the version of the listing it is made from (what a bump changes).
-        etags = {path: second[path].etag for path in doomed if second[path].etag}
+        # With paid-result writes off (the default) nothing is bumped and the cache stores nothing new, so there is no
+        # reuse to race: the sweep behaves as it did before delete-by-version existed and sends no guarded delete.
+        etags = (
+            {path: second[path].etag for path in doomed if second[path].etag} if writes_enabled() else {}
+        )
     changed: list[str] = []
     sent = 0
     guard_ok = True
