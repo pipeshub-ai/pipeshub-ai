@@ -23,6 +23,7 @@ from app.modules.parse_engine.engines import (
     docling_deadline_s,
     docling_floor,
 )
+from tests.support.eventually import done_without_waiting
 
 
 class Clock:
@@ -118,7 +119,7 @@ async def test_a_docling_throttle_slows_only_docling() -> None:
     assert eng.limit == 1
     cap = cpu._capacity()
     permits = [
-        await asyncio.wait_for(cpu.acquire(GateRequest(CostClass.SMALL), deadline_s=1), 0.5) for _ in range(cap.capacity)
+        done_without_waiting(cpu.acquire(GateRequest(CostClass.SMALL), deadline_s=1)) for _ in range(cap.capacity)
     ]
     assert cpu.running(CostClass.SMALL) == 4
     for p in permits:

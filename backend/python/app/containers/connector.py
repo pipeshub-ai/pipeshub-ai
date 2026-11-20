@@ -237,7 +237,7 @@ async def _kh_plan_keeper(
         logger.warning("KH_PLAN_KEEPER_SECONDS is not a number; the knowledge hub plan keeper is off")
         return
     # Nothing to keep for a backend that offers no sample (the interface's default).
-    if every <= 0 or type(graph_provider).get_knowledge_hub_warm_sample is _Provider.get_knowledge_hub_warm_sample:
+    if every <= 0 or type(graph_provider).get_knowledge_hub_warm_samples is _Provider.get_knowledge_hub_warm_samples:
         return
     service = KnowledgeHubService(logger=logger, graph_provider=graph_provider, config_service=config_service)
     while True:

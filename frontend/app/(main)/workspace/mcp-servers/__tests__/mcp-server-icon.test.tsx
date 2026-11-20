@@ -188,4 +188,9 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="lucid" name="Lucid" />)).toBe('lucid icon');
     expect(logo(<McpServerIcon typeId={null} name="Lucid" />)).toBe('lucid icon');
   });
+
+  it("shows Miro's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="miro" name="Miro" />)).toBe('miro icon');
+    expect(logo(<McpServerIcon typeId={null} name="Miro" />)).toBe('miro icon');
+  });
 });

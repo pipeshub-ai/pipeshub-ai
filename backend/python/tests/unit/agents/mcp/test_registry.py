@@ -105,6 +105,27 @@ class TestMCPRegistry:
         assert "granola" in type_ids
         assert "fireflies" in type_ids
         assert "fathom" in type_ids
+        assert "miro" in type_ids
+
+    def test_miro_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        miro = registry.get_template("miro")
+
+        assert miro is not None
+        assert miro.display_name == "Miro"
+        assert miro.transport == MCPTransport.STREAMABLE_HTTP
+        assert miro.default_url == "https://mcp.miro.com/"
+        assert miro.default_auth_mode == MCPAuthMode.OAUTH
+        assert miro.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert miro.supports_dcr is True
+        assert miro.require_oauth_client is False
+        assert miro.url_editable is False
+        assert miro.authorization_url == "https://mcp.miro.com/authorize"
+        assert miro.token_url == "https://mcp.miro.com/token"
+        assert miro.default_scopes == []
+        assert miro.icon == "/icons/connectors/miro.svg"
+        assert miro.documentation_url == "https://developers.miro.com/docs/mcp-intro"
 
     def test_lucid_catalog_entry(self) -> None:
         registry = MCPRegistry()

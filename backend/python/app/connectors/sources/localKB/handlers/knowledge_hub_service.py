@@ -635,8 +635,14 @@ class KnowledgeHubService:
         it (seconds for the listing and the access check) and again when its
         statistics move, and this takes that cost off a person's click. Returns
         how many requests were made."""
-        sample = await self.graph_provider.get_knowledge_hub_warm_sample()
-        if not sample:
+        sample, user_id, org_id = None, "", ""
+        for candidate in await self.graph_provider.get_knowledge_hub_warm_samples():
+            user_id, org_id = candidate["userId"], candidate["orgId"]
+            # An App the user has switched off (demo data) leaves their gate: every browse under it would be refused.
+            if candidate["appId"] not in await self._excluded_apps(user_id, org_id):
+                sample = candidate
+                break
+        if sample is None:
             return 0
         full = ["counts", "permissions", "breadcrumbs", "availableFilters"]
         main = {"limit": 50, "sort_by": "updatedAt", "sort_order": "desc", "include": full}
@@ -654,7 +660,7 @@ class KnowledgeHubService:
                 })
         for request in requests:
             try:
-                await self.get_nodes(user_id=sample["userId"], org_id=sample["orgId"], **request)
+                await self.get_nodes(user_id=user_id, org_id=org_id, **request)
             except Exception as exc:
                 self.logger.warning("knowledge hub plan warm-up request failed: %s", exc)
         return len(requests)
