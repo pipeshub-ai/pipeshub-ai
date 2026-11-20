@@ -220,6 +220,7 @@ from app.services.graph_db.common.utils import (
     SOFT_DELETE_CHUNK,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
+    RECORD_UPDATE_DROPPED_FIELDS,
     record_created_at_insert_only,
     record_insert_doc,
     record_update_doc,
@@ -4089,11 +4090,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 transaction=transaction,
             ) or [])
             remaining = [d for d in docs if d["_key"] not in handled]
-        rows = [
-            {"key": d["_key"], "insert": record_insert_doc(d), "patch": record_update_doc(d), "new": d["_key"] in known_new}
-            for d in remaining
-        ]
-        await self.http_client.batch_upsert_documents(CollectionNames.RECORDS.value, rows, txn_id=transaction)
+        rows = [{"key": d["_key"], "insert": record_insert_doc(d), "new": d["_key"] in known_new} for d in remaining]
+        await self.http_client.batch_upsert_documents(
+            CollectionNames.RECORDS.value, rows, txn_id=transaction, drop=RECORD_UPDATE_DROPPED_FIELDS
+        )
 
     async def _upsert_record_nodes_releasing_trash(
         self, nodes: list[dict], transaction: str | None = None

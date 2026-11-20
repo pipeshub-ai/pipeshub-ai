@@ -17,8 +17,8 @@ class _Base:
     def __init__(self, provider: Any) -> None:  # noqa: ANN401
         self.p = provider
 
-    async def upsert(self, records: list[Any]) -> None:
-        await self.p.batch_upsert_records(records)
+    async def upsert(self, records: list[Any], *, release_trashed: bool = False) -> None:
+        await self.p.batch_upsert_records(records, release_trashed_external_ids=release_trashed)
 
     async def upsert_nodes(self, docs: list[dict[str, Any]]) -> None:
         await self.p.batch_upsert_nodes(docs, RECORDS)
@@ -63,9 +63,9 @@ class PostgresStore(_Base):
     def _bound(self):  # noqa: ANN202
         return bind(OrgContext(self.org, None, "job", "job:test", "t"))
 
-    async def upsert(self, records: list[Any]) -> None:
+    async def upsert(self, records: list[Any], *, release_trashed: bool = False) -> None:
         with self._bound():
-            await super().upsert(records)
+            await super().upsert(records, release_trashed=release_trashed)
 
     async def upsert_nodes(self, docs: list[dict[str, Any]]) -> None:
         with self._bound():

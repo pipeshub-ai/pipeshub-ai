@@ -15,7 +15,7 @@ import random
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from logging import Logger
 from typing import Any, Dict, List, Optional, TypeVar, Union, cast
 
@@ -992,11 +992,14 @@ class ArangoHTTPClient:
         collection: str,
         rows: list[dict[str, Any]],
         txn_id: Optional[str] = None,
+        drop: Sequence[str] = (),
     ) -> dict[str, Any]:
         """Upsert documents whose update must not carry some keys (G-55: a record's insert-only fields).
 
-        Each row is ``{"key", "insert", "patch", "new"}``: ``insert`` is the whole document, written when the key does not exist;
-        ``patch`` is what an existing document may be changed by; ``new`` says the caller knows the key is not stored.
+        Each row is ``{"key", "insert", "new"}`` and optionally ``"patch"``: ``insert`` is the whole document, written when the key does
+        not exist; the patch is what an existing document may be changed by, ``insert`` without the ``drop`` keys unless the row gives
+        one (built only for a row that is patched, so a first ingest does not copy every document); ``new`` says the caller knows the
+        key is not stored.
 
         The order of calls follows what the caller knows. A row that is known to be new is inserted first
         (``overwriteMode=conflict``) and is patched only when the insert finds the key stored. Any other row is patched first
@@ -1046,6 +1049,11 @@ class ArangoHTTPClient:
         def unexpected(answers: list[Any], expected: int | None) -> list[Any]:
             return [a for a in answers if not (isinstance(a, dict) and a.get("error") and a.get("errorNum") == expected)]
 
+        def patch_of(row: dict[str, Any]) -> dict[str, Any]:
+            if "patch" in row:
+                return row["patch"]
+            return {k: v for k, v in row["insert"].items() if k not in drop and k != "_key"}
+
         by_key = {r["key"]: r for r in rows}
         insert_keys = [r["key"] for r in rows if r.get("new")]
         patch_keys = [r["key"] for r in rows if not r.get("new")]
@@ -1063,7 +1071,7 @@ class ArangoHTTPClient:
                         created += 1
             to_patch = patch_keys + lost
             if to_patch:
-                answers = await run([{"_key": k, **by_key[k]["patch"]} for k in to_patch], send_patch)
+                answers = await run([{"_key": k, **patch_of(by_key[k])} for k in to_patch], send_patch)
                 self._check_response_for_errors(unexpected(answers, ARANGO_ERROR_DOCUMENT_NOT_FOUND), "Batch upsert")
                 for k, a in zip(to_patch, answers):
                     if isinstance(a, dict) and a.get("error"):

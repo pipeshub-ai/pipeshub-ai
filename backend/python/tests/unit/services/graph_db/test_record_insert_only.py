@@ -21,6 +21,8 @@ from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import (
     RECORD_UPDATE_DROPPED_FIELDS,
     positive_min,
+    record_created_at_insert_only,
+    record_incarnation_write,
     record_insert_doc,
     record_update_doc,
     restore_items,
@@ -63,6 +65,38 @@ def test_an_insert_mints_an_id_only_with_the_flag(monkeypatch: pytest.MonkeyPatc
 ])
 def test_positive_min_ignores_values_that_are_not_real_dates(stored, incoming, want) -> None:
     assert positive_min(stored, incoming) == want
+
+
+def test_the_flags_default_to_incarnation_off_and_insert_only_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-172: release N writes no id unless the operator turns it on; the date rule is on. Nothing is set in the environment."""
+    monkeypatch.delenv("RECORD_INCARNATION_WRITE", raising=False)
+    monkeypatch.delenv("RECORD_CREATED_AT_INSERT_ONLY", raising=False)
+    assert record_incarnation_write() is False and record_created_at_insert_only() is True
+    assert "incarnationId" not in record_insert_doc({"a": 1})
+    items, _ = restore_items([{"id": "a"}], None)
+    assert "incarnationId" not in items[0]["set"]
+
+
+def test_with_the_kill_switch_off_nothing_is_minted_even_with_the_flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
+    monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true")
+    assert "incarnationId" not in record_insert_doc({"a": 1})
+
+
+@pytest.mark.parametrize(("insert_only", "flag"), [("true", "true"), ("true", "false"), ("false", "true"), ("false", "false")])
+def test_the_neo4j_one_pass_split_equals_the_two_document_helpers(monkeypatch: pytest.MonkeyPatch, insert_only: str, flag: str) -> None:
+    """``rest`` is what an update may merge and ``ins`` what an insert adds: together they are the document an insert writes."""
+    from app.services.graph_db.neo4j.neo4j_provider import _record_insert_split
+
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", insert_only)
+    monkeypatch.setenv("RECORD_INCARNATION_WRITE", flag)
+    doc = {"id": "k", "recordName": "n", "createdAtTimestamp": 5, "incarnationId": "held", "isDeleted": False, "deleteBatchId": None}
+    rest, ins = _record_insert_split(doc)
+    full = record_insert_doc(doc)
+    assert rest == record_update_doc(full)
+    assert {**rest, **ins} == full
+    _, ins2 = _record_insert_split({k: v for k, v in doc.items() if k != "incarnationId"})
+    assert ("incarnationId" in ins2) == (insert_only == "true" and flag == "true")
 
 
 # ---- restore -------------------------------------------------------------------------------------------------------

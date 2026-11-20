@@ -19,7 +19,7 @@ RECORDS = CollectionNames.RECORDS.value
 class StoreAdapter(Protocol):
     name: str
 
-    async def upsert(self, records: list[FileRecord]) -> None: ...
+    async def upsert(self, records: list[FileRecord], *, release_trashed: bool = False) -> None: ...
     async def upsert_nodes(self, docs: list[dict[str, Any]]) -> None: ...
     async def doc(self, key: str) -> dict[str, Any] | None: ...
     async def type_doc(self, key: str, collection: str) -> dict[str, Any] | None: ...
@@ -33,9 +33,9 @@ def new_key() -> str:
 
 
 def make_record(key: str, *, created_at: int, connector_id: str = "g55-conn", placeholder: bool = False, name: str = "a.txt",
-                known_new: bool = False, promotes: bool = False) -> FileRecord:
+                known_new: bool = False, promotes: bool = False, ext: str | None = None) -> FileRecord:
     record = FileRecord(
-        id=key, org_id="g55-org", record_name=name, record_type=RecordType.FILE, external_record_id=f"ext-{key}",
+        id=key, org_id="g55-org", record_name=name, record_type=RecordType.FILE, external_record_id=ext or f"ext-{key}",
         version=0, origin=OriginTypes.CONNECTOR, connector_name=Connectors.KNOWLEDGE_BASE, connector_id=connector_id,
         created_at=created_at, updated_at=created_at, is_file=True, extension="txt", is_placeholder=placeholder,
     )
@@ -92,14 +92,14 @@ async def a_new_key_through_nodes_gets_an_id(store: StoreAdapter, flag: bool) ->
 
 async def stub_then_real(store: StoreAdapter, flag: bool, *, hinted: bool) -> None:
     """S23: the stub's date becomes the earlier positive one when the real record replaces it, its id stays, and the cycle stub,
-    full, stub, full keeps the original. An unhinted promotion on ArangoDB keeps the stub's date (the processor marks promotions)."""
+    full, stub, full keeps the original. An unhinted promotion on ArangoDB and Neo4j keeps the stub's date (the processor marks promotions)."""
     key = new_key()
     await store.upsert([make_record(key, created_at=500, placeholder=True, known_new=True)])
     stub = await store.doc(key)
     assert stub["createdAtTimestamp"] == 500
     await store.upsert([make_record(key, created_at=300, promotes=hinted)])
     real = await store.doc(key)
-    expected = 300 if (hinted or store.name != "arangodb") else 500
+    expected = 300 if (hinted or store.name == "postgres") else 500
     assert real["createdAtTimestamp"] == expected, f"{store.name}: promotion date"
     assert minted(real) == minted(stub), "a promotion never changes the id"
     assert real["isPlaceholder"] is False
@@ -181,6 +181,56 @@ async def concurrent_first_inserts_agree(store: StoreAdapter, flag: bool) -> Non
     assert after["createdAtTimestamp"] == doc["createdAtTimestamp"] and minted(after) == minted(doc)
 
 
+async def a_stale_promotion_hint_is_ignored(store: StoreAdapter, flag: bool) -> None:
+    """QA-G55-4 (M09): the hint was read before another writer promoted the stub; the stored row is real now, so its date stays."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=500, known_new=True)])
+    await store.upsert([make_record(key, created_at=200, promotes=True, name="stale-hint")])
+    after = await store.doc(key)
+    assert after["recordName"] == "stale-hint"
+    assert after["createdAtTimestamp"] == 500, f"{store.name}: a real record's date moved under a stale promotion hint"
+
+
+async def the_move_path_keeps_both_fields_and_releases(store: StoreAdapter, flag: bool) -> None:
+    """QA-G55-4 (M20): the path that releases a trashed holder's external id is insert-only too, keeps the holder's trash batch,
+    and a stub promoted through it takes the earlier date and keeps its id."""
+    key, holder = new_key(), new_key()
+    ext = f"ext-shared-{key}"
+    await store.upsert([make_record(holder, created_at=50, ext=ext, known_new=True)])
+    held = await store.doc(holder)
+    batch = await store.trash(holder, "g55-conn")
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    first = await store.doc(key)
+    moved = make_record(key, created_at=999, ext=ext, name="moved.txt")
+    moved.incarnation_id = "forged"
+    await store.upsert([moved], release_trashed=True)
+    after = await store.doc(key)
+    assert after["recordName"] == "moved.txt" and after["externalRecordId"] == ext
+    assert after["createdAtTimestamp"] == 100, f"{store.name}: the move path is insert-only"
+    assert minted(after) == minted(first)
+    h = await store.doc(holder)
+    assert h["isDeleted"] is True and h["externalRecordId"] != ext and h.get("trashedExternalRecordId") == ext, h
+    assert h["createdAtTimestamp"] == 50 and minted(h) == minted(held)
+    assert h.get("deleteBatchId") == batch, "the release keeps the trash batch"
+    stub_key = new_key()
+    await store.upsert([make_record(stub_key, created_at=500, placeholder=True, known_new=True)])
+    stub = await store.doc(stub_key)
+    await store.upsert([make_record(stub_key, created_at=300, promotes=True)], release_trashed=True)
+    promoted = await store.doc(stub_key)
+    assert promoted["createdAtTimestamp"] == 300 and promoted["isPlaceholder"] is False
+    assert minted(promoted) == minted(stub)
+
+
+async def with_the_kill_switch_off_no_store_mints(store: StoreAdapter, flag: bool) -> None:
+    """QA-G55-5: ``RECORD_CREATED_AT_INSERT_ONLY=false`` restores the older write on every store, so none mints an id (a minted id would be
+    overwritten by the next update). Run with the switch off and the incarnation flag on."""
+    key = new_key()
+    await store.upsert([make_record(key, created_at=100, known_new=True)])
+    assert minted(await store.doc(key)) is None, f"{store.name} minted an id with the kill switch off"
+    await store.upsert([make_record(key, created_at=999)])
+    assert (await store.doc(key))["createdAtTimestamp"] == 999, "the older write overwrites the date"
+
+
 async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None:
     """S6: only the ``records`` document is insert-only; the type document (``files``) is written as before."""
     key = new_key()
@@ -192,6 +242,7 @@ async def type_documents_keep_the_merge(store: StoreAdapter, flag: bool) -> None
 
 
 ALL_CASES = (
+    a_stale_promotion_hint_is_ignored, the_move_path_keeps_both_fields_and_releases,
     type_documents_keep_the_merge,
     resync_keeps_created_at, nodes_path_keeps_both_fields, a_new_key_through_nodes_gets_an_id, a_promotion_ignores_an_unreal_date,
     restore_resets_the_id, an_id_sent_through_the_upsert_is_ignored, an_older_process_leaves_the_id, concurrent_first_inserts_agree,

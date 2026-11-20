@@ -29,3 +29,9 @@ async def test_insert_only_cases(store: cases.StoreAdapter, flag: bool, case) ->
 
 async def test_stub_then_real(store: cases.StoreAdapter, flag: bool) -> None:
     await cases.stub_then_real(store, flag, hinted=False)      # PostgreSQL tests every row against the stored one
+
+
+async def test_with_the_kill_switch_off_no_store_mints(store: cases.StoreAdapter, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RECORD_CREATED_AT_INSERT_ONLY", "false")
+    monkeypatch.setenv("RECORD_INCARNATION_WRITE", "true")
+    await cases.with_the_kill_switch_off_no_store_mints(store, True)
