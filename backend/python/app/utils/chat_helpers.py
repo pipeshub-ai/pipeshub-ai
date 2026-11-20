@@ -51,6 +51,7 @@ from app.models.entities import (
     edition_fields_of,
 )
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, epoch_ms
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
@@ -1955,6 +1956,41 @@ def _annotate_node_relations(
     logger.info("Record relation enrichment: %d records enriched", enriched_count)
 
 
+async def accessible_node_names(
+    graph_provider: IGraphDBProvider,
+    node_ids: set[str],
+    user_id: str,
+    org_id: str,
+    *,
+    with_placeholders: bool = False,
+    timeout: float | None = None,
+) -> dict[str, str]:
+    """The nodes among ``node_ids`` (records, record groups, apps) the user may
+    access, each with its current name, from one ``check_access``. No identity
+    means nothing is accessible; a user lookup that fails raises
+    PermissionVerificationUnavailableError, as the check itself does.
+
+    A placeholder record is left out: it is shown in listings, but it is not a
+    record to read, so a caller that serves a record's content or metadata gets
+    the same answer as for one the user cannot read. ``with_placeholders`` keeps
+    placeholders in, for a caller that only names related records. ``timeout``
+    is the check's limit per statement (``check_access``)."""
+    if not node_ids or not user_id or not org_id:
+        return {}
+    try:
+        user = await get_caller_user(graph_provider, user_id, raise_on_error=True)
+    except Exception as exc:
+        raise PermissionVerificationUnavailableError() from exc
+    user_key = (user or {}).get("id") or (user or {}).get("_key")
+    if not user_key:
+        return {}
+    found = await graph_provider.check_access(
+        user_key, org_id, node_ids=node_ids, **({"timeout": timeout} if timeout is not None else {}),
+    )
+    ids = found.node_ids if with_placeholders else found.node_ids - found.placeholder_ids
+    return {node_id: found.names.get(node_id, "") for node_id in ids}
+
+
 async def accessible_node_ids(
     graph_provider: IGraphDBProvider,
     node_ids: set[str],
@@ -1963,25 +1999,10 @@ async def accessible_node_ids(
     *,
     with_placeholders: bool = False,
 ) -> set[str]:
-    """The subset of ``node_ids`` (records, record groups, apps) the user may
-    access. No identity means nothing is accessible; a user lookup that fails
-    raises PermissionVerificationUnavailableError, as the check itself does.
-
-    A placeholder record is left out: it is shown in listings, but it is not a
-    record to read, so a caller that serves a record's content or metadata gets
-    the same answer as for one the user cannot read. ``with_placeholders`` keeps
-    placeholders in, for a caller that only names related records."""
-    if not node_ids or not user_id or not org_id:
-        return set()
-    try:
-        user = await get_caller_user(graph_provider, user_id, raise_on_error=True)
-    except Exception as exc:
-        raise PermissionVerificationUnavailableError() from exc
-    user_key = (user or {}).get("id") or (user or {}).get("_key")
-    if not user_key:
-        return set()
-    result = await graph_provider.check_access(user_key, org_id, node_ids=node_ids)
-    return set(result.node_ids if with_placeholders else result.node_ids - result.placeholder_ids)
+    """The subset of ``node_ids`` the user may access (``accessible_node_names``)."""
+    return set(await accessible_node_names(
+        graph_provider, node_ids, user_id, org_id, with_placeholders=with_placeholders,
+    ))
 
 
 async def accessible_node_ids_for_enrichment(
@@ -6315,6 +6336,7 @@ def build_message_content_array(
                 table_summary,child_results = result.get("content")
                 block_group_index = result.get("block_group_index")
                 fk_info = build_fk_info(result)
+                linked_tables_shown(result)
                 if not child_results:
                     child_results = []
                 has_row_images = any(cr.get("block_type") == BlockType.IMAGE.value for cr in child_results)
@@ -6422,6 +6444,24 @@ def build_message_content_array(
         all_contents.append(content)
 
     return all_contents, ref_mapper
+
+
+_FK_RELATION_KEYS = (
+    "fk_parent_relations", "fk_child_relations", "implicit_fk_parent_relations", "implicit_fk_child_relations",
+)
+
+
+def linked_tables_shown(result: dict[str, Any]) -> None:
+    """The tables a SQL record's FK relation lists and shared-concept context name, with their record ids,
+    are given to the model with it, so the answer's label names them as shown."""
+    ids = [
+        str(rel["record_id"]) for key in _FK_RELATION_KEYS for rel in result.get(key) or []
+        if isinstance(rel, dict) and rel.get("record_id")
+    ]
+    if result.get("concept_context"):
+        ids.extend(str(rid) for rid in result.get("concept_context_record_ids") or [] if rid)
+    if ids:
+        note_shown(records=ids)
 
 
 def build_fk_info(result: dict[str, Any]) -> str:

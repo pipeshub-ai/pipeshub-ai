@@ -134,11 +134,10 @@ class TestAConstraintHitIsNoError:
 
     @staticmethod
     def _assert_quiet(logger: MagicMock) -> None:
+        # A handler that re-raises logs nothing: the exception says what happened, and handles stay out of the logs.
         logger.error.assert_not_called()
         logger.exception.assert_not_called()
-        assert logger.info.call_count == 2
-        # Handles stay out of the logs.
-        assert "taken-handle" not in str(logger.info.call_args_list)
+        logger.info.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_neo4j(self) -> None:
@@ -174,10 +173,12 @@ class TestAConstraintHitIsNoError:
         arango.http_client.batch_insert_documents = AsyncMock(side_effect=Exception("connection reset"))
         arango.http_client.update_document = AsyncMock(side_effect=Exception("connection reset"))
 
-        # Neo4j's client logs a failed query once, so its upsert adds no second line of its own.
-        for p, logged in ((neo4j, 1), (arango, 2)):
-            with pytest.raises(Exception, match="connection reset"):
+        # The failure goes on as itself, and the client logs a failed query once, so the provider adds no line of its own.
+        for p in (neo4j, arango):
+            with pytest.raises(Exception, match="connection reset") as upsert:
                 await p.batch_upsert_nodes([{"_key": "k", "name": "n", "orgId": "o"}], AGENTS)
-            with pytest.raises(Exception, match="connection reset"):
+            with pytest.raises(Exception, match="connection reset") as update:
                 await p.update_node("k", AGENTS, {"name": "n"})
-            assert p.logger.error.call_count == logged
+            assert not isinstance(upsert.value, UniqueConstraintViolation)
+            assert not isinstance(update.value, UniqueConstraintViolation)
+            p.logger.error.assert_not_called()

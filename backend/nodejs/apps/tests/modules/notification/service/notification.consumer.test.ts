@@ -320,9 +320,8 @@ describe('notification/service/notification.consumer', () => {
         it('refuses an event with an _id and several recipients: logged, counted, nothing written, marked handled', async () => {
           mockConsumer.isConnected.returns(true);
           sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user), new mongoose.Types.ObjectId(other)]);
-          const insertMany = sinon.stub().resolves([]);
-          setNotificationRepository({ insertMany } as never);
-          const refused = sinon.spy(notificationEventRefused, 'inc');
+          const insertMany = sinon.stub(NotificationSchema.Notifications, 'insertMany').resolves([]);
+          const before = await refusedCount();
           const handler = sinon.stub().resolves();
           await consumer.consume(handler);
           await mockConsumer.consume.firstCall.args[0]({ value: { ...event, _id: 'fixed-id', recipientUserIds: [user, other] } });
@@ -339,9 +338,10 @@ describe('notification/service/notification.consumer', () => {
 
         it('keeps the _id for one recipient', async () => {
           const insertMany = sinon.stub().resolves([]);
-          const { outcome } = await run(insertMany, { ...event, _id: 'fixed-id' });
+          const fixed = new mongoose.Types.ObjectId().toString();
+          const { outcome } = await run(insertMany, { ...event, _id: fixed });
           await outcome;
-          expect(insertMany.firstCall.args[0].map((d: any) => d._id)).to.deep.equal(['fixed-id']);
+          expect(insertMany.firstCall.args[0].map((d: any) => String(d._id))).to.deep.equal([fixed]);
         });
       });
 

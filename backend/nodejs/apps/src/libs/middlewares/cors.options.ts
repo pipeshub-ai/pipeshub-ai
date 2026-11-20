@@ -1,9 +1,13 @@
 import type { CorsOptions } from 'cors';
 import { HttpMethod } from '../enums/http-methods.enum';
 
-/** The app's CORS rule; `ALLOWED_ORIGINS` is read when the app is built. */
+/**
+ * The app's CORS rule; `ALLOWED_ORIGINS` is read when the app is built. `extraExposedHeaders` are response headers
+ * an edition's routes add for the web app to read.
+ */
 export const corsOptions = (
   env: Readonly<Record<string, string | undefined>> = process.env,
+  extraExposedHeaders: readonly string[] = [],
 ): CorsOptions => ({
   origin: env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'],
   credentials: true,
@@ -16,6 +20,7 @@ export const corsOptions = (
     'accept-ranges',
     'content-range',
     'content-length',
+    ...extraExposedHeaders,
   ],
   methods: [
     HttpMethod.DELETE,

@@ -19,8 +19,15 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
     load_entity_access_context,
     remember_entities,
 )
-from app.agents.actions.knowledge_graph.views import _compact_date, _short, _trunc
+from app.agents.actions.knowledge_graph.views import (
+    _compact_date,
+    _short,
+    _trunc,
+    unnamed_sources_note,
+)
 from app.models.source_dates import RecordDates
+from app.modules.agents.context.named_sources import nameable_source_ids
+from app.modules.agents.privacy.ledger import note_shown
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.named_entities.domain.kinds import (
     VALUE_KINDS,
@@ -32,6 +39,7 @@ from app.modules.retrieval.entity_permissions import (
     NAMED_ENTITY_TYPE,
     RECORD_ENTITY_TYPE,
     SEARCH_DEADLINE_SECONDS,
+    RECORD_GROUP_ENTITY_TYPE,
     SEARCHABLE_ENTITY_TYPES,
     EntityAccessContext,
     EntityAccessError,
@@ -231,6 +239,7 @@ async def _search_other_types(
 
 def _show(
     state: "ChatState", context: EntityAccessContext, hits: list[EntityHit], *, with_kind: bool,
+    count_unnamed: bool = False,
 ) -> list[dict[str, Any]]:
     """Render ``hits`` for the agent and remember what it was shown, so later
     calls can resolve the entity ids and the record ids it may cite."""
@@ -245,12 +254,15 @@ def _show(
         ],
     )
     shortener = get_record_id_shortener_if_enabled(state)
-    results, shown_record_ids = _render_hits(hits, context, shortener, with_kind=with_kind)
+    results, shown_record_ids, apps_named_alone = _render_hits(
+        hits, context, shortener, with_kind=with_kind, count_unnamed=count_unnamed,
+    )
     names = {h.entity_id: h.name for h in hits}
     names.update(
         (r["_key"], r.get("recordName") or "") for h in hits for r in h.records if r.get("_key")
     )
     remember_record_ids(state, shown_record_ids, names=names)
+    note_shown(nodes=apps_named_alone)
     shown = set(shown_record_ids)
     note_retrieved_by(state, "entity", graph_record_refs(
         row for hit in hits for row in hit.records if row.get("_key") in shown
@@ -370,6 +382,8 @@ async def execute_search_entities(
         )
         return False, _error("Entity search failed — try again.", retryable=True)
 
+    nameable = nameable_source_ids(state)
+    hits, unlisted = _listable_hits(hits, nameable)
     ignored = sorted(set(requested) - SEARCHABLE_ENTITY_TYPES)
     others = await _other_type_matches(
         entity_vector_store, graph_provider, context, query, hits,
@@ -378,21 +392,32 @@ async def execute_search_entities(
         # kind now would answer the request the kind note just declined.
         include_named=enabled and not (asked_kinds and not kinds),
     ) if valid_types else _OtherTypes()
+    # Matches of other types are listed by the same rule as the hits.
+    other_hits, other_unlisted = _listable_hits(others.hits, nameable)
+    unlisted += other_unlisted
 
     payload: dict[str, Any] = {"status": "success"}
     if hits:
-        payload["results"] = _show(state, context, hits, with_kind=entity_search_offered)
+        payload["results"] = _show(state, context, hits, with_kind=entity_search_offered, count_unnamed=nameable is not None)
     else:
-        # With matches of other types, only the types asked for came up empty.
-        message = "No accessible entities of the types asked for matched" if others.hits else "No accessible entities matched"
-        payload.update(message=message, results=[])
+        payload["results"] = []
+        # Entities left out as unnamed sources are not "no match": the note below says so instead.
+        if not unlisted:
+            # With matches of other types, only the types asked for came up empty.
+            payload["message"] = (
+                "No accessible entities of the types asked for matched" if other_hits else "No accessible entities matched"
+            )
         if note := limited_scope_note(context):
             payload["scopeNote"] = note
-    if others.hits:
-        payload["otherTypeMatches"] = _show(state, context, others.hits, with_kind=entity_search_offered)
+    if other_hits:
+        payload["otherTypeMatches"] = _show(
+            state, context, other_hits, with_kind=entity_search_offered, count_unnamed=nameable is not None,
+        )
         payload["otherTypeNote"] = _other_types_note(query, valid_types)
     elif others.failed:
         payload["otherTypeNote"] = _other_types_failed_note(query, valid_types, compared=others.compared)
+    if unlisted:
+        payload["note"] = unnamed_sources_note(unlisted)
     if ignored:
         payload["ignoredEntityTypes"] = ignored
         payload["entityTypesNote"] = _entity_types_note(ignored)
@@ -400,6 +425,21 @@ async def execute_search_entities(
         payload["kindNotes"] = kind_notes
     _mark_incomplete(payload, hits, others_incomplete=others.incomplete)
     return True, json.dumps(payload)
+
+
+def _listable_hits(hits: list[EntityHit], nameable: frozenset[str] | None) -> tuple[list[EntityHit], int]:
+    """The hits a run may list, and how many it leaves out. A collection is a record group, and a group's hit carries
+    its name and id: when the run may name only some sources (`nameable_source_ids`), a group is listed only when it
+    is one of them or every record it shows is in one. Any other may be a collection the run doesn't name."""
+    if nameable is None:
+        return hits, 0
+    listed = [
+        hit for hit in hits
+        if hit.entity_type != RECORD_GROUP_ENTITY_TYPE
+        or hit.entity_id in nameable
+        or (hit.records and all(r.get("connectorId") in nameable for r in hit.records))
+    ]
+    return listed, len(hits) - len(listed)
 
 
 async def _search_many(
@@ -484,9 +524,15 @@ def _render_hits(
     shortener: "RecordIdShortener | None",
     *,
     with_kind: bool = False,
-) -> tuple[list[dict[str, Any]], list[str]]:
+    count_unnamed: bool = False,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """The rendered hits, the records they show, and the apps they name for records they don't show: those apps
+    reach the model by name alone, so the label must list them. `count_unnamed`: the context names only the run's
+    nameable sources, and each hit says in how many other sources its records are (`otherSources`)."""
     results: list[dict[str, Any]] = []
     shown_record_ids: list[str] = []
+    # (app, record) for each record whose app an entity lists.
+    named: list[tuple[str, str]] = []
     previews_left = _PREVIEW_ENTITY_COUNT
     for hit in hits:
         item: dict[str, Any] = {
@@ -503,6 +549,9 @@ def _render_hits(
         })
         if apps:
             item["apps"] = apps
+        unnamed = {r["connectorId"] for r in hit.records if r.get("connectorId") and r["connectorId"] not in context.app_names}
+        if count_unnamed and unnamed:
+            item["otherSources"] = len(unnamed)
         if hit.entity_type == RECORD_ENTITY_TYPE:
             item["entityId"] = _short(hit.entity_id, shortener)
             if not hit.indexed:
@@ -515,8 +564,10 @@ def _render_hits(
             if hit.more_records:
                 item["moreRecords"] = True
             shown_record_ids.extend(r["_key"] for r in hit.records if r.get("_key"))
+        named.extend((r["connectorId"], r.get("_key")) for r in hit.records if r.get("connectorId") in context.app_names)
         results.append(item)
-    return results, shown_record_ids
+    shown = set(shown_record_ids)
+    return results, shown_record_ids, sorted({app for app, key in named if key not in shown})
 
 
 def _preview_row(

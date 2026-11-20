@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Select, Text, TextArea, TextField } from '@radix-ui/themes';
+import { SecretTextField, type SecretTextFieldProps } from '@/app/components/ui/secret-text-field';
 
 // ========================================
 // Types
@@ -137,6 +138,11 @@ export function FormField({
 export function LabeledTextField(props: React.ComponentProps<typeof TextField.Root>) {
   const control = useFormFieldControl();
   return <TextField.Root color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
+}
+
+export function LabeledSecretTextField(props: SecretTextFieldProps) {
+  const control = useFormFieldControl();
+  return <SecretTextField color={control['aria-invalid'] ? 'red' : undefined} {...control} {...props} />;
 }
 
 export function LabeledTextArea(props: React.ComponentProps<typeof TextArea>) {

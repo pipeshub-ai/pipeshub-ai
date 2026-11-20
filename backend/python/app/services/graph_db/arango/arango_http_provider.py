@@ -283,6 +283,7 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_aql,
     entity_index_source,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
 from app.services.graph_db.interface.graph_db_provider import (
     ACCESS_WALK_MAX_DEPTH,
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -507,6 +508,18 @@ _KH_V3_BATCH = 50_000
 # subquery sits in a loop over a list that is empty unless it applies, so it runs only where it is asked). Measured on the browse, sidebar and
 # flatten statements: the same results and execution time without it.
 _KH_V3_QUERY_OPTIONS = {"maxRuntime": 120.0, "optimizer": {"rules": ["-move-calculations-up", "-move-calculations-up-2"]}}
+
+# How much longer than the server's own limit the client waits for a statement of the access check:
+# a statement the server stops fails with the server's error, and a server that stops answering still
+# lets the check go.
+_KH_CHECK_CLIENT_GRACE_SECONDS = 1.0
+
+
+def _kh_check_limits(timeout: float | None) -> dict[str, float]:
+    """``execute_aql``'s limits for one statement of an access check run with ``timeout``; none without one."""
+    if timeout is None:
+        return {}
+    return {"max_runtime": timeout, "client_timeout": timeout + _KH_CHECK_CLIENT_GRACE_SECONDS}
 
 
 def _aql_access_rule(v: str) -> str:
@@ -4189,7 +4202,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return result.get("errors", 0) == 0
 
-        except Exception:
+        except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def _upsert_record_base_docs(
@@ -4364,7 +4380,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 collection, key, updates, txn_id=transaction
             )
             return result is not None
-        except Exception:
+        except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def write_attempt_start(
@@ -20473,6 +20492,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         transaction: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Who this user is and every node handed to them directly, resolved once
         per request, as ``Neo4jProvider.get_knowledge_hub_access_v3``: grantee keys,
@@ -20526,6 +20546,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             rows = await self.http_client.execute_aql(
                 query, bind_vars={"user_key": user_key, "org_id": org_id}, txn_id=transaction,
+                **_kh_check_limits(timeout),
             )
         except Exception:
             raise
@@ -20570,6 +20591,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         access: dict[str, Any] | None,
         transaction: str | None,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(i for i in node_ids if i))
         vrids = list(dict.fromkeys(v for v in virtual_record_ids if v))
@@ -20577,7 +20599,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # AQL compares null equal to null: never match nodes against no org.
             return []
         if access is None:
-            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction, timeout=timeout)
         bind = {
             "org_id": org_id,
             "gated_app_ids": access["gated_app_ids"],
@@ -20586,14 +20608,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_v3_check_stage(
             "targets",
             {**bind, "kh_ids": ids, "kh_vrids": vrids, "grantee_ids": access["grantee_ids"]},
-            transaction,
+            transaction, timeout=timeout,
         )
         admitted = await self._kh_v3_admitted_by_walks(
-            [r["id"] for r in rows if r["walk"]], bind, transaction,
+            [r["id"] for r in rows if r["walk"]], bind, transaction, timeout=timeout,
         )
         return [
             {
                 **{k: r[k] for k in ("id", "vrid", "connectorId", "indexingStatus", "isInternal")},
+                "name": r.get("name"),
                 "hasIndexedCopy": r.get("hasIndexedCopy") is True,
                 # The query returns this. Dropping it made a stub asked by id
                 # look like a real record, so search could cite it.
@@ -20605,25 +20628,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ]
 
     async def _kh_v3_admitted_by_walks(
-        self, ids: list[str], bind: dict[str, Any], transaction: str | None,
+        self, ids: list[str], bind: dict[str, Any], transaction: str | None, *, timeout: float | None = None,
     ) -> set[str]:
         """The arms that walk, cheapest first, each run only for the nodes the
         ones before it left undecided: from the App, the declared scope, then
         below a seed."""
         # Requests on one stream transaction must not run concurrently, so a check inside one takes the staged path.
         if transaction is None and 0 < len(ids) <= self._KH_CHECK_CONCURRENT_MAX:
-            return await self._kh_v3_admitted_by_walks_at_once(ids, bind, transaction)
+            return await self._kh_v3_admitted_by_walks_at_once(ids, bind, transaction, timeout=timeout)
         admitted: set[str] = set()
         pending = ids
         for arm in ("from_app", "declared"):
             if not pending:
                 return admitted
-            passed = set(await self._kh_v3_check_stage(arm, {**bind, "kh_ids": pending}, transaction))
+            passed = set(await self._kh_v3_check_stage(arm, {**bind, "kh_ids": pending}, transaction, timeout=timeout))
             admitted |= passed
             pending = [i for i in pending if i not in passed]
         if not pending:
             return admitted
-        pairs = await self._kh_v3_check_stage("seeds", {**bind, "kh_ids": pending}, transaction)
+        pairs = await self._kh_v3_check_stage("seeds", {**bind, "kh_ids": pending}, transaction, timeout=timeout)
         seeds = sorted({pair["seed"] for pair in pairs})
         if not seeds:
             return admitted
@@ -20632,11 +20655,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # tested, as on Neo4j: the org rule is about the nodes asked for, and a
         # seed dropped here for its org would open everything below it.
         seed_bind = {k: v for k, v in bind.items() if k != "org_id"}
-        taken = set(await self._kh_v3_check_stage("seed_from_app", {**seed_bind, "kh_ids": seeds}, transaction))
+        taken = set(await self._kh_v3_check_stage(
+            "seed_from_app", {**seed_bind, "kh_ids": seeds}, transaction, timeout=timeout,
+        ))
         rest = [seed for seed in seeds if seed not in taken]
         if rest:
             taken |= set(await self._kh_v3_check_stage(
-                "seed_declared", {**seed_bind, "kh_ids": rest}, transaction,
+                "seed_declared", {**seed_bind, "kh_ids": rest}, transaction, timeout=timeout,
             ))
         return admitted | {pair["node"] for pair in pairs if pair["seed"] not in taken}
 
@@ -20645,11 +20670,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     _KH_CHECK_CONCURRENT_MAX = 50
 
     async def _kh_v3_admitted_by_walks_at_once(
-        self, ids: list[str], bind: dict[str, Any], transaction: str | None,
+        self, ids: list[str], bind: dict[str, Any], transaction: str | None, *, timeout: float | None = None,
     ) -> set[str]:
         """``_kh_v3_admitted_by_walks`` in two rounds instead of up to five: the same arms and the same answer."""
         passed_app, passed_declared, pairs = await asyncio.gather(*(
-            self._kh_v3_check_stage(arm, {**bind, "kh_ids": ids}, transaction) for arm in ("from_app", "declared", "seeds")))
+            self._kh_v3_check_stage(arm, {**bind, "kh_ids": ids}, transaction, timeout=timeout)
+            for arm in ("from_app", "declared", "seeds")))
         admitted = set(passed_app) | set(passed_declared)
         pairs = [pair for pair in pairs if pair["node"] not in admitted]
         seeds = sorted({pair["seed"] for pair in pairs})
@@ -20657,18 +20683,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return admitted
         seed_bind = {k: v for k, v in bind.items() if k != "org_id"}
         taken_app, taken_declared = await asyncio.gather(*(
-            self._kh_v3_check_stage(arm, {**seed_bind, "kh_ids": seeds}, transaction) for arm in ("seed_from_app", "seed_declared")))
+            self._kh_v3_check_stage(arm, {**seed_bind, "kh_ids": seeds}, transaction, timeout=timeout)
+            for arm in ("seed_from_app", "seed_declared")))
         taken = set(taken_app) | set(taken_declared)
         return admitted | {pair["node"] for pair in pairs if pair["seed"] not in taken}
 
     async def _kh_v3_check_stage(
-        self, stage: str, bind: dict[str, Any], transaction: str | None,
+        self, stage: str, bind: dict[str, Any], transaction: str | None, *, timeout: float | None = None,
     ) -> list[Any]:
         # Never the plan cache: on 3.12.4, storing some of these plans in it
         # crashes the server (SIGSEGV in SubqueryEndNode::estimateCost).
         return await self.http_client.execute_aql(
             self._kh_v3_check_aql()[stage], bind_vars=bind, txn_id=transaction,
-            options=_KH_V3_QUERY_OPTIONS,
+            options=_KH_V3_QUERY_OPTIONS, **_kh_check_limits(timeout),
         ) or []
 
     @staticmethod
@@ -20825,7 +20852,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     : false)
             LET kh_walk = kh_app != null AND NOT kh_is_app AND NOT kh_ok
             FILTER kh_ok OR kh_attachment OR kh_walk
-            RETURN {{id: t._key, vrid: t.virtualRecordId, connectorId: t.connectorId,
+            RETURN {{id: t._key, name: NOT_NULL(t.name, t.recordName, t.groupName),
+                     vrid: t.virtualRecordId, connectorId: t.connectorId,
                      indexingStatus: t.indexingStatus, hasIndexedCopy: t.hasIndexedCopy == true,
                      isInternal: t.isInternal == true,
                      isPlaceholder: t.isPlaceholder == true,

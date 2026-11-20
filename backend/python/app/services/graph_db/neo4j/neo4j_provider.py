@@ -241,6 +241,10 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_cypher,
     entity_index_source,
 )
+from app.services.graph_db.errors import (
+    UniqueConstraintViolation,
+    violates_unique_constraint,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     ACCESS_WALK_MAX_DEPTH,
     CONTAINER_SCOPE_FILTER_KEYS,
@@ -2501,11 +2505,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         RETURN n.id
         """
 
-        await self.client.execute_query(
-            query,
-            parameters={"nodes": _in_lock_order(neo4j_nodes, _by_id)},
-            txn_id=transaction
-        )
+        try:
+            await self.client.execute_query(
+                query,
+                parameters={"nodes": _in_lock_order(neo4j_nodes, _by_id)},
+                txn_id=transaction
+            )
+        except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                raise UniqueConstraintViolation(str(e)) from e
+            raise
 
         return True
 
@@ -2731,7 +2741,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return len(results) > 0
 
-        except Exception:
+        except Exception as e:
+            if violates_unique_constraint(str(e)):
+                # Whoever writes decides what this means: a taken handle is retried or answered, so it is no fault here.
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def write_attempt_start(
@@ -20864,16 +20877,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         transaction: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Memoized for the current chat turn (see `app.utils.turn_memo`); a
         turn asked for the same answer about six times."""
         if transaction is not None:
-            return await self._get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+            return await self._get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction, timeout=timeout)
         from app.utils.turn_memo import memo
 
         return await memo(
             ("kh_access_v3", user_key, org_id),
-            lambda: self._get_knowledge_hub_access_v3(user_key, org_id),
+            lambda: self._get_knowledge_hub_access_v3(user_key, org_id, timeout=timeout),
         )
 
     async def _get_knowledge_hub_access_v3(
@@ -20882,6 +20896,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         *,
         transaction: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Who this user is, and every node granted to them directly.
 
@@ -20939,6 +20954,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query,
                 parameters={"user_key": user_key, "org_id": org_id},
                 txn_id=transaction, plain=True,
+                **({"timeout": timeout} if timeout is not None else {}),
             )
         except Exception:
             raise
@@ -21143,6 +21159,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_query(
         self, query: str, parameters: dict[str, Any] | None = None, txn_id: str | None = None,
+        *, timeout: float | None = None,
     ) -> list[dict]:
         """Run a knowledge-hub statement with its list parameters inside one map
         parameter. Neo4j keys a cached plan on the size class of every list
@@ -21171,7 +21188,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self._KH_LISTS: {k: parameters[k] for k in read},
             }
         try:
-            return await self._kh_run(query, parameters, txn_id)
+            return await self._kh_run(query, parameters, txn_id, timeout=timeout)
         except KnowledgeHubListingBusy:
             raise
         except Exception as e:
@@ -21281,20 +21298,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             done += 1
         return done
 
-    async def _kh_run(self, query: str, parameters: dict[str, Any], txn_id: str | None) -> list[dict]:
+    async def _kh_run(
+        self, query: str, parameters: dict[str, Any], txn_id: str | None, *, timeout: float | None = None,
+    ) -> list[dict]:
         if txn_id is not None:
             # Inside a transaction the statement shares that transaction's session and limit.
-            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+            return await self.client.execute_query(
+                query, parameters=parameters, txn_id=txn_id, plain=True,
+                **({"timeout": timeout} if timeout is not None else {}),
+            )
         if self._kh_time_left(None) == 0:
             raise KnowledgeHubListingBusy(timed_out=True)
-        await self._kh_server_restarted()
+        await self._kh_server_restarted(timeout)
         planning, planned = self._kh_plans()
         # Neo4j keys a cached plan on the text and on the type of each parameter (a null sort key is another plan).
         types = sorted((k, type(v).__name__) for k, v in parameters.items())
         key = hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
         self._kh_seen(key, query, parameters)
+        # A caller's own limit (the access check's) bounds its wait for a plan and every statement it runs, the
+        # planning included: that check answers, or fails closed, within its limit.
+        limit = self._KH_QUERY_TIMEOUT_S if timeout is None else timeout
         # One wait budget per request, even when a failed planner hands the planning on.
-        deadline = time.monotonic() + self._KH_PLAN_WAIT_S
+        deadline = time.monotonic() + (self._KH_PLAN_WAIT_S if timeout is None else timeout)
         # shortcut: a text is trusted as planned until the server restarts (`_kh_server_restarted`); a plan Neo4j evicts
         # from a running server is planned again by every request at once (bounded by the query timeout).
         text = self._kh_text(query)
@@ -21302,7 +21327,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             task = planning.get(key)
             if task is None or task.done():
                 task = spawn_in_request(
-                    self.client.execute_query(text, parameters=parameters, plain=True, timeout=self._KH_QUERY_TIMEOUT_S),
+                    self.client.execute_query(text, parameters=parameters, plain=True, timeout=limit),
                     name="kh-plan",
                 )
                 planning[key] = task
@@ -21320,7 +21345,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The client may wait for a pooled connection and retry a lost one with the limit it was given: the request is
         # answered at its deadline whichever it is doing, and a statement already sent ends at that limit on the server.
         return await self._kh_timed(self._kh_until_deadline(
-            self.client.execute_query(text, parameters=parameters, plain=True, timeout=self._kh_time_left(self._KH_QUERY_TIMEOUT_S))
+            self.client.execute_query(text, parameters=parameters, plain=True, timeout=self._kh_time_left(limit))
         ))
 
     # A listing statement keeps its cached plan whatever the counts have done since (`replan=skip`): the plan is the
@@ -21344,7 +21369,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     # still lands for the ones after it.
     _KH_SERVER_WAIT_S = 1.0
 
-    async def _kh_server_restarted(self) -> None:
+    async def _kh_server_restarted(self, limit: float | None = None) -> None:
         if self._KH_SERVER_CHECK_S <= 0:
             return
         state = vars(self).setdefault("_kh_server", {"next": 0.0, "started": None, "check": None})
@@ -21354,7 +21379,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Server-wide, shared by every request that waits on it: its own context, not the first caller's.
             state["check"] = spawn_detached(self._kh_read_server_start(state), name="kh-server-start")
         with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(state["check"]), self._kh_time_left(self._KH_SERVER_WAIT_S))
+            wait = self._KH_SERVER_WAIT_S if limit is None else min(self._KH_SERVER_WAIT_S, limit)
+            await asyncio.wait_for(asyncio.shield(state["check"]), self._kh_time_left(wait))
 
     async def _kh_read_server_start(self, state: dict[str, Any]) -> None:
         try:
@@ -22231,6 +22257,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         access: dict[str, Any] | None,
         transaction: str | None,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         ids = list(dict.fromkeys(i for i in node_ids if i))
         vrids = list(dict.fromkeys(v for v in virtual_record_ids if v))
@@ -22238,7 +22265,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return []
         if access is None:
             access = await self.get_knowledge_hub_access_v3(
-                user_key=user_key, org_id=org_id, transaction=transaction,
+                user_key=user_key, org_id=org_id, transaction=transaction, timeout=timeout,
             )
         # Each target is decided by walking UP from it: one parent per step in a
         # tree, so the cost follows depth, never the fan-out of a large group.
@@ -22295,7 +22322,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND NOT {in_declared_scope('kh_s', 'x')}
                 RETURN 1 }}"""
 
-        items = """RETURN collect({id: ok.id, vrid: ok.virtualRecordId,
+        items = """RETURN collect({id: ok.id, name: coalesce(ok.name, ok.recordName, ok.groupName),
+                        vrid: ok.virtualRecordId,
                         connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
                         hasIndexedCopy: coalesce(ok.hasIndexedCopy, false),
                         isInternal: coalesce(ok.isInternal, false),
@@ -22395,14 +22423,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
             if probe:
                 by_parent = self._kh_grants_by_probe(by_parent)
-            rows = await self._kh_query(by_parent, parameters={"kh_ids": ids, "org_id": org_id, **grants}, txn_id=transaction)
+            rows = await self._kh_query(by_parent, parameters={"kh_ids": ids, "org_id": org_id, **grants}, txn_id=transaction, timeout=timeout)
             admitted = (rows or [{}])[0].get("items") or []
             done = {r["id"] for r in admitted}
             ids = [i for i in ids if i not in done]
             if not ids and not vrids:
                 return admitted
         parameters = {"kh_ids": ids, "kh_vrids": vrids, "org_id": org_id, "granteeIds": access["grantee_ids"], **grants}
-        rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
+        rows = await self._kh_query(query, parameters=parameters, txn_id=transaction, timeout=timeout)
         return admitted + ((rows or [{}])[0].get("items") or [])
 
     async def _kh_v3_app_declared_scope(
