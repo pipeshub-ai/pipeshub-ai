@@ -138,7 +138,6 @@ import { hasLegacyOutcomeWords, runOutcomeOf } from '../../run-outcome';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
-import { mayBeNarration } from '../../utils/narration-hold';
 import { citedAnswer, type CitedAnswer } from '../../utils/cited-answer';
 import { extractAnswerMarkers } from '../../utils/parse-download-markers';
 import { isAskUserQuestionTool } from '../../utils/tool-display';
@@ -606,23 +605,18 @@ export const ChatResponse = React.memo(function ChatResponse({
   // A row that carries on after its question card holds the text an earlier run saved on it, which is not this
   // run's answer: while it runs, only what this run streams is shown.
   const resumesCardRow = isStreaming && Boolean(persistedAskUserQuestion || askQuestionMatchesRow);
-  // Text the run is still writing stays out of the answer while it may be the sentence said before a tool call
-  // (`mayBeNarration`): when the call comes, that sentence is first drawn in the run's box, not here and then moved.
-  const liveAnswer = useMemo(
-    () => (isStreaming && mayBeNarration(streamingContent) ? '' : streamingContent),
-    [isStreaming, streamingContent],
-  );
+  // Words show the moment they arrive; a sentence said before a tool call moves into the run's box when the call comes.
   const lastCitedRef = useRef<CitedAnswer | undefined>(undefined);
   const cited = useMemo(() => {
-    const streamingNow = Boolean(isStreaming && liveAnswer);
+    const streamingNow = Boolean(isStreaming && streamingContent);
     const next = citedAnswer(
-      streamingNow ? repairStreamingMarkdown(liveAnswer) : resumesCardRow ? '' : answer,
+      streamingNow ? repairStreamingMarkdown(streamingContent) : resumesCardRow ? '' : answer,
       storedCitationMaps,
       { streaming: streamingNow, previous: lastCitedRef.current },
     );
     lastCitedRef.current = next;
     return next;
-  }, [isStreaming, liveAnswer, resumesCardRow, answer, storedCitationMaps]);
+  }, [isStreaming, streamingContent, resumesCardRow, answer, storedCitationMaps]);
   const processedContent = cited.text;
   const effectiveCitationMaps = cited.citationMaps;
   // Read via ref (not a `useMemo` dep) by `wrappedCallbacks` below, so that
@@ -658,8 +652,11 @@ export const ChatResponse = React.memo(function ChatResponse({
     ? streamingArtifacts ?? []
     : persistedArtifacts;
   const currentStatusMessage = currentStatusMessageProp;
-  const streamingStatusToShow =
-    currentStatusMessage ?? (isStreaming && !displayContent ? streamingFallbackStatus : null);
+  // A run stopped on this row's question waits on the person, not the model: no status line says it is still at work.
+  // The saved row has none either, so the card under the trail stays where it is when that row takes over.
+  const streamingStatusToShow = questionPending
+    ? null
+    : currentStatusMessage ?? (isStreaming && !displayContent ? streamingFallbackStatus : null);
 
   // Live transcript while streaming, persisted transcript after reload —
   // same components render either (see AgentActivityTimeline's docstring).
@@ -1090,9 +1087,13 @@ export const ChatResponse = React.memo(function ChatResponse({
   }
   // A job's asks are drawn on its card, after the steps: only the others keep the steps open for themselves.
   const trailInteractions = interactions.filter((item) => item.anchor === null || !jobAnchors.has(item.anchor));
+  // While the run waits on this row's question, a box with no step is not drawn: the saved row draws none either.
   const showTimeline =
     effectiveParts !== undefined &&
-    (hasTrail || (isStreaming && multiStep) || (messagePlan?.steps.length ?? 0) >= 2 || trailInteractions.length > 0);
+    (hasTrail ||
+      (isStreaming && multiStep && !questionPending) ||
+      (messagePlan?.steps.length ?? 0) >= 2 ||
+      trailInteractions.length > 0);
   // A host that draws the answer elsewhere (the answer panel) passes its own padding.
   const renderTabContent = (opts?: { padding?: string }) => {
     const spacing: React.CSSProperties = { padding: opts?.padding ?? 'var(--space-4) 0' };

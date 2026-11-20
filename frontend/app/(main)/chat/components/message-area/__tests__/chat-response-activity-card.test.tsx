@@ -157,7 +157,6 @@ describe('a headline question', () => {
 });
 
 describe('the confidence badge while the answer streams', () => {
-  // Streamed text that reads as the answer: a lone sentence may still be the run's narration and is held back.
   const STREAMED = 'Revenue was 4.\n\nCosts held.';
   const row = (streaming: boolean) => (
     <Theme>

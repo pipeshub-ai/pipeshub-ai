@@ -1,7 +1,7 @@
 /**
- * The sentence an agent says before a tool call is first drawn in the run's box, never as the answer and then moved
- * there. Replayed through the real stream handler as the server sends it (a word or a few characters at a time, then
- * the tool call), with the row redrawn after every event as the chat draws it while it streams.
+ * The answer's words show the moment they arrive. Replayed through the real stream handler as the server sends it (a
+ * word or a few characters at a time, then any tool call), with the row redrawn after every event as the chat draws it
+ * while it streams.
  */
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -49,6 +49,7 @@ const tool = (id: string, name: string, result = true): SSEEvent[] => [
 ];
 const start = [frame('RUN_STARTED', { threadId: 't1', runId: RUN }), frame('STATE_SNAPSHOT', { snapshot: { status: 'calling_llm' } })];
 
+const SHORT = 'Hi. How can I help?';
 const ASK = 'I’ll ask which team you’re on first, then pause here for your answer.';
 const SEARCH = 'I’ll search your collections for the code freeze rules and pull the clearest sources.';
 const UPDATE = 'I found the release guide; I’m checking its full procedure before I answer.';
@@ -56,8 +57,15 @@ const ANSWER =
   'Code freeze starts ten days before each release. The release captain cuts the branch. QA signs the checklist.\n\n' +
   'Staging runs for two days before the release goes out.';
 
+/** What one step of the replay drew, and the text the handler had streamed as the answer by then. */
+interface Step {
+  view: HTMLElement;
+  name: string;
+  streamed: string;
+}
+
 /** The row after every event, drawn from what the handler gave the chat so far (as `streamMessageForSlot` keeps it). */
-function replay(events: SSEEvent[], onEach: (view: HTMLElement, step: string) => void, final = ANSWER) {
+function replay(events: SSEEvent[], onEach: (step: Step) => void, final = ANSWER) {
   let content = '';
   let parts: MessagePart[] = [];
   let status: StatusMessage | null = null;
@@ -75,6 +83,9 @@ function replay(events: SSEEvent[], onEach: (view: HTMLElement, step: string) =>
     },
   };
   const handle = createAGUIEventHandler(callbacks);
+  // Saved as the server saves the turn: text the run ends on is the answer, not one of its steps.
+  const saved = () =>
+    parts.map((part, i) => (i === parts.length - 1 && part.type === 'text' ? { ...part, isFinal: true } : part));
   const draw = (streaming: boolean) => (
     <Theme>
       <ChatResponse
@@ -83,7 +94,7 @@ function replay(events: SSEEvent[], onEach: (view: HTMLElement, step: string) =>
         isStreaming={streaming}
         streamingContent={content}
         streamingParts={parts}
-        persistedParts={parts}
+        persistedParts={streaming ? parts : saved()}
         currentStatusMessage={status}
         messageId="row-1"
         isLastMessage
@@ -94,35 +105,70 @@ function replay(events: SSEEvent[], onEach: (view: HTMLElement, step: string) =>
   events.forEach((event, i) => {
     handle(event);
     rerender(draw(true));
-    onEach(container, `event ${i} ${event.event}`);
+    onEach({ view: container, name: `event ${i} ${event.event}`, streamed: content });
   });
   return { container, done: () => rerender(draw(false)) };
 }
 
-/** Where `sentence` is drawn: in the run's box, outside it, or nowhere. */
-function placeOf(view: HTMLElement, sentence: string): 'box' | 'outside' | 'none' {
+/** Where `sentence` is drawn: in the run's box, outside it (as the answer), both, or nowhere. */
+function placesOf(view: HTMLElement, sentence: string): string {
   const start = sentence.slice(0, 16);
   const holders = [...view.querySelectorAll('*')].filter(
     (el) => [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && (n.nodeValue ?? '').includes(start)),
   );
-  if (holders.length === 0) return 'none';
-  return holders.every((el) => el.closest('[data-testid="chat-activity-card"]')) ? 'box' : 'outside';
+  const places = new Set(holders.map((el) => (el.closest('[data-testid="chat-activity-card"]') ? 'box' : 'outside')));
+  return places.size === 0 ? 'none' : [...places].sort().join('+');
 }
+
+const answerText = (view: HTMLElement) => view.querySelector('[data-testid="answer"]')?.textContent ?? null;
 
 afterEach(cleanup);
 
-describe('a sentence said before a tool call', () => {
-  it('is first drawn in the run’s box, never as the answer: a question asked', () => {
-    const seen: string[] = [];
-    replay([...start, ...turn('m1', ASK), ...tool('call-1', 'internaltools__ask_user_question', false)], (view, step) => {
-      const place = placeOf(view, ASK);
-      seen.push(place);
-      expect(place, step).not.toBe('outside');
+describe('the answer while it streams', () => {
+  it('shows a short one-line answer from the first frame that carries a word, and each word as it arrives', () => {
+    let drawnSteps = 0;
+    replay([...start, ...turn('m1', SHORT)], ({ view, name, streamed }) => {
+      if (!streamed) return;
+      drawnSteps += 1;
+      expect(answerText(view), name).toBe(streamed);
     });
+    expect(drawnSteps).toBeGreaterThan(5);
+  });
+
+  it('says it is thinking until the first words arrive, and not while they do', () => {
+    let wordSteps = 0;
+    replay([...start, ...turn('m1', SHORT)], ({ view, name, streamed }) => {
+      if (!streamed) {
+        expect(view.textContent, name).toContain('Thinking…');
+      } else if (name.endsWith('TEXT_MESSAGE_CONTENT')) {
+        wordSteps += 1;
+        expect(view.textContent, name).not.toContain('Thinking…');
+      }
+    });
+    expect(wordSteps).toBeGreaterThan(5);
+  });
+
+  it('keeps the words it showed when the run ends', () => {
+    const { container, done } = replay([...start, ...turn('m1', SHORT)], () => {}, SHORT);
+    done();
+    expect(answerText(container)).toBe(SHORT);
+  });
+});
+
+describe('a sentence said before a tool call', () => {
+  it('shows as the answer until the call arrives, then only in the run’s box', () => {
+    const seen: string[] = [];
+    replay([...start, ...turn('m1', ASK), ...tool('call-1', 'internaltools__ask_user_question', false)], ({ view, name, streamed }) => {
+      const place = placesOf(view, ASK);
+      seen.push(place);
+      expect(place, name).not.toBe('box+outside');
+      if (name.endsWith('TEXT_MESSAGE_CONTENT') && streamed.length >= 16) expect(place, name).toBe('outside');
+    });
+    expect(seen).toContain('outside');
     expect(seen.at(-1)).toBe('box');
   });
 
-  it('is first drawn in the run’s box, never as the answer: searches, an update, then the answer', () => {
+  it('searches, an update, then the answer: each step’s sentence ends in the box, the answer under it', () => {
     const events = [
       ...start,
       ...turn('m1', SEARCH),
@@ -131,39 +177,13 @@ describe('a sentence said before a tool call', () => {
       ...tool('call-2', 'knowledgegraph__fetch_record'),
       ...turn('m3', ANSWER),
     ];
-    const answerShownAt: number[] = [];
-    const { container, done } = replay(events, (view, step) => {
-      expect(placeOf(view, SEARCH), step).not.toBe('outside');
-      expect(placeOf(view, UPDATE), step).not.toBe('outside');
-      if (placeOf(view, ANSWER) === 'outside') answerShownAt.push(answerShownAt.length);
+    const { container, done } = replay(events, ({ view, name }) => {
+      for (const sentence of [SEARCH, UPDATE, ANSWER]) expect(placesOf(view, sentence), name).not.toBe('box+outside');
     });
-    expect(placeOf(container, SEARCH)).toBe('box');
-    expect(placeOf(container, UPDATE)).toBe('box');
-    // The answer streams as the answer once it reads as one, before the run ends.
-    expect(answerShownAt.length).toBeGreaterThan(0);
+    expect(placesOf(container, SEARCH)).toBe('box');
+    expect(placesOf(container, UPDATE)).toBe('box');
+    expect(placesOf(container, ANSWER)).toBe('outside');
     done();
-    expect(placeOf(container, ANSWER)).toBe('outside');
-  });
-
-  it('keeps saying it is thinking while the sentence is held', () => {
-    let held = 0;
-    replay([...start, ...turn('m1', ASK)], (view, step) => {
-      if (!(view.textContent ?? '').includes('I’ll ask')) {
-        held += 1;
-        expect(view.textContent, step).toContain('Thinking…');
-      }
-    });
-    expect(held).toBeGreaterThan(10);
-  });
-
-  it('shows a short answer, held while it streams, once the run ends', () => {
-    const SHORT = 'Hi. How can I help?';
-    const { container, done } = replay(
-      [...start, ...turn('m1', SHORT)],
-      (view, step) => expect(placeOf(view, SHORT), step).toBe('none'),
-      SHORT,
-    );
-    done();
-    expect(placeOf(container, SHORT)).toBe('outside');
+    expect(placesOf(container, ANSWER)).toBe('outside');
   });
 });

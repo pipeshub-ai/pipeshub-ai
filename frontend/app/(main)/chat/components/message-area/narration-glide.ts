@@ -37,11 +37,10 @@ function startOf(el: Element): string {
 
 /**
  * Text that streams as the answer can turn out to be narration: a tool call follows, and it moves into the trail
- * above. Most narration never shows as the answer (`mayBeNarration` keeps a sentence that may be it out of the answer
- * until the call settles it); text longer than that can still move. It glides there from where it was being read,
- * instead of leaving one place and fading in at another. Every
- * streaming commit notes where the answer's text sits; the commit that moves it into the trail animates the
- * trail's newest narration from that spot. With reduced motion it simply moves.
+ * above. Nothing in the stream tells the two apart before the call, so the words show as the answer the moment they
+ * arrive. When they move, they glide there from where they were being read, instead of leaving one place and fading
+ * in at another. Every streaming commit notes where the answer's text sits; the commit that moves it into the trail
+ * animates the trail's newest narration from that spot. With reduced motion it simply moves.
  */
 export function useNarrationGlide(root: RefObject<HTMLElement | null>, isStreaming: boolean): void {
   const spot = useRef<AnswerSpot | null>(null);
