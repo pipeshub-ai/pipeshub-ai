@@ -146,6 +146,24 @@ class AccessPolicy:
         record, served = await self._authorize(actor, artifact_id, require_owner=False, version=version, newest=True)
         return record, served if served is not None else _current_version(record)
 
+    async def authorize_version_for_every_member(self, actor: Actor, artifact_id: str) -> tuple[dict, int]:
+        """`authorize_version` for every member of `actor`'s chat at once: the record, and the newest version all of
+        them may open, which the installed `ChatContentAccess` decides (no one's edge, its owner's included, counts
+        here). Raises as `authorize_read` does when they may open none."""
+        record = await self._record(actor, artifact_id)
+        current = _current_version(record)
+        access = self._chat_access or get_chat_content_access()
+        opened = [
+            v for v in await access.versions_every_member_may_open(
+                self._graph_provider, user_id=actor.user_id, org_id=actor.org_id, record=record,
+                conversation_id=actor.conversation_id, acl_version=actor.acl_version,
+            )
+            if 1 <= v <= current
+        ]
+        if not opened:
+            raise AccessDeniedError(f"Not every member of the chat may open artifact: {artifact_id}")
+        return record, opened[-1]
+
     async def readable_versions(self, actor: Actor, artifact_id: str) -> tuple[dict, list[int]]:
         """The record and every version of it `actor` may open, oldest first.
         Raises as `authorize_read` does when they may open none."""

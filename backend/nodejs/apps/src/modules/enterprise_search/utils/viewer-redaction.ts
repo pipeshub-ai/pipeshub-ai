@@ -183,6 +183,8 @@ export interface Readable {
   deadline?: number;
   /** Put to the query service in this read without an answer: not asked again, and still unknown. */
   unsettled?: Set<string>;
+  /** Nothing is put to the query service in this read: what it has not settled stays unknown. Its reader is no one. */
+  askNoOne?: true;
 }
 
 export const newReadable = (): Readable => ({
@@ -316,7 +318,7 @@ export const readableRecordIds = async (
     Date.now() + timeoutMs,
     known.deadline ?? Number.POSITIVE_INFINITY,
   );
-  if (deadline <= Date.now()) return giveUp();
+  if (known.askNoOne === true || deadline <= Date.now()) return giveUp();
   const ticket = accessCheckBreaker.allow();
   if (ticket === undefined) {
     logger.debug(

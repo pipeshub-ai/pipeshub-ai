@@ -82,6 +82,8 @@ class AgentContext(BaseModel):
     _read_by_others: bool | None = PrivateAttr(default=None)
     # The sources this turn's model calls may name; the prompts and the answer's label read this one value.
     _named_sources: Any = PrivateAttr(default=None)
+    # The chat's files this turn's model calls are told about (`told_files.ToldFiles`).
+    _told_files: Any = PrivateAttr(default=None)
     # One ledger per request so `retrieval_context` frames carry only what
     # is new since the last tool call, not the whole accumulated set.
     _retrieval_ledger: Any = PrivateAttr(default=None)
@@ -632,6 +634,8 @@ class AgentContext(BaseModel):
         keep_own_tools_out(self)
         # Now, so tools that print source names find them in `tool_state` (`nameable_source_ids`).
         _ = self.named_sources
+        # Now, so the artifacts tools find which files they may list in `tool_state` (`told_files_in`).
+        _ = self.told_files
 
     @property
     def read_by_others(self) -> bool:
@@ -710,6 +714,20 @@ class AgentContext(BaseModel):
             self._named_sources = named_sources_for(self)
             self.tool_state[NAMED_SOURCES_KEY] = self._named_sources
         return self._named_sources
+
+    @property
+    def told_files(self) -> Any:  # noqa: ANN401
+        """The chat's files this turn's model calls are told about (`told_files.ToldFiles`), worked out once, on
+        first use."""
+        if self._told_files is None:
+            from app.modules.agents.context.told_files import (
+                TOLD_FILES_KEY,
+                told_files_for,
+            )
+
+            self._told_files = told_files_for(self)
+            self.tool_state[TOLD_FILES_KEY] = self._told_files
+        return self._told_files
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""

@@ -146,6 +146,7 @@ import {
   kindFilterOf,
   listFilterOf,
   sharedListFilterOf,
+  type ConversationRequestContext,
 } from '../services/conversation/http/conversation-context';
 import {
   ConversationExtensions,
@@ -677,7 +678,6 @@ const turnEdgesOf = async <M extends ViewerMessage>(
   return { lead, trail, leadUnknown, trailUnknown };
 };
 
-/** Edition-only session fields an archive row leaves out unless collaborative chats are on, as list rows do. */
 /** Session paths a find never returns unless asked (`select: false`); an aggregate has to leave them out itself. */
 const unselectedSessionPaths = (): Record<string, 0> => {
   const hidden: Record<string, 0> = {};
@@ -689,17 +689,7 @@ const unselectedSessionPaths = (): Record<string, 0> => {
   return hidden;
 };
 
-/** What an archive list or archive search row leaves out: what a find would, and the edition's other members' state. */
-const archiveRowHidden = (): Record<string, 0> => ({
-  ...unselectedSessionPaths(),
-  ...Object.fromEntries(
-    conversationExtensions().archives.listHidden.map((field) => [
-      field,
-      0 as const,
-    ]),
-  ),
-});
-
+/** Edition-only session fields an archive row leaves out unless collaborative chats are on, as list rows do. */
 const editionFieldsHidden = (
   req: AuthenticatedUserRequest,
 ): Record<string, 0> =>
@@ -711,6 +701,36 @@ const editionFieldsHidden = (
           0 as const,
         ]),
       );
+
+/** The `select` of an archive list: the fields the edition names for its rows, else a list's default. */
+const archiveSelect = (ctx: ConversationRequestContext): string => {
+  const fields = conversationExtensions().archives.rowFields(ctx);
+  return fields ? fields.join(' ') : listViews().select(ctx);
+};
+
+/**
+ * The `$project` of an archive aggregate: the fields the edition names for its rows, with those the pipeline adds
+ * before it (`computed`); else everything but what a find would leave out, `hidden`, and the edition's own fields.
+ */
+const archiveProject = (
+  req: AuthenticatedUserRequest,
+  computed: readonly string[] = [],
+  hidden: Record<string, 0> = {},
+): Record<string, 0 | 1> => {
+  const fields = conversationExtensions().archives.rowFields(
+    conversationContextOf(req),
+  );
+  return fields
+    ? Object.fromEntries(
+        [...fields, ...computed].map((field) => [field, 1 as const]),
+      )
+    : {
+        __v: 0,
+        ...unselectedSessionPaths(),
+        ...hidden,
+        ...editionFieldsHidden(req),
+      };
+};
 
 /**
  * Whose a stored row is, for the reader check: who wrote the question or note, or asked for the answer,
@@ -4688,13 +4708,7 @@ export const listAllArchivesConversation =
           .sort(sortOptions as any)
           .skip(skip)
           .limit(limit)
-          .select(
-            ctx.extended === true
-              ? ['__v', ...Object.keys(archiveRowHidden())]
-                  .map((field) => `-${field}`)
-                  .join(' ')
-              : listViews().select(ctx),
-          )
+          .select(archiveSelect(ctx))
           .lean()
           .exec(),
         ChatSession.countDocuments(sessionFilter),
@@ -4932,13 +4946,7 @@ export const searchArchivedConversations =
           { $sort: { lastActivityAt: -1 } },
           { $skip: skip },
           { $limit: limit },
-          {
-            $project: {
-              __v: 0,
-              ...archiveRowHidden(),
-              ...editionFieldsHidden(req),
-            },
-          },
+          { $project: archiveProject(req, ['source']) },
         ]),
         ChatSession.countDocuments(assistantFilter),
         ChatSession.countDocuments(agentFilter),
@@ -7232,16 +7240,17 @@ export const listAllArchivesAgentConversation =
           .sort(sortOptions as any)
           .skip(skip)
           .limit(limit)
-          .select(ctx.extended === true ? '-__v' : listViews().select(ctx))
+          .select(archiveSelect(ctx))
           .lean()
           .exec(),
         ChatSession.countDocuments(filter),
       ]);
 
       const views = await listViews().accessViews(ctx, conversations);
+      // A shared agent chat lists here for its members too: who else is in it is its owner's to see, as on every list.
       const processedConversations = conversations.map((conversation: any) => ({
         ...addComputedFields(
-          conversation as IAgentConversation,
+          listViews().redactRecipients(ctx, conversation) as IAgentConversation,
           userId,
           views.get(String(conversation._id)),
         ),
@@ -7539,16 +7548,8 @@ export const listAllAgentsArchivedConversationsGrouped =
           // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
           // so that the initial 5 chats here align with page 1 of the per-agent pagination
           { $sort: { lastActivityAt: -1 as const } },
-          // Exclude heavy fields before grouping
-          {
-            $project: {
-              __v: 0,
-              messages: 0,
-              nextSeq: 0,
-              sessionType: 0,
-              ...editionFieldsHidden(req),
-            },
-          },
+          // Only a row's fields go into the groups (no embedded messages of an older chat, nothing `select: false`).
+          { $project: archiveProject(req, [], { messages: 0 }) },
           {
             $group: {
               _id: '$agentKey',

@@ -54,6 +54,7 @@ from app.modules.agents.context.named_sources import (
     picked_source_ids,
     without_unnamed_sources,
 )
+from app.modules.agents.context.told_files import picked_file_ids
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -420,6 +421,8 @@ async def prepare_chat_state(
         **query_info, "filters": filters, "chatMode": policy.loop_chat_mode,
         # From the request's own filters: the attachments added to `kb` above are part of the question, not a pick.
         "pickedSourceIds": picked_source_ids(query_info.get("filters"), filters),
+        # The chat's files it picked: in a turn others read, with every member's, the only ones the model is told of.
+        "pickedFileIds": picked_file_ids(query_info.get("filters")),
     }
     query_info = exclude_from_query(query_info, demo_excluded)
 

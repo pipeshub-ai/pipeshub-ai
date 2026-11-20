@@ -2,6 +2,7 @@ import { expect } from 'chai'
 import {
   configureVisibility,
   consentCovers,
+  everyMemberOf,
   fullOK,
   hiddenRowFor,
   hiddenView,
@@ -24,6 +25,7 @@ import { VerdictStore } from '../../../../../../src/modules/enterprise_search/se
 import { labelContentHash } from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/label'
 import { formatPreviousConversations } from '../../../../../../src/modules/enterprise_search/utils/utils'
 import type { EpochSource } from '../../../../../../src/modules/enterprise_search/services/conversation/privacy/epochs'
+import type { Readable } from '../../../../../../src/modules/enterprise_search/utils/viewer-redaction'
 
 const ORG = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 const ROOM = 'bbbbbbbbbbbbbbbbbbbbbbbb'
@@ -1988,5 +1990,108 @@ describe('the reader check: who may see an answer', () => {
       })
       expect(verdicts.get(String(a._id))).to.include({ verdict: 'hidden' })
     })
+  })
+})
+
+describe('the reader that stands for every member (`everyMemberOf`): shown only what every member is shown', () => {
+  afterEach(() => resetVisibility())
+
+  /** The room before Priya joined: each way into it is older than the rules. */
+  const earlier: ReaderSession = { ...session, sharedWith: (session.sharedWith as unknown[]).slice(0, 3) }
+  let seq = 100
+  /** An answer the previous release stored: no label, the records it showed in its references. */
+  const old = (content: string, records: string[] = []): ReaderRow & Record<string, unknown> => ({
+    _id: nextId(),
+    sessionId: ROOM,
+    orgId: ORG,
+    seq: ++seq,
+    messageType: 'bot_response',
+    content,
+    referenceData: records.map((id) => ({ id, recordId: id, name: id })),
+    createdAt: T0,
+  })
+  const names = (m: object): string[] =>
+    ((m as { referenceData?: Array<{ recordId?: string }> }).referenceData ?? []).map((r) => r.recordId as string)
+  /** The per-record view for whoever reads: an answer that names a record they cannot open is withheld whole. */
+  const recordView = (asked: Readable[]) => async <M extends object>(list: M[], settled: Readable): Promise<M[]> => {
+    asked.push(settled)
+    return list.map((m) =>
+      names(m).length > 0 ? ({ ...m, answerHidden: { redacted: true, reason: 'no_longer_accessible' } } as M) : m,
+    )
+  }
+  const shown = async (rows: ReaderRow[], w: World, on: ReaderSession, asked: Readable[] = []): Promise<boolean[]> => {
+    const { rows: out, verdicts } = await readerView(everyMemberOf(ORG), on, rows, { deps: w.deps, perRecordView: recordView(asked) })
+    return rows.map(
+      (r, i) =>
+        verdicts.get(String(r._id))?.verdict === 'visible' && (out[i] as { answerHidden?: unknown }).answerHidden === undefined,
+    )
+  }
+
+  it('an answer that used nothing; not one that used a record, an agent or a tool of its asker’s', async () => {
+    const plain = answer('Nothing used.')
+    const onR = answer('From R.', {}, { direct: { records: [R] } })
+    const byAgent = answer('By the agent.', {}, { direct: { agents: [{ key: 'agent-x', kind: 'config' }] } })
+    const personal = answer('From her tool.', {}, { direct: { personal: [DANA] } })
+    const rows = [plain, onR, byAgent, personal]
+    // Everyone in the room may use the agent, and Carol can open R: still not every member is known to.
+    const w = world(rows, { agents: { 'agent-x': [DANA, CAROL, BOB, IVY, PRIYA] } })
+    expect(await shown(rows, w, session)).to.deep.equal([true, false, false, false])
+    expect((await verdictsFor(CAROL, [onR], w)).get(String(onR._id))?.verdict, 'Carol herself (control)').to.equal('visible')
+    expect(w.asked.map((a) => a.userId), 'the access service is asked only for Carol').to.deep.equal([CAROL])
+  })
+
+  it('an answer from before the rules: only while each way into the room is older, and as the per-record view shows it', async () => {
+    const plainOld = old('Old: nothing named.')
+    const namedOld = old('Old: R says the launch moved.', [R])
+    const rows = [plainOld, namedOld]
+    const w = world(rows)
+    expect(await shown(rows, w, session), 'Priya joined after the rules').to.deep.equal([false, false])
+    const asked: Readable[] = []
+    expect(await shown(rows, w, earlier, asked), 'everyone was in before').to.deep.equal([true, false])
+    expect(asked.length).to.be.greaterThan(0)
+    expect(
+      asked.every((known) => known.askNoOne === true && (known.deadline ?? 0) > Date.now()),
+      'the per-record view asks no one, and its store reads keep the read’s deadline',
+    ).to.equal(true)
+  })
+
+  it('an answer built on one from before the rules, given as text: the same', async () => {
+    const before = old('Old: nothing named.')
+    const built = answer('So the plan holds.', {}, { parents: [{ id: String(before._id), ver: 'legacy', mode: 'text' }] }, CAROL)
+    const rows = [before, built]
+    const w = world(rows)
+    Object.assign(w.deps, {
+      rowsUpTo: async () => [before],
+      chats: async () => new Map(),
+      perRecordView: async (_reader: Reader, list: ReaderRow[], _owner: unknown, opts: { known?: Readable }) => {
+        expect(opts.known?.askNoOne, 'asks no one').to.equal(true)
+        return list
+      },
+    })
+    const verdict = async (on: ReaderSession) =>
+      (await visibleRows(everyMemberOf(ORG), on, [built], { deps: w.deps })).get(String(built._id))?.verdict
+    expect(await verdict(session), 'Priya joined after the rules').to.not.equal('visible')
+    expect(await verdict(earlier)).to.equal('visible')
+    // As the file gate reads it (`readerView`): the earlier turn, which takes the store a moment, is read within the
+    // read's own deadline, not cut short because the reader asks no one.
+    Object.assign(w.deps, {
+      rowsUpTo: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return [before]
+      },
+    })
+    const { verdicts } = await readerView(everyMemberOf(ORG), earlier, rows, { deps: w.deps, perRecordView: recordView([]) })
+    expect(verdicts.get(String(built._id))?.verdict, 'as the gate reads it').to.equal('visible')
+  })
+
+  it('stores no verdict, where a member’s is stored', async () => {
+    const a = answer('Nothing used.')
+    const w = world([a], { epochs: { values: async (keys) => keys.map(() => '1') } })
+    const puts: unknown[] = []
+    w.deps.store = { getMany: async () => new Map(), putMany: async (entries: unknown[]) => void puts.push(...entries) } as never
+    await visibleRows(everyMemberOf(ORG), session, [a], { deps: w.deps })
+    expect(puts, 'every member').to.deep.equal([])
+    await verdictsFor(CAROL, [a], w)
+    expect(puts.length, 'Carol (control)').to.be.greaterThan(0)
   })
 })

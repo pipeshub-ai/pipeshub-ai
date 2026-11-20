@@ -109,8 +109,11 @@ export interface ArchiveDecision {
 export interface ConversationArchiveExtension {
   /** Fields the archive routes load beyond the defaults. */
   readonly projection: string | undefined;
-  /** Session fields an archive list or archive search row leaves out, beside those the schema never selects. */
-  readonly listHidden: readonly string[];
+  /**
+   * The stored fields an archive list or archive search row carries, by name: no other field of a chat reaches one.
+   * Undefined keeps the default edition's rows: every field but those the schema never selects and the edition's own.
+   */
+  rowFields(ctx: ConversationRequestContext): readonly string[] | undefined;
   decide(
     ctx: ConversationRequestContext,
     session: IChatSession,
@@ -328,7 +331,7 @@ const defaults = (): ConversationExtensions => ({
   },
   archives: {
     projection: undefined,
-    listHidden: [],
+    rowFields: () => undefined,
     decide: (_ctx, session) => ({ archived: session.isArchived === true }),
   },
   pins: {

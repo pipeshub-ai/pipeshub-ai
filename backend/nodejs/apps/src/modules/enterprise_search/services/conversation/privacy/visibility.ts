@@ -157,7 +157,22 @@ export interface Reader {
   memberSince?: string;
   /** What the agent check calls out as (the inbound request's identity); without it an agent rule cannot be settled. */
   identity?: unknown;
+  /**
+   * Stands for every member of the chat read at once (`everyMemberOf`), as its weakest one: in it only by its newest
+   * way in, the asker of nothing, and able to open, use or read nothing of their own (no record, agent, other chat or
+   * project). Each of these only ever adds to what a reader is shown, so what this reader is shown, every member is.
+   * It asks no service anything, and no verdict of it is stored.
+   */
+  everyMember?: true;
 }
+
+/** The reader that stands for every member of a chat (`Reader.everyMember`); its id is no one's. */
+export const everyMemberOf = (orgId: string): Reader => ({
+  userId: '',
+  orgId,
+  member: true,
+  everyMember: true,
+});
 
 /** A row as the check reads it. Label fields are read from the store when the row does not carry them. */
 export interface ReaderRow {
@@ -862,6 +877,13 @@ const readBeforeSwitch = (
   if (at === undefined) return true;
   const before = (r: ShareRow): boolean => sharedBefore(r, at);
   const rows = shareRowsOf(session);
+  // Every member could read it then only when every way into it is older: each share row, and its project.
+  if (reader.everyMember === true) {
+    return (
+      rows.every(before) &&
+      (session.projectVisibility !== 'project' || projectVisibleBefore(session))
+    );
+  }
   const own = rows.find((r) => idOf(r.userId) === reader.userId);
   if (own) return before(own);
   if (projectVisibleBefore(session)) return true;
@@ -3205,13 +3227,51 @@ const perRecordJudged = (
   return { verdicts, rows: new Map(), perRecord: true };
 };
 
+/**
+ * A read's answers that asks the access service nothing (`Readable.askNoOne`), within `deadline` when given: its
+ * reader's store reads keep their bound.
+ */
+const askingNothing = (deadline?: number): Readable => ({
+  ...newReadable(),
+  askNoOne: true,
+  ...(deadline !== undefined && { deadline }),
+});
+
+/**
+ * What a check of `reader` depends on. For the reader that stands for every member (`Reader.everyMember`), what they
+ * pass of their own is nothing, settled at once (no record, agent, other chat or project), and the per-record view
+ * of a turn asks nothing for them: a turn that names a record leaves its answer hidden.
+ */
+const depsFor = (reader: Reader, deps: VisibilityDeps): VisibilityDeps =>
+  reader.everyMember !== true
+    ? deps
+    : {
+        ...deps,
+        readable: (_reader, ids) =>
+          Promise.resolve({
+            readable: new Set<string>(),
+            asked: new Set(ids),
+            deleted: new Set<string>(),
+            failed: false,
+            validUntil: deps.now() + VERDICT_TTL_MS,
+          }),
+        canUseAgent: () => Promise.resolve(false),
+        canReadConversation: () => Promise.resolve(false),
+        canReadProject: () => Promise.resolve(false),
+        perRecordView: (each, rows, ownerId, viewOpts) =>
+          deps.perRecordView(each, rows, ownerId, {
+            ...viewOpts,
+            known: askingNothing(viewOpts.known?.deadline),
+          }),
+      };
+
 async function judgeRows(
   viewer: Reader,
   session: ReaderSession | undefined,
   rows: readonly ReaderRow[],
   opts: VisibleRowsOptions,
 ): Promise<Judged> {
-  const deps: VisibilityDeps = { ...configured, ...opts.deps };
+  const deps = depsFor(viewer, { ...configured, ...opts.deps });
   const reader = asMember(viewer, session, opts.member);
   const now = deps.now();
   // A failed read of the rule leaves the stricter one.
@@ -3234,9 +3294,9 @@ async function judgeRows(
     (r) => idOf(r._id) !== undefined && isLabelledType(r),
   );
   // Stored verdicts first, under what the check depends on beside its rows, read before anything else. Rows with no
-  // answer among them need neither.
+  // answer among them need neither, and the reader that stands for every member is no one's to store a verdict for.
   const digest =
-    opts.fresh === true || passed.length === 0
+    opts.fresh === true || passed.length === 0 || reader.everyMember === true
       ? undefined
       : await checkDigestFor(deps, reader, session, passed, opts);
   // Every input of a verdict, and of the key it is stored under, is the stored one.
@@ -4033,7 +4093,11 @@ export async function readerView<M extends object>(
   rows: M[],
   opts: ReaderViewOptions = {},
 ): Promise<{ rows: M[]; verdicts: Map<string, RowVerdict> }> {
-  const known = opts.known ?? newReadable();
+  // The reader that stands for every member asks the access service nothing, in the label check or the per-record view.
+  const known =
+    viewer.everyMember === true
+      ? askingNothing(opts.known?.deadline)
+      : (opts.known ?? newReadable());
   // One clock for the read: how each card stands is read as of now.
   const now = { ...configured, ...opts.deps }.now();
   // One deadline for the whole read: the label check and the per-record view ask within it, never twice.

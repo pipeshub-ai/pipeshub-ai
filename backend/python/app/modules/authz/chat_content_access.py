@@ -72,6 +72,21 @@ class ChatContentAccess(Protocol):
         first; empty when none (or when the record is not an artifact). Never raises."""
         ...
 
+    async def versions_every_member_may_open(
+        self,
+        graph: IGraphDBProvider,
+        *,
+        user_id: str | None,
+        org_id: str | None,
+        record: RecordRef,
+        conversation_id: str | None = None,
+        acl_version: int | None = None,
+    ) -> list[int]:
+        """The versions of an artifact every member of its chat may open, oldest first, asked by `user_id`, who
+        must be one of them: what a run others read may be told about. Its owner's edge counts for nothing here.
+        Empty when none, or when it cannot be said. Never raises."""
+        ...
+
 
 class NoChatContentAccess:
     """Chat content is readable only through the graph ACL."""
@@ -101,6 +116,19 @@ class NoChatContentAccess:
         conversation_id: str | None = None,
         acl_version: int | None = None,
     ) -> list[int]:
+        return []
+
+    async def versions_every_member_may_open(
+        self,
+        graph: IGraphDBProvider,
+        *,
+        user_id: str | None,
+        org_id: str | None,
+        record: RecordRef,
+        conversation_id: str | None = None,
+        acl_version: int | None = None,
+    ) -> list[int]:
+        # Graph edges grant each person on their own: nothing says what a chat's members all may open.
         return []
 
 

@@ -9,6 +9,7 @@ from typing_extensions import TypedDict
 from app.config.configuration_service import ConfigurationService
 from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.context.named_sources import PICKED_SOURCES_KEY
+from app.modules.agents.context.told_files import PICKED_FILES_KEY
 from app.modules.agents.privacy.ledger import note_shown
 from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -688,6 +689,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "kb": kb,
         "agent_knowledge": agent_knowledge,
         PICKED_SOURCES_KEY: chat_query.get("pickedSourceIds"),
+        PICKED_FILES_KEY: chat_query.get("pickedFileIds"),
         "agent_skills": chat_query.get("skills"),
         "connector_configs": chat_query.get("connector_configs") or {},
         "has_knowledge": has_knowledge,

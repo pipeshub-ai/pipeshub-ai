@@ -186,6 +186,7 @@ from dataclasses import replace
 from app.agents.agent_loop.tool_approvals import agent_credentials_admin_only
 from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.context.named_sources import picked_source_ids
+from app.modules.agents.context.told_files import picked_file_ids
 from app.modules.agents.readiness import (
     TOOLS_UNAVAILABLE_EVENT,
     AgentReadiness,
@@ -3853,6 +3854,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "knowledge": agent_knowledge,
                     # What the request itself picked: in a turn others read, the only sources a prompt may name.
                     "pickedSourceIds": picked_source_ids(chat_query.filters, filters),
+                    # The chat's files it picked: with every member's, the only ones a turn others read is told of.
+                    "pickedFileIds": picked_file_ids(chat_query.filters),
                     "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
                     "connector_configs": connector_configs,
                     "toolsetConfigs": toolset_configs,

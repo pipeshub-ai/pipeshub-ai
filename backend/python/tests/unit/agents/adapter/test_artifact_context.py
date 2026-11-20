@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.hooks.artifact_context import artifact_context_reminder
 from app.models.entities import ArtifactType, LifecycleStatus
+from app.modules.agents.context.told_files import ToldFiles
 from app.services.artifact_registry import ArtifactMetadata
 
 
@@ -72,6 +73,19 @@ class TestArtifactContextReminder:
 
         actor = registry.list_for_conversation.await_args.kwargs["actor"]
         assert (actor.acl_version, actor.run_id) == (9, "run-1")
+
+    async def test_the_listing_is_told_which_files_the_run_may_be_told_about(self, monkeypatch) -> None:
+        """In a run others read, the reminder names only the files every member may open and the ones the request
+        picked (`told_files`): a file it names is a parent of the answer."""
+        context = _make_context(graph_provider=MagicMock(), blob_store=MagicMock())
+        told = ToldFiles(every_member_only=True, picked=frozenset({"art-1"}))
+        monkeypatch.setattr(AgentContext, "told_files", property(lambda self: told))
+        registry = MagicMock()
+        registry.list_for_conversation = AsyncMock(return_value=[])
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        ctx, _ = _make_turn_ctx()
+        await artifact_context_reminder(context)(ctx, _noop_next)
+        assert registry.list_for_conversation.await_args.kwargs["told"] is told
 
     async def test_includes_args_and_summary_from_conversation(self, monkeypatch) -> None:
         previous_conversations = [

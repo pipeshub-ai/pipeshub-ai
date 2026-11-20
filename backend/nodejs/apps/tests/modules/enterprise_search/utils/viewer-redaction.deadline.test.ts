@@ -198,6 +198,26 @@ describe('the viewer access check of one read', () => {
     expect(execute.callCount).to.equal(1)
   })
 
+  it('a read that asks no one asks nothing, whatever its deadline, and what it holds stays unknown', async () => {
+    const execute = sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
+      return allReadable(JSON.parse(this.body)) as any
+    })
+    const known: Readable = { ...newReadable(), askNoOne: true, deadline: Date.now() + 60_000 }
+    const read = await readableRecordIds(appConfig, VIEWER, ['r1'], ['https://example.com/a'], known)
+    expect(read.failed).to.equal(true)
+    expect(read.ids.has('r1')).to.equal(false)
+    expect(execute.callCount).to.equal(0)
+    const shown = await redactMessagesFor(
+      appConfig,
+      VIEWER,
+      [{ _id: 'm1', messageType: 'bot_response', content: 'R says 42.', referenceData: [{ recordId: 'r1', name: 'R' }] } as any],
+      () => OWNER,
+      { known },
+    )
+    expect((shown[0] as any).answerHidden, 'an answer that names a record').to.not.equal(undefined)
+    expect(execute.callCount).to.equal(0)
+  })
+
   it('an id a read could not settle is not asked again in that read, and stays unknown', async () => {
     const execute = sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(timesOut)
     const known = newReadable()

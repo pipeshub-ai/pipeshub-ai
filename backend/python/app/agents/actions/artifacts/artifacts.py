@@ -34,6 +34,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.models.entities import RecordType
+from app.modules.agents.context.told_files import told_files_in
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import infer_artifact_type
 from app.services.artifact_registry import (
@@ -703,7 +704,7 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": "Artifact storage is unavailable in this context"})
         try:
             artifacts: list[ArtifactMetadata] = await registry.list_for_conversation(
-                actor=self._actor(), conversation_id=conversation_id,
+                actor=self._actor(), conversation_id=conversation_id, told=told_files_in(self.chat_state),
             )
         except Exception:
             logger.exception("[list_artifacts] failed for conversation=%s", conversation_id)

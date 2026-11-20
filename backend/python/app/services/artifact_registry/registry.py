@@ -45,6 +45,7 @@ from .versioning import (
 )
 
 if TYPE_CHECKING:
+    from app.modules.agents.context.told_files import ToldFiles
     from app.modules.authz.chat_content_access import ChatContentAccess
 
     from .models import ArtifactProvenance
@@ -732,7 +733,7 @@ class ArtifactRegistryService:
 
     async def list_for_conversation(
         self, *, actor: Actor, conversation_id: str, include_lineage: bool = True, limit: int = 100,
-        visibility_filter: ArtifactVisibility | None = None,
+        visibility_filter: ArtifactVisibility | None = None, told: ToldFiles | None = None,
     ) -> list[ArtifactMetadata]:
         """List artifacts for a conversation, optionally filtered by visibility.
 
@@ -747,7 +748,10 @@ class ArtifactRegistryService:
         has no such field, and `doc.visibility == "VISIBLE"` drops every one
         of them, so a conversation's older deliverables would silently stop
         appearing in the reminder. Absent/unrecognised reads as VISIBLE,
-        matching `promote_to_visible` and `to_metadata_from_docs`."""
+        matching `promote_to_visible` and `to_metadata_from_docs`.
+
+        ``told`` is which files the run's model may be told about (`told_files`): in a run others read, each
+        artifact the request did not pick is listed only at the newest version every member of the chat may open."""
         filters: dict[str, Any] = {"orgId": actor.org_id, "conversationId": conversation_id}
         docs = await self._graph_provider.get_documents_paginated(
             CollectionNames.ARTIFACTS.value, skip=0,
@@ -758,7 +762,7 @@ class ArtifactRegistryService:
         for start in range(0, len(docs), _AUTHORIZE_WINDOW):
             window = docs[start:start + _AUTHORIZE_WINDOW]
             records = await asyncio.gather(
-                *(self._authorized_record(actor, d) for d in window)
+                *(self._authorized_record(actor, d, told) for d in window)
             )
             for artifact_doc, authorized in zip(window, records):
                 if authorized is None:
@@ -774,11 +778,19 @@ class ArtifactRegistryService:
                     return results
         return results
 
-    async def _authorized_record(self, actor: Actor, artifact_doc: dict) -> tuple[dict, int] | None:
-        """The record and the version of it `actor` is shown: the newest they may open."""
+    async def _authorized_record(
+        self, actor: Actor, artifact_doc: dict, told: ToldFiles | None = None,
+    ) -> tuple[dict, int] | None:
+        """The record and the version of it `actor` is shown: the newest they may open, or, where `told` names only
+        what every member of the chat may open, the newest every member may (a file the request picked, as for
+        `actor`)."""
         artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
+        every_member = told is not None and told.every_member_only and artifact_id not in told.picked
         try:
-            record, served = await self._access.authorize_version(actor, artifact_id)
+            if every_member:
+                record, served = await self._access.authorize_version_for_every_member(actor, artifact_id)
+            else:
+                record, served = await self._access.authorize_version(actor, artifact_id)
         except Exception:
             return None
         # A listing names it; the reminder puts that name in front of a model.
