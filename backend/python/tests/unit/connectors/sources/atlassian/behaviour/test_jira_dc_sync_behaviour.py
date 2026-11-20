@@ -37,7 +37,14 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
     _parse_jira_dc_user_list_page,
 )
 from app.connectors.utils.record_ids import new_record_id
-from app.models.entities import AppUser, FileRecord, Record, RecordGroup, RecordType, TicketRecord
+from app.models.entities import (
+    AppUser,
+    FileRecord,
+    Record,
+    RecordGroup,
+    RecordType,
+    TicketRecord,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.sources.client.http.http_client import HTTPClient
