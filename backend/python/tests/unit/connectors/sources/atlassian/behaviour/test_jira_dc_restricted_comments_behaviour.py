@@ -530,7 +530,7 @@ def two_issues_with_role_comments(updated: str = ts(2)) -> list[dict[str, Any]]:
     return [first, second]
 
 
-async def retry_list_of_two(site, search, db, store):  # noqa: ANN001, ANN201
+async def retry_list_of_two(site, search, db, store):
     """Both issues on the saved retry list: their role could not be read. Returns the connector and the role route."""
     path = f"{API}/project/ENG/role"
     role = next(r for m, p, r in site._routes if (m, p) == ("GET", path))
