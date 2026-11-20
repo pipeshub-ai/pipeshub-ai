@@ -611,6 +611,7 @@ class JiraDataCenterConnector(BaseConnector):
         # and the read time each issue with comment records takes once they are written.
         self._comment_retry: set[str] = set()
         self._comment_retry_written: set[str] = set()  # read in full this sync: leave the list once written
+        self._issues_seen: set[str] | None = None  # ids a comment retry search returned
         self._settle_after_comments: dict[str, int] = {}
         self._stored_app_users: list[AppUser] = []  # read by _fetch_users
         self._newly_listed_user_keys: set[str] = set()
@@ -4040,8 +4041,9 @@ class JiraDataCenterConnector(BaseConnector):
     ) -> list[str]:
         """Read again, by id, the stored issues whose restricted comments an earlier sync could not write in full (a
         comment list or a role not read): the cursor has passed them, and nothing at the source moves their ``updated``.
-        An issue written in full leaves the list; one Jira no longer returns in this project leaves it too (moved, which
-        its new project's sync reads). Jira rejects a whole ``id in`` clause with 400 ("Returned if there is a problem
+        Every stored id stays on the list, so every save names it, until its comment records are written in full
+        (``_process_new_records``) or Jira answers the search without it (moved to another project, whose sync reads
+        it). Jira rejects a whole ``id in`` clause with 400 ("Returned if there is a problem
         with the JQL query", POST /rest/api/2/search, 10.2 to 11.3 specifications) when one id is unknown to it: the
         clause is split until that id is alone, and an id Jira does not know (deleted, or no longer visible to the
         sync account) leaves the list with its comment records, so none stays granted."""
@@ -4050,9 +4052,10 @@ class JiraDataCenterConnector(BaseConnector):
                              if str(i).isdigit()})
         except (TypeError, ValueError):
             stored = []
-        self._comment_retry, self._comment_retry_written = set(), set()
+        self._comment_retry, self._comment_retry_written = set(stored), set()
 
         async def reread(ids: list[str]) -> None:
+            self._issues_seen = set()
             try:
                 async for batch, _more, _ts in self._fetch_issues_batched(
                     project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
@@ -4060,6 +4063,8 @@ class JiraDataCenterConnector(BaseConnector):
                 ):
                     if batch:
                         await self._process_new_records(batch, project_key, {"new_count": 0, "updated_count": 0})
+                # Answered in full without them: not in this project any more.
+                self._comment_retry -= set(ids) - self._issues_seen
             except JiraReadError as e:
                 if e.status != HttpStatusCode.BAD_REQUEST.value:
                     raise
@@ -4074,14 +4079,14 @@ class JiraDataCenterConnector(BaseConnector):
                     )
                     if not isinstance(result, dict) or not result.get("success", False):
                         raise RuntimeError(f"could not delete the comment records of issue {ids[0]}: {result}") from e
+                self._comment_retry.discard(ids[0])
                 self.logger.info("Issue %s is no longer in Jira for this account; its comment records are removed", ids[0])
 
         try:
             for start in range(0, len(stored), CHILD_REREAD_CHUNK):
                 await reread(stored[start:start + CHILD_REREAD_CHUNK])
-        except Exception:
-            self._comment_retry |= set(stored)  # not read: kept for the next sync
-            raise
+        finally:
+            self._issues_seen = None
 
     async def _reread_issues_naming(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
@@ -5598,6 +5603,8 @@ class JiraDataCenterConnector(BaseConnector):
         level_users = self._users_with_usernames(user_by_account_id)  # once per batch, not per issue
 
         for issue in issues:
+            if self._issues_seen is not None and isinstance(issue, dict):
+                self._issues_seen.add(str(issue.get("id") or ""))
             # A pass for a change of the project's access reads it anyway: skipped, it would keep the old grants.
             if not stored_only and isinstance(issue, dict) and self._is_given_up_issue(issue):
                 skipped_unchanged_count += 1

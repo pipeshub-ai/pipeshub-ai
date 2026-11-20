@@ -521,3 +521,84 @@ async def test_an_unread_comment_list_is_saved_for_retry_before_its_records_go(s
     await connector.run_sync()  # nothing changed at the source since
     assert grants(db, "comment_501") == {(EntityType.GROUP, "devs")}
     assert to_retry(store) == []
+
+
+def two_issues_with_role_comments(updated: str = ts(2)) -> list[dict[str, Any]]:
+    first = with_comments(updated, [comment("502", role="Developers")])
+    second = with_comments(updated, [comment("602", role="Developers")])
+    second["id"], second["key"] = "1002", "ENG-2"
+    return [first, second]
+
+
+async def retry_list_of_two(site, search, db, store):  # noqa: ANN001, ANN201
+    """Both issues on the saved retry list: their role could not be read. Returns the connector and the role route."""
+    path = f"{API}/project/ENG/role"
+    role = next(r for m, p, r in site._routes if (m, p) == ("GET", path))
+    site.on("GET", path, json_response({"errorMessages": ["no"]}, status=403))
+    search.add("ENG", 0, two_issues_with_role_comments())
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    assert to_retry(store) == ["1001", "1002"]
+    site.on("GET", path, role)
+    return connector
+
+
+async def test_every_save_of_the_retry_list_names_the_issues_not_yet_written(site, db, store, search) -> None:
+    """1001's comments cannot be read on the retry pass: its save (before its comment records go) still names 1002,
+    which is not written yet, and 1002 leaves the list only once its comment record is written."""
+    connector = await retry_list_of_two(site, search, db, store)
+    unread = two_issues_with_role_comments()
+    unread[0]["fields"]["comment"] = {"comments": "not a list", "total": 1}
+    search.pages.clear()
+    search.add("ENG", 0, unread)
+    saved_at: dict[str, list[str]] = {}
+    delete, write = db.on_records_deleted_cascade, db.on_new_records
+
+    async def deleting(record_ids: list[str], *args: object, **kwargs: object) -> dict:
+        saved_at.setdefault("delete", to_retry(store))
+        return await delete(record_ids, *args, **kwargs)
+
+    async def writing(items: list) -> None:
+        if any(r.external_record_id == "comment_602" for r, _ in items):
+            saved_at.setdefault("write 1002", to_retry(store))
+        await write(items)
+
+    db.on_records_deleted_cascade, db.on_new_records = deleting, writing
+    await connector.run_sync()
+
+    assert saved_at["delete"] == ["1001", "1002"], "1002 is not dropped by 1001's save"
+    assert saved_at["write 1002"] == ["1001", "1002"], "1002 stays until its comment record is written"
+    assert to_retry(store) == ["1001"]
+    assert grants(db, "comment_602") == {(EntityType.ROLE, "ENG_10002")}
+
+
+async def test_a_retry_pass_that_stops_keeps_every_issue_for_the_next_sync(site, db, store, search) -> None:
+    connector = await retry_list_of_two(site, search, db, store)
+    unread = two_issues_with_role_comments()
+    unread[0]["fields"]["comment"] = {"comments": "not a list", "total": 1}
+    search.pages.clear()
+    search.add("ENG", 0, unread)
+    write = db.on_new_records
+
+    async def failing(items: list) -> None:
+        raise RuntimeError("database unavailable")
+
+    db.on_new_records = failing
+    await connector.run_sync()  # the project's sync stops in the retry pass, reported
+    assert to_retry(store) == ["1001", "1002"]
+
+    db.on_new_records = write
+    search.pages.clear()
+    search.add("ENG", 0, two_issues_with_role_comments())  # nothing changed at the source
+    await connector.run_sync()
+    assert grants(db, "comment_502") == grants(db, "comment_602") == {(EntityType.ROLE, "ENG_10002")}
+    assert to_retry(store) == []
+
+
+async def test_an_issue_moved_out_of_the_project_leaves_its_retry_list(site, db, store, search) -> None:
+    """Jira answers the retry search without it: it is in another project now, whose sync reads it."""
+    connector = await retry_list_of_two(site, search, db, store)
+    search.pages.clear()
+    search.add("ENG", 0, two_issues_with_role_comments()[:1])
+    await connector.run_sync()
+    assert to_retry(store) == []
