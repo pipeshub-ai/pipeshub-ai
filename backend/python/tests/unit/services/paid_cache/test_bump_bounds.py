@@ -43,20 +43,27 @@ async def test_a_slow_store_does_not_slow_a_hit() -> None:
     key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
     store.write(ORG, REC, key.relative_path(), _encode(key, "text"), age_ms=OLD_MS)
     slow = store.bump_to
+    upload_started, release = asyncio.Event(), asyncio.Event()
 
-    async def slow_bump(entry: Any, data: bytes, charge: Any = None) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
-        await asyncio.sleep(0.5)
-        return await slow(entry, data, charge)
+    async def held_bump(entry: Any, data: bytes, charge: Any = None, eligible: Any = None) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+        upload_started.set()
+        await release.wait()                    # the upload is held until the hit has returned
+        return await slow(entry, data, charge, eligible)
 
-    store.bump_to = slow_bump  # type: ignore[method-assign]
+    store.bump_to = held_bump  # type: ignore[method-assign]
     cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
-    with record_in_flight(ORG, REC):
-        begin_run(ORG, REC, "rev1", "parse")
-        started = time.monotonic()
-        assert await cache.get_or_compute(key, AsyncMock()) == "text"
-        elapsed = time.monotonic() - started
-    assert elapsed < 0.25, f"the hit waited {elapsed:.2f}s: the bump is on its path"
-    await cache.bumps.wait_idle()
+    try:
+        with record_in_flight(ORG, REC):
+            begin_run(ORG, REC, "rev1", "parse")
+            hit = asyncio.ensure_future(cache.get_or_compute(key, AsyncMock()))
+            # The hit completes although the upload it queued has not: and the upload really started (a cache that never
+            # queued a bump would pass a timing check, not this one).
+            assert await asyncio.wait_for(upload_started.wait(), 10) is True
+            assert await asyncio.wait_for(hit, 10) == "text"
+            assert not release.is_set()
+    finally:
+        release.set()
+    await asyncio.wait_for(cache.bumps.wait_idle(), 10)
 
 
 def test_the_queue_is_bounded_in_entries_and_in_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,15 +79,19 @@ def test_the_queue_is_bounded_in_entries_and_in_bytes(monkeypatch: pytest.Monkey
 async def test_bytes_re_uploaded_are_capped_per_hour(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bump, "BYTES_PER_HOUR", 1000)
     store = VersionedStore(stamp_ms=1)
-    queue = BumpQueue(store, autostart=False, sleep=AsyncMock())  # type: ignore[arg-type]
+    queue = BumpQueue(store, autostart=False, sleep=AsyncMock(), budget=bump.ByteBudget())  # type: ignore[arg-type]
+    outcomes = []
     for n in range(6):
         store.write(ORG, REC, _path(n), b'{"v":1,"value":"' + b"x" * 200 + b'"}', age_ms=OLD_MS)
         got = await store.get_versioned(ORG, REC, _path(n))
         assert got is not None
-        queue.offer(BumpEntry(ORG, REC, _path(n), got.data, got.etag or "", got.last_modified_ms or 0, None))
+        outcomes.append(queue.offer(BumpEntry(ORG, REC, _path(n), got.data, got.etag or "", got.last_modified_ms or 0, None)))
+    # Each entry is about 218 bytes and TOUCH_OVERHEAD more is reserved: three fit under 1000, the next three do not.
+    assert outcomes == ["queued"] * 3 + ["over_budget"] * 3
+    store.ops.clear()
     await queue.drain_once()
-    # Each re-upload is ~230 bytes: the budget lets four through, and the rest are not queued.
-    assert queue._uploaded_last_hour(time.monotonic()) <= 1000
+    assert store.ops.count("bump_put") == 3, "the uploads that were admitted did not all happen"
+    assert 0 < queue._uploaded_last_hour(time.monotonic()) <= 1000
 
 
 async def test_requests_per_batch_are_one_presign_and_one_write_each() -> None:

@@ -7,7 +7,7 @@ const key = (n: number): string => `${ROOT}/ocr_page/${n.toString(16).padStart(6
 
 class Unavailable extends Error {}
 
-interface Obj { lastModifiedMs: number; etag: string }
+interface Obj { lastModifiedMs: number; etag?: string }
 
 /** An in-memory store that deletes by version or not, with a hook awaited at every listing and every delete. */
 const fakeAdapter = (opts: { conditional: boolean; inconclusive?: boolean }) => {
@@ -75,13 +75,14 @@ describe('purgePaidResultsOlderThan', () => {
 
   it('an object listed with no version is looked at again as well, on a store that deletes by version', async () => {
     const s = fakeAdapter({ conditional: true })
-    s.objects.set(key(1), { lastModifiedMs: 1000, etag: 'e1' })
+    s.objects.set(key(1), { lastModifiedMs: 1000 })                  // no ETag listed: nothing to guard it with
     s.hooks.afterListing = (n) => {
-      if (n === 1) s.objects.set(key(1), { lastModifiedMs: BEFORE + 1, etag: 'e2' })
+      if (n === 1) s.objects.set(key(1), { lastModifiedMs: BEFORE + 1 })
     }
     await purgePaidResultsOlderThan(s.adapter, ROOT, BEFORE, Unavailable)
     expect(s.objects.has(key(1))).to.equal(true)
     expect(s.log).to.deep.equal([])
+    expect(s.listings(), 'the purge never listed again').to.be.at.least(2)
   })
 
   it('a store that deletes by version names the listed version, so a replaced object is left', async () => {

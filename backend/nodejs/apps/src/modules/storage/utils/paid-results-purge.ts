@@ -8,12 +8,14 @@ import { REFRESH_MARKER_FOLDER } from './paid-results';
  *
  * What an object overwritten between the listing and the delete does (a refresh's own write, or a bump):
  * - Where the store deletes by version (`conditionalDelete`), the delete names the listed ETag and leaves a changed object.
- * - Elsewhere (a store that ignores the condition, MinIO), and for an object listed with no version, the same page is
- *   listed again immediately before the plain delete and an object whose write time or ETag moved, or that is no longer
- *   older than the cutoff, is kept. What is left is the window between that second listing and the delete: one request.
- *   A write that lands in it is a bump or a re-store of an object the cutoff already covers, which the refresh marker
- *   and a result's `originMs` refuse to reuse; a refresh's own result is written after the cutoff and so is not removed
- *   by a purge that, like every purge, compares each object's time with the cutoff just before deleting it.
+ * - Elsewhere (a store that ignores the condition, MinIO), and for an object listed with no version, the page is listed
+ *   again immediately before the plain delete, walking on until every key of the first page is covered (an insert or a
+ *   delete in the range can move a key off a page of the same size, and a key missing from a covered range is really
+ *   gone). An object whose write time or ETag moved, or that is no longer older than the cutoff, is kept. What is left is
+ *   the window between that listing and the delete: one request. A write that lands in it can still be removed, whether
+ *   it is a bump, a re-store or a refresh's own result: the delete names keys, not versions. For a bump or a re-store the
+ *   refresh marker and a result's `originMs` make the next reader compute again; for a refresh's own result the cost
+ *   is one more paid call. A store that deletes by version has no such window.
  * - A probe that could not tell answers 503 (`unavailable`): purging unconditionally on an unknown is never done.
  */
 export async function purgePaidResultsOlderThan(

@@ -1432,10 +1432,10 @@ export class StorageController {
       try {
         const st = await opened.handle.stat({ bigint: true });
         res.set('ETag', `"${localEtagOf(st)}"`);
-        res.set(
-          'Last-Modified',
-          new Date(Number(st.mtimeNs / BigInt(1_000_000))).toUTCString(),
-        );
+        const mtimeMs = Number(st.mtimeNs / BigInt(1_000_000));
+        res.set('Last-Modified', new Date(mtimeMs).toUTCString());
+        // The exact stamp (a local file carries milliseconds, the header whole seconds): what the refresh fence compares.
+        res.set('X-Last-Modified-Ms', String(mtimeMs));
       } catch (statError) {
         void opened.handle.close();
         throw statError;

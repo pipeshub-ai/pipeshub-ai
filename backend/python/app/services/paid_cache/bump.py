@@ -30,7 +30,9 @@ from app.services.paid_cache.store import (
     BUMPED,
     CHANGED,
     CONFLICT,
+    DEADLINE,
     GONE,
+    FinalFence,
     GuardUnsupported,
     VersionedBytes,
 )
@@ -161,7 +163,11 @@ def touched_bytes(data: bytes, now_ms: int, origin_ms: int | None = None) -> byt
 
 
 def _refreshed_since(marker_ms: int | None, origin_ms: int) -> bool:
-    """A refresh began at or after the object was written (whole seconds on both sides: a tie counts as yes)."""
+    """A refresh began after the object was written. With the cutoff the storage took (``FinalFence``) that is exact: the
+    purge removed what is older than it, by the same stamps. Before the cutoff is known the marker's own time is
+    conservative: whole seconds, and a tie counts as yes."""
+    if isinstance(marker_ms, FinalFence):
+        return origin_ms < marker_ms
     return marker_ms is not None and marker_ms // 1000 >= origin_ms // 1000
 
 
@@ -405,7 +411,20 @@ class BumpQueue:
         if new is None:
             self._count("not_json")
             return None
-        outcome, _ = await self._store.bump_to(signed, new, self._charge)
+        try:
+            outcome, _ = await self._store.bump_to(signed, new, self._charge, lambda: not entry.past_deadline())
+        except Exception:
+            # The request may have committed before it failed (a payload error reading the answer, retries used up): one
+            # read decides. Our own bytes there are a write that needs its check; anything else is the failure it was.
+            current = await self._store.get_versioned(entry.org_id, entry.record_id, entry.path)
+            if current is not None and current.data == new:
+                self._wrote()
+                self._count("bumped")
+                return new
+            raise
+        if outcome == DEADLINE:
+            self._count("deadline")
+            return None
         if outcome == BUMPED:
             self._wrote()
             self._count("bumped")
@@ -445,6 +464,9 @@ class BumpQueue:
             return None
         if _refreshed_since(marker, entry.origin_ms):
             self._count("refreshed")
+            return None
+        if entry.past_deadline():                      # the marker read itself may have run past the stage deadline
+            self._count("deadline")
             return None
         data = touched_bytes(entry.data, int(self._clock() * 1000), entry.origin_ms) or entry.data
         stored = await self._store.put(entry.org_id, entry.record_id, entry.path, data)

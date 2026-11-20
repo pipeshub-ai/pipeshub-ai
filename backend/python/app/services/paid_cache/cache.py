@@ -28,6 +28,7 @@ from app.services.paid_cache.bump import (
     PROCESS_BYTE_BUDGET,
     BumpEntry,
     BumpQueue,
+    _refreshed_since,
 )
 from app.services.paid_cache.keys import CacheKey, valid_record_id
 from app.services.paid_cache.locks import (
@@ -45,6 +46,7 @@ from app.services.paid_cache.run import RunScope, current_run
 from app.services.paid_cache.store import (
     PAID_RESULT_ROUTES,
     BumpOutcome,
+    FinalFence,
     GuardUnsupported,
     ListedFile,
     PurgeCutoffNoMarker,
@@ -273,8 +275,9 @@ class _FencedStore:
 
     async def bump_to(
         self, entry: Any, data: bytes, charge: Callable[[int], None] | None = None,  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+        eligible: Callable[[], bool] | None = None,
     ) -> tuple[BumpOutcome, str | None]:
-        return await self._inner.bump_to(entry, data, charge)  # type: ignore[attr-defined,no-any-return]
+        return await self._inner.bump_to(entry, data, charge, eligible)  # type: ignore[attr-defined,no-any-return]
 
     async def purge_record(self, org_id: str, record_id: str, *, before_ms: int | None = None) -> None:
         await self._inner.purge_record(org_id, record_id, before_ms=before_ms)
@@ -819,15 +822,17 @@ class PaidResultCache:
         cached = self._markers.get(name)
         # A marker only moves later: one read that already rejects an object rejects it (and every older one) for good. A
         # read that did not reject is never reused, since a refresh may have begun since.
-        if cached is not None and now - cached[0] < MARKER_CACHE_S and cached[1] // 1000 >= origin // 1000:
+        if cached is not None and now - cached[0] < MARKER_CACHE_S and _refreshed_since(cached[1], origin):
             return True
         try:
             marker = await read(key.org_id, key.record_id)
         except Exception as exc:
             self.logger.debug("Paid-result refresh marker unreadable (%s)", type(exc).__name__)
             return None
-        rejects = marker is not None and marker // 1000 >= origin // 1000
-        if rejects and marker is not None:
+        rejects = _refreshed_since(marker, origin)
+        # Only a fence that is final (the cutoff) is kept: a provisional marker can still move to a cutoff that accepts this
+        # object, and a rejection cached from it would hold for the whole window.
+        if rejects and isinstance(marker, FinalFence):
             if len(self._markers) > 4096:
                 self._markers.clear()
             self._markers[name] = (now, marker)

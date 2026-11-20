@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from app.services.paid_cache.store import (
     BUMPED,
     CHANGED,
+    DEADLINE,
     GONE,
     GuardUnsupported,
     ListedFile,
@@ -119,8 +120,10 @@ class VersionedStore:
         await self._op("presign")
         return {(f[0], f[1]): (org, rec, f[0], f[2] if len(f) > 2 else None) for f in files}
 
-    async def bump_to(self, entry: Any, data: bytes, charge: Callable[[int], None] | None = None) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
+    async def bump_to(self, entry: Any, data: bytes, charge: Callable[[int], None] | None = None, eligible: Callable[[], bool] | None = None) -> tuple[str, str | None]:  # noqa: ANN401 - a JSON value or opaque signed-URL entry of any shape
         await self._op("bump_put")
+        if eligible is not None and not eligible():
+            return DEADLINE, None
         if charge is not None:
             charge(len(data))
         org, rec, path, etag = entry
@@ -158,8 +161,17 @@ class VersionedStore:
         await self._op("purge_list")
         listed = [f for f in await self.list_files(org, rec) if f.last_modified_ms < before_ms]
         await self._op("purge_delete")
-        if self.supports_conditional_delete:
-            await self.delete_files_if_match(org, rec, {f.path: f.etag for f in listed if f.etag})
-            await self.delete_files(org, rec, [f.path for f in listed if not f.etag])
-        else:
-            await self.delete_files(org, rec, [f.path for f in listed])
+        guarded = {f.path: f.etag for f in listed if f.etag} if self.supports_conditional_delete else {}
+        if guarded:
+            await self.delete_files_if_match(org, rec, guarded)
+        plain = [f for f in listed if f.path not in guarded]
+        if plain:
+            # As the storage service does: listed again right before the plain delete, and what moved or is no longer older
+            # than the cutoff stays.
+            now = {f.path: f for f in await self.list_files(org, rec)}
+            keep = [
+                f.path for f in plain
+                if f.path in now and now[f.path].last_modified_ms == f.last_modified_ms and now[f.path].etag == f.etag
+                and now[f.path].last_modified_ms < before_ms
+            ]
+            await self.delete_files(org, rec, keep)

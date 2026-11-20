@@ -512,8 +512,8 @@ async def test_a_bump_that_landed_before_a_refused_retry_is_checked_like_any_oth
     assert got is not None and got.etag
     original = store.bump_to
 
-    async def lands_then_reports_a_lost_race(entry: object, data: bytes, charge: object = None) -> tuple[str, str | None]:
-        await original(entry, data, charge)  # type: ignore[arg-type]
+    async def lands_then_reports_a_lost_race(entry: object, data: bytes, charge: object = None, eligible: object = None) -> tuple[str, str | None]:
+        await original(entry, data, charge, eligible)  # type: ignore[arg-type]
         store.begin_refresh(ORG, REC)                # a refresh begins right after the write was sent
         return CHANGED, None
 
@@ -720,8 +720,8 @@ async def test_a_bump_is_not_undone_by_an_unconditional_delete_on_a_store_withou
     store.delete_files = spy  # type: ignore[method-assign]
     original = store.bump_to
 
-    async def bump_then_refresh(entry: object, data: bytes, charge: object = None) -> tuple[str, str | None]:
-        result = await original(entry, data, charge)  # type: ignore[arg-type]
+    async def bump_then_refresh(entry: object, data: bytes, charge: object = None, eligible: object = None) -> tuple[str, str | None]:
+        result = await original(entry, data, charge, eligible)  # type: ignore[arg-type]
         store.begin_refresh(ORG, REC)                   # a refresh begins after the write: the check would remove it
         return result
 
@@ -951,8 +951,8 @@ async def test_an_undo_the_store_reports_as_changed_is_not_counted_as_done() -> 
     assert got is not None and got.etag
     original = store.bump_to
 
-    async def bump_then_refresh(entry: object, data: bytes, charge: object = None) -> tuple[str, str | None]:
-        result = await original(entry, data, charge)  # type: ignore[arg-type]
+    async def bump_then_refresh(entry: object, data: bytes, charge: object = None, eligible: object = None) -> tuple[str, str | None]:
+        result = await original(entry, data, charge, eligible)  # type: ignore[arg-type]
         store.begin_refresh(ORG, REC)
         return result
 
@@ -992,17 +992,111 @@ async def test_the_read_that_discovers_bump_support_carries_the_version_too(stor
 
 
 async def test_the_marker_fence_is_the_cutoff_once_the_storage_has_taken_it(storage: FakePaidResultStorage) -> None:
+    from app.services.paid_cache.bump import _refreshed_since
+    from app.services.paid_cache.store import FinalFence
+
     store = _store(storage)
-    storage._write(storage.key(ORG, REC, "refreshed/marker.json"), json.dumps({"startedMs": 1, "cutoffMs": 7_000}).encode())
+    storage._write(storage.key(ORG, REC, "refreshed/marker.json"), json.dumps({"startedMs": 1, "cutoffMs": 10_800}).encode())
     storage.objects[storage.key(ORG, REC, "refreshed/marker.json")] = (
         storage.objects[storage.key(ORG, REC, "refreshed/marker.json")][0], 1_700_000_900_000,   # written long after the cutoff
     )
-    from app.services.paid_cache.bump import _refreshed_since
-
     fence = await store.refresh_marker_ms(ORG, REC)
-    assert fence == 6_000
-    assert _refreshed_since(fence, 7_500) is False, "a result written in the cutoff second survives the purge and is current"
-    assert _refreshed_since(fence, 6_900) is True, "a result from before the cutoff second is purged and stale"
-    # before the cutoff is known the marker's own time is the conservative fence
+    assert isinstance(fence, FinalFence) and fence == 10_800
+    # exact, by the stamps the purge compares: 10 200 is older than the cutoff (purged, stale) even in the same second
+    assert _refreshed_since(fence, 10_200) is True, "a millisecond-stamped result older than the cutoff was taken for current"
+    assert _refreshed_since(fence, 10_800) is False and _refreshed_since(fence, 11_500) is False
+    # before the cutoff is known the marker's own time is the conservative fence (whole seconds, a tie is stale)
     storage._write(storage.key(ORG, REC, "refreshed/marker.json"), b'{"startedMs":1}')
-    assert await store.refresh_marker_ms(ORG, REC) == storage.objects[storage.key(ORG, REC, "refreshed/marker.json")][1]
+    provisional = await store.refresh_marker_ms(ORG, REC)
+    assert not isinstance(provisional, FinalFence)
+
+
+# -- review round 6 ----------------------------------------------------------------------------------------------------
+
+async def test_a_provisional_marker_rejection_is_never_cached() -> None:
+    from app.services.paid_cache.cache import PaidResultCache, _encode
+    from app.services.paid_cache.keys import CacheKey
+    from app.services.paid_cache.locks import InProcessLocks
+    from tests.support.versioned_store import VersionedStore
+
+    key = CacheKey(ORG, REC, "ocr_page", 1, "m", "p", "q", "page")
+    store = VersionedStore(stamp_ms=1000)
+    raw = touched_bytes(_encode(key, "text"), 1, origin_ms=store.now_ms) or b""
+    store.write(ORG, REC, key.relative_path(), raw)
+    store.begin_refresh(ORG, REC)                       # provisional: a tie with the object's second rejects it
+    cache = PaidResultCache(store, InProcessLocks())  # type: ignore[arg-type]
+    assert await cache._predates_refresh(key, raw) is True
+    assert cache._markers == {}, "a provisional rejection was kept for the whole window"
+
+
+async def test_a_bump_whose_request_failed_after_it_committed_is_checked_like_any_write() -> None:
+    from tests.support.versioned_store import VersionedStore
+
+    store = VersionedStore(stamp_ms=1)
+    store.write(ORG, REC, K, OLD)
+    got = await store.get_versioned(ORG, REC, K)
+    assert got is not None and got.etag
+    original = store.bump_to
+
+    async def commits_then_fails(entry: object, data: bytes, charge: object = None, eligible: object = None) -> tuple[str, str | None]:
+        await original(entry, data, charge, eligible)  # type: ignore[arg-type]
+        store.begin_refresh(ORG, REC)                   # a refresh begins right after; the check must remove the write
+        raise ConnectionError("the answer was cut off")
+
+    store.bump_to = commits_then_fails  # type: ignore[method-assign]
+
+    async def no_wait(_s: float) -> None:
+        return None
+
+    queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
+    queue.offer(BumpEntry(ORG, REC, K, got.data, got.etag, 0, None))
+    await queue.drain_once()
+    assert (ORG, REC, K) not in store.files, "a write that committed before the error escaped its check"
+
+
+async def test_a_restore_is_refused_when_the_marker_read_itself_runs_past_the_deadline() -> None:
+    from tests.support.versioned_store import VersionedStore
+
+    clock = [1_700_000_000.0]
+    store = VersionedStore(stamp_ms=1)
+    scope = RunScope(ORG, REC, "rev1", "parse", clock=lambda: clock[0], stage_deadline_s=60)
+    real_marker = store.refresh_marker_ms
+
+    reads = 0
+
+    async def slow_marker(o: str, r: str) -> int | None:
+        nonlocal reads
+        reads += 1
+        if reads == 2:                                   # the restore's own read (the first was before the bump)
+            clock[0] += 120                              # took two minutes: the stage deadline passes inside it
+        return await real_marker(o, r)
+
+    store.refresh_marker_ms = slow_marker  # type: ignore[method-assign]
+
+    async def no_wait(_s: float) -> None:
+        return None
+
+    queue = BumpQueue(store, sleep=no_wait, autostart=False)  # type: ignore[arg-type]
+    queue.offer(BumpEntry(ORG, REC, K, OLD, "gone", 0, scope))
+    await queue.drain_once()
+    assert reads >= 2, "the restore never read the marker again: the test says nothing"
+    assert (ORG, REC, K) not in store.files
+
+
+async def test_no_bump_attempt_starts_after_the_stage_deadline(storage: FakePaidResultStorage) -> None:
+    store = _store(storage)
+    storage._write(storage.key(ORG, REC, K), OLD)
+    etag = storage.etag_of(ORG, REC, K)
+    signed = await store.presign(ORG, REC, [(K, "bump", etag or "")])
+    expired = False
+
+    async def the_deadline_passes_during_the_first_attempt() -> None:
+        nonlocal expired
+        expired = True                                   # the first attempt is answered 409; the deadline then passes
+
+    storage.conflict_all_bumps = True
+    storage.hooks["bump_put"] = the_deadline_passes_during_the_first_attempt
+    outcome, _ = await store.bump_to(signed[(K, "bump")], b"{}", None, lambda: not expired)
+    assert outcome == "deadline"
+    attempts = len([h for h in storage.put_headers if "If-Match" in h])
+    assert attempts == 1, f"{attempts} attempts were sent: one started after the deadline"

@@ -509,14 +509,57 @@ describe('Conditional delete, version bump and capability probe of the paid-resu
       expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
     })
 
-    it('a 501 is a definitive "not supported" and is remembered', async () => {
-      const a = adapter('notimpl-' + Math.random().toString(36).slice(2))
+    it('a 501 on the sentinel upload (the setup) is no answer about conditions; a 501 on the conditional write is definitive', async () => {
+      const setup = adapter('notimpl-setup-' + Math.random().toString(36).slice(2))
+      setup.probeBackoffMs = []
+      ;(setup as any).s3 = {
+        upload: () => ({ promise: async () => { throw Object.assign(new Error('ni'), { $metadata: { httpStatusCode: 501 } }) } }),
+        deleteObjects: () => done({}),
+      }
+      expect(await setup.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+
+      const cond = adapter('notimpl-cond-' + Math.random().toString(36).slice(2))
+      cond.probeBackoffMs = []
+      const b = bucket('honours')
+      ;(cond as any).s3 = b.s3
+      sinon.stub(cond, 'signObjectUrl').callsFake(async (_k: string, o: any) => ({ url: 'http://s3/put', headers: { 'If-Match': `"${o.ifMatch}"` } }))
+      if ((globalThis.fetch as any).restore) (globalThis.fetch as any).restore()
+      sinon.stub(globalThis, 'fetch').callsFake((async () => new Response(null, { status: 501 })) as any)
+      const first = await cond.conditionalCapabilities()
+      expect(first.bump).to.equal(false)
+      expect(first.inconclusive).to.equal(undefined)
+      expect(await cond.conditionalCapabilities()).to.deep.equal(first)
+    })
+
+    it('a HEAD that never answers is cut by the probe deadline and the probe answers "cannot tell"', async () => {
+      const a = flaky({})
+      a.probeTimeoutMs = 40
       a.probeBackoffMs = []
-      const up = sinon.stub().returns({ promise: async () => { throw Object.assign(new Error('ni'), { $metadata: { httpStatusCode: 501 } }) } })
-      ;(a as any).s3 = { upload: up, deleteObjects: () => done({}) }
-      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
-      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false })
-      expect(up.callCount).to.equal(1)
+      ;(a as any).s3 = { ...(a as any).s3, headObject: () => ({ promise: () => new Promise(() => undefined) }) }
+      const started = Date.now()
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+      expect(Date.now() - started).to.be.lessThan(2000)
+    })
+
+    it('an ambiguous answer to the missing-key delete (AccessDenied) is no answer, after a conditional delete that worked', async () => {
+      const a = adapter('missing-denied-' + Math.random().toString(36).slice(2))
+      a.probeBackoffMs = []
+      const b = bucket('honours')
+      let deletesWithEtag = 0
+      ;(a as any).s3 = {
+        ...b.s3,
+        deleteObjects: (p: any) => {
+          if (p.Delete.Objects[0].ETag === undefined) return b.s3.deleteObjects(p)
+          deletesWithEtag += 1
+          if (deletesWithEtag === 3) return done({ Errors: [{ Key: p.Delete.Objects[0].Key, Code: 'AccessDenied' }] })   // the missing-key delete
+          return b.s3.deleteObjects(p)
+        },
+      }
+      sinon.stub(a, 'signObjectUrl').callsFake(async (_k: string, o: any) => ({ url: 'http://s3/put', headers: { 'If-Match': `"${o.ifMatch}"` } }))
+      if ((globalThis.fetch as any).restore) (globalThis.fetch as any).restore()
+      sinon.stub(globalThis, 'fetch').callsFake(b.fetchStub as any)
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: false, bump: false, inconclusive: true })
+      expect(await a.conditionalCapabilities()).to.deep.equal({ conditionalDelete: true, bump: true })
     })
 
     it('a transient failure is not remembered: the next ask probes again and gets the real answer', async () => {

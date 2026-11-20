@@ -8,6 +8,7 @@ as the real service takes it from its scoped token: a request cannot name anothe
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from email.utils import formatdate
@@ -115,6 +116,11 @@ class FakePaidResultStorage:
     @staticmethod
     def key(org: str, record: str, path: str) -> str:
         return f"{org}/PipesHub/paid-results/{record}/{path}"
+
+    def _remove(self, key: str) -> None:
+        """One removal for every path that deletes: the object and its version go together."""
+        self.objects.pop(key, None)
+        self.etags.pop(key, None)
 
     def _write(self, key: str, data: bytes) -> None:
         self._writes += 1
@@ -236,7 +242,7 @@ class FakePaidResultStorage:
         self.delete_bodies.append(body)
         await self._hook("delete")
         for p in body["paths"]:
-            self.objects.pop(self.key(org, record, p), None)
+            self._remove(self.key(org, record, p))
         return web.json_response({"deleted": len(body["paths"])})
 
     async def _delete_if_match(self, request: web.Request) -> web.Response:
@@ -259,7 +265,7 @@ class FakePaidResultStorage:
             if key in self.objects and item["etag"] != self._etag(key):
                 changed.append(item["path"])
                 continue
-            self.objects.pop(key, None)
+            self._remove(key)
         reply: dict[str, Any] = {"deleted": len(body["items"]) - len(changed), "changed": changed}
         if self.fixed_delete_reply is not None:
             reply = dict(self.fixed_delete_reply)
@@ -280,7 +286,7 @@ class FakePaidResultStorage:
                 results.append({"recordId": record, "purged": False, "error": "purge failed"})
                 continue
             for k in [k for k in self.objects if k.startswith(self.key(org, record, ""))]:
-                del self.objects[k]
+                self._remove(k)
             results.append({"recordId": record, "purged": True})
         return web.json_response({"results": results})
 
@@ -289,9 +295,12 @@ class FakePaidResultStorage:
         self.calls.append(("purge_cutoff", org))
         if not self.cutoff_route:
             return web.json_response({"error": {"message": "not found"}}, status=404)
+        cutoff = self.clock_ms - self.clock_ms % 1000
         if self.cutoff_marker:
-            self.begin_refresh(org, record)
-        reply: dict[str, Any] = {"cutoff": self.clock_ms - self.clock_ms % 1000}
+            self.begin_refresh(org, record)                                  # provisional, before the cutoff is taken
+            # ... and final once it is known, as the real route writes it again with the cutoff in it
+            self._write(self.key(org, record, "refreshed/marker.json"), json.dumps({"startedMs": 1, "cutoffMs": cutoff}).encode())
+        reply: dict[str, Any] = {"cutoff": cutoff}
         if self.cutoff_marker:
             reply["marker"] = True
         return web.json_response(reply)
@@ -300,12 +309,12 @@ class FakePaidResultStorage:
         org, record = self._org(request), request.match_info["record"]
         self.calls.append(("purge_record", org))
         for k in [k for k in self.objects if k.startswith(self.key(org, record, ""))]:
-            del self.objects[k]
+            self._remove(k)
         return web.json_response({"purged": True})
 
     async def _purge_org(self, request: web.Request) -> web.Response:
         org = self._org(request)
         self.calls.append(("purge_org", org))
         for k in [k for k in self.objects if k.startswith(f"{org}/PipesHub/paid-results/")]:
-            del self.objects[k]
+            self._remove(k)
         return web.json_response({"purged": True})

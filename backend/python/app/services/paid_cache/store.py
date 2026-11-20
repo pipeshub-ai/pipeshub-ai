@@ -103,7 +103,7 @@ class VersionedBytes:
 
 #: What a bump PUT answered: ``bumped`` (2xx), ``gone`` (404), ``changed`` (412), ``conflict`` (409 after the retries).
 BumpOutcome = str
-BUMPED, GONE, CHANGED, CONFLICT = "bumped", "gone", "changed", "conflict"
+BUMPED, GONE, CHANGED, CONFLICT, DEADLINE = "bumped", "gone", "changed", "conflict", "deadline"
 
 #: The path of the refresh marker the storage service writes before it takes a purge cutoff.
 REFRESH_MARKER_PATH = "refreshed/marker.json"
@@ -118,6 +118,12 @@ def _unquote_etag(raw: str | None) -> str | None:
     if len(tag) >= 2 and tag.startswith('"') and tag.endswith('"'):
         tag = tag[1:-1]
     return tag or None
+
+
+class FinalFence(int):
+    """A refresh fence that is the cutoff the storage took: a result is stale exactly when its own store stamp is below it
+    (the purge removes what is older than the cutoff, by the same stamps). A plain ``int`` is a provisional fence (the
+    marker's own time before the cutoff was known), which is conservative: a tie counts as stale, in whole seconds."""
 
 
 def _http_date_ms(raw: str | None) -> int | None:
@@ -493,15 +499,14 @@ class NodePaidResultStore:
         if found.last_modified_ms is None:
             raise PaidResultStoreError("the refresh marker has no write time")
         # Once the storage service has taken the cutoff it writes it into the marker. A result written at or after the
-        # cutoff survives the purge (it removes only what is older, in whole seconds), so the fence is the cutoff, not the
-        # marker's own time: returned one second earlier because a tie with the fence counts as "refreshed since".
+        # cutoff survives the purge (it removes only what is older), so the fence is the cutoff, not the marker's own time.
         try:
             body = json.loads(found.data)
         except ValueError:
             body = None
         cutoff = body.get("cutoffMs") if isinstance(body, dict) else None
         if isinstance(cutoff, int) and not isinstance(cutoff, bool) and cutoff > 0:
-            return cutoff - 1000
+            return FinalFence(cutoff)
         return found.last_modified_ms
 
     async def put(self, org_id: str, record_id: str, path: str, data: bytes) -> bool:
@@ -557,6 +562,7 @@ class NodePaidResultStore:
 
     async def bump_to(
         self, entry: SignedFileUrl, data: bytes, charge: Callable[[int], None] | None = None,
+        eligible: Callable[[], bool] | None = None,
     ) -> tuple[BumpOutcome, str | None]:
         """The conditional replace a bump signs (``If-Match`` sent with exactly the signed headers). Returns the outcome
         and the new ETag when the store sent one. The store's own status says what happened, never a route reply: 404 is
@@ -567,6 +573,8 @@ class NodePaidResultStore:
 
         async def attempt() -> tuple[BumpOutcome, str | None]:
             for conflict in range(_CONFLICT_ATTEMPTS):
+                if eligible is not None and not eligible():
+                    return DEADLINE, None     # checked before every attempt, retries included: nothing is written past it
                 if charge is not None:
                     charge(len(data))        # every transfer attempt is bytes sent, whatever the answer
                 try:
@@ -611,9 +619,11 @@ class NodePaidResultStore:
                         await response.read()
                         raise _storage_status_error(response.status, f"paid-result download failed (HTTP {response.status})")
                     data = await response.read()
+                    # The local route also sends the exact stamp (its files carry milliseconds); S3 and Azure send whole seconds.
+                    exact = response.headers.get("X-Last-Modified-Ms")
                     return VersionedBytes(
                         data, _unquote_etag(response.headers.get("ETag")),
-                        _http_date_ms(response.headers.get("Last-Modified")),
+                        int(exact) if exact is not None and exact.isdigit() else _http_date_ms(response.headers.get("Last-Modified")),
                     )
             except aiohttp.InvalidURL:
                 raise PaidResultStoreError("paid-result download URL is malformed") from None

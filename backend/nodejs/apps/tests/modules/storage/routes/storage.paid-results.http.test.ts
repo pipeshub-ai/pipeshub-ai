@@ -876,6 +876,10 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
       await res.text()
       expect(res.headers.get('etag')).to.equal(`"${(await list())[0]!.etag}"`)
       expect(Date.parse(res.headers.get('last-modified')!)).to.be.within(Date.now() - 10_000, Date.now() + 1000)
+      // The exact stamp too (the header is whole seconds): what the refresh fence is compared with on a local disk.
+      const exact = Number(res.headers.get('x-last-modified-ms'))
+      expect(exact).to.be.within(Date.now() - 10_000, Date.now() + 1000)
+      expect(Math.floor(exact / 1000)).to.equal(Math.floor(Date.parse(res.headers.get('last-modified')!) / 1000))
     })
 
     it('the purge cutoff writes the refresh marker first; it is readable, never listed, never written through a URL, and survives a cutoff purge', async () => {

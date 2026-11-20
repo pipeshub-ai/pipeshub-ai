@@ -865,11 +865,38 @@ class AmazonS3Adapter implements StorageServiceInterface {
     const status = (error: unknown): number | undefined =>
       (error as { $metadata?: { httpStatusCode?: number } }).$metadata
         ?.httpStatusCode ?? (error as { statusCode?: number }).statusCode;
+    // Every SDK call of the probe has the probe's deadline: one that never answers must not hold the answer every caller
+    // of this probe shares. The SDK wrapper takes no abort signal, so the call is raced and its late answer ignored.
+    const bounded = async <T>(call: Promise<T>): Promise<T> => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([
+          call,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  Object.assign(new Error('probe call timed out'), {
+                    name: 'TimeoutError',
+                  }),
+                ),
+              this.probeTimeoutMs,
+            );
+          }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        call.catch(() => undefined);
+      }
+    };
+    // Until the first conditional request runs, a failure is the setup's (an unconditional upload), not evidence about the
+    // store's conditions: it is no answer.
+    const stage = { conditionalStarted: false };
     const exists = async (): Promise<string | null> => {
       try {
-        const head = await this.s3
-          .headObject({ Bucket: this.bucketName, Key: key })
-          .promise();
+        const head = await bounded(
+          this.s3.headObject({ Bucket: this.bucketName, Key: key }).promise(),
+        );
         return normalizeEtag(head.ETag);
       } catch (error) {
         const code = (error as { code?: string }).code;
@@ -892,15 +919,18 @@ class AmazonS3Adapter implements StorageServiceInterface {
         c,
       );
     const delOnce = async (etag: string): Promise<string> => {
-      const result = await this.s3
-        .deleteObjects({
-          Bucket: this.bucketName,
-          Delete: {
-            Objects: [{ Key: key, ETag: quoteEtag(etag) }],
-            Quiet: true,
-          },
-        })
-        .promise();
+      stage.conditionalStarted = true;
+      const result = await bounded(
+        this.s3
+          .deleteObjects({
+            Bucket: this.bucketName,
+            Delete: {
+              Objects: [{ Key: key, ETag: quoteEtag(etag) }],
+              Quiet: true,
+            },
+          })
+          .promise(),
+      );
       const code = result.Errors?.[0]?.Code;
       if (isTransientCode(code)) throw transient;
       return code ?? 'OK';
@@ -912,6 +942,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         expiresInSeconds: 60,
         ifMatch: etag,
       });
+      stage.conditionalStarted = true;
       // One deadline over the request and its body: a stalled probe must not hold every caller that shares it.
       const signal = AbortSignal.timeout(this.probeTimeoutMs);
       const response = await fetch(signed.url, {
@@ -925,14 +956,16 @@ class AmazonS3Adapter implements StorageServiceInterface {
       return response.status;
     };
     try {
-      await this.s3
-        .upload({
-          Bucket: this.bucketName,
-          Key: key,
-          Body: Buffer.from('{"probe":1}'),
-          ContentType: 'application/json',
-        })
-        .promise();
+      await bounded(
+        this.s3
+          .upload({
+            Bucket: this.bucketName,
+            Key: key,
+            Body: Buffer.from('{"probe":1}'),
+            ContentType: 'application/json',
+          })
+          .promise(),
+      );
       const e1 = await exists();
       if (e1 === null) return null;
       // (3) first, so a store that ignores the delete condition (and removes the sentinel in step 1) cannot hide that
@@ -973,6 +1006,14 @@ class AmazonS3Adapter implements StorageServiceInterface {
         return null;
       const goneAfterRight = (await exists()) === null;
       const missing = await delOnce(current);
+      // A missing key answers OK, NoSuchKey or NotFound (gone). A refusal of the condition on it (412) is a store that
+      // does not treat it as gone: not supported. Any other answer (AccessDenied, a code of its own) is ambiguous, and the
+      // probe has just seen a conditional delete work: it is no answer.
+      if (
+        !['OK', 'NoSuchKey', 'NotFound'].includes(missing) &&
+        !refusal(missing)
+      )
+        return null;
       const missingOk =
         missing === 'OK' || missing === 'NoSuchKey' || missing === 'NotFound';
       return {
@@ -982,6 +1023,8 @@ class AmazonS3Adapter implements StorageServiceInterface {
       };
     } catch (error) {
       if (error === transient) return null;
+      // A failure before any conditional request (the sentinel upload) says nothing about the store's conditions.
+      if (!stage.conditionalStarted) return null;
       const name = (error as { name?: string }).name;
       if (name === 'TimeoutError' || name === 'AbortError') return null;
       const httpStatus = status(error);

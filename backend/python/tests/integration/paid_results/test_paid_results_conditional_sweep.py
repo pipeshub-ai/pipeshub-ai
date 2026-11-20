@@ -111,7 +111,8 @@ async def test_the_storage_service_names_what_it_honours(store: NodePaidResultSt
     assert "bump" in store.capabilities, "this store honours no conditional write (see the storage service log)"
     print(f"paid-result capabilities on this store: {sorted(store.capabilities)}")
     listed = await store.list_files(org, REC)
-    assert all(f.etag for f in listed)
+    mine = [f for f in listed if f.path == K]
+    assert len(mine) == 1 and mine[0].etag, "the listing omits the object this test wrote, or lists it with no version"
 
 
 async def test_a_delete_naming_a_stale_version_keeps_the_object(store: NodePaidResultStore) -> None:
@@ -206,7 +207,7 @@ async def test_a_refresh_marker_is_written_by_the_cutoff_and_survives_the_purge(
     cutoff = await store.purge_cutoff(org, REC)
     assert cutoff is not None
     marker = await store.refresh_marker_ms(org, REC)
-    assert marker == cutoff - 1000, "the fence is the cutoff the storage took (one second earlier: a tie counts as refreshed)"
+    assert marker == cutoff, "the fence is the exact cutoff the storage took"
 
     await store.purge_record(org, REC, before_ms=cutoff + 5_000)
 
