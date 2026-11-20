@@ -42,8 +42,8 @@ from app.core.org_context import for_org
 from app.models.entities import AppUserGroup, FileRecord, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
-from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.services.messaging.kafka.handlers import entity as entity_handler
+from app.services.messaging.kafka.handlers.entity import EntityEventService
 from tests.integration.real_graph import (
     backend_unavailable,
     connect_arango,

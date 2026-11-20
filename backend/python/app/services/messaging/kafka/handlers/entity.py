@@ -21,7 +21,9 @@ from app.connectors.core.base.connector.connector_service import (
     note_sync_started,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
-from app.connectors.core.base.data_processor.data_source_entities_processor import USER_LINK_MARK_TTL_MS
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    USER_LINK_MARK_TTL_MS,
+)
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
