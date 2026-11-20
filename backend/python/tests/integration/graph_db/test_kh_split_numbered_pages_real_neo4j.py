@@ -201,3 +201,49 @@ async def test_a_grant_removed_while_a_numbered_page_is_read_is_not_listed(hub: 
     assert revoked == [True]
     assert target not in after
     assert set(after) - set(before) <= {i for i in after if i > before[-1]}, "only the next row moves up into the page"
+
+
+async def test_the_children_their_hop_admits_are_exactly_those_the_check_admits_by_its_walk(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The split browse admits a child that passes its own hop under a start the walk from the App reaches, and asks the check about the rest
+    alone. Held to the check itself, for a viewer the walk reaches the folder for (u0, by the group grant on R) and one it does not (u2, a grant
+    on F alone), in both forms the check reads grants in: from a list, and from the nodes (as a browse below the App does)."""
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    graph, folder = hub.graph, hub.ns.id("F")
+    seen: list[dict] = []
+    listed = graph._kh_split_listed
+
+    async def keep_access(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+        seen.append(k["access"])
+        return await listed(*a, **k)
+
+    monkeypatch.setattr(graph, "_kh_split_listed", keep_access)
+    kids = [k["id"] for k in (await graph._kh_split_children([folder], app_id=hub.ns.id("A"), org_id=hub.ns.org, transaction=None))[folder]
+            if not k["stub"]]
+    for user, reached in (("u0", True), ("u2", False)):
+        seen.clear()
+        await hub.browse(user)
+        listing = await graph.get_knowledge_hub_access_v3(user_key=hub.ns.id(user), org_id=hub.ns.org)
+        for access in (seen[0], {**listing, "probe": None}):
+            by_hop = await graph._kh_split_admitted_by_hop(folder, kids, app_id=hub.ns.id("A"), org_id=hub.ns.org, access=access, transaction=None)
+            every = await graph._kh_v3_admitted(kids, org_id=hub.ns.org, access=access, transaction=None)
+            rest = await graph._kh_v3_admitted([i for i in kids if i not in by_hop], org_id=hub.ns.org, access=access, transaction=None)
+            assert by_hop <= every
+            assert by_hop | rest == every
+            # Every child that inherits from F, and every file of its own sharing granted to the viewer, passes its hop: only the files shared
+            # with the other pair are left for the check.
+            assert len(by_hop) == (len(kids) - FILES // 20 if reached else 0), (user, bool(access.get("probe")))
+
+
+async def test_the_batch_check_is_asked_only_about_the_children_their_hop_does_not_admit(hub: _Hub, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KH_BROWSE_MODE", "split")
+    asked: list[int] = []
+    check = hub.graph.check_access
+
+    async def count_asked(*a: Any, **k: Any) -> Any:  # noqa: ANN401
+        asked.append(len(set(k.get("node_ids") or ())))
+        return await check(*a, **k)
+
+    monkeypatch.setattr(hub.graph, "check_access", count_asked)
+    await hub.browse("u0")
+    # The folder holds 1,415 children; the check is asked only about the 70 files shared with the other pair, which no hop admits.
+    assert max(asked) == FILES // 20, asked
