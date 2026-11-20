@@ -180,6 +180,10 @@ def scan_sql(where: str, last: str) -> str:
 # fraction of the time a row each takes.
 CLASSES = """/* pipeshub:kg.listing_classes */ SELECT count(*) AS n, coalesce(json_object_agg(c.id, c.clauses), '{}')::text AS doc
     FROM (SELECT id, clauses FROM kg.scope_classes WHERE org_id = $1 AND app_sk = $2 LIMIT $3) c"""
+# The same for the classes ``$3`` only, those of the connector ``$2``: each by a seek of the key (as ``read.CLASSES``), so that stale statistics cannot turn it into a read of the org.
+CLASSES_OF = """/* pipeshub:kg.listing_classes_of */ SELECT count(*) AS n, coalesce(json_object_agg(c.id, c.clauses), '{}')::text AS doc FROM unnest($3::bigint[]) AS q(id)
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT k.id, k.app_sk, k.clauses FROM kg.scope_classes k WHERE k.org_id = $1 AND k.id >= q.id ORDER BY k.id LIMIT 1) s
+        WHERE s.id = q.id AND s.app_sk = $2 OFFSET 0) c"""
 # What kg itself decides for a row (as ``read.decide``): stamped (a path, a class), not hidden by a pending restamp and not a record of no connector. Every other row is the walk's.
 DECIDED = "r.r13 IS FALSE AND r.path IS NOT NULL AND r.class_id IS NOT NULL AND r.fence_job IS NULL"
 
@@ -259,6 +263,12 @@ LINKS_MAX = 5_000       # the linked children of one node a request reads (kg.li
 # among the children that qualify (a link to a deleted or hidden row takes nothing from the budget).
 LINKED_CHILDREN = ("/* pipeshub:kg.browse_linked */ SELECT c.sk AS child_sk FROM "
                    + _linked("$2", "SELECT c.sk FROM kg.records c", "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($4::bigint[])", _limit("$3")) + " c")
+# The classes of the live children of the sks ``$2`` by a hierarchy edge outside the hidden rows ``$4`` (the children an arrow, a placeholder's walk and a count read of them), one row
+# per child, ``$3`` at most in all.
+_LIVE_CHILD = "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($4::bigint[])"
+CHILD_CLASSES = ("/* pipeshub:kg.browse_child_classes */ SELECT c.class_id FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL ("
+                 f"(SELECT c.class_id FROM kg.records c WHERE {_LIVE_CHILD} AND c.parent_sk = p.sk) UNION ALL "
+                 + _linked("p.sk", "SELECT c.class_id FROM kg.records c", _LIVE_CHILD) + ") c" + _limit("$3"))
 
 
 def browse_scopes(links: str | None) -> list[tuple[str, str]]:

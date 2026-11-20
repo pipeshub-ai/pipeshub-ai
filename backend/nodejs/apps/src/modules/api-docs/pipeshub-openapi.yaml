@@ -25660,6 +25660,286 @@ components:
                     type: string
         moreRecords:
           type: boolean
+    EntityCapabilities:
+      type: object
+      description: Which entity lookups the caller is served; see `GET /search/entities/capabilities`.
+      required: [entitySearch, entityRecords, namedEntities, coMentions, recordsByValue, recordsByEntities, recordsByPerson]
+      properties:
+        entitySearch:
+          type: boolean
+          description: '`POST /search/entities`.'
+        entityRecords:
+          type: boolean
+          description: '`POST /search/entities/records`.'
+        namedEntities:
+          type: boolean
+          description: Named-entity extraction is on, so `named_entity` entities and kinds can be asked for.
+        coMentions:
+          type: boolean
+          description: '`POST /search/entities/co-mentioned`.'
+        recordsByValue:
+          type: boolean
+          description: '`POST /search/records/by-value`.'
+        recordsByEntities:
+          type: boolean
+          description: '`POST /search/records/by-entities`.'
+        recordsByPerson:
+          type: boolean
+          description: '`POST /search/records/by-person`; always true.'
+      additionalProperties: false
+    EntityToolListing:
+      type: object
+      description: A listing as the assistant reads it, with record ids and links, and the next page's call at its end when there is one.
+      required: [text]
+      properties:
+        text:
+          type: string
+      additionalProperties: false
+    EntityRecordsRequest:
+      type: object
+      description: Request body for `POST /search/entities/records`.
+      required: [entityId, entityType]
+      properties:
+        entityId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: "`entityId` from `POST /search/entities`."
+        entityType:
+          $ref: '#/components/schemas/EntitySearchResultType'
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Record types to keep, e.g. FILE, MAIL, TICKET.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: From the previous page's continue call.
+      additionalProperties: false
+    CoMentionedEntitiesRequest:
+      type: object
+      description: Request body for `POST /search/entities/co-mentioned`.
+      required: [entityIds]
+      properties:
+        entityIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: Every id `POST /search/entities` returned for the one entity.
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Kinds to list, e.g. person, organization, product. Emails and phones are listed only when named here.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+      additionalProperties: false
+    RecordsByPersonRequest:
+      type: object
+      description: Request body for `POST /search/records/by-person`.
+      required: [person]
+      properties:
+        person:
+          type: string
+          minLength: 1
+          maxLength: 320
+          description: A full name, an email, or `me`.
+        roles:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 32
+            enum: [assignee, reporter, creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved]
+          description: Roles to keep; every role when omitted.
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      additionalProperties: false
+    RecordsByValueRequest:
+      type: object
+      description: >-
+        Request body for `POST /search/records/by-value`. Give at least one constraint: `entityIds`, `name`,
+        `kinds`, a date, an amount or `currency`, a quantity or `dimension`, or a percentage. `currency` alone
+        finds any amount in that currency.
+      properties:
+        kinds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Value kinds, e.g. date, currency, percentage, dimension.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: A company, person or product the records must also mention.
+        entityIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: Entity ids from `POST /search/entities` the records must mention.
+        dateFrom:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Earliest date mentioned, ISO 8601.
+        dateTo:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Latest date mentioned, ISO 8601.
+        amountMin:
+          type: number
+        amountMax:
+          type: number
+        currency:
+          type: string
+          minLength: 1
+          maxLength: 16
+          description: ISO 4217 code, e.g. USD.
+        quantityMin:
+          type: number
+          description: In SI units.
+        quantityMax:
+          type: number
+        dimension:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The quantity's dimension, e.g. time, length, mass, data.
+        percentMin:
+          type: number
+          description: As a fraction, 0.2 for 20%.
+        percentMax:
+          type: number
+        recordTypes:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        sourceIds:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          description: App or knowledge base ids to look in.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 20
+        cursor:
+          type: string
+          minLength: 1
+          maxLength: 4096
+      additionalProperties: false
+    RecordsByEntitiesRequest:
+      type: object
+      description: Request body for `POST /search/records/by-entities`.
+      required: [mentions]
+      properties:
+        mentions:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+                minLength: 1
+                maxLength: 200
+              kind:
+                type: string
+                minLength: 1
+                maxLength: 64
+                description: person, organization, product, event, location, ... when known.
+            additionalProperties: false
+        match:
+          type: string
+          enum: [any, all]
+          default: any
+          description: '`all` keeps the records that mention every name.'
+        query:
+          type: string
+          maxLength: 1000
+          description: What to look for inside those records; the names when omitted.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+          description: Passages to return.
+        maxChunksPerRecord:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: At most this many passages from one record.
+      additionalProperties: false
+    RecordsByEntitiesResponse:
+      type: object
+      required: [entities, chunks, incomplete]
+      properties:
+        entities:
+          type: string
+          description: How each name was resolved, with how many readable records mention it and the look-alikes that are not the same.
+        chunks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RetrieveChunk'
+        incomplete:
+          type: boolean
+          description: True when part of the search could not run.
+        message:
+          type: string
+          nullable: true
+          description: Why `chunks` is empty, when the search gave a reason.
+      additionalProperties: false
     EntityNeighborsRequest:
       type: object
       description: Request body for `POST /search/entities/neighbors`.
@@ -40510,6 +40790,78 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/purge-batch:
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove the paid-result folders of up to 100 records in one call (service-to-service)
+      description: |
+        The same removal as `DELETE /document/internal/paid-results/{recordId}` without `before`, for many
+        records at once, so that a re-purge of a large delete costs one request per 100 records instead of
+        one per record. The organization is the scoped token's; a body that names one (or any other field)
+        is refused. Each record gets its own result, so one folder that cannot be removed never hides the
+        others: the caller repeats only the ones that failed. A record with nothing stored is a success,
+        and so is a repeat.
+      operationId: internalPaidResultsPurgeBatch
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - recordIds
+              properties:
+                recordIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  uniqueItems: true
+                  items:
+                    type: string
+                    pattern: '^[A-Za-z0-9_-]{1,128}$'
+                    not:
+                      const: org
+      responses:
+        '200':
+          description: One result per requested record, in request order. The call is 200 even when some records failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - results
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - recordId
+                        - purged
+                      properties:
+                        recordId:
+                          type: string
+                        purged:
+                          type: boolean
+                        error:
+                          type: string
+                          description: Present when `purged` is false.
+        '400':
+          description: A record id is not valid, one is repeated, there are none or more than 100, or the body has a field other than `recordIds` (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/paid-results/{recordId}/purge-cutoff:
     post:
       tags:
@@ -78366,6 +78718,339 @@ paths:
           description: The AI search service did not answer in time.
         '503':
           description: The AI search service could not be reached, or the lookup failed or timed out. This is not an empty result; try again.
+
+  /search/entities/capabilities:
+    get:
+      tags:
+        - Semantic Search
+      summary: Which entity lookups the caller is served
+      description: |
+        Which of the entity lookups below this deployment, organisation and caller
+        are served. They depend on what the deployment and organisation turn on:
+
+        - `entitySearch`, `entityRecords`: an entity store with this organisation's
+          entities in it.
+        - `namedEntities`, `coMentions`, `recordsByValue`: named-entity extraction
+          (`HIGH_ACCURACY_MODE`, or the organisation's Labs setting).
+        - `recordsByEntities`: both of the above and the deployment's
+          `ENTITY_SEARCH_TOOL` switch.
+        - `recordsByPerson`: always.
+
+        The MCP server lists only the entity tool actions marked `true`. Every lookup
+        also checks its own condition, so calling one that is `false` answers 404.
+      operationId: entityCapabilities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      responses:
+        '200':
+          description: The lookups this caller is served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityCapabilities'
+        '400':
+          description: The connected app's knowledge limit is too large to resolve.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: Access could not be checked, or the AI search service could not be reached; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities/records:
+    post:
+      tags:
+        - Semantic Search
+      summary: List an entity's records
+      description: |
+        Every record connected to one entity that the caller can read, newest first,
+        in pages: every record tagged with a department, category, subcategory, topic
+        or language, every record directly inside a record group, every record naming
+        a person, every record of an organisation's account or naming it, every record
+        that mentions a named entity, or the record itself for a `record` entity.
+
+        The listing is returned as text, as the assistant reads it, with the next
+        page's call at its end. An entity the caller cannot reach and an entity with
+        no readable records answer the same way.
+      operationId: listEntityRecords
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EntityRecordsRequest'
+            examples:
+              topic:
+                summary: Records tagged with a topic
+                value:
+                  entityId: "0c9b3e0e-6f4e-4f07-a6d3-2a8c1d7e9b11"
+                  entityType: topic
+      responses:
+        '200':
+          description: The listing, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example an unsupported `entityType`, `named_entity` while named-entity extraction is off, or a cursor from another listing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Nothing has been indexed into the entity store for this organisation yet, so entity lookups are not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/entities/co-mentioned:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the entities mentioned with an entity
+      description: |
+        The named entities (people, organisations, products, places, events, ...)
+        mentioned in the readable records that mention one entity, with how many of
+        those records mention each, most first. Pass every id `POST /search/entities`
+        returned for that entity, aliases included.
+      operationId: listCoMentionedEntities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CoMentionedEntitiesRequest'
+            examples:
+              people:
+                summary: People mentioned with a company
+                value:
+                  entityIds: ["7d1f0a52-55c2-4a8e-9f1c-0b6e3f2a9d40"]
+                  kinds: ["person"]
+      responses:
+        '200':
+          description: The entities, most mentioned first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example no `kinds` this lookup can list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Named-entity extraction is off for this organisation (it is on under `HIGH_ACCURACY_MODE` or with the Labs setting), so this lookup is not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-person:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the records linked to a person
+      description: |
+        The records the connectors link to a person by role (assignee, reporter,
+        creator, author, owner, editor, reviewer, recipient, lead, mentioned,
+        involved) that the caller can read, newest first. `person` is a full name, an
+        email, or `me`; several people with one name are listed to pick from by email.
+        Served in every deployment.
+      operationId: listRecordsByPerson
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByPersonRequest'
+            examples:
+              mine:
+                summary: Tickets assigned to the caller
+                value:
+                  person: me
+                  roles: [assignee]
+                  recordTypes: [TICKET]
+      responses:
+        '200':
+          description: The listing, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example an unknown role or a cursor from another listing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-value:
+    post:
+      tags:
+        - Semantic Search
+      summary: List the records that mention a typed value
+      description: |
+        The records the caller can read that mention a date range, an amount in a
+        currency, a quantity or a percentage, however the record writes it, most
+        recently modified first, each with the values that matched.
+      operationId: listRecordsByValue
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByValueRequest'
+            examples:
+              amount:
+                summary: Amounts over 50,000 USD
+                value:
+                  amountMin: 50000
+                  currency: USD
+      responses:
+        '200':
+          description: The listing, most recently modified first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityToolListing'
+        '400':
+          description: The request is invalid, for example no constraint at all, or an inverted range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: Named-entity extraction is off for this organisation (it is on under `HIGH_ACCURACY_MODE` or with the Labs setting), so this lookup is not served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
+
+  /search/records/by-entities:
+    post:
+      tags:
+        - Semantic Search
+      summary: Search inside the records that mention named entities
+      description: |
+        Each name is linked to the entities extracted from the documents: an exact
+        name settles it, and look-alikes go through one model check, so "Acme
+        Robotics" never returns "Acme Financial". Then the best passages for `query`
+        (the names, when it is omitted) are returned from inside the readable records
+        that mention them: any of them, or every one of them for `match: all`.
+        `entities` says how each name was resolved.
+      operationId: searchRecordsByEntities
+      security:
+        - bearerAuth: []
+        - oauth2: [semantic:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordsByEntitiesRequest'
+            examples:
+              together:
+                summary: Records naming two companies
+                value:
+                  mentions:
+                    - name: Acme Robotics
+                      kind: organization
+                    - name: Globex
+                  match: all
+                  query: renewal terms
+      responses:
+        '200':
+          description: How each name was resolved, and the best passages inside the records naming them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordsByEntitiesResponse'
+        '400':
+          description: The request is invalid, for example no names.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token.
+        '403':
+          description: Bearer token lacks the `semantic:read` or `semantic:write` scope.
+        '404':
+          description: This deployment does not serve this search, which needs the entity store, named-entity extraction and the `ENTITY_SEARCH_TOOL` switch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error.
+        '503':
+          description: The lookup failed or timed out, or the AI search service could not be reached. This is not an empty result; try again.
+        '504':
+          description: The AI search service did not answer in time.
 
   /search/updateAppConfig:
     post:

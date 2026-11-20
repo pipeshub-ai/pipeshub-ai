@@ -196,6 +196,7 @@ MATRIX_PYTHON = (
     ".github/workflows/backend-matrix.yml",
     # Which test files each suite runs.
     "scripts/integration_discovery.py",
+    "scripts/graph_shards.py",
 ) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):

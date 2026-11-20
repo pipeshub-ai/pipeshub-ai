@@ -64,6 +64,12 @@ STALE = METRICS_BACKEND.counter(
     "Validly signed broker messages older than the accepted signature age",
     ["topic"],
 )
+REJECTED = METRICS_BACKEND.counter(
+    "pipeshub_envelope_rejected_total",
+    "Broker messages dropped because their envelope was rejected, by reason and (only once the signature verified) event "
+    "type: a dropped self-scheduled control message ends its chain, so this is the place to see one go missing",
+    ["topic", "reason", "event_type"],
+)
 ADMISSION_REFUSED = METRICS_BACKEND.counter(
     "pipeshub_envelope_admission_refused_total",
     "Stored admissions of a queue delivery that did not verify (forged, copied, edited, expired or made with a key no longer configured)",
@@ -89,11 +95,33 @@ def _log_loud(key: str, msg: str, *args: object) -> None:
 
 
 class EnvelopeRejected(NonRetryableError):
-    """Dead-letter the message (terminal: retrying cannot fix it); ``reason`` is a stable label."""
+    """Dead-letter the message (terminal: retrying cannot fix it); ``reason`` is a stable label.
 
-    def __init__(self, reason: str) -> None:
+    ``event_type`` and ``record_id`` are set only when the signature already verified (a stale message, say): they
+    name what was dropped, so a lost control message can be traced. Never set from an unverified message.
+    """
+
+    def __init__(self, reason: str, *, event_type: str = "", record_id: str = "", age_seconds: float | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.event_type = event_type
+        self.record_id = record_id
+        self.age_seconds = age_seconds
+
+    def facts(self) -> dict[str, str]:
+        """``event_type`` / ``record_id`` for the delivery's end line, only those known."""
+        return {k: v for k, v in (("event_type", self.event_type), ("record_id", self.record_id)) if v}
+
+    def describe(self) -> str:
+        """What was dropped, for the log line; no payload values, only the verified event type and record id."""
+        parts = [f"reason={self.reason}"]
+        if self.event_type:
+            parts.append(f"event_type={self.event_type}")
+        if self.record_id:
+            parts.append(f"record_id={self.record_id}")
+        if self.age_seconds is not None:
+            parts.append(f"age_seconds={int(self.age_seconds)}")
+        return " ".join(parts)
 
 
 class DuplicateEnvelope(Exception):
@@ -243,6 +271,13 @@ class Opened:
     message: dict[str, Any]  # `ctx` removed, `payload` decoded
 
 
+def _record_id_of(payload: object) -> str:
+    """The record a verified payload is about (empty when it names none or does not decode), for the drop's log line."""
+    body = _decode_payload(payload) if isinstance(payload, str) else None
+    record_id = (body or {}).get("recordId")
+    return record_id[:128] if isinstance(record_id, str) else ""
+
+
 async def open_envelope(
     topic: str,
     message: dict[str, Any],
@@ -257,7 +292,26 @@ async def open_envelope(
 
     ``admitted``: a consumer already opened this delivery with every check passed, and can prove it (see
     :func:`admission_valid`), so the age comparison is skipped. The signature, shape, org and future-skew checks always run.
-    """
+
+    Every rejection is counted in ``pipeshub_envelope_rejected_total{topic,reason,event_type}`` here, once, whichever
+    consumer called."""
+    try:
+        return await _open_envelope(topic, message, keys=keys, required=required, inbox=inbox, now=now, admitted=admitted)
+    except EnvelopeRejected as e:
+        REJECTED.inc(topic, e.reason, e.event_type)
+        raise
+
+
+async def _open_envelope(
+    topic: str,
+    message: dict[str, Any],
+    *,
+    keys: Sequence[bytes],
+    required: bool | None,
+    inbox: Inbox | None,
+    now: Callable[[], float] | None,
+    admitted: bool,
+) -> Opened:
     required = ctx_required() if required is None else required
     c = message.get("ctx")
     if c is None:
@@ -300,10 +354,10 @@ async def open_envelope(
         STALE.inc(topic)
         STALE_BY_TYPE.inc(topic, event_type[:64])
         if enforcing():
-            raise EnvelopeRejected("stale")
+            raise EnvelopeRejected("stale", event_type=event_type[:64], record_id=_record_id_of(payload), age_seconds=age)
         _log_loud(f"stale:{topic}", "validly signed envelope older than %ss topic=%s: accepted in shadow mode", max_age_seconds(), topic)
     if -age > MAX_FUTURE_SKEW_SECONDS:
-        raise EnvelopeRejected("future")
+        raise EnvelopeRejected("future", event_type=event_type[:64], record_id=_record_id_of(payload), age_seconds=age)
     try:
         body = decode_json(payload)
     except json.JSONDecodeError as e:

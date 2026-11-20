@@ -3086,7 +3086,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         parsed = await offload_if_large(decode_message, message_value)
                         return await open_stream_message(message.topic, parsed, StreamMessage)
                     except EnvelopeRejected as e:
-                        self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
+                        self.logger.error(f"Envelope rejected for {message_id}: {e.describe()}")
                         return None
                     except (ValidationError, TypeError) as e:
                         # Valid JSON that is not a StreamMessage never becomes one: poison, as in the Redis twin.
