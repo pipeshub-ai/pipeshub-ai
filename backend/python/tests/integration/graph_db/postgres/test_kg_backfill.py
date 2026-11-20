@@ -156,6 +156,54 @@ async def test_a_backfill_that_is_cut_resumes_at_its_last_committed_batch(pg_db,
     assert done.flipped and (await state(pg_db, org, "app1"))[1] == "shadow"
 
 
+async def _fetched(tx) -> int:
+    """Rows of graph.nodes this transaction has read so far."""
+    return await tx.fetchval("SELECT coalesce(sum(seq_tup_read + coalesce(idx_tup_fetch, 0)), 0) FROM pg_stat_xact_user_tables WHERE schemaname = 'graph' AND relname LIKE 'nodes%'")
+
+
+async def test_a_copy_page_of_records_reads_the_page_not_the_records_after_its_cursor(pg_db) -> None:
+    """3,000 records of another connector sort between the cursor and app1's next records: a page of 10 of app1's records reads about 10 rows, fresh and analysed (the role's own statement cannot seek
+    the connector's index under row-level security, and read every record after the cursor). The page is app1's next records in byte order."""
+    p, org = await fresh_world(pg_db)
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": f"m{i:02d}", "recordName": f"M{i}", **rec} for i in range(30)], "records")
+    await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1::text, 'records', 'm09x' || g, jsonb_build_object('_key', 'm09x' || g, 'orgId', $1::text,
+          'connectorId', 'app9', 'recordName', 'N' || g) FROM generate_series(1, 3000) g""", org)
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE graph.nodes")
+
+        async def go(tx) -> tuple[list, int]:
+            before = await _fetched(tx)
+            page = await bf.app_nodes(tx, org, "app1", ("records", "m09"), 10)
+            return page, await _fetched(tx) - before
+        page, read = await run_in(pg_db, org, go)
+        assert page == [("records", f"m{i:02d}") for i in range(10, 20)]
+        assert read <= 20, f"{state}: {read} rows of graph.nodes read for a page of 10"
+
+
+async def test_a_copy_whose_cursor_older_code_wrote_in_the_records_copies_them_again_from_the_first(pg_db) -> None:
+    """Older code paged a connector's records in the database's collation, where '-z' sorts after 'M' (the dash is ignored) and in byte order before it. A copy left at
+    'records|M' by that code must not go on after 'M' in byte order (it would never copy '-z'): it copies the records again from the first and ends verified."""
+    p, org = await fresh_world(pg_db)
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("-z", "B", "M", "q")], "records")
+
+    async def clear(tx) -> None:
+        await KgWriter(tx).changes_delete([r["id"] for r in await tx.fetch("SELECT id FROM kg.graph_changes WHERE org_id = $1", org)])
+    await run_in(pg_db, org, clear, write=True)
+    await bf.backfill_scope(pg_db, org, None)
+    await bf.backfill_scope(pg_db, org, "app1", page=2, max_batches=2)      # the app and its two groups: no record copied yet
+
+    async def older(tx) -> None:
+        await KgWriter(tx).projection_set((await load_sks(tx, org, {("apps", "app1")}))[("apps", "app1")], epoch=0, mode="legacy", digest=None, cursor="records|M", verified_at=None)
+    await run_in(pg_db, org, older, write=True)
+    out = await bf.backfill(pg_db, org, "app1", page=2)
+    assert out.flipped and out.result.ok, out.result.summary() if out.result else out.reason
+
+
 async def test_writes_during_a_backfill_are_drained_before_the_verify(pg_db) -> None:
     p, org = await fresh_world(pg_db)
     for i, op in enumerate(OPS[5:14]):

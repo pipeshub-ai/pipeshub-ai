@@ -24,6 +24,7 @@ from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE, Key, _ms, _s
 from app.services.graph_db.postgres.kg.project import project
+from app.services.graph_db.postgres.kg.reader import RECORDS_BYTE_ORDER
 from app.services.graph_db.postgres.kg.stamp import stamp_app
 from app.services.graph_db.postgres.kg.verify import (
     PAGE,
@@ -74,11 +75,13 @@ def _parse(cursor: str | None) -> Key | None:
     if not cursor or cursor == "done":
         return None
     c, _, i = cursor.partition("|")
-    return (c, i)
+    if c == "records":
+        return ("records", "")
+    return ("records", i) if c == RECORDS_BYTE_ORDER else (c, i)
 
 
 def _fmt(k: Key) -> str:
-    return f"{k[0]}|{k[1]}"
+    return f"{RECORDS_BYTE_ORDER if k[0] == 'records' else k[0]}|{k[1]}"
 
 
 # A copy carries this in its (unused until verified) digest once a batch of it was taken off the readers: it then ends not listed from. A restart or a take-back clears it with the cursor.

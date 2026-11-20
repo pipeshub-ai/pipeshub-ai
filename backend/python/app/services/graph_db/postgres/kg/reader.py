@@ -94,16 +94,41 @@ async def load_sks(tx: Tx, org: str, keys: set[Key]) -> dict[Key, int]:
     return {(CODE_COLL[r["coll"]], r["id"]): r["sk"] for r in rows}  # type: ignore[misc]
 
 
+# A connector's records in byte order of id after a cursor, a seek on the connector's index (nodes_record_connector_c). The role's own statement cannot use that index under
+# row-level security (the connector is read through a function that is not leakproof), so it would read every record of the org after the cursor for each page; the vetted read can.
+RECORDS_AFTER = "/* pipeshub:kg.records_after */ SELECT node_id FROM graph.records_page_by_connector($1, $2, $3)"
+# Beyond the vetted read's bounds (a connector id or a cursor of more than 200 characters): the same page, slowly.
+RECORDS_AFTER_LONG = """/* pipeshub:kg.records_after_long */ SELECT n.id AS node_id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'connectorId' = $2
+    AND n.id COLLATE "C" > $3::text COLLATE "C" ORDER BY n.id COLLATE "C" LIMIT $4"""
+# A cursor in a connector's records in that order is written with this collection. A cursor of "records" was written by code that paged them in the database's collation, where
+# the records after it are not those after it in byte order: what it was paging goes on from the first record (copying or stamping a node again writes the same rows).
+RECORDS_BYTE_ORDER = "records:c"
+
+
+async def records_after(tx: Tx, org: str, app_id: str, after: str, limit: int) -> list[str]:
+    """The ids of the connector's next records after ``after`` ('' from the first) in byte order: at most 1,000, whatever ``limit`` asks. A page costs its own rows."""
+    n = min(limit, 1000)
+    if 0 < len(app_id) <= 200 and len(after) <= 200:
+        return [r["node_id"] for r in await tx.fetch(RECORDS_AFTER, app_id, after, n)]
+    return [r["node_id"] for r in await tx.fetch(RECORDS_AFTER_LONG, org, app_id, after, n)]
+
+
+# One probe per parent that stops at its first child that exists: a batch costs the parents it touches, not their children, which for an app or a large folder is the whole
+# connector. LIMIT 1 keeps the lateral a loop over the parents. The parent is spelt as a range of one value in its order, as hierarchy.py spells a key: only the primary key gives
+# that order without a sort, so a leaf whose statistics do not know the org yet still seeks the parent instead of reading the org's relations.
+HAS_CHILDREN = """/* pipeshub:kg.read_has_children */ SELECT p.c AS from_coll, p.i AS from_id FROM unnest($2::text[], $3::text[]) AS p(c, i)
+    CROSS JOIN LATERAL (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id >= p.i AND e.from_id <= p.i AND e.from_coll = p.c
+      AND e.doc->>'relationshipType' = ANY($4::text[]) AND e.to_coll = ANY($5::text[])
+      AND EXISTS (SELECT 1 FROM graph.nodes c WHERE c.org_id = e.org_id AND c.coll = e.to_coll AND c.id = e.to_id) ORDER BY e.from_id LIMIT 1) x"""
+
+
 async def load_has_children(tx: Tx, org: str, keys: set[Key]) -> set[Key]:
     """The record-like keys among ``keys`` that have at least one hierarchy child that exists as a node (an edge to a node that is gone does not count)."""
-    ids = sorted({k[1] for k in keys if k[0] in RECORD_COLLS})
+    colls, ids = _split({k for k in keys if k[0] in RECORD_COLLS})
     if not ids:
         return set()
-    rows = await tx.fetch("""/* pipeshub:kg.read_has_children */ SELECT DISTINCT e.from_coll, e.from_id FROM graph.edges e
-        WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.from_id = ANY($2::text[]) AND e.doc->>'relationshipType' = ANY($3::text[])
-          AND e.to_coll = ANY($4::text[])
-          AND EXISTS (SELECT 1 FROM graph.nodes c WHERE c.org_id = e.org_id AND c.coll = e.to_coll AND c.id = e.to_id)""", org, ids, list(HIERARCHY), list(RECORD_COLLS))
-    return {(r["from_coll"], r["from_id"]) for r in rows} & keys
+    rows = await tx.fetch(HAS_CHILDREN, org, colls, ids, list(HIERARCHY), list(RECORD_COLLS))
+    return {(r["from_coll"], r["from_id"]) for r in rows}
 
 
 async def load_known_children(tx: Tx, org: str, keys: set[Key], focus: set[Key], nodes: dict[Key, dict], edges_to: dict[Key, list[GEdge]], sk: dict[Key, int]) -> set[Key]:

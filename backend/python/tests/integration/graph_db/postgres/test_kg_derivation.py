@@ -19,6 +19,7 @@ from app.services.graph_db.postgres.kg.model import (
 )
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
 from .pg_support import new_org
 
@@ -173,6 +174,41 @@ async def test_a_hierarchy_edge_to_another_collection_does_not_count_as_a_child_
         keys = {("records", "lone"), ("records", "real")}
         got = await p._q(lambda tx: reader.load_has_children(tx, org, keys), None)
     assert got == {("records", "real")}
+
+
+async def test_has_children_reads_one_child_per_parent_not_all_of_them(pg_db) -> None:
+    """A parent's ``leaf`` needs one existing hierarchy child, never the list: a batch that touches a record group of 3,000 children reads a few edges of it, fresh and analysed.
+    Children whose node is gone, and links that are not hierarchy links, still do not count."""
+    from .test_kg_read import _admin
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "big", "groupName": "big", "connectorId": "app1", "orgId": org}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("leaf", "ghosts", "late", "linked", "y")], "records")
+        await p.batch_create_edges([edge("ghosts", "records", "gone1", "records", relationshipType="PARENT_CHILD"),
+                                    edge("late", "records", "gone2", "records", relationshipType="ATTACHMENT"),
+                                    edge("late", "records", "y", "records", relationshipType="PARENT_CHILD"),
+                                    edge("linked", "records", "y", "records", relationshipType="LINKED_TO")], "nodeRelations")
+    await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1::text, 'records', 'kid-' || g, jsonb_build_object('_key', 'kid-' || g, 'orgId', $1::text,
+          'connectorId', 'app1', 'recordName', 'K' || g) FROM generate_series(1, 3000) g""", org)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, 'nodeRelations', 'recordGroups', 'big', 'records', 'kid-' || g,
+          '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 3000) g""", org)
+    keys = {("recordGroups", "big"), *(("records", k) for k in ("leaf", "ghosts", "late", "linked"))}
+    with ctx(org):
+        assert await p._q(lambda tx: reader.load_has_children(tx, org, keys), None) == {("recordGroups", "big"), ("records", "late")}
+    colls, ids = reader._split({("recordGroups", "big"), ("records", "leaf")})
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE graph.nodes; ANALYZE graph.edges")
+
+        async def go(tx) -> int:
+            ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + reader.HAS_CHILDREN, org, colls, ids, list(reader.HIERARCHY), list(reader.RECORD_COLLS))
+            # every edge row a scan produced or filtered away, over all its loops (EXPLAIN shows both per loop)
+            return sum(round((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0) + n.get("Rows Removed by Index Recheck", 0)) * n.get("Actual Loops", 1))
+                       for n in plan_gate.scans(ran, "edges"))
+        with ctx(org):
+            read = await pg_db.run(go, custom_plan=True)
+        assert read <= 2, f"{state}: {read} edge rows read to learn that 2 parents have a child"
 
 
 async def test_the_dependents_of_a_record_do_not_include_those_of_a_record_group_of_the_same_id(pg_db) -> None:

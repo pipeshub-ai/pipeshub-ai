@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg.model import Key, derive
-from app.services.graph_db.postgres.kg.reader import load_sks, snapshot
+from app.services.graph_db.postgres.kg.reader import load_sks, records_after, snapshot
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp_app
 
 if TYPE_CHECKING:
@@ -77,13 +77,22 @@ def _line(row: dict, cols: tuple[str, ...]) -> str:
     return repr(tuple(row.get(c) for c in cols))
 
 
+# The app and its record groups, in (collection, id) order (no index by connector: the org's groups are few beside its records).
+APP_GROUPS = """/* pipeshub:kg.app_nodes */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[])
+    AND ((n.coll = 'apps' AND n.id = $3) OR (n.coll = 'recordGroups' AND n.doc->>'connectorId' = $3)) AND (n.coll, n.id) > ($4, $5) ORDER BY n.coll, n.id LIMIT $6"""
+
+
 async def app_nodes(tx: Tx, org: str, app_id: str, after: Key | None, limit: int) -> list[Key]:
-    """The next page of a connector's nodes in (collection, id) order: the app, its record groups, its records."""
+    """The next page of a connector's nodes: the app and its record groups in (collection, id) order, then its records in byte order of id (at most 1,000 of them a page). A page
+    costs its own rows, wherever the cursor is."""
     c0, i0 = after if after else ("", "")
-    rows = await tx.fetch("""/* pipeshub:kg.app_nodes */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[])
-        AND ((n.coll = 'apps' AND n.id = $3) OR (n.coll <> 'apps' AND n.doc->>'connectorId' = $3)) AND (n.coll, n.id) > ($4, $5) ORDER BY n.coll, n.id LIMIT $6""",
-                          org, ["apps", "recordGroups", "records"], app_id, c0, i0, limit)
-    return [(r["coll"], r["id"]) for r in rows]
+    out: list[Key] = []
+    if c0 != "records":
+        out = [(r["coll"], r["id"]) for r in await tx.fetch(APP_GROUPS, org, ["apps", "recordGroups"], app_id, c0, i0, limit)]
+        i0 = ""
+    if len(out) < limit:
+        out += [("records", i) for i in await records_after(tx, org, app_id, i0, limit - len(out))]
+    return out
 
 
 async def _readonly(tx: Tx, org: str):  # noqa: ANN202
