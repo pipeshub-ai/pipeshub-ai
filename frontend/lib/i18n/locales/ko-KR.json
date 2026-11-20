@@ -3819,18 +3819,24 @@
         "tokenUrl": "토큰 URL",
         "scopes": "스코프",
         "scopesPlaceholder": "스코프 추가",
-        "useAdminAuth": "모든 사용자에게 공유 관리자 인증 사용",
         "headerValue": "{{headerName}}",
         "apiToken": "API 토큰",
         "credentialsHeading": "자격 증명(선택 사항)",
-        "credentialsHint": "지금 자격 증명을 추가하거나, 건너뛰고 나중에 연결 및 도구 탭에서 연결하세요.",
+        "credentialsHint": "지금 추가하거나, 나중에 서버 페이지에서 로그인하세요.",
         "multiEnvIncomplete": "모든 필수 환경 변수를 입력하거나, 나중에 연결하려면 모두 비워 두세요.",
         "oauthPairRequired": "클라이언트 ID와 클라이언트 시크릿을 모두 입력하거나, 둘 다 비워 두세요.",
-        "connectAfterCreateHint": "이 서버를 저장한 후 관리를 다시 열어 연결하세요.",
         "timeoutsHeading": "시간 제한",
         "connectTimeout": "연결 시간 제한(초)",
         "callTimeout": "도구 호출 시간 제한(초)",
-        "timeoutRange": "{{min}}에서 {{max}} 사이의 숫자를 입력하거나, 기본값을 사용하려면 비워 두세요."
+        "timeoutRange": "{{min}}에서 {{max}} 사이의 숫자를 입력하거나, 기본값을 사용하려면 비워 두세요.",
+        "whoSignsIn": "로그인 방식",
+        "signIn": {
+          "personal": "각자 자신의 자격 증명 사용",
+          "personalHint": "각자 자신의 자격 증명으로 로그인하며, 그 자격 증명이 가진 권한만 얻습니다.",
+          "shared": "모두가 쓰는 공유 자격 증명 하나",
+          "sharedHint": "아래에서 한 번만 추가합니다. 모두가 이 자격 증명의 권한으로 작업합니다."
+        },
+        "advanced": "고급"
       },
       "configPanel": {
         "editTitle": "MCP 서버 편집",
@@ -3874,7 +3880,8 @@
           "remove": "서버 삭제",
           "removeHint": "모든 사용자에게서 삭제합니다.",
           "removeHintPersonal": "서버와 로그인 정보를 삭제합니다."
-        }
+        },
+        "addTemplateTitle": "{{name}} 추가"
       },
       "oauthConfig": {
         "saved": "OAuth 앱이 저장되었습니다",
@@ -3974,6 +3981,12 @@
         "orgRulesDescription": "조직 전체에서 어떤 도구를 실행하고, 먼저 확인하고, 실행하지 않을지 정합니다. 여기서는 각자 MCP 서버 페이지에서 자신의 규칙을 설정합니다.",
         "userServersTitle": "구성원의 개인 MCP 서버",
         "userServersDescription": "조직 구성원이 직접 추가한 MCP 서버를 검토하고 삭제합니다."
+      },
+      "added": {
+        "ready": "{{name}}이(가) 추가되었으며 바로 사용할 수 있습니다.",
+        "signIn": "{{name}}이(가) 추가되었습니다. 도구를 실행하려면 아래에서 로그인하세요.",
+        "other": "{{name}}이(가) 추가되었지만 아직 작동하지 않습니다. 아래에서 이유를 확인하세요.",
+        "dismiss": "완료"
       }
     },
     "bots": {

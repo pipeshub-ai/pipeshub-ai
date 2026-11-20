@@ -41,6 +41,7 @@ function TeamMcpServersPageContent() {
   const [authDialogInstance, setAuthDialogInstance] = useState<McpMyServerEntry | null>(null);
 
   const serverId = searchParams.get('serverId');
+  const justAdded = searchParams.get('added') === '1';
   const selectedServer = useMemo(
     () => (serverId ? store.instances.find((i) => i._id === serverId) ?? null : null),
     [serverId, store.instances]
@@ -189,6 +190,8 @@ function TeamMcpServersPageContent() {
           onReauthenticate={() => handleAuthenticate(selectedServer)}
           onDisconnect={() => handleDisconnect(selectedServer)}
           onEdit={canEdit(selectedServer) ? () => store.openEditInstance(selectedServer) : undefined}
+          justAdded={justAdded}
+          onDismissAdded={() => router.replace(`${LIST_PATH}?serverId=${encodeURIComponent(selectedServer._id)}`)}
           onDelete={canEdit(selectedServer) ? () => store.openDeleteDialog(selectedServer) : undefined}
         />
       ) : (
@@ -245,7 +248,11 @@ function TeamMcpServersPageContent() {
         onOpenChange={(open) => {
           if (!open) store.closeConfigPanel();
         }}
-        onSaved={() => void loadData()}
+        onSaved={({ id, created }) => {
+          void loadData();
+          // A new server opens on its own page, where its sign-in is the next step.
+          if (created) router.push(`${LIST_PATH}?serverId=${encodeURIComponent(id)}&added=1`);
+        }}
       />
 
       <McpAuthDialog

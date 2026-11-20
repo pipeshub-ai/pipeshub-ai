@@ -317,7 +317,7 @@ describe('McpInstanceConfigPanel scope', () => {
     fireEvent.click(screen.getAllByText('Streamable HTTP').at(-1)!);
 
     choose('No authentication', 'API token');
-    expect(screen.queryByText('Use shared admin authentication for all users')).toBeNull();
+    expect(screen.queryByText('One shared credential for everyone')).toBeNull();
 
     const [nameInput] = screen.getAllByRole('textbox');
     fireEvent.change(nameInput, { target: { value: 'Mine' } });
@@ -344,6 +344,8 @@ describe('McpInstanceConfigPanel scope', () => {
     fireEvent.change(screen.getByPlaceholderText('https://example.com/mcp'), {
       target: { value: 'https://mcp.example.com/mcp' },
     });
+    expect(screen.queryByPlaceholderText('15')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
     const connect = screen.getByPlaceholderText('15');
     fireEvent.change(connect, { target: { value: '500' } });
     expect(screen.getByText('Enter a number from 1 to 45, or leave it blank for the default.')).toBeTruthy();
@@ -368,7 +370,87 @@ describe('McpInstanceConfigPanel scope', () => {
 
     expect(screen.getByText('STDIO (command)')).toBeTruthy();
     choose('No authentication', 'API token');
-    expect(screen.getByText('Use shared admin authentication for all users')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /Each person uses their own/, checked: true })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /One shared credential for everyone/, checked: false })).toBeTruthy();
+  });
+
+  it('tells the page a new server was created, so it can open it', async () => {
+    const onSaved = vi.fn();
+    renderInTheme(
+      <McpInstanceConfigPanel
+        scope="personal"
+        customStdioAllowed={false}
+        state={{ open: true, mode: 'create', editingInstance: null, prefillTemplate: null }}
+        templates={[]}
+        instances={[]}
+        onOpenChange={noop}
+        onSaved={onSaved}
+      />,
+    );
+
+    const [nameInput] = screen.getAllByRole('textbox');
+    fireEvent.change(nameInput, { target: { value: 'Mine' } });
+    fireEvent.change(screen.getByPlaceholderText('https://example.com/mcp'), { target: { value: 'https://mcp.example.com/mcp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith({ id: 'new-1', created: true }));
+  });
+
+  it('asks whose credentials people use in plain words, and saves the shared choice', async () => {
+    renderPanel('org', false);
+    choose('No authentication', 'API token');
+
+    expect(screen.queryByText('Use shared admin authentication for all users')).toBeNull();
+    fireEvent.click(screen.getByText('One shared credential for everyone'));
+    const [nameInput] = screen.getAllByRole('textbox');
+    fireEvent.change(nameInput, { target: { value: 'Team' } });
+    fireEvent.change(screen.getByPlaceholderText('https://example.com/mcp'), { target: { value: 'https://mcp.example.com/mcp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(mcpApi.createInstance).toHaveBeenCalledOnce());
+    expect(mcpApi.createInstance.mock.calls[0][0]).toMatchObject({ authMode: 'api_token', useAdminAuth: true });
+  });
+
+  it('names the catalog server being added, and keeps an OAuth client the provider does not need under Advanced', async () => {
+    mcpApi.discoverOAuthMetadata.mockResolvedValue({ supportsDcr: true, metadataFound: true, scopesSupported: [] });
+    renderInTheme(
+      <McpInstanceConfigPanel
+        scope="org"
+        customStdioAllowed={false}
+        state={{ open: true, mode: 'create', editingInstance: null, prefillTemplate: template({ defaultUrl: 'https://mcp.remote.example.com/mcp' }) }}
+        templates={[]}
+        instances={[]}
+        onOpenChange={noop}
+        onSaved={noop}
+      />,
+    );
+
+    expect(screen.getAllByText('Add Remote One').length).toBeGreaterThan(0);
+    await waitFor(() => expect(mcpApi.discoverOAuthMetadata).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText('Client ID')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    expect(screen.getByText('Client ID')).toBeTruthy();
+  });
+
+  it('keeps description and timeouts under Advanced, open when the server already uses them', () => {
+    renderPanel('org');
+    expect(screen.queryByText('Description')).toBeNull();
+    cleanup();
+
+    const editing = entry({ url: 'https://mcp.example.com/mcp', callTimeoutSeconds: 120 });
+    renderInTheme(
+      <McpInstanceConfigPanel
+        scope="org"
+        customStdioAllowed
+        state={{ open: true, mode: 'edit', editingInstance: editing, prefillTemplate: null }}
+        templates={[]}
+        instances={[editing]}
+        onOpenChange={noop}
+        onSaved={noop}
+      />,
+    );
+    expect(screen.getByDisplayValue('120')).toBeTruthy();
+    expect(screen.getByText('Description')).toBeTruthy();
   });
 
   it('edits a server with its settings only: its tools are on the server page', () => {
@@ -628,6 +710,27 @@ describe('McpServerPage', () => {
     it('offers no Edit on a server someone else added', () => {
       renderPage(entry({ createdBy: '' }), { ...personal, onEdit: undefined, onDelete: undefined });
       expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    });
+  });
+
+  describe('just added', () => {
+    it('says the next step is to sign in, and goes away when dismissed', () => {
+      const onDismissAdded = vi.fn();
+      renderPage(entry({ name: 'Jira', authMode: 'oauth', isAuthenticated: false }), { justAdded: true, onDismissAdded });
+
+      expect(within(screen.getByTestId('mcp-server-added')).getByText('Jira is added. Sign in below so its tools can run.')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      expect(onDismissAdded).toHaveBeenCalled();
+    });
+
+    it('says it is ready when nothing is left to do', () => {
+      renderPage(entry({ name: 'Docs', createdBy: '' }), { justAdded: true });
+      expect(screen.getByText('Docs is added and ready to use.')).toBeTruthy();
+    });
+
+    it('is not shown on a server opened from the list', () => {
+      renderPage(entry({ createdBy: '' }));
+      expect(screen.queryByTestId('mcp-server-added')).toBeNull();
     });
   });
 

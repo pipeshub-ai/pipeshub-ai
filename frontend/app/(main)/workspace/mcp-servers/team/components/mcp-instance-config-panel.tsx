@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Callout, Checkbox, Flex, Grid, IconButton, Text, TextField, Tooltip } from '@radix-ui/themes';
+import { Box, Callout, Flex, Grid, IconButton, RadioGroup, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { toast } from '@/lib/store/toast-store';
@@ -68,7 +68,8 @@ interface McpInstanceConfigPanelProps {
   /** Operator setting from `GET /catalog`; custom STDIO servers are refused when false. */
   customStdioAllowed: boolean;
   onOpenChange: (open: boolean) => void;
-  onSaved: () => void;
+  /** `created` is true for a new server, which the page then opens. */
+  onSaved: (saved: { id: string; created: boolean }) => void;
   /** Where a new instance is created; an existing one keeps its own. Defaults to `org`. */
   scope?: McpInstanceScope;
 }
@@ -150,6 +151,7 @@ export function McpInstanceConfigPanel({
   const [logoDraft, setLogoDraft] = useState<string | null | undefined>(undefined);
   const [isReadingLogo, setIsReadingLogo] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [pendingImpact, setPendingImpact] = useState<McpEditCredentialImpact>('none');
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(open);
 
@@ -191,7 +193,18 @@ export function McpInstanceConfigPanel({
       setScopeTags(stringsToTags(editingInstance.scopes ?? []));
       setConnectTimeout(editingInstance.connectTimeoutSeconds ? String(editingInstance.connectTimeoutSeconds) : '');
       setCallTimeout(editingInstance.callTimeoutSeconds ? String(editingInstance.callTimeoutSeconds) : '');
+      setShowAdvanced(
+        Boolean(
+          editingInstance.description ||
+            editingInstance.connectTimeoutSeconds ||
+            editingInstance.callTimeoutSeconds ||
+            editingInstance.authorizationUrl ||
+            editingInstance.tokenUrl ||
+            editingInstance.scopes?.length
+        )
+      );
     } else if (prefillTemplate) {
+      setShowAdvanced(false);
       setName(prefillTemplate.displayName);
       setDescription(prefillTemplate.description);
       setTransport(prefillTemplate.transport);
@@ -208,6 +221,7 @@ export function McpInstanceConfigPanel({
       setConnectTimeout('');
       setCallTimeout('');
     } else {
+      setShowAdvanced(false);
       setName('');
       setDescription('');
       setTransport(customStdioAllowedRef.current && !isPersonal ? 'stdio' : 'streamable_http');
@@ -525,7 +539,7 @@ export function McpInstanceConfigPanel({
       if (ended()) return;
 
       reportSaved();
-      onSaved();
+      onSaved({ id: instanceId, created: mode === 'create' });
       onOpenChange(false);
     } catch (error) {
       if (ended()) return;
@@ -541,13 +555,155 @@ export function McpInstanceConfigPanel({
   const panelTitle =
     mode === 'edit'
       ? t('workspace.mcpServers.configPanel.editTitle')
-      : t('workspace.mcpServers.configPanel.createTitle');
+      : prefillTemplate
+        ? t('workspace.mcpServers.configPanel.addTemplateTitle', { name: prefillTemplate.displayName })
+        : t('workspace.mcpServers.configPanel.createTitle');
 
   const apiTokenLabel = resolvedTemplate?.authHint?.label || t('workspace.mcpServers.form.apiToken');
   const apiTokenPlaceholder = resolvedTemplate?.authHint?.placeholder ?? undefined;
   const credentialsPlaceholder = mode === 'edit' ? t('form.leaveBlankToKeep') : undefined;
 
   const showFooter = mode === 'create' || !isReadOnly;
+  const advancedOpen = showAdvanced || !connectTimeoutInput.valid || !callTimeoutInput.valid;
+  // A provider that registers PipesHub by itself needs no OAuth client, so its fields wait under Advanced.
+  const oauthClientOptional =
+    authMode === 'oauth' && !oauthClientRequired && dcrSupported === true && !(mode === 'edit' && hasExistingOAuthClient);
+
+  const credentialsBox = (
+    <Flex
+      direction="column"
+      gap="3"
+      style={{
+        padding: 'var(--space-3)',
+        borderRadius: 'var(--radius-2)',
+        border: '1px solid var(--olive-4)',
+        backgroundColor: 'var(--olive-2)',
+      }}
+    >
+      <Flex direction="column" gap="1">
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+          {t('workspace.mcpServers.form.credentialsHeading')}
+        </Text>
+        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          {t('workspace.mcpServers.form.credentialsHint')}
+        </Text>
+      </Flex>
+
+      {authMode === 'api_token' && multiEnvAuth &&
+        envKeys.map((envKey) => {
+          const isRequired = effectiveRequiredEnv.includes(envKey);
+          return (
+            <FormField key={envKey} label={envKey} optional={!isRequired}>
+              <SecretTextField
+                size="2"
+                masked={isSecretFieldName(envKey)}
+                value={envValues[envKey] ?? ''}
+                onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
+                placeholder={credentialsPlaceholder}
+              />
+            </FormField>
+          );
+        })}
+
+      {authMode === 'api_token' && !multiEnvAuth && (
+        <FormField label={apiTokenLabel} optional>
+          <SecretTextField
+            size="2"
+            value={apiToken}
+            onChange={(e) => setApiToken(e.target.value)}
+            placeholder={credentialsPlaceholder ?? apiTokenPlaceholder}
+          />
+        </FormField>
+      )}
+
+      {authMode === 'headers' && (
+        <FormField
+          label={t('workspace.mcpServers.form.headerValue', { headerName: headerName || 'Authorization' })}
+          optional
+        >
+          <SecretTextField
+            size="2"
+            value={headerValue}
+            onChange={(e) => setHeaderValue(e.target.value)}
+            placeholder={credentialsPlaceholder}
+          />
+        </FormField>
+      )}
+
+      {authMode === 'oauth' && (
+        <>
+          <McpOAuthCallbackUrlCard
+            callbackUrl={resolveMcpOAuthCallbackUrl(dcrProbe, existingOAuthConfig)}
+            dcrProbe={dcrProbe}
+            dcrSupported={dcrSupported}
+            documentationUrl={resolvedTemplate?.documentationUrl}
+          />
+          {mode === 'edit' &&
+            hasExistingOAuthClient &&
+            revealAvailable &&
+            !isReadOnly &&
+            !oauthClientRevealed && (
+              <Flex justify="end">
+                <ShowStoredValuesButton
+                  loading={revealingOAuthClient}
+                  onClick={() => void handleRevealOAuthClient()}
+                />
+              </Flex>
+            )}
+          <FormField
+            label={t('workspace.mcpServers.oauthConfig.clientId')}
+            required={oauthClientRequired}
+            optional={!oauthClientRequired}
+            error={oauthPairError}
+          >
+            <TextField.Root
+              size="2"
+              value={oauthClientId}
+              onChange={(e) => setOauthClientId(e.target.value)}
+              placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientIdPlaceholder')}
+            />
+          </FormField>
+          <FormField
+            label={t('workspace.mcpServers.oauthConfig.clientSecret')}
+            required={oauthClientRequired}
+            optional={!oauthClientRequired}
+          >
+            <SecretTextField
+              size="2"
+              masked={!showOauthClientSecret}
+              value={oauthClientSecret}
+              onChange={(e) => setOauthClientSecret(e.target.value)}
+              placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientSecretPlaceholder')}
+            >
+              <TextField.Slot side="right">
+                <IconButton
+                  type="button"
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={() => setShowOauthClientSecret((v) => !v)}
+                  style={{ cursor: 'pointer', ...(isMobile ? { minWidth: 44, minHeight: 44 } : null) }}
+                >
+                  <MaterialIcon
+                    name={showOauthClientSecret ? 'visibility_off' : 'visibility'}
+                    size={16}
+                    color="var(--gray-10)"
+                  />
+                </IconButton>
+              </TextField.Slot>
+            </SecretTextField>
+            <McpClientSecretPrefixHint prefix={resolvedTemplate?.clientSecretPrefix} secret={oauthClientSecret} />
+          </FormField>
+          {mode === 'edit' && hasExistingOAuthClient && (
+            <Text size="1" style={{ color: 'var(--amber-11)' }}>
+              {t('workspace.mcpServers.oauthConfig.alreadyConfigured')}
+              {existingOAuthConfig?.clientId ? ` (${existingOAuthConfig.clientId})` : ''}
+            </Text>
+          )}
+        </>
+      )}
+    </Flex>
+  );
 
   const configurationForm = (
     <Flex direction="column" gap="4">
@@ -557,19 +713,6 @@ export function McpInstanceConfigPanel({
       <FormField label={t('workspace.mcpServers.form.name')} required>
         <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
       </FormField>
-
-      <FormField label={t('workspace.mcpServers.form.description')} optional>
-        <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
-      </FormField>
-
-      {!isTemplateBased && !isReadOnly && (
-        <McpLogoField
-          key={editingInstance?._id ?? 'new'}
-          logo={logoDraft === undefined ? savedLogo : logoDraft}
-          onChange={setLogoDraft}
-          onReadingChange={setIsReadingLogo}
-        />
-      )}
 
       {!isTemplateBased && (
         <FormField label={t('workspace.mcpServers.form.transport')} required>
@@ -658,221 +801,155 @@ export function McpInstanceConfigPanel({
         </FormField>
       )}
 
-      {authMode === 'oauth' && !isTemplateBased && (
-        <>
-          <FormField label={t('workspace.mcpServers.form.authorizationUrl')} optional>
-            <TextField.Root
-              size="2"
-              value={authorizationUrl}
-              onChange={(e) => setAuthorizationUrl(e.target.value)}
-              placeholder={t('workspace.mcpServers.form.dcrHint')}
-            />
-          </FormField>
-          <FormField label={t('workspace.mcpServers.form.tokenUrl')} optional>
-            <TextField.Root size="2" value={tokenUrl} onChange={(e) => setTokenUrl(e.target.value)} />
-          </FormField>
-          <FormField label={t('workspace.mcpServers.form.scopes')} optional>
-            <TagInput tags={scopeTags} onTagsChange={setScopeTags} placeholder={t('workspace.mcpServers.form.scopesPlaceholder')} />
-          </FormField>
-        </>
-      )}
-
       {canUseAdminAuth && (
-        <Flex align="center" gap="2">
-          <Checkbox checked={useAdminAuth} onCheckedChange={(v) => setUseAdminAuth(v === true)} />
-          <Text size="2" style={{ color: 'var(--slate-12)' }}>
-            {t('workspace.mcpServers.form.useAdminAuth')}
-          </Text>
-        </Flex>
+        <FormField label={t('workspace.mcpServers.form.whoSignsIn')} required>
+          <RadioGroup.Root value={useAdminAuth ? 'shared' : 'personal'} onValueChange={(v) => setUseAdminAuth(v === 'shared')}>
+            <Flex direction="column" gap="2">
+              {(['personal', 'shared'] as const).map((choice) => {
+                const on = (choice === 'shared') === useAdminAuth;
+                return (
+                  <Text
+                    as="label"
+                    key={choice}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 'var(--space-3)',
+                      padding: 'var(--space-3)',
+                      borderRadius: 'var(--radius-2)',
+                      border: `1px solid ${on ? 'var(--accent-7)' : 'var(--olive-4)'}`,
+                      background: on ? 'var(--accent-2)' : 'var(--olive-2)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <RadioGroup.Item value={choice} style={{ marginTop: 2, flexShrink: 0 }} />
+                    <Flex direction="column" gap="1">
+                      <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                        {t(`workspace.mcpServers.form.signIn.${choice}`)}
+                      </Text>
+                      <Text size="1" style={{ color: 'var(--gray-11)' }}>
+                        {t(`workspace.mcpServers.form.signIn.${choice}Hint`)}
+                      </Text>
+                    </Flex>
+                  </Text>
+                );
+              })}
+            </Flex>
+          </RadioGroup.Root>
+        </FormField>
       )}
 
-      {authMode !== 'none' && (
-        <Flex
-          direction="column"
-          gap="3"
+      {authMode !== 'none' && !oauthClientOptional && credentialsBox}
+
+      <Box>
+        <button
+          type="button"
+          aria-expanded={advancedOpen}
+          onClick={() => setShowAdvanced((v) => !v)}
           style={{
-            padding: 'var(--space-3)',
-            borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--olive-4)',
-            backgroundColor: 'var(--olive-2)',
+            appearance: 'none',
+            margin: 0,
+            padding: 0,
+            border: 'none',
+            background: 'none',
+            font: 'inherit',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
           }}
         >
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('workspace.mcpServers.form.credentialsHeading')}
-            </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
-              {t('workspace.mcpServers.form.credentialsHint')}
-            </Text>
-          </Flex>
+          <MaterialIcon name={advancedOpen ? 'expand_more' : 'chevron_right'} size={18} color="var(--gray-11)" />
+          <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }}>
+            {t('workspace.mcpServers.form.advanced')}
+          </Text>
+        </button>
+      </Box>
 
-          {authMode === 'api_token' && multiEnvAuth &&
-            envKeys.map((envKey) => {
-              const isRequired = effectiveRequiredEnv.includes(envKey);
-              return (
-                <FormField key={envKey} label={envKey} optional={!isRequired}>
-                  <SecretTextField
-                    size="2"
-                    masked={isSecretFieldName(envKey)}
-                    value={envValues[envKey] ?? ''}
-                    onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
-                    placeholder={credentialsPlaceholder}
-                  />
-                </FormField>
-              );
-            })}
+      {advancedOpen && (
+        <Flex direction="column" gap="4" style={{ paddingLeft: 'var(--space-3)', borderLeft: '2px solid var(--olive-4)' }}>
+          {oauthClientOptional && credentialsBox}
+          <FormField label={t('workspace.mcpServers.form.description')} optional>
+            <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
+          </FormField>
 
-          {authMode === 'api_token' && !multiEnvAuth && (
-            <FormField label={apiTokenLabel} optional>
-              <SecretTextField
-                size="2"
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                placeholder={credentialsPlaceholder ?? apiTokenPlaceholder}
-              />
-            </FormField>
+          {!isTemplateBased && !isReadOnly && (
+            <McpLogoField
+              key={editingInstance?._id ?? 'new'}
+              logo={logoDraft === undefined ? savedLogo : logoDraft}
+              onChange={setLogoDraft}
+              onReadingChange={setIsReadingLogo}
+            />
           )}
 
-          {authMode === 'headers' && (
-            <FormField
-              label={t('workspace.mcpServers.form.headerValue', { headerName: headerName || 'Authorization' })}
-              optional
-            >
-              <SecretTextField
-                size="2"
-                value={headerValue}
-                onChange={(e) => setHeaderValue(e.target.value)}
-                placeholder={credentialsPlaceholder}
-              />
-            </FormField>
-          )}
-
-          {authMode === 'oauth' && (
+          {authMode === 'oauth' && !isTemplateBased && (
             <>
-              <McpOAuthCallbackUrlCard
-                callbackUrl={resolveMcpOAuthCallbackUrl(dcrProbe, existingOAuthConfig)}
-                dcrProbe={dcrProbe}
-                dcrSupported={dcrSupported}
-                documentationUrl={resolvedTemplate?.documentationUrl}
-              />
-              {mode === 'edit' &&
-                hasExistingOAuthClient &&
-                revealAvailable &&
-                !isReadOnly &&
-                !oauthClientRevealed && (
-                  <Flex justify="end">
-                    <ShowStoredValuesButton
-                      loading={revealingOAuthClient}
-                      onClick={() => void handleRevealOAuthClient()}
-                    />
-                  </Flex>
-                )}
+              <FormField label={t('workspace.mcpServers.form.authorizationUrl')} optional>
+                <TextField.Root
+                  size="2"
+                  value={authorizationUrl}
+                  onChange={(e) => setAuthorizationUrl(e.target.value)}
+                  placeholder={t('workspace.mcpServers.form.dcrHint')}
+                />
+              </FormField>
+              <FormField label={t('workspace.mcpServers.form.tokenUrl')} optional>
+                <TextField.Root size="2" value={tokenUrl} onChange={(e) => setTokenUrl(e.target.value)} />
+              </FormField>
+              <FormField label={t('workspace.mcpServers.form.scopes')} optional>
+                <TagInput tags={scopeTags} onTagsChange={setScopeTags} placeholder={t('workspace.mcpServers.form.scopesPlaceholder')} />
+              </FormField>
+            </>
+          )}
+
+          <Flex direction="column" gap="3">
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              {t('workspace.mcpServers.form.timeoutsHeading')}
+            </Text>
+            <Grid columns="2" gap="3">
               <FormField
-                label={t('workspace.mcpServers.oauthConfig.clientId')}
-                required={oauthClientRequired}
-                optional={!oauthClientRequired}
-                error={oauthPairError}
+                label={t('workspace.mcpServers.form.connectTimeout')}
+                optional
+                error={
+                  connectTimeoutInput.valid
+                    ? undefined
+                    : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.connect)
+                }
               >
                 <TextField.Root
                   size="2"
-                  value={oauthClientId}
-                  onChange={(e) => setOauthClientId(e.target.value)}
-                  placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientIdPlaceholder')}
+                  type="number"
+                  inputMode="numeric"
+                  value={connectTimeout}
+                  onChange={(e) => setConnectTimeout(e.target.value)}
+                  placeholder="15"
                 />
               </FormField>
               <FormField
-                label={t('workspace.mcpServers.oauthConfig.clientSecret')}
-                required={oauthClientRequired}
-                optional={!oauthClientRequired}
+                label={t('workspace.mcpServers.form.callTimeout')}
+                optional
+                error={
+                  callTimeoutInput.valid ? undefined : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.call)
+                }
               >
-                <SecretTextField
+                <TextField.Root
                   size="2"
-                  masked={!showOauthClientSecret}
-                  value={oauthClientSecret}
-                  onChange={(e) => setOauthClientSecret(e.target.value)}
-                  placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientSecretPlaceholder')}
-                >
-                  <TextField.Slot side="right">
-                    <IconButton
-                      type="button"
-                      variant="ghost"
-                      color="gray"
-                      size="1"
-                      onClick={() => setShowOauthClientSecret((v) => !v)}
-                      style={{ cursor: 'pointer', ...(isMobile ? { minWidth: 44, minHeight: 44 } : null) }}
-                    >
-                      <MaterialIcon
-                        name={showOauthClientSecret ? 'visibility_off' : 'visibility'}
-                        size={16}
-                        color="var(--gray-10)"
-                      />
-                    </IconButton>
-                  </TextField.Slot>
-                </SecretTextField>
-                <McpClientSecretPrefixHint prefix={resolvedTemplate?.clientSecretPrefix} secret={oauthClientSecret} />
+                  type="number"
+                  inputMode="numeric"
+                  value={callTimeout}
+                  onChange={(e) => setCallTimeout(e.target.value)}
+                  placeholder="60"
+                />
               </FormField>
-              {mode === 'edit' && hasExistingOAuthClient && (
-                <Text size="1" style={{ color: 'var(--amber-11)' }}>
-                  {t('workspace.mcpServers.oauthConfig.alreadyConfigured')}
-                  {existingOAuthConfig?.clientId ? ` (${existingOAuthConfig.clientId})` : ''}
-                </Text>
-              )}
-            </>
-          )}
+            </Grid>
+          </Flex>
+
         </Flex>
       )}
-
-      <Flex direction="column" gap="3">
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          {t('workspace.mcpServers.form.timeoutsHeading')}
-        </Text>
-        <Grid columns="2" gap="3">
-          <FormField
-            label={t('workspace.mcpServers.form.connectTimeout')}
-            optional
-            error={
-              connectTimeoutInput.valid
-                ? undefined
-                : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.connect)
-            }
-          >
-            <TextField.Root
-              size="2"
-              type="number"
-              inputMode="numeric"
-              value={connectTimeout}
-              onChange={(e) => setConnectTimeout(e.target.value)}
-              placeholder="15"
-            />
-          </FormField>
-          <FormField
-            label={t('workspace.mcpServers.form.callTimeout')}
-            optional
-            error={
-              callTimeoutInput.valid ? undefined : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.call)
-            }
-          >
-            <TextField.Root
-              size="2"
-              type="number"
-              inputMode="numeric"
-              value={callTimeout}
-              onChange={(e) => setCallTimeout(e.target.value)}
-              placeholder="60"
-            />
-          </FormField>
-        </Grid>
-      </Flex>
 
       {!isPersonal && (
         <McpManageAccess serverId={editingInstance?._id ?? null} disabled={isReadOnly} saveRef={manageAccessSave} />
       )}
 
-      {mode === 'create' && authMode !== 'none' && !useAdminAuth && (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
-          {t('workspace.mcpServers.form.connectAfterCreateHint')}
-        </Text>
-      )}
     </Flex>
   );
 

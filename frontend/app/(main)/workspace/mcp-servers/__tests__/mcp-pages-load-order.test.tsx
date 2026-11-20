@@ -88,6 +88,16 @@ describe('the personal MCP servers page', () => {
     expect(router.push).toHaveBeenCalledWith('/workspace/mcp-servers/personal/');
   });
 
+  it('says what is left on a server just added, and drops the note from the address when dismissed', async () => {
+    params.current = new URLSearchParams('serverId=inst-Jira&added=1');
+    mcpApi.getMyMcpServers.mockResolvedValue({ instances: [server('Jira', { authMode: 'oauth', isAuthenticated: false })] });
+    renderInTheme(<PersonalMcpServersPage />);
+
+    expect(await screen.findByText('Jira is added. Sign in below so its tools can run.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(router.replace).toHaveBeenCalledWith('/workspace/mcp-servers/personal/?serverId=inst-Jira');
+  });
+
   it('shows the list when the server in the address is gone', async () => {
     params.current = new URLSearchParams('serverId=inst-Deleted');
     mcpApi.getMyMcpServers.mockResolvedValue({ instances: [server('Jira')] });

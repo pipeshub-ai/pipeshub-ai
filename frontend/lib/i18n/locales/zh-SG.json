@@ -3819,18 +3819,24 @@
         "tokenUrl": "Token URL",
         "scopes": "权限范围",
         "scopesPlaceholder": "添加权限范围",
-        "useAdminAuth": "为所有用户使用共享的管理员认证",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "凭证（可选）",
-        "credentialsHint": "现在添加凭证，或跳过并稍后在“连接与工具”标签页中连接。",
+        "credentialsHint": "现在添加，或稍后在服务器页面登录。",
         "multiEnvIncomplete": "请填写所有必需的环境变量，或全部留空以便稍后连接。",
         "oauthPairRequired": "请同时输入客户端 ID 和客户端密钥，或两者都留空。",
-        "connectAfterCreateHint": "保存此服务器，然后重新打开“管理”进行连接。",
         "timeoutsHeading": "超时",
         "connectTimeout": "连接超时（秒）",
         "callTimeout": "工具调用超时（秒）",
-        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。"
+        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。",
+        "whoSignsIn": "成员如何登录",
+        "signIn": {
+          "personal": "每人使用自己的凭据",
+          "personalHint": "每个人用自己的凭据登录，只获得这些凭据拥有的权限。",
+          "shared": "所有人共用一个凭据",
+          "sharedHint": "你在下方添加一次。所有人都以它的权限操作。"
+        },
+        "advanced": "高级"
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",
@@ -3874,7 +3880,8 @@
           "remove": "删除服务器",
           "removeHint": "为所有人删除它。",
           "removeHintPersonal": "删除它及您的登录信息。"
-        }
+        },
+        "addTemplateTitle": "添加 {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth 应用已保存",
@@ -3974,6 +3981,12 @@
         "orgRulesDescription": "为组织中的所有人决定哪些工具直接运行、先询问或从不运行。在这里，每个人在自己的 MCP 服务器页面设置自己的规则。",
         "userServersTitle": "成员自己的 MCP 服务器",
         "userServersDescription": "查看并移除组织成员为自己添加的 MCP 服务器。"
+      },
+      "added": {
+        "ready": "{{name}} 已添加，可以使用了。",
+        "signIn": "{{name}} 已添加。请在下方登录，以便运行它的工具。",
+        "other": "{{name}} 已添加，但还不能使用。原因见下方。",
+        "dismiss": "完成"
       }
     },
     "bots": {

@@ -12,7 +12,7 @@ import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@/config';
 import { ConfirmationDialog } from '../../components';
-import { McpStatusBadge, usesSharedCredential } from '../connection-state';
+import { McpStatusBadge, mcpStatusGroup, usesSharedCredential } from '../connection-state';
 import { isOfferedForNewServers, replacementFor } from '../catalog-replacement';
 import { useMcpServerTools } from '../hooks/use-mcp-server-tools';
 import { McpServerActionsMenu, type McpMenuEntry } from '../team/components/mcp-panel-header';
@@ -42,6 +42,9 @@ interface McpServerPageProps {
   /** Absent where this person can't change the server. */
   onEdit?: () => void;
   onDelete?: () => void;
+  /** Just added: say what is left before it can be used, until the person dismisses it. */
+  justAdded?: boolean;
+  onDismissAdded?: () => void;
 }
 
 /** One server: how it is doing, what fixes it, and its tools. */
@@ -57,6 +60,8 @@ export function McpServerPage({
   onDisconnect,
   onEdit,
   onDelete,
+  justAdded = false,
+  onDismissAdded,
 }: McpServerPageProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -138,6 +143,9 @@ export function McpServerPage({
       onSelect: onDelete,
     });
   }
+
+  const addedGroup = mcpStatusGroup(connectionState);
+  const addedColor = addedGroup === 'ready' ? 'green' : addedGroup === 'action' ? 'blue' : 'amber';
 
   // Unsaved rule changes are asked about before leaving the page.
   const requestBack = () => {
@@ -237,6 +245,40 @@ export function McpServerPage({
       </Flex>
 
       <McpInheritedCallout instance={instance} />
+
+      {justAdded && (
+        <Flex
+          role="status"
+          align="center"
+          gap="3"
+          wrap="wrap"
+          data-testid="mcp-server-added"
+          style={{
+            width: '100%',
+            maxWidth: CONTENT_WIDTH,
+            padding: 'var(--space-3)',
+            borderRadius: 'var(--radius-3)',
+            backgroundColor: `var(--${addedColor}-a3)`,
+          }}
+        >
+          <MaterialIcon name="check_circle" size={18} color={`var(--${addedColor}-11)`} />
+          <Text size="2" style={{ flex: '1 1 240px', minWidth: 0, color: `var(--${addedColor}-11)` }}>
+            {t(
+              addedGroup === 'ready'
+                ? 'workspace.mcpServers.added.ready'
+                : addedGroup === 'action'
+                  ? 'workspace.mcpServers.added.signIn'
+                  : 'workspace.mcpServers.added.other',
+              { name: instance.name }
+            )}
+          </Text>
+          {onDismissAdded && (
+            <Button size="1" variant="soft" color="gray" onClick={onDismissAdded} style={{ cursor: 'pointer' }}>
+              {t('workspace.mcpServers.added.dismiss')}
+            </Button>
+          )}
+        </Flex>
+      )}
 
       <Box style={{ flex: 1, minHeight: 0, width: '100%', maxWidth: CONTENT_WIDTH }}>
         <McpToolsApprovalsTab

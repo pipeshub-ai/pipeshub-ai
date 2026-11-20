@@ -3945,18 +3945,24 @@
         "tokenUrl": "URL tokenu",
         "scopes": "Rozsahy",
         "scopesPlaceholder": "Přidat rozsah",
-        "useAdminAuth": "Použít sdílené ověření správce pro všechny uživatele",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "Přihlašovací údaje (volitelné)",
-        "credentialsHint": "Přidejte přihlašovací údaje nyní, nebo tento krok přeskočte a připojte se později na kartě Připojení a nástroje.",
+        "credentialsHint": "Přidejte je teď, nebo se přihlaste později na stránce serveru.",
         "multiEnvIncomplete": "Vyplňte všechny požadované proměnné prostředí, nebo je všechny ponechte prázdné a připojte se později.",
         "oauthPairRequired": "Zadejte ID klienta i tajný klíč klienta, nebo ponechte obě pole prázdná.",
-        "connectAfterCreateHint": "Uložte tento server a poté znovu otevřete Spravovat, abyste jej připojili.",
         "timeoutsHeading": "Časové limity",
         "connectTimeout": "Časový limit připojení (sekundy)",
         "callTimeout": "Časový limit volání nástroje (sekundy)",
-        "timeoutRange": "Zadejte číslo od {{min}} do {{max}}, nebo ponechte prázdné pro výchozí hodnotu."
+        "timeoutRange": "Zadejte číslo od {{min}} do {{max}}, nebo ponechte prázdné pro výchozí hodnotu.",
+        "whoSignsIn": "Jak se lidé přihlašují",
+        "signIn": {
+          "personal": "Každý používá své vlastní",
+          "personalHint": "Každý se přihlásí svými přihlašovacími údaji a získá jen přístup, který mají.",
+          "shared": "Jeden sdílený přihlašovací údaj pro všechny",
+          "sharedHint": "Přidáte ho jednou níže. Všichni pak jednají s jeho přístupem."
+        },
+        "advanced": "Pokročilé"
       },
       "configPanel": {
         "editTitle": "Upravit MCP server",
@@ -4004,7 +4010,8 @@
           "remove": "Smazat server",
           "removeHint": "Smaže jej pro všechny.",
           "removeHintPersonal": "Smaže jej i vaše přihlášení."
-        }
+        },
+        "addTemplateTitle": "Přidat {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth aplikace byla uložena",
@@ -4108,6 +4115,12 @@
         "orgRulesDescription": "Rozhodněte, které nástroje se spouštějí, které se nejprve ptají a které se nikdy nespustí, a to pro všechny ve vaší organizaci. Lidé si vlastní pravidla nastavují na své stránce MCP serverů.",
         "userServersTitle": "Vlastní MCP servery uživatelů",
         "userServersDescription": "Zkontrolujte a odeberte MCP servery, které si lidé ve vaší organizaci přidali sami."
+      },
+      "added": {
+        "ready": "{{name}} je přidán a připraven k použití.",
+        "signIn": "{{name}} je přidán. Přihlaste se níže, aby jeho nástroje mohly běžet.",
+        "other": "{{name}} je přidán, ale zatím nefunguje. Důvod najdete níže.",
+        "dismiss": "Hotovo"
       }
     },
     "bots": {

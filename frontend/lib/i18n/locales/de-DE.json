@@ -3678,18 +3678,24 @@
         "tokenUrl": "Token-URL",
         "scopes": "Berechtigungen",
         "scopesPlaceholder": "Berechtigung hinzufügen",
-        "useAdminAuth": "Gemeinsame Admin-Authentifizierung für alle Benutzer verwenden",
         "headerValue": "{{headerName}}",
         "apiToken": "API-Token",
         "credentialsHeading": "Anmeldedaten (optional)",
-        "credentialsHint": "Fügen Sie jetzt Anmeldedaten hinzu oder überspringen Sie dies und verbinden Sie sich später über den Tab \"Verbindung & Tools\".",
+        "credentialsHint": "Fügen Sie sie jetzt hinzu oder melden Sie sich später auf der Seite des Servers an.",
         "multiEnvIncomplete": "Füllen Sie jede erforderliche Umgebungsvariable aus, oder lassen Sie alle leer, um später zu verbinden.",
         "oauthPairRequired": "Geben Sie sowohl die Client-ID als auch das Client-Secret ein, oder lassen Sie beide leer.",
-        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden.",
         "timeoutsHeading": "Zeitlimits",
         "connectTimeout": "Verbindungszeitlimit (Sekunden)",
         "callTimeout": "Zeitlimit für Tool-Aufrufe (Sekunden)",
-        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer."
+        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer.",
+        "whoSignsIn": "Wie sich Personen anmelden",
+        "signIn": {
+          "personal": "Jede Person nutzt eigene Zugangsdaten",
+          "personalHint": "Personen melden sich mit ihren eigenen Zugangsdaten an und erhalten nur deren Zugriff.",
+          "shared": "Gemeinsame Zugangsdaten für alle",
+          "sharedHint": "Sie fügen sie einmal unten hinzu. Alle handeln mit deren Zugriff."
+        },
+        "advanced": "Erweitert"
       },
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",
@@ -3733,7 +3739,8 @@
           "remove": "Server löschen",
           "removeHint": "Löscht ihn für alle.",
           "removeHintPersonal": "Löscht ihn und Ihre Anmeldung."
-        }
+        },
+        "addTemplateTitle": "{{name}} hinzufügen"
       },
       "oauthConfig": {
         "saved": "OAuth-App gespeichert",
@@ -3833,6 +3840,12 @@
         "orgRulesDescription": "Legen Sie für alle in Ihrer Organisation fest, welche Tools laufen, zuerst nachfragen oder nie laufen. Hier legt jede Person ihre eigenen Regeln auf ihrer MCP-Server-Seite fest.",
         "userServersTitle": "Eigene MCP-Server der Mitglieder",
         "userServersDescription": "Prüfen und entfernen Sie die MCP-Server, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
+      },
+      "added": {
+        "ready": "{{name}} wurde hinzugefügt und ist einsatzbereit.",
+        "signIn": "{{name}} wurde hinzugefügt. Melden Sie sich unten an, damit seine Tools laufen können.",
+        "other": "{{name}} wurde hinzugefügt, funktioniert aber noch nicht. Den Grund finden Sie unten.",
+        "dismiss": "Fertig"
       }
     },
     "bots": {

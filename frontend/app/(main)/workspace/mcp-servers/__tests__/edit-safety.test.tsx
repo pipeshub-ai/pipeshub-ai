@@ -223,7 +223,7 @@ describe('McpInstanceConfigPanel asks before an edit removes sign-ins', () => {
   it('says only the shared credential goes when it is turned off', async () => {
     renderPanel({ mode: 'edit', editing: entry({ useAdminAuth: true }) });
 
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('radio', { name: /Each person uses their own/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByText(/Turning off the shared credential removes it/)).toBeTruthy();

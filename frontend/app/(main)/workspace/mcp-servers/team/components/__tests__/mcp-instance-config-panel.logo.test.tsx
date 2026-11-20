@@ -128,6 +128,12 @@ function panel(state: PanelProps['state'], onSaved = vi.fn()) {
 const createCustom = { open: true, mode: 'create', editingInstance: null, prefillTemplate: null } as PanelProps['state'];
 const editCustom = { open: true, mode: 'edit', editingInstance: custom, prefillTemplate: null } as PanelProps['state'];
 
+/** The logo sits under Advanced; open it whenever the panel shows it closed. */
+function withAdvanced() {
+  const toggle = screen.queryByRole('button', { name: 'workspace.mcpServers.form.advanced' });
+  if (toggle?.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
+}
+
 const logoField = () => screen.queryByRole('group', { name: 'workspace.mcpServers.form.logo' });
 const preview = () => screen.queryByTestId('logo-preview')?.getAttribute('src') ?? null;
 const textInput = (label: string) => screen.getByRole('group', { name: label }).querySelector('input') as HTMLInputElement;
@@ -160,6 +166,7 @@ afterEach(cleanup);
 describe('McpInstanceConfigPanel logo', () => {
   it('saves the logo picked for a new custom server once the server exists', async () => {
     render(panel(createCustom));
+    withAdvanced();
     fireEvent.change(textInput('workspace.mcpServers.form.name'), { target: { value: 'Acme tools' } });
     fireEvent.change(textInput('workspace.mcpServers.form.url'), { target: { value: 'https://mcp.acme.example/mcp' } });
 
@@ -173,12 +180,14 @@ describe('McpInstanceConfigPanel logo', () => {
 
   it('offers no logo for a catalog server, which shows its vendor logo', () => {
     render(panel({ open: true, mode: 'create', editingInstance: null, prefillTemplate: template } as PanelProps['state']));
+    withAdvanced();
 
     expect(logoField()).toBeNull();
   });
 
   it("shows a custom server's saved logo and removes it on save", async () => {
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.logoRemove' }));
@@ -191,6 +200,7 @@ describe('McpInstanceConfigPanel logo', () => {
 
   it('leaves the logo alone when it was not changed', async () => {
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await save();
@@ -204,6 +214,7 @@ describe('McpInstanceConfigPanel logo', () => {
     api.setLogo.mockRejectedValue(new Error('too large'));
     const onSaved = vi.fn();
     render(panel(editCustom, onSaved));
+    withAdvanced();
 
     await pickFile();
     await save();
@@ -215,6 +226,7 @@ describe('McpInstanceConfigPanel logo', () => {
   it('says why a picked file was refused and keeps the earlier logo', async () => {
     picked.imageFileToLogo.mockRejectedValue(new McpLogoFileError('type'));
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await pickFile();
@@ -229,6 +241,7 @@ describe('McpInstanceConfigPanel logo', () => {
       .mockReturnValueOnce(new Promise<string>((resolve) => (finishFirst = resolve)))
       .mockResolvedValueOnce(NEW);
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await pickFile();
@@ -242,6 +255,7 @@ describe('McpInstanceConfigPanel logo', () => {
     let finish: (logo: string) => void = () => {};
     picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await pickFile();
@@ -258,6 +272,7 @@ describe('McpInstanceConfigPanel logo', () => {
       let finish: (logo: string) => void = () => {};
       picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
       render(panel(editCustom));
+      withAdvanced();
       await waitFor(() => expect(preview()).toBe(SAVED));
 
       await pickFile();
@@ -274,6 +289,7 @@ describe('McpInstanceConfigPanel logo', () => {
       let fail: (error: Error) => void = () => {};
       picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((_, reject) => (fail = reject)));
       render(panel(editCustom));
+      withAdvanced();
 
       await pickFile();
       expect(saveButton().disabled).toBe(true);
@@ -289,6 +305,7 @@ describe('McpInstanceConfigPanel logo', () => {
         .mockReturnValueOnce(new Promise<string>((resolve) => (finishFirst = resolve)))
         .mockReturnValueOnce(new Promise<string>((resolve) => (finishLatest = resolve)));
       render(panel(editCustom));
+      withAdvanced();
 
       await pickFile();
       await pickFile();
@@ -307,6 +324,7 @@ describe('McpInstanceConfigPanel logo', () => {
         let finish: (logo: string) => void = () => {};
         picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
         const { rerender } = render(panel(editCustom));
+        withAdvanced();
         await waitFor(() => expect(preview()).toBe(SAVED));
         await pickFile();
         expect(saveButton().disabled).toBe(true);
@@ -326,7 +344,9 @@ describe('McpInstanceConfigPanel logo', () => {
       it('after the panel was closed and opened for it', async () => {
         await finishAfter((rerender) => {
           rerender(panel({ ...editCustom, open: false }));
+          withAdvanced();
           rerender(panel(editOther));
+          withAdvanced();
         });
 
         await expectOtherUntouched();
@@ -342,6 +362,7 @@ describe('McpInstanceConfigPanel logo', () => {
     it('frees Save when the logo is removed instead', async () => {
       picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>(() => {}));
       render(panel(editCustom));
+      withAdvanced();
       await waitFor(() => expect(preview()).toBe(SAVED));
 
       await pickFile();

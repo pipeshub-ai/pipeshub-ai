@@ -3819,18 +3819,24 @@
         "tokenUrl": "Token URL",
         "scopes": "範圍",
         "scopesPlaceholder": "新增範圍",
-        "useAdminAuth": "對所有使用者使用共用的管理員驗證",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "憑證（選填）",
-        "credentialsHint": "立即新增憑證，或先跳過並稍後從「連線與工具」分頁進行連線。",
+        "credentialsHint": "現在新增，或稍後在伺服器頁面登入。",
         "multiEnvIncomplete": "請填寫所有必要的環境變數，或全部留白以便稍後連線。",
         "oauthPairRequired": "請同時輸入用戶端 ID 和用戶端密鑰，或兩者皆留白。",
-        "connectAfterCreateHint": "請先儲存此伺服器，然後重新開啟「管理」進行連線。",
         "timeoutsHeading": "逾時",
         "connectTimeout": "連線逾時（秒）",
         "callTimeout": "工具呼叫逾時（秒）",
-        "timeoutRange": "請輸入 {{min}} 到 {{max}} 之間的數字，或留空以使用預設值。"
+        "timeoutRange": "請輸入 {{min}} 到 {{max}} 之間的數字，或留空以使用預設值。",
+        "whoSignsIn": "成員如何登入",
+        "signIn": {
+          "personal": "每人使用自己的憑證",
+          "personalHint": "每個人用自己的憑證登入，只取得這些憑證擁有的權限。",
+          "shared": "所有人共用一個憑證",
+          "sharedHint": "你在下方新增一次。所有人都以它的權限操作。"
+        },
+        "advanced": "進階"
       },
       "configPanel": {
         "editTitle": "編輯 MCP 伺服器",
@@ -3874,7 +3880,8 @@
           "remove": "刪除伺服器",
           "removeHint": "為所有人刪除它。",
           "removeHintPersonal": "刪除它及您的登入資訊。"
-        }
+        },
+        "addTemplateTitle": "新增 {{name}}"
       },
       "oauthConfig": {
         "saved": "已儲存 OAuth 應用程式",
@@ -3974,6 +3981,12 @@
         "orgRulesDescription": "為組織中的所有人決定哪些工具直接執行、先詢問或永不執行。在這裡，每個人在自己的 MCP 伺服器頁面設定自己的規則。",
         "userServersTitle": "成員自己的 MCP 伺服器",
         "userServersDescription": "檢視並移除組織成員為自己新增的 MCP 伺服器。"
+      },
+      "added": {
+        "ready": "{{name}} 已新增，可以使用了。",
+        "signIn": "{{name}} 已新增。請在下方登入，以便執行它的工具。",
+        "other": "{{name}} 已新增，但還無法使用。原因見下方。",
+        "dismiss": "完成"
       }
     },
     "bots": {

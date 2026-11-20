@@ -3669,18 +3669,24 @@
         "tokenUrl": "Token URL",
         "scopes": "Scopes",
         "scopesPlaceholder": "Add a scope",
-        "useAdminAuth": "Use shared admin authentication for all users",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "Credentials (optional)",
-        "credentialsHint": "Add credentials now, or skip and connect later from the Connection & Tools tab.",
+        "credentialsHint": "Add them now, or sign in later from the server's page.",
         "multiEnvIncomplete": "Fill in every required environment variable, or leave them all blank to connect later.",
         "oauthPairRequired": "Enter both the client ID and client secret, or leave both blank.",
-        "connectAfterCreateHint": "Save this server, then reopen Manage to connect it.",
         "timeoutsHeading": "Timeouts",
         "connectTimeout": "Connect timeout (seconds)",
         "callTimeout": "Tool call timeout (seconds)",
-        "timeoutRange": "Enter a number from {{min}} to {{max}}, or leave it blank for the default."
+        "timeoutRange": "Enter a number from {{min}} to {{max}}, or leave it blank for the default.",
+        "whoSignsIn": "How people sign in",
+        "signIn": {
+          "personal": "Each person uses their own",
+          "personalHint": "People sign in with their own credentials and get only the access those have.",
+          "shared": "One shared credential for everyone",
+          "sharedHint": "You add it once, below. Everyone acts with its access."
+        },
+        "advanced": "Advanced"
       },
       "configPanel": {
         "editTitle": "Edit MCP server",
@@ -3724,7 +3730,8 @@
           "remove": "Delete server",
           "removeHint": "Deletes it for everyone.",
           "removeHintPersonal": "Deletes it and your sign-in."
-        }
+        },
+        "addTemplateTitle": "Add {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth app saved",
@@ -3824,6 +3831,12 @@
         "orgRulesDescription": "Decide which tools run, ask first or never run for everyone in your organization. Here, people set their own rules from their MCP servers page.",
         "userServersTitle": "People's own MCP servers",
         "userServersDescription": "Review and remove the MCP servers people in your organization add for themselves."
+      },
+      "added": {
+        "ready": "{{name}} is added and ready to use.",
+        "signIn": "{{name}} is added. Sign in below so its tools can run.",
+        "other": "{{name}} is added, but it isn't working yet. See below for why.",
+        "dismiss": "Done"
       }
     },
     "bots": {
