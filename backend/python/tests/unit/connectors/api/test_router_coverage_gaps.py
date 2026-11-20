@@ -1413,11 +1413,19 @@ class TestCreateOrUpdateOAuthConfigGaps:
         assert saved[0]["userId"] == "u1"
 
     @pytest.mark.asyncio
-    async def test_creator_can_update_app_that_only_records_created_by(self):
-        """Apps saved from the OAuth Apps page have createdBy; older ones only userId."""
+    @pytest.mark.parametrize(
+        ("record", "updated"),
+        [
+            # A person's own app: its owner changes it.
+            ({"ownerUserId": "u1"}, True),
+            # The org's app, even one this member once created: only an admin changes it.
+            ({"createdBy": "u1"}, False),
+        ],
+    )
+    async def test_only_an_app_s_owner_or_an_admin_updates_it(self, record, updated):
         from app.connectors.api.router import _create_or_update_oauth_config
 
-        existing = {"_id": "app-1", "orgId": "o1", "createdBy": "u1", "config": {"clientId": "old"}}
+        existing = {"_id": "app-1", "orgId": "o1", "config": {"clientId": "old"}, **record}
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value=[existing])
         config_service.set_config = AsyncMock()
@@ -1436,11 +1444,9 @@ class TestCreateOrUpdateOAuthConfigGaps:
                 logger=logging.getLogger("test"),
             )
 
-        assert result == "app-1"
         saved = config_service.set_config.call_args.args[1]
-        assert len(saved) == 1
-        assert saved[0]["config"]["clientId"] == "new"
-        assert saved[0]["updatedBy"] == "u1"
+        assert saved[0]["config"]["clientId"] == ("new" if updated else "old")
+        assert (result == "app-1") is updated
 
     @pytest.mark.asyncio
     async def test_handle_oauth_config_creation_passes_scope_through(self):
@@ -1463,10 +1469,10 @@ class TestCreateOrUpdateOAuthConfigGaps:
                 auth_type="OAUTH",
                 base_url="",
                 logger=logging.getLogger("test"),
-                connector_scope="personal",
+                connector_scope="team",
             )
 
-        assert mock_create.call_args.kwargs["connector_scope"] == "personal"
+        assert mock_create.call_args.kwargs["connector_scope"] == "team"
 
     @pytest.mark.asyncio
     async def test_update_existing_with_matching_id_and_org(self):
@@ -2086,7 +2092,9 @@ class TestCreateConnectorInstanceConfigAuthMissing:
             is_admin=True,
         )
 
-        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+        # The named app is checked before the connector exists; this test is about storing its config.
+        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+                patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock):
             with patch(f"{_ROUTER}._prepare_connector_config", new_callable=AsyncMock, return_value={"auth": {}, "sync": {}, "filters": {}}):
                 result = await create_connector_instance(req, graph_provider=gp)
         assert result["success"] is True

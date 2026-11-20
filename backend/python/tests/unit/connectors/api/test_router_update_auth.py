@@ -1102,7 +1102,7 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
             },
             "baseUrl": "https://app.example.com",
         }
-        # Use non-admin to skip admin OAuth creation path and test only filtering
+        # Only the filtering is under test: the OAuth app write is stubbed to keep the link.
         request = _make_request(
             body=body,
             container=container,
@@ -1118,6 +1118,7 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
             patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
             patch(f"{_ROUTER}.resolve_oauth_config", AsyncMock(return_value=linked_app)),
+            patch(f"{_ROUTER}._handle_oauth_config_creation", AsyncMock(return_value="oauth-1")),
         ):
             result = await update_connector_instance_auth_config(
                 "conn1", request, graph_provider

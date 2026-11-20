@@ -345,6 +345,8 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
             scope=' '.join(auth_config.get('scopes', [])) if auth_config.get('scopes') else ''
         )
 
+    oauth_config.public_only = bool(auth_config.get("publicOnly"))
+
     if auth_config.get('tokenAccessType'):
         oauth_config.token_access_type = auth_config.get('tokenAccessType')
     if auth_config.get('additionalParams'):
@@ -578,3 +580,70 @@ async def fetch_oauth_config_by_id(
         if logger:
             logger.error("Error fetching OAuth config")
         return None
+
+
+# ============================================================================
+# Personal OAuth apps
+# ============================================================================
+
+# Set by the server on an OAuth app someone created for their own personal connector, and
+# never taken from a request. Only that person may list, link, change or sign in with the
+# app. An app without it belongs to the org.
+OAUTH_APP_OWNER_FIELD = "ownerUserId"
+
+OAUTH_APPS_PREFIX = "/services/oauth/"
+
+
+def oauth_app_owner(app: dict[str, Any] | None) -> str | None:
+    """The user a personal OAuth app belongs to, or None for an org app."""
+    owner = (app or {}).get(OAUTH_APP_OWNER_FIELD)
+    # Any other stored value still names an owner, so a damaged record stays private.
+    return None if owner in (None, "") else str(owner)
+
+
+def oauth_app_usable_by(app: dict[str, Any] | None, user_id: str | None) -> bool:
+    """Whether ``user_id`` may see and use ``app``: an org app, or their own personal app."""
+    owner = oauth_app_owner(app)
+    return owner is None or (bool(user_id) and owner == user_id)
+
+
+async def oauth_app_public_only(
+    auth_config: dict[str, Any] | None,
+    config_service: ConfigurationService,
+    logger: logging.Logger | None = None,
+) -> bool:
+    """Whether a connector's server calls may reach public addresses only.
+
+    A person's own connector may carry addresses they typed (a GitLab instance URL), so it is
+    held to public addresses unless it is linked to an org app that still exists. A team
+    connector's addresses come from an administrator and keep the deployment's rule.
+    """
+    auth_config = auth_config or {}
+    if str(auth_config.get("connectorScope") or "").lower() != "personal":
+        return False
+    app = await fetch_oauth_config_by_id(
+        oauth_config_id=auth_config.get("oauthConfigId") or "",
+        connector_type=auth_config.get("connectorType") or "",
+        config_service=config_service,
+        logger=logger,
+    )
+    return app is None or oauth_app_owner(app) is not None
+
+
+async def remove_personal_oauth_apps(config_service: ConfigurationService, org_id: str, user_id: str) -> int:
+    """Remove a deleted user's personal OAuth apps of every connector type. Returns how many went."""
+    removed = 0
+    for key in await config_service.list_keys_in_directory(OAUTH_APPS_PREFIX):
+        apps = await config_service.get_config(key, default=[], use_cache=False)
+        if not isinstance(apps, list):
+            continue
+        kept = [
+            app for app in apps
+            if not (isinstance(app, dict) and app.get("orgId") == org_id and oauth_app_owner(app) == user_id)
+        ]
+        if len(kept) == len(apps):
+            continue
+        if not await config_service.set_config(key, kept):
+            raise RuntimeError(f"Could not save {key} without the deleted user's OAuth apps")
+        removed += len(apps) - len(kept)
+    return removed

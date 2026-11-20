@@ -164,6 +164,8 @@ class OAuthConfig:
     token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
     # RFC 8414 name for how the token endpoint takes client credentials; set by get_oauth_config.
     token_endpoint_auth_method: str = "client_secret_post"
+    # A person's own connector, whose token URL may be an address they typed: public addresses only.
+    public_only: bool = False
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
@@ -309,10 +311,11 @@ class OAuthProvider:
         if self._session is None or self._session.closed:
             # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
             # aiohttp refuses any header over 8190 bytes by default.
-            # The token URL is configured by an administrator: the deployment's rule for such
-            # hosts applies (this server, link-local and cloud metadata never).
+            # An administrator's token URL gets the deployment's rule for such hosts (this server,
+            # link-local and cloud metadata never); a person's own connector, public addresses only.
+            allow_private = not private_addresses_blocked() and not self.config.public_only
             self._session = ClientSession(
-                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=not private_addresses_blocked()),
+                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=allow_private),
             )
         return self._session
 

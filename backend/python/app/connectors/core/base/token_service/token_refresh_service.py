@@ -48,6 +48,7 @@ from app.utils.logging_fields import log_event
 from app.utils.oauth_config import (
     carry_oauth_url_settings,
     get_oauth_config,
+    oauth_app_owner,
     pin_oauth_urls,
 )
 from app.utils.request_context import (
@@ -562,6 +563,7 @@ class TokenRefreshService:
         """
         oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
         connector_scope = auth_config.get(ConnectorRequestKeys.CONNECTOR_SCOPE, "team")
+        shared_oauth_config: dict[str, any] = {}
 
         # Try to use shared OAuth config first
         if oauth_config_id:
@@ -582,7 +584,7 @@ class TokenRefreshService:
                     oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
                     oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
                     self.logger.debug("Using the shared OAuth config")
-                    return oauth_flow_config
+                    return self._with_address_rule(oauth_flow_config, connector_scope, shared_oauth_config)
 
                 self.logger.warning("OAuth config found but missing credentials, falling back to auth config")
 
@@ -606,6 +608,17 @@ class TokenRefreshService:
         oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
         oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
 
+        return self._with_address_rule(oauth_flow_config, connector_scope, shared_oauth_config)
+
+    @staticmethod
+    def _with_address_rule(
+        oauth_flow_config: dict[str, any], connector_scope: str, shared_oauth_config: dict[str, any]
+    ) -> dict[str, any]:
+        """A person's own connector may carry addresses they typed, so its refresh reaches public
+        addresses only, unless it is linked to an org app (one an administrator set up)."""
+        linked_to_org_app = bool(shared_oauth_config) and oauth_app_owner(shared_oauth_config) is None
+        if str(connector_scope or "").lower() == "personal" and not linked_to_org_app:
+            oauth_flow_config["publicOnly"] = True
         return oauth_flow_config
 
     @staticmethod

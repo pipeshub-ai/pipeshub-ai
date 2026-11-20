@@ -1843,7 +1843,9 @@ class TestCreateConnectorInstanceConfigAuthMissing:
             is_admin=True,
         )
 
-        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+        # The named app is checked before the connector exists; this test is about storing its config.
+        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+                patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock):
             with patch(f"{_ROUTER}._prepare_connector_config", new_callable=AsyncMock, return_value={"auth": {}, "sync": {}, "filters": {}}):
                 result = await create_connector_instance(req, graph_provider=gp)
         assert result["success"] is True
@@ -5063,7 +5065,9 @@ class TestCreateConnectorInstanceConfigAuthMissingCoverage:
             is_admin=True,
         )
 
-        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+        # The named app is checked before the connector exists; this test is about storing its config.
+        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+                patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock):
             with patch(f"{_ROUTER}._prepare_connector_config", new_callable=AsyncMock, return_value={"auth": {}, "sync": {}, "filters": {}}):
                 result = await create_connector_instance(req, graph_provider=gp)
         assert result["success"] is True

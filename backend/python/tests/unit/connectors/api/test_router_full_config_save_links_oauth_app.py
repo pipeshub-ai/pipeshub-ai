@@ -107,7 +107,8 @@ def _instance(connector_type: str = "Drive") -> dict[str, Any]:
         "name": "My Drive",
         "isActive": False,
         "authType": "OAUTH",
-        "scope": "personal",
+        # ServiceNow is a team connector; Drive a personal one.
+        "scope": "team" if connector_type == "ServiceNow" else "personal",
         "createdBy": USER_ID,
     }
 
@@ -242,7 +243,11 @@ class TestInlineCredentialsLinkAnOAuthApp:
         assert await _start_drive(store) is True
 
     async def test_a_name_already_taken_by_another_app_is_refused_as_on_the_other_saves(self) -> None:
-        other = {"_id": "other-app", "orgId": ORG_ID, "oauthInstanceName": "My Drive", "config": {"clientId": "x"}}
+        # Names are unique per owner: here another of this person's own apps.
+        other = {
+            "_id": "other-app", "orgId": ORG_ID, "oauthInstanceName": "My Drive", "config": {"clientId": "x"},
+            "ownerUserId": USER_ID,
+        }
         store = InMemoryConfigService(
             {CONFIG_PATH: {"auth": {"connectorScope": "personal"}}, OAUTH_APPS_PATH: [other]}
         )
@@ -301,14 +306,15 @@ class TestOtherSavesAreUnchanged:
         assert store.apps() == []
         assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]
 
-    async def test_a_member_saving_credentials_creates_no_app(self) -> None:
-        # As on the other save paths, only an admin's credentials become an OAuth app.
+    async def test_a_member_saving_credentials_on_their_connector_makes_their_own_app(self) -> None:
+        # As on the other save paths: a person's client on their personal connector is their own app.
         store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
 
         await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}}, role="member")
 
-        assert store.apps() == []
-        assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]
+        [app] = store.apps()
+        assert app["ownerUserId"] == USER_ID
+        assert store.values[CONFIG_PATH]["auth"]["oauthConfigId"] == app["_id"]
 
     async def test_a_failed_app_write_fails_the_save_and_stores_nothing(self) -> None:
         store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
