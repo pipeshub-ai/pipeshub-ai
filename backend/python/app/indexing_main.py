@@ -139,6 +139,7 @@ from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.membership import expect_groups
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.precision_runtime import start_precision_check
 from app.services.messaging.storage_protocol import tagged
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
@@ -442,9 +443,11 @@ async def recover_in_progress_records(
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
                                     "reason": CONNECTOR_REMOVED,
-                                    # The refresh cannot run for a connector that is gone or off.
-                                    **refresh_intent.CLEARED_FIELDS,
                                 },
+                            )
+                            # The refresh cannot run for a connector that is gone or off: its request ends here (only when it holds one).
+                            await refresh_intent.clear_intent(
+                                graph_provider, record_id, (refresh_intent.stored_intent(record) or (None,))[0]
                             )
                             results["skipped"] += 1
                             return True
@@ -462,9 +465,11 @@ async def recover_in_progress_records(
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
                                     "reason": CONNECTOR_OFF,
-                                    # The refresh cannot run for a connector that is gone or off.
-                                    **refresh_intent.CLEARED_FIELDS,
                                 },
+                            )
+                            # The refresh cannot run for a connector that is gone or off: its request ends here (only when it holds one).
+                            await refresh_intent.clear_intent(
+                                graph_provider, record_id, (refresh_intent.stored_intent(record) or (None,))[0]
                             )
                             results["skipped"] += 1
                             return True
@@ -1681,13 +1686,10 @@ async def _republish_refresh_intents(
 
     async def _expire(record: dict[str, Any], key: str) -> None:
         held = refresh_intent.stored_intent(record)
-        updates: dict[str, Any] = dict(refresh_intent.CLEARED_FIELDS)
+        updates: dict[str, Any] = {}
         if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
             updates["reason"] = refresh_intent.REFRESH_EXPIRED_REASON
-        cleared = await graph_provider.update_node_fields_if_match(
-            key, CollectionNames.RECORDS.value, updates, {refresh_intent.ID_FIELD: held[0] if held else None}
-        )
-        if cleared:
+        if await refresh_intent.clear_intent(graph_provider, key, held[0] if held else None, updates):
             refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
             logger.warning(
                 "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
@@ -1754,7 +1756,8 @@ async def _republish_refresh_intents(
             if not key:
                 continue
             if refresh_intent.expired_intent(record, pass_started_ms):
-                await _expire(record, str(key))
+                if record.get("indexingStatus") != ProgressStatus.IN_PROGRESS.value:
+                    await _expire(record, str(key))          # a record a run holds does not age out under it: its end serves it
                 continue
             intent_id = refresh_intent.live_intent(record, pass_started_ms)
             if intent_id is None or is_deferred_until_later(record, pass_started_ms):
@@ -2782,6 +2785,10 @@ async def start_kafka_consumers(
             app_container, producer=retry_producer
         )
         connector_off_filter = await app_container.connector_off_filter()
+        # Hands back, as they are read, the events that would write vectors of another precision than the
+        # indexes hold; its verdict is recomputed in the background.
+        precision_filter, precision_task = await start_precision_check(app_container, logger)
+        app_container.precision_task = precision_task
         # Kept on the container so shutdown can release its Redis client.
         app_container.record_event_handler = record_event_handler
 
@@ -2803,6 +2810,7 @@ async def start_kafka_consumers(
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
             connector_off_filter=connector_off_filter,
+            precision_filter=precision_filter,
             worker=worker,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
@@ -2841,6 +2849,7 @@ async def start_kafka_consumers(
                 backpressure_coordinator=get_default_backpressure_coordinator(),
                 disposition_sink=record_event_handler,
                 connector_off_filter=connector_off_filter,
+                precision_filter=precision_filter,
                 priority_lane=PriorityLane(
                     heavy_limit=messaging_env.priority_lane_heavy_limit,
                     light_limit=messaging_env.priority_lane_light_limit,
@@ -3086,6 +3095,10 @@ async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_
     # after the clients bound to it.
     if close_worker_loop:
         await _close_worker_loop(container)
+
+    precision_task = getattr(container, "precision_task", None)
+    if precision_task is not None:
+        precision_task.cancel()
 
     handler = getattr(container, "record_event_handler", None)
     aclose = getattr(handler, "aclose", None)

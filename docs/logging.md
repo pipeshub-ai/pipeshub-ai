@@ -175,6 +175,8 @@ except Exception as e:
 - `classify_error(exc_or_status)` is one of `auth_expired`, `forbidden`, `not_found`, `rate_limited`, `timeout`, `upstream_5xx`,
   `bad_request`, `conflict`, `unavailable`, `cancelled`, `misconfigured`, `internal`. `misconfigured` is **our** configuration: the
   LLM provider rejected our key, no LLM is configured, an OAuth client registration was rejected, or a service token was refused.
+  A credential refresh also classes a token URL that cannot be sent to (no `https://`), or a token endpoint that answers 2xx
+  without a token, as `misconfigured` (see Credential refresh).
   `auth_expired` is a user's or a connector's grant that expired or was revoked. The first decisive exception in the chain wins,
   outermost first (`__cause__`, else `__context__` unless `from None`). OAuth error codes are read before the HTTP status, our
   own `HTTPException` 5xx counts as `internal`, and our programming errors (`KeyError`, `TypeError`, …) stop the walk. It never raises.
@@ -435,8 +437,11 @@ Levels and outcome:
 - `timeout_s` is the record's configured processing budget. The embedding stall timer (`RecordProgress`) can end the same
   budget earlier; its `embed cut (stall)` line says so, and `duration_ms` is the time the attempt ran.
 - The ack or commit failed after the record was indexed (`reason=ack_failed` or `commit_failed`): `success` (or `skipped`,
-  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. A handler that raised after
-  `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+  for a delivery the handler skipped), `retry`, WARNING; the redelivery is deduped. No attempt is counted and nothing is
+  re-published for it. A handler that raised after `INDEXING_COMPLETE` is still a `failure` when the settlement of its retry then fails. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+  On Kafka in FIFO mode, a dead-letter whose commit fails (`reason=commit_failed`) is read again, so the sink can be told twice,
+  which is harmless; an `attempts_exhausted` one comes back with a fresh attempt count. Under fair scheduling it is not
+  read again: the next commit covers its offset.
 - A failure with no exception and no class is WARNING, except the dead-letters above (`unfinished_attempts`, `backstop`),
   which stay ERROR.
 - `error_class` is `classify_error`'s, except that a `DocumentProcessingError` whose direct cause is a programming error
@@ -540,6 +545,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   turn's. `toolset.route.failed op=load_instances` also appears on agent chat requests (`get_authenticated_toolsets`). An OAuth
   callback's failure is on the line with `outcome=failure` and the body's `error` code as `reason`; a provider's `error=` is
   `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
+  The connector OAuth callback (`connectors/api/router.py`) does the same for its token exchange (`reason=server_error`, no text:
+  the error can quote the token URL's query or the provider's answer), a provider's `error=`, and an unknown connector
+  (`reason=instance_not_found`).
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
@@ -632,11 +640,11 @@ refresh of one credential reads the same everywhere:
 | --- | --- | --- |
 | `credential_refresh.scheduled` | INFO when the refresh time is new, DEBUG when a scan re-arms the same one | `next_refresh_at` (UTC), `delay_s` |
 | `credential_refresh.start` | DEBUG | |
-| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
+| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `no_access_token`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
 | `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
-| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated), the cause's `error_class` and `oauth_error` |
-| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`), `path` (MCP: `background` after 3 rejections, `route` after one) |
-| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone |
+| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated; MCP adds `reason`: `rotated`, `within_window`, `not_saved`), the cause's `error_class` and `oauth_error` |
+| `credential_refresh.deauthenticated` | WARNING | `reason` (`refresh_token_invalid`; MCP also `oauth_client_rejected`), `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`) |
+| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone; MCP adds `strike` |
 | `credential_refresh.skipped` | WARNING | `outcome=skipped`, `reason` (`lock_wait_timeout`: another refresh of the same credential holds its lock) |
 
 Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
@@ -645,19 +653,27 @@ sign-in belongs to; MCP: `mcp_server_id` and `owner_id`), `provider` (the connec
 `provider`), and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
-rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between. `trigger` is set by the refresh
+rejected our client, a token URL that cannot be sent to, or a 2xx answer with no token) is ERROR with a stack once per credential
+per hour and DEBUG in between. A 2xx answer whose `error` is a dead-grant code (`invalid_grant`, `bad_refresh_token`, ...) is
+`auth_expired`, like the same code on a 400: the user signs in again. A 2xx answer whose `error` says the provider is busy or down is `unavailable`, `rate_limited` or `upstream_5xx`,
+and a programming error raised while handling one stays `internal`. `trigger` is set by the refresh
 scope and never inherited from a sync's own `trigger`. The toolset service has no on-demand refresh: its lines say `trigger=scan`
 or `scheduled`, and `on_demand` only on the `scheduled` line written when a sign-in completes.
 
 Every MCP refresh, whoever starts it (the background service, the refresh route, tool listing or discovery, an agent's 401), goes
 through `app/agents/mcp/token_refresh.py`, which writes its `end`; `duration_ms` includes waiting for another process's refresh lock.
+A refusal that says the sign-in can't be renewed (a dead grant, or the provider refusing our client) is a strike on the
+credential record, whichever path saw it, at most one per 5 minutes; the third signs it out with `deauthReason`, and a
+success clears the count. A refused request shape (`invalid_request`, `invalid_scope`, `unsupported_grant_type`) is no
+such strike; only the background service counts it, in process. The refresh route signs nobody out itself.
 The tool call and discovery lines of the same failure carry the same `error_class` and keep their own level. Per-turn MCP lines
 classed `misconfigured` share one hourly ERROR per server and class (`tool_call.end`, `mcp.discover.end` turn and listing); the
 others in that hour are DEBUG. A token host that does not resolve is `host_unresolved` (`unavailable`, WARNING); only a URL the
 guard refuses by policy is `url_blocked` (`misconfigured`).
 
 Nothing a token endpoint answered is logged as text: its body, and the token URL and redirect URI in the exception message, can
-quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, every failure line of
+quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, or an unusable token URL
+(aiohttp's error text is the URL, query included), every failure line of
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
 `Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
 
@@ -695,8 +711,14 @@ which every Postgres graph provider runs through) write one record per call that
   hides the text and leaves the class to `classify_error`), so `classify_error` returns its class and `log_failure` leaves `error_message` out and
   prints the stack as `Type: <message omitted>` for any chain, or exception group member, that holds it. This also hides the
   server's own text for our bugs (an ArangoDB 1501 "syntax error … near …" reads `code=1501 caller=…`): diagnose from `code`,
-  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible (the
-  Neo4j memory-limit hint).
+  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible when
+  they chain no stamped error (raised outside its `except`, as the Neo4j memory-limit hint is, or `from None`); an exception
+  raised `from` a stamped error, or while handling one, loses its message too, and keeps its type and frames. A
+  `logger.exception` or `exc_info=True` record of such a chain prints the same text-free stack, exception-group members
+  included: its `exc_info` is None and its `exc_text` holds the stack, and a filter reads the exception with
+  `error_class.record_exception(record)`. A message that embeds the error's text is not covered: `traceback.format_exc()`
+  (log with `exc_info=True` instead), `%s` of the error, and asyncio's "Task exception was never retrieved", whose message holds
+  the task's `repr` with the exception's text.
 - **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
   1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
   Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
@@ -713,8 +735,8 @@ record content. Like any `log_failure` line it is DEBUG when the same exception,
 higher, so at a WARNING threshold a handled failure can leave no event. The user is the bound `user_id`; the graph key is never
 logged. Diagnose from `error_class`, `error_type` and the `db.query.failed` record of the same call. When the batch access read
 fails, `check_access` first logs a `check_access failed …` ERROR with only the counts and the error's class. The
-`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause, which a
-traceback (`exc_info=True`, `logger.exception`) still prints.
+`PermissionVerificationUnavailableError` it raises has a fixed message and keeps the driver's error as its cause; its chain
+is always text-hidden, so an `exc_info` record of it prints each exception as `Type: <message omitted>`.
 
 | Event | What the search does next | Fields |
 | --- | --- | --- |
@@ -785,6 +807,42 @@ role name, group name or field value: a role change is told by the event and its
 Refusals use the same tags as the auth events (`userRefusal` / `auditUserRefusal` in `modules/user_management/utils/user-audit.ts`,
 lists in `USER_AUDIT_REASONS`). Not audited: route-guard refusals (`userAdminCheck`, `userAdminOrSelfCheck`, …), validation 400s,
 display-picture changes, and system failures (the error middleware logs those once).
+
+## Org settings, team and service-account audit events (Node)
+
+The same mechanism and fields for changes to the org's own settings (`/api/v1/org`), to teams and to service accounts and their
+keys. Three more fields, each only on the lines it applies to:
+
+- `team_id`: the team, on team membership lines (the target is the user). The org's default All team is `all_<org id>`.
+- `key_id`: a service-account key's record id, never the key itself. It is the `id` that the mint answer and the key list show.
+- `scopes`: the scopes a key was issued with, sorted and comma-joined (`kb:read,semantic:write`).
+
+Team decisions are made by the team service (Python). Node writes the line from that service's answer: 2xx is a success, 403 is
+`not_owner`, 404 is `not_found` (the team, or the caller, is unknown to the team service), and 409 is `name_taken`.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `org.update`, `org.delete` | `success` | | the org is `org_id`; an update that names no known field is still written |
+| `org.logo.update` | `success` | `set`, `removed` | |
+| `org.onboarding.update` | `success` | `configured`, `not_configured`, `skipped` | |
+| `team.create` | `success`, `failure` | success: `no_team_id` (the team service's answer named no team: no target and no member lines); failure: `name_taken` | `target` = the new team; one `team.member.add` per member listed (the creator, who joins as owner, is not) |
+| `team.update` | `success`, `failure` | failure: `not_owner`, `not_found`, `name_taken` | success only when the name or description was sent (an empty description counts); a refused PUT writes one `team.update` failure, whatever it asked for |
+| `team.delete` | `success`, `failure` | failure: `not_owner`, `not_found`, `protected_team` (the All team) | |
+| `team.member.add`, `team.member.remove`, `team.member.role.change` | `success` | | one line per user; written from the request after the team service accepted it, so an owner's own add and an owner-to-owner role change, which the team service skips, still get a line |
+| `service_account.create` | `success`, `failure` | success: `restore` (a deleted account brought back under its name); failure: `name_taken` | written at the write, so it is there even when the request then fails publishing the change |
+| `service_account.update` | `success`, `failure` | success: `profile`, `disable`, `enable`; failure: `restoring` (enable during a restore), `not_found` | one PATCH can write two lines (`profile` and `disable`; or `enable` and then a `not_found` failure when the account is deleted between the two writes, since the enable was already saved); enabling an enabled account still writes `enable` |
+| `service_account.delete` | `success`, `failure` | failure: `not_found` | the key revocations it causes are part of this line |
+| `service_account.token.create` | `success`, `failure` | failure: `account_disabled`, `scope_denied` (`agent:execute`), `token_limit`, `not_found` | `key_id` and `scopes` on success |
+| `service_account.token.revoke` | `success`, `failure` | failure: `not_found` | `key_id` on both |
+
+A key rotation is a `service_account.token.create` followed by a `service_account.token.revoke` of the old `key_id` on the same
+target: no endpoint changes a key's scopes after it is minted. `not_found` on a service account also covers an id from another
+org, so a probe across orgs is audited.
+
+Not audited: route-guard refusals (`userAdminCheck`, `requireScopes`), validation 400s (including an unknown scope and the team
+service's 400s: no name, the last owner, people who are gone), and system failures. **Known gap:** the team service's
+`update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
+saved changes get no line here; the team service's own log has them.
 
 ## Upstream calls (Node)
 

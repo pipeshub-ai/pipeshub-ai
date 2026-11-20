@@ -102,7 +102,7 @@ def _make_projection_client(toolset_rows, knowledge_rows, doc_store):
     """
     calls = {"toolsets": 0, "knowledge": 0, "docs": 0}
 
-    async def _execute(query, parameters=None, txn_id=None):
+    async def _execute(query, parameters=None, txn_id=None, **_):
         parameters = parameters or {}
         if "agent_ids" in parameters:
             if "AS toolset" in query:

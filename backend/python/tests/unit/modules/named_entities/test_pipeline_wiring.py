@@ -681,3 +681,31 @@ async def test_a_year_less_date_is_written_in_the_year_nearest_the_records_creat
     # Created 2025-10-01: September 10 is 2025, and now has a start a date query can match.
     assert [(v["timex"], v["startMs"] is not None) for v in values] == [("2025-09-10", True)]
     assert kept.entities[0].value.ambiguous
+
+
+async def _persist_with_vector_store(upsert, monkeypatch) -> str:
+    monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
+    graph = MagicMock(
+        find_named_entities=AsyncMock(return_value=[]),
+        resolve_named_entity_redirects=AsyncMock(return_value={}),
+        schedule_named_entity_persist_retry=AsyncMock(return_value=1),
+    )
+    with patch.object(stage.NamedEntityGraphWriter, "write", AsyncMock(return_value=[object()])):
+        return await stage.persist_named_entities(
+            SimpleNamespace(record=_record()), _extraction(), graph_provider=graph, graph_data_store=_store(), enabled=True,
+            entity_vector_store=SimpleNamespace(upsert_entities_batch=upsert),
+        )
+
+
+async def test_entity_points_that_were_not_written_make_the_persist_a_failure_for_the_caller_to_retry(monkeypatch) -> None:
+    from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
+
+    assert await _persist_with_vector_store(AsyncMock(return_value=EntityWriteOutcome(failed=1)), monkeypatch) == "failed"
+    assert await _persist_with_vector_store(AsyncMock(return_value=EntityWriteOutcome(written=1)), monkeypatch) == "written"
+
+
+async def test_an_entity_write_that_could_not_be_confirmed_is_a_failure_for_the_caller_to_retry(monkeypatch) -> None:
+    from app.services.vector_db.precision_guard import PrecisionUnreadable
+
+    upsert = AsyncMock(side_effect=PrecisionUnreadable("pin unreadable"))
+    assert await _persist_with_vector_store(upsert, monkeypatch) == "failed"

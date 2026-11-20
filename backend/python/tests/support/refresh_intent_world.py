@@ -56,7 +56,8 @@ class IntentGraph:
         return True
 
     async def update_node_fields_if_match(
-        self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, **_kw: object,
+        self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, *,
+        unset: tuple[str, ...] = (), **_kw: object,
     ) -> bool:
         doc = self.docs.get(key)
         if doc is None:
@@ -66,6 +67,8 @@ class IntentGraph:
             if (value is None and held is not None) or (value is not None and held != value):
                 return False
         doc.update(updates)
+        for name in unset:
+            doc.pop(name, None)                                # removed, never left null (the stores' rule)
         return True
 
     async def update_record_fields_for_ids(self, ids: list[str], fields: dict) -> int:

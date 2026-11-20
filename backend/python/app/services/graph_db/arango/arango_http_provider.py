@@ -1346,6 +1346,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 schema_by_collection[col_name] = col_schema
 
             # 1. Create all collections (node + edge)
+            apps_schema_applied = True
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
             for col in CollectionNames:
                 name = col.value
@@ -1356,16 +1357,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         name, edge=is_edge, schema=col_schema
                     ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
+                        apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
+                        continue
+                    # A create that lost the race to another process answers 409, which counts as created: that
+                    # process's schema may be older, so the schema is applied as to any existing collection.
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
-                    # Ensure schema is applied to pre-existing collections too. Not fatal here: the
-                    # indexing service, which writes the fields a newer schema adds, does not start
-                    # until the records schema is applied (ensure_pipeline_schema).
-                    if col_schema and not await self._apply_schema(name, col_schema):
-                        self.logger.error(
-                            "The schema of collection '%s' was not updated; documents carrying fields "
-                            "the previous schema does not list will be refused until it is", name,
-                        )
+                # Ensure schema is applied to pre-existing collections too. Not fatal here: the
+                # indexing service, which writes the fields a newer schema adds, does not start
+                # until the records schema is applied (ensure_pipeline_schema).
+                if col_schema and not await self._apply_schema(name, col_schema):
+                    self.logger.error(
+                        "The schema of collection '%s' was not updated; documents carrying fields "
+                        "the previous schema does not list will be refused until it is", name,
+                    )
+                    # Reported to the caller for apps: an older apps schema refuses every write to an app
+                    # document, and a sync whose start is refused does not run (`run_sync_task`).
+                    apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -1394,8 +1402,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self._ensure_departments_seed()
 
             self.start_record_schema_poll()
-            self.logger.info("✅ ArangoDB schema ensured successfully")
-            return True
+            if apps_schema_applied:
+                self.logger.info("✅ ArangoDB schema ensured successfully")
+            return apps_schema_applied
 
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
@@ -12143,6 +12152,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return len(result or [])
+
+    async def get_user_granted_records(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on."""
+        query = """
+        FOR perm IN permission
+            FILTER perm._from == @user
+            FILTER PARSE_IDENTIFIER(perm._to).collection == @records
+            LET r = DOCUMENT(perm._to)
+            FILTER r != null AND r.connectorId == @connector_id
+            RETURN DISTINCT {id: r._key, externalRecordId: r.externalRecordId, recordType: r.recordType}
+        """
+        result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={"user": f"users/{user_id}", "connector_id": connector_id,
+                       "records": CollectionNames.RECORDS.value},
+            txn_id=transaction,
+        )
+        return list(result or [])
 
     async def _collect_connector_entities(
         self,
@@ -27144,11 +27176,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR seed IN seed_rgs
                 FILTER seed.hideChildren != true
                 FOR child IN 1..@inherit_max_depth INBOUND seed._id {inherit_permissions}
-                    PRUNE child.orgId != @org_id
+                    // The walk stays inside the seed's connector.
+                    PRUNE child.orgId != @org_id OR child.connectorId != seed.connectorId
                     OPTIONS {{ bfs: true, uniqueVertices: "global", vertexCollections: ["{record_groups}"] }}
                     FILTER child != null AND IS_SAME_COLLECTION("{record_groups}", child)
                     FILTER child.orgId == @org_id AND child.isDeleted != true
-                    FILTER child.connectorId IN record_level_app_ids
+                    FILTER child.connectorId == seed.connectorId AND child.connectorId IN record_level_app_ids
                     RETURN child._key
         )
 

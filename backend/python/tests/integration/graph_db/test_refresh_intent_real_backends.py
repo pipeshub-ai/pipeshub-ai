@@ -81,15 +81,12 @@ class _Store:
         return found
 
 
-@pytest.fixture(params=["neo4j", "arango"])
-async def store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Store]:
+async def _stores(backend: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Store]:
     async with contextlib.AsyncExitStack() as cleanup:
         try:
-            graph = await (
-                connect_neo4j(logger, monkeypatch) if request.param == "neo4j" else connect_arango(logger, ARANGO_DB)
-            )
+            graph = await (connect_neo4j(logger, monkeypatch) if backend == "neo4j" else connect_arango(logger, ARANGO_DB))
         except Exception as exc:
-            backend_unavailable(request.param, exc)
+            backend_unavailable(backend, exc)
         disconnect = getattr(graph, "disconnect", None)
         if disconnect is not None:
             cleanup.push_async_callback(disconnect)
@@ -104,6 +101,19 @@ async def store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
                     await graph.delete_nodes_and_edges(s.keys, RECORDS)
 
         cleanup.push_async_callback(remove)
+        yield s
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Store]:
+    async for s in _stores(request.param, monkeypatch):
+        yield s
+
+
+@pytest.fixture(params=["arango"])
+async def arango_store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_Store]:
+    """For a test that only makes sense on ArangoDB; parametrized rather than skipped at run time."""
+    async for s in _stores(request.param, monkeypatch):
         yield s
 
 
@@ -131,13 +141,20 @@ async def test_the_intent_only_write_changes_nothing_but_the_request_whatever_th
 
 async def test_a_request_is_cleared_by_its_own_id_only(store: _Store) -> None:
     k = await store.add("c", **ri.intent_fields("mine", 1))
-    clear = dict(ri.CLEARED_FIELDS)
-    assert not await store.graph.update_node_fields_if_match(k, RECORDS, clear, {ri.ID_FIELD: "other"})
+    assert not await store.graph.update_node_fields_if_match(k, RECORDS, {}, {ri.ID_FIELD: "other"}, unset=ri.CLEARED_FIELDS)
     assert (await store.doc("c"))[ri.ID_FIELD] == "mine"
-    assert await store.graph.update_node_fields_if_match(k, RECORDS, clear, {ri.ID_FIELD: "mine"})
+    assert await store.graph.update_node_fields_if_match(k, RECORDS, {}, {ri.ID_FIELD: "mine"}, unset=ri.CLEARED_FIELDS)
     doc = await store.doc("c")
-    assert doc.get(ri.ID_FIELD) is None and doc.get(ri.AT_FIELD) is None
+    assert ri.ID_FIELD not in doc and ri.AT_FIELD not in doc, "a cleared record carries neither field, not nulls"
     assert ri.stored_intent(doc) is None
+
+
+async def test_the_clear_helper_removes_the_fields_and_writes_its_extra_in_the_same_statement(store: _Store) -> None:
+    k = await store.add("h", status=ProgressStatus.FAILED.value, **ri.intent_fields("mine", 1))
+    assert not await ri.clear_intent(store.graph, k, "other", {"reason": "x"})
+    assert await ri.clear_intent(store.graph, k, "mine", {"reason": ri.REFRESH_EXPIRED_REASON})
+    doc = await store.doc("h")
+    assert ri.ID_FIELD not in doc and ri.AT_FIELD not in doc and doc["reason"] == ri.REFRESH_EXPIRED_REASON
 
 
 async def test_the_sweeps_read_lists_the_live_records_of_one_org_with_a_request_in_key_order(store: _Store) -> None:
@@ -174,3 +191,37 @@ async def test_the_next_queued_duplicate_never_picks_a_copy_that_holds_a_request
     await store.add("plain2", status=QUEUED, md5="m2")
     nxt = await store.graph.find_next_queued_duplicate(ref)
     assert nxt is not None and (nxt.get("_key") or nxt.get("id")) == store.key("plain2")
+
+
+async def _put_record_schema(store: _Store, schema: dict) -> None:
+    client = store.graph.http_client  # type: ignore[attr-defined]
+    session = await client._get_session()
+    url = f"{client.base_url}/_db/{client.database}/_api/collection/{RECORDS}/properties"
+    async with session.put(url, json={"schema": schema}) as resp:
+        assert resp.status == 200, await resp.text()
+
+
+async def test_a_cleared_or_never_requested_record_stays_writable_under_the_previous_closed_schema(arango_store: _Store) -> None:
+    """A process on a release before the two fields applies the closed record schema without them. Only a record that still holds
+    a field is refused by it, so a clear removes the fields (not nulls), and stale recovery's connector-off write adds none."""
+    import copy
+
+    from app.schema.arango.documents import record_schema
+
+    store = arango_store
+    cleared = await store.add("cleared", **ri.intent_fields("mine", 1))
+    assert await ri.clear_intent(store.graph, cleared, "mine")
+    never = await store.add("never", status=QUEUED)
+    previous = copy.deepcopy(record_schema)
+    for name in ri.CLEARED_FIELDS:
+        previous["rule"]["properties"].pop(name)
+    live = copy.deepcopy(record_schema)
+    await _put_record_schema(store, previous)
+    try:
+        for key in (cleared, never):
+            await store.graph.http_client.update_document(RECORDS, key, {"reason": "an older image's write"})
+    finally:
+        await _put_record_schema(store, live)
+    for name in ("cleared", "never"):
+        doc = await store.doc(name)
+        assert ri.ID_FIELD not in doc and ri.AT_FIELD not in doc and doc["reason"] == "an older image's write"

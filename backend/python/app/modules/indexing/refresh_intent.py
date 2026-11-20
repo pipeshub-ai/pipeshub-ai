@@ -76,6 +76,16 @@ def live_intent(record: Mapping[str, Any] | None, now_ms: int) -> str | None:
     return held[0] if 0 <= now_ms - held[1] < INTENT_LIFE_MS else None
 
 
+def waiting_intent(record: Mapping[str, Any] | None, now_ms: int, run_started_ms: int) -> str | None:
+    """The request a run that has just ended should hand over: a live one, or one made while the run was in progress even if
+    the run outlasted its life (a record held by a run does not age out under it)."""
+    live = live_intent(record, now_ms)
+    if live is not None:
+        return live
+    held = stored_intent(record)
+    return held[0] if held is not None and held[1] is not None and held[1] >= run_started_ms else None
+
+
 def expired_intent(record: Mapping[str, Any] | None, now_ms: int) -> bool:
     held = stored_intent(record)
     return held is not None and live_intent(record, now_ms) is None
@@ -103,4 +113,20 @@ def intent_fields(intent_id: str, at_ms: int) -> dict[str, Any]:
     return {ID_FIELD: intent_id, AT_FIELD: at_ms, "republishCount": None}
 
 
-CLEARED_FIELDS: dict[str, Any] = {ID_FIELD: None, AT_FIELD: None}
+#: The two fields a clear removes. Removed, never left null (ArangoDB would keep the nulls): a cleared record carries neither.
+CLEARED_FIELDS: tuple[str, str] = (ID_FIELD, AT_FIELD)
+
+
+async def clear_intent(
+    graph_provider: Any,  # noqa: ANN401 - an IGraphDBProvider
+    record_id: str,
+    intent_id: str | None,
+    extra: Mapping[str, Any] | None = None,
+) -> bool:
+    """Remove the request ``intent_id`` from the record, and only that one (a compare-and-set on its id); ``extra`` fields
+    are written in the same statement. True when it was cleared."""
+    if not intent_id:
+        return False
+    return bool(await graph_provider.update_node_fields_if_match(
+        record_id, "records", dict(extra or {}), {ID_FIELD: intent_id}, unset=CLEARED_FIELDS,
+    ))

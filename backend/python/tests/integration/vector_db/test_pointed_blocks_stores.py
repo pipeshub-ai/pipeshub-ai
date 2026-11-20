@@ -76,7 +76,7 @@ def store_of(svc: object, col: str, image: str) -> object:
     """image: 'embed' (the provider returns a vector) or 'skip' (it returns none)."""
     s = make_store(svc, dim=DIM, collection=col)
     s.embedding_size = DIM
-    s._embed_documents_with_retry = AsyncMock(side_effect=lambda ts, _r: [_vec(t) for t in ts])
+    s._embed_documents_with_retry = AsyncMock(side_effect=lambda ts, _r, witness_out=None: [_vec(t) for t in ts])
     s.get_embedding_model_instance = AsyncMock(return_value=True)
     s.image_calls = 0
 

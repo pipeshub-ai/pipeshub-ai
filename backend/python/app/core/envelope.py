@@ -39,6 +39,7 @@ from app.utils.request_context import sanitize_root_id
 
 DEFAULT_MAX_AGE_SECONDS = 900  # beyond normal consumer lag plus a retry backoff (<= 300 s); see docs/org-context.md
 MAX_FUTURE_SKEW_SECONDS = 300
+DEFAULT_ADMITTED_MAX_AGE_SECONDS = 86400  # how long an admission of a delivery counts; re-stamped each time the delivery moves
 
 CTX_MISSING = METRICS_BACKEND.counter(
     "pipeshub_envelope_ctx_missing_total",
@@ -63,6 +64,17 @@ STALE = METRICS_BACKEND.counter(
     "Validly signed broker messages older than the accepted signature age",
     ["topic"],
 )
+REJECTED = METRICS_BACKEND.counter(
+    "pipeshub_envelope_rejected_total",
+    "Broker messages dropped because their envelope was rejected, by reason and (only once the signature verified) event "
+    "type: a dropped self-scheduled control message ends its chain, so this is the place to see one go missing",
+    ["topic", "reason", "event_type"],
+)
+ADMISSION_REFUSED = METRICS_BACKEND.counter(
+    "pipeshub_envelope_admission_refused_total",
+    "Stored admissions of a queue delivery that did not verify (forged, copied, edited, expired or made with a key no longer configured)",
+    ["topic"],
+)
 STRIPPED = METRICS_BACKEND.counter(
     "pipeshub_envelope_stripped_total",
     "Broker messages without a ctx while signing is enabled (stripped or unsigned producer)",
@@ -83,11 +95,33 @@ def _log_loud(key: str, msg: str, *args: object) -> None:
 
 
 class EnvelopeRejected(NonRetryableError):
-    """Dead-letter the message (terminal: retrying cannot fix it); ``reason`` is a stable label."""
+    """Dead-letter the message (terminal: retrying cannot fix it); ``reason`` is a stable label.
 
-    def __init__(self, reason: str) -> None:
+    ``event_type`` and ``record_id`` are set only when the signature already verified (a stale message, say): they
+    name what was dropped, so a lost control message can be traced. Never set from an unverified message.
+    """
+
+    def __init__(self, reason: str, *, event_type: str = "", record_id: str = "", age_seconds: float | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.event_type = event_type
+        self.record_id = record_id
+        self.age_seconds = age_seconds
+
+    def facts(self) -> dict[str, str]:
+        """``event_type`` / ``record_id`` for the delivery's end line, only those known."""
+        return {k: v for k, v in (("event_type", self.event_type), ("record_id", self.record_id)) if v}
+
+    def describe(self) -> str:
+        """What was dropped, for the log line; no payload values, only the verified event type and record id."""
+        parts = [f"reason={self.reason}"]
+        if self.event_type:
+            parts.append(f"event_type={self.event_type}")
+        if self.record_id:
+            parts.append(f"record_id={self.record_id}")
+        if self.age_seconds is not None:
+            parts.append(f"age_seconds={int(self.age_seconds)}")
+        return " ".join(parts)
 
 
 class DuplicateEnvelope(Exception):
@@ -117,6 +151,19 @@ def max_age_seconds() -> float:
         value = 0.0
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"ENVELOPE_MAX_AGE_SECONDS must be a positive number, got {raw!r}")
+    return value
+
+
+def admitted_max_age_seconds() -> float:
+    raw = os.getenv("ENVELOPE_ADMITTED_MAX_AGE_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_ADMITTED_MAX_AGE_SECONDS)
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.0
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"ENVELOPE_ADMITTED_MAX_AGE_SECONDS must be a positive number, got {raw!r}")
     return value
 
 
@@ -224,6 +271,13 @@ class Opened:
     message: dict[str, Any]  # `ctx` removed, `payload` decoded
 
 
+def _record_id_of(payload: object) -> str:
+    """The record a verified payload is about (empty when it names none or does not decode), for the drop's log line."""
+    body = _decode_payload(payload) if isinstance(payload, str) else None
+    record_id = (body or {}).get("recordId")
+    return record_id[:128] if isinstance(record_id, str) else ""
+
+
 async def open_envelope(
     topic: str,
     message: dict[str, Any],
@@ -231,9 +285,33 @@ async def open_envelope(
     keys: Sequence[bytes] = (),
     required: bool | None = None,
     inbox: Inbox | None = None,
-    now: Callable[[], float] = time.time,
+    now: Callable[[], float] | None = None,
+    admitted: bool = False,
 ) -> Opened:
-    """Verify a consumed message and derive its OrgContext. Raises EnvelopeRejected / DuplicateEnvelope."""
+    """Verify a consumed message and derive its OrgContext. Raises EnvelopeRejected / DuplicateEnvelope.
+
+    ``admitted``: a consumer already opened this delivery with every check passed, and can prove it (see
+    :func:`admission_valid`), so the age comparison is skipped. The signature, shape, org and future-skew checks always run.
+
+    Every rejection is counted in ``pipeshub_envelope_rejected_total{topic,reason,event_type}`` here, once, whichever
+    consumer called."""
+    try:
+        return await _open_envelope(topic, message, keys=keys, required=required, inbox=inbox, now=now, admitted=admitted)
+    except EnvelopeRejected as e:
+        REJECTED.inc(topic, e.reason, e.event_type)
+        raise
+
+
+async def _open_envelope(
+    topic: str,
+    message: dict[str, Any],
+    *,
+    keys: Sequence[bytes],
+    required: bool | None,
+    inbox: Inbox | None,
+    now: Callable[[], float] | None,
+    admitted: bool,
+) -> Opened:
     required = ctx_required() if required is None else required
     c = message.get("ctx")
     if c is None:
@@ -271,15 +349,15 @@ async def open_envelope(
             raise EnvelopeRejected("bad_signature")
     except (KeyError, TypeError, UnicodeEncodeError) as e:  # a lone surrogate cannot be encoded for the HMAC
         raise EnvelopeRejected("malformed") from e
-    age = now() - c["issuedAt"]
-    if age > max_age_seconds():
+    age = (now or time.time)() - c["issuedAt"]
+    if age > max_age_seconds() and not admitted:
         STALE.inc(topic)
         STALE_BY_TYPE.inc(topic, event_type[:64])
         if enforcing():
-            raise EnvelopeRejected("stale")
+            raise EnvelopeRejected("stale", event_type=event_type[:64], record_id=_record_id_of(payload), age_seconds=age)
         _log_loud(f"stale:{topic}", "validly signed envelope older than %ss topic=%s: accepted in shadow mode", max_age_seconds(), topic)
     if -age > MAX_FUTURE_SKEW_SECONDS:
-        raise EnvelopeRejected("future")
+        raise EnvelopeRejected("future", event_type=event_type[:64], record_id=_record_id_of(payload), age_seconds=age)
     try:
         body = decode_json(payload)
     except json.JSONDecodeError as e:
@@ -328,6 +406,7 @@ async def configure_from_config(config_service: Any) -> None:  # noqa: ANN401
 
     validate_mode()
     max_age_seconds()
+    admitted_max_age_seconds()
     for task in _retry_task:
         task.cancel()
     _retry_task.clear()
@@ -369,10 +448,10 @@ async def configure_from_config(config_service: Any) -> None:  # noqa: ANN401
     _retry_task.append(spawn_detached(retry(), name="envelope-key-retry"))
 
 
-async def open_configured(topic: str, message: dict[str, Any], *, claim: bool = True) -> Opened:
-    """``claim=False`` for parse paths that may run more than once per delivery (no inbox claim)."""
+async def open_configured(topic: str, message: dict[str, Any], *, claim: bool = True, admitted: bool = False) -> Opened:
+    """``claim=False`` for parse paths that may run more than once per delivery (no inbox claim). ``admitted``: see :func:`open_envelope`."""
     keys = await _keys() if _keys else ()
-    return await open_envelope(topic, message, keys=keys, inbox=_inbox if claim else None)
+    return await open_envelope(topic, message, keys=keys, inbox=_inbox if claim else None, admitted=admitted)
 
 
 def with_event_id(message: dict[str, Any]) -> dict[str, Any]:
@@ -380,6 +459,105 @@ def with_event_id(message: dict[str, Any]) -> dict[str, Any]:
     if isinstance(message.get("eventId"), str) and message["eventId"]:
         return message
     return {**message, "eventId": str(uuid.uuid4())}
+
+
+def _admission_canon(topic: str, group_id: str, message_id: int, message: dict[str, Any], admission_ms: int) -> bytes | None:
+    """What an admission binds: the message's identity (not its timestamp or signature, so a re-signed copy keeps it), the row and the stamp."""
+    c, payload = message.get("ctx"), message.get("payload")
+    if not (isinstance(c, dict) and isinstance(payload, str) and isinstance(c.get("eventId"), str) and isinstance(c.get("orgId"), str)):
+        return None
+    event_type = message.get("eventType")
+    parts = [
+        "admit1", topic, group_id, str(message_id), c["eventId"], c["orgId"], event_type if isinstance(event_type, str) else "",
+        hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest(), str(admission_ms),
+    ]
+    # Each field carries its length, so no two different field lists can encode to the same bytes.
+    return "".join(f"{len(part)}:{part}" for part in parts).encode("utf-8", "surrogatepass")
+
+
+def admission_mac(key: bytes, topic: str, group_id: str, message_id: int, message: dict[str, Any], admission_ms: int) -> str | None:
+    canon = _admission_canon(topic, group_id, message_id, message, admission_ms)
+    if canon is None:
+        return None
+    return base64.urlsafe_b64encode(hmac.new(key, canon, hashlib.sha256).digest()).decode().rstrip("=")
+
+
+def admission_valid(
+    keys: Sequence[bytes], topic: str, group_id: str, message_id: int, message: dict[str, Any],
+    admission_ms: int | None, mac: str | None, *, now: float | None = None,
+) -> bool:
+    """Whether a stored admission proves a consumer opened this very message for this very row, recently enough.
+
+    False for anything absent, edited, copied to another group, message or topic, made for another message, made with a key that is
+    no longer configured, older than ``ENVELOPE_ADMITTED_MAX_AGE_SECONDS`` or stamped in the future. A False answer only means the
+    age check applies as it would to a message never seen.
+    """
+    if admission_ms is None or not mac or not keys:
+        return False
+    at = (now if now is not None else time.time())
+    stamp = admission_ms / 1000.0
+    if at - stamp > admitted_max_age_seconds() or stamp - at > MAX_FUTURE_SKEW_SECONDS:
+        return False
+    try:
+        return any(
+            (expected := admission_mac(k, topic, group_id, message_id, message, admission_ms)) is not None
+            and hmac.compare_digest(expected, mac)
+            for k in keys
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+async def configured_admission_valid(
+    topic: str, group_id: str, message_id: int, message: dict[str, Any], admission_ms: int | None, mac: str | None
+) -> bool:
+    """:func:`admission_valid` with the configured keys; counts a stored admission that does not verify."""
+    if admission_ms is None and mac is None:
+        return False
+    keys = await _keys() if _keys else ()
+    ok = admission_valid(keys, topic, group_id, message_id, message, admission_ms, mac)
+    if not ok and keys:
+        ADMISSION_REFUSED.inc(topic)
+        _log_loud(f"admission:{topic}", "a stored queue admission did not verify topic=%s: the message is judged by its age", topic)
+    return ok
+
+
+async def new_admission(topic: str, group_id: str, message_id: int, message: dict[str, Any]) -> tuple[int, str] | None:
+    """(stamp, MAC) for a message this process just opened, made with the current key; None without a key or an envelope to bind."""
+    keys = await _keys() if _keys else ()
+    if not keys or not isinstance(message.get("ctx"), dict):
+        return None
+    ms = int(time.time() * 1000)
+    mac = admission_mac(keys[0], topic, group_id, message_id, message, ms)
+    return None if mac is None else (ms, mac)
+
+
+def within_lifetime(message: dict[str, Any], now: float | None = None) -> bool:
+    """Whether the message's own timestamp is inside the envelope lifetime now (the age check on its own, without any admission)."""
+    c = message.get("ctx")
+    issued = c.get("issuedAt") if isinstance(c, dict) else None
+    return isinstance(issued, int) and ((now if now is not None else time.time()) - issued) <= max_age_seconds()
+
+
+async def refresh_envelope(topic: str, message: dict[str, Any], *, admitted: bool = False) -> dict[str, Any] | None:
+    """The same signed message issued again now, for a consumer that keeps it waiting past its lifetime.
+
+    A delivery that is handed back repeatedly keeps its stored envelope, so the time it has waited counts as its age and
+    the envelope would be refused as stale. The message is verified first (signature, age, shape), exactly as on receipt;
+    only then is ``issuedAt`` renewed and the signature recomputed over the unchanged payload. Raises EnvelopeRejected for a
+    message that does not verify, which includes one that is already stale. Returns None when there is nothing to renew: no
+    envelope, or no key to verify or sign with.
+    """
+    if not isinstance(message.get("ctx"), dict) or not _sign_key or _keys is None:
+        return None
+    keys = await _keys()
+    if not keys:
+        return None
+    await open_envelope(topic, message, keys=keys, required=True, admitted=admitted)
+    c = {**message["ctx"], "issuedAt": int(time.time())}
+    event_type = message.get("eventType")
+    c["sig"] = compute_sig(_sign_key, topic, c, message["payload"], event_type if isinstance(event_type, str) else "")
+    return {**message, "ctx": c}
 
 
 def sign_message(topic: str, message: dict[str, Any]) -> dict[str, Any]:
@@ -422,7 +600,7 @@ def ctx_of(message: Any) -> OrgContext | None:  # noqa: ANN401
     return message.org_ctx or legacy_ctx({"payload": message.payload, "requestId": message.requestId})
 
 
-async def open_stream_message(topic: str, raw: Any, model: type) -> Any:  # noqa: ANN401
+async def open_stream_message(topic: str, raw: Any, model: type, *, admitted: bool = False) -> Any:  # noqa: ANN401
     """Parse helper for consumers that build the message model themselves (indexing consumers).
 
     Verifies like :func:`open_configured` (no inbox claim: parsing may run more than once per
@@ -430,5 +608,5 @@ async def open_stream_message(topic: str, raw: Any, model: type) -> Any:  # noqa
     """
     if not isinstance(raw, dict):
         return model(**raw)
-    opened = await open_configured(topic, raw, claim=False)
+    opened = await open_configured(topic, raw, claim=False, admitted=admitted)
     return model(**opened.message, org_ctx=opened.ctx)

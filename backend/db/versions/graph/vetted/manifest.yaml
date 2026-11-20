@@ -65,7 +65,7 @@ functions:
 # applied as the provider's own statement applies them, and p_null_absent selects its rule that a null value also matches an absent key.
 # A page continues after p_after (ids ascending), so a read of every match pages by the last id.
 
-  # The blocks of one record (index nodes_block_record).
+  # The blocks of one record (index nodes_block_record_seek: a hash of the record, then id).
   - name: graph.blocks_by_record
     class: read
     scope: org
@@ -83,16 +83,20 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      -- only the ids are materialized (the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection); the page's docs are fetched by key
+      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0018): a page reads one page of matches, not
+      -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
+      -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
+      -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
+      -- equality does not let the planner drop it from the order, and an order by id alone walks the primary key and filters the collection
       RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'recordId' = p_record_id
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND hashtext(n.doc->>'recordId') = hashtext(p_record_id) AND n.doc->>'recordId' IS NOT DISTINCT FROM p_record_id
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
-        SELECT n.id, n.doc FROM (SELECT m.id FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit) pg
-        JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = pg.id ORDER BY n.id;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+          AND n.id > p_after ORDER BY hashtext(n.doc->>'recordId'), n.id LIMIT p_limit)
+        SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = m.id ORDER BY n.id;
 
-  # The blocks of one connector with one folded name (index nodes_block_name).
+  # The blocks of one connector with one folded name (index nodes_block_name_seek: a hash of connector and name, then id).
   - name: graph.blocks_by_name
     class: read
     scope: org
@@ -111,22 +115,27 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      -- only the ids are materialized (the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection); the page's docs are fetched by key
+      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0018): a page reads one page of matches, not
+      -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
+      -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
+      -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
+      -- equality does not let the planner drop it from the order, and an order by id alone walks the primary key and filters the collection
       RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'nameFolded')) = hashtext(p_connector_id || '/' || p_name_folded)
+          AND n.doc->>'connectorId' IS NOT DISTINCT FROM p_connector_id AND n.doc->>'nameFolded' IS NOT DISTINCT FROM p_name_folded
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
-        SELECT n.id, n.doc FROM (SELECT m.id FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit) pg
-        JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = pg.id ORDER BY n.id;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+          AND n.id > p_after ORDER BY hashtext((n.doc->>'connectorId') || '/' || (n.doc->>'nameFolded')), n.id LIMIT p_limit)
+        SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = m.id ORDER BY n.id;
 
-  # The code files of one path (index nodes_codefile_path).
+  # The code files of one path (index nodes_codefile_path_seek: a hash of the path, then id).
   - name: graph.code_files_by_path
     class: read
     scope: org
     grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
     args:
-      - {name: p_path, type: text, length: [1, 2000]}
+      - {name: p_path, type: text, length: [1, 4096]}
       - {name: p_keys, type: "text[]", max_items: 32, item_not_null: true, item_length: [1, 200]}
       - {name: p_vals, type: "jsonb[]", max_items: 32, item_not_null: true}
       - {name: p_null_absent, type: boolean}
@@ -138,14 +147,18 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      -- only the ids are materialized (the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection); the page's docs are fetched by key
+      -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0018): a page reads one page of matches, not
+      -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
+      -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
+      -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's
+      -- equality does not let the planner drop it from the order, and an order by id alone walks the primary key and filters the collection
       RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path
+        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND hashtext(n.doc->>'filePath') = hashtext(p_path) AND n.doc->>'filePath' IS NOT DISTINCT FROM p_path
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
-        SELECT n.id, n.doc FROM (SELECT m.id FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit) pg
-        JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = pg.id ORDER BY n.id;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
+          AND n.id > p_after ORDER BY hashtext(n.doc->>'filePath'), n.id LIMIT p_limit)
+        SELECT n.id, n.doc FROM m JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = m.id ORDER BY n.id;
 
 # ---- more hot lookups (graph_0004) ------------------------------------------------------------------------------------------------
 # The same reason as the code graph's reads above: a plain statement under the service role reaches an expression index on the document
@@ -602,3 +615,59 @@ functions:
             ORDER BY coalesce(n.doc->>'origin' = p_upload AND n.doc->>'connectorName' = p_kb, false) DESC, n.id COLLATE ucs_basic LIMIT p_per_doc)
           UNION ALL (SELECT 'files.path'::text, f.id, NULL::text, NULL::text, NULL::text FROM graph.nodes f
             WHERE f.org_id = v_org AND f.coll = 'files' AND f.doc->>'path' = 'storage://' || d.e ORDER BY f.id COLLATE ucs_basic LIMIT 1)) x;
+
+# ---- records by web address, and the Jira sites of the org's tickets (graph_0017) -------------------------------------------------------------
+# Same reason as above: a plain statement read every record of the org to match an address. Each address is probed on its own (one probe per distinct
+# address, as records_by_virtual_id does), so a call with many addresses cannot plan a scan of the org.
+
+  # Every record of the org whose webUrl is one of the addresses (index nodes_record_weburl, keyed by md5 of the address). The callers apply their own
+  # filters (live, link records, the record's orgId) to the rows; an address holds a record, the attachments sharing its address and a link record per connector.
+  # At most 10,000 records per address (the hard limit a vetted read has), in no order: a caller that gets 10,000 for an address reads the addresses
+  # with its plain statement instead, in the same statement (lookups.py), so no answer depends on which 10,000 came back.
+  - name: graph.records_by_weburl
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_urls, type: "text[]", max_items: 1000, item_not_null: true, item_length: [0, 100000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT m.id, m.doc FROM (SELECT DISTINCT u FROM unnest(p_urls) u) k
+        CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n
+          WHERE n.org_id = v_org AND n.coll = 'records' AND md5(n.doc->>'webUrl') = md5(k.u) AND n.doc->>'webUrl' = k.u LIMIT 10000) m;
+
+  # The distinct sites (the address before its last /browse/) of the live TICKET records of the given connector names whose orgId is p_owner, ordered,
+  # up to p_limit (NULL: all). One probe of nodes_record_ticket_site per site and connector name: each step finds the next md5 of a site (a skip scan).
+  # The regular expression spells its slashes [/] (the same match), and live is the text test of isDeleted, as the index predicate is written: no cast here.
+  # Each probe orders by the connector name too: it is the probe's own but not a constant, and without it the index order does not give the site's,
+  # so the plan sorted every ticket of the connector under the LIMIT.
+  - name: graph.ticket_sites
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_owner, type: text, length: [1, 200]}
+      - {name: p_connector_names, type: "text[]", max_items: 100, item_not_null: true, item_length: [1, 200]}
+      - {name: p_limit, type: int, nullable: true, range: [0, 1000000]}
+    returns: "TABLE (site_url text)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY WITH RECURSIVE s(c, h, site) AS (
+          SELECT k.c, f.h, f.site FROM (SELECT DISTINCT c FROM unnest(p_connector_names) c) k
+            CROSS JOIN LATERAL (SELECT md5((regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1]) AS h, (regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1] AS site
+              FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' LIKE '%/browse/%'
+                AND coalesce(n.doc->>'isDeleted', '') <> 'true' AND n.doc->>'connectorName' = k.c AND n.doc->>'orgId' = p_owner
+              ORDER BY n.doc->>'connectorName', 1 LIMIT 1) f
+          UNION ALL
+          SELECT s.c, f.h, f.site FROM s
+            CROSS JOIN LATERAL (SELECT md5((regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1]) AS h, (regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1] AS site
+              FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' LIKE '%/browse/%'
+                AND coalesce(n.doc->>'isDeleted', '') <> 'true' AND n.doc->>'connectorName' = s.c AND n.doc->>'orgId' = p_owner
+                AND md5((regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1]) > s.h
+              ORDER BY n.doc->>'connectorName', 1 LIMIT 1) f)
+        SELECT DISTINCT s.site FROM s WHERE s.site <> '' ORDER BY s.site LIMIT p_limit;

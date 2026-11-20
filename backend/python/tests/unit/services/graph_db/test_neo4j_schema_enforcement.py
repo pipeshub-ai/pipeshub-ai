@@ -227,7 +227,7 @@ CLASSIFICATION: dict[str, str] = {
     "update_node_if_match": _R,
     # ---- targeted raw writes of one schema'd field
     "compare_and_set_indexing_status": _T, "transition_unsupported": _T, "compare_and_set_record_fields": _T, "stamp_external_org_parents": _T,
-    "update_indexing_status_for_record_ids": _T, "reset_indexing_status_for_connector": _T,
+    "update_indexing_status_for_record_ids": _T, "update_record_fields_for_ids": _T, "reset_indexing_status_for_connector": _T,
     "batch_update_connector_status": _T, "update_drive_sync_state": _T, "update_user_sync_state": _T,
     "update_queued_duplicates_status": _T, "claim_push_record": _T, "retag_push_record": _T,
     "record_purge_failure": _T, "increment_node_field": _T, "take_back_kept_record_group": _T,
@@ -742,6 +742,16 @@ async def test_status_only_update_of_records_rejects_a_bogus_status_without_writ
     assert _writes(p) == []
 
 
+async def test_intent_only_write_of_records_accepts_the_two_fields_and_rejects_a_bad_value() -> None:
+    p = _provider(existing=("r1",))
+    await p.update_record_fields_for_ids(["r1"], {"refreshIntentId": "i1", "refreshIntentAtMs": 5})
+    assert len(_writes(p)) == 1
+    p = _provider(existing=("r1",))
+    with pytest.raises(SchemaValidationError):
+        await p.update_record_fields_for_ids(["r1"], {"refreshIntentAtMs": "not a number"})
+    assert _writes(p) == []
+
+
 async def test_connector_status_batch_writes_booleans() -> None:
     p = _provider()
     await p.batch_update_connector_status("apps", ["a1"], is_active=True, is_agent_active=False)
@@ -989,7 +999,7 @@ COVERED = (
     set(NODE_DRIVERS) | set(EDGE_DRIVERS)
     | {
         "set_record_properties", "compare_and_set_indexing_status", "transition_unsupported", "compare_and_set_record_fields",
-        "update_indexing_status_for_record_ids", "reset_indexing_status_for_connector",
+        "update_indexing_status_for_record_ids", "update_record_fields_for_ids", "reset_indexing_status_for_connector",
         "batch_update_connector_status", "update_drive_sync_state", "update_user_sync_state", "update_edge",
         "create_organization_if_absent",
     }

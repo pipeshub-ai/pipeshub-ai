@@ -3226,7 +3226,8 @@
             "max_pages": "已達到最大頁數限制",
             "time_limit": "已達到時間限制；下次同步將繼續",
             "stalled": "網站停止回應；下次同步將繼續",
-            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續",
+            "start_not_recorded": "同步無法儲存其開始記錄，因此未執行；下次同步將重試"
           },
           "pagesSaved": "已儲存 {{count}} 個頁面",
           "failed": "{{count}} 個頁面失敗",
@@ -3681,6 +3682,91 @@
           "sweep": "此連接器的權限更新持續失敗。請執行 PipesHub 的人員檢查其記錄。",
           "other": "此連接器的權限需要有人查看。",
           "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
+        }
+      },
+      "userAccess": {
+        "connect": "連接",
+        "reconnect": "重新連接",
+        "connected": "已連接",
+        "connectedAs": "已以 {{account}} 連接",
+        "connectDialog": {
+          "title": "將你的帳戶連接到 {{name}}",
+          "description": "貼上你自己的 {{source}} 帳戶中的個人存取權杖。PipesHub 只會向你顯示你的帳戶可以開啟的頁面。",
+          "howTo": "如何建立個人存取權杖",
+          "tokenLabel": "個人存取權杖",
+          "submitting": "正在連接…",
+          "errorFallback": "無法連接你的帳戶，請重試。",
+          "signInHint": "{{source}} 只列出你擁有完整存取權限的頁面。所選頁面的子頁面（包括新建立的）都會包含在內。之後如需新增更多頁面，請重新登入。",
+          "signingIn": "正在等待 {{source}}…",
+          "signInFailed": "登入未完成。請重試。",
+          "popupBlocked": "瀏覽器封鎖了登入視窗。請允許此網站的彈出視窗後重試。"
+        },
+        "admin": {
+          "title": "已連接的使用者",
+          "description": "此連接器只向每個人顯示其自己帳戶可以開啟的內容。未連接的人看不到任何內容。",
+          "remove": "移除",
+          "removeTitle": "移除 {{email}} 的連接？",
+          "removeMessage": "在重新連接之前，對方將看不到此連接器的結果。",
+          "removing": "正在移除…",
+          "removed": "連接已移除",
+          "status": {
+            "connected": "已連接",
+            "needs_reconnect": "需要重新連接",
+            "invited": "已邀請",
+            "not_invited": "未邀請",
+            "opted_out": "不希望收到提醒",
+            "no_account": "沒有 PipesHub 帳戶"
+          },
+          "noAccountHint": "請先邀請他們加入 PipesHub",
+          "invite": "邀請",
+          "remind": "提醒",
+          "sent_other": "已傳送給 {{count}} 人",
+          "notEmailed_other": "有 {{count}} 人的郵件未能傳送；他們仍收到了應用程式內通知。",
+          "lastSent": "上次傳送於 {{time}}",
+          "connectedAt": "連接於 {{time}}",
+          "membersUpdated": "成員清單上次讀取於 {{time}}",
+          "membersPending": "成員清單將在下次同步後顯示",
+          "queued_other": "正在傳送給 {{count}} 人。他們會收到一則通知和一封郵件。",
+          "nothingSent": "未傳送任何內容",
+          "skipReason": {
+            "connected": "已連接。",
+            "not_found": "已不是成員。",
+            "opted_out": "不希望收到提醒。",
+            "recently_sent": "過去一天內已傳送過。",
+            "not_sent": "無法傳送。請稍後重試。"
+          },
+          "inviteWho": "邀請 {{name}}",
+          "remindWho": "提醒 {{name}}",
+          "removeWho": "移除 {{name}} 的連接",
+          "yourAccount": "你的帳號",
+          "connectedOf": "{{total}} 人中已有 {{connected}} 人連線",
+          "needReconnect_other": "{{count}} 人需要重新連線",
+          "search": "依姓名或電子郵件搜尋",
+          "inviteEveryoneHint": "所有尚未連線的人",
+          "inviteEveryone": "全部邀請（{{count}}）",
+          "noMatches": "沒有符合「{{q}}」的人",
+          "nobody": "目前沒有人。下次同步後會顯示。"
+        },
+        "link": {
+          "title": "連接你的 {{source}} 帳戶",
+          "forEmail": "適用於 {{email}}",
+          "continue": "繼續前往 {{source}}",
+          "loading": "正在檢查連結…",
+          "alreadyConnected": "你的 {{source}} 帳戶已連接。",
+          "openApp": "開啟 PipesHub",
+          "expired": "此連結已過期或已被使用。請向管理員索取新連結，或在 PipesHub 的「您的個人連接器」中連接。",
+          "optedOut": "你將不會再收到此連接器的提醒。",
+          "error": "發生問題。請一分鐘後重試。",
+          "noSignIn": "此連接器使用個人存取權杖。開啟 PipesHub，在通知中選擇「連線」來貼上你的權杖。",
+          "done": "{{name}} 已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
+          "doneUnnamed": "你的帳戶已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
+          "failedTitle": "無法連接",
+          "failedRetry": "請使用郵件中的連結重試。",
+          "confirmOptOut": "停止 {{name}} 的提醒？",
+          "stopReminders": "停止提醒",
+          "rateLimited": "嘗試次數過多，請一分鐘後重試。",
+          "cancelled": "你取消了登入。",
+          "signInFailed": "登入未完成。請重試。"
         }
       }
     },
@@ -4615,6 +4701,9 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜尋索引超出了向量資料庫的記憶體",

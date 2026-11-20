@@ -201,15 +201,39 @@ async def test_an_intent_write_resets_the_resend_count(w: World) -> None:
     assert w.row.get("republishCount") is None
 
 
+class _Counted:
+    """Records the labels of every ``inc`` (the metrics backend has no reader)."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def inc(self, *labels: str, value: float = 1.0) -> None:
+        self.events.extend(labels)
+
+
 async def test_an_expired_request_on_a_completed_row_is_cleared_logged_and_counted(w: World, caplog: pytest.LogCaptureFixture) -> None:
     w.row.update(ri.intent_fields("old", w.now_ms - 25 * HOUR_MS))
-    before = ri.REFRESH_INTENT_EVENTS.get("expired") if hasattr(ri.REFRESH_INTENT_EVENTS, "get") else None
-    with caplog.at_level("WARNING"):
+    counted = _Counted()
+    with patch.object(ri, "REFRESH_INTENT_EVENTS", counted), caplog.at_level("WARNING"):
         await w.intent_sweep()
-    assert w.row.get(ri.ID_FIELD) is None and not w.msgs
+    assert ri.ID_FIELD not in w.row and ri.AT_FIELD not in w.row and not w.msgs
     assert "was not served within its life" in caplog.text
     assert w.row.get("reason") is None                                                   # a completed row keeps its text
-    assert before is None or ri.REFRESH_INTENT_EVENTS.get("expired") == before + 1
+    assert counted.events == ["expired"]
+
+
+async def test_a_request_made_during_a_run_longer_than_the_life_is_still_served(w: World) -> None:
+    """A record a run holds does not age out under it: the sweep leaves its request, and the run's end hands it over."""
+    await w.plain_update()
+    await w.consume()
+    await w.user_force()                                                                 # intent-only write on the running row
+    assert w.row.get(ri.ID_FIELD)
+    for _ in range(25):
+        w.now_ms += HOUR_MS
+        await w.intent_sweep()                                                           # nothing dropped, nothing sent
+    assert w.row.get(ri.ID_FIELD) and w.row.get("reason") != ri.REFRESH_EXPIRED_REASON and not w.msgs
+    await w.finish(allow_crash=False)
+    assert any(m["payload"].get(ri.PAYLOAD_ID_KEY) for m in w.msgs), w.msgs
 
 
 async def test_an_expired_request_on_a_waiting_row_says_so_in_its_reason(w: World) -> None:
@@ -250,7 +274,7 @@ async def test_the_upgrade_of_a_plain_event_keeps_its_origin_through_a_requeue(w
     first = await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, plain, dict(w.row), KEY, parse_now=False)
     assert first is not None and first.refresh and plain[ri.FROM_INTENT_KEY] is True
     requeued = dict(plain)                                                               # the consumer re-queues the mutated payload
-    w.row.update(ri.CLEARED_FIELDS)                                                      # the request has been served meanwhile
+    w.row.update(dict.fromkeys(ri.CLEARED_FIELDS))                                                      # the request has been served meanwhile
     again = await w.handler._settle_refresh_intent(EventTypes.UPDATE_RECORD.value, requeued, dict(w.row), KEY, parse_now=False)
     assert again is not None and not again.refresh and "refreshPaidOutputs" not in requeued
 
@@ -262,7 +286,7 @@ async def test_the_backstop_stores_the_request_of_an_unstamped_refresh_and_never
     run = await w.handler._settle_refresh_intent(EventTypes.NEW_RECORD.value, unstamped, dict(w.row), KEY, parse_now=False)
     assert run is not None and run.refresh and run.intent_id == "d-1" and w.row[ri.ID_FIELD] == "d-1"
     assert unstamped[ri.PAYLOAD_ID_KEY] == "d-1"
-    w.row.update(ri.CLEARED_FIELDS)
+    w.row.update(dict.fromkeys(ri.CLEARED_FIELDS))
     stamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, ri.PAYLOAD_ID_KEY: "d-1"}
     await w.handler._settle_refresh_intent(EventTypes.NEW_RECORD.value, stamped, dict(w.row), KEY, parse_now=False)
     assert w.row.get(ri.ID_FIELD) is None, "a cleared request must not be written back"

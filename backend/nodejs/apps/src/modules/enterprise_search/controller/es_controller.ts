@@ -138,6 +138,7 @@ import {
   aguiErrorCodeFromPayload,
   frameAGUI,
   isAGUI,
+  readRunFrame,
   resolveProtocol,
 } from '../utils/agui';
 import { emitTurnStarted } from '../utils/compare-turn';
@@ -1003,23 +1004,52 @@ export const streamChat =
               contentAccumulator.feedToolCallStart(dataLine);
             }
 
-            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-              // Root RUN_FINISHED's `result` IS `completion_data` — see
-              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
-              // frames carry no `result` and are just forwarded through below.
-              try {
-                const parsed = JSON.parse(dataLine);
-                if (parsed.result) {
-                  completeData = parsed.result;
-                  run.sawResult(completeData);
-                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
-                  // own enriched RUN_FINISHED after saving, same as `complete`.
-                } else {
+            if (
+              agui &&
+              (eventType === AGUIEventType.RUN_FINISHED ||
+                eventType === AGUIEventType.RUN_ERROR)
+            ) {
+              const frame = readRunFrame(eventType, dataLine);
+              if (frame.kind === 'answer') {
+                // Not forwarded: Node sends its own RUN_FINISHED once the answer is saved.
+                completeData = frame.result;
+                run.sawResult(completeData);
+              } else {
+                if (frame.kind === 'error') {
+                  // A throw here must not escape the stream's 'data' handler.
+                  try {
+                    const errorData = frame.data;
+                    const errorMessage =
+                      (typeof errorData.message === 'string' &&
+                        errorData.message) ||
+                      CHAT_ERROR_MESSAGES.failed;
+                    upstreamAiErrorEventForwarded = true;
+                    run.sawRunError(errorData.code);
+                    if (savedConversation) {
+                      void markConversationFailed(
+                        savedConversation,
+                        errorMessage,
+                        session,
+                        aguiErrorCodeFromPayload(errorData),
+                        typeof errorData.stack === 'string'
+                          ? errorData.stack
+                          : undefined,
+                      ).catch((markErr: any) => {
+                        logger.error(
+                          'Failed to mark conversation from AI RUN_ERROR SSE',
+                          { error: markErr },
+                        );
+                      });
+                    }
+                  } catch {
+                    logBadFrame(eventType, dataLine);
+                  }
+                } else if (frame.kind === 'bad') {
+                  logBadFrame(eventType, dataLine);
+                }
+                if (frame.kind !== 'bad') {
                   filteredChunk += event + '\n\n';
                 }
-              } catch {
-                logBadFrame('RUN_FINISHED', dataLine);
-                filteredChunk += event + '\n\n';
               }
             } else if (
               agui &&
@@ -1034,43 +1064,6 @@ export const streamChat =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (
-              agui &&
-              eventType === AGUIEventType.RUN_ERROR &&
-              dataLine
-            ) {
-              try {
-                const errorData = JSON.parse(dataLine) as Record<
-                  string,
-                  unknown
-                >;
-                const errorMessage =
-                  (typeof errorData.message === 'string' &&
-                    errorData.message) ||
-                  CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                run.sawRunError(errorData?.code);
-                if (savedConversation) {
-                  void markConversationFailed(
-                    savedConversation,
-                    errorMessage,
-                    session,
-                    aguiErrorCodeFromPayload(errorData),
-                    typeof errorData.stack === 'string'
-                      ? errorData.stack
-                      : undefined,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark conversation from AI RUN_ERROR SSE',
-                      { error: markErr },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch {
-                logBadFrame('RUN_ERROR', dataLine);
-                filteredChunk += event + '\n\n';
-              }
             } else if (!agui && eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
@@ -1760,23 +1753,52 @@ export const addMessageStream =
             ) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
-            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-              // Root RUN_FINISHED's `result` IS `completion_data` — see
-              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
-              // frames carry no `result` and are just forwarded through below.
-              try {
-                const parsed = JSON.parse(dataLine);
-                if (parsed.result) {
-                  completeData = parsed.result;
-                  run.sawResult(completeData);
-                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
-                  // own enriched RUN_FINISHED after saving, same as `complete`.
-                } else {
+            if (
+              agui &&
+              (eventType === AGUIEventType.RUN_FINISHED ||
+                eventType === AGUIEventType.RUN_ERROR)
+            ) {
+              const frame = readRunFrame(eventType, dataLine);
+              if (frame.kind === 'answer') {
+                // Not forwarded: Node sends its own RUN_FINISHED once the answer is saved.
+                completeData = frame.result;
+                run.sawResult(completeData);
+              } else {
+                if (frame.kind === 'error') {
+                  // A throw here must not escape the stream's 'data' handler.
+                  try {
+                    const errorData = frame.data;
+                    const errorMessage =
+                      (typeof errorData.message === 'string' &&
+                        errorData.message) ||
+                      CHAT_ERROR_MESSAGES.failed;
+                    upstreamAiErrorEventForwarded = true;
+                    run.sawRunError(errorData.code);
+                    if (existingConversation) {
+                      void markConversationFailed(
+                        existingConversation,
+                        errorMessage,
+                        session,
+                        aguiErrorCodeFromPayload(errorData),
+                        typeof errorData.stack === 'string'
+                          ? errorData.stack
+                          : undefined,
+                      ).catch((markErr: any) => {
+                        logger.error(
+                          'Failed to mark conversation from AI RUN_ERROR SSE',
+                          { error: markErr },
+                        );
+                      });
+                    }
+                  } catch {
+                    logBadFrame(eventType, dataLine);
+                  }
+                } else if (frame.kind === 'bad') {
+                  logBadFrame(eventType, dataLine);
+                }
+                if (frame.kind !== 'bad') {
                   filteredChunk += event + '\n\n';
                 }
-              } catch {
-                logBadFrame('RUN_FINISHED', dataLine);
-                filteredChunk += event + '\n\n';
               }
             } else if (
               agui &&
@@ -1791,38 +1813,6 @@ export const addMessageStream =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (
-              agui &&
-              eventType === AGUIEventType.RUN_ERROR &&
-              dataLine
-            ) {
-              try {
-                const errorData = JSON.parse(dataLine);
-                const errorMessage =
-                  errorData.message || CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                run.sawRunError(errorData?.code);
-                if (existingConversation) {
-                  void markConversationFailed(
-                    existingConversation,
-                    errorMessage,
-                    session,
-                    aguiErrorCodeFromPayload(
-                      errorData as Record<string, unknown>,
-                    ),
-                    errorData.stack,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark conversation from AI RUN_ERROR SSE',
-                      { error: markErr },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch {
-                logBadFrame('RUN_ERROR', dataLine);
-                filteredChunk += event + '\n\n';
-              }
             } else if (!agui && eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
@@ -6677,23 +6667,52 @@ export const streamAgentConversation =
               contentAccumulator.feedToolCallStart(dataLine);
             }
 
-            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-              // Root RUN_FINISHED's `result` IS `completion_data` — see
-              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
-              // frames carry no `result` and are just forwarded through below.
-              try {
-                const parsed = JSON.parse(dataLine);
-                if (parsed.result) {
-                  completeData = parsed.result;
-                  run.sawResult(completeData);
-                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
-                  // own enriched RUN_FINISHED after saving, same as `complete`.
-                } else {
+            if (
+              agui &&
+              (eventType === AGUIEventType.RUN_FINISHED ||
+                eventType === AGUIEventType.RUN_ERROR)
+            ) {
+              const frame = readRunFrame(eventType, dataLine);
+              if (frame.kind === 'answer') {
+                // Not forwarded: Node sends its own RUN_FINISHED once the answer is saved.
+                completeData = frame.result;
+                run.sawResult(completeData);
+              } else {
+                if (frame.kind === 'error') {
+                  // A throw here must not escape the stream's 'data' handler.
+                  try {
+                    const errorData = frame.data;
+                    const errorMessage =
+                      (typeof errorData.message === 'string' &&
+                        errorData.message) ||
+                      CHAT_ERROR_MESSAGES.failed;
+                    upstreamAiErrorEventForwarded = true;
+                    run.sawRunError(errorData.code);
+                    if (savedConversation) {
+                      void markAgentConversationFailed(
+                        savedConversation,
+                        errorMessage,
+                        session,
+                        aguiErrorCodeFromPayload(errorData),
+                        typeof errorData.stack === 'string'
+                          ? errorData.stack
+                          : undefined,
+                      ).catch((markErr: any) => {
+                        logger.error(
+                          'Failed to mark agent conversation from AI RUN_ERROR SSE',
+                          { error: markErr },
+                        );
+                      });
+                    }
+                  } catch {
+                    logBadFrame(eventType, dataLine);
+                  }
+                } else if (frame.kind === 'bad') {
+                  logBadFrame(eventType, dataLine);
+                }
+                if (frame.kind !== 'bad') {
                   filteredChunk += event + '\n\n';
                 }
-              } catch {
-                logBadFrame('RUN_FINISHED', dataLine);
-                filteredChunk += event + '\n\n';
               }
             } else if (
               agui &&
@@ -6708,43 +6727,6 @@ export const streamAgentConversation =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (
-              agui &&
-              eventType === AGUIEventType.RUN_ERROR &&
-              dataLine
-            ) {
-              try {
-                const errorData = JSON.parse(dataLine) as Record<
-                  string,
-                  unknown
-                >;
-                const errorMessage =
-                  (typeof errorData.message === 'string' &&
-                    errorData.message) ||
-                  CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                run.sawRunError(errorData?.code);
-                if (savedConversation) {
-                  void markAgentConversationFailed(
-                    savedConversation,
-                    errorMessage,
-                    session,
-                    aguiErrorCodeFromPayload(errorData),
-                    typeof errorData.stack === 'string'
-                      ? errorData.stack
-                      : undefined,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark agent conversation from AI RUN_ERROR SSE',
-                      { error: markErr },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch {
-                logBadFrame('RUN_ERROR', dataLine);
-                filteredChunk += event + '\n\n';
-              }
             } else if (
               agui &&
               eventType === AGUIEventType.CUSTOM &&
@@ -7413,23 +7395,52 @@ export const addMessageStreamToAgentConversation =
             ) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
-            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-              // Root RUN_FINISHED's `result` IS `completion_data` — see
-              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
-              // frames carry no `result` and are just forwarded through below.
-              try {
-                const parsed = JSON.parse(dataLine);
-                if (parsed.result) {
-                  completeData = parsed.result;
-                  run.sawResult(completeData);
-                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
-                  // own enriched RUN_FINISHED after saving, same as `complete`.
-                } else {
+            if (
+              agui &&
+              (eventType === AGUIEventType.RUN_FINISHED ||
+                eventType === AGUIEventType.RUN_ERROR)
+            ) {
+              const frame = readRunFrame(eventType, dataLine);
+              if (frame.kind === 'answer') {
+                // Not forwarded: Node sends its own RUN_FINISHED once the answer is saved.
+                completeData = frame.result;
+                run.sawResult(completeData);
+              } else {
+                if (frame.kind === 'error') {
+                  // A throw here must not escape the stream's 'data' handler.
+                  try {
+                    const errorData = frame.data;
+                    const errorMessage =
+                      (typeof errorData.message === 'string' &&
+                        errorData.message) ||
+                      CHAT_ERROR_MESSAGES.failed;
+                    upstreamAiErrorEventForwarded = true;
+                    run.sawRunError(errorData.code);
+                    if (existingConversation) {
+                      void markAgentConversationFailed(
+                        existingConversation,
+                        errorMessage,
+                        session,
+                        aguiErrorCodeFromPayload(errorData),
+                        typeof errorData.stack === 'string'
+                          ? errorData.stack
+                          : undefined,
+                      ).catch((markErr: any) => {
+                        logger.error(
+                          'Failed to mark agent conversation from AI RUN_ERROR SSE',
+                          { error: markErr },
+                        );
+                      });
+                    }
+                  } catch {
+                    logBadFrame(eventType, dataLine);
+                  }
+                } else if (frame.kind === 'bad') {
+                  logBadFrame(eventType, dataLine);
+                }
+                if (frame.kind !== 'bad') {
                   filteredChunk += event + '\n\n';
                 }
-              } catch {
-                logBadFrame('RUN_FINISHED', dataLine);
-                filteredChunk += event + '\n\n';
               }
             } else if (
               agui &&
@@ -7444,38 +7455,6 @@ export const addMessageStreamToAgentConversation =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (
-              agui &&
-              eventType === AGUIEventType.RUN_ERROR &&
-              dataLine
-            ) {
-              try {
-                const errorData = JSON.parse(dataLine);
-                const errorMessage =
-                  errorData.message || CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                run.sawRunError(errorData?.code);
-                if (existingConversation) {
-                  void markAgentConversationFailed(
-                    existingConversation,
-                    errorMessage,
-                    session,
-                    aguiErrorCodeFromPayload(
-                      errorData as Record<string, unknown>,
-                    ),
-                    errorData.stack,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark agent conversation from AI RUN_ERROR SSE',
-                      { error: markErr },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch {
-                logBadFrame('RUN_ERROR', dataLine);
-                filteredChunk += event + '\n\n';
-              }
             } else if (
               agui &&
               eventType === AGUIEventType.CUSTOM &&

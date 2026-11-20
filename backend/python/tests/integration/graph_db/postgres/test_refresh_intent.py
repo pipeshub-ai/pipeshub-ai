@@ -59,11 +59,19 @@ async def test_the_intent_only_write_changes_nothing_but_the_request_whatever_th
 
 async def test_a_request_is_cleared_by_its_own_id_only(w: World) -> None:
     await record(w, "c", **ri.intent_fields("mine", 1))
-    clear = dict(ri.CLEARED_FIELDS)
-    assert not await w.p.update_node_fields_if_match("c", "records", clear, {ri.ID_FIELD: "other"})
+    assert not await w.p.update_node_fields_if_match("c", "records", {}, {ri.ID_FIELD: "other"}, unset=ri.CLEARED_FIELDS)
     assert (await doc(w, "c"))[ri.ID_FIELD] == "mine"
-    assert await w.p.update_node_fields_if_match("c", "records", clear, {ri.ID_FIELD: "mine"})
-    assert ri.stored_intent(await doc(w, "c")) is None
+    assert await w.p.update_node_fields_if_match("c", "records", {}, {ri.ID_FIELD: "mine"}, unset=ri.CLEARED_FIELDS)
+    d = await doc(w, "c")
+    assert ri.ID_FIELD not in d and ri.AT_FIELD not in d and ri.stored_intent(d) is None
+
+
+async def test_the_clear_helper_removes_the_fields_and_writes_its_extra_in_the_same_statement(w: World) -> None:
+    await record(w, "h", indexingStatus="FAILED", **ri.intent_fields("mine", 1))
+    assert not await ri.clear_intent(w.p, "h", "other", {"reason": "x"})
+    assert await ri.clear_intent(w.p, "h", "mine", {"reason": ri.REFRESH_EXPIRED_REASON})
+    d = await doc(w, "h")
+    assert ri.ID_FIELD not in d and ri.AT_FIELD not in d and d["reason"] == ri.REFRESH_EXPIRED_REASON
 
 
 async def test_the_sweeps_read_lists_the_live_records_of_one_org_with_a_request_in_key_order(w: World) -> None:

@@ -30,7 +30,13 @@ from app.config.constants.service import (
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
-from app.core.org_context import current_org_id, for_org
+from app.core.org_context import (
+    MissingOrgContext,
+    current_or_system,
+    current_org_id,
+    for_org,
+    system,
+)
 from app.core.org_context import peek as peek_org_context
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import (
@@ -126,6 +132,8 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.messaging.precision_check import active_verdict
+from app.services.messaging.precision_flip import PrecisionFlip, precision_flip_in
 from app.services.messaging.provider_rate_limit import ProviderRateLimitRequeue
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import repurge_window
@@ -231,12 +239,14 @@ class RefreshRun:
     request made while it ran survives. ``intent_id`` names the refresh the run is, when it is one.
     """
 
-    __slots__ = ("intent_id", "refresh", "seen")
+    __slots__ = ("intent_id", "refresh", "seen", "started_ms")
 
-    def __init__(self, *, seen: str | None, intent_id: str | None, refresh: bool) -> None:
+    def __init__(self, *, seen: str | None, intent_id: str | None, refresh: bool, started_ms: int = 0) -> None:
         self.seen = seen
         self.intent_id = intent_id
         self.refresh = refresh
+        #: When the run began: a request made after this was made while it ran, however long it ran.
+        self.started_ms = started_ms
 
 
 def is_parse_now(event_type: str | None, payload: dict) -> bool:
@@ -1726,12 +1736,56 @@ class RecordEventHandler(BaseEventService):
             key=str(payload.get("connectorId")),
         )
 
+    async def _org_ids_to_sweep(self) -> list[str]:
+        """The organisations whose retired-epoch points the cleanup's tail removes.
+
+        A store deletes for one organisation at a time. When the event runs bound to an organisation, that one;
+        otherwise every one the graph lists. A listing that fails leaves the sweep to the end of each organisation's
+        next record, which runs it too.
+        """
+        try:
+            try:
+                bound = current_or_system().org_id
+            except MissingOrgContext:
+                bound = None
+            if bound:
+                return [bound]
+            with system("epoch_sweep_orgs"):
+                orgs = await self.event_processor.graph_provider.get_all_orgs(active=False, raise_on_error=True) or []
+        except Exception:
+            self.logger.warning("Could not list the organisations to sweep retired epochs for", exc_info=True)
+            return []
+        return [str(o.get("_key") or o.get("id")) for o in orgs if o.get("_key") or o.get("id")]
+
+    async def _forget_precision_state(self) -> None:
+        """After the drop: release the pins of collections that are gone (orphans) and recompute the verdict now.
+
+        The pin of every collection the cleanup dropped was released with its vectors. A pin over a collection that
+        still exists stays: it describes vectors that are still there.
+
+        Without the recompute, a process would keep handing events back for up to a poll period after the
+        indexes it was waiting on are gone.
+        """
+        try:
+            registry = self.event_processor.processor.indexing_pipeline.collection_registry
+            await registry.release_orphan_pins()
+            await registry.sweep_dead_epochs(await self._org_ids_to_sweep())
+        except Exception:
+            # Raised: the consumer's index.end writes the failure once.
+            self.logger.debug("Could not release the weight-precision pins of collections that are gone", exc_info=True)
+            raise
+        verdict = active_verdict()
+        if verdict is not None:
+            verdict.clear()
+            await verdict.refresh()
+
     async def _delete_vector_collection(self, payload: dict | None = None) -> AsyncGenerator[PipelineEvent, None]:
         # The cleanup job polls for a phase and otherwise waits out its whole
         # deadline, so every exit from here must publish one — a failure
         # included — rather than let the job time out with no explanation.
         try:
             await self._recreate_managed_collections()
+            await self._forget_precision_state()
         except Exception:
             await mark_cleanup_phase(
                 self.config_service, PHASE_FAILED, logger=self.logger
@@ -1748,11 +1802,13 @@ class RecordEventHandler(BaseEventService):
         )
 
     async def _recreate_managed_collections(self) -> list[str]:
-        """Drop and rebuild every records collection the registry manages.
+        """Drop and rebuild every records collection the registry manages, and reset the entity index.
 
-        The entity index is not one of them: it is a projection of the graph
-        that ``EntityVectorStore`` keeps on the current model by itself, and
-        nothing here would fill it again.
+        The entity index is not a records collection: it is a projection of the graph that
+        ``EntityVectorStore`` keeps on the current model by itself. It holds embedding vectors of the
+        weight precision it was written with, so it is dropped and created empty here, with its pin, and the
+        entity index rebuild (which reads the new collection as one it has not filled) projects the graph
+        into it again, as it does after a model change.
 
         The embedding dimension is re-derived from the *live* model rather
         than the manifest, because this event fires precisely when the model
@@ -1780,6 +1836,9 @@ class RecordEventHandler(BaseEventService):
         # are rebuilt but every later resolution still uses the outgoing
         # strategy's names until the service restarts.
         reset_strategy_cache()
+        entity_store = self._entity_vector_store()
+        if entity_store is not None:
+            await entity_store.reset_collection()
         self.logger.info(
             "Recreated %d records collection(s) at dimension %s: %s",
             len(recreated),
@@ -1984,7 +2043,9 @@ class RecordEventHandler(BaseEventService):
             payload.update(refresh_intent.intent_flags(stored, from_intent=True))
             stamped = stored
         refresh = paid_cache_run.refresh_requested(payload)
-        return RefreshRun(seen=stored if refresh else None, intent_id=stamped if refresh else None, refresh=refresh)
+        return RefreshRun(
+            seen=stored if refresh else None, intent_id=stamped if refresh else None, refresh=refresh, started_ms=now_ms,
+        )
 
     async def _store_intent(self, record_id: str, record: dict, intent_id: str, now_ms: int) -> None:
         """Write the request on a record that holds none (or an expired one). A lost race re-reads once; a failure raises,
@@ -2019,11 +2080,7 @@ class RecordEventHandler(BaseEventService):
 
     async def _clear_intent(self, record_id: str, intent_id: str | None) -> bool:
         """Clear the request ``intent_id`` and only that one: a newer request on the record stays."""
-        if not intent_id:
-            return False
-        return bool(await self.event_processor.graph_provider.update_node_fields_if_match(
-            record_id, CollectionNames.RECORDS.value, dict(refresh_intent.CLEARED_FIELDS), {refresh_intent.ID_FIELD: intent_id},
-        ))
+        return await refresh_intent.clear_intent(self.event_processor.graph_provider, record_id, intent_id)
 
     async def _end_refresh_run(self, record_id: str, run: RefreshRun, payload: dict) -> None:
         """A run that has reached its end: clear the request it saw, record that its refresh has run, and hand over a request
@@ -2040,7 +2097,7 @@ class RecordEventHandler(BaseEventService):
                     str(org_id), record_id, run.intent_id
                 )
             now_ms = get_epoch_timestamp_in_ms()
-            waiting = refresh_intent.live_intent(row, now_ms) if row is not None and is_live_record(row) else None
+            waiting = refresh_intent.waiting_intent(row, now_ms, run.started_ms) if row is not None and is_live_record(row) else None
             if waiting is None or waiting == run.seen or self.producer is None:
                 return
             await self._hand_over_refresh(record_id, row or {}, waiting, now_ms)
@@ -2065,6 +2122,7 @@ class RecordEventHandler(BaseEventService):
         event_type, payload = rebuilt_record_event(
             {**row, refresh_intent.AT_FIELD: now_ms}, record_key=record_id, connector_id=str(row.get("connectorId") or ""),
         )
+        payload.update(refresh_intent.intent_flags(intent_id, from_intent=True))      # the claim above made it live: say so
         await run_on_loop(
             self._producer_loop,
             self.producer.send_event(
@@ -2135,6 +2193,7 @@ class RecordEventHandler(BaseEventService):
         cancelled = False
         # Handed back to the broker for a model provider's rate-limit wait (``ProviderRateLimitRequeue``).
         handed_back = False
+        precision_flipped = False
         # Handed back because the record's connector is being deleted: nothing of it is written.
         held_for_delete = False
         held_for_refresh = False
@@ -2357,7 +2416,8 @@ class RecordEventHandler(BaseEventService):
                         )
                     elif payload.get("phase") == repurge_window.PHASE_HOP:
                         await repurge_window.handle_page_hop(
-                            self.producer, batch_org, payload, purge=paid_cache.purge_record, loop=self._producer_loop,
+                            self.producer, batch_org, payload, purge=paid_cache.purge_record, purge_many=paid_cache.purge_records,
+                            loop=self._producer_loop,
                         )
                     else:
                         raise repurge_window.BatchPayloadError("purgePaidResultsBatch has no known phase")
@@ -2544,6 +2604,9 @@ class RecordEventHandler(BaseEventService):
                 # A second event of a refresh that has run: nothing is left to do for it.
                 note(outcome="skipped", reason="refresh_already_ran")
                 refresh_intent.REFRESH_INTENT_EVENTS.inc("deduped")
+                # The refresh ran: a stored copy of its id (a clear that did not land) goes now, so the sweep does not send it
+                # again and it does not age out as a request that was never served.
+                await self._clear_intent(record_id, refresh_run.intent_id)
                 refresh_run = None
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -2941,6 +3004,9 @@ class RecordEventHandler(BaseEventService):
                 file_types.TEXT_LOG_HARD_LIMIT_BYTES if decision.limited_as is not None else None
             )
 
+            # The same payload object on either download path; the gate's reader goes with it.
+            event_data_for_processor = {"eventType": event_type, "payload": payload, "gateRoute": decision.route}
+
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
 
@@ -2968,10 +3034,6 @@ class RecordEventHandler(BaseEventService):
                 else:
                     payload["buffer"] = response
                     note(size_bytes=len(response))
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload
-                    }
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
@@ -3030,11 +3092,6 @@ class RecordEventHandler(BaseEventService):
                     if is_deferred(record):
                         await self._end_rate_limit_wait(record_id)
 
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload
-                    }
-
                     event_data_for_processor["payload"]["buffer"] = response["data"]
                     if isinstance(response["data"], (bytes, bytearray)):
                         note(size_bytes=len(response["data"]))
@@ -3088,7 +3145,24 @@ class RecordEventHandler(BaseEventService):
             error_msg = "Record processing was cancelled"
             last_exception = ce
             raise
+        except PrecisionFlip as flip:
+            # The embedding server serves other weights than this index holds: the message goes back
+            # with no attempt counted, and the record is never failed for it.
+            error_occurred = True
+            precision_flipped = True
+            error_msg = str(flip)
+            last_exception = flip
+            self.logger.debug(f"Record {record_id} handed back: {flip}")
+            raise
         except IndexingError as ie:
+            flip = precision_flip_in(ie)
+            if flip is not None:
+                error_occurred = True
+                precision_flipped = True
+                error_msg = str(flip)
+                last_exception = flip
+                self.logger.debug(f"Record {record_id} handed back: {flip}")
+                raise flip from ie
             error_occurred = True
             error_msg = str(ie)
             last_exception = ie
@@ -3124,6 +3198,14 @@ class RecordEventHandler(BaseEventService):
             self.logger.debug(f"Record {record_id} held: another delivery of its refresh is purging")
             raise
         except Exception as e:
+            flip = precision_flip_in(e)
+            if flip is not None:
+                error_occurred = True
+                precision_flipped = True
+                error_msg = str(flip)
+                last_exception = flip
+                self.logger.debug(f"Record {record_id} handed back: {flip}")
+                raise flip from e
             error_occurred = True
             error_msg = str(e)
             last_exception = e
@@ -3180,6 +3262,10 @@ class RecordEventHandler(BaseEventService):
                     == MessageErrorType.TERMINAL
                 ):
                     is_final = True
+
+                if precision_flipped:
+                    # A flip is never final: the record waits in the broker for the setting to be put right.
+                    is_final = False
 
                 if is_final is None:
                     self.logger.warning(

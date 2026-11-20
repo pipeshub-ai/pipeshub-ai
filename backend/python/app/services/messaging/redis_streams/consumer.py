@@ -579,7 +579,7 @@ class RedisStreamsConsumer(IMessagingConsumer):
                 message_log.note(outcome="skipped", reason="duplicate")
                 return True, False
             except EnvelopeRejected as e:
-                message_log.note(reason="envelope_rejected", code=e.reason)
+                message_log.note(reason="envelope_rejected", code=e.reason, **e.facts())
                 return False, True
             message_log.bind_opened(opened.ctx, opened.message)
             try:

@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Set on a state that renders a listing for an API caller rather than a chat
+# answer: a Citation ID names a citation only an answer can resolve.
+LISTING_CITATIONS_OFF_KEY = "listing_citations_off"
+
 # Lines of `Record.to_llm_context()` that state facts about the record rather
 # than identify it (ids, URLs, MIME type). The dates follow
 # `RecordDates.header_lines`, which an uploaded file's header uses too.
@@ -74,9 +78,10 @@ async def cite_listed_records(
 
     Only ever called with records the listing already checked the user may
     open. Returns nothing when the records cannot be loaded; the listing is
-    then shown without Citation IDs, as before.
+    then shown without Citation IDs, as before. Nothing either for a run that
+    has no answer to cite into (``LISTING_CITATIONS_OFF_KEY``: an API route).
     """
-    if not facts:
+    if not facts or state.get(LISTING_CITATIONS_OFF_KEY):
         return {}
     frontend_url = await resolve_frontend_url(state.get("config_service"))
     try:
