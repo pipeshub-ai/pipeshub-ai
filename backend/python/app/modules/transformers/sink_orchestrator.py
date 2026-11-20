@@ -941,7 +941,7 @@ class SinkOrchestrator(Transformer):
         }
         # With the copy: a commit that moves the record to a replacement copy receives these fields in the same write.
         status.update(parser_identity.indexed_parser_fields(
-            ctx.parser_identity, ctx.parser_identity_source, at=timestamp, vrid=record.virtual_record_id,
+            getattr(ctx, "parser_identity", None), getattr(ctx, "parser_identity_source", None), at=timestamp, vrid=record.virtual_record_id,
         ))
         if current_attempt() is not None:
             status.update(cleared_fields())
