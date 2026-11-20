@@ -41,7 +41,11 @@ from app.services.graph_db.postgres.kg.model import (
     RECORD_COLLS,
     Key,
 )
-from app.services.graph_db.postgres.kg.reader import RECORDS_BYTE_ORDER, load_sks, records_after
+from app.services.graph_db.postgres.kg.reader import (
+    RECORDS_BYTE_ORDER,
+    load_sks,
+    records_after,
+)
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.services.permissions import classes
 
