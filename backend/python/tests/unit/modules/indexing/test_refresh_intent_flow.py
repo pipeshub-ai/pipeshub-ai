@@ -1,7 +1,7 @@
-"""A Force reindex request, scenario by scenario (G-46): what is stored, who reads it, what clears it, what it must not do.
+"""A Force reindex request, scenario by scenario: what is stored, who reads it, what clears it, what it must not do.
 
 The world is ``tests/support/refresh_intent_world.py`` (one record, a clock, a broker that can lose a message, the real handler,
-walk and sweeps); the numbers are the test plan's in ``design/G-46-refresh-intent.md``.
+walk and sweeps).
 """
 from __future__ import annotations
 
@@ -179,7 +179,7 @@ async def test_two_events_of_one_refresh_run_once(w: World) -> None:
     assert run is not None and await w.handler._refresh_already_ran(run, dict(w.row), again)
 
 
-# ---- R2-1: the life of a request that waited, and the expiry
+# ---- the life of a request that waited, and the expiry
 
 async def test_a_hand_over_restarts_the_life_and_the_resend_count_so_the_first_resend_is_an_hour_away(w: World) -> None:
     w.row.update(republishCount=5, lastRepublishedAt=w.now_ms - 3 * HOUR_MS)             # the record waited through five stranded re-sends
@@ -279,7 +279,7 @@ async def test_the_upgrade_of_a_plain_event_keeps_its_origin_through_a_requeue(w
     assert again is not None and not again.refresh and "refreshPaidOutputs" not in requeued
 
 
-# ---- R2-2: the backstop writes only for an event that names no request
+# ---- the backstop writes only for an event that names no request
 
 async def test_the_backstop_stores_the_request_of_an_unstamped_refresh_and_never_restores_a_cleared_one(w: World) -> None:
     unstamped = {"recordId": KEY, "orgId": ORG, "forceReindex": True, "refreshPaidOutputs": True, "_delivery_id": "d-1"}
@@ -304,7 +304,7 @@ async def test_nothing_is_written_while_the_flag_is_off(w: World, monkeypatch: p
     {"parseNow": True}, {"vectorDbOnly": True}, {"firstUse": True}, {"stages": ["classify"]},
 ])
 async def test_a_request_applies_to_a_full_record_event_only(w: World, payload: dict) -> None:
-    """R2-6: a parse-now, a vector rebuild or a stage re-run stays plain; the request waits for a full run."""
+    """a parse-now, a vector rebuild or a stage re-run stays plain; the request waits for a full run."""
     w.row.update(ri.intent_fields("i1", w.now_ms))
     event = {"recordId": KEY, "orgId": ORG, **payload}
     parse_now = payload.get("parseNow") is True
@@ -312,7 +312,7 @@ async def test_a_request_applies_to_a_full_record_event_only(w: World, payload: 
     assert run is None and "refreshPaidOutputs" not in event and w.row[ri.ID_FIELD] == "i1"
 
 
-# ---- R2-4: stale recovery gives up on one request, not on the next
+# ---- stale recovery gives up on one request, not on the next
 
 async def test_recovery_that_gives_up_clears_only_the_request_it_served(w: World) -> None:
     w.row.update(ri.intent_fields("newer", w.now_ms), indexingStatus=IN_PROGRESS)
@@ -325,7 +325,7 @@ async def test_recovery_that_gives_up_clears_only_the_request_it_served(w: World
     assert w.row.get(ri.ID_FIELD) is None
 
 
-# ---- R2-5, R2-7: the sweep leaves what is not its to send, and sends once
+# ---- the sweep leaves what is not its to send, and sends once
 
 async def test_the_intent_sweep_leaves_a_deferred_a_trashed_and_a_leased_record_alone(w: World) -> None:
     w.row.update(ri.intent_fields("i1", w.now_ms - 2 * HOUR_MS))
@@ -353,7 +353,7 @@ async def test_two_sweeps_send_one_event(w: World) -> None:
 
 
 async def test_a_sweep_that_lost_the_claim_to_another_sends_nothing(w: World) -> None:
-    """R2-7: the claim matches the re-send time that was read, so a sweep that read it before another claimed it does not send."""
+    """the claim matches the re-send time that was read, so a sweep that read it before another claimed it does not send."""
     w.row.update(ri.intent_fields("i1", w.now_ms - 2 * HOUR_MS))
     real = w.graph.get_document
     reads = 0
@@ -483,7 +483,7 @@ async def test_the_walk_is_today_s_while_the_flag_is_off(monkeypatch: pytest.Mon
 
 
 async def test_an_event_upgraded_by_a_request_reaches_the_pipeline_as_a_forced_run(w: World) -> None:
-    """G-37: the swap decides a forced run from the two flags the pipeline reads off the event; the handler sets them in place."""
+    """The swap decides a forced run from the two flags the pipeline reads off the event; the handler sets them in place."""
     from app.events.events import refresh_requested
 
     w.row.update(ri.intent_fields("i1", w.now_ms))

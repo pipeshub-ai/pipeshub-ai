@@ -1,4 +1,4 @@
-"""A Force reindex request kept on a record, on a real Neo4j and ArangoDB (G-46).
+"""A Force reindex request kept on a record, on a real Neo4j and ArangoDB.
 
 The request is two fields, ``refreshIntentId`` and ``refreshIntentAtMs``. This covers what the stores must do for it:
 

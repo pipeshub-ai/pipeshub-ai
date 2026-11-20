@@ -1,4 +1,4 @@
-"""One record, driven by the model's action alphabet over the repository's own code (G-46).
+"""One record, driven by the model's action alphabet over the repository's own code.
 
 ``tests/support/refresh_intent_model.py`` is the reference model. This is the same world with the real pieces in it:
 the record handler's ``_settle_refresh_intent`` and ``_end_refresh_run`` (the run's start and end), the walk's

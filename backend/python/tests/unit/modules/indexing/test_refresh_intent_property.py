@@ -1,4 +1,4 @@
-"""A Force reindex request survives a lost hand-back, and nothing is bought twice (G-46), over the repository's own code.
+"""A Force reindex request survives a lost hand-back, and nothing is bought twice, over the repository's own code.
 
 The action alphabet is the reference model's (``tests/support/refresh_intent_model.py``): a Force reindex through the walk
 (its publish can fail), one made while the record runs, a connector's plain update, message loss, a hand-back before and

@@ -1,4 +1,4 @@
-"""A reference model of the Force reindex request kept on a record (G-46), one record at a time.
+"""A reference model of the Force reindex request kept on a record, one record at a time.
 
 Pure Python, no repository code: random interleavings of the user's Force reindex (the walk: a status write that stores the
 request, a publish that can fail, the compare-and-set to QUEUED; a request made while the record runs), a connector's plain
@@ -10,12 +10,11 @@ sweeps, and a twin's start and completion. After a drain with no loss it reports
   already satisfied: a re-buy nobody asked for (``notes["spurious_any"]`` counts every derived run, ``spurious`` the ones
   sourced from the sweeps).
 
-Variants: ``base`` (today), ``design`` (the first design), ``fix2``, ``fix3`` (round 2 as reviewed), ``fix3m`` (round 2 with the
+Variants: ``base`` (today), ``design`` (an earlier design), ``fix2``, ``fix3`` (an earlier revision), ``fix3m`` (that revision with the
 in-place upgrade losing its origin marker and the backstop rewriting a cleared request: must still show SPURIOUS), ``final``
 (the design that is built: the upgrade keeps the marker, the backstop writes only for a payload with no request id).
 
-The model is the reviewer's (``reviews/G-46-probes/round2/intent_model_r2.py``) with the ``final`` variant added; the
-real-code property test drives the same action alphabet over the repository's handler, sweep and walk.
+The real-code property test drives the same action alphabet over the repository's handler, sweep and walk.
 """
 
 import random
@@ -54,7 +53,7 @@ def run(
                 1  # event_service.py:1502: the walk excludes IN_PROGRESS rows
             )
             k = tick()
-            reqs[k] = k  # the request still counts (R1-11): it must be served
+            reqs[k] = k  # the request still counts it must be served
             if variant in ("fix3", "fix3m", "final") and (
                 rec["intent"] is None or rec["intent"][1] < k
             ):

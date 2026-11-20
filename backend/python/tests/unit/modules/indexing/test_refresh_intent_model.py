@@ -1,6 +1,6 @@
-"""The reference model of the Force reindex request (G-46): the design that is built loses no request and re-buys nothing.
+"""The reference model of the Force reindex request: the design that is built loses no request and re-buys nothing.
 
-Scenarios 1 of the test plan. The model is pure Python (``tests/support/refresh_intent_model.py``); the property test next to
+The model is pure Python (``tests/support/refresh_intent_model.py``); the property test next to
 this one drives the same action alphabet over the repository's own handler, sweep and walk.
 """
 from __future__ import annotations
@@ -36,6 +36,6 @@ def test_earlier_designs_still_lose_requests(variant: str) -> None:
 
 
 def test_upgrade_that_loses_its_origin_marker_buys_twice() -> None:
-    """R2-2: an in-place upgrade re-queued as an original, and a backstop that rewrites a cleared request, re-buy."""
+    """an in-place upgrade re-queued as an original, and a backstop that rewrites a cleared request, re-buy."""
     dropped, _, derived = _tally("fix3m", SEEDS[0], twins=True)
     assert dropped == 0 and derived > 100

@@ -1,4 +1,4 @@
-"""A Force reindex request kept on a record, on PostgreSQL, against a real database (G-46).
+"""A Force reindex request kept on a record, on PostgreSQL, against a real database.
 
 The same answers as ``tests/integration/graph_db/test_refresh_intent_real_backends.py`` gives on Neo4j and ArangoDB: the walk's
 status statement stores the request with the status; the intent-only write changes nothing else, whatever the status; the

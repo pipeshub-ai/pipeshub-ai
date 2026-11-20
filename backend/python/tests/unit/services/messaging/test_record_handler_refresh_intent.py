@@ -1,4 +1,4 @@
-"""The record handler's wiring of a Force reindex request (G-46), over ``process_event`` and ``on_message_abandoned``.
+"""The record handler's wiring of a Force reindex request, over ``process_event`` and ``on_message_abandoned``.
 
 The flow tests drive the helpers (``_settle_refresh_intent``, ``_end_refresh_run``) directly; these drive the handler, so a call
 that ``process_event`` stopped making is seen: a refresh run that ends COMPLETED, final FAILED or FILE_TYPE_NOT_SUPPORTED clears
