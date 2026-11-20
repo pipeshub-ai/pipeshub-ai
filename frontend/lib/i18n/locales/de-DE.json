@@ -2829,10 +2829,7 @@
         "createError": "Konnektor konnte nicht erstellt werden",
         "createSuccess": "Konnektor-Instanz „{{name}}“ wurde erfolgreich erstellt",
         "authSaveError": "Authentifizierungskonfiguration konnte nicht gespeichert werden",
-        "configSaveError": "Konfiguration konnte nicht gespeichert werden",
-        "oauthAppUnavailableTitle": "Für diesen Konnektor sind keine OAuth-Apps verfügbar",
-        "oauthAppUnavailableDescription": "Bitten Sie den Administrator Ihres Arbeitsbereichs, zuerst eine OAuth-App für {{name}} zu erstellen, und versuchen Sie es dann erneut.",
-        "thisConnectorFallback": "diesen Konnektor"
+        "configSaveError": "Konfiguration konnte nicht gespeichert werden"
       },
       "tabs": {
         "authenticate": "Instanz authentifizieren",
@@ -2968,6 +2965,8 @@
         "oauthAppNameLabel": "OAuth-App-Name",
         "oauthAppNamePlaceholder": "z. B. {{name}} OAuth",
         "oauthAppNameHelper": "Dieser Name wird mit der OAuth-Registrierung gespeichert und angezeigt, wenn Benutzer eine gespeicherte App für andere Instanzen auswählen.",
+        "oauthAppNameHelperPersonal": "Nur Sie können diese OAuth-App sehen und verwenden. Sie können sie für Ihre anderen Connectors dieses Typs erneut auswählen.",
+        "oauthAppYours": "{{name}} · Ihre",
         "oauthAppNameRequired": "Geben Sie einen Namen für die neue OAuth-App ein.",
         "oauthAppChangeReauthWarning": "Wenn Sie die OAuth-App oder ihre Anmeldedaten ändern, müssen Sie den Konnektor erneut authentifizieren."
       },
@@ -3544,6 +3543,10 @@
           "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen.",
           "unreadable": "Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen. Die Suche prüft währenddessen jedes Ergebnis."
         }
+      },
+      "enterprise": {
+        "userOAuthAppsTitle": "Eigene OAuth-Apps der Mitglieder",
+        "userOAuthAppsDescription": "Prüfen und entfernen Sie die OAuth-Apps, die Mitglieder Ihrer Organisation für ihre eigenen Connectors hinzufügen."
       },
       "userAccess": {
         "connect": "Verbinden",

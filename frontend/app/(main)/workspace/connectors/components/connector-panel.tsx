@@ -37,6 +37,7 @@ import {
   collectAuthFieldErrors,
 } from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
+import { useCanEnterOAuthClient } from './authenticate-tab/use-can-enter-oauth-client';
 import {
   collectSyncFilterErrors,
   hasAnySyncFiltersSelected,
@@ -49,14 +50,14 @@ import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 let connectionCheckSeq = 0;
 
-/** Non-admin OAuth instances must pick an OAuth app before save. */
+/** Someone who may not enter an OAuth client (a member on a team connector) must pick an OAuth app before save. */
 function oauthAppSelectionError(
   selectedAuthType: string,
   oauthConfigId: unknown,
   isProfileInitialized: boolean,
-  isAdmin: boolean
+  mayEnterOAuthClient: boolean | null
 ): string | null {
-  if (selectedAuthType !== 'OAUTH' || !isProfileInitialized || isAdmin !== false) {
+  if (selectedAuthType !== 'OAUTH' || !isProfileInitialized || mayEnterOAuthClient !== false) {
     return null;
   }
   if (
@@ -91,6 +92,7 @@ export function ConnectorPanel() {
   const router = useRouter();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
+  const mayEnterOAuthClient = useCanEnterOAuthClient();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
   const {
@@ -403,7 +405,7 @@ export function ConnectorPanel() {
       formData.auth,
       connectorConfig,
       isCreateMode,
-      isAdmin,
+      { isAdmin, mayEnterOAuthClient },
       disableCredEdit
     );
 
@@ -428,7 +430,7 @@ export function ConnectorPanel() {
       selectedAuthType,
       oauthConfigIdStr,
       isProfileInitialized,
-      isAdmin
+      mayEnterOAuthClient
     );
     if (oauthErrEarly) {
       mergeFormErrors({ oauthConfigId: oauthErrEarly });
@@ -437,34 +439,10 @@ export function ConnectorPanel() {
           .querySelector('[data-ph-oauth-app-select]')
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
-      if (
-        isCreateMode &&
-        selectedScope === 'personal' &&
-        selectedAuthType === 'OAUTH' &&
-        isProfileInitialized &&
-        isAdmin === false &&
-        connectorType
-      ) {
-        const oauthSnap = useConnectorsStore.getState();
-        const listReady =
-          oauthSnap.oauthAppsListPhase === 'ready' &&
-          oauthSnap.oauthAppsListConnectorType === connectorType &&
-          oauthSnap.oauthAppsListFetchError == null;
-        if (listReady && oauthSnap.oauthAppsList.length === 0) {
-          addToast({
-            variant: 'warning',
-            title: t('workspace.connectors.toasts.oauthAppUnavailableTitle'),
-            description: t('workspace.connectors.toasts.oauthAppUnavailableDescription', {
-              name: connectorTypeName || t('workspace.connectors.toasts.thisConnectorFallback'),
-            }),
-            duration: 4500,
-          });
-        }
-      }
       return false;
     }
 
-    if (selectedAuthType === 'OAUTH' && isAdmin === true && !oauthConfigIdStr) {
+    if (selectedAuthType === 'OAUTH' && mayEnterOAuthClient === true && !oauthConfigIdStr) {
       const oauthAppName = (formData.auth.oauthInstanceName as string | undefined)?.trim();
       if (!oauthAppName) {
         mergeFormErrors({
@@ -516,15 +494,12 @@ export function ConnectorPanel() {
     connectorConfig,
     isProfileInitialized,
     isAdmin,
+    mayEnterOAuthClient,
     isCreateMode,
-    selectedScope,
-    connectorType,
-    connectorTypeName,
     instanceName,
     mergeFormErrors,
     setInstanceNameError,
     setSaveError,
-    addToast,
     t,
   ]);
 

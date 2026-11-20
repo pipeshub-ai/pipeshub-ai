@@ -2971,10 +2971,7 @@
         "createError": "無法建立連接器",
         "createSuccess": "已成功建立連接器執行個體「{{name}}」",
         "authSaveError": "無法儲存驗證設定",
-        "configSaveError": "無法儲存設定",
-        "oauthAppUnavailableTitle": "此連接器沒有可用的 OAuth 應用程式",
-        "oauthAppUnavailableDescription": "請先請您的工作區管理員為 {{name}} 建立 OAuth 應用程式，然後再試一次。",
-        "thisConnectorFallback": "此連接器"
+        "configSaveError": "無法儲存設定"
       },
       "tabs": {
         "authenticate": "驗證執行個體",
@@ -3110,6 +3107,8 @@
         "oauthAppNameLabel": "OAuth 應用程式名稱",
         "oauthAppNamePlaceholder": "例如：{{name}} OAuth",
         "oauthAppNameHelper": "此名稱會與 OAuth 註冊一起儲存，並在使用者為其他執行個體挑選已儲存的應用程式時顯示。",
+        "oauthAppNameHelperPersonal": "只有你可以檢視和使用此 OAuth 應用程式。你可以在同類型的其他連接器中再次選擇它。",
+        "oauthAppYours": "{{name}} · 我的",
         "oauthAppNameRequired": "請為新的 OAuth 應用程式輸入名稱。",
         "oauthAppChangeReauthWarning": "變更 OAuth 應用程式或其憑證後，您必須重新驗證您的連接器。"
       },
@@ -3685,6 +3684,10 @@
           "other": "此連接器的權限需要有人查看。",
           "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
         }
+      },
+      "enterprise": {
+        "userOAuthAppsTitle": "成員自己的 OAuth 應用程式",
+        "userOAuthAppsDescription": "檢視並移除組織成員為自己的連接器新增的 OAuth 應用程式。"
       },
       "userAccess": {
         "connect": "連接",
