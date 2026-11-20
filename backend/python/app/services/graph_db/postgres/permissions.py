@@ -231,7 +231,8 @@ class PermissionsMixin(PgBase):
                 return await walk(ids, vrids, acc)
             # on the check's connection, in a savepoint: kg's settings end with its read. The samples run after the call, in units of their own.
             return await kg_read.accessible_rows(lambda fn: kg_read.in_savepoint(tx, fn), org, ids, vrids, acc, walk, self._db, sample_run=unit)
-        return await (self._q(check, transaction) if transaction else unit(check))
+        # through _q, the provider's one way to the database, as every other read: a store that cannot answer fails the check (check_access raises)
+        return await self._q(check, transaction, isolation="repeatable_read")
 
     async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],
                                   exact_record_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:
