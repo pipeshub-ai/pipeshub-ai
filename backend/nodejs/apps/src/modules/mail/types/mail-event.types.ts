@@ -18,6 +18,13 @@ export interface MailEventPayload {
    * topic's retention, and the token's TTL starts at delivery, not enqueue.
    */
   passwordResetLinkFor?: PasswordResetLinkTarget;
+  /**
+   * Send only if SMTP is configured: without it the job is dropped with an
+   * info log instead of a failure notification. For mail that accompanies an
+   * in-app notification, so a workspace without mail set up still gets that
+   * notification and not an "Email delivery failed" one on top.
+   */
+  ifSmtpConfigured?: boolean;
 }
 
 export interface PasswordResetLinkTarget {

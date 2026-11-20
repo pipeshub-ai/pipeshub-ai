@@ -133,6 +133,41 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.true;
   });
 
+  describe('a job sent only if SMTP is configured', () => {
+    it('is skipped with an info log and no failure notification when SMTP is not set', async () => {
+      mockSender.getSmtpConfig.resolves(null);
+
+      await deliver(payload({ ifSmtpConfigured: true }));
+
+      expect(mockSender.send.called).to.be.false;
+      expect(mockNotificationProducer.publishEvent.called).to.be.false;
+      expect(mockLogger.info.calledWithMatch('Mail skipped: SMTP not configured')).to.be.true;
+      expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.false;
+    });
+
+    it('is sent normally when SMTP is set', async () => {
+      await deliver(payload({ ifSmtpConfigured: true }));
+
+      expect(mockSender.send.calledOnce).to.be.true;
+      expect(mockNotificationProducer.publishEvent.called).to.be.false;
+    });
+
+    it('is skipped silently when the settings were unreadable and then turn out to be unset', async () => {
+      mockSender.getSmtpConfig
+        .onFirstCall()
+        .rejects(new SmtpSettingsUnreadableError(new Error('kv down')))
+        .onSecondCall()
+        .resolves(null);
+
+      await runWithFakeTimers(deliver(payload({ ifSmtpConfigured: true })));
+
+      expect(mockSender.getSmtpConfig.callCount).to.equal(2);
+      expect(mockSender.send.called).to.be.false;
+      expect(mockNotificationProducer.publishEvent.called).to.be.false;
+      expect(mockLogger.info.calledWithMatch('Mail skipped: SMTP not configured')).to.be.true;
+    });
+  });
+
   it('sends once and does not notify when delivery succeeds', async () => {
     await deliver(payload());
 

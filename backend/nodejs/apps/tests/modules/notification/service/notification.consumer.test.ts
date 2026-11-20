@@ -10,6 +10,7 @@ import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../../src/libs
 import { GatewayTimeoutError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as NotificationSchema from '../../../../src/modules/notification/schema/notification.schema';
 import * as RecipientResolver from '../../../../src/modules/notification/utils/notification-recipient.resolver';
+import * as PayloadResolver from '../../../../src/modules/notification/utils/notification-payload.resolver';
 
 describe('notification/service/notification.consumer', () => {
   let consumer: NotificationConsumer;
@@ -178,6 +179,78 @@ describe('notification/service/notification.consumer', () => {
       expect(createStub.called).to.be.false;
       expect(mockLogger.warn.called).to.be.true;
       expect(userHandler.calledOnce).to.be.true;
+    });
+
+    describe('an event for the installation admins', () => {
+      const platformEvent = { audience: 'platformAdmins', type: 'SANDBOX_CAPACITY_WARNING', payload: { v: 1, alertId: 'a1' } };
+
+      it('goes to the platform alert handler and not through the org path', async () => {
+        mockConsumer.isConnected.returns(true);
+        const platformHandler = { handle: sinon.stub().resolves() };
+        const toBroker = sinon.spy(PayloadResolver, 'toBrokerMessage');
+        consumer = new NotificationConsumer(
+          mockConsumer,
+          mockLogger,
+          mockNotificationService as unknown as NotificationService,
+          platformHandler as never,
+        );
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+
+        expect(platformHandler.handle.calledOnceWith(platformEvent)).to.be.true;
+        expect(toBroker.called).to.be.false;
+        expect(handler.calledOnce).to.be.true;
+      });
+
+      it('is acknowledged when the handler delivers nothing or fails for good', async () => {
+        mockConsumer.isConnected.returns(true);
+        const platformHandler = { handle: sinon.stub().rejects(new Error('bad')) };
+        consumer = new NotificationConsumer(
+          mockConsumer,
+          mockLogger,
+          mockNotificationService as unknown as NotificationService,
+          platformHandler as never,
+        );
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+
+        expect(handler.calledOnce).to.be.true;
+        expect(mockLogger.error.calledOnce).to.be.true;
+      });
+
+      it('is delivered again after a retryable store error', async () => {
+        mockConsumer.isConnected.returns(true);
+        const err = new DocStoreReadOnlyError();
+        const platformHandler = { handle: sinon.stub().rejects(err) };
+        consumer = new NotificationConsumer(
+          mockConsumer,
+          mockLogger,
+          mockNotificationService as unknown as NotificationService,
+          platformHandler as never,
+        );
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        let thrown: unknown;
+        try {
+          await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+        } catch (e) {
+          thrown = e;
+        }
+        expect(thrown).to.equal(err);
+        expect(handler.called).to.be.false;
+      });
+
+      it('is acknowledged with a warning when no handler is configured', async () => {
+        mockConsumer.isConnected.returns(true);
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await mockConsumer.consume.firstCall.args[0]({ value: platformEvent });
+
+        expect(mockLogger.warn.calledWithMatch('Platform alert skipped')).to.be.true;
+        expect(handler.calledOnce).to.be.true;
+      });
     });
 
     describe('the store', () => {

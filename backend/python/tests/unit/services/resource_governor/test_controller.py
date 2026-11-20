@@ -18,10 +18,12 @@ from app.services.resource_governor.policy import (
     HEAVY_START_INTERVAL_SECONDS,
     MEM_HARD,
     MEM_SOFT,
+    YIELD_GROW_CONFIRM_SAMPLES,
     floor_for,
     pressure_floor,
     start_rate_limiter_params,
 )
+from app.services.resource_governor.yield_signal import YieldState
 
 
 class ScriptedProbe:
@@ -448,3 +450,130 @@ class TestLaneBudgetWiring:
         assert governor.lanes is None
         with pytest.raises(Exception, match="closed"):
             budget.try_acquire()  # type: ignore[union-attr]
+
+
+class FakeYieldSignal:
+    def __init__(self, active: bool = True, *, fail: bool = False) -> None:
+        self.state = YieldState(active=active, since=0.0 if active else None)
+        self.fail = fail
+        self.acks: list[tuple[int, bool]] = []
+        self.closed = False
+
+    def read_state(self) -> YieldState:
+        if self.fail:
+            raise OSError("unreadable")
+        return self.state
+
+    def ack(self, pid: int, now: float | None = None, *, at_floor: bool) -> bool:
+        self.acks.append((pid, at_floor))
+        return True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestSandboxYield:
+    """The code sandbox's yield signal read once per sample."""
+
+    def _governor(self, signal: FakeYieldSignal, clock: ManualClock) -> ResourceGovernor:
+        return ResourceGovernor(
+            logger=logging.getLogger("test.yield"),
+            probe=ScriptedProbe([_snap(mem_pressure_working_set_gb=4.0, mem_limit_gb=32.0, cpu_quota=8.0)]),
+            feedback=DownstreamFeedback(),
+            sample_interval=15.0,
+            clock=clock,
+            yield_signal=signal,  # type: ignore[arg-type]
+        )
+
+    async def test_an_active_signal_shrinks_and_acks_with_this_pid(self) -> None:
+        import os
+
+        clock = ManualClock()
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, clock)
+        before = {pool: governor.limit(pool) for pool in Pool}
+        await governor._sample_once()
+        assert governor.limit(Pool.INDEX_HEAVY) < before[Pool.INDEX_HEAVY]
+        assert governor.limit(Pool.HEAVY_PARSE) == max(
+            pressure_floor(Pool.HEAVY_PARSE, governor.ceiling(Pool.HEAVY_PARSE)), before[Pool.HEAVY_PARSE] - 1,
+        )
+        assert signal.acks == [(os.getpid(), False)]
+        stats = governor.stats()["yield_to_sandboxes"]
+        assert stats["active"] and stats["holdoff_samples"] == 4
+
+    async def test_the_ack_says_at_floor_once_every_yielding_pool_is(self) -> None:
+        clock = ManualClock()
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, clock)
+        for _ in range(30):
+            clock.now += 15.0
+            await governor._sample_once()
+        for pool in (Pool.HEAVY_PARSE, Pool.INDEX_HEAVY, Pool.INDEX_LIGHT):
+            assert governor.limit(pool) == pressure_floor(pool, governor.ceiling(pool))
+        assert signal.acks[-1][1] is True
+
+    async def test_an_unreadable_signal_is_off_and_logged_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        clock = ManualClock()
+        signal = FakeYieldSignal(fail=True)
+        governor = self._governor(signal, clock)
+        before = governor.limit(Pool.INDEX_HEAVY)
+        with caplog.at_level(logging.WARNING, logger="test.yield"):
+            await governor._sample_once()
+            await governor._sample_once()
+        assert governor.limit(Pool.INDEX_HEAVY) >= before
+        assert signal.acks == []
+        assert caplog.text.count("yield signal cannot be read") == 1
+
+    async def test_an_inactive_signal_is_not_acked(self) -> None:
+        signal = FakeYieldSignal(active=False)
+        governor = self._governor(signal, ManualClock())
+        await governor._sample_once()
+        assert signal.acks == []
+        assert governor.stats()["yield_to_sandboxes"]["active"] is False
+
+    async def test_state_changes_are_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, ManualClock())
+        with caplog.at_level(logging.INFO, logger="test.yield"):
+            await governor._sample_once()
+            signal.state = YieldState()
+            await governor._sample_once()
+        assert "slowing indexing" in caplog.text
+        assert "growth resumes after 60 s" in caplog.text
+        assert "heavy parse after" not in caplog.text
+        assert "yield=on" in caplog.text
+
+    async def test_a_yield_soon_after_release_logs_the_longer_heavy_parse_holdoff(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        clock = ManualClock()
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, clock)
+
+        async def sample(active: bool) -> None:
+            signal.state = YieldState(active=active, since=0.0 if active else None)
+            await governor._sample_once()
+            clock.now += 15.0
+
+        with caplog.at_level(logging.INFO, logger="test.yield"):
+            await sample(True)
+            for _ in range(YIELD_GROW_CONFIRM_SAMPLES + 1):
+                await sample(False)
+            await sample(True)
+            await sample(False)
+        assert "growth resumes after 60 s, heavy parse after 120 s" in caplog.text
+        assert governor.stats()["yield_to_sandboxes"]["holdoff_samples"] == 2 * YIELD_GROW_CONFIRM_SAMPLES - 1
+
+    def test_without_a_signal_stats_have_no_yield_block(self) -> None:
+        governor = ResourceGovernor(
+            logger=logging.getLogger("test.yield"),
+            probe=ScriptedProbe([_snap(mem_pressure_working_set_gb=1.0)]),
+            clock=ManualClock(),
+        )
+        assert "yield_to_sandboxes" not in governor.stats()
+
+    def test_close_closes_the_signal(self) -> None:
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, ManualClock())
+        governor.close()
+        assert signal.closed

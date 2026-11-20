@@ -155,6 +155,12 @@ export class MailConsumer {
   }
 
   private async dropUnconfigured(payload: MailEventPayload): Promise<void> {
+    if (payload.ifSmtpConfigured) {
+      this.logger.info('Mail skipped: SMTP not configured', {
+        emailTemplateType: payload.mail.emailTemplateType,
+      });
+      return;
+    }
     // Not retryable until an admin configures SMTP.
     this.logger.error('Mail event dropped: SMTP configuration not set');
     await this.notifyFailure(payload, 'SMTP configuration not set');
