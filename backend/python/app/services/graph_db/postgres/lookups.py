@@ -67,13 +67,18 @@ PLAIN_BY_WEBURLS = """/* pipeshub:graph.get_records_by_weburls */ SELECT id, "re
       FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'webUrl' = ANY($2::text[]) AND n.doc->>'orgId' = $3
         AND n.doc->>'recordType' <> 'LINK' AND NOT coalesce((n.doc->>'isPlaceholder')::boolean, false) AND ($5 OR coalesce((n.doc->>'isDeleted')::boolean, false) = false)) q
     WHERE rn <= $4"""
+# The link records' holders: each link's edges, then each edge's holder, read by their keys. Joined, on an org that the statistics do not know
+# yet (put at a row) the planner crossed every record of the org with every link record of it: 86 million rows for 10,000 links, 12 s, or past
+# the statement timeout. OFFSET 0 keeps each probe its own subquery, run per row in this order; the collections come from ``k`` because a
+# literal implies the predicate of every partial index on them, and a scan of one bounded by the org alone costs as little as the key probe.
 PLAIN_LINKING = """/* pipeshub:graph.get_records_linking_to_weburls */ SELECT DISTINCT h.id FROM graph.nodes link
-    JOIN graph.edges e ON e.org_id = link.org_id AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = link.id
-      AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
-    JOIN graph.nodes h ON h.org_id = e.org_id AND h.coll = 'records' AND h.id = e.from_id
+    CROSS JOIN (SELECT 'records'::text AS rec, 'nodeRelations'::text AS rel OFFSET 0) k
+    CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = k.rel AND e.to_coll = 'records' AND e.to_id = link.id
+        AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' OFFSET 0) e
+    CROSS JOIN LATERAL (SELECT h.id FROM graph.nodes h WHERE h.org_id = $1 AND h.coll = k.rec AND h.id = e.from_id
+        AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5) OFFSET 0) h
     WHERE link.org_id = $1 AND link.coll = 'records' AND link.doc->>'webUrl' = ANY($2::text[]) AND link.doc->>'orgId' = $3
       AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
-      AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5)
     ORDER BY h.id LIMIT $6"""
 
 
@@ -286,14 +291,15 @@ class LookupsMixin(PgBase):
         if not weburls or not org_id or not connector_names:
             return []
         args = (current_org_id(), [u for u in weburls if isinstance(u, str)], org_id, list(connector_names), after, limit)
+        # the holders are read by the probes of PLAIN_LINKING, for its reason
         rows = await self._at_addresses("""/* pipeshub:graph.get_records_linking_to_weburls */ WITH f AS MATERIALIZED (SELECT r.node_id AS id, r.doc FROM graph.records_by_weburl($2::text[]) r),
-              q AS (SELECT DISTINCT h.id FROM f link
-                JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = link.id
-                  AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
-                JOIN graph.nodes h ON h.org_id = e.org_id AND h.coll = 'records' AND h.id = e.from_id
+              q AS (SELECT DISTINCT h.id FROM f link CROSS JOIN (SELECT 'records'::text AS rec, 'nodeRelations'::text AS rel OFFSET 0) k
+                CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = k.rel AND e.to_coll = 'records' AND e.to_id = link.id
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records' OFFSET 0) e
+                CROSS JOIN LATERAL (SELECT h.id FROM graph.nodes h WHERE h.org_id = $1 AND h.coll = k.rec AND h.id = e.from_id
+                    AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5) OFFSET 0) h
                 WHERE link.doc->>'orgId' = $3
                   AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
-                  AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5)
                 ORDER BY h.id LIMIT $6)
             SELECT c.capped, q.id FROM (SELECT EXISTS (SELECT 1 FROM f GROUP BY f.doc->>'webUrl' HAVING count(*) >= 10000) AS capped) c LEFT JOIN q ON true
             ORDER BY q.id""", args, PLAIN_LINKING, args, transaction)

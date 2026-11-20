@@ -32,6 +32,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.services.graph_db.postgres.lookups import LookupsMixin
+from tests.support import plan_gate
 
 from .pg_support import OrgBound, StandInProvider, new_org
 
@@ -623,11 +624,20 @@ async def test_the_address_lookups_answer_what_the_plain_statements_answered(pg_
     assert await a.get_issue_sites(a.org, ["JIRA", "JIRA DATA CENTER"]) == sorted(["https://x.atlassian.net", "https://jira.corp.example/jira", "https://h.example/browse/x"])
 
 
-async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_read_whole(pg_db) -> None:
+async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_read_whole(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """graph.records_by_weburl returns at most 10,000 records per address, in no order. At an address that holds more (here 10,050 link records,
     some trashed or placeholders, inserted before the ones that matter), the eligible record and the link holder are still found, as the plain
-    statements found them."""
+    statements found them. The holders are read by key from each link: joined, on an org the statistics did not know yet, the planner crossed every
+    record of the org with every link record and the statement ran past its timeout."""
     p = OrgBound(StandInProvider(logging.getLogger("x"), pg_db), new_org())
+    sent: list[tuple[str, tuple]] = []
+    real = Tx.fetch
+
+    async def spy(self: Tx, sql: str, *args: object) -> list:
+        if "pipeshub:graph.get_records_linking_to_weburls" in sql:
+            sent.append((sql, args))
+        return await real(self, sql, *args)
+    monkeypatch.setattr(Tx, "fetch", spy)
     u = "https://crowded.example/p"
     await p._lrows("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'crowd-' || lpad(i::text, 5, '0'), jsonb_build_object('orgId', $1::text,
         'webUrl', $2::text, 'recordType', 'LINK', 'connectorName', 'GITHUB', 'isDeleted', i % 7 = 0, 'isPlaceholder', i % 11 = 0) FROM generate_series(1, 10050) i""",
@@ -641,8 +651,14 @@ async def test_an_address_held_by_more_records_than_the_probe_returns_is_still_r
     assert await p.get_records_linking_to_weburls([u, "https://other.example/"], p.org, ["SLACK WORKSPACE"]) == ["zz-holder"]
     old = await p._lrows(OLD_BY_WEBURLS, p.org, [u], p.org, 50, True)
     assert [dict(r) for r in old] == await p.get_records_by_weburls([u], p.org, 50, include_deleted=True)
-    assert [r["id"] for r in await p._lrows(OLD_LINKING, p.org, [u], p.org, ["SLACK WORKSPACE", "GITHUB"], None, 100)] == \
-        await p.get_records_linking_to_weburls([u], p.org, ["SLACK WORKSPACE", "GITHUB"])
+    assert await p.get_records_linking_to_weburls([u], p.org, ["SLACK WORKSPACE", "GITHUB"]) == ["zz-holder"]      # the crowd's links have no holder
+    assert len(sent) == 4, len(sent)        # each call: the probe's statement, then (capped) the plain one
+    for sql, args in sent:
+        plan = plan_gate.root(await p._q(lambda tx, sql=sql, args=args: tx._con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args), None))
+        assert not (bad := plan_gate.unkeyed(plan, "edges", r"\b(to_id|from_id) = ")), (sql[:60], bad)
+        # the link records are read once (the org's, by the plain statement); every other record by its id
+        assert not (bad := [n.get("Index Cond") for n in plan_gate.scans(plan, "nodes") if n.get("Actual Loops", 1) > 1 and not plan_gate.keyed(n, r"\bid = ")]), \
+            (sql[:60], bad)
 
 
 async def test_more_addresses_than_one_probe_takes_are_read_in_one_statement(pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
