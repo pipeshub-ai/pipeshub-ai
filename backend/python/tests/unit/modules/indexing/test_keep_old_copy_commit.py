@@ -462,3 +462,21 @@ async def test_a_failed_membership_restore_after_the_retirement_asks_for_a_repai
          patch("app.modules.transformers.swap_commit.sync_vector_membership", AsyncMock(side_effect=RuntimeError("down"))):
         await swap._retire_membership(run())
     g.update_node.assert_any_await("k1", "apps", {"vectorMembershipBackfilled": False})
+
+
+@pytest.mark.asyncio
+async def test_a_read_that_fails_after_the_commit_write_undoes_the_move_and_the_run_is_retried() -> None:
+    """A store timeout on the read after the write must not leave the record on a copy nobody has shown to be whole."""
+    g = FakeGraph({"A": rec("X", pendingVirtualRecordId="Y")})
+    calls = {"n": 0}
+
+    def view(vrid: str) -> list[str]:
+        calls["n"] += 1
+        if calls["n"] == 2:  # the read after the write
+            raise TimeoutError("down")
+        return ["b1"]
+
+    swap, _ = committer(g, view=view)
+    with pytest.raises(TimeoutError):
+        await swap.commit(ctx_for("A", "Y", pointed=["b1"]), run(), {"indexingStatus": "COMPLETED"})
+    assert g.records["A"]["virtualRecordId"] == "X" and g.records["A"]["pendingVirtualRecordId"] == "Y"

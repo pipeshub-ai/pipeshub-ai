@@ -117,13 +117,19 @@ class SwapCommitter:
 
     async def _confirm_after_commit(self, ctx: TransformContext, swap: keep_old_copy.SwapRun, fields: dict[str, Any]) -> None:
         """The record names the copy now. When it is not whole in the store (a sweep, or anything else, took it between the read and the write), the move is undone while the old copy is still there, and the run is retried."""
-        if await self._complete_set(ctx, swap):
-            return
+        failure: Exception | None = None
+        try:
+            if await self._complete_set(ctx, swap):
+                return
+        except Exception as exc:  # the read itself failed (a store timeout): the copy cannot be shown to be whole, so the move is undone too
+            failure = exc
         await self.o.graph_provider.update_node_fields_if(
             swap.record_id, _RECORDS,
             {"virtualRecordId": swap.old_vrid, PENDING_VIRTUAL_RECORD_ID: swap.new_vrid, "indexingStatus": ProgressStatus.IN_PROGRESS.value},
             [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", EQ, fields.get("indexingStatus", ProgressStatus.COMPLETED.value))],
         )
+        if failure is not None:
+            raise failure  # the run is retried with the record on the old copy
         raise IndexingError(
             "The replacement copy was removed from the vector store while it was committed; the move is undone and the run is retried",
             details={"record_id": swap.record_id, "virtual_record_id": swap.new_vrid},

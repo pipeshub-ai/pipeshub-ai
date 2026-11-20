@@ -2572,14 +2572,15 @@ class IGraphDBProvider(ABC):
         """Merge ``updates`` into the node only while every field in
         ``expected`` still holds its value (``None`` means absent), in one
         statement. Unlike ``update_node_if_match`` the document is merged,
-        not replaced. A ``None`` in ``updates`` removes or nulls the field.
+        not replaced. A ``None`` in ``updates`` removes or nulls the field,
+        as the store does (with ``unset`` given, a ``None`` in ``updates`` removes it).
         ``clock_at_most`` (epoch seconds): also only while the store's own
         clock (`store_time`), read by the statement as it writes, is not past
         it, so a value computed from an earlier read of that clock is never
         written later than the caller allowed. ``unset`` names fields the same
         write removes (the attribute is gone, never left null: an older strict
-        schema rejects a stored null it does not list); a ``None`` in ``updates``
-        removes its field in that write, as on every store.
+        schema rejects a stored null it does not list); with ``unset`` given, a
+        ``None`` in ``updates`` removes its field in that write too.
 
         Returns:
             True iff the write applied.

@@ -51,7 +51,12 @@ class World:
             self.graph.records["B"] = {**base, "virtualRecordId": "X", "indexingStatus": "COMPLETED", "hasIndexedCopy": True}
         self.points: dict[str, str] = {"X": "complete"}  # vrid -> "complete" | "partial"
         # the vector store as the commit reads it: a complete copy has both blocks, a partial one the first
-        self.swap, _ = committer(self.graph, view=lambda vrid: {"complete": ["b1", "b2"], "partial": ["b1"]}.get(self.points.get(vrid, ""), []))
+        def view(vrid: str) -> list[str]:
+            if rng.random() < 0.03:
+                raise TimeoutError("the vector store did not answer")  # a read that fails, before or after the commit write
+            return {"complete": ["b1", "b2"], "partial": ["b1"]}.get(self.points.get(vrid, ""), [])
+
+        self.swap, _ = committer(self.graph, view=view)
         self.swap._release_unheld = AsyncMock(side_effect=self._release)
         real_require = self.swap._require_points
 
@@ -118,8 +123,8 @@ class World:
                     self.served_rev = g.records["A"]["contentRev"]
                     self.states.add((st["y"], self.served_rev))  # the stages of the new copy run after its commit
                 await self.swap._release_unheld("o", st["x"]) if not _held(g, st["x"]) else None
-            except (SupersededRun, IndexingError):
-                pass  # superseded, or the set is not whole (or was taken): the record keeps the copy it serves
+            except (SupersededRun, IndexingError, TimeoutError):
+                pass  # superseded, or the set is not whole (or was taken, or could not be read): the record keeps the copy it serves
             self.runs.pop(run)
             if not self.runs and g.records["A"]["indexingStatus"] == "COMPLETED":
                 pass
