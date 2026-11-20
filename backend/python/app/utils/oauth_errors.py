@@ -13,6 +13,10 @@ PERMANENT_GRANT_ERROR_CODES = frozenset({
     "bad_refresh_token", "incorrect_client_credentials", "invalid_refresh_token",
 })
 
+# The provider refuses our OAuth client (unknown, wrong secret, or not allowed this grant): an admin's or a
+# new registration's fix, not the user's grant.
+CLIENT_REJECTED_ERROR_CODES = frozenset({"invalid_client", "unauthorized_client", "incorrect_client_credentials"})
+
 # Providers that only say it in prose (Atlassian's "refresh_token is invalid").
 PERMANENT_REFRESH_TEXT_MARKERS = (
     "invalid_grant",
