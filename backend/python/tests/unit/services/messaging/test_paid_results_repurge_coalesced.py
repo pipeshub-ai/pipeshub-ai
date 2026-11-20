@@ -325,10 +325,14 @@ def _chain_length() -> int:
     return count
 
 
-async def test_a_100k_record_bulk_delete_makes_pages_of_hops_not_a_chain_per_record(
-    monkeypatch: pytest.MonkeyPatch, clock: list[float],
+# The message ratio does not depend on the delete count once a few windows and pages have formed: at 20,000 it is 46x, at
+# 100,000 it is 46x. The work does: every record runs the real hop code (about 30 us a step, a few hundred thousand env
+# reads and millions of id checks at 100,000), 3 s on an idle core but over a minute on a CI runner that is shared, so the
+# per-PR job runs the 20,000 case and the 100,000 case runs with the stress tests (``-m stress`` or RUN_STRESS_TESTS=1).
+@pytest.mark.parametrize("n", [20_000, pytest.param(100_000, marks=pytest.mark.stress)], ids=["20k", "100k"])
+async def test_a_bulk_delete_makes_pages_of_hops_not_a_chain_per_record(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float], n: int,
 ) -> None:
-    n = 100_000
     store, broker = MemoryWindowStore(), Broker(clock)
     sim = _Sim(broker, store, clock, monkeypatch)
     start = clock[0]
