@@ -358,6 +358,8 @@ async def test_a_relink_left_to_the_next_sync_finds_pages_that_name_the_folder_w
     db.end_full_sync()
     assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == [SETUP]
 
+    # The full sync rewrote the page with the slashed reference; the retry is for one that still names it without.
+    db.records[INSTALL].parent_external_record_id = SETUP.rstrip("/")
     monkeypatch.setattr(db, "on_records_attached_to_parent", attach)
     await connector.run_sync()  # incremental
 

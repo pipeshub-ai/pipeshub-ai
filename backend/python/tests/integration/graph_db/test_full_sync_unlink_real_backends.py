@@ -871,9 +871,12 @@ async def _can_search(sync: _Sync, user_key: str, external_id: str) -> bool:
     return record.id in result.node_ids
 
 
+# The connector's order is relink first: it walks a page's ancestors while it processes the page, and an
+# unchanged page's permissions update comes after. The other order shows the result does not depend on it.
+@pytest.mark.parametrize("relink_first", [True, False], ids=["relink-then-update", "update-then-relink"])
 @pytest.mark.parametrize("parent_is_a_page", [False, True], ids=["under-a-folder", "under-a-page"])
 async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_full_sync_cut_off(
-    sync: _Sync, parent_is_a_page: bool,
+    sync: _Sync, parent_is_a_page: bool, relink_first: bool,
 ) -> None:
     """PR #6129, against the real processor and store.
 
@@ -911,11 +914,14 @@ async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_f
             await s.processor.on_updated_record_permissions(above, [])
         else:
             await s.processor.on_new_records([(above, [])])
+        if relink_first:
+            await s.processor.on_records_attached_to_parent(parent_id, [page_id])
         # The connector passes the stored id of a page it already holds.
         await s.processor.on_updated_record_permissions(
             _web_record(s, page_path, parent=parent_path, internal=False, record_id=page_id), []
         )
-        await s.processor.on_records_attached_to_parent(parent_id, [page_id])
+        if not relink_first:
+            await s.processor.on_records_attached_to_parent(parent_id, [page_id])
 
     task, _lease = await sync.full_sync(fixed_build)
     await asyncio.wait_for(task, timeout=60)
