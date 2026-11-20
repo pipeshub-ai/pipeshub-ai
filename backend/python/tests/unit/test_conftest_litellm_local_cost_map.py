@@ -11,7 +11,6 @@ import textwrap
 
 import httpx
 import pytest
-
 from litellm.litellm_core_utils.get_model_cost_map import get_model_cost_map
 
 
@@ -52,7 +51,7 @@ def test_importing_litellm_in_a_worker_opens_no_connection() -> None:
         assert litellm.model_cost, "no price map"
         """
     )
-    result = subprocess.run(  # noqa: S603 - our own interpreter and a fixed script
+    result = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=120, env=dict(os.environ), check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
