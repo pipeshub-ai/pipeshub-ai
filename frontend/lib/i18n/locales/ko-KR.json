@@ -4338,11 +4338,15 @@
       "resetToDefault": "기본값으로 재설정",
       "customInstructionsTitle": "프롬프트",
       "customInstructionsDescription": "채팅 어시스턴트를 위한 사용자 지정 지침을 추가하세요. 예를 들어 특정 언어로 답변하기, 서식 스타일 따르기, 원하는 동작 적용하기 등입니다. 아래 각 모드는 답변 방식이 다르므로 자체 지침을 갖습니다.",
-      "scopeHint": "이 지침은 <bold>채팅 어시스턴트</bold>(아래 에이전트 모드)에만 적용됩니다. <bold>Agent Builder</bold>에서 만든 사용자 지정 에이전트에는 영향을 주지 않으며, 각 에이전트는 자체 시스템 프롬프트와 해당 에이전트에 구성된 지침을 사용합니다.",
+      "scopeHint": "이 지침은 <bold>채팅 어시스턴트</bold>(아래 에이전트 모드)와, 켜면 <bold>PipesHub MCP 서버</bold>에만 적용됩니다. <bold>Agent Builder</bold>에서 만든 사용자 지정 에이전트에는 영향을 주지 않으며, 각 에이전트는 자체 시스템 프롬프트와 해당 에이전트에 구성된 지침을 사용합니다.",
       "agentTitle": "에이전트",
       "agentDescription": "사용자가 에이전트 모드로 채팅할 때 적용됩니다. 어시스턴트가 질문마다 내부 지식, 웹 검색 또는 둘 다를 사용할지 결정합니다.",
       "agentPlaceholder": "예: 회사 관련 질문에는 내부 지식을 우선하세요. 세부 내용을 제공하기 전에 항상 요약하세요.",
-      "agentHelperText": "이 프롬프트는 AI가 내부 지식과 웹 검색 중에서 자유롭게 선택할 수 있을 때 안내 역할을 합니다. 변경 사항은 새 대화에 즉시 적용됩니다."
+      "agentHelperText": "이 프롬프트는 AI가 내부 지식과 웹 검색 중에서 자유롭게 선택할 수 있을 때 안내 역할을 합니다. 변경 사항은 새 대화에 즉시 적용됩니다.",
+      "mcpToggleLabel": "PipesHub MCP 서버에서도 사용",
+      "mcpToggleDescription": "Claude, Cursor 같은 MCP 클라이언트는 연결할 때 PipesHub 자체 지침보다 먼저 이 프롬프트를 받습니다. 클라이언트는 서버 지침을 일정 길이까지만 유지하므로, 이 옵션이 켜져 있으면 프롬프트는 최대 {{max}}자까지 입력할 수 있습니다.",
+      "mcpCharCount": "{{length}} / {{max}}자",
+      "mcpTooLong": "{{length}} / {{max}}자. 저장하려면 프롬프트를 줄이거나 MCP 서버에서의 사용을 끄세요."
     },
     "webSearch": {
       "loading": "웹 검색 설정을 불러오는 중…",

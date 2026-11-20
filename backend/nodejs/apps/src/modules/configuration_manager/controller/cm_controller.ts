@@ -79,6 +79,11 @@ import {
 } from '../utils/util';
 import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../types/ai-models.types';
 import {
+  MCP_PROMPT_MAX_CHARS,
+  mcpPromptLength,
+  readSystemPrompts,
+} from '../utils/system-prompts';
+import {
   AiModelsConfigRepository,
   AiModelsWriteAborted,
   ensureAiModelBuckets,
@@ -4265,46 +4270,10 @@ export const getCustomSystemPrompt =
     next: NextFunction,
   ) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const decrypt = (enc: string): string =>
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(enc);
-
-      // 1. Try the new dedicated key first
-      const encryptedPrompts = await keyValueStoreService.get<string>(configPaths.systemPrompts);
-      if (encryptedPrompts) {
-        const p = JSON.parse(decrypt(encryptedPrompts)) as SystemPromptsConfig;
-        res
-          .status(200)
-          .json({
-            customSystemPrompt:          p.customSystemPrompt          || '',
-            customSystemPromptWebSearch: p.customSystemPromptWebSearch || '',
-            customSystemPromptAgent:     p.customSystemPromptAgent     || '',
-          })
-          .end();
-        return;
-      }
-
-      // 2. OSS backward compat: prompts were previously stored inside the aiModels blob
-      const encryptedAIConfig = await keyValueStoreService.get<string>(configPaths.aiModels);
-      if (encryptedAIConfig) {
-        const aiModels = JSON.parse(decrypt(encryptedAIConfig)) as AIModelsConfig;
-        res
-          .status(200)
-          .json({
-            customSystemPrompt:          aiModels.customSystemPrompt          || '',
-            customSystemPromptWebSearch: aiModels.customSystemPromptWebSearch || '',
-            customSystemPromptAgent:     aiModels.customSystemPromptAgent     || '',
-          })
-          .end();
-        return;
-      }
-
+      const prompts = await readSystemPrompts(keyValueStoreService);
       res
         .status(200)
-        .json({ customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '' })
+        .json({ ...prompts, mcpPromptMaxChars: MCP_PROMPT_MAX_CHARS })
         .end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
@@ -4324,6 +4293,9 @@ export const setCustomSystemPrompt =
         // break existing Internal Search / Web Search saves.
         customSystemPromptAgent = '',
       } = req.body;
+      // Left out, the stored choice stands, so a client that does not know
+      // the switch never turns it off.
+      const useInMcp: unknown = (req.body as { useInMcp?: unknown }).useInMcp;
 
       if (typeof customSystemPrompt !== 'string') {
         throw new BadRequestError('customSystemPrompt must be a string');
@@ -4334,23 +4306,39 @@ export const setCustomSystemPrompt =
       if (typeof customSystemPromptAgent !== 'string') {
         throw new BadRequestError('customSystemPromptAgent must be a string');
       }
+      if (useInMcp !== undefined && typeof useInMcp !== 'boolean') {
+        throw new BadRequestError('useInMcp must be true or false');
+      }
 
       const configManagerConfig = loadConfigurationManagerConfig();
-      const encrypt = (val: string): string =>
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).encrypt(val);
+      const encryptor = EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      );
+      const encrypt = (val: string): string => encryptor.encrypt(val);
+      let savedUseInMcp = false;
 
       const MAX_RETRIES = 5;
       let success = false;
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         const existing = await keyValueStoreService.get<string>(configPaths.systemPrompts);
+        const stored = existing
+          ? (JSON.parse(encryptor.decrypt(existing)) as SystemPromptsConfig)
+          : undefined;
+        savedUseInMcp =
+          typeof useInMcp === 'boolean' ? useInMcp : stored?.useInMcp === true;
+        const length = mcpPromptLength(customSystemPromptAgent);
+        if (savedUseInMcp && length > MCP_PROMPT_MAX_CHARS) {
+          throw new BadRequestError(
+            `customSystemPromptAgent is ${length} characters, and MCP clients are sent at most ${MCP_PROMPT_MAX_CHARS}. Shorten it, or set useInMcp to false.`,
+          );
+        }
         const promptsConfig: SystemPromptsConfig = {
           customSystemPrompt,
           customSystemPromptWebSearch,
           customSystemPromptAgent,
+          useInMcp: savedUseInMcp,
         };
         const encrypted = encrypt(JSON.stringify(promptsConfig));
 
@@ -4380,6 +4368,7 @@ export const setCustomSystemPrompt =
         customSystemPrompt,
         customSystemPromptWebSearch,
         customSystemPromptAgent,
+        useInMcp: savedUseInMcp,
       });
     } catch (error: any) {
       logger.error('Error setting custom system prompt', { error });

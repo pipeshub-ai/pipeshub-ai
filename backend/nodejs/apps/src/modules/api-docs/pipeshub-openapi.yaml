@@ -19635,7 +19635,7 @@ components:
       type: object
       description: Custom system prompt configuration
       additionalProperties: false
-      required: [customSystemPrompt, customSystemPromptWebSearch, customSystemPromptAgent]
+      required: [customSystemPrompt, customSystemPromptWebSearch, customSystemPromptAgent, useInMcp, mcpPromptMaxChars]
       properties:
         customSystemPrompt:
           type: string
@@ -19646,6 +19646,19 @@ components:
         customSystemPromptAgent:
           type: string
           description: Custom system prompt text used for Agent chat mode
+        useInMcp:
+          type: boolean
+          description: |
+            Whether `customSystemPromptAgent` is also sent to MCP clients of the `/mcp`
+            endpoint, ahead of the server's own instructions. `false` until an admin turns it
+            on, and for prompts saved by an older version inside the AI models configuration.
+        mcpPromptMaxChars:
+          type: integer
+          example: 500
+          description: |
+            The longest `customSystemPromptAgent`, after trimming, that can be saved while
+            `useInMcp` is on: the room the MCP server's own instructions leave within what
+            MCP clients keep of them.
 
     # AI Model Provider Management Schemas
     AIModelProviderConfiguration:
@@ -73959,6 +73972,10 @@ paths:
         request validator: the handler checks the types itself and refuses a missing or
         non-string prompt with `400 HTTP_BAD_REQUEST` before anything is stored. Leaving out
         `customSystemPromptAgent` saves it as an empty string. Fields it does not read are ignored.
+
+        `useInMcp` turns sending the Agent prompt to MCP clients on or off. Left out, the
+        stored choice is kept. While it is on, an Agent prompt longer than `mcpPromptMaxChars`
+        (see the GET response) after trimming is refused.
       operationId: setCustomSystemPrompt
       security:
         - bearerAuth: []
@@ -73981,6 +73998,9 @@ paths:
                 customSystemPromptAgent:
                   type: string
                   description: Prompt for Agent chat mode. Left out, it is saved as an empty string; `null` is refused.
+                useInMcp:
+                  type: boolean
+                  description: Also send the Agent prompt to MCP clients. Left out, the stored choice is kept; any value but `true` or `false` is refused.
           application/x-www-form-urlencoded:
             schema:
               type: object
@@ -73995,6 +74015,9 @@ paths:
                 customSystemPromptAgent:
                   type: string
                   description: Prompt for Agent chat mode. Left out, it is saved as an empty string; `null` is refused.
+                useInMcp:
+                  type: string
+                  description: Not settable from a form, whose values are strings. Leave it out to keep the stored choice; any value is refused.
       responses:
         '200':
           description: System prompt updated. The stored prompts are echoed back.
@@ -74003,7 +74026,7 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [message, customSystemPrompt, customSystemPromptWebSearch, customSystemPromptAgent]
+                required: [message, customSystemPrompt, customSystemPromptWebSearch, customSystemPromptAgent, useInMcp]
                 properties:
                   message:
                     type: string
@@ -74014,10 +74037,18 @@ paths:
                     type: string
                   customSystemPromptAgent:
                     type: string
+                  useInMcp:
+                    type: boolean
+                    description: Whether the Agent prompt is now sent to MCP clients.
         '400':
           description: |
             A prompt is missing or is not a string (`HTTP_BAD_REQUEST`, for example
             `customSystemPromptWebSearch must be a string`). Nothing is stored.
+
+            Also returned when `useInMcp` is not `true` or `false` (`useInMcp must be true or
+            false`), and when the Agent prompt is longer than `mcpPromptMaxChars` while
+            `useInMcp`, sent or stored, is on (`customSystemPromptAgent is 612 characters, and
+            MCP clients are sent at most 500. ...`).
 
             Every string is trimmed before validation, so text of only whitespace counts as
             empty.
@@ -74057,7 +74088,8 @@ paths:
         - Platform Settings
       summary: Get custom system prompt
       description: |
-        Get the three custom system prompts. An unset prompt reads as an empty string, also
+        Get the three custom system prompts, whether the Agent prompt is also sent to MCP
+        clients, and how long it may then be. An unset prompt reads as an empty string, also
         when nothing has been saved. Prompts saved by an older version inside the AI models
         configuration are read from there. The query string is not read.
       operationId: getCustomSystemPrompt

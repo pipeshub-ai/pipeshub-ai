@@ -4338,11 +4338,15 @@
       "resetToDefault": "恢复默认",
       "customInstructionsTitle": "提示词",
       "customInstructionsDescription": "为聊天助手添加自定义指令——例如使用特定语言回答、遵循某种格式风格，或应用您希望的任何行为。下面每种模式的回答方式不同，因此各有自己的指令。",
-      "scopeHint": "这些指令仅适用于<bold>聊天助手</bold>（下方的智能体模式）。在 <bold>Agent Builder</bold> 中创建的自定义智能体不受影响——每个智能体使用自己的系统提示词和在该智能体上配置的指令。",
+      "scopeHint": "这些指令仅适用于<bold>聊天助手</bold>（下方的智能体模式），开启后也适用于 <bold>PipesHub MCP 服务器</bold>。在 <bold>Agent Builder</bold> 中创建的自定义智能体不受影响——每个智能体使用自己的系统提示词和在该智能体上配置的指令。",
       "agentTitle": "智能体",
       "agentDescription": "当用户以智能体模式聊天时生效——助手会针对每个问题决定使用内部知识、网络搜索，还是两者兼用。",
       "agentPlaceholder": "例如：公司相关问题优先使用内部知识。给出细节前始终先做总结。",
-      "agentHelperText": "当 AI 可以在内部知识和网络搜索之间自由选择时，此提示词会为其提供指引。更改会立即对新对话生效。"
+      "agentHelperText": "当 AI 可以在内部知识和网络搜索之间自由选择时，此提示词会为其提供指引。更改会立即对新对话生效。",
+      "mcpToggleLabel": "同时用于 PipesHub MCP 服务器",
+      "mcpToggleDescription": "Claude、Cursor 等 MCP 客户端连接时，会先收到此提示词，再收到 PipesHub 自身的指令。客户端只保留服务器指令的有限长度，因此开启后提示词最多 {{max}} 个字符。",
+      "mcpCharCount": "{{length}} / {{max}} 个字符",
+      "mcpTooLong": "{{length}} / {{max}} 个字符。请缩短提示词，或关闭在 MCP 服务器中的使用，然后再保存。"
     },
     "webSearch": {
       "loading": "正在加载网络搜索设置…",

@@ -19,6 +19,8 @@ export interface SettingsSaveBarProps {
   isSaving?: boolean;
   /** Label for the save button — defaults to "Save" */
   saveLabel?: string;
+  /** Disables Save while the form holds a value that cannot be saved */
+  saveDisabled?: boolean;
 }
 
 // ========================================
@@ -46,13 +48,14 @@ export function SettingsSaveBar({
   onSave,
   isSaving = false,
   saveLabel = 'Save',
+  saveDisabled = false,
 }: SettingsSaveBarProps) {
   const [localSaving, setLocalSaving] = useState(false);
 
   const isActuallySaving = isSaving || localSaving;
 
   const handleSave = async () => {
-    if (isActuallySaving) return;
+    if (isActuallySaving || saveDisabled) return;
     setLocalSaving(true);
     try {
       await onSave();
@@ -102,6 +105,7 @@ export function SettingsSaveBar({
         onClick={handleSave}
         loading={isActuallySaving}
         loadingLabel="Saving..."
+        disabled={saveDisabled}
       >
         {saveLabel}
       </LoadingButton>

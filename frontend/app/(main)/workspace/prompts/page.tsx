@@ -9,6 +9,7 @@ import {
   Flex,
   Heading,
   IconButton,
+  Switch,
   Text,
   TextArea,
 } from '@radix-ui/themes';
@@ -147,6 +148,51 @@ function PromptEditor({
   );
 }
 
+interface McpPromptToggleProps {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  length: number;
+  maxChars: number;
+}
+
+/** Sends the Agent prompt to MCP clients too; they keep only so much of it. */
+function McpPromptToggle({ checked, onCheckedChange, length, maxChars }: McpPromptToggleProps) {
+  const { t } = useTranslation();
+  const tooLong = checked && length > maxChars;
+  return (
+    <Flex direction="column" gap="2" data-testid="prompt-mcp-toggle">
+      <Flex align="center" justify="between" gap="4">
+        <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+          <Text as="label" htmlFor="prompt-use-in-mcp" size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+            {t('workspace.prompts.mcpToggleLabel')}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>
+            {t('workspace.prompts.mcpToggleDescription', { max: maxChars })}
+          </Text>
+        </Flex>
+        <Switch
+          id="prompt-use-in-mcp"
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+          style={{ flexShrink: 0, cursor: 'pointer' }}
+        />
+      </Flex>
+      {checked && (
+        <Text
+          size="1"
+          role={tooLong ? 'alert' : undefined}
+          data-testid="prompt-mcp-count"
+          style={{ color: tooLong ? 'var(--red-11)' : 'var(--slate-10)', lineHeight: '16px' }}
+        >
+          {tooLong
+            ? t('workspace.prompts.mcpTooLong', { length, max: maxChars })
+            : t('workspace.prompts.mcpCharCount', { length, max: maxChars })}
+        </Text>
+      )}
+    </Flex>
+  );
+}
+
 function PromptConfigCallout() {
   const { t } = useTranslation();
   return (
@@ -191,16 +237,24 @@ export default function PromptsPage() {
   const [customPrompt, setCustomPrompt] = useState('');
   const [customPromptWebSearch, setCustomPromptWebSearch] = useState('');
   const [customPromptAgent, setCustomPromptAgent] = useState('');
+  const [useInMcp, setUseInMcp] = useState(false);
+  const [mcpPromptMaxChars, setMcpPromptMaxChars] = useState(500);
 
   // Saved snapshot for dirty-state detection
   const [savedPrompt, setSavedPrompt] = useState('');
   const [savedPromptWebSearch, setSavedPromptWebSearch] = useState('');
   const [savedPromptAgent, setSavedPromptAgent] = useState('');
+  const [savedUseInMcp, setSavedUseInMcp] = useState(false);
 
   const isDirty =
     customPrompt !== savedPrompt ||
     customPromptWebSearch !== savedPromptWebSearch ||
-    customPromptAgent !== savedPromptAgent;
+    customPromptAgent !== savedPromptAgent ||
+    useInMcp !== savedUseInMcp;
+
+  // The server sends the prompt without its leading and trailing space, and refuses a longer one.
+  const agentPromptLength = customPromptAgent.trim().length;
+  const agentPromptTooLongForMcp = useInMcp && agentPromptLength > mcpPromptMaxChars;
 
   // The sidebar hides this page from members, but the URL still opens it. A profile that failed
   // to load leaves isAdmin null; General is open to everyone, so that goes there too.
@@ -219,9 +273,12 @@ export default function PromptsPage() {
         setCustomPrompt(prompts.customSystemPrompt);
         setCustomPromptWebSearch(prompts.customSystemPromptWebSearch);
         setCustomPromptAgent(prompts.customSystemPromptAgent);
+        setUseInMcp(prompts.useInMcp);
+        setMcpPromptMaxChars(prompts.mcpPromptMaxChars);
         setSavedPrompt(prompts.customSystemPrompt);
         setSavedPromptWebSearch(prompts.customSystemPromptWebSearch);
         setSavedPromptAgent(prompts.customSystemPromptAgent);
+        setSavedUseInMcp(prompts.useInMcp);
       } finally {
         setIsLoading(false);
       }
@@ -247,16 +304,19 @@ export default function PromptsPage() {
   }, []);
 
   const handleSave = useCallback(async () => {
+    if (agentPromptTooLongForMcp) return;
     setIsSaving(true);
     try {
       await PromptsApi.saveSystemPrompts({
         customSystemPrompt: customPrompt,
         customSystemPromptWebSearch: customPromptWebSearch,
         customSystemPromptAgent: customPromptAgent,
+        useInMcp,
       });
       setSavedPrompt(customPrompt);
       setSavedPromptWebSearch(customPromptWebSearch);
       setSavedPromptAgent(customPromptAgent);
+      setSavedUseInMcp(useInMcp);
       addToast({
         variant: 'success',
         title: t('workspace.prompts.toasts.saved'),
@@ -272,18 +332,19 @@ export default function PromptsPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [customPrompt, customPromptWebSearch, customPromptAgent, addToast, t]);
+  }, [customPrompt, customPromptWebSearch, customPromptAgent, useInMcp, agentPromptTooLongForMcp, addToast, t]);
 
   const handleDiscard = useCallback(() => {
     setCustomPrompt(savedPrompt);
     setCustomPromptWebSearch(savedPromptWebSearch);
     setCustomPromptAgent(savedPromptAgent);
+    setUseInMcp(savedUseInMcp);
     addToast({
       variant: 'success',
       title: t('workspace.prompts.toasts.discarded'),
       description: t('workspace.prompts.toasts.discardedDescription'),
     });
-  }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast, t]);
+  }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, savedUseInMcp, addToast, t]);
 
   if (!isProfileInitialized || isAdmin !== true) {
     return null;
@@ -326,7 +387,7 @@ export default function PromptsPage() {
           </Button>
         </Flex>
 
-        {/* ── Scope Callout: Chat Assistant only, not Agent Builder ── */}
+        {/* ── Scope Callout: Chat Assistant (and the MCP server, if on), not Agent Builder ── */}
         <Flex
           align="center"
           gap="3"
@@ -361,6 +422,12 @@ export default function PromptsPage() {
               onChange={setCustomPromptAgent}
               onClear={handleUseDefaultAgent}
             />
+            <McpPromptToggle
+              checked={useInMcp}
+              onCheckedChange={setUseInMcp}
+              length={agentPromptLength}
+              maxChars={mcpPromptMaxChars}
+            />
           </PromptSectionCard>
         </Box>
 
@@ -375,6 +442,7 @@ export default function PromptsPage() {
         onDiscard={handleDiscard}
         onSave={handleSave}
         isSaving={isSaving}
+        saveDisabled={agentPromptTooLongForMcp}
       />
     </Box>
     </ServiceGate>

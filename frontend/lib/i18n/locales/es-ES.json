@@ -4088,11 +4088,15 @@
       "resetToDefault": "Restablecer los valores predeterminados",
       "customInstructionsTitle": "Prompts",
       "customInstructionsDescription": "Añada instrucciones personalizadas para el Asistente de chat: por ejemplo, responder en un idioma concreto, seguir un estilo de formato o aplicar el comportamiento que desee. Cada modo de abajo tiene sus propias instrucciones, ya que responden de forma distinta.",
-      "scopeHint": "Estas instrucciones se aplican solo al <bold>Asistente de chat</bold> (el modo Agente de abajo). Los agentes personalizados creados en el <bold>Creador de agentes</bold> no se ven afectados: cada agente usa su propio prompt de sistema y las instrucciones configuradas en el propio agente.",
+      "scopeHint": "Estas instrucciones se aplican solo al <bold>Asistente de chat</bold> (el modo Agente de abajo) y, si lo activas, al <bold>servidor MCP de PipesHub</bold>. Los agentes personalizados creados en el <bold>Creador de agentes</bold> no se ven afectados: cada agente usa su propio prompt de sistema y las instrucciones configuradas en el propio agente.",
       "agentTitle": "Agente",
       "agentDescription": "Se aplica cuando un usuario chatea en modo Agente: el asistente decide en cada pregunta si usar el conocimiento interno, la búsqueda web o ambos.",
       "agentPlaceholder": "p. ej. Prioriza el conocimiento interno para las preguntas sobre la empresa. Resume siempre antes de dar los detalles.",
-      "agentHelperText": "Este prompt guía a la IA cuando puede elegir libremente entre el conocimiento interno y la búsqueda web. Los cambios se aplican de inmediato a las conversaciones nuevas."
+      "agentHelperText": "Este prompt guía a la IA cuando puede elegir libremente entre el conocimiento interno y la búsqueda web. Los cambios se aplican de inmediato a las conversaciones nuevas.",
+      "mcpToggleLabel": "Usar también en el servidor MCP de PipesHub",
+      "mcpToggleDescription": "Los clientes MCP como Claude y Cursor reciben este prompt antes de las instrucciones propias de PipesHub al conectarse. Solo conservan una parte de las instrucciones de un servidor, así que el prompt puede tener como máximo {{max}} caracteres mientras esta opción esté activada.",
+      "mcpCharCount": "{{length}} / {{max}} caracteres",
+      "mcpTooLong": "{{length}} / {{max}} caracteres. Acorta el prompt o desactiva su uso en el servidor MCP para guardar."
     },
     "webSearch": {
       "loading": "Loading web search settings…",

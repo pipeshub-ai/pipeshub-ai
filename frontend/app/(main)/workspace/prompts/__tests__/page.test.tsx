@@ -1,10 +1,11 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup, waitFor } from '@testing-library/react';
+import { render, cleanup, waitFor, screen, fireEvent } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 const replace = vi.fn();
 const getSystemPrompts = vi.fn();
+const saveSystemPrompts = vi.fn();
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace, push: vi.fn() }) }));
 vi.mock('@/app/components/ui/service-gate', () => ({
@@ -15,7 +16,7 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 vi.mock('../api', () => ({
   PromptsApi: {
     getSystemPrompts: (...args: unknown[]) => getSystemPrompts(...args),
-    saveSystemPrompts: vi.fn(),
+    saveSystemPrompts: (...args: unknown[]) => saveSystemPrompts(...args),
   },
 }));
 
@@ -44,7 +45,10 @@ beforeEach(() => {
     customSystemPrompt: '',
     customSystemPromptWebSearch: '',
     customSystemPromptAgent: '',
+    useInMcp: false,
+    mcpPromptMaxChars: 500,
   });
+  saveSystemPrompts.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -76,5 +80,68 @@ describe('Prompts page access', () => {
 
     await waitFor(() => expect(getSystemPrompts).toHaveBeenCalledTimes(1));
     expect(replace).not.toHaveBeenCalled();
+  });
+});
+
+describe('Using the Agent prompt in the MCP server', () => {
+  const stored = (agent: string, useInMcp: boolean) =>
+    getSystemPrompts.mockResolvedValue({
+      customSystemPrompt: '',
+      customSystemPromptWebSearch: '',
+      customSystemPromptAgent: agent,
+      useInMcp,
+      mcpPromptMaxChars: 10,
+    });
+  const toggle = () => screen.getByRole('switch');
+  const agentEditor = () => screen.getByPlaceholderText(/Prefer internal knowledge/);
+  const saveButton = () => screen.getByRole('button', { name: 'Save' });
+
+  beforeEach(() => signInAs(true));
+
+  it('shows the saved choice, and counts the trimmed prompt against the limit only while it is on', async () => {
+    stored('  Be brief. ', true);
+    render(<PromptsPage />);
+
+    await waitFor(() => expect(toggle().getAttribute('aria-checked')).toBe('true'));
+    expect(screen.getByTestId('prompt-mcp-count').textContent).toBe('9 / 10 characters');
+
+    fireEvent.click(toggle());
+    expect(screen.queryByTestId('prompt-mcp-count')).toBeNull();
+  });
+
+  it('saves the choice with the prompts', async () => {
+    stored('Be brief.', false);
+    render(<PromptsPage />);
+    await waitFor(() => expect(toggle().getAttribute('aria-checked')).toBe('false'));
+
+    fireEvent.click(toggle());
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(saveSystemPrompts).toHaveBeenCalledWith({
+        customSystemPrompt: '',
+        customSystemPromptWebSearch: '',
+        customSystemPromptAgent: 'Be brief.',
+        useInMcp: true,
+      }),
+    );
+  });
+
+  it('will not save a prompt longer than the MCP server takes while it is on', async () => {
+    stored('', false);
+    render(<PromptsPage />);
+    await waitFor(() => expect(toggle().getAttribute('aria-checked')).toBe('false'));
+
+    fireEvent.change(agentEditor(), { target: { value: 'Twelve chars' } });
+    fireEvent.click(toggle());
+
+    expect(screen.getByRole('alert').textContent).toMatch(/^12 \/ 10 characters\./);
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(saveButton());
+    expect(saveSystemPrompts).not.toHaveBeenCalled();
+
+    // Turned off, the same prompt saves: chat has no such limit.
+    fireEvent.click(toggle());
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
   });
 });

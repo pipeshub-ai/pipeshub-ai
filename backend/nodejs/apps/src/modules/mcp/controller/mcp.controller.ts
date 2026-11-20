@@ -46,6 +46,12 @@ import {
 } from '../access-policy';
 import { McpToolCatalog, registeredTools } from '../tool-catalog';
 import { mcpLinkRouting } from '../public-links';
+import {
+  McpWorkspaceInstructions,
+  sendsInstructions,
+  SystemPromptsStoreForOrg,
+} from '../workspace-instructions';
+import { systemPromptsStoreForOrg } from '../../configuration_manager/utils/system-prompts';
 
 const logger = Logger.getInstance({
   service: 'MCPController',
@@ -57,6 +63,8 @@ const coreModule = import('@pipeshub-ai/mcp/esm/core.js');
 const httpModule = import('@pipeshub-ai/mcp/esm/lib/http.js');
 const oauthScopesModule =
   import('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js');
+const instructionsModule =
+  import('@pipeshub-ai/mcp/esm/mcp-server/instructions.js');
 
 /**
  * Activation signals for the MCP path. The transport is stateless, so every
@@ -234,7 +242,10 @@ function recordActivityFromProps(
  * Creates a stateless MCP server per request, connected to the PipeshubCore SDK
  * using the caller's bearer token.
  */
-export const handleMCPRequest = (appConfig: AppConfig) => {
+export const handleMCPRequest = (
+  appConfig: AppConfig,
+  storeForOrg: SystemPromptsStoreForOrg = systemPromptsStoreForOrg,
+) => {
   // Built on first use, not with the router: the secret is read once the config is loaded.
   let relaySigningKey: KeyObject | undefined;
   return async (
@@ -251,6 +262,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const { PipeshubCore } = await coreModule;
       const { HTTPClient } = await httpModule;
       const { requiredOAuthScopes } = await oauthScopesModule;
+      const { customInstructionsSection } = await instructionsModule;
 
       const policy = mcpAccessPolicyOf(res);
       // Before the step-up: a tool an admin turned off must not send the client asking for scopes.
@@ -282,6 +294,13 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           return;
         }
       }
+
+      // Only initialize and prompts/get answer with the instructions, so no other request reads them.
+      const orgId = getCurrentOrgId();
+      const customInstructions =
+        sendsInstructions(req.body) && orgId !== undefined && orgId !== ''
+          ? await McpWorkspaceInstructions.read(orgId, storeForOrg)
+          : undefined;
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -320,6 +339,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         ...(policy.disabledTools.includes('pipeshub_chat')
           ? { chat: false }
           : {}),
+        customInstructions,
         onToolCall: (call) => {
           auditToolCall(req, call);
         },
@@ -366,7 +386,8 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           _instructions?: string;
         };
         server._instructions = codeOnly
-          ? CODE_GRAPH_INSTRUCTIONS.trimStart()
+          ? customInstructionsSection(customInstructions) +
+            CODE_GRAPH_INSTRUCTIONS.trimStart()
           : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
 

@@ -19,6 +19,7 @@ delete require.cache[CONTROLLER_PATH]
 const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../../../src/modules/mcp/controller/mcp.controller')
 import { CODE_GRAPH_INSTRUCTIONS, CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
 import { McpToolCatalog } from '../../../../src/modules/mcp/tool-catalog'
+import { McpWorkspaceInstructions } from '../../../../src/modules/mcp/workspace-instructions'
 import path from 'path'
 
 // Cached module references — we mutate these exports per-test so the controller
@@ -374,6 +375,23 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(sdkServer._instructions).to.equal(CODE_GRAPH_INSTRUCTIONS.trimStart())
     })
 
+    it("keeps the workspace's instructions first for ?tools=code", async () => {
+      sinon.stub(McpWorkspaceInstructions, 'read').resolves('Org rules')
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          _registeredTools: {},
+          registerTool: (name: string) => { registered.push(name) },
+          connect: sinon.stub().resolves(),
+          server: sdkServer,
+        },
+      })
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await runWithOrgContext(makeOrgContext({ orgId: 'org-1', userId: 'cg-code-only-ws', kind: 'user', source: 'jwt' }), () =>
+        serve('cg-code-only-ws', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, {}, { tools: 'code' }),
+      )
+      expect(sdkServer._instructions).to.equal('[workspace: Org rules]\n' + CODE_GRAPH_INSTRUCTIONS.trimStart())
+    })
+
     it('keeps document tools callable in a ?tools=code batch that calls one', async () => {
       const docTool = { remove: sinon.stub() }
       mcpServerExports.createMCPServer = sinon.stub().returns({
@@ -404,6 +422,62 @@ describe('MCP Controller — handleMCPRequest', () => {
       await serve('cg-other', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search' } })
       expect(fetchStub.called).to.equal(false)
       expect(registered).to.deep.equal([])
+    })
+  })
+
+  describe("the workspace's instructions", () => {
+    let createStub: sinon.SinonStub
+    let read: sinon.SinonStub
+    const storeForOrg = sinon.stub()
+
+    beforeEach(() => {
+      createStub = sinon.stub().returns({
+        server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} },
+      })
+      mcpServerExports.createMCPServer = createStub
+      sdkTransportExports.StreamableHTTPServerTransport = class { async handleRequest() {} }
+      read = sinon.stub(McpWorkspaceInstructions, 'read').resolves('Answer in British English.')
+    })
+
+    const serve = async (body: unknown, orgId: string | null = 'org-1') => {
+      const req = createMockRequest({
+        headers: { authorization: 'Bearer t' },
+        user: { userId: 'u-1', orgId: orgId ?? undefined },
+        body,
+      })
+      const handle = () => handleMCPRequest(appConfig, storeForOrg)(req, createMockResponse() as any, createMockNext())
+      // The auth middleware binds the caller's org for the rest of the request.
+      await (orgId === null
+        ? handle()
+        : runWithOrgContext(makeOrgContext({ orgId, userId: 'u-1', kind: 'user', source: 'jwt' }), handle))
+    }
+
+    it("hands the org's instructions to the server it builds for initialize", async () => {
+      await serve({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      expect(read.calledOnceWith('org-1', storeForOrg)).to.equal(true)
+      expect(createStub.firstCall.args[0].customInstructions).to.equal('Answer in British English.')
+    })
+
+    it('reads them for the org the request is bound to', async () => {
+      await serve({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, 'org-2')
+      expect(read.firstCall.args[0]).to.equal('org-2')
+    })
+
+    it('hands them over for prompts/get too, where the assistant prompt carries them', async () => {
+      await serve({ jsonrpc: '2.0', id: 1, method: 'prompts/get', params: { name: 'pipeshub-assistant' } })
+      expect(createStub.firstCall.args[0].customInstructions).to.equal('Answer in British English.')
+    })
+
+    it('reads nothing for a request whose answer carries no instructions', async () => {
+      await serve({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_search' } })
+      expect(read.called).to.equal(false)
+      expect(createStub.firstCall.args[0].customInstructions).to.equal(undefined)
+    })
+
+    it('reads nothing outside an org context', async () => {
+      await serve({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, null)
+      expect(read.called).to.equal(false)
+      expect(createStub.firstCall.args[0].customInstructions).to.equal(undefined)
     })
   })
 
