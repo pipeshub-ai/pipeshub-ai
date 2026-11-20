@@ -119,9 +119,6 @@ WITH gone AS (DELETE FROM platform.queue_groups WHERE ephemeral AND seen_at < no
 DELETE FROM platform.queue_deliveries d USING gone WHERE d.group_id = gone.group_id AND d.topic = gone.topic"""
 _BACKLOG = """/* pipeshub:queue.backlog */
 SELECT status, count(*) AS n FROM platform.queue_deliveries WHERE group_id = $1 AND topic = ANY($2::text[]) GROUP BY status"""
-_UNTAGGED_CLAIMS = """/* pipeshub:queue.untaggedclaims */
-SELECT DISTINCT consumer FROM platform.queue_deliveries
-WHERE status = 'claimed' AND locked_until > now() AND consumer IS NOT NULL AND group_id = ANY($2::text[]) AND position($1::text IN consumer) = 0"""
 _TOPICS = """/* pipeshub:queue.topics */
 SELECT DISTINCT topic FROM platform.queue_groups UNION SELECT DISTINCT topic FROM platform.queue_messages ORDER BY 1"""
 
@@ -316,13 +313,6 @@ class PgQueue:
             return {
                 r["status"]: r["n"] for r in await tx.fetch(_BACKLOG, group_id, topics)
             }
-
-    async def untagged_claimants(self, tag: str, group_ids: list[str]) -> list[str]:
-        """Names of the consumers of ``group_ids`` (the indexing groups: the connector and other services' consumers never carry the tag)
-        holding a live claim whose name lacks ``tag``: pods of an older protocol that are working. A pod that
-        holds no claim leaves no trace in the queue tables, so this alone never proves a fleet clean."""
-        async with (await self.rt.db()).runtime_uow() as tx:
-            return sorted(r["consumer"] for r in await tx.fetch(_UNTAGGED_CLAIMS, tag, list(group_ids)))
 
     async def has_dead(self, topic: str, key: str) -> bool:
         """Whether a delivery with this key ran out of attempts and is still held as dead (until the dead-letter sweep)."""

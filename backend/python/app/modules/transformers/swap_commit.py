@@ -176,7 +176,10 @@ class SwapCommitter:
                 # The copy is known to be incomplete (the read answered): keep it out of search until the rerun, as far as the graph store lets
                 # it be written. A record that is not an indexed copy is not served.
                 with contextlib.suppress(Exception):
-                    await self.o.graph_provider.update_node(swap.record_id, _RECORDS, {"hasIndexedCopy": False})
+                    # only while the record still names the copy this attempt committed (a newer complete copy is left served)
+                    await self.o.graph_provider.update_node_fields_if(
+                        swap.record_id, _RECORDS, {"hasIndexedCopy": False}, [Cond("virtualRecordId", EQ, swap.new_vrid)]
+                    )
         if failure is not None:
             raise failure  # the run is retried
         raise IndexingError(
@@ -443,13 +446,16 @@ class SwapCommitter:
         try:
             await asyncio.sleep(keep_old_copy.grace_seconds())
             # Another record may have left the same copy since (it writes a newer mark): the copy goes only when the latest mark's grace is over.
+            # A read that fails raises: the copy is left to the sweep rather than released on a mark that was not read.
             for _ in range(10):
-                row = await self.o.graph_provider.get_document(swap.old_vrid, _MAPPING)
+                row = await self.o.graph_provider.get_document(swap.old_vrid, _MAPPING, raise_on_error=True)
                 mark = (row or {}).get(keep_old_copy.RETIRED_AT_FIELD)
                 left = (mark / 1000 + keep_old_copy.grace_seconds() - time.time()) if isinstance(mark, (int, float)) else 0
                 if left <= 0:
                     break
                 await asyncio.sleep(left)
+            else:
+                return  # marks kept arriving: the sweep reclaims the copy once the last grace is over
             with for_org(swap.org_id, job="swap-release"):
                 await self.release_old_copy(swap, record)
         except Exception as exc:

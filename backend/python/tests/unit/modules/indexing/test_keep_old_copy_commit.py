@@ -624,25 +624,59 @@ async def test_one_failing_twin_does_not_stop_the_others_and_all_are_waited_for(
 @pytest.mark.asyncio
 async def test_the_release_waits_for_the_latest_retirement_mark_of_the_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two records left the same copy: the first one's timer must not release it while the second one's grace is running."""
-    import time as _time
     from unittest.mock import AsyncMock
 
+    clock = {"now": 1_000_000.0}
     monkeypatch.setattr(keep_old_copy, "grace_seconds", lambda: 100.0)
+    monkeypatch.setattr("app.modules.transformers.swap_commit.time.time", lambda: clock["now"])
+    mark = clock["now"] * 1000 + 40_000  # the second record left 40 s after the timer was set
     g = FakeGraph({"A": rec("Y", "COMPLETED")})
-    g.mapping["X"] = {keep_old_copy.RETIRED_AT_FIELD: _time.time() * 1000 + 40_000}  # a later mark: 40 s from now
+    g.mapping["X"] = {keep_old_copy.RETIRED_AT_FIELD: mark}
     swap, _ = committer(g)
-    swap.release_old_copy = AsyncMock()  # type: ignore[method-assign]
-    sleeps: list[float] = []
+    released_at: list[float] = []
+
+    async def release(s: object, r: object) -> None:
+        released_at.append(clock["now"])
+
+    swap.release_old_copy = release  # type: ignore[method-assign]
 
     async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if len(sleeps) == 2:
-            g.mapping["X"] = {}  # the later grace is over when the timer wakes the second time
+        clock["now"] += seconds  # the mark stays: only the clock moves
 
     monkeypatch.setattr("app.modules.transformers.swap_commit.asyncio.sleep", fake_sleep)
     await swap._release_after_grace(run(), ctx_for("A", "Y").record)
-    assert sleeps[0] == 100.0 and len(sleeps) == 2 and sleeps[1] > 100.0  # waited for the newer mark's grace as well
-    swap.release_old_copy.assert_awaited_once()
+    assert released_at and released_at[0] >= mark / 1000 + 100.0  # not before the latest mark's grace is over
+
+
+@pytest.mark.asyncio
+async def test_the_release_does_nothing_when_the_mark_cannot_be_read_or_keeps_being_renewed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    clock = {"now": 1_000_000.0}
+    monkeypatch.setattr(keep_old_copy, "grace_seconds", lambda: 100.0)
+    monkeypatch.setattr("app.modules.transformers.swap_commit.time.time", lambda: clock["now"])
+    g = FakeGraph({"A": rec("Y", "COMPLETED")})
+    swap, _ = committer(g)
+    swap.release_old_copy = AsyncMock()  # type: ignore[method-assign]
+
+    async def fake_sleep(seconds: float) -> None:
+        clock["now"] += seconds
+        g.mapping["X"] = {keep_old_copy.RETIRED_AT_FIELD: clock["now"] * 1000}  # a holder renews the mark each time
+
+    monkeypatch.setattr("app.modules.transformers.swap_commit.asyncio.sleep", fake_sleep)
+    g.mapping["X"] = {keep_old_copy.RETIRED_AT_FIELD: clock["now"] * 1000}
+    await swap._release_after_grace(run(), ctx_for("A", "Y").record)
+    swap.release_old_copy.assert_not_called()  # renewed past the limit: the sweep reclaims it later
+
+    async def unreadable(key: str, collection: str, **k: object) -> dict | None:
+        if k.get("raise_on_error"):
+            raise RuntimeError("down")
+        return None  # what a swallowed read failure looks like
+
+    g.get_document = unreadable  # type: ignore[method-assign]
+    swap.release_old_copy.reset_mock()
+    await swap._release_after_grace(run(), ctx_for("A", "Y").record)
+    swap.release_old_copy.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -717,3 +751,23 @@ async def test_neither_the_finish_nor_the_undo_runs_over_the_pending_copy_of_a_n
     with pytest.raises(IndexingError):
         await swap2._confirm_after_commit(ctx_for("A", "Y", pointed=["b1"]), run())
     assert g2.records["A"]["virtualRecordId"] == "Y" and g2.records["A"]["pendingVirtualRecordId"] == "Y2"  # the undo did not overwrite it
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_that_hides_an_incomplete_copy_leaves_a_newer_complete_copy_served() -> None:
+    from unittest.mock import AsyncMock
+
+    g = FakeGraph({"A": rec("Z", "COMPLETED", hasIndexedCopy=True)})  # a newer run already committed its complete copy Z
+    swap, _ = committer(g, view=lambda vrid: [])
+    real = g.update_node_fields_if
+
+    async def undo_refused(key: str, collection: str, updates: dict, conditions: list, *a: object, **k: object) -> bool:
+        if updates.get("pendingVirtualRecordId"):
+            return False
+        return await real(key, collection, updates, conditions, *a, **k)
+
+    g.update_node_fields_if = undo_refused  # type: ignore[method-assign]
+    g.update_node = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    with pytest.raises(IndexingError):
+        await swap._confirm_after_commit(ctx_for("A", "Y", pointed=["b1"]), run())
+    assert g.records["A"]["hasIndexedCopy"] is True  # the record names Z, not the incomplete Y

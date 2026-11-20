@@ -64,7 +64,7 @@ class World:
         self.swap, _ = committer(self.graph, view=view)
         self.swap._release_unheld = AsyncMock(side_effect=self._release)
         real_update = self.graph.update_node_fields_if
-        self.window_taken = False  # a sweep took a copy between the read before the commit and the write that commits
+        self.window_swept: set[str] = set()  # the copies a sweep took between the read before the commit and the write that commits
         self.unverified = False  # the record names a copy that was not verified and could not be undone: its attempt is in flight
         self.faults = True
 
@@ -85,8 +85,9 @@ class World:
                 doc = self.graph.records["A"]
                 back = doc["indexingStatus"]
                 doc["indexingStatus"] = "COMPLETED"
+                before = set(self.points)
                 await self.sweep()
-                self.window_taken = True
+                self.window_swept |= before - set(self.points)
                 doc["indexingStatus"] = back
 
         self.swap._require_points = require_then_race  # type: ignore[method-assign]
@@ -193,7 +194,8 @@ class World:
             # The copy a record keeps serving after the double failure is the one the read before the commit confirmed: it is whole, unless
             # a sweep took it in the narrow window between that read and the write (a status that left the running set and came back).
             doc = self.graph.records["A"]
-            assert self.points.get(doc["virtualRecordId"]) == "complete" or self.window_taken, ("an unverified copy is incomplete", self.points)
+            assert self.points.get(doc["virtualRecordId"]) == "complete" or doc["virtualRecordId"] in self.window_swept, (
+                "an unverified copy is incomplete", self.points)
         for key, doc in self.graph.records.items():
             if key == "A" and self.unverified:
                 continue  # the record whose attempt is in flight: checked above, and finished by the rerun

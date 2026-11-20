@@ -29,7 +29,6 @@ async def world(runtime: object, monkeypatch: pytest.MonkeyPatch, uid: str) -> t
     reasons: list[str] = []
     monkeypatch.setattr(keep_old_copy.swap_refusals, "inc", lambda reason: reasons.append(reason))
     queue = PgQueue(runtime)
-    monkeypatch.setattr("app.services.messaging.postgres.queue.PgQueue", lambda *a, **k: queue)
     group = f"records-{uid}"
     monkeypatch.setattr(membership, "_registered", {group: {f"record-events-{uid}"}})
     monkeypatch.setattr(membership, "_expected", {group: {f"record-events-{uid}"}})

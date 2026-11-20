@@ -81,15 +81,15 @@ async def test_the_postgres_broker_needs_the_operators_statement_and_no_older_cl
     assert not await keep_old_copy.swap_allowed(None)
     assert reasons == ["pg_broker_unconfirmed"]  # no statement: refused, before any claim is read
     monkeypatch.setenv(keep_old_copy.ENV_PG_BROKER_CONFIRMED, "on")
-    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(return_value=["old-pod"])) as claimants:
+    with patch("app.services.messaging.postgres.fleet_claims.untagged_claimants", AsyncMock(return_value=["old-pod"])) as claimants:
         assert not await keep_old_copy.swap_allowed(None)
     claimants.assert_awaited_once()
     assert claimants.await_args.args[1] == ["records_consumer_group"]  # only the indexing groups are asked about
     assert reasons[-1] == "older_consumer"
-    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(side_effect=RuntimeError("down"))):
+    with patch("app.services.messaging.postgres.fleet_claims.untagged_claimants", AsyncMock(side_effect=RuntimeError("down"))):
         assert not await keep_old_copy.swap_allowed(None)
     assert reasons[-1] == "pg_broker_unreadable"
-    with patch("app.services.messaging.postgres.queue.PgQueue.untagged_claimants", AsyncMock(return_value=[])):
+    with patch("app.services.messaging.postgres.fleet_claims.untagged_claimants", AsyncMock(return_value=[])):
         assert await keep_old_copy.swap_allowed(None)
     monkeypatch.setattr("app.services.messaging.membership.groups_to_check", lambda: {})
     assert not await keep_old_copy.swap_allowed(None)
