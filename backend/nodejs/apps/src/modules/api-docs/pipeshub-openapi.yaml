@@ -42362,7 +42362,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: Connector service unavailable or connection refused
+          description: |
+            Connector service unavailable or connection refused, or (with `X-Record-Content-Open: 1`)
+            the record's connector could not be read because the database was unreachable. Safe to retry.
           content:
             application/json:
               schema:
@@ -43112,6 +43114,20 @@ paths:
           description: |
             The record has no file content the connector service can fetch, for example a
             folder: `{"error": "Could not retrieve this item right now. Please try again later."}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '503':
+          description: |
+            The record, its organization or its connector could not be read because the database
+            was unreachable. The record may well exist. Safe to retry after the `Retry-After` seconds.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+                example: 5
           content:
             application/json:
               schema:

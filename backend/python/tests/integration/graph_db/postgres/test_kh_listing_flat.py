@@ -76,6 +76,37 @@ async def test_a_connector_listed_while_kg_does_not_serve_it_lists_the_same_rows
     assert served == walked == [f"r{i:04d}" for i in range(7)] and first["total"] == again["total"] == 7
 
 
+@pytest.mark.parametrize("hidden", [False, True], ids=["plain", "walked"])
+async def test_a_first_page_that_reads_its_whole_listing_counts_its_total_from_it_without_a_second_read(pg_db, monkeypatch, hidden) -> None:
+    """300 records, 15 readable. A search that matches ten names reads its whole listing in the page's first window: the total (5, of the readable ones) and the counts are the
+    rows the window admitted, and the connector is not read again to count them (a rare word was read whole twice, once to find its rows and once to count them). A listing that
+    does not end in the page's windows (no search), and a page after a boundary, still count by the count. ``walked``: a matching readable record no class decides (a restamp hides
+    it) is in the total as the access check admits it, in the window as in the count."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 300, readable=15)
+    if hidden:
+        await _admin("UPDATE kg.records SET fence_job = 1 WHERE org_id = $1 AND id = 'r0012' AND coll = 3", org)
+    counted: list[bool] = []
+    real = kh_listing.KhListingMixin._kh_flat_exact
+
+    async def spy(self, *a, **kw) -> object:
+        counted.append(True)
+        return await real(self, *a, **kw)
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_flat_exact", spy)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, filters={"search_query": "r001"})
+    matched = [f"r{i:04d}" for i in range(10, 15)]
+    assert [r["id"] for r in page["rows"]] == matched and page["total"] == 5 and page["counts"] == {"record": 5} and not page.get("totalCapped")
+    assert not counted
+    with ctx(org):
+        whole = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=3)
+    assert whole["total"] == 15 and len(counted) == 1
+    after = {k: whole["rows"][-1][k] for k in ("nullRank", "sortKey", "id")}
+    with ctx(org):
+        later = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted=15), limit=50, after=after, filters={"search_query": "r001"})
+    assert [r["id"] for r in later["rows"]] == matched and later["total"] == 5 and len(counted) == 2
+
+
 async def test_a_connector_with_no_copy_is_refused(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 3, promote=False)
@@ -654,6 +685,68 @@ async def test_a_record_named_longer_than_the_copy_once_took_is_copied_whole_and
     finally:
         await con.close()
     assert stored == long
+
+
+async def test_a_connectors_classes_are_decided_from_a_row_of_classes_and_a_row_of_literals_as_their_clauses_say(pg_db) -> None:
+    """3,000 classes of random clauses over the literals of a tree (a group, folders with children, a record with none, a key kg does not hold, ``@self``): each class is met with
+    no grant of the row's own, met with it, or not vouched for, as the clauses say. The classes and the literals kg vouches for reach the listing as one row each, not one row per
+    class or literal: a connector has tens of thousands of each, and their decoding held the event loop every page of the knowledge hub shares (about 0.2 s a connector at 1M records)."""
+    import random
+    p, org = prov(pg_db), new_org()
+    await _tree(p, pg_db, org)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        lit = {r["id"]: r["sk"] for r in await con.fetch("SELECT id, sk FROM kg.records WHERE org_id = $1 AND id = ANY($2::text[])", org, ["g1", "f1", "f2", "r1"])}
+        pool = [*lit.values(), 99_999_999, kg_read.SELF]
+        rng = random.Random(6051)
+        made = [[rng.sample(pool, rng.randint(0, 3)) for _ in range(rng.randint(0, 3))] for _ in range(3000)]
+        await con.execute("INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT $1, 980000 + i, $2, NULL, c::jsonb, decode(md5($1 || i), 'hex') "
+                          "FROM unnest($3::text[]) WITH ORDINALITY AS q(c, i)", org, app_sk, [json.dumps(m) for m in made])
+        classes = {r["id"]: json.loads(r["clauses"]) for r in await con.fetch("SELECT id, clauses::text FROM kg.scope_classes WHERE org_id = $1 AND app_sk = $2", org, app_sk)}
+        # what kg vouches for, by the rule of kg_read.LITERALS: a node kg holds that is not flagged a leaf and, for a record, has a child
+        seen = {r["sk"] for r in await con.fetch("SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[]) AND r.leaf IS FALSE AND (r.kind <> 3 OR EXISTS "
+                                                    "(SELECT 1 FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk = r.sk) OR EXISTS (SELECT 1 FROM kg.links l "
+                                                    "WHERE l.org_id = r.org_id AND l.parent_sk = r.sk AND l.kind = 1))", org, pool[:-1])}
+    finally:
+        await con.close()
+    assert seen == {lit["g1"], lit["f1"], lit["f2"]}          # the tree gives one literal of each kind: r1 has no child, the last key is not held
+    granted = {"g1", "f2", "r1"}
+    live = {lit[i] for i in granted} & seen
+
+    def verdict(cl: list[list]) -> tuple[bool, bool] | None:
+        if any(x != kg_read.SELF and x not in seen for clause in cl for x in clause):
+            return None
+        met = [all(x in live for x in clause if x != kg_read.SELF) for clause in cl]
+        return (any(m and kg_read.SELF not in c for m, c in zip(met, cl, strict=True)), any(m and kg_read.SELF in c for m, c in zip(met, cl, strict=True)))
+    want = {c: verdict(cl) for c, cl in classes.items()}
+
+    class Counted:
+        def __init__(self, tx) -> None:
+            self.tx, self.rows = tx, 0
+
+        async def fetch(self, *a) -> list:
+            out = await self.tx.fetch(*a)
+            self.rows += len(out)
+            return out
+
+        async def fetchrow(self, *a) -> object:
+            self.rows += 1
+            return await self.tx.fetchrow(*a)
+
+        async def fetchval(self, *a) -> object:
+            return await self.tx.fetchval(*a)
+
+    async def go(tx) -> tuple[dict, int]:
+        c = Counted(tx)
+        return await kh_listing.class_sets(c, org, app_sk, granted), c.rows
+    with ctx(org):
+        sets, rows = await pg_db.run(go)
+    assert sets["plain"] == {c for c, v in want.items() if v and v[0]}
+    assert sets["own"] == {c for c, v in want.items() if v and v[1] and not v[0]}
+    assert sets["unvouched"] == {c for c, v in want.items() if v is None}
+    assert sets["plain"] and sets["own"] and sets["unvouched"]
+    assert rows <= 2, rows
 
 
 async def test_a_change_to_the_whole_connector_that_commits_after_the_check_is_not_read_by_the_page(pg_db, monkeypatch) -> None:

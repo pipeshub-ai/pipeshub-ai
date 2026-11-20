@@ -388,7 +388,7 @@ or the one minted for an envelope without one), binds its org and notes `record_
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `index.end` | see below | `outcome` (`success`, `skipped`, `failure`), `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `attempt`, `tier`, `duration_ms`, `record_id`, `event_type`; timings `wait_slot_ms`, `held_ms`, `pre_parse_ms`, `parse_wait_ms`, `parse_ms`, `post_parse_ms`, `stages` (busy time per step, largest first, steps under 50 ms left out), `slow_steps`; what was learned on the way: `extension`, `mime_type` (as the file-type registry knows them, else `unknown`: never the text of a name or a MIME parameter), `size_bytes`, `blocks`, `chunks`, `failed_batches`, `page` (an OCR page), `block_group` (the block group a failure was in), `duplicate_of` (the shared virtual record id; absent while the twin is still being indexed), `timeout_s`, `phase` (`enrichment`, `after_indexing_complete`), `code` (a hand-back's type), `pool` (the slot a parse-slot wait ran out on), and for a stage job `stage`, `job`; for an exception, the `log_failure` fields and `cause_type` |
+| `index.end` | see below | `outcome` (`success`, `skipped`, `failure`), `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `attempt`, `tier`, `duration_ms`, `record_id`, `event_type`; timings `wait_slot_ms`, `held_ms`, `pre_parse_ms`, `parse_wait_ms`, `parse_ms`, `post_parse_ms`, `stages` (busy time per step, largest first, steps under 50 ms left out), `slow_steps`; what was learned on the way: `extension`, `mime_type` (as the file-type registry knows them, else `unknown`: never the text of a name or a MIME parameter), `size_bytes`, `blocks`, `chunks`, `failed_batches`, `page` (an OCR page), `block_group` (the block group a failure was in), `duplicate_of` (the shared virtual record id; absent while the twin is still being indexed), `timeout_s`, `phase` (`enrichment`, `after_indexing_complete`), `code` (a hand-back's type), `pool` (the slot a parse-slot wait ran out on), and for a stage job `stage`, `job`, `stage_outcome` (`completed`, `retry`, `paused`, `failed`), `stage_attempt` and, for a superseded run, `owner_attempt` (the attempt that owns the state now), and for a state a newer release owns, `foreign_status` (the status it wrote); for an exception, the `log_failure` fields and `cause_type` |
 
 Levels and outcome:
 - `ack`: `success`, or `skipped` when the handler noted a skip (`reason`: `duplicate`, `already_indexed`, `replayed` (an exact
@@ -396,6 +396,9 @@ Levels and outcome:
   `connector_inactive`, `parse_now_refused`, `folder`, `unsupported_type`, `too_large` (a file too large to read), `metadata_file`, `code_file_skipped` (a generated or oversized code file), `no_virtual_record_id`, `stored_content_missing` (a vector-only reindex whose stored blocks could not be read; the
   record is marked failed, and `index.blob_read_failed` says why), `nothing_to_rerun` (a stage re-run that dispatched no job: a
   newer release owns the revision, or every stage was current), `duplicate_envelope` (PostgreSQL)). INFO.
+- A stage delivery that did no work is `skipped` with `reason`: `stale` (its revision is gone), `unchanged` (inputs and output already
+  current), `duplicate` (the job was already settled), `not_applicable` (the stage did not apply), `foreign_state` (a newer release
+  owns its state), `superseded` (another run took the state over; the run's result was not recorded). INFO.
 - Handed back without an attempt counted: `skipped`, `retry`; `reason=requeued` is WARNING (waiting on capacity), or the level the
   hand-back asks for (a paused stage job that wakes into the same outage is DEBUG), `contended` INFO.
 - A failure that will be retried: `failure`, `retry`, at WARNING, or ERROR for `internal`/`misconfigured`.
@@ -457,7 +460,7 @@ Other lines on the path, each once:
 | Event | Level | When |
 | --- | --- | --- |
 | `index.slow_step` | WARNING | a step ran past `INDEXING_SLOW_STEP_SECONDS`; `step`, `duration_ms`, `threshold_ms`, `detail`, `record_id`; at most three per step per record |
-| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. A failed request (a 500, a 429 without `Retry-After`, a connection lost mid-answer) has no `reason`: `error_class` says why, and `status` adds Docling's HTTP status when it answered with one (a lost connection has none) |
+| `index.parse_fallback` | its class's level: WARNING; ERROR for `misconfigured` (an API mismatch between indexing and Docling, or a refused service token) | Docling could not parse the PDF or could not be asked, and the PdfPlumber path runs next. `parser=docling`, `reason` (Docling's `errorCode` in lower case such as `parse_failed`, `parse_timeout`; `invalid_input`, `too_large`, `unreadable`; `unavailable`), `status` (Docling's HTTP status, when it answered), and the `log_failure` fields without `error_message`. `unavailable` also covers a 5xx or a 429 without `Retry-After` that outlived the retries and a connection lost mid-answer (Docling answers a file it cannot parse with a 422 and its code, never a 5xx); `error_class` then says which. Only a client-side request error (ours, such as a wrong URL scheme) has no `reason` |
 | `index.download_fallback` | WARNING | the signed-URL download failed; the connector stream is tried next (no text: it can carry the URL) |
 | `index.requeue_failed` | WARNING | the re-queue of a failed or handed-back record failed; it stays pending (no text) |
 | `index.ack_failed` | WARNING | Redis: the replacement was sent, but the original's ack failed; it stays pending and is deduped when redelivered (no text) |
@@ -470,6 +473,8 @@ Other lines on the path, each once:
 | `index.ack_failed` | WARNING | Redis: the XACK of a dead-letter failed; the entry stays pending (no text; `index.end` keeps the record's own exception) |
 | `index.dedup_normalize_failed` | WARNING | HTML could not be normalised for duplicate detection; the raw bytes are hashed instead (no text: it can carry the document) |
 | `index.task_failed` | per class | a processing task ended with an exception nobody handled; DEBUG for one already written (by `index.end`, `index.requeue_failed` or `index.commit_failed`) |
+| `stage.abandon_failed` | WARNING | a dead-lettered stage job could not be marked FAILED (no text when it quotes content) |
+| `stage.follow_up_failed` | WARNING | a failed stage's follow-up hook (releasing queued copies) could not run |
 | `stage.run_failed` | WARNING | a stage failed after another worker took its job over (`reason=superseded`): the failure's only trace |
 
 On Redis and Kafka, deliveries that end before the timeline opens write no `index.end`: an unparseable message (a WARNING, the

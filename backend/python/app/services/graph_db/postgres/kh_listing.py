@@ -88,10 +88,10 @@ def _node_type(coll: str, doc: dict) -> str:
 async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str]) -> dict[str, Any] | None:
     """What the viewer's grants open of a connector kg serves, per class: met with no grant of the row's own (``plain``), met with the row's own grant (``own``), and the classes kg cannot vouch
     for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate."""
-    rows = await tx.fetch(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
-    if len(rows) > CLASS_MAX:
+    got = await tx.fetchrow(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
+    if got["n"] > CLASS_MAX:
         return None
-    found = {r["id"]: (json.loads(r["clauses"]) if isinstance(r["clauses"], str) else list(r["clauses"])) for r in rows}
+    found = {int(c): cl for c, cl in json.loads(got["doc"]).items()}
     verdicts = await kg_read.class_verdicts(tx, org, found, held)
     return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None}}
 
@@ -254,6 +254,10 @@ class KhListingMixin(PgBase):
             admit_sql = kgl.class_admit("w", pbase, viewer)
         need, kept, boundary, scanned, resume = limit + 1, [], after, 0, None
         window, t0 = min(WINDOW_MAX, max(need * 4, 100)), time.monotonic()
+        # A first page whose windows reach the end of the listing has read every row its total counts, each with what the classes say of it (``ok``): counted from the windows,
+        # the total needs no second read of the connector (a search for a rare word reads the whole connector to find its few rows, and the count read it again).
+        found = {"record": 0, "folder": 0, "recordGroup": 0} if include_total and viewer is not None and after is None else None
+        whole = False
         while len(kept) < need:
             p = kgl.Params(list(pbase.values))
             p.values[2] = window
@@ -262,7 +266,12 @@ class KhListingMixin(PgBase):
             got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
             allowed = None if viewer is not None else await admit([r["id"] for r in got]) if got else set()
             kept += [r for r in got if (r["ok"] if allowed is None else r["id"] in allowed)][:need - len(kept)]
+            if found is not None:
+                for r in got:
+                    if r["ok"]:
+                        found["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += 1
             if len(got) < window:
+                whole = True
                 break
             if len(kept) >= need:
                 break
@@ -276,7 +285,9 @@ class KhListingMixin(PgBase):
             window = min(WINDOW_MAX, window * 8)
         total = counts = None
         capped = False
-        if include_total:
+        if whole and found is not None and sum(found.values()) <= COUNT_CAP:
+            total, counts = sum(found.values()), {k: v for k, v in found.items() if v}
+        elif include_total:
             total, counts, capped = await self._kh_flat_exact(org, app_sk, where, base, viewer, transaction) if viewer is not None else await self._kh_flat_count(org, app_sk, where, base, admit, transaction)
         # the arrow of a group or a folder: on exactly when a browse of it lists something
         containers = [c for c in kept[:need] if c["kind"] == 2 or c["folder"]]
