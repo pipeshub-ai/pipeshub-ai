@@ -685,7 +685,7 @@ async def test_a_withdrawn_reporter_reads_nothing_of_theirs_through_the_org_team
     world: dict[str, Any],
 ) -> None:
     """dave reads PROJ-1 as its reporter and holds a role. His Jira account is deactivated: the withdrawal takes his
-    grants with the link, so the org's All team passing the gate (as a public project makes it) opens nothing of
+    grants with the link, so the org's All team passing the gate (as an earlier release let it) opens nothing of
     his, and a re-sync that no longer lists him does not grant him the issue again. Listed again, a re-read does."""
     await _sync_project(world)
     graph, connector, processor = world["graph"], world["connector"], world["processor"]
@@ -745,7 +745,7 @@ async def test_a_reindex_does_not_grant_a_withdrawn_reporter_whose_email_is_in_t
     await _write(world, [_edited("plain task", "2024-06-16T10:00:00.000+0000", reporter=dave)])
     assert not await _mismatches(world, {**readers, "PROJ-1": PROJECT_READERS | {"dave"}}, by_key)
 
-    for key in world["user_keys"]:  # the org's All team passes the gate (as a public project makes it)
+    for key in world["user_keys"]:  # the org's All team passes the gate (as an earlier release let it)
         await world["graph"].add_user_to_all_team(world["org_id"], key)
     await processor.ensure_team_app_edge(world["connector_id"])
     connector._stored_app_users = await processor.get_all_app_users(world["connector_id"])
