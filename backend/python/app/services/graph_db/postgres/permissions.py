@@ -796,6 +796,7 @@ class PermissionsMixin(PgBase):
             async def candidates(tx: Tx) -> list[Any]:
                 """The scope filters are applied where the records are read: every record of a collection or app-level connector in one statement, and the
                 records the walk reached, by key, in another."""
+                await tx.fetchval(access_sql.NO_JIT)      # the walks down below plan as large reads: compiling each costs more than it reads
                 rows = list(await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT r.id, {cols} FROM graph.nodes r
                     WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
                       AND ((r.doc->>'connectorId' = ANY($2::text[])) OR (r.doc->>'connectorId' = ANY($3::text[]) AND r.doc->>'origin' = 'UPLOAD'))
