@@ -71,11 +71,14 @@ async def test_the_agents_of_a_web_search_provider_follow_the_same_rule(w: World
     assert await p.get_agents_by_web_search_provider(w.org, "none") == [] and await p.get_agents_by_web_search_provider(_org(), "serper") == []
 
 
-async def test_a_failed_agent_list_is_empty_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_failed_agent_list_raises_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await agent_world(w)
     real = w.p._q
     monkeypatch.setattr(w.p, "_q", failing)
-    assert await w.p.get_agents_by_model_key(w.org, "gpt-4") == [] and await w.p.get_agents_by_web_search_provider(w.org, "serper") == []
+    with pytest.raises(RuntimeError):                       # a delete is refused on this answer: a failed read is never "no agents"
+        await w.p.get_agents_by_model_key(w.org, "gpt-4")
+    with pytest.raises(RuntimeError):
+        await w.p.get_agents_by_web_search_provider(w.org, "serper")
     monkeypatch.setattr(w.p, "_q", real)
     assert len(await w.p.get_agents_by_model_key(w.org, "gpt-4")) == 2
 

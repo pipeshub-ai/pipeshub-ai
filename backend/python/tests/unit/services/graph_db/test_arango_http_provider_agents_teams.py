@@ -2055,10 +2055,10 @@ class TestGetAgentsByWebSearchProvider:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_agents_by_web_search_provider("org1", "BRAVE")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_agents_by_web_search_provider("org1", "BRAVE")
 
 
 class TestGetAgentsByModelKey:
@@ -2077,7 +2077,7 @@ class TestGetAgentsByModelKey:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_agents_by_model_key("org1", "gpt-4")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_agents_by_model_key("org1", "gpt-4")
