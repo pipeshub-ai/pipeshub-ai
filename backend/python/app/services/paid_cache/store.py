@@ -125,7 +125,8 @@ class _BatchRoute:
         with self._lock:
             first = self._misses == 0
             self._misses += 1
-            pause = min(BATCH_REPROBE_BASE_S * 2 ** (self._misses - 1), BATCH_REPROBE_MAX_S)
+            # The exponent is capped first: 2 ** 1024 is no float, and a route missing for that long must still fall back.
+            pause = min(BATCH_REPROBE_BASE_S * 2 ** min(self._misses - 1, 16), BATCH_REPROBE_MAX_S)
             self._retry_at = self._clock() + pause
             return first
 
@@ -279,19 +280,22 @@ class NodePaidResultStore:
                         )
                 except Exception as exc:
                     outcomes.update(dict.fromkeys(chunk, exc))
-                    PURGE_REQUESTS.inc("batch")
                     PURGE_RECORDS.inc("batch", "failed", value=float(len(chunk)))
                     continue
             outcomes.update(await self._purge_one_by_one(org_id, chunk))
         return outcomes
 
     async def _purge_chunk(self, org_id: str, chunk: list[str]) -> dict[str, BaseException | None]:
-        body = await self._call(
-            org_id, "POST", Routes.STORAGE_PAID_RESULTS_PURGE_BATCH.value, body={"recordIds": chunk},
-            latch=False, timeout_s=PURGE_BATCH_TIMEOUT_S,
+        PURGE_REQUESTS.inc("batch")          # counted when sent: a probe the storage service answers 404 is a request too
+        # The deadline is for the whole call, retries included (the per-request timeout alone is reset by each retry).
+        body = await asyncio.wait_for(
+            self._call(
+                org_id, "POST", Routes.STORAGE_PAID_RESULTS_PURGE_BATCH.value, body={"recordIds": chunk},
+                latch=False, timeout_s=PURGE_BATCH_TIMEOUT_S,
+            ),
+            timeout=PURGE_BATCH_TIMEOUT_S,
         )
         PURGE_BATCH_ROUTE.present()
-        PURGE_REQUESTS.inc("batch")
         answered: dict[str, bool] = {}
         results = body.get("results")
         if isinstance(results, list):

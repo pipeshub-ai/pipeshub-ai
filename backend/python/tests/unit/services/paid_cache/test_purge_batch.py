@@ -143,7 +143,7 @@ async def test_a_404_falls_back_to_one_purge_per_record_and_keeps_the_cache_on(
     assert store_module.PAID_RESULT_ROUTES.available
     assert len([r for r in caplog.records if "batch purge route" in r.message]) == 1
     assert _metric("pipeshub_paid_purge_storage_requests_total", route="record") == 12
-    assert _metric("pipeshub_paid_purge_storage_requests_total", route="batch") == 0
+    assert _metric("pipeshub_paid_purge_storage_requests_total", route="batch") == 1        # the probe
 
 
 async def test_the_fallback_is_not_latched_it_asks_again_after_a_backoff_and_returns_to_the_batch(
@@ -235,3 +235,34 @@ async def test_the_cache_drops_ids_no_result_can_be_stored_under_and_never_sends
 
     assert outcomes == dict.fromkeys(ids)
     assert storage.batch_bodies == [{"recordIds": ["good"]}]
+
+
+async def test_the_pause_never_overflows_however_long_the_route_stays_missing() -> None:
+    for _ in range(1100):
+        store_module.PURGE_BATCH_ROUTE.missing()
+    assert store_module.PURGE_BATCH_ROUTE._retry_at - store_module.PURGE_BATCH_ROUTE._clock() <= BATCH_REPROBE_MAX_S
+
+
+async def test_a_batch_probe_the_storage_service_answers_404_is_counted_as_a_batch_request(storage: FakePaidResultStorage) -> None:
+    storage.batch_present = False
+    await _store(storage).purge_records("org-1", ["a"])
+    assert _metric("pipeshub_paid_purge_storage_requests_total", route="batch") == 1
+    assert _metric("pipeshub_paid_purge_storage_requests_total", route="record") == 1
+
+
+async def test_the_batch_deadline_covers_the_retries_and_ends_in_a_failure_of_the_chunk(
+    storage: FakePaidResultStorage, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    store = _store(storage)
+
+    async def stalls(*_a: object, **_k: object) -> dict[str, object]:
+        await asyncio.sleep(30)
+        return {}
+
+    store._call = stalls  # type: ignore[method-assign]
+    monkeypatch.setattr(store_module, "PURGE_BATCH_TIMEOUT_S", 0.05)
+    outcomes = await store.purge_records("org-1", ["a", "b"])
+    assert all(isinstance(e, asyncio.TimeoutError) for e in outcomes.values()) and set(outcomes) == {"a", "b"}
+    assert store_module.PURGE_BATCH_ROUTE.usable()          # a stall is no evidence the route is missing
