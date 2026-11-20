@@ -20,7 +20,6 @@ from atlassian_behaviour_fakes import (
 )
 from test_jira_dc_sync_behaviour import (  # the stub site and fakes the sync tests use
     API,
-    BASE,
     IssueSearch,
     JiraRecordsDb,
     issue,
