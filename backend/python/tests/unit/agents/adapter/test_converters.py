@@ -303,6 +303,18 @@ class TestAssistantMessageFromLangchain:
         result = convert_assistant_message_from_langchain(ai_message)
         assert result.truncated is True
 
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"finish_reason": "MAX_TOKENS"},  # Gemini / Vertex
+            {"done_reason": "length"},  # Ollama
+            {"stopReason": "max_tokens"},  # Bedrock Converse
+        ],
+    )
+    def test_truncated_response_for_provider_specific_fields(self, metadata: dict[str, str]) -> None:
+        ai_message = AIMessage(content="cut off", response_metadata=metadata)
+        assert convert_assistant_message_from_langchain(ai_message).truncated is True
+
     def test_truncated_response_from_responses_api_incomplete_details(self) -> None:
         """OpenAI's Responses API never sets `finish_reason` — it reports a
         cut-off answer as `status="incomplete"` plus `incomplete_details`."""
