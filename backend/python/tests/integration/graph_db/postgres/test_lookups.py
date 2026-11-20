@@ -595,7 +595,7 @@ async def test_the_address_lookups_answer_what_the_plain_statements_answered(pg_
                         got = await p.get_records_by_weburls(batch, owner, per, include_deleted=deleted)
                         assert sorted(map(tuple, (dict(r).values() for r in old))) == sorted(map(tuple, (r.values() for r in got))), (len(batch), per, deleted)
                         calls += 1
-        for batch in ([w], [w, w + "/"], urls, [w + "/ph"]):
+        for batch in ([w], [w, w + "/"], urls, [w + "/ph"], [w, None], [None]):
             for names in (["SLACK WORKSPACE", "SLACK"], ["SLACK"], ["GITHUB"], ["JIRA"]):
                 for owner in (p.org, other.org):
                     for limit in (1, 2, 100):
@@ -607,7 +607,7 @@ async def test_the_address_lookups_answer_what_the_plain_statements_answered(pg_
                             if len(old) < limit:
                                 break
                             after = old[-1]
-        for names in (["JIRA"], ["JIRA", "JIRA DATA CENTER"], ["GITHUB"], ["JIRA", "JIRA"]):
+        for names in (["JIRA"], ["JIRA", "JIRA DATA CENTER"], ["GITHUB"], ["JIRA", "JIRA"], ["JIRA", None, ""], [None]):
             for owner in (p.org, other.org):
                 for limit in (None, 0, 1, 3):
                     old = [r["site"] for r in await p._lrows(OLD_SITES, p.org, owner, names, limit)]

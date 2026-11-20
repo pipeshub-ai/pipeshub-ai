@@ -261,15 +261,18 @@ class LookupsMixin(PgBase):
             WHERE link.doc->>'orgId' = $3
               AND link.doc->>'recordType' = 'LINK' AND link.doc->>'connectorName' = ANY($4::text[]) AND coalesce((link.doc->>'isDeleted')::boolean, false) = false
               AND h.doc->>'orgId' = $3 AND coalesce((h.doc->>'isDeleted')::boolean, false) = false AND ($5::text IS NULL OR h.id > $5)
-            ORDER BY h.id LIMIT $6""", current_org_id(), list(weburls), org_id, list(connector_names), after, limit, transaction=transaction)
+            ORDER BY h.id LIMIT $6""", current_org_id(), [u for u in weburls if isinstance(u, str)], org_id, list(connector_names), after, limit, transaction=transaction)
         return [r["id"] for r in rows]
 
     async def get_issue_sites(self, org_id: str, connector_names: list[str], limit: int | None = None, transaction: str | None = None) -> list[str]:
         if not org_id or not connector_names:
             return []
         current_org_id()
+        names = _uniq(connector_names)        # a null or empty name matched no ticket; the function refuses one
+        if not names:
+            return []
         rows = await self._lrows("/* pipeshub:graph.get_issue_sites */ SELECT site_url FROM graph.ticket_sites($1, $2::text[], $3)",
-                                 org_id, list(connector_names), limit, transaction=transaction)
+                                 org_id, names, limit, transaction=transaction)
         return [r["site_url"] for r in rows if r["site_url"]]
 
     async def find_duplicate_records(self, record_key: str, md5_checksum: str, org_id: str, record_type: str | None = None, size_in_bytes: int | None = None,
