@@ -262,6 +262,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             from app.web.budget import WebBudget
             from app.web.container import build_web_services
             from app.web.models import CallerContext
+            from app.web.own_files import ISSUED_DOWNLOAD_LINKS_KEY
             from app.web.tools.fetch_url import create_fetch_url_tool
             from app.web.tools.web_search import create_web_search_tool
 
@@ -269,7 +270,10 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 web_search_config, get_web_access_gate(), WebBudget.for_answer(deep_research=context.deep_research),
             )
             caller = CallerContext(org_id=context.org_id, user_id=context.user_id, conversation_id=context.conversation_id)
-            fetch_url = create_fetch_url_tool(services.fetch, caller, ref_mapper=ref_mapper)
+            fetch_url = create_fetch_url_tool(
+                services.fetch, caller, ref_mapper=ref_mapper,
+                issued_links=state.setdefault(ISSUED_DOWNLOAD_LINKS_KEY, {}),
+            )
             web_tools = [create_web_search_tool(services.search, caller), fetch_url]
             image_options = _page_image_options(web_search_config, services.fetch, caller)
         except Exception as e:

@@ -124,7 +124,7 @@ from app.utils.chat_helpers import (
     valid_group_labels,
 )
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
-from app.utils.embedding_retry import await_with_retry
+from app.utils.embedding_retry import await_with_retry, is_quota_exhausted
 from app.utils.error_class import log_failure
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
@@ -349,6 +349,12 @@ _SEARCH_INDEX_FAILURE_MESSAGES = {
     SearchFailureKind.TIMEOUT: SEARCH_INDEX_TIMEOUT_MESSAGE,
     SearchFailureKind.UNAVAILABLE: SEARCH_INDEX_UNREACHABLE_MESSAGE,
 }
+# The embedding provider refused the query because its account has no credit left (OpenAI's insufficient_quota, a 429
+# that no retry fixes). Allowlisted by the Node gateway like the messages above.
+EMBEDDING_OUT_OF_CREDIT_MESSAGE = (
+    "Search can't run because the embedding model's provider account is out of credit. "
+    "An admin can add credit with the provider, or choose another embedding model in Workspace > AI Models."
+)
 # Some collections answered and some failed (timed out, or any other error):
 # the results stand, with this said.
 SEARCH_INCOMPLETE_MESSAGE = (
@@ -1600,6 +1606,8 @@ class RetrievalService:
         except Exception as e:
             # A refused query embedding lands here too, its text the provider's body.
             log_failure(self.logger, "search.failed", e, include_error_text=False)
+            if is_quota_exhausted(e):
+                return self._create_empty_response(EMBEDDING_OUT_OF_CREDIT_MESSAGE, Status.EMBEDDING_OUT_OF_CREDIT)
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _diversity_candidates(
@@ -2970,6 +2978,9 @@ class RetrievalService:
             Status.PERMISSION_CHECK_UNAVAILABLE: 503,  # graph could not adjudicate
             Status.INVALID_FILTER: 422,  # the gateway passes the message through on a 422
             Status.SEARCH_INDEX_UNAVAILABLE: 503,  # vector store timed out or unreachable
+            # 503 so every caller that reads a failed search by its status code keeps doing so, and the gateway
+            # passes the message through.
+            Status.EMBEDDING_OUT_OF_CREDIT: 503,
             Status.SELECTION_TOO_LARGE: 422,
             Status.SELECTION_NOT_READY: 422,
             Status.SELECTION_EMPTY: 404,

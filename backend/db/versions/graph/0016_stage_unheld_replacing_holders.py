@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.vetted import run_vetted
 
-revision = "graph_0015"
-down_revision = "graph_0014"
+revision = "graph_0016"
+down_revision = "graph_0015"
 branch_labels = None
 depends_on = None
 older_code_compatible = "replaces the body of one function with one that answers alike or with fewer rows; older code calls it with the same arguments"

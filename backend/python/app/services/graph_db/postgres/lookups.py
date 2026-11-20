@@ -126,11 +126,13 @@ class LookupsMixin(PgBase):
             return None
 
     async def get_record_by_issue_key(self, connector_id: str, issue_key: str, transaction: str | None = None) -> Record | None:
-        org = current_org_id()
+        current_org_id()      # the vetted read answers for the org of the unit of work; a missing org raises here, before the try
+        if not connector_id:
+            return None
         try:
-            d = await self._one("""/* pipeshub:graph.get_record_by_issue_key */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'connectorId' = $2 AND n.doc->>'recordType' = 'TICKET' AND n.doc->>'webUrl' ~ $3 LIMIT 1""",
-                                org, connector_id, jira_issue_browse_url_regex(issue_key), transaction=transaction)
+            # graph_0014: a plain statement under row security reaches no index on the address, so it read every record of the org
+            d = await self._one("/* pipeshub:graph.record_by_issue_url */ SELECT doc FROM graph.record_by_issue_url($1, $2)",
+                                connector_id, jira_issue_browse_url_regex(issue_key), transaction=transaction)
             return Record.from_arango_base_record(_arango(d, "records")) if d else None
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve record for issue key {connector_id} {issue_key}: {e}")
