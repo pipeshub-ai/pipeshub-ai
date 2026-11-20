@@ -2097,7 +2097,7 @@ class TestCacheAuthenticatedProfile:
         )
         assert connector._jql_timezone is not None
 
-    def test_an_answer_hiding_the_email_does_not_keep_an_earlier_accounts(self):
+    def test_an_answer_hiding_the_email_does_not_keep_an_earlier_accounts(self) -> None:
         """The id and the email come from the same answer: B's hidden email is hidden, not A's left from before, so
         the link is not written to A's email under B's id."""
         connector = _make_connector()
@@ -2105,7 +2105,7 @@ class TestCacheAuthenticatedProfile:
         connector._cache_authenticated_jira_profile(_resp(200, {"accountId": "acc-b"}))
         assert (connector._authenticated_jira_account_id, connector._authenticated_jira_email) == ("acc-b", None)
 
-    def test_a_failed_answer_keeps_what_was_read(self):
+    def test_a_failed_answer_keeps_what_was_read(self) -> None:
         connector = _make_connector()
         connector._cache_authenticated_jira_profile(_resp(200, {"accountId": "acc-a", "emailAddress": "a@b.com"}))
         connector._cache_authenticated_jira_profile(_resp(503, {}))

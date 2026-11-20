@@ -27,7 +27,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 if TYPE_CHECKING:
-    from app.connectors.sources.slack.team.connector import ProcessingContext
+    from app.connectors.sources.slack.team.connector import ProcessingContext, SlackConnector
 
 # ---------------------------------------------------------------------------
 # Helpers to build a minimal SlackConnector without real deps
@@ -10265,7 +10265,7 @@ class TestTheTokenOwnersLink:
     email, so the link is only removed when Slack itself says the account has none."""
 
     @staticmethod
-    def _connector(info: Any) -> Any:
+    def _connector(info: object) -> SlackConnector:
         c = _make_connector()
         c.rate_limiter.acquire = AsyncMock()
         ds = MagicMock()
@@ -10283,7 +10283,7 @@ class TestTheTokenOwnersLink:
         (MagicMock(success=False, error="ratelimited"), (None, None)),
         (ConnectionError("Slack unavailable"), (None, None)),
     ], ids=["email_read", "email_hidden", "account_deleted", "read_refused", "read_failed"])
-    async def test_an_owner_missing_from_the_user_list_is_read_directly(self, info: Any, expected: tuple) -> None:
+    async def test_an_owner_missing_from_the_user_list_is_read_directly(self, info: object, expected: tuple) -> None:
         c = self._connector(info)
         await c._register_authenticated_identity()
         c.register_authenticated_source_user.assert_awaited_once_with(*expected)
