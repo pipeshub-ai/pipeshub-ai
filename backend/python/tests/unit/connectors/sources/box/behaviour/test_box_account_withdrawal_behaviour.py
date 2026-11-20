@@ -172,6 +172,12 @@ class TestAnAccountThatLeftBox:
         assert checkpoints.cursor()["cursor"]
 
 
+def forget_withdrawals(checkpoints: FakeCheckpointStore) -> None:
+    """Lose the record of withdrawals, as when the sync points were cleared; the stream position stays."""
+    for key in [k for k in checkpoints.sync_points if k.endswith("/withdrawn_accounts")]:
+        del checkpoints.sync_points[key]
+
+
 def owner_walks(api: FakeBoxApi) -> int:
     return len([r for r in api.calls("GET", "/2.0/folders/0/items") if r.as_user == ALICE])
 
@@ -208,9 +214,7 @@ class TestReturningAccounts:
         connector = await synced(box_api, db, checkpoints)
         box_api.users[CAROL]["status"] = "inactive"
         await connector.run_sync()
-        # The record of withdrawals is lost; the stream position stays, so the next run is incremental.
-        for key in [k for k in checkpoints.sync_points if k.endswith("/withdrawn_accounts")]:
-            del checkpoints.sync_points[key]
+        forget_withdrawals(checkpoints)
         walks = owner_walks(box_api)
         box_api.users[CAROL]["status"] = "active"
 
@@ -218,6 +222,51 @@ class TestReturningAccounts:
 
         assert owner_walks(box_api) == walks + 1
         assert CAROL_EMAIL in readers(db, "file-shared")
+
+    async def test_a_return_seen_on_a_user_list_cut_short_still_gets_its_full_sync(self, box_api, db, checkpoints) -> None:
+        box_api.page_cap["/2.0/users"] = 3
+        enterprise(box_api, db)
+        box_api.add_user("u-dan", "dan@acme.test", "Dan")
+        connector = await synced(box_api, db, checkpoints)
+        box_api.users[CAROL]["status"] = "inactive"
+        await connector.run_sync()
+        forget_withdrawals(checkpoints)
+        box_api.users[CAROL]["status"] = "active"
+        # Carol is on the first page; the second cannot be read, so this run stops before any full sync.
+        box_api.fail("GET", "/2.0/users", 503, times=10, query={"marker": "3"})
+        await connector.run_sync()
+        box_api.faults.clear()
+        walks = owner_walks(box_api)
+
+        await connector.run_sync()
+
+        assert owner_walks(box_api) == walks + 1
+        assert CAROL_EMAIL in readers(db, "file-shared")
+
+    async def test_a_returning_account_gets_back_a_share_only_the_share_history_names(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        # Erin has no PipesHub account, so her files are not walked: Carol's share is known from the history alone.
+        box_api.add_user("u-erin", "erin@acme.test", "Erin")
+        box_api.add_folder("fold-erin", "Erin's", "u-erin")
+        box_api.add_file("file-direct", "direct.pdf", "u-erin", parent="fold-erin")
+        collab_id = box_api.collaborate("file-direct", CAROL)
+        box_api.add_event(
+            "COLLABORATION_INVITE",
+            {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-direct"},
+             "accessible_by": {"type": "user", "id": CAROL, "login": CAROL_EMAIL}},
+            created_by={"type": "user", "id": "u-erin", "login": "erin@acme.test"},
+            additional_details={"collab_id": collab_id},
+        )
+        connector = await synced(box_api, db, checkpoints)
+        assert CAROL_EMAIL in readers(db, "file-direct")
+        box_api.users[CAROL]["status"] = "inactive"
+        await connector.run_sync()
+        assert CAROL_EMAIL not in readers(db, "file-direct")
+        box_api.users[CAROL]["status"] = "active"
+
+        await connector.run_sync()
+
+        assert CAROL_EMAIL in readers(db, "file-direct")
 
     async def test_a_record_that_cannot_be_saved_withdraws_no_one(self, box_api, db, checkpoints, monkeypatch) -> None:
         enterprise(box_api, db)

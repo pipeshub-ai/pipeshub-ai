@@ -806,7 +806,8 @@ class BoxConnector(BaseConnector):
 
         Returns the accounts linked again after such a withdrawal: only a full sync writes their grants again, as
         no event names them. With no record of withdrawals (never written, or the sync points were cleared), every
-        newly linked account counts."""
+        newly linked account counts, and is recorded before it is linked: once linked it no longer looks new, and
+        this run may stop before its full sync."""
         signed_in = [u for u in users if u.is_active]
         try:
             stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
@@ -823,8 +824,16 @@ class BoxConnector(BaseConnector):
             u for u in signed_in
             if str(u.source_user_id) not in stored_ids and (u.email or "").lower() not in stored_emails
         ]
+        if withdrawn is None and newly_linked and not full_sync:
+            withdrawn = {str(u.source_user_id) for u in newly_linked if u.source_user_id}
+            try:
+                await self.user_sync_point.update_sync_point(self.WITHDRAWN_ACCOUNTS_KEY, {"ids": sorted(withdrawn)})
+            except Exception as e:
+                self.logger.error(f"Could not record the newly linked Box accounts, so no one is linked this run: {e}")
+                self._read_complete = False
+                return []
         await self.data_entities_processor.on_new_app_users(signed_in)
-        returning = newly_linked if withdrawn is None else [u for u in signed_in if str(u.source_user_id) in withdrawn]
+        returning = [u for u in signed_in if str(u.source_user_id) in (withdrawn or set())]
         # An empty list is no evidence that everyone left; a complete list in which no one can sign in is.
         if not self._user_list_complete or not users:
             return returning
@@ -840,6 +849,11 @@ class BoxConnector(BaseConnector):
             # run is a full sync again.
             ids -= kept_ids
         try:
+            if full_sync and returning:
+                # A returning account's individual shares are written only by the share-history replay (an access-only
+                # invite is not in the grantee's All Files), and the replay moved past them: read it again from the start.
+                # shortcut: Box keeps that history for a limited time; a share older than it comes back only by a walk.
+                await self.box_cursor_sync_point.update_sync_point(self.SHARE_HISTORY_KEY, {"position": "0"})
             if full_sync or gone:
                 # Saved before the withdrawal, so a failure in between cannot lose the account's later full sync.
                 await self.user_sync_point.update_sync_point(self.WITHDRAWN_ACCOUNTS_KEY, {"ids": sorted(ids)})

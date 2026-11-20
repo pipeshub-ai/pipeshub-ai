@@ -263,3 +263,48 @@ async def test_a_full_sync_after_a_deactivation_gives_no_grant_back(env: _Env) -
     assert await env.drive_grants("carol") == set()
     assert await env.readable("carol") == set()
     assert await env.readable("bob") == BOB_READS
+
+
+async def test_a_returning_account_gets_back_a_share_only_the_share_history_names(env: _Env) -> None:
+    """Erin has no PipesHub account, so her files are not walked: Carol's share of one is known from Box's
+    collaboration history alone, which a returning account needs read again."""
+    env.api.add_user("u-erin", f"erin@{env.org_id}.example", "Erin")
+    env.api.add_folder("fold-erin", "Erin's", "u-erin")
+    env.api.add_file("file-direct", "direct.pdf", "u-erin", parent="fold-erin")
+    collab_id = env.api.collaborate("file-direct", "u-carol")
+    env.api.add_event(
+        "COLLABORATION_INVITE",
+        {"type": "collaboration", "id": collab_id, "item": {"type": "file", "id": "file-direct"},
+         "accessible_by": {"type": "user", "id": "u-carol", "login": env.email("carol")}},
+        created_by={"type": "user", "id": "u-erin", "login": f"erin@{env.org_id}.example"},
+        additional_details={"collab_id": collab_id},
+    )
+    await env.sync()
+    assert "direct.pdf" in await env.readable("carol")
+    env.api.users["u-carol"]["status"] = "inactive"
+    await env.sync()
+    assert await env.readable("carol") == set()
+    env.api.users["u-carol"]["status"] = "active"
+
+    await env.sync()
+
+    assert await env.readable("carol") == CAROL_READS | {"direct.pdf"}
+
+
+async def test_a_return_seen_on_a_user_list_cut_short_still_gets_its_full_sync(env: _Env) -> None:
+    env.api.page_cap["/2.0/users"] = 3
+    await env.sync()
+    env.api.users["u-carol"]["status"] = "inactive"
+    await env.sync()
+    # The record of withdrawals is lost (the users sync point cleared), the stream position kept.
+    await env.graph.delete_sync_points_by_connector_id(connector_id=env.connector_id)
+    await env.connector.box_cursor_sync_point.update_sync_point(
+        "event_stream_cursor", {"cursor": env.api.stream_head, "cursor_updated_at": get_epoch_timestamp_in_ms()})
+    env.api.users["u-carol"]["status"] = "active"
+    env.api.fail("GET", "/2.0/users", 503, times=10, query={"marker": "3"})  # carol is on the first page
+    await env.sync()
+    env.api.faults.clear()
+
+    await env.sync()
+
+    assert await env.readable("carol") == CAROL_READS
