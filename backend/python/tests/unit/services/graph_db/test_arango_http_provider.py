@@ -10127,24 +10127,6 @@ class TestValidateFolderExistsInKb:
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# list_kb_records
-# ---------------------------------------------------------------------------
-
-
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_kb_permission",
-            new_callable=AsyncMock, return_value=None
-        ):
-            records, total, filters = await connected_provider.list_kb_records(
-                "kb1", "u1", "org1", 0, 10, None, None, None, None, None, None, None, "recordName", "asc"
-            )
-            assert records == []
-            assert total == 0
-
 class TestCheckRecordAccessWithDetails:
     @pytest.mark.asyncio
     async def test_user_not_found(self, connected_provider):
@@ -11825,86 +11807,6 @@ class TestListKbPermissionsExtended:
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.list_kb_permissions("kb1")
         assert result == []
-
-
-# ---------------------------------------------------------------------------
-# list_kb_records
-# ---------------------------------------------------------------------------
-
-
-class TestListKbRecordsExtended:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[
-                [{"records": [{"id": "r1", "recordName": "Rec1"}], "total": 1}],
-                [[{"id": "f1", "name": "Folder"}]],
-            ]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert len(records) == 1
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert records == []
-        assert total == 0
-
-    @pytest.mark.asyncio
-    async def test_with_folder_filter(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[{"records": [], "total": 0}], [[]]]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search=None, record_types=None, origins=None,
-            connectors=None, indexing_status=None,
-            date_from=None, date_to=None,
-            sort_by="recordName", sort_order="asc", folder_id="f1"
-        )
-        assert records == []
-
-    @pytest.mark.asyncio
-    async def test_with_all_filters(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[{"records": [], "total": 0}], [[]]]
-        )
-        records, total, filters = await connected_provider.list_kb_records(
-            "kb1", "u1", "org1", skip=0, limit=10,
-            search="test", record_types=["FILE"], origins=["UPLOAD"],
-            connectors=["KNOWLEDGE_BASE"], indexing_status=["COMPLETED"],
-            date_from=1000, date_to=9999,
-            sort_by="recordName", sort_order="desc"
-        )
-        assert records == []
-
-    @pytest.mark.asyncio
-    async def test_a_failed_read_raises(self, connected_provider):
-        connected_provider.get_user_kb_permission = AsyncMock(side_effect=Exception("fail"))
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider.list_kb_records(
-                "kb1", "u1", "org1", skip=0, limit=10,
-                search=None, record_types=None, origins=None,
-                connectors=None, indexing_status=None,
-                date_from=None, date_to=None,
-                sort_by="recordName", sort_order="asc"
-            )
 
 
 # ---------------------------------------------------------------------------

@@ -4163,32 +4163,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connectors: list[str] | None,
-        indexing_status: list[str] | None,
-        date_from: int | None,
-        date_to: int | None,
-        sort_by: str,
-        sort_order: str,
-        folder_id: str | None = None,
-    ) -> tuple[list[dict], int, dict]:
-        """List records in a KB. Returns (records, total_count, available_filters).
-
-        An empty list means no matching record or no access. A query that could
-        not be read raises; it is never reported as an empty list.
-        """
-        pass
-
-    @abstractmethod
     async def list_accessible_artifacts(
         self,
         user_id: str,
