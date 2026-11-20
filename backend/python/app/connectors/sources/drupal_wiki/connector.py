@@ -1511,7 +1511,9 @@ class DrupalWikiConnector(BaseConnector):
         was one that gave it (remembered as ``open``), and never adds one. A protected space
         not listed in full adds its members only to a page that already holds grants of its
         own; a page shared into one whose members could not be read keeps its stored access
-        (``_share_target_kept``). A space no longer synced or gone loses them. Until every page
+        (``_share_target_kept``), or, when its stored org grant came from an open space that no
+        longer gives it, is written with the readers this run resolved and that share kept in
+        its memory. A space no longer synced or gone loses them. Until every page
         of its home space is ``STRICT``, a page gets no grants of its own.
         """
         had = listing.shares_before.get(str(page_id)) or {}
@@ -1542,7 +1544,12 @@ class DrupalWikiConnector(BaseConnector):
         for space in (home, *protected):
             for grant in self._space_grants.get(space, []):
                 grants.setdefault((grant.entity_type.value, grant.email or "", grant.external_id or ""), grant)
-        if len(grants) == len({(g.entity_type.value, g.email or "", g.external_id or "") for g in self._space_grants.get(home, [])}):
+        # A share into a space whose members were unread this run stays remembered with grants of
+        # its own, so the run that reads them gives its readers back even if it cannot list it.
+        pending = held and bool(shares & self._spaces_kept)
+        if not pending and len(grants) == len(
+            {(g.entity_type.value, g.email or "", g.external_id or "") for g in self._space_grants.get(home, [])}
+        ):
             return shares, opening, None  # the shares add no reader: plain, inheriting its home space
         return shares, opening, list(grants.values())
 
