@@ -4323,15 +4323,16 @@ export const setCustomSystemPrompt =
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         const existing = await keyValueStoreService.get<string>(configPaths.systemPrompts);
-        const stored = existing
-          ? (JSON.parse(encryptor.decrypt(existing)) as SystemPromptsConfig)
-          : undefined;
+        const stored =
+          existing !== null && existing !== ''
+            ? (JSON.parse(encryptor.decrypt(existing)) as SystemPromptsConfig)
+            : undefined;
         savedUseInMcp =
           typeof useInMcp === 'boolean' ? useInMcp : stored?.useInMcp === true;
         const length = mcpPromptLength(customSystemPromptAgent);
         if (savedUseInMcp && length > MCP_PROMPT_MAX_CHARS) {
           throw new BadRequestError(
-            `customSystemPromptAgent is ${length} characters, and MCP clients are sent at most ${MCP_PROMPT_MAX_CHARS}. Shorten it, or set useInMcp to false.`,
+            `customSystemPromptAgent is ${String(length)} characters, and MCP clients are sent at most ${String(MCP_PROMPT_MAX_CHARS)}. Shorten it, or set useInMcp to false.`,
           );
         }
         const promptsConfig: SystemPromptsConfig = {
