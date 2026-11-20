@@ -207,6 +207,51 @@ describe('PatController', () => {
       expect(mockPatService.updateKnowledgeLimit.firstCall.args[3]).to.equal(null)
     })
 
+    it('records a pat_access_changed event that counts items without naming them', async () => {
+      eventBuffer.drain()
+      mockPatService.updateKnowledgeLimit = sinon.stub().resolves({ id: 'tok-1', knowledgeLimit: limit })
+      mockReq.user.email = 'dev@example.com'
+      mockReq.params = { tokenId: 'tok-1' }
+      mockReq.body = { knowledgeLimit: limit }
+
+      await inOrg(() => controller.updateKnowledgeLimit(mockReq, mockRes, mockNext))
+
+      const events = eventBuffer.drain()
+      expect(events).to.have.length(1)
+      expect(events[0].event).to.equal('pat_access_changed')
+      expect(events[0].props).to.deep.equal({
+        orgId: 'org-1',
+        userId: 'user-1',
+        domain: 'example.com',
+        limited: true,
+        item_count: 1,
+      })
+      expect(JSON.stringify(events[0])).to.not.include(limit.apps[0])
+    })
+
+    it('records lifting the limit as not limited', async () => {
+      eventBuffer.drain()
+      mockPatService.updateKnowledgeLimit = sinon.stub().resolves({ id: 'tok-1' })
+      mockReq.params = { tokenId: 'tok-1' }
+      mockReq.body = { knowledgeLimit: null }
+
+      await inOrg(() => controller.updateKnowledgeLimit(mockReq, mockRes, mockNext))
+
+      const [event] = eventBuffer.drain()
+      expect(event.props).to.include({ limited: false, item_count: 0 })
+    })
+
+    it('records nothing when the change fails', async () => {
+      eventBuffer.drain()
+      mockPatService.updateKnowledgeLimit = sinon.stub().rejects(new Error('not found'))
+      mockReq.params = { tokenId: 'tok-1' }
+      mockReq.body = { knowledgeLimit: null }
+
+      await inOrg(() => controller.updateKnowledgeLimit(mockReq, mockRes, mockNext))
+
+      expect(eventBuffer.drain()).to.have.length(0)
+    })
+
     it('calls next on service error (e.g. NotFoundError)', async () => {
       mockPatService.updateKnowledgeLimit = sinon.stub().rejects(new Error('not found'))
       mockReq.params = { tokenId: 'tok-1' }

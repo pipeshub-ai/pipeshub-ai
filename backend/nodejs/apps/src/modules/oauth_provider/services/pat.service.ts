@@ -21,6 +21,7 @@ import {
 } from '../types/oauth.types'
 import { PAT_TOKEN_PREFIX, PAT_APP_CLIENT_ID_PREFIX } from '../constants/constants'
 import { getUserRepository } from '../../../libs/repositories/user'
+import { knowledgeLimitSize } from '../types/knowledge_limit';
 
 const CLIENT_SECRET_BYTES = 32
 const SECONDS_PER_DAY = 86400
@@ -274,6 +275,7 @@ export class PatService {
       userId,
       tokenId,
       limited: knowledgeLimit !== null,
+      itemCount: knowledgeLimitSize(knowledgeLimit),
     });
 
     return {

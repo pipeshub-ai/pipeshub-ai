@@ -14,6 +14,14 @@ export const toKnowledgeLimit = (
 
 const LIMIT_KEYS = ['apps', 'recordGroups', 'records'] as const;
 
+/** How many items a limit names; none (everything) is 0. */
+export const knowledgeLimitSize = (
+  limit: KnowledgeLimit | null | undefined,
+): number =>
+  limit
+    ? limit.apps.length + limit.recordGroups.length + limit.records.length
+    : 0;
+
 /**
  * A limit read back from storage, where nothing has validated it. Absent or
  * null is everything. Anything else must be an object whose lists hold only
@@ -38,9 +46,7 @@ export const readStoredKnowledgeLimit = (
     }
     limit[key] = [...(ids as string[])];
   }
-  const size =
-    limit.apps.length + limit.recordGroups.length + limit.records.length;
-  return size > 0 ? limit : 'unreadable';
+  return knowledgeLimitSize(limit) > 0 ? limit : 'unreadable';
 };
 
 /** Two limits name the same items, in any order; absent equals only absent. */

@@ -7,6 +7,7 @@ import { CreatePatRequest, UpdatePatKnowledgeLimitBody } from '../types/oauth.ty
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { currentOrgContext } from '../../../libs/context/orgContext';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
+import { knowledgeLimitSize } from '../types/knowledge_limit';
 import {
   clientTags,
   domainFromEmail,
@@ -148,6 +149,15 @@ export class PatController {
         tokenId,
         knowledgeLimit,
       );
+      // A record of who changed a token's reach. Items are counted, never named.
+      recordEvent('pat_access_changed', {
+        orgId,
+        userId,
+        domain: domainFromEmail(req.user?.email as string | undefined),
+        limited: knowledgeLimit !== null,
+        item_count: knowledgeLimitSize(knowledgeLimit),
+        ...clientTags(req.headers),
+      });
       res.json({ token });
     } catch (error) {
       next(error);
