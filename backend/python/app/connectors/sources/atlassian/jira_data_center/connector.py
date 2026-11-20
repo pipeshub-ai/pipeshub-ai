@@ -7550,11 +7550,19 @@ class JiraDataCenterConnector(BaseConnector):
                 )
             self._hold_grants_while_holders_unread(issue_record, security, record, changed=True)  # a reindex reads only changed issues
             if (not settled or skipped_holders) and getattr(record, "access_rule", None) != AccessRule.RESTRICTED:
-                # Stored open, and the issue is not known to be without a level now: closed, not left readable
-                # by the project. (A stored RESTRICTED issue keeps its grants below.) A leveled issue on its level's
-                # group is stored STRICT or OPEN, so it is closed too until the next sync; the group may not be written.
-                issue_record.access_rule = AccessRule.RESTRICTED
-                issue_record.access_group_external_id = None
+                # Stored open, and the issue is not known to be without a level now: not left readable by the project.
+                # (A stored RESTRICTED issue keeps its grants below.) A leveled issue on its level's group is stored
+                # STRICT or OPEN too, so the stored rule does not tell them apart: an issue whose level has the group
+                # the last sync wrote hangs on it, read by that group's readers alone (no wider than the level as last
+                # read); any other is closed.
+                level_group = level_group_external_id(project_id, level_id) if (
+                    (level_id := read_security_level(fields)[1]) and not issue_data["is_subtask"]
+                    and project_id and project_id == issue_record.external_record_group_id) else None
+                if level_group and await self.data_entities_processor.get_record_group_by_external_id(
+                        self.connector_id, level_group) is not None:
+                    issue_record.access_rule, issue_record.access_group_external_id = AccessRule.STRICT, level_group
+                else:
+                    issue_record.access_rule, issue_record.access_group_external_id = AccessRule.RESTRICTED, None
                 issue_record.rewrite_permissions = True
                 # The write stores the issue's new timestamp, so the sync would skip it: leave the retry marker
                 # a failed sync leaves, and the next sync that reads the levels reads this issue again.

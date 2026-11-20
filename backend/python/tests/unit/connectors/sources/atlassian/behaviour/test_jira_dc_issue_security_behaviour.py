@@ -920,7 +920,9 @@ class TestReindex:
         jira.on("GET", f"{API}/issue/2", leveled)
         serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
         await connector.reindex_records([db.records["2"]])
-        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
+        # Its level's group, as the last sync wrote it, holds it: no wider than the level as last read.
+        assert hidden_from_project(db.records["2"]) and readers(db, "2") == {("USER", "alice@example.com")}
+        assert own_readers(db, "2") == set()
         marked = json.loads(store.values_for("project_ENG")["security_levels"])
         assert marked == {**digests, "*": "retry"}
 

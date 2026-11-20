@@ -38,7 +38,7 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
-from app.models.entities import AppUser, RecordGroup, RecordGroupType
+from app.models.entities import AppUser, AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -147,46 +147,50 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         org_id, connector_id = f"org-jiradc-{run}", f"jiradc-{run}"
         user_keys: list[str] = []
         cleanup.push_async_callback(_remove, graph, org_id, connector_id, user_keys)
+        yield await new_world(graph, run, org_id, connector_id, user_keys)
 
-        now = get_epoch_timestamp_in_ms()
+
+async def new_world(graph: IGraphDBProvider, run: str, org_id: str, connector_id: str, user_keys: list[str]) -> dict[str, Any]:
+    """The org, the Jira Data Center app, the people and the connector writing through the real processor into ``graph``."""
+    now = get_epoch_timestamp_in_ms()
+    assert await graph.batch_upsert_nodes(
+        [{"id": org_id, "name": "Acme", "accountType": "enterprise", "isActive": True,
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.ORGS.value)
+    assert await graph.batch_upsert_nodes(
+        [{"id": connector_id, "orgId": org_id, "name": "Jira Data Center", "type": Connectors.JIRA.value,
+          "appGroup": "Atlassian", "scope": "team", "isActive": True, "isConfigured": True,
+          "isAuthenticated": True, "authType": "API_TOKEN", "createdBy": "it-admin",
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.APPS.value)
+
+    user_ids: dict[str, str] = {}
+    for name in PEOPLE:
+        key, user_id = f"{run}-{name}", f"user-{run}-{name}"
+        user_keys.append(key)
         assert await graph.batch_upsert_nodes(
-            [{"id": org_id, "name": "Acme", "accountType": "enterprise", "isActive": True,
-              "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.ORGS.value)
-        assert await graph.batch_upsert_nodes(
-            [{"id": connector_id, "orgId": org_id, "name": "Jira Data Center", "type": Connectors.JIRA.value,
-              "appGroup": "Atlassian", "scope": "team", "isActive": True, "isConfigured": True,
-              "isAuthenticated": True, "authType": "API_TOKEN", "createdBy": "it-admin",
-              "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-            collection=CollectionNames.APPS.value)
+            [{"id": key, "userId": user_id, "orgId": org_id, "email": _email(name, run), "fullName": name,
+              "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+            collection=CollectionNames.USERS.value)
+        assert await graph.batch_create_edges(
+            [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
+              "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
+        user_ids[name] = user_id
 
-        user_ids: dict[str, str] = {}
-        for name in PEOPLE:
-            key, user_id = f"{run}-{name}", f"user-{run}-{name}"
-            user_keys.append(key)
-            assert await graph.batch_upsert_nodes(
-                [{"id": key, "userId": user_id, "orgId": org_id, "email": _email(name, run), "fullName": name,
-                  "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
-                collection=CollectionNames.USERS.value)
-            assert await graph.batch_create_edges(
-                [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": org_id,
-                  "to_collection": CollectionNames.ORGS.value, "entityType": "ORGANIZATION",
-                  "createdAtTimestamp": now, "updatedAtTimestamp": now}], collection=CollectionNames.BELONGS_TO.value)
-            user_ids[name] = user_id
-
-        processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
-        processor.org_id = org_id
-        processor.messaging_producer = AsyncMock()
-        processor.messaging_producer.send_messages.side_effect = lambda _topic, messages, **_: [True] * len(messages)
-        config = MagicMock()
-        config.get_config = AsyncMock(return_value=None)
-        connector = JiraDataCenterConnector(
-            logger, processor, GraphDataStore(logger, graph), config, connector_id, "team", "it-admin")
-        connector.notify = AsyncMock()
-        connector.data_source = MagicMock()  # the search itself is stood in for per test
-        connector._epic_link_field_id = EPIC_FIELD
-        connector._parent_link_field_id = ""
-        yield {"graph": graph, "processor": processor, "connector": connector, "run": run,
-               "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids}
+    processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
+    processor.org_id = org_id
+    processor.messaging_producer = AsyncMock()
+    processor.messaging_producer.send_messages.side_effect = lambda _topic, messages, **_: [True] * len(messages)
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value=None)
+    connector = JiraDataCenterConnector(
+        logger, processor, GraphDataStore(logger, graph), config, connector_id, "team", "it-admin")
+    connector.notify = AsyncMock()
+    connector.data_source = MagicMock()  # the search itself is stood in for per test
+    connector._epic_link_field_id = EPIC_FIELD
+    connector._parent_link_field_id = ""
+    return {"graph": graph, "processor": processor, "connector": connector, "run": run,
+            "org_id": org_id, "connector_id": connector_id, "user_ids": user_ids, "user_keys": user_keys}
 
 
 def _user_holder(name: str) -> dict[str, Any]:
@@ -208,6 +212,12 @@ def _users(world: dict[str, Any]) -> list[AppUser]:
     return [AppUser(app_name=Connectors.JIRA, connector_id=world["connector_id"], source_user_id=key,
                     org_id=world["org_id"], email=_email(name, world["run"]), full_name=name, is_active=True)
             for name, key in PEOPLE.items()]
+
+
+def _directory(world: dict[str, Any]) -> dict[str, AppUser]:
+    """The accounts a sync resolves a level's holders against (``_sync_project_issues``)."""
+    connector = world["connector"]
+    return connector._grant_directory(connector._users_with_usernames({u.source_user_id: u for u in _users(world)}))
 
 
 def _project(world: dict[str, Any]) -> RecordGroup:
@@ -256,6 +266,10 @@ async def _write(world: dict[str, Any], issues: list[dict], *, again: bool = Fal
     for issue in issues:
         SOURCE[issue["id"]] = issue
     connector = world["connector"]
+    context = connector._issue_security.get(PROJECT_ID)
+    if context is not None and context.knowledge == SchemeKnowledge.PRESENT and context.members_readable:
+        # As a sync does before it reads any issue (``_sync_project_issues``): each level's record group.
+        await connector._write_level_groups(PROJECT_ID, PROJECT_KEY, context, list(context.members_by_level), _directory(world))
     built = await connector._build_issue_records(issues, PROJECT_ID, _users(world), is_new_project=again)
     await connector._process_new_records(built, PROJECT_KEY, {"new_count": 0, "updated_count": 0})
 
@@ -536,7 +550,8 @@ async def test_an_issue_changed_while_its_level_cannot_be_read_does_not_keep_the
 
     await _write(world, [_edited("leveled epic", "2024-06-16T10:00:00.000+0000")])
 
-    assert not await _mismatches(world, {**_readers(), "PROJ-2": set(), "PROJ-11": set()}, by_key)  # PROJ-11 hangs under it
+    # PROJ-11 is filed under it but takes its access from its own level, which Jira does not copy from the epic.
+    assert not await _mismatches(world, {**_readers(), "PROJ-2": set()}, by_key)
 
 
 async def test_an_issue_written_while_the_level_is_unreadable_is_hidden_until_it_can_be_read(world: dict[str, Any]) -> None:
@@ -717,3 +732,55 @@ async def test_while_the_holders_are_unread_a_changed_issue_drops_its_reporter_a
         issue = BROWSE_ISSUES[label][0] if label == "PROJ-21" else leveled
         await _write(world, [{**issue, "fields": {**issue["fields"], "updated": later, "security": None}}])
     assert not await _mismatches(world, {**_browse_readers(), "PROJ-21": PROJECT_READERS, "PROJ-25": PROJECT_READERS}, by_key)
+
+
+# Browse Projects held by the reporter, and a level held by the group devs (alice and dave): dave, outside the project,
+# reads the issue he reported once he is in the level; Browse names him, and the level holds him through devs.
+DEVS_LEVEL = "10105"
+
+
+async def _devs(world: dict[str, Any], members: list[str] | None) -> None:
+    """devs as the sync last read it: its members written to the graph, and kept for the level readers; None: its read
+    failed, so the graph keeps what it has and its members are unknown."""
+    connector = world["connector"]
+    if members is None:
+        connector._group_members = {}
+        return
+    users = {u.full_name: u for u in _users(world)}
+    group = AppUserGroup(app_name=Connectors.JIRA, connector_id=world["connector_id"], source_user_group_id="devs",
+                         name="devs", org_id=world["org_id"])
+    await world["processor"].on_new_user_groups([(group, [users[n] for n in members])])
+    connector._group_members = {"devs": [users[n] for n in members]}
+
+
+async def _sync_devs_level(world: dict[str, Any], members: list[str] | None, *, again: bool = False) -> dict[str, str]:
+    connector = world["connector"]
+    await _devs(world, members)
+    context = _context(browse_holders=[{"type": "reporter"}],
+                       members_by_level={DEVS_LEVEL: [{"type": "group", "parameter": "devs", "value": "devs"}]})
+    if again:
+        connector._issue_security[PROJECT_ID] = context
+    else:
+        await _open_project(world, context)
+    context.level_readers = connector._level_readers(context, PROJECT_KEY, _directory(world))
+    await _write(world, [_issue("31", "PROJ-31", "Task", level=DEVS_LEVEL, reporter="dave"),
+                         _issue("32", "PROJ-32", "Task", level=DEVS_LEVEL, reporter="bob")], again=again)
+    return await _ticket_ids(world)
+
+
+async def test_a_reporter_in_the_level_through_a_group_reads_it_without_the_project_until_out_of_the_group(
+    world: dict[str, Any],
+) -> None:
+    by_key = await _sync_devs_level(world, ["alice", "dave"])
+    assert not await _mismatches(world, {"PROJ-31": {"alice", "dave"}, "PROJ-32": {"alice"}}, by_key)
+
+    by_key = await _sync_devs_level(world, ["alice"], again=True)
+    assert not await _mismatches(world, {"PROJ-31": {"alice"}, "PROJ-32": {"alice"}}, by_key)
+
+
+async def test_a_group_whose_read_failed_does_not_open_the_issue_to_its_reporter(world: dict[str, Any]) -> None:
+    """Jira took dave out of devs and this read of devs failed: the graph keeps devs as stored (dave in it), and the
+    members the connector last saw are not used to open the issue to him."""
+    await _sync_devs_level(world, ["alice", "dave"])
+    by_key = await _sync_devs_level(world, None, again=True)
+    assert not await _mismatches(world, {"PROJ-31": {"alice"}, "PROJ-32": {"alice"}}, by_key)

@@ -37,7 +37,7 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
     _parse_jira_dc_user_list_page,
 )
 from app.connectors.utils.record_ids import new_record_id
-from app.models.entities import AppUser, FileRecord, Record, RecordType, TicketRecord
+from app.models.entities import AppUser, FileRecord, Record, RecordGroup, RecordType, TicketRecord
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.sources.client.http.http_client import HTTPClient
@@ -81,6 +81,9 @@ class JiraRecordsDb(FakeRecordsDb):
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
             self.app_roles[role.source_role_id] = list(members)
+
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> RecordGroup | None:
+        return self.record_groups.get(external_id)
 
     def _keep_stored_group(self, record: Record) -> None:
         """A record written with no level group named keeps the stored one, as the processor does (None)."""
