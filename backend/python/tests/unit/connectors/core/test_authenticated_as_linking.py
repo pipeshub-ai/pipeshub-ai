@@ -210,29 +210,38 @@ class TestRegisterAuthenticatedSourceUser:
             CONNECTOR, CREATED_BY, "darshan@pipeshub.com", "acct-123", Connectors.JIRA
         )
 
-    @pytest.mark.parametrize(
-        ("email", "source_user_id"),
-        [(None, "acct-123"), ("", "acct-123"), ("darshan@pipeshub.com", None), ("darshan@pipeshub.com", "")],
-    )
-    async def test_an_account_that_cannot_be_linked_removes_the_link_to_an_earlier_one(self, email, source_user_id) -> None:
-        """The credentials moved from account A to B, and B's email (hidden) or id cannot be read: A's link must not
-        stay, since it alone passes the connector gate with A's grants."""
+    @pytest.mark.parametrize("email", [None, ""])
+    async def test_an_identified_account_with_a_hidden_email_removes_the_link_to_an_earlier_one(self, email) -> None:
+        """The credentials moved from account A to B and B hides its email: B is identified but cannot be linked, and
+        A's link must not stay, since it alone passes the connector gate with A's grants."""
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector()
+        await BaseConnector.register_authenticated_source_user(conn, email, "acct-b")
+        conn.data_entities_processor.link_authenticator_to_source_user.assert_not_called()
+        conn.data_entities_processor.unlink_authenticator.assert_awaited_once_with(CONNECTOR)
+
+    @pytest.mark.parametrize(("email", "source_user_id"), [(None, None), ("darshan@pipeshub.com", None),
+                                                           ("darshan@pipeshub.com", "")])
+    async def test_an_identity_read_that_failed_leaves_the_link(self, email, source_user_id) -> None:
+        """No account id: the identity read failed (a rate limit, a 5xx) or gave nothing. That is no evidence the
+        credentials changed, so the link stays as it is."""
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
         conn = self._connector()
         await BaseConnector.register_authenticated_source_user(conn, email, source_user_id)
         conn.data_entities_processor.link_authenticator_to_source_user.assert_not_called()
-        conn.data_entities_processor.unlink_authenticator.assert_awaited_once_with(CONNECTOR)
+        conn.data_entities_processor.unlink_authenticator.assert_not_called()
 
-    async def test_failure_is_logged_not_raised(self) -> None:
+    async def test_a_write_that_fails_leaves_the_link(self) -> None:
+        """The repoint is one transaction: a write that raises rolls back, and the link committed before stands."""
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
         conn = self._connector()
         conn.data_entities_processor.link_authenticator_to_source_user.side_effect = RuntimeError("graph down")
         await BaseConnector.register_authenticated_source_user(conn, "darshan@pipeshub.com", "acct-123")
         conn.logger.warning.assert_called_once()
-        # A repoint that failed may have left the link to the earlier account.
-        conn.data_entities_processor.unlink_authenticator.assert_awaited_once_with(CONNECTOR)
+        conn.data_entities_processor.unlink_authenticator.assert_not_called()
 
     async def test_an_unlink_that_fails_is_logged_not_raised(self) -> None:
         from app.connectors.core.base.connector.connector_service import BaseConnector
