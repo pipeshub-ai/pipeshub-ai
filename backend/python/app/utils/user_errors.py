@@ -32,6 +32,7 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
+from app.modules.parsers.worker_deaths import is_retrying_death
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 from app.utils.api_call import ApiCallError
@@ -165,7 +166,7 @@ def retry_reason(exc: BaseException | None) -> str:
     A parse worker killed under memory pressure says so: the next delivery usually succeeds once the
     other work has eased, and nobody needs to split the file yet. Any other failure is the generic text.
     """
-    if exc is not None and any(getattr(e, "retrying_worker_death", False) for e in _chain(exc)):
+    if is_retrying_death(exc):
         return PARSE_WORKER_KILLED_RETRYING
     return RETRY_SCHEDULED
 
@@ -182,7 +183,6 @@ _STORED_AS_WRITTEN = frozenset({
     EXCEL_TOO_LARGE,
     UNREADABLE_FILE,
     PARSE_WORKER_OUT_OF_MEMORY,
-    PARSE_WORKER_KILLED_RETRYING,
     PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
 })
@@ -759,6 +759,11 @@ def _reason(exc: BaseException | None) -> str:
     if exc is None:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
+
+    # The final text of a record whose worker was killed: the retry promised while it waited did not come, so this
+    # is the second death (or the last attempt) and the advice is to make the file smaller.
+    if is_retrying_death(exc):
+        return PARSE_WORKER_OUT_OF_MEMORY
 
     for e in chain:
         # The source refused the item, and the connector said why in its own words.

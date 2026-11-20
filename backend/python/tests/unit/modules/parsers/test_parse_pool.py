@@ -488,6 +488,18 @@ class TestKilledWorkerIsRetriedOnce:
         assert str(raised.value) == PARSE_WORKER_OUT_OF_MEMORY
         assert MessageErrorClassifier.classify_by_exception(_wrapped(raised.value)) == MessageErrorType.TERMINAL
 
+    async def test_a_worker_that_closes_its_pipes_and_lives_on_is_not_read_as_a_kill(
+        self, governor: MagicMock, record_deaths: None
+    ) -> None:
+        # The status is read before the worker is stopped: stopping kills it, which must not read as the kernel's kill.
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(
+                exec, "import os, time\nos.closerange(3, 4096)\ntime.sleep(30)", label="eof.pdf", size=5_000_000
+            )
+
+        assert raised.value.retrying_worker_death is False
+        assert str(raised.value) == PARSE_WORKER_OUT_OF_MEMORY
+
     async def test_a_worker_that_ran_out_of_time_keeps_its_behaviour(
         self, governor: MagicMock, record_deaths: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:

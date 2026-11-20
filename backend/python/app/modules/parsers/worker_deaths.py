@@ -10,6 +10,21 @@ WINDOW_SECONDS = 1800.0
 MAX_RECORDS = 1024
 
 
+def is_retrying_death(exc: BaseException | None) -> bool:
+    """Whether ``exc`` was raised from a first, retried death of a parse worker.
+
+    Only explicit causes (``raise ... from``) count: an unrelated failure raised while a death was being
+    handled carries it as ``__context__`` and is not a reason to retry.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if getattr(exc, "retrying_worker_death", False):
+            return True
+        exc = exc.__cause__
+    return False
+
+
 class WorkerDeaths:
     """A bounded, per-process memory of records whose parse worker was killed.
 
