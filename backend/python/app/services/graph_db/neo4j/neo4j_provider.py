@@ -27774,104 +27774,96 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_agents_by_web_search_provider(
         self, org_id: str, provider: str
     ) -> list[dict]:
-        try:
-            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            org_label = collection_to_label(CollectionNames.ORGS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-            belongs_to_rel = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        org_label = collection_to_label(CollectionNames.ORGS.value)
+        permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+        belongs_to_rel = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
 
-            query = f"""
-            // Agents owned by users in this org (covers private + shared)
-            MATCH (u:{user_label})-[bt:{belongs_to_rel}]->(o:{org_label} {{id: $org_id}})
-            MATCH (u)-[p:{permission_rel}]->(agent:{agent_label})
-            WHERE p.type = 'USER' AND p.role = 'OWNER'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            AND agent.webSearch = $provider
-            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
-            RETURN DISTINCT agent.name AS name,
-                   agent.id AS _key,
-                   COALESCE(creator.fullName, creator.name) AS creatorName
+        query = f"""
+        // Agents owned by users in this org (covers private + shared)
+        MATCH (u:{user_label})-[bt:{belongs_to_rel}]->(o:{org_label} {{id: $org_id}})
+        MATCH (u)-[p:{permission_rel}]->(agent:{agent_label})
+        WHERE p.type = 'USER' AND p.role = 'OWNER'
+        AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+        AND agent.webSearch = $provider
+        OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+        RETURN DISTINCT agent.name AS name,
+               agent.id AS _key,
+               COALESCE(creator.fullName, creator.name) AS creatorName
 
-            UNION
+        UNION
 
-            // Agents shared directly with this org
-            MATCH (o:{org_label} {{id: $org_id}})-[p:{permission_rel}]->(agent:{agent_label})
-            WHERE p.type = 'ORG'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            AND agent.webSearch = $provider
-            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
-            RETURN DISTINCT agent.name AS name,
-                   agent.id AS _key,
-                   COALESCE(creator.fullName, creator.name) AS creatorName
-            """
-            result = await self.client.execute_query(
-                query, parameters={"org_id": org_id, "provider": provider}
-            )
-            if not result:
-                return []
-            seen = set()
-            deduped = []
-            for row in result:
-                key = row.get("_key")
-                if key and key not in seen:
-                    seen.add(key)
-                    deduped.append(row)
-            return deduped
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by web search provider: {str(e)}")
+        // Agents shared directly with this org
+        MATCH (o:{org_label} {{id: $org_id}})-[p:{permission_rel}]->(agent:{agent_label})
+        WHERE p.type = 'ORG'
+        AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+        AND agent.webSearch = $provider
+        OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+        RETURN DISTINCT agent.name AS name,
+               agent.id AS _key,
+               COALESCE(creator.fullName, creator.name) AS creatorName
+        """
+        result = await self.client.execute_query(
+            query, parameters={"org_id": org_id, "provider": provider}
+        )
+        if not result:
             return []
+        seen = set()
+        deduped = []
+        for row in result:
+            key = row.get("_key")
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(row)
+        return deduped
 
     async def get_agents_by_model_key(
         self, org_id: str, model_key: str
     ) -> list[dict]:
-        try:
-            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
-            user_label = collection_to_label(CollectionNames.USERS.value)
-            org_label = collection_to_label(CollectionNames.ORGS.value)
-            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
-            belongs_to_rel = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        org_label = collection_to_label(CollectionNames.ORGS.value)
+        permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+        belongs_to_rel = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
 
-            query = f"""
-            // Agents owned by users in this org
-            MATCH (u:{user_label})-[bt:{belongs_to_rel}]->(o:{org_label} {{id: $org_id}})
-            MATCH (u)-[p:{permission_rel}]->(agent:{agent_label})
-            WHERE p.type = 'USER' AND p.role = 'OWNER'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            AND ANY(m IN coalesce(agent.models, []) WHERE m = $model_key OR m STARTS WITH ($model_key + '_'))
-            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
-            RETURN DISTINCT agent.name AS name,
-                   agent.id AS _key,
-                   COALESCE(creator.fullName, creator.name) AS creatorName
+        query = f"""
+        // Agents owned by users in this org
+        MATCH (u:{user_label})-[bt:{belongs_to_rel}]->(o:{org_label} {{id: $org_id}})
+        MATCH (u)-[p:{permission_rel}]->(agent:{agent_label})
+        WHERE p.type = 'USER' AND p.role = 'OWNER'
+        AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+        AND ANY(m IN coalesce(agent.models, []) WHERE m = $model_key OR m STARTS WITH ($model_key + '_'))
+        OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+        RETURN DISTINCT agent.name AS name,
+               agent.id AS _key,
+               COALESCE(creator.fullName, creator.name) AS creatorName
 
-            UNION
+        UNION
 
-            // Agents shared directly with this org
-            MATCH (o:{org_label} {{id: $org_id}})-[p:{permission_rel}]->(agent:{agent_label})
-            WHERE p.type = 'ORG'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            AND ANY(m IN coalesce(agent.models, []) WHERE m = $model_key OR m STARTS WITH ($model_key + '_'))
-            OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
-            RETURN DISTINCT agent.name AS name,
-                   agent.id AS _key,
-                   COALESCE(creator.fullName, creator.name) AS creatorName
-            """
-            result = await self.client.execute_query(
-                query, parameters={"org_id": org_id, "model_key": model_key}
-            )
-            if not result:
-                return []
-            seen = set()
-            deduped = []
-            for row in result:
-                key = row.get("_key")
-                if key and key not in seen:
-                    seen.add(key)
-                    deduped.append(row)
-            return deduped
-        except Exception as e:
-            self.logger.error(f"Failed to get agents by model key: {str(e)}")
+        // Agents shared directly with this org
+        MATCH (o:{org_label} {{id: $org_id}})-[p:{permission_rel}]->(agent:{agent_label})
+        WHERE p.type = 'ORG'
+        AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+        AND ANY(m IN coalesce(agent.models, []) WHERE m = $model_key OR m STARTS WITH ($model_key + '_'))
+        OPTIONAL MATCH (creator:{user_label} {{id: agent.createdBy}})
+        RETURN DISTINCT agent.name AS name,
+               agent.id AS _key,
+               COALESCE(creator.fullName, creator.name) AS creatorName
+        """
+        result = await self.client.execute_query(
+            query, parameters={"org_id": org_id, "model_key": model_key}
+        )
+        if not result:
             return []
+        seen = set()
+        deduped = []
+        for row in result:
+            key = row.get("_key")
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(row)
+        return deduped
 
     async def get_all_agents(
         self,
