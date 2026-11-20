@@ -73,7 +73,10 @@ export function createOpenAICompatRouter(container: Container): Router {
   );
   const deps: OpenAICompatDeps = {
     appConfig: container.get<AppConfig>('AppConfig'),
-    readModels: () => readStoredAiModelsConfig(keyValueStoreService),
+    // An edition that reads the models config another way binds its own reader.
+    readModels: container.isBound('AiModelsReader')
+      ? container.get<() => Promise<unknown>>('AiModelsReader')
+      : () => readStoredAiModelsConfig(keyValueStoreService),
   };
   const authenticate = authMiddleware.authenticate.bind(authMiddleware);
   const guards = [
