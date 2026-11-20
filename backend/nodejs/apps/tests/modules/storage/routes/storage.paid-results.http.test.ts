@@ -23,6 +23,7 @@ import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/cre
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const JWT_SECRET = 'paid-results-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'paid-results-http-test-scoped-secret'
@@ -131,12 +132,14 @@ describe('Paid-result cache routes over HTTP: the local disk path', () => {
     const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     baseUrl = `${origin}/api/v1/document`
     kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: backend.url }, storage: { endpoint: origin } }))
+    registerUpstreams({ nodejs: [backend.url, origin] })
     kv.changed(storageEtcdPaths)
   })
 
   afterEach(async () => {
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })

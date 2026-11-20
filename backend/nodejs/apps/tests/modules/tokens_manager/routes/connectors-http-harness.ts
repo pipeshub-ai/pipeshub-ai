@@ -14,7 +14,8 @@ import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
-import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { AppConfig, registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 
@@ -223,6 +224,7 @@ export const startHarness = async ({
   process.env.CONNECTOR_BACKEND = backend.url
 
   const config = buildConfig(backend.url)
+  registerAppUpstreams(config)
   const tokens = new AuthTokenService(JWT_SECRET, SCOPED_JWT_SECRET)
   const oauthGrants = new Map<string, OAuthGrant>()
   const oauthService = {
@@ -280,6 +282,7 @@ export const startHarness = async ({
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
       await backend.stop()
+      registerUpstreams({})
       if (previousConnectorBackend === undefined) delete process.env.CONNECTOR_BACKEND
       else process.env.CONNECTOR_BACKEND = previousConnectorBackend
     },

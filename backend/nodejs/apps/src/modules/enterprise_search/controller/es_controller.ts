@@ -982,7 +982,6 @@ export const streamChat =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
-        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -996,18 +995,13 @@ export const streamChat =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (
-              agui &&
-              eventType === AGUIEventType.TOOL_CALL_START &&
-              dataLine
-            ) {
+            if (eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
 
             if (
-              agui &&
-              (eventType === AGUIEventType.RUN_FINISHED ||
-                eventType === AGUIEventType.RUN_ERROR)
+              eventType === AGUIEventType.RUN_FINISHED ||
+              eventType === AGUIEventType.RUN_ERROR
             ) {
               const frame = readRunFrame(eventType, dataLine);
               if (frame.kind === 'answer') {
@@ -1052,7 +1046,6 @@ export const streamChat =
                 }
               }
             } else if (
-              agui &&
               eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
               dataLine
             ) {
@@ -1064,111 +1057,7 @@ export const streamChat =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'complete' && dataLine) {
-              try {
-                completeData = JSON.parse(dataLine);
-                logger.debug('Captured complete event data from AI backend', {
-                  requestId,
-                  conversationId: savedConversation?._id,
-                  answer: completeData?.answer,
-                  citationsCount: completeData?.citations?.length || 0,
-                });
-                // DO NOT forward the complete event from AI backend
-                // We'll send our own complete event after processing
-              } catch (parseError: any) {
-                logger.error('Failed to parse complete event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                // Forward the event if we can't parse it
-                filteredChunk += event + '\n\n';
-              }
-            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
-              // `accumulated` is the running full text, not a delta — see
-              // LegacyFormatter.answer_delta.
-              try {
-                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
-                if (typeof parsed.accumulated === 'string') {
-                  contentAccumulator.setAccumulatedText(parsed.accumulated);
-                }
-              } catch {
-                // Non-fatal: still forward the frame below.
-              }
-              filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'error' && dataLine) {
-              try {
-                const errorData = JSON.parse(dataLine) as Record<
-                  string,
-                  unknown
-                >;
-                const errorMessage =
-                  (typeof errorData.message === 'string' &&
-                    errorData.message) ||
-                  (typeof errorData.error === 'string' && errorData.error) ||
-                  CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                if (savedConversation) {
-                  const meta =
-                    errorData.metadata && typeof errorData.metadata === 'object'
-                      ? new Map(
-                          Object.entries(
-                            errorData.metadata as Record<string, unknown>,
-                          ),
-                        )
-                      : undefined;
-                  void markConversationFailed(
-                    savedConversation,
-                    errorMessage,
-                    session,
-                    'streaming_error',
-                    typeof errorData.stack === 'string'
-                      ? errorData.stack
-                      : undefined,
-                    meta,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark conversation from AI error SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error(
-                  'Failed to parse error event data from AI stream',
-                  {
-                    requestId,
-                    parseError: parseError.message,
-                    dataLine,
-                  },
-                );
-                upstreamAiErrorEventForwarded = true;
-                if (savedConversation) {
-                  const parseFailMsg = CHAT_ERROR_MESSAGES.failed;
-                  void markConversationFailed(
-                    savedConversation,
-                    parseFailMsg,
-                    session,
-                    'parse_error',
-                    parseError.stack,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark conversation after SSE parse error',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              }
             } else if (
-              agui &&
               eventType === AGUIEventType.CUSTOM &&
               dataLine &&
               savedConversation
@@ -1204,49 +1093,6 @@ export const streamChat =
                 }
               } catch {
                 logBadFrame('CUSTOM', dataLine);
-              }
-              filteredChunk += event + '\n\n';
-            } else if (
-              !agui &&
-              eventType === 'ask_user_question' &&
-              dataLine &&
-              savedConversation
-            ) {
-              try {
-                const eventData = JSON.parse(dataLine);
-                if (eventData.status === 'success') {
-                  const toolCallMessage = {
-                    messageType: 'tool_call' as const,
-                    content: '',
-                    tools: [
-                      {
-                        toolName: 'ask_user_question',
-                        toolResult: eventData.toolData ?? eventData,
-                      },
-                    ],
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                  };
-                  void appendMessages(
-                    savedConversation._id,
-                    savedConversation.orgId,
-                    [toolCallMessage],
-                  ).catch((saveErr: any) => {
-                    logger.error(
-                      'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: savedConversation?._id,
-                        error: saveErr?.message,
-                      },
-                    );
-                  });
-                }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse ask_user_question event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
               }
               filteredChunk += event + '\n\n';
             } else {
@@ -1732,7 +1578,6 @@ export const addMessageStream =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
-        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -1746,17 +1591,12 @@ export const addMessageStream =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (
-              agui &&
-              eventType === AGUIEventType.TOOL_CALL_START &&
-              dataLine
-            ) {
+            if (eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
             if (
-              agui &&
-              (eventType === AGUIEventType.RUN_FINISHED ||
-                eventType === AGUIEventType.RUN_ERROR)
+              eventType === AGUIEventType.RUN_FINISHED ||
+              eventType === AGUIEventType.RUN_ERROR
             ) {
               const frame = readRunFrame(eventType, dataLine);
               if (frame.kind === 'answer') {
@@ -1801,7 +1641,6 @@ export const addMessageStream =
                 }
               }
             } else if (
-              agui &&
               eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
               dataLine
             ) {
@@ -1813,96 +1652,7 @@ export const addMessageStream =
                 // Non-fatal: still forward the frame below.
               }
               filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'complete' && dataLine) {
-              try {
-                completeData = JSON.parse(dataLine);
-                logger.debug('Captured complete event data from AI backend', {
-                  requestId,
-                  conversationId: existingConversation?._id,
-                  answer: completeData?.answer,
-                  citationsCount: completeData?.citations?.length || 0,
-                });
-                // DO NOT forward the complete event from AI backend
-                // We'll send our own complete event after processing
-              } catch (parseError: any) {
-                logger.error('Failed to parse complete event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                // Forward the event if we can't parse it
-                filteredChunk += event + '\n\n';
-              }
-            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
-              // `accumulated` is the running full text, not a delta — see
-              // LegacyFormatter.answer_delta.
-              try {
-                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
-                if (typeof parsed.accumulated === 'string') {
-                  contentAccumulator.setAccumulatedText(parsed.accumulated);
-                }
-              } catch {
-                // Non-fatal: still forward the frame below.
-              }
-              filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'error' && dataLine) {
-              try {
-                const errorData = JSON.parse(dataLine);
-                const errorMessage =
-                  errorData.message ||
-                  errorData.error ||
-                  CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                if (existingConversation) {
-                  void markConversationFailed(
-                    existingConversation,
-                    errorMessage,
-                    session,
-                    'streaming_error',
-                    errorData.stack,
-                    errorData.metadata
-                      ? new Map(Object.entries(errorData.metadata))
-                      : undefined,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark conversation from AI error SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error('Failed to parse error event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                upstreamAiErrorEventForwarded = true;
-                const errorMessage = CHAT_ERROR_MESSAGES.failed;
-                if (existingConversation) {
-                  void markConversationFailed(
-                    existingConversation,
-                    errorMessage,
-                    session,
-                    'parse_error',
-                    parseError.stack,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark conversation after SSE parse error',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              }
             } else if (
-              agui &&
               eventType === AGUIEventType.CUSTOM &&
               dataLine &&
               existingConversation
@@ -1939,50 +1689,6 @@ export const addMessageStream =
                 }
               } catch {
                 logBadFrame('CUSTOM', dataLine);
-              }
-              filteredChunk += event + '\n\n';
-            } else if (
-              !agui &&
-              eventType === 'ask_user_question' &&
-              dataLine &&
-              existingConversation
-            ) {
-              try {
-                const eventData = JSON.parse(dataLine);
-                if (eventData.status === 'success') {
-                  const toolCallMessage = {
-                    messageType: 'tool_call' as const,
-                    content: '',
-                    tools: [
-                      {
-                        toolName: 'ask_user_question',
-                        toolResult: eventData.toolData ?? eventData,
-                      },
-                    ],
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                  };
-                  void appendMessages(
-                    existingConversation._id,
-                    existingConversation.orgId,
-                    [toolCallMessage as unknown as NewMessage],
-                    session,
-                  ).catch((saveErr: any) => {
-                    logger.error(
-                      'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: existingConversation?._id,
-                        error: saveErr?.message,
-                      },
-                    );
-                  });
-                }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse ask_user_question event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
               }
               filteredChunk += event + '\n\n';
             } else {
@@ -3939,13 +3645,11 @@ async function regenerateAnswersInternal(
         existingConversation,
         messageId || null,
         session,
-        requestId || '',
         res,
         (data: IAIResponse) => {
           completeData = data;
           run.sawResult(completeData);
         },
-        protocol,
         contentAccumulator,
         (code: unknown) => {
           upstreamAiErrorEventForwarded = true;
@@ -6645,7 +6349,6 @@ export const streamAgentConversation =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
-        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -6659,18 +6362,13 @@ export const streamAgentConversation =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (
-              agui &&
-              eventType === AGUIEventType.TOOL_CALL_START &&
-              dataLine
-            ) {
+            if (eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
 
             if (
-              agui &&
-              (eventType === AGUIEventType.RUN_FINISHED ||
-                eventType === AGUIEventType.RUN_ERROR)
+              eventType === AGUIEventType.RUN_FINISHED ||
+              eventType === AGUIEventType.RUN_ERROR
             ) {
               const frame = readRunFrame(eventType, dataLine);
               if (frame.kind === 'answer') {
@@ -6715,7 +6413,6 @@ export const streamAgentConversation =
                 }
               }
             } else if (
-              agui &&
               eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
               dataLine
             ) {
@@ -6728,7 +6425,6 @@ export const streamAgentConversation =
               }
               filteredChunk += event + '\n\n';
             } else if (
-              agui &&
               eventType === AGUIEventType.CUSTOM &&
               dataLine &&
               savedConversation
@@ -6765,154 +6461,6 @@ export const streamAgentConversation =
                 }
               } catch {
                 logBadFrame('CUSTOM', dataLine);
-              }
-              filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'complete' && dataLine) {
-              try {
-                completeData = JSON.parse(dataLine);
-                logger.debug('Captured complete event data from AI backend', {
-                  requestId,
-                  conversationId: savedConversation?._id,
-                  answer: completeData?.answer,
-                  citationsCount: completeData?.citations?.length || 0,
-                  agentKey,
-                });
-                // DO NOT forward the complete event from AI backend
-                // We'll send our own complete event after processing
-              } catch (parseError: any) {
-                logger.error('Failed to parse complete event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                // Forward the event if we can't parse it
-                filteredChunk += event + '\n\n';
-              }
-            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
-              // `accumulated` is the running full text, not a delta — see
-              // LegacyFormatter.answer_delta.
-              try {
-                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
-                if (typeof parsed.accumulated === 'string') {
-                  contentAccumulator.setAccumulatedText(parsed.accumulated);
-                }
-              } catch {
-                // Non-fatal: still forward the frame below.
-              }
-              filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'error' && dataLine) {
-              try {
-                const errorData = JSON.parse(dataLine) as Record<
-                  string,
-                  unknown
-                >;
-                const errorMessage =
-                  (typeof errorData.message === 'string' &&
-                    errorData.message) ||
-                  (typeof errorData.error === 'string' && errorData.error) ||
-                  CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                if (savedConversation) {
-                  const meta =
-                    errorData.metadata && typeof errorData.metadata === 'object'
-                      ? new Map(
-                          Object.entries(
-                            errorData.metadata as Record<string, unknown>,
-                          ),
-                        )
-                      : undefined;
-                  void markAgentConversationFailed(
-                    savedConversation,
-                    errorMessage,
-                    session,
-                    'streaming_error',
-                    typeof errorData.stack === 'string'
-                      ? errorData.stack
-                      : undefined,
-                    meta,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark agent conversation from AI error SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error(
-                  'Failed to parse error event data from AI stream',
-                  {
-                    requestId,
-                    parseError: parseError.message,
-                    dataLine,
-                  },
-                );
-                upstreamAiErrorEventForwarded = true;
-                if (savedConversation) {
-                  const parseFailMsg = CHAT_ERROR_MESSAGES.failed;
-                  void markAgentConversationFailed(
-                    savedConversation,
-                    parseFailMsg,
-                    session,
-                    'parse_error',
-                    parseError.stack,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark agent conversation after SSE parse error',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              }
-            } else if (
-              !agui &&
-              eventType === 'ask_user_question' &&
-              dataLine &&
-              savedConversation
-            ) {
-              try {
-                const eventData = JSON.parse(dataLine);
-                if (eventData.status === 'success') {
-                  const toolCallMessage = {
-                    messageType: 'tool_call' as const,
-                    content: '',
-                    tools: [
-                      {
-                        toolName: 'ask_user_question',
-                        toolResult: eventData.toolData ?? eventData,
-                      },
-                    ],
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                  };
-                  void appendMessages(
-                    savedConversation._id,
-                    savedConversation.orgId,
-                    [toolCallMessage as unknown as NewMessage],
-                    session,
-                  ).catch((saveErr: any) => {
-                    logger.error(
-                      'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: savedConversation?._id,
-                        error: saveErr?.message,
-                      },
-                    );
-                  });
-                }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse ask_user_question event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
               }
               filteredChunk += event + '\n\n';
             } else {
@@ -7374,7 +6922,6 @@ export const addMessageStreamToAgentConversation =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
-        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -7388,17 +6935,12 @@ export const addMessageStreamToAgentConversation =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (
-              agui &&
-              eventType === AGUIEventType.TOOL_CALL_START &&
-              dataLine
-            ) {
+            if (eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
             if (
-              agui &&
-              (eventType === AGUIEventType.RUN_FINISHED ||
-                eventType === AGUIEventType.RUN_ERROR)
+              eventType === AGUIEventType.RUN_FINISHED ||
+              eventType === AGUIEventType.RUN_ERROR
             ) {
               const frame = readRunFrame(eventType, dataLine);
               if (frame.kind === 'answer') {
@@ -7443,7 +6985,6 @@ export const addMessageStreamToAgentConversation =
                 }
               }
             } else if (
-              agui &&
               eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
               dataLine
             ) {
@@ -7456,7 +6997,6 @@ export const addMessageStreamToAgentConversation =
               }
               filteredChunk += event + '\n\n';
             } else if (
-              agui &&
               eventType === AGUIEventType.CUSTOM &&
               dataLine &&
               existingConversation
@@ -7493,137 +7033,6 @@ export const addMessageStreamToAgentConversation =
                 }
               } catch {
                 logBadFrame('CUSTOM', dataLine);
-              }
-              filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'complete' && dataLine) {
-              try {
-                completeData = JSON.parse(dataLine);
-                logger.debug('Captured complete event data from AI backend', {
-                  requestId,
-                  conversationId: existingConversation?._id,
-                  answer: completeData?.answer,
-                  citationsCount: completeData?.citations?.length || 0,
-                });
-                // DO NOT forward the complete event from AI backend
-                // We'll send our own complete event after processing
-              } catch (parseError: any) {
-                logger.error('Failed to parse complete event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                // Forward the event if we can't parse it
-                filteredChunk += event + '\n\n';
-              }
-            } else if (!agui && eventType === 'answer_chunk' && dataLine) {
-              // `accumulated` is the running full text, not a delta — see
-              // LegacyFormatter.answer_delta.
-              try {
-                const parsed = JSON.parse(dataLine) as Record<string, unknown>;
-                if (typeof parsed.accumulated === 'string') {
-                  contentAccumulator.setAccumulatedText(parsed.accumulated);
-                }
-              } catch {
-                // Non-fatal: still forward the frame below.
-              }
-              filteredChunk += event + '\n\n';
-            } else if (!agui && eventType === 'error' && dataLine) {
-              try {
-                const errorData = JSON.parse(dataLine);
-                const errorMessage =
-                  errorData.message ||
-                  errorData.error ||
-                  CHAT_ERROR_MESSAGES.failed;
-                upstreamAiErrorEventForwarded = true;
-                if (existingConversation) {
-                  void markAgentConversationFailed(
-                    existingConversation,
-                    errorMessage,
-                    session,
-                    'streaming_error',
-                    errorData.stack,
-                    errorData.metadata
-                      ? new Map(Object.entries(errorData.metadata))
-                      : undefined,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark agent conversation from AI error SSE',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              } catch (parseError: any) {
-                logger.error('Failed to parse error event data', {
-                  requestId,
-                  parseError: parseError.message,
-                  dataLine,
-                });
-                upstreamAiErrorEventForwarded = true;
-                if (existingConversation) {
-                  void markAgentConversationFailed(
-                    existingConversation,
-                    CHAT_ERROR_MESSAGES.failed,
-                    session,
-                    'parse_error',
-                    parseError.stack,
-                  ).catch((markErr: any) => {
-                    logger.error(
-                      'Failed to mark agent conversation after error-event parse failure',
-                      {
-                        requestId,
-                        error: markErr?.message,
-                      },
-                    );
-                  });
-                }
-                filteredChunk += event + '\n\n';
-              }
-            } else if (
-              !agui &&
-              eventType === 'ask_user_question' &&
-              dataLine &&
-              existingConversation
-            ) {
-              try {
-                const eventData = JSON.parse(dataLine);
-                if (eventData.status === 'success') {
-                  const toolCallMessage = {
-                    messageType: 'tool_call' as const,
-                    content: '',
-                    tools: [
-                      {
-                        toolName: 'ask_user_question',
-                        toolResult: eventData.toolData ?? eventData,
-                      },
-                    ],
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                  };
-                  void appendMessages(
-                    existingConversation._id,
-                    existingConversation.orgId,
-                    [toolCallMessage as unknown as NewMessage],
-                    session,
-                  ).catch((saveErr: any) => {
-                    logger.error(
-                      'Failed to persist ask_user_question tool_call message',
-                      {
-                        requestId,
-                        conversationId: existingConversation?._id,
-                        error: saveErr?.message,
-                      },
-                    );
-                  });
-                }
-              } catch (parseErr: any) {
-                logger.warn('Failed to parse ask_user_question event data', {
-                  requestId,
-                  error: parseErr?.message,
-                });
               }
               filteredChunk += event + '\n\n';
             } else {

@@ -6,6 +6,7 @@ import { AddressInfo } from 'net'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJ1MSJ9.c2lnbmF0dXJlLXZhbHVl'
 
@@ -35,6 +36,7 @@ describe('IAMServiceCommand logging', () => {
   })
 
   beforeEach(() => {
+    registerUpstreams({ nodejs: [origin] })
     logged = []
     const record =
       (level: string) =>
@@ -52,6 +54,7 @@ describe('IAMServiceCommand logging', () => {
 
   afterEach(() => {
     sinon.restore()
+    registerUpstreams({})
   })
 
   const run = (path: string): Promise<unknown> =>
