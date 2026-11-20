@@ -10,6 +10,11 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 import { SchemaFormField } from '../schema-form-field';
 import type { AuthSchemaField } from '../../types';
 import { installDomShims, renderInTheme, inputByLabel } from '../../__tests__/fixtures';
+import { SECRET_FIELD_MASK_CLASS } from '@/app/components/ui/secret-text-field';
+
+/** A secret is hidden when its text input sits inside (or is) the mask class. */
+const isMasked = (input: HTMLInputElement) =>
+  input.type === 'text' && input.closest(`.${SECRET_FIELD_MASK_CLASS}`) !== null;
 
 type ChangeFn = (name: string, value: unknown) => void;
 
@@ -63,7 +68,7 @@ describe('SchemaFormField: secrets', () => {
     renderField(secretField, { value: 'tok_live_123' });
 
     const input = inputByLabel('API token');
-    expect(input.type).toBe('password');
+    expect(isMasked(input)).toBe(true);
     expect(input.value).toBe('tok_live_123');
     expect(screen.queryByText('tok_live_123')).toBeNull();
   });
@@ -73,10 +78,10 @@ describe('SchemaFormField: secrets', () => {
     const input = inputByLabel('API token');
 
     fireEvent.click(screen.getByRole('button', { name: 'Show password' }));
-    expect(input.type).toBe('text');
+    expect(isMasked(input)).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide password' }));
-    expect(input.type).toBe('password');
+    expect(isMasked(input)).toBe(true);
   });
 
   it('shows the value once the form reveals it and masks it again when the reveal ends', () => {
@@ -84,21 +89,21 @@ describe('SchemaFormField: secrets', () => {
     const view = renderInTheme(
       <SchemaFormField field={secretField} value="tok_live_123" onChange={onChange} revealed={false} />
     );
-    expect(inputByLabel('API token').type).toBe('password');
+    expect(isMasked(inputByLabel('API token'))).toBe(true);
 
     view.rerender(
       <Theme>
         <SchemaFormField field={secretField} value="tok_live_123" onChange={onChange} revealed />
       </Theme>
     );
-    expect(inputByLabel('API token').type).toBe('text');
+    expect(isMasked(inputByLabel('API token'))).toBe(false);
 
     view.rerender(
       <Theme>
         <SchemaFormField field={secretField} value="" onChange={onChange} revealed={false} />
       </Theme>
     );
-    expect(inputByLabel('API token').type).toBe('password');
+    expect(isMasked(inputByLabel('API token'))).toBe(true);
   });
 
   it('does not write the secret to the console while typing it', () => {

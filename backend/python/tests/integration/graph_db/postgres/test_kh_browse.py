@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -30,6 +31,9 @@ from .test_kh_listing_flat import (
     prov,
     seed_folder,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
@@ -510,6 +514,9 @@ CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
 NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*>?=")
 
 
+KG_TABLES = ("kg.records", "kg.links", "kg.node_keys")
+
+
 def run_kg_analyze() -> None:
     """The maintenance worker's analyze job (``python -m db.maintain analyze``) as it runs in a deployment: the migrate login as the owner role, the jobs login for the
     requests. With no interval between two ANALYZEs, so every run of the test is served (the worker waits 10 minutes)."""
@@ -521,11 +528,29 @@ def run_kg_analyze() -> None:
     assert ran.returncode == 0, ran.stdout + ran.stderr
 
 
+@pytest.fixture
+async def kg_statistics_held() -> AsyncIterator[None]:
+    """The statistics of the kg tables change only when the test says so. The tables autoanalyze after 200 rows and 2 % of their
+    size, so the rows this test adds could be analyzed by the server at any moment between the insert and the plan check: the
+    ``after_first_load`` case then planned from statistics it had not been told about, and ``after_analyze`` from a second pass."""
+    from asyncpg import connect
+
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        for table in KG_TABLES:
+            await con.execute(f"ALTER TABLE {table} SET (autovacuum_enabled = false)")
+        yield
+    finally:
+        for table in KG_TABLES:
+            await con.execute(f"ALTER TABLE {table} RESET (autovacuum_enabled)")
+        await con.close()
+
+
 # after_first_load: the statistics are those the worker took when the connectors' first loads asked for them (kg.analyze_requests), and the org has grown tenfold since.
 # Before the request, an org the statistics did not know was put at one row, and the plan of a page could read every kg row of the org (records_pkey bounded by
 # the org alone, then a sort) instead of the parent's range of a children index: a near tie the planner broke either way.
 @pytest.mark.parametrize("analyzed", [False, True], ids=["after_first_load", "after_analyze"])
-async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, analyzed) -> None:
+async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, kg_statistics_held, analyzed) -> None:
     p, org = prov(pg_db), new_org()
     await seed_folder(p, pg_db, org, 400, readable_kids=[])
     for _ in range(2):
@@ -542,7 +567,7 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
     con = await connect(os.environ["PG_ADMIN_URL"])
     try:
         if analyzed:
-            await con.execute("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys")
+            await con.execute("; ".join(f"ANALYZE {t}" for t in KG_TABLES))
         sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 3 AND id = 'fold'", org)
         app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
         g1 = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 2 AND id = 'g1'", org)

@@ -306,9 +306,9 @@ def _uses(plan, index):
 
 
 @pytest.mark.parametrize(("fn", "params", "index"), [
-    ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("rec7", ["recordId", "qualifiedName"], ['"rec7"', '"q777"']), "nodes_block_record"),
-    ("graph.blocks_by_name(%s, %s, %s::text[], %s::jsonb[], true)", ("c1", "n7", ["connectorId"], ['"c1"']), "nodes_block_name"),
-    ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/p7/f7.py", ["orgId"], ['"' + "a" * 24 + '"']), "nodes_codefile_path"),
+    ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("rec7", ["recordId", "qualifiedName"], ['"rec7"', '"q777"']), "nodes_block_record_seek"),
+    ("graph.blocks_by_name(%s, %s, %s::text[], %s::jsonb[], true)", ("c1", "n7", ["connectorId"], ['"c1"']), "nodes_block_name_seek"),
+    ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/p7/f7.py", ["orgId"], ['"' + "a" * 24 + '"']), "nodes_codefile_path_seek"),
 ], ids=["blocks_by_record", "blocks_by_name", "code_files_by_path"])
 def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, params, index):
     """Row-level security keeps the planner from the expression index of a plain statement (the `->>` operator is not leakproof); the vetted function
@@ -326,7 +326,7 @@ def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, p
         assert all(_uses(p, index) for p in plans[:1] + plans[-1:]), plans[0] + "\n" + plans[-1]
         assert all("Seq Scan on" not in p for p in plans), "a sequential scan of graph.nodes"
         # the same read as a plain statement, which is what the provider sent before: no key index
-        coll, hot = ("codeFiles", "n.doc->>'filePath' = %s") if index == "nodes_codefile_path" else ("blocks", "n.doc->>'recordId' = %s")
+        coll, hot = ("codeFiles", "n.doc->>'filePath' = %s") if index == "nodes_codefile_path_seek" else ("blocks", "n.doc->>'recordId' = %s")
         plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = %s AND " + hot,
                                                   (coll, "src/p7/f7.py" if coll == "codeFiles" else "rec7"))
         assert not any(_uses(p, index) for p in plain), "the plain statement used the index: the function is not needed on this server"
@@ -493,6 +493,123 @@ def test_the_hot_lookups_keep_their_key_index_when_the_planner_expects_a_big_col
         as_role(c, "pipeshub_connectors", A)
         assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, '', 1000)")] == ["bz0", "bz1", "bz2"]
         assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, 'bz0', 1)")] == ["bz1"]
+
+
+def _analyzed(c, org: str, sql: str, params: tuple) -> str:
+    """The plans auto_explain logs, with actual row counts, for the statements one call runs under the connectors role."""
+    notes: list[str] = []
+    c.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
+    with c.transaction():
+        c.execute("LOAD 'auto_explain'")
+        for s in ("log_min_duration = 0", "log_nested_statements = on", "log_analyze = on", "log_timing = off", "log_level = notice"):
+            c.execute(f"SET LOCAL auto_explain.{s}")
+        c.execute("SET LOCAL ROLE pipeshub_connectors")
+        c.execute("SELECT set_config('app.org_id', %s, true)", (org,))
+        c.execute(sql, params).fetchall()
+        c.execute("RESET ROLE")
+    return "\n".join(notes)
+
+
+def _seek_scans(plan: str, index: str) -> list[tuple[int, int, str, int]]:
+    """(actual rows, loops, index condition, rows removed by a filter) of every scan of ``index`` in an analyzed auto_explain plan."""
+    lines = plan.splitlines()
+    scans = []
+    for i, line in enumerate(lines):
+        m = re.search(rf"Index (?:Only )?Scan using \S*{index} on \S+ n(?:_\d+)?\b.*actual rows=(\d+)(?:\.\d+)? loops=(\d+)", line)
+        if m:
+            own = []                        # the node's own detail lines: up to its first child or the next node
+            for nxt in lines[i + 1:]:
+                if nxt.strip().startswith("->") or not nxt.startswith(" "):
+                    break
+                own.append(nxt.strip())
+            cond = next((x for x in own if x.startswith("Index Cond: ")), "")
+            removed = sum(int(x.split(": ")[1]) for x in own if x.startswith("Rows Removed by Filter: "))
+            scans.append((int(m[1]), int(m[2]), cond, removed))
+    return scans
+
+
+def test_a_page_of_a_hot_lookup_reads_one_page_of_matches_from_its_cursor(rdb):
+    """A read of every match pages after the last id. With the matches of a key in id order inside its index (graph_0018), page k seeks past the cursor
+    and reads one page of index entries; before, each page read every match of the key and dropped those before the cursor (pages x matches)."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || lpad(i::text, 5, '0'), jsonb_build_object('orgId', %s::text, 'filePath', "
+                  "CASE WHEN i < 6000 THEN 'src/common.py' ELSE 'src/p' || i || '.py' END, 'repo', 'r' || (i %% 7)) FROM generate_series(0, 8999) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || lpad(i::text, 5, '0'), jsonb_build_object('orgId', %s::text, 'connectorId', 'c1', "
+                  "'nameFolded', CASE WHEN i < 6000 THEN 'init' ELSE 'n' || i END, 'recordId', CASE WHEN i < 6000 THEN 'big' ELSE 'r' || i END) "
+                  "FROM generate_series(0, 8999) i", (A, A))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [   # (call with the cursor last, its leading arguments, the plain filter of every match, the index)
+            ("graph.code_files_by_path(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("src/common.py",), "f", "nodes_codefile_path_seek"),
+            ("graph.blocks_by_record(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("big",), "b", "nodes_block_record_seek"),
+            ("graph.blocks_by_name(%s, %s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", ("c1", "init"), "b", "nodes_block_name_seek"),
+        ]
+        for call, lead, prefix, index in cases:
+            plan = _analyzed(c, A, f"SELECT node_id FROM {call}", (*lead, json.dumps(A), f"{prefix}04999"))
+            scans = _seek_scans(plan, index)
+            # one page of entries read once, from the cursor inside the index: not the 6,000 matches, nor 5,000 of them dropped by a filter
+            assert scans and all(rows <= 1000 and loops == 1 and re.search(r"\bid > ", cond) and removed == 0 for rows, loops, cond, removed in scans), (index, scans, plan)
+            as_role(c, "pipeshub_connectors", A)
+            ids, after = [], ""
+            while True:
+                page = [r[0] for r in c.execute(f"SELECT node_id FROM {call}", (*lead, json.dumps(A), after))]
+                ids += page
+                if len(page) < 1000:
+                    break
+                after = page[-1]
+            assert ids == [f"{prefix}{i:05d}" for i in range(6000)], (index, len(ids))
+            c.execute("RESET ROLE")
+
+
+_RANDOM_HEX = "(SELECT left(string_agg(md5(%s || g::text), ''), %s) FROM generate_series(1, 90) g)"      # incompressible text of the given length
+
+
+def test_a_hot_lookup_index_holds_every_row_the_primary_key_holds(db):
+    """The seek indexes key a 4-byte hash of the path, name or record, never the text: a row whose key is ~3,000 bytes and whose id is as long as the
+    primary key allows is built into them by the upgrade, written after it, and its page still seeks by the cursor (an index of the text and id fails
+    past about 2,700 bytes, at the build or at the write)."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "graph_0017", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    # the longest arguments the reads take (path 4096, connector 200, name 1000, record 200), and a record id no read takes (3,000)
+    path, rec, conn, fold = "src/" + "deep/" * 600 + "x.py", "q" * 200, "c" * 200, "n" * 1000
+
+    def write(c, tag: str) -> None:
+        as_role(c, "pipeshub_connectors", A)
+        for coll, doc, t in (("codeFiles", {"orgId": A, "filePath": path}, tag), ("blocks", {"orgId": A, "recordId": "r" * 3000, "connectorId": conn, "nameFolded": fold}, tag + "a"),
+                             ("blocks", {"orgId": A, "recordId": rec, "connectorId": "d", "nameFolded": "m"}, tag + "b")):
+            c.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, %s, " + _RANDOM_HEX + ", %s::jsonb)", (A, coll, t, 2650, json.dumps(doc)))
+        c.execute("COMMIT")
+    with connect(cluster, name) as c:
+        write(c, "before")
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        for index in ("nodes_block_record_seek", "nodes_block_name_seek", "nodes_codefile_path_seek"):
+            assert c.execute(f"SELECT bool_and(i.indisvalid) FROM pg_partition_tree('graph.{index}') t JOIN pg_index i ON i.indexrelid = t.relid").fetchone()[0] is True
+        write(c, "after")
+        as_role(c, "pipeshub_connectors", A)        # other keys around them, analyzed, so the plan is the one a populated graph gets
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || i, jsonb_build_object('orgId', %s::text, 'filePath', 'src/p' || i || '.py') FROM generate_series(1, 9000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || i, jsonb_build_object('orgId', %s::text, 'recordId', 'r' || (i %% 900), 'connectorId', 'c1', "
+                  "'nameFolded', 'n' || (i %% 300)) FROM generate_series(1, 9000) i", (A, A))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [("graph.code_files_by_path(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", (path,), "nodes_codefile_path_seek"),
+                 ("graph.blocks_by_record(%s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", (rec,), "nodes_block_record_seek"),
+                 ("graph.blocks_by_name(%s, %s, '{orgId}', ARRAY[%s]::jsonb[], true, %s, 1000)", (conn, fold), "nodes_block_name_seek")]
+        for call, lead, index in cases:
+            as_role(c, "pipeshub_connectors", A)
+            ids = [r[0] for r in c.execute(f"SELECT node_id FROM {call}", (*lead, json.dumps(A), ""))]
+            assert len(ids) == 2 and all(len(i) == 2650 for i in ids), (index, [len(i) for i in ids])
+            assert [r[0] for r in c.execute(f"SELECT node_id FROM {call}", (*lead, json.dumps(A), ids[0][:200]))] == [i for i in ids if i > ids[0][:200]]
+            c.execute("RESET ROLE")
+            scans = _seek_scans(_analyzed(c, A, f"SELECT node_id FROM {call}", (*lead, json.dumps(A), ids[0][:200])), index)
+            assert scans and all(loops == 1 and re.search(r"\bid > ", cond) and removed == 0 for _rows, loops, cond, removed in scans), (index, scans)
 
 
 # ---- keyed record lookups (graph_0014) -------------------------------------------------------------------------------------------------
@@ -1161,7 +1278,8 @@ STALE_PLAIN = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.
 UNHELD_PLAIN = """WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev, max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s
                     WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(%s::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
                  SELECT g.v, g.rev FROM g WHERE g.newest < %s::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = current_setting('app.org_id') AND r.coll = 'records'
-                    AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev"""
+                    AND r.doc->>'virtualRecordId' = g.v AND (r.doc->>'contentRev' = g.rev OR (r.doc->>'hasIndexedCopy' = 'true' AND r.doc->>'indexingStatus' IS NOT NULL AND r.doc->>'indexingStatus' <> 'COMPLETED'
+                       AND coalesce(r.doc->>'isPlaceholder', 'false') <> 'true'))) ORDER BY g.v, g.rev"""
 
 
 UNHELD_NEW = """SELECT virtual_record_id, revision FROM graph.stage_states_unheld(%s::text[]) GROUP BY 1, 2 HAVING max(coalesce(updated_at_ms::numeric, 0)) < %s::bigint ORDER BY 1, 2"""      # the caller's grouping
@@ -1332,3 +1450,126 @@ def test_the_link_read_uses_its_two_indexes_where_the_plain_statement_cannot(rdb
         plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' "
                                                                            "AND n.doc->>'externalRecordId' = 'e777'")
         assert not any(re.search(r"Index Cond: .*externalRecordId", p) for p in plain), plain[0]
+
+
+# ---- records by web address and the Jira sites of the org (graph_0017) ---------------------------------------------------------------------
+# 6,421 characters that compress poorly: more than a btree row holds, so the index keys the address by its md5
+LONG = "https://long.example/" + "".join(f"{i:08x}{(i * 2654435761) % 2**32:08x}" for i in range(400))
+OLD_AT = "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'webUrl' = ANY(%s::text[])"
+AT = "SELECT node_id FROM graph.records_by_weburl(%s::text[])"
+# the provider's statement before graph_0017
+OLD_SITES = ("SELECT site FROM (SELECT DISTINCT (regexp_match(n.doc->>'webUrl', '^(.*)/browse/'))[1] AS site FROM graph.nodes n "
+             "WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'orgId' = %s AND n.doc->>'recordType' = 'TICKET' "
+             "AND n.doc->>'connectorName' = ANY(%s::text[]) AND n.doc->>'webUrl' LIKE '%%/browse/%%' AND coalesce((n.doc->>'isDeleted')::boolean, false) = false) q "
+             "WHERE site <> '' ORDER BY site LIMIT %s")
+SITES = "SELECT site_url FROM graph.ticket_sites(%s, %s::text[], %s)"
+
+
+def _seed_addresses(c):
+    rows = {"p1": {"webUrl": "https://w/1", "recordType": "WEBPAGE"}, "p1att": {"webUrl": "https://w/1", "recordType": "FILE", "isDependentNode": True},
+            "p1link": {"webUrl": "https://w/1", "recordType": "LINK", "connectorName": "SLACK WORKSPACE"}, "p1slash": {"webUrl": "https://w/1/"},
+            "pdel": {"webUrl": "https://w/2", "isDeleted": True}, "plong": {"webUrl": LONG}, "pempty": {"webUrl": ""}, "pnone": {"recordType": "FILE"}}
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for rid, doc in rows.items():
+            if not (org == B and rid == "p1slash"):                                  # the address with a slash is A's alone
+                c.execute(NODE, (org, "records", rid, json.dumps({"orgId": org, **doc})))
+        c.execute(NODE, (org, "files", "f1", json.dumps({"webUrl": "https://w/1"})))      # not a record
+
+
+def test_the_records_at_an_address_are_every_record_of_the_org_stored_there(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_addresses(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for urls in (["https://w/1"], ["https://w/1/"], ["https://w/1", "https://w/2", LONG, ""], ["https://W/1", "https://w/1?x", "nope"], [LONG[:-1]], ["https://w/1"] * 3, []):
+                new = [r[0] for r in c.execute(AT, (urls,))]
+                assert len(new) == len(set(new)) and set(new) == {r[0] for r in c.execute(OLD_AT, (urls,))}, (org, urls, new)
+        as_role(c, "pipeshub_connectors", A)
+        assert {r[0] for r in c.execute(AT, (["https://w/1"],))} == {"p1", "p1att", "p1link"}
+        assert [r[0] for r in c.execute(AT, ([LONG],))] == ["plong"] and [r[0] for r in c.execute(AT, ([""],))] == ["pempty"]
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert c.execute("SELECT count(*) FROM graph.records_by_weburl(%s::text[])", (["https://w/1", ""],)).fetchone()[0] == 0, org
+        as_role(c, "pipeshub_connectors", A)
+        for args in (None, [None], ["x" * 100001], ["u"] * 1001):
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(AT, (args,))
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            assert c.execute("SELECT has_function_privilege(%s, 'graph.records_by_weburl(text[])', 'EXECUTE')", (role,)).fetchone()[0] is ok, role
+
+
+TICKET_ROWS = {   # id -> (connectorName, webUrl, extra): sites the old statement told apart, and tickets it left out
+    "t1": ("JIRA", "https://x.atlassian.net/browse/ENG-1", {}), "t2": ("JIRA", "https://x.atlassian.net/browse/ENG-2", {}),
+    "t3": ("JIRA", "https://y.atlassian.net/browse/OPS-1", {"isDeleted": False}), "t4": ("JIRA DATA CENTER", "https://jira.corp.example/jira/browse/DC-7", {}),
+    "tgone": ("JIRA", "https://gone.atlassian.net/browse/G-1", {"isDeleted": True}), "tdup": ("JIRA", "https://h.example/browse/x/browse/K-1", {}),
+    "troot": ("JIRA", "/browse/E-1", {}), "tgh": ("GITHUB", "https://gh.example/browse/Z-1", {}), "tnokey": ("JIRA", "https://z.atlassian.net/projects/ENG", {}),
+    "towner": ("JIRA", "https://owner.atlassian.net/browse/O-1", {"orgId": "c" * 24}), "tfile": ("JIRA", "https://file.atlassian.net/browse/F-1", {"recordType": "FILE"}),
+    "tnl": ("JIRA", "https://nl.example/a\nb/browse/N-1", {}), "tnone": ("JIRA", None, {}),
+}
+
+
+def test_the_ticket_sites_are_what_the_plain_statement_read_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for rid, (conn, url, extra) in TICKET_ROWS.items():
+                if org == B and rid in ("t1", "t2", "t4"):
+                    continue                                                        # B has the y site only of these
+                c.execute(NODE, (org, "records", rid, json.dumps({"orgId": org, "recordType": "TICKET", "connectorName": conn, **({"webUrl": url} if url else {}), **extra})))
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for owner in (A, B, "c" * 24):
+                for names in (["JIRA"], ["JIRA", "JIRA DATA CENTER"], ["JIRA", "JIRA"], ["GITHUB"], ["nope"]):
+                    for limit in (None, 0, 1, 2, 100):
+                        old = [r[0] for r in c.execute(OLD_SITES, (owner, names, limit))]
+                        assert [r[0] for r in c.execute(SITES, (owner, names, limit))] == old, (org, owner, names, limit)
+        as_role(c, "pipeshub_connectors", A)
+        got = [r[0] for r in c.execute(SITES, (A, ["JIRA", "JIRA DATA CENTER"], None))]
+        assert set(got) == {"https://x.atlassian.net", "https://y.atlassian.net", "https://jira.corp.example/jira", "https://h.example/browse/x", "https://nl.example/a\nb"}, got
+        as_role(c, "pipeshub_connectors", B)
+        assert [r[0] for r in c.execute(SITES, (B, ["JIRA", "JIRA DATA CENTER"], None))] == [r[0] for r in c.execute(OLD_SITES, (B, ["JIRA", "JIRA DATA CENTER"], None))]
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert c.execute("SELECT count(*) FROM graph.ticket_sites(%s, %s::text[], NULL)", (A, ["JIRA"])).fetchone()[0] == 0, org
+        as_role(c, "pipeshub_connectors", A)
+        for args in ((None, ["JIRA"], None), ("", ["JIRA"], None), ("o" * 201, ["JIRA"], None), (A, None, None), (A, [None], None), (A, [""], None),
+                     (A, ["J"] * 101, None), (A, ["JIRA"], -1)):
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(SITES, args)
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            assert c.execute("SELECT has_function_privilege(%s, 'graph.ticket_sites(text, text[], int)', 'EXECUTE')", (role,)).fetchone()[0] is ok, role
+
+
+def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements_read_the_org(rdb):
+    """12,000 records two to an address and 12,000 tickets on three sites of two connectors, on a leaf the planner expects to hold 4 billion rows."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'webUrl', 'https://w/p' || (i %% 6000)) "
+                  "FROM generate_series(1, 12000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 't' || i, jsonb_build_object('orgId', %s::text, 'recordType', 'TICKET', 'connectorName', "
+                  "CASE WHEN i %% 2 = 0 THEN 'JIRA' ELSE 'JIRA DATA CENTER' END, 'webUrl', 'https://s' || (i %% 3) || '.atlassian.net/browse/K-' || i) "
+                  "FROM generate_series(1, 12000) i", (A, A))
+        _big_leaf(c, A)
+        for urls in (["https://w/p7"], ["https://w/p7", "nope"], [f"https://w/p{i}" for i in range(1000)]):
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, AT, (urls,))
+            for i in (0, 6):
+                assert "nodes_record_weburl" in plans[i] and not _reads_by(plans[i], "nodes_record_weburl", "webUrl"), (len(urls), i, plans[i])
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, SITES, (A, ["JIRA", "JIRA DATA CENTER", "JIRA PERSONAL"], None))
+        for i in (0, 6):
+            assert "nodes_record_ticket_site" in plans[i] and not _reads_by(plans[i], "nodes_record_ticket_site", "connectorName"), (i, plans[i])
+            # each probe reads the index in order and stops at its first row; a sort under the LIMIT would read every ticket of the connector
+            assert not re.search(r"Sort Key: \(?md5", plans[i]), (i, plans[i])
+        # what the provider sent before: a read of the org
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, OLD_AT, (["https://w/p7"],))
+        assert _reads_by(plain[6], "nodes_record_weburl", "webUrl"), plain[6]
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, OLD_SITES, (A, ["JIRA"], None))
+        assert _reads_by(plain[6], "nodes_record_ticket_site", "connectorName"), plain[6]
+        as_role(c, "pipeshub_connectors", A)
+        assert sorted(r[0] for r in c.execute(AT, (["https://w/p7"],))) == ["r6007", "r7"]
+        assert [r[0] for r in c.execute(SITES, (A, ["JIRA", "JIRA DATA CENTER"], None))] == [f"https://s{i}.atlassian.net" for i in range(3)]

@@ -157,6 +157,7 @@ from app.services.graph_db.common.name_match import cypher_name_key, name_query_
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
+    cypher_holds_vrid,
     cypher_live_record,
     cypher_record_visibility,
     cypher_searchable_record,
@@ -201,6 +202,7 @@ from app.services.graph_db.conditions import (
     EQ,
     IS_NULL,
     NULL_OR_EQ,
+    ONE_OF,
     Cond,
     check_conditions,
 )
@@ -876,6 +878,12 @@ LISTED = """CALL () {{
 _KH_SPLIT_COMPARE = "split-compare"
 
 
+@lru_cache(maxsize=8)
+def _warn_unknown_kh_browse_mode(value: str) -> None:
+    # Once per value: the mode is read on every browse.
+    logging.getLogger(__name__).warning("KH_BROWSE_MODE=%r is not legacy, split or shadow; browsing with split", value)
+
+
 class _KhSplitUndecided(Exception):
     """The split browse cannot decide a row within its bounds: a node with more children than it reads and none admitted among
     those it read, or stubs below stubs past the depth cap. The page is answered by legacy, which decides in the database, so
@@ -1370,6 +1378,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_virtual_record_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.virtualRecordId)"
+        )
+        # The virtual record a record is indexing into: the holder lookups also match it (record_visibility.cypher_holds_vrid)
+        indexes.append(
+            "CREATE INDEX record_pending_virtual_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.pendingVirtualRecordId)"
         )
 
         # get_document_id_by_virtual_record_id falls back to this field when the
@@ -4771,13 +4784,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return {}
         query = """
         UNWIND $vrids AS vid
-        MATCH (r:Record {virtualRecordId: vid})
-        WHERE r.orgId = $org_id
+        MATCH (r:Record)
+        WHERE %s AND r.orgId = $org_id
         RETURN vid, r.id AS id, r.connectorId AS connectorId,
                r.connectorName AS connectorName, r.recordGroupId AS recordGroupId,
                r.recordName AS recordName, r.webUrl AS webUrl, r.contentRev AS contentRev,
                coalesce(r.isDeleted, false) AS isDeleted
-        """
+        """ % cypher_holds_vrid("r", "vid")
         results = await self.client.execute_query(
             query,
             parameters={"vrids": list(dict.fromkeys(virtual_record_ids)), "org_id": org_id},
@@ -4824,8 +4837,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # this file: in Cypher `null <> true` is null, which WHERE treats as
             # false, so `<> true` silently drops every record predating the field.
             query = f"""
-            MATCH (r:Record {{virtualRecordId: $virtual_record_id}})
-            WHERE {cypher_record_visibility("r", visibility)}
+            MATCH (r:Record)
+            WHERE {cypher_holds_vrid("r", "$virtual_record_id")}
+            AND {cypher_record_visibility("r", visibility)}
             """
 
             # Add optional filter for record IDs
@@ -5073,6 +5087,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         clock_at_most: float | None = None,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if_match`."""
         if not expected:
@@ -5094,6 +5109,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             else:
                 parameters[f"v{i}"] = value
                 conditions.append(f"n[$f{i}] = $v{i}")
+        # The removed attributes (a dynamic property set to null is removed)
+        unset_clause = ""
+        for j, name in enumerate(unset):
+            parameters[f"u{j}"] = name
+            unset_clause += f"SET n[$u{j}] = NULL\n            "
         # The lock comes first so the check reads a write that committed while
         # this waited, instead of overwriting it (Neo4j's lost-update pattern).
         rows = await self.client.execute_query(
@@ -5104,6 +5124,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH n
             WHERE {" AND ".join(conditions)}
             SET n += $updates
+            {unset_clause}
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
             RETURN 1 AS n
             """,
@@ -5119,6 +5140,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         updates: dict[str, Any],
         conditions: Sequence[Cond],
         transaction: str | None = None,
+        *,
+        unset: Sequence[str] = (),
     ) -> bool:
         """See :meth:`IGraphDBProvider.update_node_fields_if`."""
         check_conditions(conditions)
@@ -5137,8 +5160,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 clauses.append(f"n[$f{i}] = $v{i}")
             elif cond.op == NULL_OR_EQ:
                 clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] = $v{i})")
+            elif cond.op == ONE_OF:
+                clauses.append(f"n[$f{i}] IN $v{i}")
             else:
                 clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] <= $v{i})")
+        unset_clause = ""
+        for j, name in enumerate(unset):
+            parameters[f"u{j}"] = name
+            unset_clause += f"SET n[$u{j}] = NULL\n            "
         # The lock comes first so the conditions read a write that committed while this waited.
         rows = await self.client.execute_query(
             f"""
@@ -5148,6 +5177,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH n
             WHERE {" AND ".join(clauses)}
             SET n += $updates
+            {unset_clause}
             {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
             RETURN 1 AS n
             """,
@@ -5373,8 +5403,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return set()
         query = f"""
         UNWIND $virtual_record_ids AS vrid
-        MATCH (r:Record {{virtualRecordId: vrid}})
-        WHERE {cypher_record_visibility("r", visibility)}
+        MATCH (r:Record)
+        WHERE {cypher_holds_vrid("r", "vrid")} AND {cypher_record_visibility("r", visibility)}
         RETURN DISTINCT vrid
         """
         results = await self.client.execute_query(
@@ -8751,8 +8781,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.get_entity_access_context`.
 
         App paths mirror `get_user_apps` plus the KB paths, and RecordGroup
-        paths mirror Paths 1-4 and the nested step of
-        `_build_permission_paths_cypher`.
+        paths mirror Paths 1-4 of `_build_permission_paths_cypher`. Unlike its
+        nested step, the inheritance walk here stays inside the seed's connector.
         """
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
@@ -8867,14 +8897,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         // unlabelled with its filters after the WITH, or the planner seeks
         // child record groups by index and checks paths back to the seed
         // (VarLengthExpand(Into)), three times the cost. The whole-path
-        // predicate still requires child to be a RecordGroup.
+        // predicate still requires child to be a RecordGroup, and keeps the
+        // walk inside the seed's connector (a null connectorId matches none).
         CALL {
             WITH seed_rgs, record_level_app_ids
             UNWIND seed_rgs AS seed
             WITH seed, record_level_app_ids
             WHERE coalesce(seed.hideChildren, false) = false
             MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..__INHERIT_DEPTH__]-(child)
-            WHERE all(n IN nodes(p) WHERE n:RecordGroup)
+            WHERE all(n IN nodes(p) WHERE n:RecordGroup AND n.connectorId = seed.connectorId)
             WITH child, record_level_app_ids
             WHERE child.orgId = $org_id
               AND coalesce(child.isDeleted, false) = false
@@ -17112,7 +17143,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH vrid, state.rev AS rev, max(coalesce(state.updatedAtMs, 0)) AS newest
                 WHERE newest < $before
                   AND NOT EXISTS {{
-                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev OR (r.hasIndexedCopy = true AND r.indexingStatus IS NOT NULL AND r.indexingStatus <> 'COMPLETED' AND coalesce(r.isPlaceholder, false) = false)
                   }}
                 RETURN vrid, rev ORDER BY vrid, rev
                 """,
@@ -17146,7 +17177,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH vrid, rev, collect(state) AS states
                 WHERE all(s IN states WHERE coalesce(s.updatedAtMs, 0) < $before)
                   AND NOT EXISTS {{
-                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev OR (r.hasIndexedCopy = true AND r.indexingStatus IS NOT NULL AND r.indexingStatus <> 'COMPLETED' AND coalesce(r.isPlaceholder, false) = false)
                   }}
                 UNWIND states AS state
                 DETACH DELETE state
@@ -21843,10 +21874,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
         return list(rows[0].get("ids") or []) if rows else []
 
-    # A browse (``flatten=False``) decides what it lists in one of two ways (``KH_BROWSE_MODE``):
-    # - ``legacy``: one statement evaluates the browse rule at every hop, for the listing, each row's arrow and the stubs. It
-    #   grew to 62-104 KB and 262 EXISTS subqueries, which Neo4j takes minutes to plan (docs/knowledge-hub-browse.md).
-    # - ``split``: the definition the Knowledge Hub conformance layer holds both to (tests/permissions/kh_layer.py), computed
+    # A browse (``flatten=False``) decides what it lists in one of two ways (``KH_BROWSE_MODE``, unset or unknown: ``split``):
+    # - ``legacy`` (opt-out): one statement evaluates the browse rule at every hop, for the listing, each row's arrow and the
+    #   stubs. It grew to 62-104 KB and 262 EXISTS subqueries, which Neo4j takes minutes to plan (docs/knowledge-hub-browse.md).
+    # - ``split`` (the default): the definition the Knowledge Hub conformance layer holds both to (tests/permissions/kh_layer.py), computed
     #   from small fixed statements. A browse of N lists N's hierarchy children of N's App that the batch check admits and no
     #   group that hides its children holds or lies above, the chain-tops placed under N, and a stub child only where opening
     #   it lists something. A row's arrow is on exactly where opening the row lists something. The page statement then lists
@@ -21870,8 +21901,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     @staticmethod
     def kh_browse_mode() -> str:
-        mode = os.getenv("KH_BROWSE_MODE", "legacy").strip().lower()
-        return mode if mode in Neo4jProvider.KH_BROWSE_MODES else "legacy"
+        mode = os.getenv("KH_BROWSE_MODE", "").strip().lower() or "split"
+        if mode not in Neo4jProvider.KH_BROWSE_MODES:
+            _warn_unknown_kh_browse_mode(mode)
+            return "split"
+        return mode
 
     @staticmethod
     def _kh_shadow_sample() -> float:

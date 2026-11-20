@@ -1,10 +1,12 @@
 /**
  * Every tool `/mcp` can serve, read from the package's own registrations plus the code-graph
- * tools this app adds, so the admin list and the write-tool check never drift from what the
- * server mounts.
+ * and entity tools this app adds (the entity tools with every action, since some deployment
+ * serves each), so the admin list and the write-tool check never drift from what the server
+ * mounts.
  */
 
 import { registerCodeGraphTools } from './code-graph.tools';
+import { ALL_ENTITY_CAPABILITIES, registerEntityTools } from './entity.tools';
 
 export interface McpAccessTool {
   name: string;
@@ -52,6 +54,11 @@ async function buildCatalog(): Promise<McpAccessTool[]> {
       aiBackend: '',
       authorization: '',
     });
+    registerEntityTools(
+      server,
+      { aiBackend: '', authorization: '' },
+      ALL_ENTITY_CAPABILITIES,
+    );
     return registeredTools(server);
   };
   const all = mount();

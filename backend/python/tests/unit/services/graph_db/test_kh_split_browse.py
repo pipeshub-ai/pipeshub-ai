@@ -180,13 +180,23 @@ async def test_a_stub_left_unfollowed_at_the_depth_cap_is_undecided_not_empty() 
     assert await p._kh_split_lists(["N"], app_id="A", org_id="o", access={}, transaction=None, memo={}) == {"N"}
 
 
-def test_the_mode_is_legacy_unless_split_is_asked(monkeypatch: pytest.MonkeyPatch) -> None:
-    for raw, mode in [(None, "legacy"), ("split", "split"), (" SPLIT ", "split"), ("classes", "legacy"), ("", "legacy")]:
+def test_the_mode_is_split_unless_legacy_or_shadow_is_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    cases = [(None, "split"), ("", "split"), ("  ", "split"), ("split", "split"), (" SPLIT ", "split"),
+             ("legacy", "legacy"), (" Legacy ", "legacy"), ("shadow", "shadow"), ("classes", "split")]
+    for raw, mode in cases:
         if raw is None:
             monkeypatch.delenv("KH_BROWSE_MODE", raising=False)
         else:
             monkeypatch.setenv("KH_BROWSE_MODE", raw)
-        assert Neo4jProvider.kh_browse_mode() == mode
+        assert Neo4jProvider.kh_browse_mode() == mode, raw
+
+
+def test_an_unknown_mode_is_warned_about_once(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setenv("KH_BROWSE_MODE", "no-such-mode")
+    with caplog.at_level(logging.WARNING):
+        assert [Neo4jProvider.kh_browse_mode() for _ in range(3)] == ["split"] * 3
+    assert [r.getMessage() for r in caplog.records if "KH_BROWSE_MODE" in r.getMessage()] == [
+        "KH_BROWSE_MODE='no-such-mode' is not legacy, split or shadow; browsing with split"]
 
 
 def test_the_split_statements_are_small() -> None:

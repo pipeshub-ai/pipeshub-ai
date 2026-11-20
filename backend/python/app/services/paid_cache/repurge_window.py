@@ -53,6 +53,9 @@ if TYPE_CHECKING:
 
     from redis.asyncio import Redis
 
+    #: Purges many ids of an org at once; one entry per id, ``None`` when it is done, else the error.
+    PurgeMany = Callable[[str, Sequence[str]], Awaitable[dict[str, BaseException | None]]]
+
 log = logging.getLogger(__name__)
 
 COALESCE_ENV = "PAID_RESULT_REPURGE_COALESCE"
@@ -693,8 +696,9 @@ def tail_delay_s(attempt: int) -> float:
 async def handle_page_hop(
     producer: Any, org_id: str, payload: dict[str, Any], *,  # noqa: ANN401
     purge: Callable[[str, str], Awaitable[None]], loop: Any = None, now: float | None = None,  # noqa: ANN401
+    purge_many: PurgeMany | None = None,
 ) -> None:
-    """A page hop: purge every id, then publish the next hop (all ids again). Partial failure never fails the page:
+    """A page hop: purge every id (through ``purge_many`` when given: a few storage requests for the page, else one per id), then publish the next hop (all ids again). Partial failure never fails the page:
     the next hop retries the failed ids; at the final hop a tail message carries just them, a few attempts, and then the
     message dead-letters with them. Every id failing, or the successor not publishing, raises (broker redelivery)."""
     ids = _ids_of(payload)
@@ -704,7 +708,7 @@ async def handle_page_hop(
     tail = payload.get("tail") is True
     attempt = payload.get("attempt")
     attempt = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) and attempt >= 1 else 1
-    failed, first_error = await _purge_all(org_id, ids, purge)
+    failed, first_error = await _purge_all(org_id, ids, purge, purge_many)
     if ids and len(failed) == len(ids) and not tail:
         raise first_error or RuntimeError("every id of a re-purge page failed")
     if tail:
@@ -733,8 +737,14 @@ async def handle_page_hop(
 
 
 async def _purge_all(
-    org_id: str, ids: list[str], purge: Callable[[str, str], Awaitable[None]],
+    org_id: str, ids: list[str], purge: Callable[[str, str], Awaitable[None]], purge_many: PurgeMany | None = None,
 ) -> tuple[list[str], BaseException | None]:
+    if purge_many is not None:
+        outcomes = await purge_many(org_id, ids)
+        # An id the answer leaves out is not purged: it is repeated like any failure.
+        failed_ids = [rid for rid in ids if rid not in outcomes or outcomes[rid] is not None]
+        first_failure = next((outcomes[rid] for rid in failed_ids if outcomes.get(rid) is not None), None)
+        return failed_ids, first_failure
     gate = asyncio.Semaphore(PURGE_CONCURRENCY)
     errors: list[BaseException | None] = []
 

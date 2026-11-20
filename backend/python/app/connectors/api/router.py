@@ -66,6 +66,7 @@ from app.api.middlewares.auth import (
     require_scopes,
     require_service_token,
 )
+from app.api.middlewares.request_log import add_request_log_fields, mark_request_failure
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -158,6 +159,7 @@ from app.connectors.services.vector_store_rebuild import (
     VectorStoreRebuildConflictError,
     acquire_rebuild_lock,
     assert_no_indexing_in_flight,
+    precision_wait_in_force,
     list_rebuild_apps,
     release_rebuild_lock,
     schedule_vector_store_job_async,
@@ -220,6 +222,7 @@ from app.utils.oauth_config import (
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
+from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
@@ -3169,7 +3172,10 @@ async def _accept_vector_store_job(
     # the same VRID can interleave delete-then-upsert into duplicates.
     try:
         apps = await list_rebuild_apps(graph_provider, org_id=org_id)
-        await assert_no_indexing_in_flight(graph_provider, apps)
+        # A cleanup is how an index is moved to another weight precision: while indexing is waiting for the
+        # embedding precision its queued records are not work in flight, so only IN_PROGRESS ones are counted.
+        waiting_for_precision = operation == "cleanup" and await precision_wait_in_force(config_service)
+        await assert_no_indexing_in_flight(graph_provider, apps, waiting_for_precision=waiting_for_precision)
     except VectorStoreRebuildConflictError as exc:
         await release_rebuild_lock(lock, redis)
         raise HTTPException(
@@ -3190,6 +3196,7 @@ async def _accept_vector_store_job(
         if operation == "cleanup":
             job = start_vector_store_cleanup(
                 logger=logger,
+                config_service=config_service,
                 graph_provider=graph_provider,
                 kafka_service=kafka_service,
                 lock=lock,
@@ -3197,6 +3204,7 @@ async def _accept_vector_store_job(
                 org_id=org_id,
                 user_id=user_id,
                 apps=apps,
+                waiting_for_precision=waiting_for_precision,
             )
         else:
             data_store = await container.data_store()
@@ -7265,7 +7273,9 @@ async def handle_oauth_callback(
             error = None
 
         if error:
-            logger.error(f"OAuth error: {error}")
+            # The raw parameter is anyone's input: only a code a spec defines goes on the line.
+            add_request_log_fields(request, oauth_error=authorization_error_code(error))
+            mark_request_failure(request, None, error_class=authorization_error_class(error), reason="provider_error")
             return {
                 "success": False,
                 "error": error,
@@ -7318,7 +7328,8 @@ async def handle_oauth_callback(
             is_admin=is_admin
         )
         if not instance:
-            logger.error(f"Instance {connector_id} not found or access denied")
+            # connector_id comes from the caller's state: kept off the line.
+            mark_request_failure(request, None, error_class="not_found", reason="instance_not_found")
             return {
                 "success": False,
                 "error": "instance_not_found",
@@ -7481,7 +7492,8 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
-        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
+        # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
+        mark_request_failure(request, e, reason="server_error", include_error_text=False)
 
         # Update instance authentication status on error
         if connector_id:

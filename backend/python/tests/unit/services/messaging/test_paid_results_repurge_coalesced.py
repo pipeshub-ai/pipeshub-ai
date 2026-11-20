@@ -195,6 +195,42 @@ async def test_a_partial_failure_does_not_fail_the_page_and_the_next_hop_carries
     assert broker.sent[0].payload["hop"] == 2
 
 
+def _many(bad: set[str], *, leave_out: set[str] = frozenset()) -> Any:  # noqa: ANN401
+    calls: list[list[str]] = []
+
+    async def purge_many(org: str, ids: Any) -> dict[str, BaseException | None]:  # noqa: ANN401
+        calls.append(list(ids))
+        return {i: (ConnectionError("down") if i in bad else None) for i in ids if i not in leave_out}
+    purge_many.calls = calls  # type: ignore[attr-defined]
+    return purge_many
+
+
+async def test_a_page_hop_with_a_batch_purge_purges_the_page_in_one_call_and_carries_every_id_on(clock: list[float]) -> None:
+    broker = Broker(clock)
+    ids = [f"r{i}" for i in range(500)]
+    per_id, many = _flaky(set()), _many({"r3"})
+    await repurge_window.handle_page_hop(broker, ORG, _hop(clock, ids), purge=per_id, purge_many=many)
+    assert many.calls == [ids] and per_id.calls == []                       # one batch call, no per-id purge
+    assert [m.type for m in broker.sent] == [BATCH] and broker.sent[0].payload["recordIds"] == ids
+
+
+async def test_a_page_hop_with_a_batch_purge_retries_failed_and_unanswered_ids_in_the_tail(clock: list[float]) -> None:
+    broker = Broker(clock)
+    ids = ["a", "b", "c"]
+    await repurge_window.handle_page_hop(
+        broker, ORG, _hop(clock, ids, hop=50, deleted_at=clock[0] - repurge_horizon_s() - 1), purge=_flaky(set()), purge_many=_many({"b"}, leave_out={"c"}),
+    )
+    tails = [m.payload for m in broker.sent if m.payload.get("tail")]
+    assert len(tails) == 1 and tails[0]["recordIds"] == ["b", "c"]
+
+
+async def test_a_page_hop_whose_batch_purge_fails_for_every_id_raises_so_the_page_is_redelivered(clock: list[float]) -> None:
+    with pytest.raises(ConnectionError):
+        await repurge_window.handle_page_hop(
+            Broker(clock), ORG, _hop(clock, ["a", "b"]), purge=_flaky(set()), purge_many=_many({"a", "b"}),
+        )
+
+
 async def test_every_id_failing_or_the_successor_not_publishing_raises_so_the_page_is_redelivered(clock: list[float]) -> None:
     ids = ["a", "b"]
     with pytest.raises(ConnectionError):
@@ -325,10 +361,14 @@ def _chain_length() -> int:
     return count
 
 
-async def test_a_100k_record_bulk_delete_makes_pages_of_hops_not_a_chain_per_record(
-    monkeypatch: pytest.MonkeyPatch, clock: list[float],
+# The message ratio does not depend on the delete count once a few windows and pages have formed: at 20,000 it is 46x, at
+# 100,000 it is 46x. The work does: every record runs the real hop code (about 30 us a step, a few hundred thousand env
+# reads and millions of id checks at 100,000), 3 s on an idle core but over a minute on a CI runner that is shared, so the
+# per-PR job runs the 20,000 case and the 100,000 case runs with the stress tests (``-m stress`` or RUN_STRESS_TESTS=1).
+@pytest.mark.parametrize("n", [20_000, pytest.param(100_000, marks=pytest.mark.stress)], ids=["20k", "100k"])
+async def test_a_bulk_delete_makes_pages_of_hops_not_a_chain_per_record(
+    monkeypatch: pytest.MonkeyPatch, clock: list[float], n: int,
 ) -> None:
-    n = 100_000
     store, broker = MemoryWindowStore(), Broker(clock)
     sim = _Sim(broker, store, clock, monkeypatch)
     start = clock[0]

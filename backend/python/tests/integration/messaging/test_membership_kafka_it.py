@@ -1,7 +1,7 @@
 """The membership interlock against a real Kafka broker.
 
 Unit tests cannot catch a wrong guess about what aiokafka's admin client returns, so this one
-starts real consumers: a pod that follows the stored-write protocol (client id tagged ``/sp3``) and
+starts real consumers: a pod that follows the stored-write protocol (client id tagged ``/sp4``) and
 an older pod (untagged) in one group, and checks that the product's check reports the older pod, that
 the entry the publisher writes carries it, and that the verdict Node and the readers evaluate from
 that entry refuses to turn artifact reads on.
@@ -24,7 +24,7 @@ from tests.integration.messaging.conftest import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 OLD_POD = "indexing-old-pod"
-NEW_POD = "indexing/sp3"
+NEW_POD = "indexing/sp4"
 
 
 async def _stable_with(bootstrap: str, group: str, members: int) -> None:

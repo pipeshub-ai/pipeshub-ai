@@ -13,11 +13,13 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/python/app/core/**'
+      - 'backend/python/app/services/vector_db/collection_pin.py'
       - 'backend/python/app/services/pg_*.py'
       - 'backend/python/app/services/messaging/**'
       # The window of the coalesced re-purge runs on the state tables in PostgreSQL mode (PgWindowStore).
       - 'backend/python/app/services/paid_cache/**'
       - 'backend/python/tests/support/repurge_window.py'
+      - 'backend/python/tests/support/plan_gate.py'
       - 'backend/python/app/services/redis/**'
       - 'backend/python/app/services/cache/**'
       - 'backend/python/app/config/**'

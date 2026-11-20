@@ -28,6 +28,7 @@ from app.utils.aimodels import (
     get_embedding_model,
     get_generator_model,
 )
+from tests.support.app_tree import may_contain_name, sources
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.provider_configs import BASE, service_account_json
 from tests.support.sdk_retries import sdk_retries
@@ -205,8 +206,11 @@ NOT_INDEXING = {
 }
 
 
+ROLE_RESOLVERS = ("get_llm_for_role", "_get_llm_for_role")
+
+
 def _role_arg(call: ast.Call) -> ast.expr | None:
-    names = {"get_llm_for_role", "_get_llm_for_role"}
+    names = set(ROLE_RESOLVERS)
     func = call.func
     name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
     if name not in names:
@@ -222,11 +226,14 @@ def test_every_indexing_role_call_site_passes_sdk_retries() -> None:
     ``sdk_retries=INDEXING_SDK_RETRIES``. A new site that forgets it fails here, not in production."""
     offenders: list[str] = []
     seen = 0
-    for path in sorted(APP.rglob("*.py")):
+    # ``sources`` is the tree's one cached read and ``may_contain_name`` skips every file that holds neither function name
+    # (a call can only match by its name), so only the few files that resolve a role are parsed; the rest of the 2,250
+    # files were parsed for nothing (30 s on an idle core, over the 60 s timeout on a loaded runner).
+    for path, text in sources(APP):
         relative = path.relative_to(APP.parent).as_posix()
-        if relative in NOT_INDEXING:
+        if relative in NOT_INDEXING or not may_contain_name(text, *ROLE_RESOLVERS):
             continue
-        tree = ast.parse(path.read_bytes())
+        tree = ast.parse(text)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

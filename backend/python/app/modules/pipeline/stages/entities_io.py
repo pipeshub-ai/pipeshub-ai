@@ -29,6 +29,7 @@ from app.services.featureflag.platform_settings import (
     is_named_entity_extraction_enabled,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.utils.indexing_timing import stage
 from app.utils.llm import indexing_model_identity, load_ai_models
 
@@ -165,6 +166,8 @@ class GraphEntitiesIO(RecordStageIO):
                     continue
                 await self._graph.copy_named_entity_mentions(owner, sibling)
                 await self._sink.sync_entities_for_duplicate(document)
+            except PrecisionFlip:
+                raise
             except Exception as exc:
                 self._logger.warning(
                     "Named entities of record %s not copied to its copy %s: %s", owner, sibling, type(exc).__name__

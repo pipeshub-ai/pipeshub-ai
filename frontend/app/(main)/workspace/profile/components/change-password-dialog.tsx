@@ -121,6 +121,7 @@ export function ChangePasswordDialog({
               </Text>
               <TextField.Root
                 type="password"
+                autoComplete="current-password"
                 placeholder={t('workspace.profile.changePassword.currentPasswordPlaceholder')}
                 value={form.currentPassword}
                 onChange={(e) => {

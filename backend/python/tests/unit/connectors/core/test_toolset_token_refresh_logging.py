@@ -315,6 +315,28 @@ class TestFailedRefresh:
         assert not [r for r in caplog.records if "Traceback" in r.getMessage()]
         assert_no_secrets(caplog)
 
+    async def test_token_url_saved_without_a_scheme_is_one_misconfigured_error_and_never_quoted(
+        self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The real aiohttp session: it refuses the URL before connecting, with the URL (query included) as its text.
+        query = "tenant=QRY-SEEDED-77"
+        _seed(config)
+        config.store[APPS] = [_app(tokenUrl=f"idp.example/oauth/token?{query}")]
+
+        await service._refresh_all_tokens()
+        await service._refresh_all_tokens()
+
+        ends = events(caplog, CR.EVENT_END)
+        assert [(fields(r)["error_class"], fields(r)["error_type"]) for r in ends] == [
+            ("misconfigured", "InvalidUrlClientError"), ("misconfigured", "InvalidUrlClientError"),
+        ]
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert _at_least(logging.ERROR, caplog) == [ends[0]]
+        for record in caplog.records:
+            rendered = JsonFormatter().format(record) + repr(fields(record)) + (record.exc_text or "")
+            assert query not in rendered, record.getMessage()
+        assert_no_secrets(caplog)
+
     async def test_revoked_grant_three_scans_strike_then_deauthenticate(
         self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
         caplog: pytest.LogCaptureFixture,
