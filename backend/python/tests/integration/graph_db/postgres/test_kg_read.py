@@ -163,7 +163,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
             uid = ns.id(viewer)
             with _bound(org):
                 access = await prov.get_knowledge_hub_access_v3(uid, org)
-                gate = await prov._check_gate(uid, None)      # the access a check reads when given none: grants read per node
+                gate = await prov._q(lambda tx, u=uid: prov._check_gate(tx, org, u), None)      # the access a check reads when given none: grants read per node
             walk = await _ask(prov, org, uid, ids, access, "0")
             got = await _ask(prov, org, uid, ids, access, None)
             for switch in ("0", None):

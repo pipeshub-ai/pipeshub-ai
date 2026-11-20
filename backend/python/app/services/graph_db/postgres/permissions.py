@@ -192,43 +192,46 @@ class PermissionsMixin(PgBase):
             out.setdefault(lk["cid"], []).extend([lk["to_id"], *badges])
         return out
 
-    async def _check_gate(self, user_key: str, transaction: str | None) -> dict[str, Any]:
+    async def _check_gate(self, tx: Tx, org: str, user_key: str) -> dict[str, Any]:
         """The access a check reads when the caller holds none: the gate of ``get_knowledge_hub_access_v3`` without its grants (``linked`` instead), so the check reads the grants
-        of the nodes it decides (``access.Grants``), not every grant the user holds."""
-        org = current_org_id()
-
-        async def go(tx: Tx) -> dict[str, Any]:
-            gate = await self._gate(tx, org, user_key)
-            if gate is None:
-                return dict(_NO_ACCESS)
-            grantees, gated, links = gate
-            return {"grantee_ids": grantees, "gated_app_ids": gated, "linked": await self._linked_holders(tx, org, links, gated)}
-        return await self._q(go, transaction)
+        of the nodes it decides (``access.Grants``), not every grant the user holds. Read in the check's own snapshot (``_kh_v3_accessible_rows``)."""
+        gate = await self._gate(tx, org, user_key)
+        if gate is None:
+            return dict(_NO_ACCESS)
+        grantees, gated, links = gate
+        return {"grantee_ids": grantees, "gated_app_ids": gated, "linked": await self._linked_holders(tx, org, links, gated)}
 
     async def _kh_v3_accessible_rows(self, user_key: str, org_id: str, node_ids: list[str], virtual_record_ids: list[str], *,
                                      access: dict[str, Any] | None, transaction: str | None) -> list[dict[str, Any]]:
-        """The asked nodes and virtual record ids the user may access, as the rows ``check_access`` reads. An org other than the ambient one admits nothing."""
+        """The asked nodes and virtual record ids the user may access, as the rows ``check_access`` reads. An org other than the ambient one admits nothing.
+
+        One check reads one state of the graph: outside a transaction (and in a read-only snapshot) the gate, kg's classes, the walk and every grant it reads per node
+        share one repeatable-read snapshot. A writable transaction reads at read committed, statement by statement, so there the grants are read whole first, in one
+        statement (``get_knowledge_hub_access_v3``, as before), and no answer joins grants of two states."""
         org = current_org_id()
         ids = list(dict.fromkeys(i for i in node_ids if i))
         vrids = list(dict.fromkeys(v for v in virtual_record_ids if v))
         if (not ids and not vrids) or org_id != org:
             return []
-        if access is None:
-            access = await self._check_gate(user_key, transaction)
-
-        async def walk(i: list[str], v: list[str], acc: dict[str, Any]) -> list[dict[str, Any]]:
-            return await self._q(lambda tx: access_sql.accessible_rows(tx, org, i, v, acc), transaction)
         # an explicit transaction sees its own writes before kg has been given them (a read-only snapshot has none: kg answers in it); the system role has no read on kg
         snapshot = getattr(self._txns.get(transaction), "snapshot", False) if transaction else False
-        if (transaction is None or snapshot) and kg_read.enabled() and current_or_system().kind != "system":
-            def unit(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
-                return self._db.run(fn, isolation="repeatable_read", custom_plan=True)
+        if access is None and transaction and not snapshot:
+            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+        use_kg = (transaction is None or snapshot) and kg_read.enabled() and current_or_system().kind != "system"
 
-            def in_snapshot(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
-                return self._q(lambda tx: kg_read.in_savepoint(tx, fn), transaction)
-            # in a snapshot, on its connection: a read that holds a pooled connection never waits for a second one. The samples run after the call, in units of their own.
-            return await kg_read.accessible_rows(in_snapshot if snapshot else unit, org, ids, vrids, access, walk, self._db, sample_run=unit)
-        return await walk(ids, vrids, access)
+        def unit(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
+            return self._db.run(fn, isolation="repeatable_read", custom_plan=True, jobs=current_or_system().kind == "system")
+
+        async def check(tx: Tx) -> list[dict[str, Any]]:
+            acc = access if access is not None else await self._check_gate(tx, org, user_key)
+
+            async def walk(i: list[str], v: list[str], a: dict[str, Any]) -> list[dict[str, Any]]:
+                return await access_sql.accessible_rows(tx, org, i, v, a)
+            if not use_kg:
+                return await walk(ids, vrids, acc)
+            # on the check's connection, in a savepoint: kg's settings end with its read. The samples run after the call, in units of their own.
+            return await kg_read.accessible_rows(lambda fn: kg_read.in_savepoint(tx, fn), org, ids, vrids, acc, walk, self._db, sample_run=unit)
+        return await (self._q(check, transaction) if transaction else unit(check))
 
     async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],
                                   exact_record_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:
