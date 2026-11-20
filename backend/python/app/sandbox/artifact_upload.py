@@ -142,8 +142,10 @@ async def save_query_result_csv(
     CSV is downloaded through the permission-checked record stream, follows the
     conversation when it is shared, and can take new versions like any other
     artifact. It skips the registry's size cap on purpose: a query export is
-    not a sandbox artifact. Without a user and graph, or if the record cannot
-    be created, the export has no downloadable link and counts as failed.
+    not a sandbox artifact. Without them it falls back to an unregistered
+    upload, which only cloud storage can link to (by signed URL).
+
+    An export left with neither a record nor a signed URL counts as failed.
 
     Returns a conversation-task result (``{"type": "artifacts", ...}``), or
     ``None`` on failure.

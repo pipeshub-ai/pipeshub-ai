@@ -817,27 +817,44 @@ class TestSaveQueryResultCsv:
         assert kwargs["content_hash"] == hashlib.sha256(upload["file_bytes"]).hexdigest()
 
     @pytest.mark.asyncio
-    async def test_without_a_user_a_signed_url_alone_is_a_failed_export(self) -> None:
+    async def test_without_a_user_on_cloud_storage_links_by_signed_url(self):
         blob = self._blob(signed_url="https://s3/q")
         with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock()) as create:
-            assert await self._save(blob, user_id=None) is None
+            result = await self._save(blob, user_id=None)
 
         create.assert_not_awaited()
+        blob.save_versioned_artifact_to_storage.assert_not_awaited()
         blob.save_conversation_file_to_storage.assert_awaited_once()
+        (entry,) = result["artifacts"]
+        assert entry["signedUrl"] == "https://s3/q"
+        assert "recordId" not in entry
 
     @pytest.mark.asyncio
     async def test_without_a_user_on_local_storage_is_a_failed_export(self):
+        # No record and no signed URL: nothing the user could download.
         with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock()):
             assert await self._save(self._blob(), user_id=None) is None
 
     @pytest.mark.asyncio
-    async def test_record_failure_is_a_failed_export_even_with_a_signed_url(self) -> None:
-        blob = self._blob(signed_url="https://s3/q")
+    async def test_record_failure_without_a_signed_url_is_a_failed_export(self):
+        blob = self._blob()
         with patch(
             "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(side_effect=RuntimeError("graph down")),
         ):
             assert await self._save(blob) is None
         blob.save_versioned_artifact_to_storage.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_keeps_the_export_when_record_creation_fails(self):
+        blob = self._blob(signed_url="https://s3/q")
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(side_effect=RuntimeError("graph down")),
+        ):
+            result = await self._save(blob)
+
+        (entry,) = result["artifacts"]
+        assert entry["signedUrl"] == "https://s3/q"
+        assert "recordId" not in entry and "version" not in entry
 
     @pytest.mark.asyncio
     async def test_returns_none_when_upload_fails(self):
