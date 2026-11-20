@@ -288,7 +288,8 @@ class TestAdminOAuthUpdatesExistingConfigFound:
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            # A team connector: an admin changes an org app only there.
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope="team")),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT) as mock_conflict,
             patch(
@@ -607,7 +608,7 @@ class TestOAuthMetadataRedirectUriNoBaseUrl:
 
 
 class TestConnectorScopeMissing:
-    """9. Connector scope missing -> fetches from graph_provider."""
+    """9. The connector instance carries no scope -> fetches it from graph_provider."""
 
     async def test_fetches_scope_from_graph_when_missing(self):
         # Instance config has no connectorScope
@@ -633,7 +634,7 @@ class TestConnectorScopeMissing:
         )
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope=None)),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
         ):
@@ -909,7 +910,8 @@ class TestAdminOAuthUpdateExistingChangeName:
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            # A team connector: an admin changes an org app only there.
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope="team")),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT) as mock_conflict,
             patch(

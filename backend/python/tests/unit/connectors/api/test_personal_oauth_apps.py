@@ -110,7 +110,7 @@ def _metadata() -> dict[str, Any]:
     }
 
 
-def _request(user_id: str, *, admin: bool = False, body: dict[str, Any] | None = None, store: Any = None) -> MagicMock:
+def _request(user_id: str, *, admin: bool = False, body: dict[str, Any] | None = None, store: InMemoryConfigService | None = None) -> MagicMock:
     request = MagicMock()
     request.state.user = {"userId": user_id, "orgId": ORG_ID, "role": "admin" if admin else "member"}
     request.json = AsyncMock(return_value=body or {})
@@ -541,3 +541,216 @@ class TestPublicOnly:
         store = InMemoryConfigService({APPS_PATH: [_org_app(), _personal_app(ALICE, "alice-app")]})
 
         assert await oauth_app_public_only(auth, store) is public_only
+
+
+class _ConnectorConfigWriteFails(InMemoryConfigService):
+    """The OAuth app list saves; the connector's own config does not."""
+
+    async def set_config(self, path: str, value: object) -> bool:
+        if path == CONFIG_PATH:
+            return False
+        return await super().set_config(path, value)
+
+
+@pytest.mark.asyncio
+class TestAnAdminsPersonalConnector:
+    async def test_a_whole_client_makes_the_admin_s_own_app_and_leaves_the_org_app(self) -> None:
+        store = InMemoryConfigService({
+            APPS_PATH: [_org_app()],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "org-app", "connectorScope": "personal"}},
+        })
+
+        await _save_auth(store, ADMIN, {"oauthConfigId": "org-app", "clientId": "admin-client", "clientSecret": "admin-secret"}, admin=True)
+
+        org_app, own_app = store.apps()
+        assert org_app == _org_app()
+        assert own_app[OAUTH_APP_OWNER_FIELD] == ADMIN
+        assert _linked_app_id(store) == own_app["_id"]
+
+    async def test_part_of_a_client_changes_no_org_app(self) -> None:
+        store = InMemoryConfigService({
+            APPS_PATH: [_org_app()],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "org-app", "connectorScope": "personal"}},
+        })
+
+        await _save_auth(store, ADMIN, {"oauthConfigId": "org-app", "clientSecret": "admin-secret"}, admin=True)
+
+        assert store.apps() == [_org_app()]
+        assert _linked_app_id(store) == "org-app"
+
+    async def test_the_full_save_changes_no_org_app_either(self) -> None:
+        store = InMemoryConfigService({
+            APPS_PATH: [_org_app()],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "org-app", "clientId": "org-client", "connectorScope": "personal"}},
+        })
+
+        await _save_full(store, ADMIN, {"oauthConfigId": "org-app", "clientSecret": "admin-secret"}, admin=True)
+
+        assert store.apps() == [_org_app()]
+        assert _linked_app_id(store) == "org-app"
+
+
+@pytest.mark.asyncio
+class TestTheConnectorScopeIsTheServers:
+    async def test_an_auth_save_can_not_make_a_personal_connector_look_like_a_team_one(self) -> None:
+        store = InMemoryConfigService({
+            APPS_PATH: [_personal_app(ALICE, "alice-app")],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "alice-app", "connectorScope": "personal"}},
+        })
+
+        await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "connectorScope": "team"})
+
+        assert store.values[CONFIG_PATH]["auth"]["connectorScope"] == "personal"
+
+    async def test_a_stored_wrong_scope_is_put_right_on_the_next_save(self) -> None:
+        store = InMemoryConfigService({
+            APPS_PATH: [_personal_app(ALICE, "alice-app")],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "alice-app", "connectorScope": "team"}},
+        })
+
+        await _save_auth(store, ALICE, {"oauthConfigId": "alice-app"})
+
+        assert store.values[CONFIG_PATH]["auth"]["connectorScope"] == "personal"
+
+    async def test_the_full_save_can_not_change_it_either(self) -> None:
+        store = InMemoryConfigService({
+            APPS_PATH: [_personal_app(ALICE, "alice-app")],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "alice-app", "connectorScope": "personal"}},
+        })
+
+        await _save_full(store, ALICE, {"oauthConfigId": "alice-app", "connectorScope": "team"})
+
+        assert store.values[CONFIG_PATH]["auth"]["connectorScope"] == "personal"
+
+
+@pytest.mark.asyncio
+class TestAFailedSaveLeavesNoApp:
+    async def test_an_auth_save_whose_connector_config_is_not_stored_takes_its_new_app_back(self) -> None:
+        store = _ConnectorConfigWriteFails({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+
+        with pytest.raises(HTTPException) as exc:
+            await _save_auth(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
+
+        assert exc.value.status_code == 500
+        assert store.apps() == []
+
+    async def test_an_auth_save_whose_connector_config_is_not_stored_puts_the_app_back(self) -> None:
+        store = _ConnectorConfigWriteFails({
+            APPS_PATH: [_personal_app(ALICE, "alice-app")],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "alice-app", "connectorScope": "personal"}},
+        })
+
+        with pytest.raises(HTTPException):
+            await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
+
+        assert store.apps() == [_personal_app(ALICE, "alice-app")]
+
+    async def test_a_connector_that_could_not_be_created_takes_its_new_app_back(self) -> None:
+        store = InMemoryConfigService()
+        request = _request(ALICE, store=store, body={
+            "connectorType": "Drive", "instanceName": "My Drive", "scope": "personal", "authType": "OAUTH",
+            "config": {"auth": {"clientId": "alice-client", "clientSecret": ALICE_SECRET}},
+        })
+        request.app.state.connector_registry.create_connector_instance_on_configuration = AsyncMock(return_value=None)
+        graph = AsyncMock()
+        graph.get_account_type = AsyncMock(return_value="individual")
+
+        with (
+            patch.object(router_module, "resolve_config_service", return_value=store),
+            patch.object(router_module, "check_beta_connector_access", AsyncMock()),
+            patch.object(router_module, "_store_config_action_items", AsyncMock()),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await create_connector_instance(request, graph)
+
+        assert exc.value.status_code == 500
+        assert store.apps() == []
+
+    async def test_an_app_that_could_not_be_saved_leaves_no_connector(self) -> None:
+        store = InMemoryConfigService()
+        request = _request(ALICE, store=store, body={
+            "connectorType": "Drive", "instanceName": "My Drive", "scope": "personal", "authType": "OAUTH",
+            "config": {"auth": {"clientId": "alice-client", "clientSecret": ALICE_SECRET}},
+        })
+        graph = AsyncMock()
+        graph.get_account_type = AsyncMock(return_value="individual")
+
+        with (
+            patch.object(router_module, "resolve_config_service", return_value=store),
+            patch.object(router_module, "check_beta_connector_access", AsyncMock()),
+            patch.object(router_module, "_create_or_update_oauth_config", AsyncMock(return_value=None)),
+            pytest.raises(HTTPException),
+        ):
+            await create_connector_instance(request, graph)
+
+        request.app.state.connector_registry.create_connector_instance_on_configuration.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestTheAppWriter:
+    async def test_a_new_name_is_kept_when_the_owner_updates_their_app(self) -> None:
+        store = InMemoryConfigService({
+            APPS_PATH: [_personal_app(ALICE, "alice-app")],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "alice-app", "connectorScope": "personal"}},
+        })
+
+        await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated", "oauthInstanceName": "Renamed"})
+
+        [app] = store.apps()
+        assert app["oauthInstanceName"] == "Renamed"
+        assert app["config"]["clientSecret"] == "rotated"
+
+    async def test_part_of_a_client_for_an_app_gone_since_the_plan_creates_nothing(self) -> None:
+        store = InMemoryConfigService()
+
+        written = await router_module._create_or_update_oauth_config(
+            connector_type="Drive",
+            auth_config={"clientSecret": "rotated"},
+            instance_name="My app",
+            user_id=ALICE,
+            org_id=ORG_ID,
+            is_admin=False,
+            config_service=store,
+            base_url="",
+            oauth_app_id="alice-app",
+            connector_scope="personal",
+            owner_user_id=ALICE,
+        )
+
+        assert written is None
+        assert store.apps() == []
+
+    async def test_a_whole_client_for_an_app_gone_since_the_plan_is_still_its_owners(self) -> None:
+        store = InMemoryConfigService()
+
+        written = await router_module._create_or_update_oauth_config(
+            connector_type="Drive",
+            auth_config={"clientId": "alice-client", "clientSecret": ALICE_SECRET},
+            instance_name="My app",
+            user_id=ALICE,
+            org_id=ORG_ID,
+            is_admin=False,
+            config_service=store,
+            base_url="",
+            oauth_app_id="alice-app",
+            connector_scope="personal",
+            owner_user_id=ALICE,
+        )
+
+        [app] = store.apps()
+        assert written == app["_id"]
+        assert app[OAUTH_APP_OWNER_FIELD] == ALICE
+
+
+@pytest.mark.asyncio
+class TestAFailedRemovalIsRetried:
+    async def test_the_user_deleted_event_fails_so_it_comes_again(self) -> None:
+        from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+        service = EntityEventService(logging.getLogger("test_personal_oauth_apps"), AsyncMock(), MagicMock())
+        with (
+            patch("app.connectors.api.connector_resolvers.resolve_config_service", return_value=MagicMock()),
+            patch("app.utils.oauth_config.remove_personal_oauth_apps", AsyncMock(side_effect=RuntimeError("store down"))),
+            pytest.raises(RuntimeError),
+        ):
+            await service._remove_personal_oauth_apps(ORG_ID, ALICE)

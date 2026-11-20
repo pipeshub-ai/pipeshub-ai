@@ -35,12 +35,13 @@ import {
   personalConnectorHref,
 } from '../../utils/admin-access-helpers';
 import { useTranslation } from 'react-i18next';
-import { useCanEnterOAuthClient } from './use-can-enter-oauth-client';
+import { useCanEditLinkedOAuthApp, useCanEnterOAuthClient } from './use-can-enter-oauth-client';
 
 export function AuthenticateTab() {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isAdmin = useUserStore(selectIsAdmin);
   const mayEnterOAuthClient = useCanEnterOAuthClient();
+  const mayEditLinkedOAuthApp = useCanEditLinkedOAuthApp();
   const revealedOAuthAppId = useConnectorsStore((s) => s.revealedOAuthAppId);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
@@ -100,10 +101,10 @@ export function AuthenticateTab() {
         formData.auth,
         connectorConfig,
         isCreateMode,
-        { isAdmin, mayEnterOAuthClient },
+        { mayEditLinkedOAuthApp, mayEnterOAuthClient },
         disableCredentialEditWhenLinked
       ),
-    [formData.auth, connectorConfig, isCreateMode, isAdmin, mayEnterOAuthClient, disableCredentialEditWhenLinked]
+    [formData.auth, connectorConfig, isCreateMode, mayEditLinkedOAuthApp, mayEnterOAuthClient, disableCredentialEditWhenLinked]
   );
 
   const authFieldsForForm = useMemo(() => {

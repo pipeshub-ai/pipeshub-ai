@@ -295,7 +295,7 @@ class TestApplyConfluenceJiraScopeAlreadyPresent:
 # ============================================================================
 
 
-async def _validate(config, oauth_config_id, cs, *, is_admin=True, scope="team", user_id="u1"):
+async def _validate(config, oauth_config_id, cs, *, is_admin=True, scope="team", user_id="u1") -> None:
     from app.connectors.api.router import _validate_oauth_app_before_creation
 
     await _validate_oauth_app_before_creation(
@@ -356,7 +356,7 @@ class TestValidateOAuthAppBeforeCreation:
         mock_check.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_member_credentials_on_a_personal_connector_plan_their_own_app(self):
+    async def test_member_credentials_on_a_personal_connector_plan_their_own_app(self) -> None:
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
         config = {"auth": {"clientId": "id1", "clientSecret": "sec"}}
@@ -366,7 +366,7 @@ class TestValidateOAuthAppBeforeCreation:
         assert mock_check.call_args.kwargs["owner_user_id"] == "u1"
 
     @pytest.mark.asyncio
-    async def test_member_credentials_without_the_secret_are_refused(self):
+    async def test_member_credentials_without_the_secret_are_refused(self) -> None:
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
 
@@ -375,7 +375,7 @@ class TestValidateOAuthAppBeforeCreation:
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_member_without_an_app_or_credentials(self):
+    async def test_member_without_an_app_or_credentials(self) -> None:
         with pytest.raises(HTTPException) as exc:
             await _validate(None, None, AsyncMock(), is_admin=False, scope="personal")
         assert exc.value.status_code == 400
@@ -399,7 +399,7 @@ class TestValidateOAuthAppBeforeCreation:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_someone_else_s_personal_app_is_not_found(self):
+    async def test_someone_else_s_personal_app_is_not_found(self) -> None:
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "cfg1", "orgId": "o1", "ownerUserId": "u2"}])
 

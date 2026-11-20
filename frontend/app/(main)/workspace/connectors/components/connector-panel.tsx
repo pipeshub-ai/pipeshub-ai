@@ -37,7 +37,7 @@ import {
   collectAuthFieldErrors,
 } from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
-import { useCanEnterOAuthClient } from './authenticate-tab/use-can-enter-oauth-client';
+import { useCanEditLinkedOAuthApp, useCanEnterOAuthClient } from './authenticate-tab/use-can-enter-oauth-client';
 import {
   collectSyncFilterErrors,
   hasAnySyncFiltersSelected,
@@ -93,6 +93,7 @@ export function ConnectorPanel() {
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
   const mayEnterOAuthClient = useCanEnterOAuthClient();
+  const mayEditLinkedOAuthApp = useCanEditLinkedOAuthApp();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
   const {
@@ -405,7 +406,7 @@ export function ConnectorPanel() {
       formData.auth,
       connectorConfig,
       isCreateMode,
-      { isAdmin, mayEnterOAuthClient },
+      { mayEditLinkedOAuthApp, mayEnterOAuthClient },
       disableCredEdit
     );
 
@@ -494,6 +495,7 @@ export function ConnectorPanel() {
     connectorConfig,
     isProfileInitialized,
     isAdmin,
+    mayEditLinkedOAuthApp,
     mayEnterOAuthClient,
     isCreateMode,
     instanceName,

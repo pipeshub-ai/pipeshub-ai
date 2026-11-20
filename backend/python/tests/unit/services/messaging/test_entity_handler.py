@@ -38,7 +38,10 @@ def _make_entity_service(graph_provider=None, app_container=None, logger=None):
 
     logger = logger or MagicMock()
     graph_provider = graph_provider or AsyncMock()
-    app_container = app_container or MagicMock()
+    if app_container is None:
+        app_container = MagicMock()
+        # An empty store: a user's deletion removes their OAuth apps, and that step raises on failure.
+        app_container.config_service.return_value.list_keys_in_directory = AsyncMock(return_value=[])
     app_container.messaging_producer = AsyncMock()
     app_container.messaging_producer.send_message = AsyncMock()
 

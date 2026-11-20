@@ -12,6 +12,7 @@ Covers:
 """
 
 import contextlib
+import copy
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -899,19 +900,31 @@ class TestOAuthBodyLevelConfigId:
 
     @pytest.mark.asyncio
     async def test_body_level_oauth_config_id_used_for_update(self) -> None:
-        """Body-level oauthConfigId is used; without name override conflict check is skipped."""
+        """Body-level oauthConfigId names the app the credentials update; without a new name
+        there is no name check, and the connector links that same app."""
+        from app.connectors.api import router as router_module
+
         body = _base_body(
             authType="OAUTH",
             oauthConfigId="body-level-id",
             config={"auth": {"clientId": "cid", "clientSecret": "csecret"}},
         )
-        existing_configs = [
-            {"_id": "body-level-id", "orgId": "org-1", "name": "Body OAuth"},
-        ]
+        apps_path = "/services/oauth/googledrive"
+        stored: dict[str, object] = {
+            apps_path: [{"_id": "body-level-id", "orgId": "org-1", "oauthInstanceName": "Body OAuth", "config": {}}],
+        }
+
+        async def get_config(path: str, default: object = None, **_: object) -> object:
+            return copy.deepcopy(stored.get(path, default))
+
+        async def set_config(path: str, value: object) -> bool:
+            stored[path] = copy.deepcopy(value)
+            return True
+
         registry = _default_registry()
         config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value=existing_configs)
-        config_service.set_config = AsyncMock(return_value=True)
+        config_service.get_config = AsyncMock(side_effect=get_config)
+        config_service.set_config = AsyncMock(side_effect=set_config)
         req = _mock_request(
             body=body,
             is_admin=True,
@@ -920,28 +933,35 @@ class TestOAuthBodyLevelConfigId:
         )
         gp = _default_graph_provider()
 
-        # The named app is checked before the connector exists; this test is about what follows.
-        with _common_patches(), patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock), patch(
+        with _common_patches(), patch(
             f"{_ROUTER}._get_oauth_field_names_from_registry",
             return_value=["clientId", "clientSecret"],
         ), patch(
+            f"{_ROUTER}._get_required_oauth_field_names_from_registry",
+            return_value=["clientId", "clientSecret"],
+        ), patch(
             f"{_ROUTER}._get_oauth_config_path",
-            return_value="/services/oauth/googledrive",
+            return_value=apps_path,
         ), patch(
-            f"{_ROUTER}._check_oauth_name_conflict"
-        ) as mock_conflict, patch(
-            f"{_ROUTER}._handle_oauth_config_creation",
+            f"{_ROUTER}._update_oauth_infrastructure_fields",
             new_callable=AsyncMock,
-            return_value="body-level-id",
         ), patch(
+            f"{_ROUTER}._check_oauth_name_conflict",
+            wraps=router_module._check_oauth_name_conflict,
+        ) as mock_conflict, patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
             return_value={"auth": {}},
-        ):
+        ) as mock_prepare:
             result = await create_connector_instance(req, gp)
 
         assert result["success"] is True
         mock_conflict.assert_not_called()
+        [app] = stored[apps_path]
+        assert app["_id"] == "body-level-id"
+        assert app["oauthInstanceName"] == "Body OAuth"
+        assert app["config"] == {"clientId": "cid", "clientSecret": "csecret"}
+        assert mock_prepare.await_args.kwargs["oauth_config_id"] == "body-level-id"
 
 
 class TestGenericExceptionHandling:

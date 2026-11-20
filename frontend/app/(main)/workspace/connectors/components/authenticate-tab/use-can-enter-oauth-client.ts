@@ -2,7 +2,7 @@
 
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useConnectorsStore } from '../../store';
-import { canEnterOAuthClient } from '../../utils/auth-helpers';
+import { canEditLinkedOAuthApp, canEnterOAuthClient } from '../../utils/auth-helpers';
 
 /** Scope of the connector open in the panel: a new one takes the catalog's, an existing one keeps its own. */
 export function usePanelConnectorScope(): string | undefined {
@@ -13,4 +13,10 @@ export function usePanelConnectorScope(): string | undefined {
 export function useCanEnterOAuthClient(): boolean | null {
   const isAdmin = useUserStore(selectIsAdmin);
   return canEnterOAuthClient(isAdmin, usePanelConnectorScope());
+}
+
+/** {@link canEditLinkedOAuthApp} for the connector open in the panel. */
+export function useCanEditLinkedOAuthApp(): boolean | null {
+  const isAdmin = useUserStore(selectIsAdmin);
+  return canEditLinkedOAuthApp(isAdmin, usePanelConnectorScope());
 }

@@ -222,10 +222,23 @@ export function canEnterOAuthClient(
   return isAdmin;
 }
 
+/**
+ * Whether the person sees, and may change, the client of the OAuth app linked to this connector:
+ * an admin on a team connector. On a personal connector a linked app is used as is, even by an
+ * admin: the server never changes an org app from there, and sends no one a personal app's values.
+ */
+export function canEditLinkedOAuthApp(
+  isAdmin: boolean | null,
+  connectorScope: string | null | undefined
+): boolean | null {
+  if (isAdmin === null) return null;
+  return isAdmin && connectorScope !== 'personal';
+}
+
 export interface OAuthAuthFieldVisibilityContext {
   isCreateMode: boolean;
-  /** Admins can read a saved app's values, so they see them, and can change them, when one is linked. */
-  isAdmin: boolean | null;
+  /** From {@link canEditLinkedOAuthApp}. */
+  mayEditLinkedOAuthApp: boolean | null;
   /** From {@link canEnterOAuthClient}. */
   canEnterOAuthClient: boolean | null;
   hasLinkedOAuthApp: boolean;
@@ -241,7 +254,7 @@ export function resolveOAuthFieldVisibility(
   formAuth: { oauthConfigId?: unknown; [key: string]: unknown } | undefined,
   connectorConfig: ConnectorConfig | null | undefined,
   isCreateMode: boolean,
-  access: { isAdmin: boolean | null; mayEnterOAuthClient: boolean | null },
+  access: { mayEditLinkedOAuthApp: boolean | null; mayEnterOAuthClient: boolean | null },
   disableCredentialEditWhenLinked?: boolean
 ): { linkedOAuthAppId: string; oauthFieldVisibility: OAuthAuthFieldVisibilityContext } {
   const linkedOAuthAppId = resolveLinkedOAuthAppId(formAuth, connectorConfig);
@@ -249,7 +262,7 @@ export function resolveOAuthFieldVisibility(
     linkedOAuthAppId,
     oauthFieldVisibility: {
       isCreateMode,
-      isAdmin: access.isAdmin,
+      mayEditLinkedOAuthApp: access.mayEditLinkedOAuthApp,
       canEnterOAuthClient: access.mayEnterOAuthClient,
       hasLinkedOAuthApp: Boolean(linkedOAuthAppId),
       disableCredentialEditWhenLinked,
@@ -258,9 +271,9 @@ export function resolveOAuthFieldVisibility(
 }
 
 /**
- * OAUTH form field visibility: client credentials (admins always; anyone on their own personal
- * connector while creating a new app, since no one else can read a saved app's values to show
- * them), redirect/scope when no linked app, and `oauthInstanceName` for those who may enter a
+ * OAUTH form field visibility: client credentials (an admin on a team connector always; anyone
+ * who may enter a client while creating a new app, since a linked app on a personal connector is
+ * used as is), redirect/scope when no linked app, and `oauthInstanceName` for those who may enter a
  * client when there is no linked registration yet (create or edit;
  * same condition as `showNewOAuthAppName` in the Authenticate tab OAuth app selector).
  */
@@ -275,7 +288,7 @@ export function shouldRenderOAuthAuthSchemaField(
     return ctx.canEnterOAuthClient === true && !ctx.hasLinkedOAuthApp;
   }
   if (OAUTH_ORG_CREDENTIAL_FIELD_NAMES.has(fieldName)) {
-    return ctx.isAdmin === true || (ctx.canEnterOAuthClient === true && !ctx.hasLinkedOAuthApp);
+    return ctx.mayEditLinkedOAuthApp === true || (ctx.canEnterOAuthClient === true && !ctx.hasLinkedOAuthApp);
   }
   if (OAUTH_METADATA_DERIVED_WHEN_APP_LINKED.has(fieldName)) {
     return !ctx.hasLinkedOAuthApp;

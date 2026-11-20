@@ -4288,12 +4288,20 @@ def _may_link_oauth_app(app: dict[str, Any], *, user_id: str, connector_scope: s
     return owner is None or (_is_personal_scope(connector_scope) and owner == user_id)
 
 
-def _may_edit_oauth_app(app: dict[str, Any], *, user_id: str, org_id: str, is_admin: bool) -> bool:
-    """A personal app is changed only by its owner, an org app only by an admin of its org."""
+def _may_edit_oauth_app(
+    app: dict[str, Any], *, user_id: str, org_id: str, is_admin: bool, connector_scope: str | None = None
+) -> bool:
+    """A personal app is changed only by its owner, an org app only by an admin of its org.
+
+    Not from a personal connector, even an admin's: a save there makes the caller's own app,
+    so it never switches the client of every other connector linked to the org app.
+    """
     if app.get("orgId") != org_id:
         return False
     owner = oauth_app_owner(app)
-    return owner == user_id if owner is not None else is_admin
+    if owner is not None:
+        return owner == user_id
+    return is_admin and not _is_personal_scope(connector_scope)
 
 
 async def _resolve_linkable_oauth_app(
@@ -4409,7 +4417,9 @@ async def _plan_oauth_app_write(
     # An app the caller may not link is treated as one that does not exist.
     if existing and not _may_link_oauth_app(existing, user_id=user_id, connector_scope=connector_scope):
         existing_index, existing = None, None
-    if existing and not _may_edit_oauth_app(existing, user_id=user_id, org_id=org_id, is_admin=is_admin):
+    if existing and not _may_edit_oauth_app(
+        existing, user_id=user_id, org_id=org_id, is_admin=is_admin, connector_scope=connector_scope
+    ):
         app_values = existing.get(OAuthConfigKeys.CONFIG) or {}
         sent = _sent_oauth_app_values(auth_config, connector_type)
         repeats_the_app = all(_oauth_field_value(app_values, name) == value for name, value in sent.items())
@@ -4527,9 +4537,10 @@ def _apply_confluence_optional_jira_scope(
 
 
 # Set by the server: which org a linked OAuth app belongs to (worked out from the app
-# by annotate_oauth_inheritance) and the connector's type, which picks the registry
-# defaults for that app. A value sent by the client is never stored.
-_SERVER_SET_AUTH_FIELDS = frozenset({"inheritedFromOrgId", "orgId", "connectorType"})
+# by annotate_oauth_inheritance), the connector's type, which picks the registry
+# defaults for that app, and its scope, which holds a person's own connector to public
+# addresses. A value sent by the client is never stored.
+_SERVER_SET_AUTH_FIELDS = frozenset({"inheritedFromOrgId", "orgId", "connectorType", "connectorScope"})
 
 
 def _without_server_set_auth_fields(auth: dict[str, Any]) -> dict[str, Any]:
@@ -4718,7 +4729,7 @@ async def _full_save_oauth_app(
     # Taking the rest from an org app the caller may not change, or from a copy of its values
     # left on the connector, would put the org's client secret in a person's own app.
     if current_app is not None and not _may_edit_oauth_app(
-        current_app, user_id=user_id, org_id=org_id, is_admin=is_admin
+        current_app, user_id=user_id, org_id=org_id, is_admin=is_admin, connector_scope=instance.get("scope")
     ):
         if not _has_required_oauth_credentials(sent, connector_type):
             # Less than a whole client of their own: the linked app stays as it is.
@@ -4807,6 +4818,27 @@ async def _undo_oauth_app_write(
         await _restore_oauth_app(app_before_update, connector_type, config_service, logger)
 
 
+async def _oauth_apps_before_save(connector_type: str, config_service: ConfigurationService) -> list[dict[str, Any]]:
+    """The connector type's OAuth apps before a save writes one, to undo that write if the
+    connector's own settings then fail to store."""
+    apps = await config_service.get_config(_get_oauth_config_path(connector_type), default=[], use_cache=False)
+    return copy.deepcopy(apps) if isinstance(apps, list) else []
+
+
+async def _undo_oauth_app_save(
+    app_id: str | None,
+    apps_before: list[dict[str, Any]],
+    connector_type: str,
+    config_service: ConfigurationService,
+    logger: logging.Logger,
+) -> None:
+    """Undo a save of ``app_id``: remove it when the save created it, else put back its earlier copy."""
+    if not app_id:
+        return
+    previous = next((app for app in apps_before if isinstance(app, dict) and app.get("_id") == app_id), None)
+    await _undo_oauth_app_write(None if previous else app_id, previous, connector_type, config_service, logger)
+
+
 async def _restore_oauth_app(
     previous_app: dict[str, Any],
     connector_type: str,
@@ -4818,7 +4850,8 @@ async def _restore_oauth_app(
     try:
         oauth_config_path = _get_oauth_config_path(connector_type)
         apps = await config_service.get_config(oauth_config_path, default=[], use_cache=False)
-        if isinstance(apps, list) and any(app.get("_id") == app_id for app in apps):
+        # An app the save left as it was needs no write.
+        if isinstance(apps, list) and any(app.get("_id") == app_id and app != previous_app for app in apps):
             await config_service.set_config(
                 oauth_config_path, [previous_app if app.get("_id") == app_id else app for app in apps]
             )
@@ -5138,96 +5171,102 @@ async def create_connector_instance(
         _reject_auth_the_connector_refuses(connector_type, _auth_section(config) or None, None)
 
         # ============================================================
-        # 8. Create Connector Instance in Database
+        # 8. Save the OAuth App
         # ============================================================
-        try:
-            instance = await connector_registry.create_connector_instance_on_configuration(
+        # Client credentials become an OAuth app: the org's from an admin on a team connector,
+        # the caller's own on a personal one. Before the instance exists, so a failed write
+        # leaves no connector behind; undone below when the connector is not stored.
+        written_app_id: str | None = None
+        apps_before: list[dict[str, Any]] = []
+        if config and config.get(OAuthConfigKeys.AUTH):
+            logger.debug(f"Auth config provided, attempting OAuth config creation/update for {connector_type}")
+            logger.debug(f"Auth config keys: {list(config.get(OAuthConfigKeys.AUTH, {}).keys())}")
+            logger.debug(f"Connector authType: {selected_auth_type}")
+            apps_before = await _oauth_apps_before_save(connector_type, config_service)
+            written_app_id = await _handle_oauth_config_creation(
                 connector_type=connector_type,
+                auth_config=config.get(OAuthConfigKeys.AUTH),
                 instance_name=instance_name,
-                scope=scope,
-                created_by=user_id,
-                org_id=org_id,
-                is_admin=is_admin,
-                selected_auth_type=selected_auth_type
-            )
-        except ValueError as e:
-            logger.error("create_connector_instance rejected: %s", e, exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=_setup_failure_message(e)
-            ) from e
-
-        if not instance:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to create connector instance"
-            )
-
-        connector_id = instance.get("_key")
-
-        # ============================================================
-        # 9. Store Initial Configuration
-        # ============================================================
-        if config or oauth_config_id:
-            logger.debug(f"Storing initial config for instance {connector_id}")
-
-            # Client credentials become an OAuth app: the org's from an admin on a team
-            # connector, the caller's own on a personal one.
-            if config and config.get(OAuthConfigKeys.AUTH):
-                logger.debug(f"Auth config provided, attempting OAuth config creation/update for {connector_type}")
-                logger.debug(f"Auth config keys: {list(config.get(OAuthConfigKeys.AUTH, {}).keys())}")
-                logger.debug(f"Connector authType: {selected_auth_type}")
-
-                created_oauth_id = await _handle_oauth_config_creation(
-                    connector_type=connector_type,
-                    auth_config=config.get(OAuthConfigKeys.AUTH),
-                    instance_name=instance_name,
-                    user_id=user_id,
-                    org_id=org_id,
-                    is_admin=is_admin,
-                    config_service=config_service,
-                    oauth_config_id=oauth_config_id,
-                    auth_type=selected_auth_type,
-                    base_url=base_url,
-                    logger=logger,
-                    connector_scope=scope,
-                )
-
-                if created_oauth_id:
-                    oauth_config_id = created_oauth_id
-                    if OAuthConfigKeys.AUTH not in config:
-                        config[OAuthConfigKeys.AUTH] = {}
-                    config[OAuthConfigKeys.AUTH][OAuthConfigKeys.OAUTH_CONFIG_ID] = created_oauth_id
-                    logger.debug(f"OAuth config created/updated for connector {connector_id}")
-                else:
-                    logger.debug(f"No OAuth config created for connector {connector_id} (credentials not provided or existing ID used)")
-            else:
-                logger.debug(f"No auth config provided for {connector_id}")
-
-            # Prepare configuration for storage
-            config_path = _get_config_path_for_instance(connector_id)
-            prepared_config = await _prepare_connector_config(
-                config=config,
-                connector_type=connector_type,
-                scope=scope,
-                oauth_config_id=oauth_config_id,
-                metadata=metadata,
-                selected_auth_type=selected_auth_type or AuthType.NONE,
                 user_id=user_id,
                 org_id=org_id,
                 is_admin=is_admin,
                 config_service=config_service,
+                oauth_config_id=oauth_config_id,
+                auth_type=selected_auth_type,
                 base_url=base_url,
                 logger=logger,
-                container=container,
+                connector_scope=scope,
             )
+            if written_app_id:
+                oauth_config_id = written_app_id
+                config[OAuthConfigKeys.AUTH][OAuthConfigKeys.OAUTH_CONFIG_ID] = written_app_id
+                logger.debug(f"OAuth config created/updated for connector type {connector_type}")
+            else:
+                logger.debug(f"No OAuth config created for connector type {connector_type} (credentials not provided or existing ID used)")
 
-            await config_service.set_config(config_path, prepared_config)
-            logger.info(f"Stored initial config for instance {connector_id}")
-            await _store_config_action_items(request, connector_type, connector_id, _auth_section(prepared_config), logger)
+        config_saved = False
+        try:
+            # ============================================================
+            # 9. Create Connector Instance in Database
+            # ============================================================
+            try:
+                instance = await connector_registry.create_connector_instance_on_configuration(
+                    connector_type=connector_type,
+                    instance_name=instance_name,
+                    scope=scope,
+                    created_by=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    selected_auth_type=selected_auth_type
+                )
+            except ValueError as e:
+                logger.error("create_connector_instance rejected: %s", e, exc_info=True)
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=_setup_failure_message(e)
+                ) from e
+
+            if not instance:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Failed to create connector instance"
+                )
+
+            connector_id = instance.get("_key")
+
+            # ============================================================
+            # 10. Store Initial Configuration
+            # ============================================================
+            if config or oauth_config_id:
+                logger.debug(f"Storing initial config for instance {connector_id}")
+                config_path = _get_config_path_for_instance(connector_id)
+                prepared_config = await _prepare_connector_config(
+                    config=config,
+                    connector_type=connector_type,
+                    scope=scope,
+                    oauth_config_id=oauth_config_id,
+                    metadata=metadata,
+                    selected_auth_type=selected_auth_type or AuthType.NONE,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    config_service=config_service,
+                    base_url=base_url,
+                    logger=logger,
+                    container=container,
+                )
+
+                await config_service.set_config(config_path, prepared_config)
+                config_saved = True
+                logger.info(f"Stored initial config for instance {connector_id}")
+                await _store_config_action_items(request, connector_type, connector_id, _auth_section(prepared_config), logger)
+        except Exception:
+            if written_app_id and not config_saved:
+                await _undo_oauth_app_save(written_app_id, apps_before, connector_type, config_service, logger)
+            raise
 
         # ============================================================
-        # 10. Return Success Response
+        # 11. Return Success Response
         # ============================================================
         logger.info(
             f"Created connector '{instance_name}' ({connector_type}) "
@@ -5713,6 +5752,10 @@ async def update_connector_instance_auth_config(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
+    # The OAuth app this save wrote, undone when the connector's config is not stored.
+    written_app_id: str | None = None
+    apps_before: list[dict[str, Any]] = []
+    config_saved = False
 
     try:
         # Use dependency to validate and retrieve connector instance
@@ -5773,6 +5816,7 @@ async def update_connector_instance_auth_config(
         # personal connector (get_validated_connector_instance), where client credentials become
         # their own OAuth app; an admin's on a team connector become the org's.
         if auth_type == AuthType.OAUTH and _has_oauth_credentials(auth_config_raw, connector_type):
+            apps_before = await _oauth_apps_before_save(connector_type, config_service)
             written_app_id = await _handle_oauth_config_creation(
                 connector_type=connector_type,
                 auth_config=auth_config_raw,
@@ -5893,12 +5937,21 @@ async def update_connector_instance_auth_config(
                     oauth_updates[AuthFieldKeys.TOKEN_URL] = oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
             new_config[OAuthConfigKeys.AUTH].update(oauth_updates)
 
-        if not new_config[OAuthConfigKeys.AUTH].get("connectorScope"):
+        # Always the connector's own scope, never a stored or sent one: the runtime reads it to
+        # hold a person's own connector to public addresses.
+        connector_scope = instance.get("scope")
+        if not connector_scope:
             connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-            new_config[OAuthConfigKeys.AUTH]["connectorScope"] = connector_doc.get("scope", "")
+            connector_scope = (connector_doc or {}).get("scope", "")
+        new_config[OAuthConfigKeys.AUTH]["connectorScope"] = connector_scope
 
         # Save configuration
-        await config_service.set_config(config_path, new_config)
+        if not await config_service.set_config(config_path, new_config):
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=action_failed("save this connector's sign-in details"),
+            )
+        config_saved = True
         logger.info(f"Updated auth config for instance {connector_id}")
         await _store_config_action_items(request, connector_type, connector_id, _auth_section(cast(object, new_config)), logger)
 
@@ -5937,9 +5990,13 @@ async def update_connector_instance_auth_config(
         }
 
     except HTTPException:
+        if written_app_id and not config_saved:
+            await _undo_oauth_app_save(written_app_id, apps_before, connector_type, config_service, logger)
         raise
     except Exception as e:
         logger.error(f"Error updating auth config for instance {connector_id}: {e}")
+        if written_app_id and not config_saved:
+            await _undo_oauth_app_save(written_app_id, apps_before, connector_type, config_service, logger)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("save this connector's sign-in details")
@@ -6266,6 +6323,8 @@ async def update_connector_instance_config(
             _require_valid_auth_config(connector_type, new_config[OAuthConfigKeys.AUTH])
         if auth_updated and connector_type and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
             new_config[OAuthConfigKeys.AUTH]["connectorType"] = connector_type
+        if auth_updated and instance.get("scope") and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict):
+            new_config[OAuthConfigKeys.AUTH]["connectorScope"] = instance["scope"]
 
 
         # Prevent auth type changes after connector creation
@@ -9984,7 +10043,7 @@ async def _create_or_update_oauth_config(
             oauth_config = None
             for idx, oauth_cfg in enumerate(oauth_configs):
                 if oauth_cfg.get("_id") == oauth_app_id and _may_edit_oauth_app(
-                    oauth_cfg, user_id=user_id, org_id=org_id, is_admin=is_admin
+                    oauth_cfg, user_id=user_id, org_id=org_id, is_admin=is_admin, connector_scope=connector_scope
                 ):
                     # Update the config with new credentials from form
                     if OAuthConfigKeys.CONFIG not in oauth_cfg:
@@ -10011,12 +10070,18 @@ async def _create_or_update_oauth_config(
 
                     oauth_cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
                     oauth_cfg["updatedBy"] = user_id
+                    # The planned name: the request's, or the app's own when it sent none.
+                    oauth_cfg[OAUTH_INSTANCE_NAME] = instance_name
                     oauth_configs[idx] = oauth_cfg
                     oauth_config = oauth_cfg
                     logger.info(f"Updated existing OAuth config for connector {connector_type}")
                     break
 
             if not oauth_config:
+                if owner_user_id and not _has_required_oauth_credentials(auth_config, connector_type):
+                    # Gone since the save was planned: part of a client is no app to sign in with.
+                    logger.warning(f"OAuth app to update is gone for {connector_type}; part of a client creates nothing")
+                    return None
                 logger.warning(f"OAuth config not found or access denied for {connector_type}, will create new one if credentials provided")
                 oauth_app_id = None  # Will create new one below if credentials are provided
 

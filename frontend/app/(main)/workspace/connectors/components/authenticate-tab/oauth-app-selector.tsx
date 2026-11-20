@@ -360,6 +360,9 @@ export function OAuthAppSelector() {
       return;
     }
     setAuthFormValue(OAUTH_FORM_WANTS_NEW_REGISTRATION, undefined);
+    // A client typed for a new app must not ride along with the saved one: sent with it, it
+    // would change that app or make another one.
+    clearOAuthCredentialFields();
     setAuthFormValue('oauthConfigId', value);
     const app = oauthApps.find((a) => a._id === value);
     if (app?.config && typeof app.config === 'object') {

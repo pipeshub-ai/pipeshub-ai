@@ -60635,8 +60635,9 @@ paths:
         </ul>
         A linked connector stores no copy of its app's secret fields: they are not
         stored, and not returned, in <code>config.auth</code>. Its client ID and provider
-        URLs are the app's. An organization app is created or changed only by an admin; a
-        person's own app only by them.
+        URLs are the app's. An organization app is created or changed only by an admin, and only
+        from a team connector; a person's own app only by them. <code>auth.connectorScope</code> is
+        set by the server from the connector; a sent value is ignored.
       operationId: updateConnectorConfig
       x-pipeshub-sdk: true
       security:
@@ -60751,7 +60752,9 @@ paths:
         <b>OAuth app:</b><br>
         On a personal connector, client credentials update the caller's own OAuth app named in
         <code>auth.oauthConfigId</code>, or create one (every required field, the secret too) when that
-        app is the organization's or not named. They never change an organization app.
+        app is the organization's or not named. They never change an organization app, an admin's
+        included. <code>auth.connectorScope</code> is set by the server from the connector; a sent
+        value is ignored.
       operationId: updateConnectorAuthConfig
       x-pipeshub-sdk: true
       security:
