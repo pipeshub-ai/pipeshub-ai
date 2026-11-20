@@ -256,7 +256,7 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
         raise NeedLocks(set(), wide=True)
     st.focus = len(every)
-    st.keys = set(focus)
+    st.keys = {k for k in focus if k[0] != "apps" or k in logged_apps}       # an app only the expansion brought in is not restamped (below): a change of its own waits for its own projection
     cur_links, cur_grants, cur_closure = await current(tx, org, d)
 
     if d.records:

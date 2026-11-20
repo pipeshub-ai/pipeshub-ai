@@ -25,6 +25,7 @@ from .test_access import World, _org
 from .test_access import w as w
 from .test_grants import in_org
 from .test_kg_read import flip
+from .test_kg_stamps import dry_diffs
 
 pytestmark = pytest.mark.integration
 
@@ -308,6 +309,26 @@ async def test_a_membership_added_and_removed_while_kg_serves_never_restamps_a_c
             want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
             for uid in MEMBERS:
                 assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], (user, change.__name__, uid)
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("seed", range(2))
+async def test_a_change_of_an_app_waiting_behind_a_membership_of_one_of_its_members_is_still_restamped(
+        w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int) -> None:
+    """u3 joins a group, then the collection u3 belongs to stops being a collection. The drain takes one row a page: the membership's projection brings the app in (u3
+    links to it) without restamping it, so it must not count the app's own change, waiting behind it, as done. That change is restamped, and every scope is the graph's."""
+    monkeypatch.setenv("PG_KG_INLINE_MAX", "3")
+    recs = await build(w, random.Random(seed), w.org, n=40)
+    await extras(w, random.Random(seed), recs)
+    assert (await flip(pg_db, w.org))[0], "the world was not promoted: the test proves nothing"
+    await w.p.batch_create_edges([{"from_collection": "users", "from_id": "u3", "to_collection": "groups", "to_id": "g1", "type": "USER", "role": "READER"}], "permission")
+    await w.nodes("apps", {"_key": KB2, "type": "CONNECTOR"})
+    await drain_org(pg_db, w.org, page=1)
+    await restamp.run_jobs(pg_db, w.org, "w1")
+    want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
+    for uid in MEMBERS:
+        assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], uid
+    assert await dry_diffs(w.p, w.org, KB2) == []
 
 
 @pytest.mark.timeout(300)
