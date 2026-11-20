@@ -854,10 +854,11 @@ class DrupalWikiConnector(BaseConnector):
         """A stored person the directory just read does not show enabled (disabled, removed
         from the wiki, or now under another address) cannot open the wiki, so they lose the
         connector. An open space's org-wide grant reaches everyone the connector is linked
-        to, so without this they would keep reading it. Their own grants are already
-        rewritten without them: private spaces, group membership and shared pages leave out
-        every account that is not enabled. The next run that lists them enabled links them
-        again.
+        to, so without this they would keep reading it. Their own grants go with it: a group
+        whose members could not be read, or that the wiki deleted, keeps its membership, and
+        a page this run does not write keeps what an earlier sync gave them, which would come
+        back with the link. The next run that lists them enabled links them again, with only
+        what the wiki shows them then.
         """
         enabled = self._enabled_emails
         if not enabled:
@@ -869,7 +870,7 @@ class DrupalWikiConnector(BaseConnector):
             if u.source_user_id and (u.email or "").lower() not in enabled and not await self._still_enabled(u)
         ]
         if gone:
-            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
             self.logger.info("Withdrew Drupal Wiki from %d person(s) it no longer shows enabled", len(gone))
 
     async def _still_enabled(self, user: AppUser) -> bool:
