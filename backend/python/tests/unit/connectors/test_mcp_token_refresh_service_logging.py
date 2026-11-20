@@ -11,7 +11,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,6 +20,7 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_instance_path,
     get_mcp_shared_dcr_client_path,
 )
+from app.agents.mcp import token_refresh
 from app.agents.mcp.models import OAuthTokens
 from app.agents.mcp.oauth_client import MCPRefreshTokenInvalidError
 from app.connectors.core.base.token_service import (
@@ -49,6 +50,8 @@ OWNER = "65f0a1b2c3d4e5f6a7b8c9d1"
 ORG, ORG2 = "65f0a1b2c3d4e5f6a7b8c9d0", "65f0a1b2c3d4e5f6a7b8c9d2"
 PATH = get_mcp_credentials_path(INST, OWNER)
 INVALID_GRANT = (400, {"error": "invalid_grant", "error_description": f"refresh token {SEEDED_RT} is not active"})
+# A refused request shape: the background's own in-process count, not token_refresh's shared rule.
+INVALID_SCOPE = (400, {"error": "invalid_scope", "error_description": f"refresh token {SEEDED_RT} is not active"})
 OK = (200, {"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 3600})
 SKIPPED = "credential_refresh.skipped"
 REMOVING = "Removing an MCP credential whose server no longer exists"
@@ -241,8 +244,10 @@ class TestRejectedGrant:
         endpoint.answers = [INVALID_GRANT] * 3
         _seed(store)
 
-        for _ in range(svc_module.MAX_REFRESH_TOKEN_INVALID_FAILURES):
-            await service._refresh_all_tokens()
+        # token_refresh's shared rule counts one strike per window.
+        for n in range(svc_module.MAX_REFRESH_TOKEN_INVALID_FAILURES):
+            with patch.object(token_refresh, "get_epoch_timestamp_in_ms", return_value=n * token_refresh.STRIKE_SPACING_MS):
+                await service._refresh_all_tokens()
 
         assert [r.levelno for r in events(caplog, CR.EVENT_END)] == [logging.WARNING] * 3
         assert [(r.levelno, fields(r)["strike"], fields(r)["error_class"], fields(r)["org_id"])
@@ -250,9 +255,11 @@ class TestRejectedGrant:
         [deauth] = events(caplog, CR.EVENT_DEAUTHENTICATED)
         assert deauth.levelno == logging.WARNING
         assert fields(deauth).items() >= {
-            "reason": "refresh_token_invalid", "strikes": 3, "path": "background", "mcp_server_id": INST, "org_id": ORG,
+            "reason": "refresh_token_invalid", "strikes": 3, "trigger": "scan", "mcp_server_id": INST, "org_id": ORG,
         }.items()
-        assert store.data[PATH]["isAuthenticated"] is False
+        assert "path" not in fields(deauth)
+        assert (store.data[PATH]["isAuthenticated"], store.data[PATH]["deauthReason"]) == (False, "refresh_token_invalid")
+        assert service._invalid_refresh_failures == {}
         assert _at_least(logging.ERROR, caplog) == []
         assert_no_secrets(caplog)
 
@@ -266,7 +273,7 @@ class TestRejectedGrant:
             store.set_config = AsyncMock(return_value=False)  # type: ignore[method-assign]
         service._invalid_refresh_failures[PATH] = 2
 
-        await service._handle_refresh_token_invalid(PATH, MCPRefreshTokenInvalidError("x", error_code="invalid_grant", status=400))
+        await service._handle_refresh_token_invalid(PATH, MCPRefreshTokenInvalidError("x", error_code="invalid_scope", status=400))
 
         [line] = events(caplog, CR.EVENT_DEAUTHENTICATE_FAILED)
         assert (line.levelno, fields(line)["reason"]) == (logging.ERROR, reason)
@@ -276,7 +283,7 @@ class TestRejectedGrant:
         self, service: svc_module.MCPTokenRefreshService, store: FakeConfigService, endpoint: Endpoint,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        endpoint.answers = [INVALID_GRANT]
+        endpoint.answers = [INVALID_SCOPE]
         _seed(store)
         store.set_config = AsyncMock(side_effect=ConnectionError("store down"))  # type: ignore[method-assign]
         service._invalid_refresh_failures[PATH] = 2

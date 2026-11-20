@@ -574,9 +574,10 @@ class TestARefreshKeepsTheIssuingClientAndDropsARejectedOne:
     @pytest.mark.asyncio
     async def test_a_rejected_shared_client_is_marked_so_the_next_sign_in_registers_anew(self) -> None:
         cfg = _store(**{CRED_PATH: self._cred("shared-cid"), SHARED_PATH: SHARED})
-        rejected = oauth_client_module.MCPRefreshTokenInvalidError("rejected", error_code="invalid_client")
+        # A refused client is a plain MCPOAuthError (a misconfiguration), not a rejected refresh token.
+        rejected = oauth_client_module.MCPOAuthError("rejected", error_code="invalid_client", status=401)
         with patch.object(oauth_client_module, "refresh_access_token", new=AsyncMock(side_effect=rejected)):
-            with pytest.raises(oauth_client_module.MCPRefreshTokenInvalidError):
+            with pytest.raises(oauth_client_module.MCPOAuthError):
                 await refresh_credential_record("inst-1", "user-1", cfg)
 
         # Marked, not deleted: one rejection mustn't sign out everyone else it issued tokens to.
@@ -595,9 +596,10 @@ class TestARefreshKeepsTheIssuingClientAndDropsARejectedOne:
     @pytest.mark.asyncio
     async def test_a_rejected_retired_client_goes_and_the_current_one_stays(self) -> None:
         cfg = _store(**{CRED_PATH: self._cred("retired-cid"), SHARED_PATH: SHARED_WITH_RETIRED})
-        rejected = oauth_client_module.MCPRefreshTokenInvalidError("rejected", error_code="invalid_client")
+        # A refused client is a plain MCPOAuthError (a misconfiguration), not a rejected refresh token.
+        rejected = oauth_client_module.MCPOAuthError("rejected", error_code="invalid_client", status=401)
         with patch.object(oauth_client_module, "refresh_access_token", new=AsyncMock(side_effect=rejected)):
-            with pytest.raises(oauth_client_module.MCPRefreshTokenInvalidError):
+            with pytest.raises(oauth_client_module.MCPOAuthError):
                 await refresh_credential_record("inst-1", "user-1", cfg)
 
         assert cfg.data[SHARED_PATH] == SHARED
@@ -605,9 +607,10 @@ class TestARefreshKeepsTheIssuingClientAndDropsARejectedOne:
     @pytest.mark.asyncio
     async def test_a_rejected_static_app_is_left_for_an_admin(self) -> None:
         cfg = _store(**{CRED_PATH: self._cred("static-cid"), STATIC_PATH: STATIC})
-        rejected = oauth_client_module.MCPRefreshTokenInvalidError("rejected", error_code="invalid_client")
+        # A refused client is a plain MCPOAuthError (a misconfiguration), not a rejected refresh token.
+        rejected = oauth_client_module.MCPOAuthError("rejected", error_code="invalid_client", status=401)
         with patch.object(oauth_client_module, "refresh_access_token", new=AsyncMock(side_effect=rejected)):
-            with pytest.raises(oauth_client_module.MCPRefreshTokenInvalidError):
+            with pytest.raises(oauth_client_module.MCPOAuthError):
                 await refresh_credential_record("inst-1", "user-1", cfg)
 
         assert cfg.data[STATIC_PATH] == STATIC

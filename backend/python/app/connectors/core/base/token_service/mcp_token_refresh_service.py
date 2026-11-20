@@ -48,7 +48,8 @@ MIN_IMMEDIATE_RECHECK_DELAY_SECONDS = 1
 PROACTIVE_REFRESH_WINDOW_SECONDS = 600  # refresh 10 minutes before expiry
 MIN_SHORT_LIVED_REFRESH_WINDOW_SECONDS = 60
 SHORT_LIVED_TOKEN_BUFFER_RATIO = 0.2
-MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
+# shortcut: EE imports this name (ee/.../mcp_token_refresh_service.py:23); drop it with the EE port of F22.
+MAX_REFRESH_TOKEN_INVALID_FAILURES = mcp_token_refresh.MAX_REFRESH_REJECTIONS
 PERIODIC_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 STATE_SWEEP_INTERVAL_SECONDS = 300
 
@@ -82,6 +83,8 @@ class MCPTokenRefreshService:
         self._credential_locks: Dict[str, asyncio.Lock] = {}
         self._schedule_locks: Dict[str, asyncio.Lock] = {}
         self._last_refresh_time: Dict[str, float] = {}
+        # shortcut: in-process strikes for the request-shape refusals only (F22), and read by EE's override of
+        # _perform_token_refresh / _handle_refresh_token_invalid; remove with the EE port of F22.
         self._invalid_refresh_failures: Dict[str, int] = {}
 
     def _get_credential_lock(self, config_path: str) -> asyncio.Lock:
@@ -218,6 +221,10 @@ class MCPTokenRefreshService:
         return new_tokens
 
     async def _handle_refresh_token_invalid(self, config_path: str, error: Exception) -> None:
+        # shortcut: token_refresh's shared rule counts the grant and client refusals; this in-process count is left
+        # for the request-shape codes (F22) and for EE, which overrides it. Remove with the EE port of F22.
+        if getattr(error, "deauth_reason", None):
+            return
         failures = self._invalid_refresh_failures.get(config_path, 0) + 1
         self._invalid_refresh_failures[config_path] = failures
         # The full cause is on the attempt's credential_refresh.end line; the strike carries only its class and OAuth code.
@@ -235,7 +242,7 @@ class MCPTokenRefreshService:
             record["deauthReason"] = "refresh_token_invalid"
             record["updatedAt"] = get_epoch_timestamp_in_ms()
             if await self.configuration_service.set_config(config_path, record):
-                log_deauthenticated(self.logger, reason="refresh_token_invalid", strikes=failures, path="background")
+                log_deauthenticated(self.logger, reason="refresh_token_invalid", strikes=failures)
             else:
                 log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")
         except Exception as e:
