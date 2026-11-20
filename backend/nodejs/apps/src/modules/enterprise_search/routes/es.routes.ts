@@ -12,6 +12,12 @@ import {
   grepRecords,
   searchEntities,
   entityNeighbors,
+  entityCapabilities,
+  entityRecords,
+  coMentionedEntities,
+  recordsByPerson,
+  recordsByValue,
+  recordsByEntities,
 } from '../controller/exact_search.controller';
 import multer from 'multer';
 import { createMulter } from '../../../libs/utils/multer.utils';
@@ -104,6 +110,11 @@ import {
   enterpriseSearchEntitiesSchema,
   enterpriseSearchGrepSchema,
   enterpriseSearchEntityNeighborsSchema,
+  enterpriseSearchEntityRecordsSchema,
+  enterpriseSearchCoMentionedSchema,
+  enterpriseSearchRecordsByPersonSchema,
+  enterpriseSearchRecordsByValueSchema,
+  enterpriseSearchRecordsByEntitiesSchema,
   enterpriseSearchSearchHistorySchema,
   searchIdParamsSchema,
   addMessageParamsSchema,
@@ -722,6 +733,42 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/entities/neighbors',
     enterpriseSearchEntityNeighborsSchema,
     entityNeighbors(appConfig),
+  );
+  // The assistant's entity tools (what the MCP entity tools call); see the AI service's entity_tools routes.
+  router.get(
+    '/entities/capabilities',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- used as a method reference by every route in this file
+    authMiddleware.authenticate,
+    requireScopes(
+      OAuthScopeNames.SEMANTIC_READ,
+      OAuthScopeNames.SEMANTIC_WRITE,
+    ),
+    entityCapabilities(appConfig),
+  );
+  entityRoute(
+    '/entities/records',
+    enterpriseSearchEntityRecordsSchema,
+    entityRecords(appConfig),
+  );
+  entityRoute(
+    '/entities/co-mentioned',
+    enterpriseSearchCoMentionedSchema,
+    coMentionedEntities(appConfig),
+  );
+  entityRoute(
+    '/records/by-person',
+    enterpriseSearchRecordsByPersonSchema,
+    recordsByPerson(appConfig),
+  );
+  entityRoute(
+    '/records/by-value',
+    enterpriseSearchRecordsByValueSchema,
+    recordsByValue(appConfig),
+  );
+  entityRoute(
+    '/records/by-entities',
+    enterpriseSearchRecordsByEntitiesSchema,
+    recordsByEntities(appConfig),
   );
 
   router.get(

@@ -36,6 +36,47 @@ const ENTITY_SEARCH_FIELDS = [
   'namedEntityKinds',
   'limit',
 ] as const;
+const ENTITY_RECORDS_FIELDS = [
+  'entityId',
+  'entityType',
+  'recordTypes',
+  'limit',
+  'cursor',
+] as const;
+const CO_MENTIONED_FIELDS = ['entityIds', 'kinds', 'limit'] as const;
+const PERSON_RECORDS_FIELDS = [
+  'person',
+  'roles',
+  'recordTypes',
+  'limit',
+  'cursor',
+] as const;
+const VALUE_RECORDS_FIELDS = [
+  'kinds',
+  'name',
+  'entityIds',
+  'dateFrom',
+  'dateTo',
+  'amountMin',
+  'amountMax',
+  'currency',
+  'quantityMin',
+  'quantityMax',
+  'dimension',
+  'percentMin',
+  'percentMax',
+  'recordTypes',
+  'sourceIds',
+  'limit',
+  'cursor',
+] as const;
+const ENTITY_RECORDS_SEARCH_FIELDS = [
+  'mentions',
+  'match',
+  'query',
+  'limit',
+  'maxChunksPerRecord',
+] as const;
 const NEIGHBOR_FIELDS = [
   'entityId',
   'entityType',
@@ -55,21 +96,25 @@ const forward =
   (
     appConfig: AppConfig,
     path: string,
-    fields: readonly string[],
+    fields: readonly string[] | null,
     what: string,
   ): Handler =>
   async (req, res, next) => {
     try {
-      const sent = req.body as Record<string, unknown>;
-      const body: Record<string, unknown> = {};
-      for (const key of fields) {
-        if (sent[key] !== undefined) body[key] = sent[key];
+      // `null` fields: a GET, which sends no body.
+      let body: Record<string, unknown> | undefined;
+      if (fields) {
+        const sent = req.body as Record<string, unknown>;
+        body = {};
+        for (const key of fields) {
+          if (sent[key] !== undefined) body[key] = sent[key];
+        }
       }
       let aiResponse;
       try {
         aiResponse = await new AIServiceCommand<Record<string, unknown>>({
           uri: `${appConfig.aiBackend}/api/v1/search/${path}`,
-          method: HttpMethod.POST,
+          method: fields ? HttpMethod.POST : HttpMethod.GET,
           headers: req.headers as Record<string, string>,
           body,
         }).execute();
@@ -114,3 +159,47 @@ export const searchEntities = (appConfig: AppConfig): Handler =>
 /** POST /api/v1/search/entities/neighbors */
 export const entityNeighbors = (appConfig: AppConfig): Handler =>
   forward(appConfig, 'entities/neighbors', NEIGHBOR_FIELDS, 'Entity lookup');
+
+/** GET /api/v1/search/entities/capabilities */
+export const entityCapabilities = (appConfig: AppConfig): Handler =>
+  forward(appConfig, 'entities/capabilities', null, 'Entity lookup');
+
+/** POST /api/v1/search/entities/records */
+export const entityRecords = (appConfig: AppConfig): Handler =>
+  forward(
+    appConfig,
+    'entities/records',
+    ENTITY_RECORDS_FIELDS,
+    'Entity lookup',
+  );
+
+/** POST /api/v1/search/entities/co-mentioned */
+export const coMentionedEntities = (appConfig: AppConfig): Handler =>
+  forward(
+    appConfig,
+    'entities/co-mentioned',
+    CO_MENTIONED_FIELDS,
+    'Entity lookup',
+  );
+
+/** POST /api/v1/search/records/by-person */
+export const recordsByPerson = (appConfig: AppConfig): Handler =>
+  forward(
+    appConfig,
+    'records/by-person',
+    PERSON_RECORDS_FIELDS,
+    'Record lookup',
+  );
+
+/** POST /api/v1/search/records/by-value */
+export const recordsByValue = (appConfig: AppConfig): Handler =>
+  forward(appConfig, 'records/by-value', VALUE_RECORDS_FIELDS, 'Record lookup');
+
+/** POST /api/v1/search/records/by-entities */
+export const recordsByEntities = (appConfig: AppConfig): Handler =>
+  forward(
+    appConfig,
+    'records/by-entities',
+    ENTITY_RECORDS_SEARCH_FIELDS,
+    'Entity search',
+  );

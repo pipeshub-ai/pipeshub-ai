@@ -61,6 +61,18 @@ CODE_TOOLS = {
     "pipeshub_code_entry_points",
 }
 
+# Registered by PipesHub itself (modules/mcp/entity.tools.ts), with the actions
+# the deployment serves: entity store, named-entity extraction, ENTITY_SEARCH_TOOL.
+# Not in the package's golden surface; integration_test_mcp_entity_tools.py checks them.
+ENTITY_TOOLS = {"pipeshub_entities", "pipeshub_find_records"}
+ENTITY_INSTRUCTIONS_HEADING = "\n\n## People, entities and values\n"
+
+
+def _without_entity_instructions(instructions: str) -> str:
+    """The instructions without the section the entity tools append, which ends them."""
+    return instructions.split(ENTITY_INSTRUCTIONS_HEADING, 1)[0]
+
+
 # The mcp-server repo caps every description so hosts keep room for their own
 # tools (its __tests__/toolDescriptions.test.ts). Mirror the ceiling here.
 # 3.1.0 raised it from 4000 to 4600 (mcp-server#100), for caveats that replace
@@ -113,11 +125,11 @@ class TestMcpHandshake:
 @pytest.mark.mcp
 class TestMcpSurfaceMatchesGolden:
     def test_instructions(self, mcp_surface: dict, mcp_golden: dict) -> None:
-        expected, actual = mcp_golden["instructions"], mcp_surface["instructions"]
+        expected, actual = mcp_golden["instructions"], _without_entity_instructions(mcp_surface["instructions"])
         assert actual == expected, "instructions differ:\n" + _diff(expected, actual, "instructions")
 
     def test_tool_names(self, mcp_surface: dict, mcp_golden: dict) -> None:
-        served = [t["name"] for t in mcp_surface["tools"]]
+        served = [t["name"] for t in mcp_surface["tools"] if t["name"] not in ENTITY_TOOLS]
         golden = [t["name"] for t in mcp_golden["tools"]]
         if not CODE_TOOLS & set(served):
             golden = [n for n in golden if n not in CODE_TOOLS]
@@ -168,8 +180,10 @@ class TestMcpSurfaceMatchesGolden:
 @pytest.mark.mcp
 class TestMcpSurfaceInvariants:
     def test_exactly_the_curated_tools(self, mcp_surface: dict) -> None:
-        """The code tools come all together or not at all (no repo, or no code:read)."""
-        assert {t["name"] for t in mcp_surface["tools"]} in (CURATED_TOOLS, CURATED_TOOLS | CODE_TOOLS)
+        """The code tools come all together or not at all (no repo, or no code:read);
+        the entity tools come with the actions the deployment serves, so either may be absent."""
+        served = {t["name"] for t in mcp_surface["tools"]}
+        assert served - ENTITY_TOOLS in (CURATED_TOOLS, CURATED_TOOLS | CODE_TOOLS)
 
     def test_code_tools_are_marked_experimental(self, mcp_surface: dict) -> None:
         for tool in mcp_surface["tools"]:
@@ -211,7 +225,8 @@ class TestMcpSurfaceInvariants:
     def test_assistant_prompt_is_the_instructions(self, mcp_surface: dict) -> None:
         prompts = _by_name(mcp_surface["prompts"])
         assert ASSISTANT_PROMPT in prompts, sorted(prompts)
-        assert prompts[ASSISTANT_PROMPT]["text"].strip() == mcp_surface["instructions"].strip()
+        # The prompt is the package's text; the entity section is per deployment and per caller.
+        assert prompts[ASSISTANT_PROMPT]["text"].strip() == _without_entity_instructions(mcp_surface["instructions"]).strip()
 
 
 
