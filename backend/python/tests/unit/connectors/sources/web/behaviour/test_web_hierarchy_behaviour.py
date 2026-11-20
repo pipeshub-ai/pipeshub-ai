@@ -269,6 +269,78 @@ async def test_a_folder_rewritten_under_a_parent_stored_without_a_trailing_slash
     assert db.parent_of.get(db.records[SETUP].id) == guides.id
 
 
+async def test_a_full_sync_links_a_page_again_under_a_parent_page_an_earlier_sync_unlinked(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """An older build could skip the parent page (a 304, a sitemap lastmod) and unlink it with the
+    links of the pages under it. Rewriting the parent page restores only its own links."""
+    _site(site)
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+    db.end_full_sync()
+    del db.parent_of[db.records[CHILD].id]
+
+    checkpoints.sync_points.clear()
+    await connector.run_sync()
+    db.end_full_sync()
+
+    assert db.parent_of.get(db.records[CHILD].id) == db.records[DOCS].id
+
+
+async def test_a_new_folder_names_its_parent_page_as_it_is_stored_now(
+    site: FakeWeb, db: FullSyncRecordsDb, make_connector: MakeConnector
+) -> None:
+    """The parent page was met under an old id without its trailing slash, then the crawl stored it
+    under its new id. A folder written under it later must name the new id."""
+    _site(site)
+    connector = await make_connector()
+    await connector.run_sync()
+    page = db.records.pop(DOCS)
+    page.external_record_id = DOCS.rstrip("/")
+    db.records[page.external_record_id] = page
+    connector._ancestors_done.clear()  # a new sync meets the page first under its old id
+    await connector._ensure_parent_records_exist(DOCS)
+    assert DOCS in connector._ancestors_done
+
+    db.records.pop(page.external_record_id)
+    page.external_record_id = DOCS
+    db.records[DOCS] = page
+    await connector._ensure_parent_records_exist("http://site.test/docs/sub/")
+
+    sub = db.records["http://site.test/docs/sub/"]
+    assert sub.parent_external_record_id == DOCS
+    assert db.parent_of.get(sub.id) == page.id
+
+
+async def test_a_relink_left_to_the_next_sync_finds_pages_that_name_the_folder_with_a_trailing_slash(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The folder is stored without the slash, as older builds did; the page under it names it with one."""
+    connector = await _damaged_by_an_earlier_full_sync(site, db, checkpoints, make_connector)
+    legacy = SETUP.rstrip("/")
+    folder = db.records.pop(SETUP)
+    folder.external_record_id = legacy
+    db.records[legacy] = folder
+    assert db.records[INSTALL].parent_external_record_id == SETUP
+    attach = db.on_records_attached_to_parent
+
+    async def failing(*_: object, **__: object) -> None:
+        raise RuntimeError("records database unavailable")
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", failing)
+    await connector.run_sync()
+    db.end_full_sync()
+    assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == [legacy]
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", attach)
+    await connector.run_sync()  # incremental
+
+    assert db.parent_of.get(db.records[INSTALL].id) == folder.id
+    assert next(iter(checkpoints.sync_points.values()))["relinkPending"] == []
+
+
 MANUAL = "http://site.test/guides/setup/manual.pdf"
 
 

@@ -652,9 +652,9 @@ class WebConnector(BaseConnector):
         self._landed_urls: set[str] = set()
         # Pages this sync kept, directly or through a redirect; visited_urls also holds pages fetched and dropped.
         self._kept_urls: set[str] = set()
-        # The ancestors this sync has dealt with, each once (folders it wrote, and pages, which the
-        # crawl writes): normalized external id -> the external id it is stored under.
-        self._ancestors_done: dict[str, str] = {}
+        # Normalized external ids of the ancestors this sync has dealt with, each once: folders it
+        # wrote, and pages, which the crawl writes.
+        self._ancestors_done: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
         # Stored pages that answered 404/410: deleted when the next sync gets the same answer.
         self._gone_last_sync: set[str] = set()
@@ -3666,7 +3666,7 @@ class WebConnector(BaseConnector):
         in_trash = await self.data_entities_processor.on_record_deleted(record.id)
         self._stored_page_ids.discard(record.id)
         # A page under this URL now needs a folder here.
-        self._ancestors_done.pop(self._ensure_trailing_slash(record.external_record_id), None)
+        self._ancestors_done.discard(self._ensure_trailing_slash(record.external_record_id))
         # A page in the trash keeps its stored copy and its links; the purge removes both.
         if in_trash:
             return
@@ -3685,10 +3685,23 @@ class WebConnector(BaseConnector):
             self.logger.warning("Could not read the pages under %s: %s", external_id, e)
             return None
 
+    async def _children_under(self, external_id: str) -> list[Record] | None:
+        """The records stored under ``external_id``, whether they name it with or without its trailing slash.
+
+        None when either could not be read.
+        """
+        children: dict[str, Record] = {}
+        for parent_ref in dict.fromkeys([external_id, self._ensure_trailing_slash(external_id)]):
+            stored = await self._children_of(parent_ref)
+            if stored is None:
+                return None
+            children.update({child.id: child for child in stored})
+        return list(children.values())
+
     async def _relink_children_left_out(self) -> None:
-        """Link again the children an earlier removal could not: an unchanged child is never rewritten."""
+        """Link again the children an earlier removal or full sync could not: an unchanged child is never rewritten."""
         for external_id in sorted(self._relink_pending):
-            children = await self._children_of(external_id)
+            children = await self._children_under(external_id)
             if children:
                 await self._keep_children_in_the_tree(external_id, children)
             elif children is not None:
@@ -4072,10 +4085,10 @@ class WebConnector(BaseConnector):
         A folder is written once per sync, whether or not it is already stored. A full sync
         ends by unlinking every record it did not write, so a stored folder left unwritten
         lost its links, and the pages under it lost the access they inherit through it.
-        Writing it again restores the folder's own links if an earlier sync removed them; on a
-        full sync the pages stored under it are linked to it again too, since an unchanged page
-        is not rewritten. An ancestor that is a page of the site is left to the crawl, which
-        writes it with its content.
+        Writing it again restores the folder's own links if an earlier sync removed them. An
+        ancestor that is a page of the site is left to the crawl, which writes it with its
+        content. On a full sync the pages stored under every stored ancestor, folder or page,
+        are linked to it again too, since an unchanged page is not rewritten.
 
         The folders go to ``on_new_records`` root first, so each finds its parent stored.
         """
@@ -4092,7 +4105,7 @@ class WebConnector(BaseConnector):
 
             # ── Step 2: walk segments, collect the folders not yet written this sync ─
             batch_parent_records: List[Tuple[FileRecord, List[Permission]]] = []
-            stored_folders: list[Record] = []
+            stored_ancestors: list[Record] = []
             done: dict[str, str] = {}
             timestamp = get_epoch_timestamp_in_ms()
 
@@ -4102,26 +4115,12 @@ class WebConnector(BaseConnector):
                     # Dealt with along with every ancestor above it.
                     break
 
-                # Primary lookup
-                existing = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=external_id,
-                )
-
-                # Legacy fallback: old records may have been stored without a trailing slash
-                if not existing:
-                    legacy_id = external_id.rstrip("/")
-                    if legacy_id != external_id:
-                        existing = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=legacy_id,
-                        )
-
+                existing = await self._stored_ancestor(external_id)
                 done[external_id] = existing.external_record_id if existing else external_id
-                if existing and not existing.is_internal:
-                    continue
                 if existing:
-                    stored_folders.append(existing)
+                    stored_ancestors.append(existing)
+                    if not existing.is_internal:
+                        continue
 
                 parsed = urlparse(segment_url)
                 prefix_path = parsed.path if parsed.path.endswith("/") else parsed.path + "/"
@@ -4166,20 +4165,26 @@ class WebConnector(BaseConnector):
 
             # A parent reference names the parent as it is stored, which on an old record has no
             # trailing slash; one that names no stored record would drop the folder's parent link.
-            known = {**self._ancestors_done, **done}
+            # A parent dealt with earlier in the sync is looked up again: the crawl may since have
+            # rewritten it under another id.
             for file_record, _ in batch_parent_records:
                 parent_ref = file_record.parent_external_record_id
-                if parent_ref:
-                    file_record.parent_external_record_id = known.get(self._ensure_trailing_slash(parent_ref), parent_ref)
+                if not parent_ref:
+                    continue
+                key = self._ensure_trailing_slash(parent_ref)
+                if key in done:
+                    file_record.parent_external_record_id = done[key]
+                elif parent := await self._stored_ancestor(key):
+                    file_record.parent_external_record_id = parent.external_record_id
 
             if batch_parent_records:
                 # ── Step 3: reverse so root-level ancestors are processed first ──
                 batch_parent_records.reverse()
 
                 await self.data_entities_processor.on_new_records(batch_parent_records)
-                if self.full_sync:
-                    for folder in stored_folders:
-                        await self._link_stored_pages_under(folder)
+            if self.full_sync:
+                for ancestor in stored_ancestors:
+                    await self._link_stored_pages_under(ancestor)
             # Only once everything is stored, so a failed write is tried again for the next page.
             self._ancestors_done.update(done)
 
@@ -4190,29 +4195,37 @@ class WebConnector(BaseConnector):
             )
 
 
-    async def _link_stored_pages_under(self, folder: Record) -> None:
-        """Link the pages stored under a folder to it again.
+    async def _stored_ancestor(self, external_id: str) -> Optional[Record]:
+        """The record stored for an ancestor URL, under *external_id* or, on an old record, without its trailing slash."""
+        for candidate in dict.fromkeys([external_id, external_id.rstrip("/")]):
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=candidate,
+            )
+            if existing:
+                return existing
+        return None
 
-        A full sync that did not write the folder removed its children's links to it along
+    async def _link_stored_pages_under(self, parent: Record) -> None:
+        """Link the pages stored under a folder or page to it again.
+
+        A full sync that did not write the parent removed its children's links to it along
         with its own. An unchanged page is not rewritten, and its permissions update restores
         only the inherit edge, so without this it stays out of the tree and out of reach.
         """
         try:
-            children: dict[str, Record] = {}
-            for external_id in {folder.external_record_id, self._ensure_trailing_slash(folder.external_record_id)}:
-                stored = await self._children_of(external_id)
-                if stored is None:
-                    raise RuntimeError(f"could not read the pages under {external_id}")
-                children.update({child.id: child for child in stored if not child.is_internal})
+            stored = await self._children_under(parent.external_record_id)
+            if stored is None:
+                raise RuntimeError("they could not be read")
+            children = [child.id for child in stored if not child.is_internal]
             if children:
-                await self.data_entities_processor.on_records_attached_to_parent(folder.id, list(children))
+                await self.data_entities_processor.on_records_attached_to_parent(parent.id, children)
         except Exception as e:
             # Only a full sync links them here, so the pending mark is what gets it done later.
             self.logger.error(
                 "Could not link the pages under %s to it again; the next sync tries again: %s",
-                folder.external_record_id, e,
+                parent.external_record_id, e,
             )
-            self._relink_pending.add(folder.external_record_id)
+            self._relink_pending.add(parent.external_record_id)
             self._sync_point_base["relinkPending"] = sorted(self._relink_pending)
 
     @classmethod
