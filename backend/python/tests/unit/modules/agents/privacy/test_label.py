@@ -82,6 +82,24 @@ class TestWireShape:
         ]
         assert AnswerProvenance.from_wire(wire).parents == label.parents
 
+    def test_a_file_no_run_wrote_names_its_chat_and_last_write_and_reads_back_the_same(self) -> None:
+        label = AnswerProvenance(
+            direct=LabelDirect(),
+            parents=(
+                ParentRef("", "", "full", artifact_id="a1", conversation_id="conv-1", written_at=1_700_000_000_000),
+                # Either one missing: nothing of it is sent, and Node judges it as a file with no run.
+                ParentRef("", "", "full", artifact_id="a2", conversation_id="conv-1"),
+            ),
+            complete=True,
+        )
+        wire = label.to_wire()
+
+        assert wire["parents"] == [
+            {"id": "", "ver": "", "mode": "full", "artifactId": "a1", "conversationId": "conv-1", "writtenAt": 1_700_000_000_000},
+            {"id": "", "ver": "", "mode": "full", "artifactId": "a2"},
+        ]
+        assert AnswerProvenance.from_wire(wire).parents[0] == label.parents[0]
+
     def test_one_file_noted_with_and_without_its_run_is_two_parents_in_a_stable_order(self) -> None:
         wire = AnswerProvenance(
             direct=LabelDirect(),

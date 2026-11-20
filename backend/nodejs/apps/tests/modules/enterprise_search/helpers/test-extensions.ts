@@ -5,6 +5,7 @@ export const testAcl = {
     const d = doc as { aclVersion?: number | null }
     d.aclVersion = (d.aclVersion ?? 0) + 1
   },
+  projectPlacement: () => ({ set: {}, unset: [] as string[] }),
 }
 
 /** Content access that grants nothing, for tests about the share write itself. */

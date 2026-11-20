@@ -109,20 +109,46 @@ _MAX_VERSION_CONFLICT_RETRIES = 1
 _AUTHORIZE_WINDOW = 8
 
 
-def _note_read(artifact_id: str | None, doc: dict | None, version: int = 1) -> None:
+def _ms(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _version_written_at(doc: dict, record: dict | None, version: int) -> int | None:
+    """When `version` of the artifact was written (epoch ms): its `versions` entry, or for version 1 with none, its
+    record's creation. None when neither says."""
+    for entry in deserialize_artifact_versions(doc.get("versions")):
+        if entry.get("registryVersion") == version:
+            return _ms(entry.get("createdAt"))
+    return _ms((record or {}).get("createdAtTimestamp")) if version == 1 else None
+
+
+def _note_read(artifact_id: str | None, doc: dict | None, version: int = 1, record: dict | None = None) -> None:
     """An artifact read or listed for a chat request is a parent of its answer:
     the row of the run that wrote the version read. The request's ledger skips its
     own run's. `doc` is the artifact's own document: the runs that wrote it are
     stored there, not on its record. A version whose writer was never kept names
-    no run, so the answer is its asker's alone."""
+    no run, so the answer is its asker's alone, unless the document was read: then
+    its chat and when that version was written go with it, so a file an older
+    release wrote can be judged as an answer from before labels. A document that
+    could not be read gives nothing."""
     from app.modules.agents.privacy.ledger import note_artifact_read
 
-    if artifact_id:
-        writer = artifact_version_writer(doc, version)
-        note_artifact_read(artifact_id, writer.run_id if writer is not None else None)
+    if not artifact_id:
+        return
+    writer = artifact_version_writer(doc, version)
+    run_id = writer.run_id if writer is not None else None
+    if doc is None or run_id:
+        note_artifact_read(artifact_id, run_id)
+        return
+    note_artifact_read(
+        artifact_id,
+        None,
+        conversation_id=str(doc.get("conversationId") or "") or None,
+        written_at=_version_written_at(doc, record, version),
+    )
 
 
-async def _note_read_by_id(graph_provider: Any, artifact_id: str, version: int) -> None:
+async def _note_read_by_id(graph_provider: Any, artifact_id: str, version: int, record: dict | None = None) -> None:
     """`_note_read` for a read that authorized against the record alone. The
     artifact's document is read only while a request is labelled. One that can't
     be read names no run, so the artifact counts as an earlier run's: the answer
@@ -136,7 +162,7 @@ async def _note_read_by_id(graph_provider: Any, artifact_id: str, version: int) 
     except Exception:
         logger.warning("answer label: the run that wrote an artifact could not be read", exc_info=True)
         doc = None
-    _note_read(artifact_id, doc if isinstance(doc, dict) else None, version)
+    _note_read(artifact_id, doc if isinstance(doc, dict) else None, version, record)
 
 
 def _metadata_at(record: dict, artifact_doc: dict, version: int) -> ArtifactMetadata:
@@ -568,7 +594,7 @@ class ArtifactRegistryService:
         if not artifact_doc:
             from .access import ArtifactNotFoundError
             raise ArtifactNotFoundError(f"Artifact metadata missing for: {ref}")
-        _note_read(ref, artifact_doc, served)
+        _note_read(ref, artifact_doc, served, record)
         return await self._with_lineage(_metadata_at(record, artifact_doc, served))
 
     async def resolve_by_logical_name(
@@ -641,7 +667,7 @@ class ArtifactRegistryService:
     async def get_content(self, *, actor: Actor, artifact_id: str, version: int | None = None) -> bytes:
         """The bytes of `version`, or with none asked of the newest version `actor` may open."""
         record, served = await self._access.authorize_version(actor, artifact_id, version)
-        await _note_read_by_id(self._graph_provider, artifact_id, served)
+        await _note_read_by_id(self._graph_provider, artifact_id, served, record)
         storage_version = await self._resolve_storage_version(artifact_id, record, served)
         from app.agents.actions.util.blob_staging import fetch_blob_bytes
 
@@ -660,7 +686,7 @@ class ArtifactRegistryService:
         later version. So only a reader who opens every version gets one; anyone
         else gets the signed-in link, which is checked for each viewer when opened."""
         record, served = await self._access.authorize_version(actor, artifact_id, version)
-        await _note_read_by_id(self._graph_provider, artifact_id, served)
+        await _note_read_by_id(self._graph_provider, artifact_id, served, record)
         if await self._access.opens_every_version(actor, artifact_id):
             storage_version = await self._resolve_storage_version(artifact_id, record, served)
             signed = await self._urls.get_download_url(
@@ -756,7 +782,7 @@ class ArtifactRegistryService:
         except Exception:
             return None
         # A listing names it; the reminder puts that name in front of a model.
-        _note_read(artifact_id, artifact_doc, served)
+        _note_read(artifact_id, artifact_doc, served, record)
         return record, served
 
     # ------------------------------------------------------------------

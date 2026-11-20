@@ -96,7 +96,10 @@ const isParent = (p: Plain): boolean =>
   typeof p.ver === 'string' &&
   (LABEL_PARENT_MODES as readonly unknown[]).includes(p.mode) &&
   (p.artifactId === undefined || typeof p.artifactId === 'string') &&
-  (p.runId === undefined || typeof p.runId === 'string');
+  (p.runId === undefined || typeof p.runId === 'string') &&
+  (p.conversationId === undefined || typeof p.conversationId === 'string') &&
+  (p.writtenAt === undefined ||
+    (typeof p.writtenAt === 'number' && Number.isFinite(p.writtenAt)));
 
 /** What a label as sent or stored gets wrong; empty when nothing. Unknown names are listed before malformed values. */
 export function labelProblems(label: Plain): string[] {

@@ -179,7 +179,10 @@ export function makeWorld(seed: number): World {
     if (rng.chance(0.05)) out.push({ id: nextId(T0), ver: nextId(T0), mode: 'text' })
     if (runs.length > 0 && rng.chance(0.15)) {
       const runId = rng.chance(0.85) ? rng.pick(runs) : 'run-nobody'
-      out.push({ id: '', ver: '', mode: 'full', artifactId: `art-${rng.int(3)}`, ...(rng.chance(0.9) && { runId }) })
+      // With no run: a file saved before the rules, whose record names its chat and when the version read was written,
+      // or one whose record could not be read.
+      const before = rng.chance(0.6) && { conversationId: rng.pick([ROOM, OTHER, THREAD]), writtenAt: (rng.chance(0.7) ? T0 : T2).getTime() }
+      out.push({ id: '', ver: '', mode: 'full', artifactId: `art-${rng.int(3)}`, ...(rng.chance(0.9) ? { runId } : before) })
     }
     if (rng.chance(0.03)) out.push('not a parent')
     return out

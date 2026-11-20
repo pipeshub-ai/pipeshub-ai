@@ -73,6 +73,13 @@ export interface LabelParent {
   artifactId?: string;
   /** For a file, that run. A file parent without it can't be judged, so only the asker's own read passes. */
   runId?: string;
+  /**
+   * For a file whose own record names no run (written by an older release, or outside a run): its chat, and when it
+   * was last written (epoch ms). Written before the rules started for that chat, it is judged as an answer from
+   * before labels; without both, as a file with no run.
+   */
+  conversationId?: string;
+  writtenAt?: number;
 }
 
 export interface AnswerProvenance {

@@ -5,8 +5,10 @@ import mongoose from 'mongoose'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import * as agui from '../../../../src/modules/enterprise_search/utils/agui'
 import { FULL_FRAME_MAX_ROWS } from '../../../../src/modules/enterprise_search/utils/utils'
-import { FakeQuery, InMemoryChatStore, settle } from '../controller/chat-test-harness'
-import { Flow, Run, RUN, StreamHandler, finalAnswer, flows, seedConversation, startStream } from '../controller/streaming-flows'
+import { FakeQuery, InMemoryChatStore, oid, settle } from '../controller/chat-test-harness'
+import { AGENT_KEY, Flow, ORG, OWNER, Run, RUN, StreamHandler, finalAnswer, flows, seedConversation, startStream } from '../controller/streaming-flows'
+import { configureVisibility, resetVisibility } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
+import { labelContentHash } from '../../../../src/modules/enterprise_search/services/conversation/privacy/label'
 
 type Row = Record<string, unknown>
 
@@ -249,6 +251,92 @@ describe('final stream frame', () => {
       expect(run.res.eventsOf('RUN_FINISHED')).to.deep.equal([])
       expect(run.res.eventsOf('RUN_ERROR')).to.have.length(1)
       expect(run.conversation().status).to.equal('Failed')
+    })
+  })
+
+  describe("in an agent chat, another person's earlier answer whose label names the chat's agent", () => {
+    const EARLIER = 'The agent found three themes.'
+    // Someone the owner shared the chat with asked it: the asker's own answer passes an unsettled check anyway.
+    const ASKER = oid()
+    let earlier: Row = {}
+
+    /** The chat as its agent left it: a first turn whose answer's label names the agent, then the turn a regenerate replaces. */
+    const agentWrote = (base: Flow): Flow => ({
+      ...base,
+      prepare: (store: InMemoryChatStore) => {
+        const session = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Agent chat', sessionType: 'agent', agentKey: AGENT_KEY, conversationSource: 'agent_chat' })
+        store.addMessage(session, { messageType: 'user_query', content: 'What changed?', authorUserId: ASKER })
+        const first = store.addMessage(session, { messageType: 'bot_response', content: EARLIER, requestedBy: ASKER })
+        const labelVer = '6a0000000000000000000001'
+        earlier = {
+          _id: String(first._id),
+          sessionId: String(session._id),
+          orgId: ORG,
+          messageType: 'bot_response',
+          requestedBy: ASKER,
+          content: EARLIER,
+          parts: [],
+          labelVer,
+          provenance: {
+            v: 5,
+            ver: labelVer,
+            contentHash: labelContentHash(EARLIER, []),
+            direct: { records: [], vrids: [], nodes: [], saVrids: [], personal: [], agents: [{ key: AGENT_KEY, kind: 'config' }], chat: [], projects: [], marks: [] },
+            parents: [],
+            complete: true,
+            tagset: 1,
+            pub: false,
+          },
+        }
+        const params: Record<string, string> = { conversationId: String(session._id), agentKey: AGENT_KEY }
+        if (!base.regenerate) {
+          store.writes.length = 0
+          return { params, body: { query: 'More detail please' }, existing: session }
+        }
+        store.addMessage(session, { messageType: 'user_query', content: 'And since then?' })
+        const bot = store.addMessage(session, { messageType: 'bot_response', content: 'Nothing yet.' })
+        store.writes.length = 0
+        return { params: { ...params, messageId: String(bot._id) }, body: {}, existing: session, replacedMessageId: String(bot._id) }
+      },
+    })
+
+    beforeEach(() => {
+      configureVisibility({
+        labelRule: async () => true,
+        labels: async (_org, ids) => new Map(ids.filter((id) => id === earlier._id).map((id) => [id, earlier as never])),
+        // As the edition wires it: the agent check calls out as the reader, so a read with no request behind it cannot say.
+        canUseAgent: async (reader, key) => (reader.identity === undefined ? undefined : key === AGENT_KEY),
+      })
+    })
+    afterEach(() => {
+      resetVisibility()
+    })
+
+    const shownEarlier = (conversation: Row): Row | undefined => (conversation.messages as Row[]).find((m) => String(m._id) === earlier._id)
+
+    for (const name of ['addMessageStreamToAgentConversation', 'regenerateAgentAnswers']) {
+      it(`${name}: is shown to the owner, who may use the agent, in the final frame: checked as the caller, as a fetch checks it`, async () => {
+        connected()
+        const run = await startStream(agentWrote(flow(name)))
+
+        await finishWith(run)
+
+        const shown = shownEarlier(finishedConversation(run))
+        expect(shown?.content).to.equal(EARLIER)
+        expect(shown).to.not.have.property('answerHidden')
+      })
+    }
+
+    it('regenerateAgentAnswers: is shown to the owner in the error frame too', async () => {
+      connected()
+      const run = await startStream(agentWrote(flow('regenerateAgentAnswers')))
+      run.ai.finish()
+      await run.res.ended
+      await settle()
+
+      const shown = shownEarlier(run.res.eventsOf('RUN_ERROR')[0]?.data.conversation as Row)
+      expect(shown?.content).to.equal(EARLIER)
+      expect(shown).to.not.have.property('answerHidden')
     })
   })
 })

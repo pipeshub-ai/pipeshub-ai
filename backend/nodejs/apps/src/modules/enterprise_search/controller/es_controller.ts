@@ -118,6 +118,7 @@ import {
   messageActor,
   redactMessagesFor,
   redactSearchesFor,
+  redactWithTurns,
   viewerOf,
   startsTurn,
   type Readable,
@@ -127,6 +128,7 @@ import {
   idOf as idOfValue,
   includableRows,
   readerView,
+  unlabelledAnswers,
   type Reader,
   type ReaderSession,
 } from '../services/conversation/privacy/visibility';
@@ -148,6 +150,7 @@ import {
 import {
   ConversationExtensions,
   conversationExtensions,
+  type ProjectPlacement,
 } from '../services/conversation/conversation-extensions';
 import { attachUpstreamAbort, runGuarded } from '../utils/stream-lifecycle';
 import { ChatStreamRun, type StreamEnd } from '../utils/chat-stream-run';
@@ -277,6 +280,35 @@ const listViews = (): ConversationExtensions['lists'] =>
   conversationExtensions().lists;
 const aclVersionBump = (): Record<string, unknown> =>
   conversationExtensions().acl.versionBump();
+
+/** A chat's stored project and its visibility to it, as `acl.projectPlacement` compares them. */
+const placementOf = (conversation: {
+  projectId?: mongoose.Types.ObjectId | string | null;
+  projectVisibility?: 'private' | 'project';
+}): ProjectPlacement => ({
+  ...(conversation.projectId != null && {
+    projectId: String(conversation.projectId),
+  }),
+  ...(conversation.projectVisibility !== undefined && {
+    visibility: conversation.projectVisibility,
+  }),
+});
+
+/** What moving a chat between project placements also stores, as `$set` fields and a `$unset` document. */
+const placementChange = (
+  before: ProjectPlacement,
+  after: ProjectPlacement,
+): { set: Record<string, unknown>; unset: Record<string, ''> } => {
+  const { set, unset } = conversationExtensions().acl.projectPlacement(
+    before,
+    after,
+    new Date(),
+  );
+  return {
+    set,
+    unset: Object.fromEntries(unset.map((field) => [field, ''] as const)),
+  };
+};
 
 const rsAvailable = isReplicaSet();
 
@@ -585,26 +617,24 @@ const TURN_READ_ROWS = 50;
 const TURN_READ_STEPS = 10;
 
 /**
- * `redactMessagesFor` for one page of a conversation. A turn's rows go with its
- * hidden answer wherever they sit, and a turn can run past either edge of the
- * page, so the rows back to the turn's question and forward to the next one are
- * read through the repository and judged with the page. Each side reads at most
- * `TURN_READ_STEPS` steps of `TURN_READ_ROWS`; past that the turn's rows on the
- * page are hidden as unconfirmed, never shown.
+ * The rows a page's first and last turns hold past its edges. A turn's rows go with its hidden answer wherever they
+ * sit, and a turn can run past either edge of the page, so the rows back to the turn's question and forward to the
+ * next one are read through the repository and judged with the page. Each side reads at most `TURN_READ_STEPS` steps
+ * of `TURN_READ_ROWS`; past that the turn's rows on the page are hidden as unconfirmed, never shown.
  */
-const redactPageFor = async <M extends ViewerMessage>(
-  appConfig: AppConfig,
-  viewer: ReturnType<typeof viewerOf>,
+interface TurnEdges<M> {
+  lead: M[];
+  trail: M[];
+  leadUnknown: boolean;
+  trailUnknown: boolean;
+}
+
+const turnEdgesOf = async <M extends ViewerMessage>(
   conversation: { _id: string; orgId: string },
   messages: M[],
   skip: number,
   total: number,
-  ownerOf: (message: M) => string | undefined,
-  known?: Readable,
-  // The harness decided the citations of this page's messages for the viewer; rows read past its edges it never saw.
-  citationsDecided = false,
-  checkFailed = false,
-): Promise<M[]> => {
+): Promise<TurnEdges<M>> => {
   const read = async (from: number, limit: number): Promise<M[]> =>
     (await getMessages(conversation._id, {
       orgId: conversation.orgId,
@@ -644,23 +674,7 @@ const redactPageFor = async <M extends ViewerMessage>(
     trail.push(...rows);
     from += rows.length;
   }
-  const page = new Set<M>(messages);
-  const out = await redactMessagesFor(
-    appConfig,
-    viewer,
-    [...lead, ...messages, ...trail],
-    ownerOf,
-    {
-      known,
-      leadUnknown,
-      trailUnknown,
-      checkFailed,
-      ...(citationsDecided && {
-        citationsDecided: (m: M) => page.has(m),
-      }),
-    },
-  );
-  return out.slice(lead.length, lead.length + messages.length);
+  return { lead, trail, leadUnknown, trailUnknown };
 };
 
 /** Edition-only session fields an archive row leaves out unless collaborative chats are on, as list rows do. */
@@ -749,9 +763,11 @@ const readerSessionOf = (
 /**
  * Rows as the reader may see them (`readerView`): an answer is shown whole only to readers who can open everything
  * its label names, its text alone to those it was shared with, and to nobody else; another person's steps never.
- * Rows from before labels, and every row another person wrote, also pass main's per-record view. Every chat is read
- * this way, shared or not: whether a chat is shared is no reason to show a reader more. Rows of several chats (the
- * archives) are judged chat by chat.
+ * The answers no label decided alone (an asker's own, and those from before labels) also pass main's per-record
+ * view, each with its whole turn, as the room's feed judges them: a labelled answer is judged by its label, which
+ * names the chat's uploads it used, and those open for the chat's members (the chat's own file rule). Every chat is
+ * read this way, shared or not: whether a chat is shared is no reason to show a reader more. Rows of several chats
+ * (the archives) are judged chat by chat.
  */
 const redactForViewer = async <M extends object>(
   req: AuthenticatedUserRequest,
@@ -789,26 +805,58 @@ const redactForViewer = async <M extends object>(
         appConfig,
         known,
         ...(chat?.initiator !== undefined && { ownerId: chat.initiator }),
+        perRecordFor: unlabelledAnswers,
         perRecordView: async <R extends object>(list: R[], settled: Readable) =>
-          (await redactMessagesFor(
+          redactWithTurns(
             appConfig,
             viewerOf(req.user?.userId, req.user?.orgId),
-            list as unknown as ViewerMessage[],
+            list,
             ownerOf as unknown as (
               message: ViewerMessage,
             ) => string | undefined,
-            { known: settled },
-          )) as unknown as R[],
+            { known: settled, run: rows, sessionId: sid },
+          ),
       },
     );
+    const named = withAuthorsOf(rows, shown);
     indexes.forEach((i, n) => {
-      out[i] = shown[n] as M;
+      out[i] = named[n] as M;
     });
   }
   return out;
 };
 
+/**
+ * The rows the reader check gave back, with the author each had when it was handed over. The edition names rows on
+ * the detail before the check, and the check rebuilds a hidden or shared answer from its stored fields alone; the
+ * feed names rows after the check, so both reads give such a row its author (who asked it).
+ */
+const withAuthorsOf = <M extends object>(
+  given: readonly M[],
+  shown: M[],
+): M[] =>
+  shown.map((m, i) => {
+    const author = (given[i] as { author?: unknown } | undefined)?.author;
+    if (
+      author === undefined ||
+      (m as { author?: unknown }).author !== undefined
+    ) {
+      return m;
+    }
+    const named: M = { ...m, author };
+    return named;
+  });
+
 /** `redactForViewer` for one page of a conversation, a turn that runs past either edge of it read with it. */
+const pickFrom = <R extends object>(
+  list: R[],
+  all: readonly object[],
+  judged: readonly object[],
+): R[] => {
+  const at = new Map(all.map((m, i) => [m, judged[i] ?? m]));
+  return list.map((m) => (at.get(m) ?? m) as R);
+};
+
 const redactPageForViewer = async <M extends object>(
   req: AuthenticatedUserRequest,
   appConfig: AppConfig,
@@ -825,36 +873,61 @@ const redactPageForViewer = async <M extends object>(
   citationsDecided = false,
   // The harness's citation check could not be made: another person's answers are unconfirmed.
   checkFailed = false,
-): Promise<M[]> =>
-  (
-    await readerView(
-      readerOfRequest(req),
-      readerSessionOf(req, conversation),
-      messages,
-      {
-        member: true,
-        appConfig,
-        ...(conversation.initiator !== undefined && {
-          ownerId: conversation.initiator,
-        }),
-        perRecordView: async <R extends object>(list: R[], known: Readable) =>
-          (await redactPageFor(
+): Promise<M[]> => {
+  // The reader check sees the page's first and last turns whole, as the feed's whole read does: a card goes with its
+  // turn's answer, and an answer with its turn's question, wherever the page's edge falls.
+  const edges = await turnEdgesOf(
+    conversation,
+    messages as unknown as ViewerMessage[],
+    skip,
+    total,
+  );
+  const lead = edges.lead as unknown as M[];
+  const all = [...lead, ...messages, ...(edges.trail as unknown as M[])];
+  const page = new Set<object>(messages);
+  const { rows } = await readerView(
+    readerOfRequest(req),
+    readerSessionOf(req, conversation),
+    all,
+    {
+      member: true,
+      appConfig,
+      ...(conversation.initiator !== undefined && {
+        ownerId: conversation.initiator,
+      }),
+      // As the room's feed judges rows: main's per-record view for the answers no label decided alone, each with its
+      // turn; the rest as their label and the reader check have them.
+      perRecordFor: unlabelledAnswers,
+      perRecordView: async <R extends object>(list: R[], known: Readable) =>
+        pickFrom(
+          list,
+          all,
+          await redactMessagesFor(
             appConfig,
             viewerOf(req.user?.userId, req.user?.orgId),
-            conversation,
-            list as unknown as ViewerMessage[],
-            skip,
-            total,
+            all as unknown as ViewerMessage[],
             ownerOf as unknown as (
               message: ViewerMessage,
             ) => string | undefined,
-            known,
-            citationsDecided,
-            checkFailed,
-          )) as unknown as R[],
-      },
-    )
-  ).rows;
+            {
+              known,
+              leadUnknown: edges.leadUnknown,
+              trailUnknown: edges.trailUnknown,
+              checkFailed,
+              // The harness decided the citations of this page's messages for the viewer; rows read past its edges it never saw.
+              ...(citationsDecided && {
+                citationsDecided: (m: ViewerMessage) => page.has(m),
+              }),
+            },
+          ),
+        ),
+    },
+  );
+  return withAuthorsOf(
+    messages,
+    rows.slice(lead.length, lead.length + messages.length),
+  );
+};
 
 const RASTER_IMAGE_MIMES = new Set([
   'image/jpeg',
@@ -2103,8 +2176,9 @@ export const setConversationProject = async (
 
     let update: Record<string, unknown>;
     if (projectId === null) {
+      const placed = placementChange(placementOf(conversation), {});
       update = {
-        $unset: { projectId: '', projectVisibility: '' },
+        $unset: { projectId: '', projectVisibility: '', ...placed.unset },
         ...aclVersionBump(),
       };
     } else {
@@ -2123,11 +2197,17 @@ export const setConversationProject = async (
           : project.chatSharing === 'members'
             ? 'project'
             : 'private';
+      const placed = placementChange(placementOf(conversation), {
+        projectId: String(new mongoose.Types.ObjectId(projectId)),
+        visibility: projectVisibility,
+      });
       update = {
         $set: {
           projectId: new mongoose.Types.ObjectId(projectId),
           projectVisibility,
+          ...placed.set,
         },
+        ...(Object.keys(placed.unset).length > 0 && { $unset: placed.unset }),
         ...aclVersionBump(),
       };
       void ProjectService.touchActivity(projectId);
@@ -2195,9 +2275,15 @@ export const setConversationProjectVisibility = async (
       throw new BadRequestError('Conversation is not linked to a project');
     }
 
+    const before = placementOf(conversation);
+    const placed = placementChange(before, { ...before, visibility });
     const updated = await ChatSession.findOneAndUpdate(
       { _id: conversationId, ...sessionTypeFilter },
-      { $set: { projectVisibility: visibility }, ...aclVersionBump() },
+      {
+        $set: { projectVisibility: visibility, ...placed.set },
+        ...(Object.keys(placed.unset).length > 0 && { $unset: placed.unset }),
+        ...aclVersionBump(),
+      },
       { returnDocument: 'after' },
     );
     if (!updated) {
@@ -2728,12 +2814,17 @@ async function regenerateAnswersInternal(
           frame,
           session,
         );
-        // The conversation an error event carries is hidden for its reader as in a fetch.
+        // The conversation an error event carries is hidden for its reader as in a fetch; its error row is this
+        // run's own, as an answer frame's new answer is.
         if (plainConversation) {
           plainConversation = await conversationForViewer(
             appConfig,
             viewerOf(userId, orgId),
             plainConversation as { messages?: unknown },
+            {
+              ...(messageId !== undefined && { freshIds: [messageId] }),
+              identity: callerIdentityOf(req),
+            },
           );
         }
       } catch (reloadError: unknown) {
@@ -3299,7 +3390,11 @@ async function regenerateAnswersInternal(
             appConfig,
             viewerOf(userId, orgId),
             responseConversation as { messages?: unknown },
-            { known: accessMemo, freshIds: [messageId] },
+            {
+              known: accessMemo,
+              freshIds: [messageId],
+              identity: callerIdentityOf(req),
+            },
           );
 
           // Send final response event with the complete conversation data
@@ -3447,7 +3542,7 @@ async function regenerateAnswersInternal(
           turnRun,
           () => gate.settle('failed'),
           frame,
-          { appConfig, userId, orgId },
+          { appConfig, userId, orgId, identity: callerIdentityOf(req) },
         );
       } catch (dbError: unknown) {
         if (dbError instanceof LeaseLostError) {
@@ -3505,7 +3600,7 @@ async function regenerateAnswersInternal(
         run,
         () => gate.settle(outcome),
         frame,
-        { appConfig, userId, orgId },
+        { appConfig, userId, orgId, identity: callerIdentityOf(req) },
       );
     } catch (dbError: unknown) {
       if (dbError instanceof LeaseLostError) {

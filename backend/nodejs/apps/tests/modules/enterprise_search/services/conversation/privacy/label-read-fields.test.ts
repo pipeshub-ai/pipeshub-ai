@@ -216,7 +216,7 @@ const depsReading = (shape: (row: Row) => Row): Partial<VisibilityDeps> => {
     canReadProject: async () => undefined,
     isServiceAgent: async () => false,
     sharedText: (text) => text,
-    // The org's first labelled answer came after Bob, Carol and Ivy joined and before Priya did.
+    // The privacy rules started (this build first served) after Bob, Carol and Ivy joined and before Priya did.
     switchAt: async () => T1.getTime(),
     labelRule: async () => true,
     store: new VerdictStore(),

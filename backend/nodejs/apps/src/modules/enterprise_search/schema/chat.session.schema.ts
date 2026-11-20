@@ -13,7 +13,9 @@ import { schemaExtensions } from '../../../edition-schemas';
  * `sessionType` and `nextSeq` are internal bookkeeping fields, not part of
  * any documented API response shape, so they are `select: false` — this is
  * the structural guard against leaking them into a response even from a
- * `.lean()` query that forgets to project them out explicitly.
+ * `.lean()` query that forgets to project them out explicitly. A session
+ * just created still holds every `select: false` field, so `attachMessages()`
+ * leaves them all out of a response built from one.
  */
 const chatSessionSchema = new Schema<IChatSessionDocument>(
   {

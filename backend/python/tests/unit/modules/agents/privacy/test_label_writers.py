@@ -25,14 +25,20 @@ class _Recording(LabelLedger):
         self.vrids: set[str] = set()
         self.nodes: set[str] = set()
         self.artifacts: list[tuple[str, str | None]] = []
+        self.unrun: list[tuple[str, str | None, int | None]] = []
 
     def shown(self, *, records=(), vrids=(), nodes=(), call_id=None) -> None:
         self.records.update(records)
         self.vrids.update(vrids)
         self.nodes.update(nodes)
 
-    def artifact_read(self, artifact_id: str, run_id: str | None = None) -> None:
+    def artifact_read(
+        self, artifact_id: str, run_id: str | None = None, *, conversation_id: str | None = None,
+        written_at: int | None = None,
+    ) -> None:
         self.artifacts.append((artifact_id, run_id))
+        if conversation_id is not None or written_at is not None:
+            self.unrun.append((artifact_id, conversation_id, written_at))
 
 
 def _row(node_id: str, node_type: str) -> NodeRow:
@@ -252,6 +258,41 @@ class TestArtifactRegistry:
         assert record is not None
         assert ledger.artifacts == [("art-1", "run-0")]
 
+    async def test_an_artifact_no_run_wrote_is_named_with_its_chat_and_when_that_version_was_written(self) -> None:
+        # As an older release stored it: no run on its document. Its record says when version 1 was written.
+        from app.services.artifact_registry.registry import ArtifactRegistryService
+
+        registry = ArtifactRegistryService(MagicMock(), MagicMock())
+        registry._access = MagicMock()
+        registry._access.authorize_version = AsyncMock(
+            return_value=({"externalRecordId": "blob-1", "createdAtTimestamp": 1_000, "updatedAtTimestamp": 2_000}, 1),
+        )
+        ledger = _Recording()
+        with bind_ledger(ledger):
+            await registry._authorized_record(MagicMock(), {"_key": "art-1", "conversationId": "conv-1"})
+
+        assert ledger.artifacts == [("art-1", None)]
+        assert ledger.unrun == [("art-1", "conv-1", 1_000)]
+
+    async def test_a_later_version_no_run_kept_is_named_with_the_time_its_entry_says(self) -> None:
+        # Versioned before runs were kept per version: its entry has a time and no run.
+        from app.services.artifact_registry.registry import ArtifactRegistryService
+
+        registry = ArtifactRegistryService(MagicMock(), MagicMock())
+        registry._access = MagicMock()
+        registry._access.authorize_version = AsyncMock(return_value=({"externalRecordId": "blob-1", "createdAtTimestamp": 1_000}, 2))
+        doc = {
+            "_key": "art-1",
+            "conversationId": "conv-1",
+            "runId": "run-0",
+            "versions": [{"registryVersion": 1, "createdAt": 1_000}, {"registryVersion": 2, "createdAt": 3_000}],
+        }
+        ledger = _Recording()
+        with bind_ledger(ledger):
+            await registry._authorized_record(MagicMock(), doc)
+
+        assert ledger.unrun == [("art-1", "conv-1", 3_000)]
+
     async def test_an_artifact_the_reader_may_not_open_is_not_named(self) -> None:
         from app.services.artifact_registry.registry import ArtifactRegistryService
 
@@ -300,13 +341,26 @@ class TestArtifactReadById:
             await self._read(registry, read)
         assert ledger.artifacts == [("art-1", "run-1")]
 
+    @pytest.mark.parametrize("read", ["get_download_url", "get_content"])
+    async def test_one_no_run_wrote_is_named_with_its_chat_and_when_it_was_written(self, read: str) -> None:
+        registry, ledger = self._registry({"_key": "art-1", "conversationId": "conv-1"}), _Recording()
+        registry._access.authorize_version = AsyncMock(
+            return_value=({"externalRecordId": "blob-1", "version": 1, "orgId": "org-1", "createdAtTimestamp": 5_000}, 1),
+        )
+        with bind_ledger(ledger):
+            await self._read(registry, read)
+        assert ledger.artifacts == [("art-1", None)]
+        assert ledger.unrun == [("art-1", "conv-1", 5_000)]
+
     @pytest.mark.parametrize("fails", [False, True], ids=["no-document", "read-fails"])
     async def test_when_the_writer_cant_be_read_it_names_no_run(self, fails: bool) -> None:
         registry, ledger = self._registry(None, fails=fails), _Recording()
         with bind_ledger(ledger):
             await self._read(registry, "get_download_url")
-        # No run named: the label takes it for an earlier run's, which hides the answer more, never less.
+        # No run named: the label takes it for an earlier run's, which hides the answer more, never less. Nothing
+        # says it was written before labels either.
         assert ledger.artifacts == [("art-1", None)]
+        assert ledger.unrun == []
 
     async def test_outside_a_labelled_request_nothing_more_is_read(self) -> None:
         registry = self._registry({"_key": "art-1", "runId": "run-1"})

@@ -86,7 +86,9 @@ class ParentRef:
     earlier run is a parent with `artifact_id` set and `id`/`ver` empty, and
     `run_id` the run that last wrote it: Node judges the row version that run
     wrote. With no `run_id` (not known), Node can't, and the answer is its
-    asker's alone."""
+    asker's alone, unless the artifact's own document named no run: then
+    `conversation_id` and `written_at` (its record's last write, epoch ms) let
+    Node judge it as an answer from before labels, by that chat's readers."""
 
     id: str
     ver: str
@@ -94,13 +96,18 @@ class ParentRef:
     artifact_id: str | None = None
     # Empty when not known; a string either way, so parents always sort.
     run_id: str = ""
+    conversation_id: str = ""
+    written_at: int = 0
 
-    def to_wire(self) -> dict[str, str]:
-        wire = {"id": self.id, "ver": self.ver, "mode": self.mode}
+    def to_wire(self) -> dict[str, str | int]:
+        wire: dict[str, str | int] = {"id": self.id, "ver": self.ver, "mode": self.mode}
         if self.artifact_id:
             wire["artifactId"] = self.artifact_id
             if self.run_id:
                 wire["runId"] = self.run_id
+            elif self.conversation_id and self.written_at > 0:
+                wire["conversationId"] = self.conversation_id
+                wire["writtenAt"] = self.written_at
         return wire
 
 
@@ -232,9 +239,12 @@ class AnswerProvenance:
         for p in wire.get("parents") or ():
             if not isinstance(p, Mapping) or p.get("mode") not in PARENT_MODES:
                 raise LabelError("unknown parent mode")
+            written_at = p.get("writtenAt")
             parents.append(ParentRef(
                 str(p.get("id") or ""), str(p.get("ver") or ""), p["mode"], p.get("artifactId"),
                 run_id=str(p.get("runId") or ""),
+                conversation_id=str(p.get("conversationId") or ""),
+                written_at=written_at if isinstance(written_at, int) and not isinstance(written_at, bool) else 0,
             ))
         incomplete = wire.get("incomplete") or ()
         if not isinstance(incomplete, (list, tuple)):

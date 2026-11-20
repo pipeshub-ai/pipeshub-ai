@@ -191,12 +191,30 @@ export interface ConversationEventsExtension {
   ): Promise<void>;
 }
 
+/** A chat's project and whether it is visible to that project's members, as stored. */
+export interface ProjectPlacement {
+  projectId?: string;
+  visibility?: 'private' | 'project';
+}
+
+/** What a change of a chat's project placement also stores: fields to set, and fields to unset. */
+export interface ProjectPlacementFields {
+  set: Record<string, unknown>;
+  unset: string[];
+}
+
 /** Writes that change who may read a conversation or a project's conversations. */
 export interface ConversationAclExtension {
   /** Update fields every such write carries. */
   versionBump(): Record<string, unknown>;
   /** The same change, on a document about to be saved. */
   bumpDocument(doc: object): void;
+  /** What a chat created at, or moved from `before` to, `after` also stores; the caller merges it into its write. */
+  projectPlacement(
+    before: ProjectPlacement,
+    after: ProjectPlacement,
+    now: Date,
+  ): ProjectPlacementFields;
 }
 
 /** What a project update needs besides the shared settings. */
@@ -321,7 +339,11 @@ const defaults = (): ConversationExtensions => ({
     conversationDeleted: () => Promise.resolve(),
     conversationForked: () => Promise.resolve(),
   },
-  acl: { versionBump: () => ({}), bumpDocument: () => undefined },
+  acl: {
+    versionBump: () => ({}),
+    bumpDocument: () => undefined,
+    projectPlacement: () => ({ set: {}, unset: [] }),
+  },
   content: new RecordPermissionChatContentAccess(),
   agents: { changed: () => undefined },
   routes: {

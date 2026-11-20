@@ -322,6 +322,8 @@ interface QueryState {
   populate?: boolean
   session?: unknown
   exclude?: string[]
+  /** The top-level fields a projection names; absent, every field. */
+  include?: string[]
 }
 
 /** Chainable, awaitable stand-in for a Mongoose query. */
@@ -346,11 +348,20 @@ export class FakeQuery<T> implements PromiseLike<T> {
     this.state.lean = true
     return this
   }
-  /** Honours `-field` exclusions on `lean()` results; any other projection is ignored. */
+  /**
+   * Honours a string projection on `lean()` results as Mongoose does: `-field` drops the field; named fields keep only
+   * those (a nested path, its top-level field), `_id` and any `+field` beside them. A `+field` alone adds a hidden field
+   * to the whole row, which every row here already holds. Object projections are ignored.
+   */
   select(projection?: unknown): this {
     if (typeof projection === 'string') {
-      const excluded = projection.split(/\s+/).filter((token) => token.startsWith('-')).map((token) => token.slice(1))
+      const tokens = projection.split(/\s+/).filter((token) => token !== '')
+      const top = (token: string): string => token.split('.')[0] as string
+      const excluded = tokens.filter((token) => token.startsWith('-')).map((token) => token.slice(1))
+      const named = tokens.filter((token) => !token.startsWith('-') && !token.startsWith('+')).map(top)
+      const added = tokens.filter((token) => token.startsWith('+')).map((token) => top(token.slice(1)))
       this.state.exclude = [...(this.state.exclude ?? []), ...excluded]
+      if (named.length > 0) this.state.include = [...(this.state.include ?? []), ...named, ...added]
     }
     return this
   }
@@ -414,6 +425,10 @@ export const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
   return rows.map((row) => {
     const object = row.toObject() as Doc
     for (const field of state.exclude ?? []) delete object[field]
+    if (state.include) {
+      const kept = new Set(['_id', ...state.include])
+      for (const field of Object.keys(object)) if (!kept.has(field)) delete object[field]
+    }
     return object
   })
 }

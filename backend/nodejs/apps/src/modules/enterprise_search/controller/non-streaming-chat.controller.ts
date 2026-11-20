@@ -37,6 +37,7 @@ import {
 } from '../utils/utils';
 import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
 import { viewerOf } from '../utils/viewer-redaction';
+import { callerIdentityOf } from '../../../libs/types/caller-identity';
 import {
   aiRequestBody,
   appendFollowUpQuery,
@@ -269,7 +270,8 @@ const nonStreamingTurn =
           .status(HTTP_STATUS.CREATED)
           .json({ conversation: turn.conversation, meta });
       } else {
-        // The response carries the stored history: answers the reader lost access to go out hidden.
+        // The response carries the stored history: answers the reader lost access to go out hidden. An agent an
+        // answer's label names is checked as the caller, a scoped token's person since it was hydrated above.
         const stored = turn.conversation as {
           messages?: Array<{ _id?: unknown; messageType?: string }>;
         };
@@ -282,7 +284,10 @@ const nonStreamingTurn =
           turn.conversation as Record<string, unknown> & {
             messages?: unknown;
           },
-          { freshIds: [freshId] },
+          {
+            freshIds: [freshId],
+            identity: callerIdentityOf(req as AuthenticatedUserRequest),
+          },
         );
         res.status(HTTP_STATUS.OK).json({
           conversation,

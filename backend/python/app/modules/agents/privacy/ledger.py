@@ -106,8 +106,12 @@ class LabelLedger:
     def parent(self, ref_id: str, ver: str, mode: ParentMode) -> None:
         """An earlier row, at its version, was given to the run."""
 
-    def artifact_read(self, artifact_id: str, run_id: str | None = None) -> None:
-        """The run read or listed an artifact; `run_id` is the run that wrote it, when known."""
+    def artifact_read(
+        self, artifact_id: str, run_id: str | None = None, *, conversation_id: str | None = None,
+        written_at: int | None = None,
+    ) -> None:
+        """The run read or listed an artifact; `run_id` is the run that wrote it, when known. For one whose own
+        document names no run: its chat and when its record was last written, when known."""
 
     def skill_shown(self, name: str, origin: SkillOrigin, agent_key: str | None = None) -> None:
         """A skill's name, description, body or files reached the run. `agent_key` is the run's
@@ -317,8 +321,14 @@ def note_personal() -> None:
     _guarded(lambda ledger: ledger.personal(call_id=_tool_call.get()))
 
 
-def note_artifact_read(artifact_id: str, run_id: str | None = None) -> None:
-    _guarded(lambda ledger: ledger.artifact_read(artifact_id, run_id))
+def note_artifact_read(
+    artifact_id: str, run_id: str | None = None, *, conversation_id: str | None = None, written_at: int | None = None,
+) -> None:
+    _guarded(
+        lambda ledger: ledger.artifact_read(
+            artifact_id, run_id, conversation_id=conversation_id, written_at=written_at,
+        )
+    )
 
 
 def note_skills(shown: Iterable[tuple[str, SkillOrigin]], *, agent_key: str | None = None) -> None:
