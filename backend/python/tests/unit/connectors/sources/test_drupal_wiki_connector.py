@@ -3544,6 +3544,24 @@ class TestAttachmentsOfUnwrittenPages:
 
         assert wiki.attachments() == {"attachment:88", "attachment:89"}
 
+    @pytest.mark.parametrize("page_answer", ["404", "moved"])
+    @pytest.mark.asyncio
+    async def test_an_attachment_dropped_while_its_page_is_not_written_still_goes(
+        self, connector: DrupalWikiConnector, processor: MagicMock, page_answer: str
+    ) -> None:
+        # The listing drops 89 and adds 90; the page is not written here (gone since its space
+        # listed it, or moved to another space), so 90 is not written, and 89 is still looked up.
+        wiki = QuietWiki(connector, processor, {1: [88, 89]})
+        wiki.pages[1] = [88, 90]
+        connector.data_source.get_page = AsyncMock(return_value=(
+            response(status=404) if page_answer == "404" else response(page_payload(1, space_id=99))
+        ))
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert wiki.attachments() == {"attachment:88"}
+        processor.on_new_records.assert_not_awaited()
+
     @pytest.mark.parametrize("token_lists_spaces", [True, False], ids=["token-valid", "token-dead"])
     @pytest.mark.asyncio
     async def test_a_403_on_the_lookup_removes_it_unless_the_token_is_dead(

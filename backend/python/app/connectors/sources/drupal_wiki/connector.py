@@ -1763,12 +1763,13 @@ class DrupalWikiConnector(BaseConnector):
                     if extension_passes_filter(self.sync_filters, _attachment_extension(a))
                 ):
                     page = await self._current_page(page_id)
-                    if (
-                        page is not None and _as_int(page.get("homeSpace")) == space_id
-                        and (records := await self._build_page_records(page, None, listing))
-                    ):
-                        await self.data_entities_processor.on_new_records(records)
-                    continue
+                    if page is not None and _as_int(page.get("homeSpace")) == space_id:
+                        # Writing the page runs its own pass over the stored attachments.
+                        if records := await self._build_page_records(page, None, listing):
+                            await self.data_entities_processor.on_new_records(records)
+                        continue
+                    # Not written here (gone, refused, or moved since its space listed it): the
+                    # attachments its listing no longer has are still looked up one by one.
                 await self._remove_unlisted_attachments(stored, listing)
             except DrupalWikiAuthError:
                 raise
