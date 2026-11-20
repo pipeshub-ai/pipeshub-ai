@@ -60,16 +60,23 @@ function PersonalAccessTokensPageContent() {
   const [isRevoking, setIsRevoking] = useState(false);
 
   // Bumped by every change the server confirms. A list read that started
-  // before one is older than the row that change put on screen, so it is dropped.
+  // before one is older than the row that change put on screen, so it is read
+  // again: dropping it would also drop what it saw, such as a revoked token.
   const listVersion = useRef(0);
+
+  const readTokens = useCallback(async () => {
+    for (;;) {
+      const started = listVersion.current;
+      const data = await PatApi.listTokens();
+      if (listVersion.current === started) return data.tokens ?? [];
+    }
+  }, []);
 
   const fetchTokens = useCallback(async () => {
     setIsLoading(true);
     setError(null);
-    const started = listVersion.current;
     try {
-      const data = await PatApi.listTokens();
-      if (listVersion.current === started) setTokens(data.tokens ?? []);
+      setTokens(await readTokens());
     } catch (err: unknown) {
       const message =
         err instanceof Error
@@ -79,14 +86,12 @@ function PersonalAccessTokensPageContent() {
     } finally {
       setIsLoading(false);
     }
-  }, [t]);
+  }, [t, readTokens]);
 
   // A quiet re-read that keeps the list on screen, for when a change's outcome is unknown.
   const reloadTokens = useCallback(async () => {
-    const started = listVersion.current;
-    const data = await PatApi.listTokens();
-    if (listVersion.current === started) setTokens(data.tokens ?? []);
-  }, []);
+    setTokens(await readTokens());
+  }, [readTokens]);
 
   useEffect(() => {
     if (!isProfileInitialized) return;

@@ -155,6 +155,44 @@ describe('personal access tokens page', () => {
     expect(screen.getByText('Can see: 1 picked item')).toBeTruthy();
   });
 
+  it('reads the list again when a change lands during a read, so a revoked token still leaves it', async () => {
+    installBrowserShims();
+    useToastStore.setState({ toasts: [] });
+    const ci = listed.tokens[1];
+    let finishRead: (value: unknown) => void = () => {};
+    listTokens
+      .mockResolvedValueOnce(listed)
+      .mockReturnValueOnce(new Promise((resolve) => { finishRead = resolve; }))
+      .mockResolvedValueOnce({ tokens: [ci] });
+    updateKnowledgeLimit.mockReset();
+    updateKnowledgeLimit
+      .mockResolvedValueOnce({ token: { ...ci, knowledgeLimit: undefined } })
+      .mockResolvedValueOnce({ token: ci });
+    renderInTheme(<PersonalAccessTokensPage />);
+    await screen.findByText('CI token');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change what CI token can see' }));
+    fireEvent.click(document.getElementById('pat-access-knowledge-limit-everything')!);
+    fireEvent.click(screen.getByRole('button', { name: access.save }));
+    await waitFor(() => expect(useToastStore.getState().toasts[0]?.action).toBeTruthy());
+    const undo = useToastStore.getState().toasts[0]?.action;
+
+    // Revoking starts a list read; Undo is confirmed while that read is still out.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Revoke No scopes token' })[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(listTokens).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      undo?.onClick?.();
+    });
+    await act(async () => {
+      finishRead({ tokens: [{ ...ci, knowledgeLimit: undefined }] });
+    });
+
+    await waitFor(() => expect(listTokens).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByText('No scopes token')).toBeNull());
+    expect(screen.getByText('Can see: 1 picked item')).toBeTruthy();
+  });
+
   it('tells you a new token\'s access can be changed later', async () => {
     installBrowserShims();
     renderInTheme(<PersonalAccessTokensPage />);
