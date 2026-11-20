@@ -26,6 +26,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
@@ -784,7 +785,8 @@ async def test_a_project_open_to_anyone_is_read_only_by_linked_jira_accounts(wor
     """Browse held by `anyone` (Jira's public access): dave, a linked Jira account that cannot browse the project
     otherwise, reads its issues with no level; erin, a PipesHub user with no Jira account, reads nothing, and neither
     does frank, who has no Jira account but a grant left on dave's leveled issue. An All-team edge an earlier release
-    opened is withdrawn at the start of the next sync, and erin and frank read nothing again."""
+    opened is withdrawn when the connector next initialises, even by an init that fails, and erin and frank read
+    nothing again."""
     await _sync_project(world)
     graph, run, org_id, connector = world["graph"], world["run"], world["org_id"], world["connector"]
     erin_id = await _org_member(world, "erin")
@@ -819,9 +821,44 @@ async def test_a_project_open_to_anyone_is_read_only_by_linked_jira_accounts(wor
 
     await world["processor"].ensure_team_app_edge(world["connector_id"])  # as an earlier release opened it
     assert await reads(erin_id) == unleveled
-    connector.data_source = None  # the sync stops at its first step, after the withdrawal
-    with pytest.raises(RuntimeError):
-        await connector.run_sync()
+    with pytest.raises(ConnectorInitError):  # no Jira credentials are configured: init fails after the withdrawal
+        await connector.init()
     assert await reads(erin_id) == set()
     assert await reads(frank_id) == set()
     assert not await _mismatches(world, public, by_key)
+
+
+async def test_the_configuring_user_reads_through_the_connectors_jira_account_only_while_it_is_linked(
+    world: dict[str, Any],
+) -> None:
+    """erin, who has no Jira account, configured the connector with dave's account (``authenticatedAs``). The link
+    passes the connector gate on its own, so she reads what dave reads and the ORG grant of a project open to anyone,
+    even after dave's account is withdrawn with its grants. Only removing the link, as the sync does once Jira shows
+    the account ineligible (``_link_authenticated_account``), leaves her nothing."""
+    await _sync_project(world)
+    graph, run, org_id, processor = world["graph"], world["run"], world["org_id"], world["processor"]
+    erin_id = await _org_member(world, "erin")
+    by_key = await _ticket_ids(world)
+    project = RecordGroup(
+        id=str(uuid.uuid4()), org_id=org_id, external_group_id=PROJECT_ID, connector_id=world["connector_id"],
+        connector_name=Connectors.JIRA, name="Project", short_name=PROJECT_KEY, group_type=RecordGroupType.PROJECT)
+    browse = [Permission(entity_type=EntityType.USER, email=_email(n, run), type=PermissionType.READ)
+              for n in sorted(PROJECT_READERS)]
+    anyone = Permission(entity_type=EntityType.ORG, external_id="anyone_authenticated", type=PermissionType.READ)
+    await processor.on_new_record_groups([(project, [*browse, anyone])])
+    unleveled = {by_key[issue["key"]] for issue, who in ISSUES.values() if set(who) == PROJECT_READERS}
+
+    async def reads() -> set[str]:
+        return set(await graph.filter_accessible_record_ids(list(by_key.values()), erin_id, org_id))
+
+    assert await reads() == set()
+    await processor.link_authenticator_to_source_user(
+        world["connector_id"], erin_id, _email("dave", run), PEOPLE["dave"], Connectors.JIRA)
+    assert unleveled <= await reads()
+    await processor.withdraw_app_user_access(
+        world["connector_id"], [AppUser(app_name=Connectors.JIRA, connector_id=world["connector_id"],
+                                        source_user_id=PEOPLE["dave"], email=_email("dave", run), full_name="dave",
+                                        id=f"{run}-dave")], drop_grants=True)
+    assert await reads() == unleveled  # the link alone still passes the gate: the ORG grant reaches her
+    await processor.unlink_authenticator(world["connector_id"])
+    assert await reads() == set()

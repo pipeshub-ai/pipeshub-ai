@@ -503,6 +503,39 @@ async def test_withdrawing_the_org_team_from_the_app_leaves_unlinked_users_nothi
     assert await w.allowed("m", "hers", "public") == {"hers", "public"}
 
 
+async def test_the_configuring_user_reads_through_the_source_account_only_while_it_is_linked(w: World) -> None:
+    """The user who configured a connector reads what its source account reads (``authenticatedAs``), and the link
+    passes the gate on its own: after the account is withdrawn with its grants, the ORG grant still reaches the
+    configuring user, who has no account of their own. Removing the link, as the Jira Cloud sync does once the account
+    is ineligible, leaves them nothing."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    await w.nodes("organizations", {"_key": w.org})
+    await member(w, "admin", userId="u-admin", email="admin@x.com", isActive=True)
+    await member(w, "sa", userId="u-sa", email="sa@x.com", isActive=False)
+    await w.nodes("records", rec("own"), rec("public"))
+    await w.edge("permission", ("users", "sa"), ("records", "own"), type="USER", role="READER")
+    await w.edge("permission", ("organizations", w.org), ("records", "public"), type="ORG", role="READER")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("sa@x.com", "sa")])
+    assert await w.allowed("admin", "own", "public") == set()
+
+    await processor.link_authenticator_to_source_user(APP, "u-admin", "sa@x.com", "src-sa", Connectors.JIRA)
+    assert await w.allowed("admin", "own", "public") == {"own", "public"}
+    await processor.withdraw_app_user_access(APP, [app_user("sa@x.com", "sa")], drop_grants=True)
+    assert await w.allowed("admin", "own", "public") == {"public"}         # the link alone passes the gate
+    await processor.unlink_authenticator(APP)
+    assert await w.allowed("admin", "own", "public") == set()
+
+
 async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:
     await member(w, "m", userId="um", email="m@x.com")
     txn = await w.p.begin_transaction(read=[], write=[], explicit=True)

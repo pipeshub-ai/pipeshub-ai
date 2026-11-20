@@ -789,6 +789,11 @@ class JiraConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize Jira client and DataSource from connector auth config."""
         try:
+            if self.scope == ConnectorScope.TEAM.value:
+                # Earlier releases let the org's All team through the gate for projects open to anyone; nobody without
+                # a Jira account reads them. Graph only and before Jira is reached, so an init that keeps failing
+                # cannot keep that edge.
+                await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             client = await self._build_jira_client()
             rest_client = client.get_client()
             # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
@@ -1022,10 +1027,6 @@ class JiraConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Main sync flow: users → groups → projects/roles → issues → deletions."""
         try:
-            if self.scope == ConnectorScope.TEAM.value:
-                # Earlier releases let the org's All team through the gate for projects open to anyone; nobody without
-                # a Jira account reads them, so an edge left from then goes first, whatever the rest of the sync does.
-                await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
             # 1. Init is done by event_service / setup before run_sync is scheduled
             if not self.data_source:
                 init_error = RuntimeError(
@@ -1033,10 +1034,6 @@ class JiraConnector(BaseConnector):
                 )
                 init_error._notification_sent = True
                 raise init_error
-
-            await self.register_authenticated_source_user(
-                self._authenticated_jira_email, self._authenticated_jira_account_id
-            )
 
             # 2. Load latest sync/indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1077,10 +1074,10 @@ class JiraConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
             # An account missing from the list is gone only after a complete read; one it shows deactivated or
             # without product access is ineligible whatever the read.
-            await self._withdraw_ineligible_app_users(
-                jira_users, unlicensed_ids | (
-                    self._deactivated_account_ids if self._directory_read_complete() else self._shown_inactive_ids)
-            )
+            ineligible_ids = unlicensed_ids | (
+                self._deactivated_account_ids if self._directory_read_complete() else self._shown_inactive_ids)
+            await self._withdraw_ineligible_app_users(jira_users, ineligible_ids)
+            await self._link_authenticated_account(ineligible_ids)
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -2938,6 +2935,18 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone, drop_grants=True)
             # No longer linked: the rest of this sync must not count them as linked accounts.
             self._stored_app_users = [u for u in self._stored_app_users if u not in gone]
+
+    async def _link_authenticated_account(self, ineligible_ids: set[str]) -> None:
+        """The user who configured the connector reads what its Jira account reads (``authenticatedAs``), and that link
+        passes the connector gate, so it holds only while Jira lets the account in. A read that shows the account
+        ineligible (deactivated, without product access, gone from a complete list) removes it. It is written when the
+        account has product access, or when product access could not be read: ``_keep_licensed_users`` then keeps the
+        connector's own account too, since it reads the issues being synced."""
+        me = self._authenticated_jira_account_id
+        if me and me in ineligible_ids:
+            await self.data_entities_processor.unlink_authenticator(self.connector_id)
+        elif self._licensed_account_ids is None or me in self._licensed_account_ids:
+            await self.register_authenticated_source_user(self._authenticated_jira_email, me)
 
     def _directory_read_complete(self) -> bool:
         """The user list was read in full: not cut short, not refused, and not empty when accounts were linked
