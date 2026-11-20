@@ -8,8 +8,9 @@ not find a quiet moment (``pipeshub_record_schema_rewiden_contended_total``).
 That test prints the measured X; what it asserts is the number of round trips a save transaction holds open, which the
 code controls (the duration is that number times the host's round-trip time).
 
-The widening tests assert the same way: what a write waits for is the set of stream transactions running when the schema
-change is sent, which the guard controls (``running_at_each_widening``); the waits themselves are printed."""
+The widening tests assert the same way: what a write waits for is the set of stream transactions open when the schema
+change is sent, and the guard decides when to send it; ``running_at_each_widening`` records what the server lists right
+before each change. The waits themselves are printed."""
 
 from typing import Any
 
@@ -20,7 +21,12 @@ STALL_BOUND_S = 2.0
 
 def running_at_each_widening(client: Any, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:  # noqa: ANN401
     """From now on, for each schema change ``client`` sends, the ids of the stream transactions the server lists right before it.
-    The change waits for each of them and every later records write queues behind it, so an empty list is a change no write waits on."""
+
+    The change waits for every transaction open when it reaches the server, and every later records write queues behind it.
+    The list is a separate request, so a transaction that begins between it and the change is not in it: an empty list says
+    the guard sent the change with nothing open after its quiet point, not that none began before the change arrived (the
+    guard does not hold new transactions back from other processes). A test asserting on an empty list keeps new
+    transactions out of that window itself."""
     sent: list[list[str]] = []
     update = client.update_collection_schema
 

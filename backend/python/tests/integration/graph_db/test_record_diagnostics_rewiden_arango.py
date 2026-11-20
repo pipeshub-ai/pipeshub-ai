@@ -284,7 +284,9 @@ async def test_no_other_records_write_waits_on_the_widening_while_a_transaction_
     await asyncio.gather(*background)
 
     print(f"plain writes during the widening: {len(waits)}, max wait {max(waits):.2f}s (STALL_BOUND_S={STALL_BOUND_S}s)")
-    assert sent == [[]], f"the widening was sent while the server listed {sent}: every records write waits for those"
+    # one change (the trigger is one write, so one widening), and only plain writes run beside it, so no transaction can begin
+    # between the list and the change
+    assert sent == [[]], f"the widening was sent while the server listed {sent} right before it: every records write waits for those"
     assert (await cluster.store.doc(tainted))["indexingStatus"] == "QUEUED"
 
 

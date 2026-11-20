@@ -176,8 +176,10 @@ async def test_rewiden_under_steady_load(env, monkeypatch: pytest.MonkeyPatch, s
     assert generation_of_schema(await p.http_client.get_collection_schema(RECORDS)) == RECORD_SCHEMA_GENERATION, "the schema ends wide"
     assert saves["other"] == [], saves["other"][:3]
     if hold_max < 5:
-        # new save transactions wait while the schema is narrow, so the open ones end and the change is sent with none running
-        assert sent == [[]], f"the widening was sent while the server listed {sent}: every records write waits for those"
+        # The trigger's refusal marks this process narrow, so new save transactions wait in begin_transaction until the schema is wide:
+        # the open ones end, and none begins between the guard's quiet point and the change. A first change the server does not answer
+        # in time keeps its lease, and a later try may send it again; every one of them must go out with none open.
+        assert sent and all(not running for running in sent), f"a widening was sent while the server listed {sent} right before it: every records write waits for those"
     else:
         # a transaction is nearly always open, so the first quiet-point wait finds no moment: that widening is skipped (the write is refused
         # transiently) and a later try finds a gap or is forced. What a write then waits for is the save transactions open at that
