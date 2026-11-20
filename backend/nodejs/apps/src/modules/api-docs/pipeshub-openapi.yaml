@@ -17761,7 +17761,9 @@ components:
           type: integer
           format: int64
           nullable: true
-          description: Epoch ms when the last sync run started; absent before the first run
+          description: >-
+            Epoch ms when the last sync run started; absent before the first run. A pass that links newly added users to the
+            connector moves it too, when it starts.
         lastSyncFinishedAtTimestamp:
           type: integer
           format: int64
@@ -17777,7 +17779,8 @@ components:
           nullable: true
           additionalProperties: true
           description: >-
-            What the last run did, in the connector's own terms. For a Web connector: pagesSaved (written this run),
+            What the last run did, in the connector's own terms. Any connector: stopReason start_not_recorded when the run
+            did not start because its start could not be saved. For a Web connector: pagesSaved (written this run),
             pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages,
             deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.
         actionItems:

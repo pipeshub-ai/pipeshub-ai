@@ -34,7 +34,9 @@ from app.events.dedup import (
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
     IndexingError,
+    PasswordProtectedError,
     ProcessingError,
     RecordDeletedError,
 )
@@ -85,6 +87,7 @@ from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
+from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.reconciliation.service import ReconciliationMetadata
@@ -115,6 +118,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     messaging_env,
 )
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.services.paid_cache.access import abandon_run, complete_run, start_run
 from app.services.paid_cache.run import current_run as current_paid_run
 from app.services.paid_cache.run import refresh_requested
@@ -123,6 +127,7 @@ from app.services.parsing.interface import ParserProvider, UnsupportedFormatErro
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
+from app.services.vector_db.filters import OrgRequired, org_for_filter
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
     CollectionStrategy,
@@ -267,6 +272,7 @@ class EventProcessor:
     async def _skip_same_bytes(self, record: Mapping[str, Any], record_id: str) -> bool:
         """Settle a same-bytes update without parsing or embedding; False when it must run in full.
 
+        0. The record's own points are still in the store (a cleanup or reset of the index leaves a COMPLETED record with none).
         1. The membership sync: a full update ends in one, and the update may be the sign that the
            record's connector, groups or permissions changed under the same bytes.
         2. An unforced redrive of the stages after embed that did not finish (failed or paused). A
@@ -284,6 +290,17 @@ class EventProcessor:
         vrid, rev = str(record["virtualRecordId"]), str(record["contentRev"])
         try:
             if await ingress.handoff_lost(record):
+                return False
+            # The record's points must still be in the store: after a cleanup or a reset of the index its status still says
+            # COMPLETED while its vectors are gone (or were never written under the live epoch), and skipping would keep it
+            # unsearchable until a reindex reaches it. No point of its own, or nothing to ask: run in full, which embeds under
+            # the index's current precision and epoch.
+            pipeline = self._indexing_pipeline()
+            try:
+                org_id = org_for_filter()
+            except OrgRequired:
+                return False
+            if pipeline is None or org_id not in await pipeline.orgs_holding_points(vrid):
                 return False
             await self.sync_vector_membership(vrid)
             dispatched = await ingress.redrive_unchanged(vrid, rev, record)
@@ -561,6 +578,7 @@ class EventProcessor:
         # call per page: when Docling is not used or cannot read the file, the
         # local layout parser reads it instead.
         use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+        docling_unavailable: DoclingUnavailableError | None = None
         if use_pdfplumber:
             self.logger.debug("Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
@@ -599,6 +617,8 @@ class EventProcessor:
                     self.logger, "index.parse_fallback", exc, parser="docling", reason=exc.reason,
                     status=exc.status_code, include_error_text=False,
                 )
+                if isinstance(exc, DoclingUnavailableError):
+                    docling_unavailable = exc
             else:
                 if not docling_failed:
                     return
@@ -613,17 +633,34 @@ class EventProcessor:
                 # The processor already wrote index.parse_fallback for this sentinel.
                 self.logger.debug("Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
-        async for event in self.processor.process_pdf_with_pdf_plumber(
-            recordName=record_name,
-            recordId=record_id,
-            pdf_binary=pdf_binary,
-            virtual_record_id=virtual_record_id,
-            event_type=event_type,
-            prev_virtual_record_id=prev_virtual_record_id,
-        ):
-            if event.event == IndexingEvent.PARSING_COMPLETE:
-                pdf_binary = inspected = None
-            yield event
+        parsed = False
+        retry: DoclingUnavailableError | None = None
+        try:
+            async for event in self.processor.process_pdf_with_pdf_plumber(
+                recordName=record_name,
+                recordId=record_id,
+                pdf_binary=pdf_binary,
+                virtual_record_id=virtual_record_id,
+                event_type=event_type,
+                prev_virtual_record_id=prev_virtual_record_id,
+            ):
+                if event.event == IndexingEvent.PARSING_COMPLETE:
+                    parsed = True
+                    pdf_binary = inspected = None
+                yield event
+        except DocumentProcessingError as layout_exc:
+            if (
+                docling_unavailable is None
+                or parsed
+                or isinstance(layout_exc, PasswordProtectedError)
+                or worker_gave_up_on(layout_exc)
+            ):
+                raise
+            retry = docling_unavailable
+        if retry is not None:
+            # Docling may read what PdfPlumber could not: retry once it serves again, not a verdict on the file.
+            # Raised outside the handler, so the layout error is not its __context__ for the classifier to read.
+            raise retry
 
     @staticmethod
     def _reads_as_code_file(
@@ -1501,25 +1538,6 @@ class EventProcessor:
                     doc,
                 )
             await self._copy_twin_edges(match.record, doc)
-        if match.same_collection and self.sink_orchestrator is not None:
-            # The copy above only touched the graph — this record still
-            # has no `record`/`record_group` point, and the taxonomy
-            # points it now shares carry only the other record's
-            # connectorId/recordGroupId. Different-collection duplicates
-            # skip this: they continue to full indexing and get entity
-            # sync from SinkOrchestrator.index()/enrich() there instead.
-            # sync_entities_for_duplicate is already best-effort
-            # internally; caught again here so a mock/mis-wired sink in
-            # a caller can never turn dedup's own bookkeeping into a
-            # failed event.
-            try:
-                await self.sink_orchestrator.sync_entities_for_duplicate(doc)
-            except Exception as exc:
-                self.logger.warning(
-                    "Entity vector sync failed for duplicate %s (non-fatal): %s",
-                    _record_key(doc),
-                    exc,
-                )
         self.logger.debug(
             "Duplicate record %s resolved (same_collection=%s)",
             _record_key(match.record),
@@ -1608,6 +1626,10 @@ class EventProcessor:
                 # have written some of the points.
                 sync_attempted = True
                 await self.sync_vector_membership(vrid)
+            # Before the status: the copy has no `record`/`record_group` point yet, and the taxonomy points it now
+            # shares carry only the twin's connectorId/recordGroupId. The handler acknowledges a redelivered event
+            # for a COMPLETED record, so a flip handed back after the status was written would never run this again.
+            await self._sync_entities_for_attached_copy(doc)
             self._require_persisted(
                 await self.update_record_fields(
                     doc,
@@ -1644,6 +1666,26 @@ class EventProcessor:
                 target_key, prior_identity, vrid if sync_attempted else None
             )
             raise
+
+    async def _sync_entities_for_attached_copy(self, doc: dict[str, Any]) -> None:
+        """Project the copy's taxonomy and its own record points into the entity index.
+
+        ``sync_entities_for_duplicate`` is already best-effort internally; caught again here so a mock/mis-wired sink
+        can never turn dedup's own bookkeeping into a failed event. A flip of the weight precision is the exception:
+        it goes up, with the record still not COMPLETED, so its redelivery attaches and syncs again.
+        """
+        if self.sink_orchestrator is None:
+            return
+        try:
+            await self.sink_orchestrator.sync_entities_for_duplicate(doc)
+        except PrecisionFlip:
+            raise
+        except Exception as exc:
+            self.logger.warning(
+                "Entity vector sync failed for duplicate %s (non-fatal): %s",
+                _record_key(doc),
+                exc,
+            )
 
     async def _restore_identity_after_failed_attach(
         self,

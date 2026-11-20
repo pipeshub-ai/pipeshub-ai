@@ -65,7 +65,7 @@ READS = {
         "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py::resolve_persisted_strategy_name", "get_config(STRATEGY_CONFIG_KEY"),
         "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py::read_entries_from_config", "list_keys_in_directory(MEMBERSHIP_DIRECTORY)"),
         "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py::_STORE", "ConnectorIntentStore(PENDING_DIRECTORY"),  # entity_index_rebuild.py::EntityIndexRebuilder._reconcile_entity_cleanup
-        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::backfill_class_units", "get_config(flag_key"),
+        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::_backfill_pass", "get_config(flag_key"),
         "/services/secretKeys": ("app/core/envelope.py::configure_from_config.load", "config_node_constants.SECRET_KEYS.value"),
         "/services/endpoints": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.ENDPOINTS.value"),
         "/services/storage": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.STORAGE.value"),

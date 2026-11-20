@@ -27,7 +27,7 @@ BEGIN
   IF p_limit NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'code_files_by_path: p_limit must be 1..1000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
   IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-  -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0017): a page reads one page of matches, not
+  -- the page's ids by the key's index from the cursor on (a 4-byte hash of the key, then id, graph_0018): a page reads one page of matches, not
   -- every match before it. The key itself is rechecked, since two keys can share a hash, with IS NOT DISTINCT FROM (the arguments are never
   -- null): no index serves it, so the graph_0001 index of the key text cannot be picked for the page and sorted;
   -- only the ids are materialized, and the page's docs are fetched by key. The order names the index's whole key: under row security the key's

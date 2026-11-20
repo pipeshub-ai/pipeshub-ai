@@ -19,8 +19,10 @@ from app.agents.mcp.models import OAuthTokens, TokenEndpointAuthMethod, utcnow
 from app.agents.mcp.url_guard import GuardedTransport
 from app.utils.error_class import chain_has
 from app.utils.oauth_errors import (
+    CLIENT_REJECTED_ERROR_CODES,
     PERMANENT_GRANT_ERROR_CODES,
     is_permanent_grant_rejection,
+    is_transient_status,
     oauth_error_code,
 )
 from app.utils.url_fetcher import UnresolvableHostError
@@ -30,8 +32,10 @@ logger = logging.getLogger(__name__)
 TOKEN_REQUEST_TIMEOUT_SECONDS = 15.0
 
 # MCP also counts a refused request shape as permanent. Connectors don't: one regression in
-# our own request would then deauthenticate every org-wide connector at once.
-_PERMANENT_ERROR_CODES = PERMANENT_GRANT_ERROR_CODES | {"invalid_request", "invalid_scope", "unsupported_grant_type"}
+# our own request would then deauthenticate every org-wide connector at once. For the same reason
+# these are no strike toward signing a credential out (`deauth_reason`).
+_REQUEST_REFUSED_CODES = frozenset({"invalid_request", "invalid_scope", "unsupported_grant_type"})
+_PERMANENT_ERROR_CODES = PERMANENT_GRANT_ERROR_CODES | _REQUEST_REFUSED_CODES
 _MAX_ERROR_TEXT_CHARS = 500
 
 
@@ -55,7 +59,18 @@ class MCPOAuthError(Exception):
     @property
     def rejected_client(self) -> bool:
         """The provider doesn't know the client (or its secret) any more."""
-        return (self.error_code or "").lower() == "invalid_client"
+        return self._code == "invalid_client"
+
+    @property
+    def deauth_reason(self) -> Optional[str]:
+        """Why this answer counts toward signing the credential out (`token_refresh`), or None. A refused
+        client is a misconfiguration, not the user's revoked grant, but no retry fixes it either."""
+        refused = self._code in CLIENT_REJECTED_ERROR_CODES and not is_transient_status(self.status)
+        return "oauth_client_rejected" if refused else None
+
+    @property
+    def _code(self) -> str:
+        return (self.error_code or "").lower()
 
     @property
     def unanswered(self) -> bool:
@@ -68,6 +83,11 @@ class MCPRefreshTokenInvalidError(MCPOAuthError):
     """The provider permanently rejected the refresh token — re-authentication is required."""
 
     refresh_reason = "invalid_grant"
+
+    @property
+    def deauth_reason(self) -> Optional[str]:
+        # A refused request shape is more likely our own regression than every user's dead grant.
+        return None if self._code in _REQUEST_REFUSED_CODES else "refresh_token_invalid"
 
 
 def _error_text(status_code: int, body: Any, text: str) -> str:  # noqa: ANN401
@@ -151,7 +171,11 @@ async def _post_token_request(
         error_code = oauth_error_code(body)
         if resp.status_code >= 400 or error_code:
             detail = _error_text(resp.status_code, body, text)
-            if is_permanent_grant_rejection(text, error_code, _PERMANENT_ERROR_CODES, status=resp.status_code):
+            # A refused client is never a rejected grant, even when its description reads like one.
+            client_refused = (error_code or "").lower() in CLIENT_REJECTED_ERROR_CODES
+            if not client_refused and is_permanent_grant_rejection(
+                text, error_code, _PERMANENT_ERROR_CODES, status=resp.status_code,
+            ):
                 raise MCPRefreshTokenInvalidError(
                     f"OAuth token request rejected ({resp.status_code}): {detail}", error_code=error_code,
                     status=resp.status_code,
@@ -253,7 +277,7 @@ async def refresh_access_token(
 
     token_data = await _post_token_request(token_url, data, allow_private=allow_private, headers=headers)
     if "access_token" not in token_data:
-        raise MCPOAuthError("OAuth refresh response missing access_token")
+        raise MCPOAuthError("OAuth refresh response missing access_token", refresh_reason="no_access_token")
 
     return OAuthTokens(
         access_token=token_data["access_token"],

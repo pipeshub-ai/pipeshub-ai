@@ -878,6 +878,12 @@ LISTED = """CALL () {{
 _KH_SPLIT_COMPARE = "split-compare"
 
 
+@lru_cache(maxsize=8)
+def _warn_unknown_kh_browse_mode(value: str) -> None:
+    # Once per value: the mode is read on every browse.
+    logging.getLogger(__name__).warning("KH_BROWSE_MODE=%r is not legacy, split or shadow; browsing with split", value)
+
+
 class _KhSplitUndecided(Exception):
     """The split browse cannot decide a row within its bounds: a node with more children than it reads and none admitted among
     those it read, or stubs below stubs past the depth cap. The page is answered by legacy, which decides in the database, so
@@ -21867,10 +21873,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
         return list(rows[0].get("ids") or []) if rows else []
 
-    # A browse (``flatten=False``) decides what it lists in one of two ways (``KH_BROWSE_MODE``):
-    # - ``legacy``: one statement evaluates the browse rule at every hop, for the listing, each row's arrow and the stubs. It
-    #   grew to 62-104 KB and 262 EXISTS subqueries, which Neo4j takes minutes to plan (docs/knowledge-hub-browse.md).
-    # - ``split``: the definition the Knowledge Hub conformance layer holds both to (tests/permissions/kh_layer.py), computed
+    # A browse (``flatten=False``) decides what it lists in one of two ways (``KH_BROWSE_MODE``, unset or unknown: ``split``):
+    # - ``legacy`` (opt-out): one statement evaluates the browse rule at every hop, for the listing, each row's arrow and the
+    #   stubs. It grew to 62-104 KB and 262 EXISTS subqueries, which Neo4j takes minutes to plan (docs/knowledge-hub-browse.md).
+    # - ``split`` (the default): the definition the Knowledge Hub conformance layer holds both to (tests/permissions/kh_layer.py), computed
     #   from small fixed statements. A browse of N lists N's hierarchy children of N's App that the batch check admits and no
     #   group that hides its children holds or lies above, the chain-tops placed under N, and a stub child only where opening
     #   it lists something. A row's arrow is on exactly where opening the row lists something. The page statement then lists
@@ -21894,8 +21900,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     @staticmethod
     def kh_browse_mode() -> str:
-        mode = os.getenv("KH_BROWSE_MODE", "legacy").strip().lower()
-        return mode if mode in Neo4jProvider.KH_BROWSE_MODES else "legacy"
+        mode = os.getenv("KH_BROWSE_MODE", "").strip().lower() or "split"
+        if mode not in Neo4jProvider.KH_BROWSE_MODES:
+            _warn_unknown_kh_browse_mode(mode)
+            return "split"
+        return mode
 
     @staticmethod
     def _kh_shadow_sample() -> float:

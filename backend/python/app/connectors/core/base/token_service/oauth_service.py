@@ -45,6 +45,17 @@ class RefreshConfigError(ValueError):
     refresh_reason = "config_missing"
 
 
+class TokenResponseError(ValueError):
+    """The token endpoint answered success without an access token: a wrong token URL or provider setup."""
+
+    refresh_reason = "no_access_token"
+
+
+def _require_access_token(data: object) -> None:
+    if not isinstance(data, dict) or "access_token" not in data:
+        raise TokenResponseError("OAuth token response missing required 'access_token' field. ")
+
+
 class OAuthTokenRequestError(Exception):
     """The token endpoint refused a request. `error_code` is the RFC 6749 `error` it sent, if any."""
 
@@ -116,8 +127,8 @@ class OAuthConfig:
         Returns:
             Normalized token dictionary compatible with OAuthToken.from_dict()
         """
-        if not self.token_response_path:
-            return response
+        if not self.token_response_path or not isinstance(response, dict):
+            return response  # a non-object body is _require_access_token's to reject
 
         # Extract from nested path (e.g., response["authed_user"])
         nested_data = response.get(self.token_response_path)
@@ -386,12 +397,7 @@ class OAuthProvider:
         # Normalize only if configured (backward compatible)
         normalized_data = self.config.normalize_token_response(token_data)
 
-        # Ensure access_token exists after normalization
-        if "access_token" not in normalized_data:
-            raise ValueError(
-                "OAuth token response missing required 'access_token' field. "
-            )
-
+        _require_access_token(normalized_data)
         token = OAuthToken.from_dict(normalized_data)
         return token
 
@@ -416,6 +422,7 @@ class OAuthProvider:
 
         # Normalize only if configured (backward compatible)
         normalized_data = self.config.normalize_token_response(token_data)
+        _require_access_token(normalized_data)
         # Create new token with current timestamp
         token = OAuthToken.from_dict(normalized_data)
 
