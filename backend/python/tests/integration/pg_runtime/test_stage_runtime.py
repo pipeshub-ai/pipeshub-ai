@@ -107,7 +107,8 @@ async def test_a_stage_job_runs_on_its_own_lease_pool_and_is_acked(stage) -> Non
 
     await stage.consumer(handler, admission=StageAdmission(stage=f"classify{stage.uid}", limit=2, workers=3))
     await stage.producer.send_event(stage.topic, "stage", {"jobId": f"j-{stage.uid}", "recordIds": ["r1"]})
-    await until(lambda: len(seen) == 1)
+    await until(lambda: len(pools) == 1)       # the handler fills pools after an awaited read: `seen` can be ahead of it
+    assert len(seen) == 1
     mine = [k for k in pools[0] if f"c-{stage.uid}:" in k]         # only this test's holders: other runs leave rows of their own
     assert any(k.startswith(f"state:lease:stage:classify{stage.uid}:") for k in mine)      # the stage's pool, not the indexing one
     assert any(k.startswith(f"state:lease:record:job:j-{stage.uid}:") for k in mine)       # the job's lease, which the stage sweeper reads
