@@ -89,7 +89,7 @@ case "$args" in
       for _ in $(seq 1 100); do sleep 0.1; done
       echo none >>"$STUB_FOLLOW_SIGNALS"
     fi
-    [[ -n "${STUB_FAIL:-}" && "$tool" == "$STUB_FAIL"* ]] && { echo "$step" >>"$CALLS"; echo "  argv: $*" >>"$ARGV"; exit 1; } ;;
+    [[ -n "${STUB_FAIL:-}" && "$tool" == "$STUB_FAIL"* ]] && { echo "$step" >>"$CALLS"; echo "  argv: $*" >>"$ARGV"; exit "${STUB_RC:-1}"; } ;;
 esac
 echo "$step" >>"$CALLS"
 echo "  argv: $*" >>"$ARGV"
@@ -420,6 +420,14 @@ check_eq "exits 1" "$RC" 1
 check_not "does not close the login" "$(steps)" "login-close"
 check_eq "and keeps its password" "$(import_pw)" "kept_for_reverse_5"
 check "says it stays open and how to close it" "$OUT" "--close-login"
+check_not "does not claim PostgreSQL is still the store (a stuck handover can have fenced MongoDB)" "$OUT" "PostgreSQL is still the store"
+check "points to the tool's report for which store is live" "$OUT" "which store is live"
+new_install "PG_IMPORT_PASSWORD=kept_for_reverse_5"
+STUB_FAIL="rollback --online" STUB_RC=2 run_script "$ROLLBACK" --online
+check_eq "an online rollback the tool fails with an error exits 2, as the tool did" "$RC" 2
+new_install
+STUB_FAIL="rollback" STUB_RC=2 run_script "$ROLLBACK"
+check_eq "an offline rollback the tool fails with an error exits 2, not 1 (refused)" "$RC" 2
 new_install "PG_IMPORT_PASSWORD=kept_for_reverse_5"
 run_script "$ROLLBACK" --online
 check "a successful online rollback closes it" "$(steps)" "login-close"

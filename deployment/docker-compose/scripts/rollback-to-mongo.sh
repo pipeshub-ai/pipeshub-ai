@@ -28,17 +28,21 @@ done
 # shellcheck source-path=SCRIPTDIR source=docstore-migrate.sh
 . "$(dirname "${BASH_SOURCE[0]}")/docstore-migrate.sh"
 
-# An online rollback that does not complete leaves PostgreSQL the store, with the reverse follower still writing as the import
-# login: it keeps that login and its password then. Every other ending closes it.
+# An online rollback that does not complete may leave either store live (a handover stuck partway can have fenced MongoDB while
+# PostgreSQL stays read-only), with the reverse follower still writing as the import login: it keeps that login and its password
+# then. Every other ending closes it.
 DONE=0
 trap '[ "$FLAG" = --online ] && [ "$DONE" = 0 ] || import_login_close' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 import_login_open
 [ "$FLAG" = --online ] || "${DC[@]}" stop pipeshub-ai
-if ! docstore rollback ${FLAG:+"$FLAG"}; then
-  [ "$FLAG" = --online ] && echo "The online rollback did not complete; PostgreSQL is still the store. The import login stays open for the reverse follower; close it when the move is over: scripts/migrate-to-postgres.sh --close-login" >&2
-  exit 1
+rc=0
+docstore rollback ${FLAG:+"$FLAG"} || rc=$?
+if [ "$rc" != 0 ]; then
+  # the tool's status is kept: 1 refused, 2 error
+  [ "$FLAG" = --online ] && echo "The online rollback did not complete. Follow the tool's report above to see which store is live before you close the import login or restart the application. The import login stays open for the reverse follower; close it when the move is over: scripts/migrate-to-postgres.sh --close-login" >&2
+  exit "$rc"
 fi
 DONE=1
 echo "MongoDB is the store again. Remove docker-compose.postgres-docstore.yml from PIPESHUB_COMPOSE_OVERRIDES in the env file and start the application:" >&2
