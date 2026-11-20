@@ -1162,6 +1162,62 @@ class TestMovesAndDeletions:
         assert [c.args[0] for c in connector.data_source.get_page.await_args_list] == [4, 5, 6]
 
     @pytest.mark.asyncio
+    async def test_a_page_the_token_may_no_longer_read_goes_and_the_run_goes_on(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # Trashed, or moved into a space the token's user cannot read: the lookup answers 403
+        # while the token still lists spaces. Only that page is affected, and its stored copy,
+        # written from where the user could read it, goes rather than keep its grants.
+        self.wiki(connector, processor, {12: []}, {12: [2, 3]})
+        checkpoints = self.remembered(connector)
+        connector.data_source.get_page = AsyncMock(side_effect=lambda page_id: response(status=403) if page_id == 2
+                                                   else response(status=404))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([{"id": 12}])))
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert [c.args for c in processor.delete_record_by_external_id.await_args_list] == [
+            ("conn-1", "page:2"), ("conn-1", "page:3")]
+        assert checkpoints["removals/space/all"] == {"after": 0, "missing": [2, 3]}
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_refused_with_the_token_unchecked_keeps_the_page(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self.wiki(connector, processor, {12: []}, {12: [2]})
+        self.remembered(connector)
+        connector.data_source.get_page = AsyncMock(return_value=response(status=403))
+        connector.data_source.list_spaces = AsyncMock(side_effect=TimeoutError())
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        processor.delete_record_by_external_id.assert_not_awaited()
+        assert any("token could not be checked" in failure for failure in connector._failures)
+
+    @pytest.mark.asyncio
+    async def test_the_missing_pages_are_saved_when_a_rejected_token_stops_the_lookups(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # The token dies during the lookups: the run stops, but the pages missing now are
+        # known as missing before, so the run after removes them without asking.
+        self.wiki(connector, processor, {12: []}, {12: [2, 3]})
+        checkpoints = self.remembered(connector)
+        connector.data_source.get_page = AsyncMock(return_value=response(status=403))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(status=403))
+
+        with pytest.raises(DrupalWikiAuthError):
+            await connector._sync_pages({12: {"id": 12}})
+        assert checkpoints["removals/space/all"]["missing"] == [2, 3]
+        processor.delete_record_by_external_id.assert_not_awaited()
+
+        connector.data_source.get_page.reset_mock()
+        await connector._sync_pages({12: {"id": 12}})
+
+        connector.data_source.get_page.assert_not_awaited()
+        assert [c.args for c in processor.delete_record_by_external_id.await_args_list] == [
+            ("conn-1", "page:2"), ("conn-1", "page:3")]
+
+    @pytest.mark.asyncio
     async def test_an_unchanged_stored_page_is_kept_through_a_full_sync(
         self, connector: DrupalWikiConnector, processor: MagicMock
     ) -> None:
@@ -1992,9 +2048,11 @@ class TestRevokedToken:
     ) -> None:
         # A live wiki answers a token it does not accept with a 403 page, or a 400 page for
         # an unknown one, never a 401; a blocked user's token gives no access at all (node
-        # 605). The run stops with the auth notification, before anything is removed.
+        # 605), so listing spaces is refused too. The run stops with the auth notification,
+        # before anything is removed.
         connector.notify = AsyncMock()
         connector.data_source.list_users = AsyncMock(return_value=answer)
+        connector.data_source.list_spaces = AsyncMock(return_value=answer)
         connector._sync_spaces = AsyncMock(return_value={12: {"id": 12}})
         connector._sync_pages = AsyncMock()
 
@@ -2006,11 +2064,29 @@ class TestRevokedToken:
         connector._sync_pages.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_403_with_a_token_that_still_lists_spaces_is_one_failed_phase(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        # A token whose user may not list people is not a revoked token (node 605: it reads
+        # what its user may read): the people phase fails alone, and no auth alert is raised.
+        connector.notify = AsyncMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(status=403))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([])))
+        connector._sync_spaces = AsyncMock(return_value={})
+
+        await run_with_no_filters(connector)
+
+        types = [call.kwargs["type"] for call in connector.notify.await_args_list]
+        assert NotificationType.CONNECTOR_AUTH_ERROR not in types
+        assert any("reading the list of people" in failure for failure in connector._failures)
+        connector.data_source.list_spaces.assert_awaited_once_with(page=0, size=1)
+
+    @pytest.mark.asyncio
     async def test_a_bad_request_the_api_words_as_json_is_not_an_auth_failure(
         self, connector: DrupalWikiConnector
     ) -> None:
         with pytest.raises(DrupalWikiSyncError):
-            connector._require_ok(response({"status": 400, "title": "Bad Request"}, status=400), "reading x")
+            await connector._require_ok(response({"status": 400, "title": "Bad Request"}, status=400), "reading x")
 
 
 class TestErrorsCarryTheWikisReason:
@@ -3132,6 +3208,23 @@ class TestPeopleWhoLostAccess:
         await connector._withdraw_people_without_access()
 
         processor.withdraw_app_user_access.assert_awaited_once_with("conn-1", [disabled, removed], drop_grants=True)
+
+    @pytest.mark.asyncio
+    async def test_a_person_left_out_whom_the_token_may_not_read_is_withdrawn(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([
+            {"id": 1, "email": "a@example.com", "status": "ENABLED"},
+        ])))
+        gone = self.stored("b@example.com", "2")
+        processor.get_all_app_users = AsyncMock(return_value=[self.stored("a@example.com", "1"), gone])
+        connector.data_source.get_user = AsyncMock(return_value=response(status=403))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([])))
+
+        await connector._sync_users()
+        await connector._withdraw_people_without_access()
+
+        processor.withdraw_app_user_access.assert_awaited_once_with("conn-1", [gone], drop_grants=True)
 
     @pytest.mark.asyncio
     async def test_an_address_an_enabled_account_also_uses_keeps_access(

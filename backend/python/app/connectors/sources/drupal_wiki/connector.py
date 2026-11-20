@@ -35,9 +35,13 @@ Sync model, with the vendor's words where it documents a rule (all read 2026-11-
 * a person the directory does not show enabled (disabled, removed, or now under
   another address) loses the connector (https://help.drupal-wiki.com/node/248: blocked
   users "können sich nicht mehr im Wiki anmelden")
-* a token the wiki rejects (a 401, a 403, or a 400 that is not the API's JSON) fails the
-  run with an auth notification; a rejected read is never taken as empty, so it removes
-  nothing (a removal already decided on a read the wiki answered stands)
+* a token the wiki rejects (a 401; a 403, or a 400 that is not the API's JSON, when listing
+  spaces is refused too) fails the run with an auth notification; a rejected read is never
+  taken as empty, so it removes nothing (a removal already decided on a read the wiki
+  answered stands). A 403 while the token still lists spaces is one item its user may not
+  read (https://help.drupal-wiki.com/node/605: the token acts as its user, who "muss zum
+  Beispiel die entsprechenden Rechte haben, um Seiten zu lesen"): that item alone fails, and
+  a page no space lists or a person the directory left out that answers it is gone
 * a wiki that refuses the GraphQL page structure query (Drupal Wiki 8.44 refuses it for
   tokens) syncs pages without their tree, and the admin is told on the connector card
 """
@@ -233,6 +237,11 @@ def _epoch_millis(seconds: int | str | None) -> int | None:
 
 class DrupalWikiSyncError(RuntimeError):
     """A sync phase failed; the run is reported as failed and no checkpoint moves."""
+
+
+class DrupalWikiRefusedItemError(DrupalWikiSyncError):
+    """The wiki refused one item while the token still reads the wiki: the token's user may
+    not read it (moved to a space they cannot read, or into the trash)."""
 
 
 class DrupalWikiAuthError(RuntimeError):
@@ -784,7 +793,7 @@ class DrupalWikiConnector(BaseConnector):
         skipped_without_email = 0
         page = 0
         while True:
-            payload = self._require_ok(
+            payload = await self._require_ok(
                 await self.data_source.list_users(only_active=False, page=page, size=PAGE_SIZE),
                 "reading the list of people",
             )
@@ -876,7 +885,9 @@ class DrupalWikiConnector(BaseConnector):
     async def _still_enabled(self, user: AppUser) -> bool:
         """Whether the wiki's own record of a person the directory left out still shows them
         enabled under the stored address. The directory pages by offset, so a removal between
-        two windows can shift a person out of both. A lookup that fails keeps them."""
+        two windows can shift a person out of both. A lookup that fails keeps them; one the
+        wiki refuses while the token still reads it does not: left out of the directory and
+        not readable, they are not shown enabled (fail closed)."""
         user_id = _as_int(user.source_user_id)
         try:
             if user_id is None:
@@ -884,9 +895,12 @@ class DrupalWikiConnector(BaseConnector):
             response = await self.data_source.get_user(user_id)
             if response.status == HttpStatusCode.NOT_FOUND.value:
                 return False
-            record = self._require_ok(response, f"reading user {user_id}")
+            record = await self._require_ok(response, f"reading user {user_id}")
         except DrupalWikiAuthError:
             raise
+        except DrupalWikiRefusedItemError as e:
+            self.logger.info("Drupal Wiki: %s; user %s counts as not enabled", e, user.source_user_id)
+            return False
         except Exception as e:
             self._fail(
                 f"Could not check whether the Drupal Wiki user {user.source_user_id} is still enabled, so they "
@@ -910,7 +924,7 @@ class DrupalWikiConnector(BaseConnector):
         synced = 0
         page = 0
         while True:
-            payload = self._require_ok(
+            payload = await self._require_ok(
                 await self.data_source.list_groups(page=page, size=PAGE_SIZE), "reading the list of groups"
             )
             content = payload.get("content") or []
@@ -923,7 +937,7 @@ class DrupalWikiConnector(BaseConnector):
                     )
                     continue
                 try:
-                    detail = self._require_ok(
+                    detail = await self._require_ok(
                         await self.data_source.get_group(group_id), f"reading the members of group {group_id}"
                     )
                 except DrupalWikiAuthError:
@@ -987,7 +1001,7 @@ class DrupalWikiConnector(BaseConnector):
 
         page = 0
         while True:
-            payload = self._require_ok(
+            payload = await self._require_ok(
                 await self.data_source.list_spaces(page=page, size=PAGE_SIZE), "reading the list of spaces"
             )
             content = payload.get("content") or []
@@ -1317,7 +1331,7 @@ class DrupalWikiConnector(BaseConnector):
         """
         index = 0
         while True:
-            payload = self._require_ok(
+            payload = await self._require_ok(
                 await self.data_source.list_pages(space_id=space_id, page=index, size=PAGE_SIZE),
                 f"reading the pages of space {space_id}",
             )
@@ -1485,11 +1499,18 @@ class DrupalWikiConnector(BaseConnector):
 
     async def _current_page(self, page_id: int) -> dict[str, Any] | None:
         """The page as the wiki has it now; None on a 404, the only refusal the spec documents
-        for ``GET /page/{id}``. Anything else fails the lookup and keeps the page."""
+        for ``GET /page/{id}``, and on a refusal while the token still reads the wiki: the
+        token's user may no longer read the page (trashed, or moved to a space they cannot
+        read), so the copy stored from where they could is not kept (fail closed). Anything
+        else fails the lookup and keeps the page."""
         response = await self.data_source.get_page(page_id)
         if response.status == HttpStatusCode.NOT_FOUND.value:
             return None
-        page = self._require_ok(response, f"reading page {page_id}")
+        try:
+            page = await self._require_ok(response, f"reading page {page_id}")
+        except DrupalWikiRefusedItemError as e:
+            self.logger.info("Drupal Wiki: %s; the stored copy of page %s goes", e, page_id)
+            return None
         if not isinstance(page, dict) or _as_int(page.get("homeSpace")) is None:
             raise DrupalWikiSyncError(f"Drupal Wiki answered page {page_id} without its home space")
         if page.get("id") is not None and _as_int(page.get("id")) != page_id:
@@ -1531,6 +1552,29 @@ class DrupalWikiConnector(BaseConnector):
         after = _as_int(memory.get("after")) or 0
         start = next((i for i, (page_id, _) in enumerate(missing) if page_id > after), 0)
         turn = (missing[start:] + missing[:start])[:GONE_PAGE_CHECKS_PER_RUN]
+        try:
+            await self._check_pages_gone(turn, listing)
+        finally:
+            # Saved whatever stopped the lookups (a rejected token too), so the pages missing
+            # now are known as missing before, and the next run removes them rather than
+            # stopping at the same lookup.
+            if len(turn) < len(missing):
+                # Their absence is not confirmed, so a full sync must not unlink them.
+                self._removals_unchecked = True
+                self.logger.info(
+                    "Drupal Wiki: %d of %d stored pages no space lists were checked; the rest are "
+                    "checked on the next sync", len(turn), len(missing),
+                )
+            try:
+                await self.record_sync_point.update_sync_point(key, {
+                    "after": turn[-1][0] if len(turn) < len(missing) else 0,
+                    "missing": [page_id for page_id, _ in missing],
+                })
+            except Exception as e:
+                # Reported, not raised: raised here it would replace a rejected token unwinding.
+                self._fail(f"Could not save which Drupal Wiki pages no space lists: {describe_exception(e)}")
+
+    async def _check_pages_gone(self, turn: list[tuple[int, int]], listing: PageListing) -> None:
         for page_id, space_id in turn:
             try:
                 page = await self._current_page(page_id)
@@ -1548,17 +1592,6 @@ class DrupalWikiConnector(BaseConnector):
                     f"Could not check whether the Drupal Wiki page {page_id} still exists, so "
                     f"it stays until the next sync: {describe_exception(e)}"
                 )
-        if len(turn) < len(missing):
-            # Their absence is not confirmed, so a full sync must not unlink them.
-            self._removals_unchecked = True
-            self.logger.info(
-                "Drupal Wiki: %d of %d stored pages no space lists were checked; the rest are "
-                "checked on the next sync", len(turn), len(missing),
-            )
-        await self.record_sync_point.update_sync_point(key, {
-            "after": turn[-1][0] if len(turn) < len(missing) else 0,
-            "missing": [page_id for page_id, _ in missing],
-        })
 
     async def _remove_attachments_gone(self, page_id: int, listing: PageListing) -> None:
         """Remove the stored attachments of a page that its complete attachment listing no longer
@@ -1609,7 +1642,7 @@ class DrupalWikiConnector(BaseConnector):
         try:
             index = 0
             while True:
-                batch = self._require_ok(
+                batch = await self._require_ok(
                     await self.data_source.list_attachments(
                         page_id=page_id, page=index, size=PAGE_SIZE
                     ),
@@ -2178,25 +2211,60 @@ class DrupalWikiConnector(BaseConnector):
             )
             return {}
 
-    def _require_ok(self, response: HTTPResponse, context: str) -> object:
+    async def _require_ok(self, response: HTTPResponse, context: str) -> object:
         # The spec documents no 401 or 403, and a live wiki answers a token it does not
         # accept with a 403 page, or a 400 page for an unknown one, never a 401. A token of a
         # blocked user gives no access at all (https://help.drupal-wiki.com/node/605: "Token
-        # von gesperrten Nutzern ermöglichen keinerlei Zugriff."). So a 401, any 403 and a 400
-        # that is not the API's own JSON fail the run as a rejected token, before anything
-        # is removed.
-        if response.status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value) or (
-            response.status == HttpStatusCode.BAD_REQUEST.value and not self._is_json(response)
-        ):
+        # von gesperrten Nutzern ermöglichen keinerlei Zugriff."), but a valid one reads only
+        # what its user may read (same page: "Er muss zum Beispiel die entsprechenden Rechte
+        # haben, um Seiten zu lesen"), so a 403 can also be one item that user may not read.
+        # A 401 fails the run as a rejected token; a 403 or a 400 that is not the API's own
+        # JSON does only when the token cannot list spaces either.
+        if response.status == HttpStatusCode.UNAUTHORIZED.value:
             raise DrupalWikiAuthError(
                 f"Drupal Wiki rejected the personal access token while {context}: "
                 f"{describe_response(response)}. It may have been revoked or its user blocked."
+            )
+        if response.status == HttpStatusCode.FORBIDDEN.value or (
+            response.status == HttpStatusCode.BAD_REQUEST.value and not self._is_json(response)
+        ):
+            token_reads = await self._token_reads_the_wiki()
+            if token_reads is None:
+                raise DrupalWikiSyncError(
+                    f"Drupal Wiki refused {context}: {describe_response(response)}, and the token could "
+                    "not be checked"
+                )
+            if not token_reads:
+                raise DrupalWikiAuthError(
+                    f"Drupal Wiki rejected the personal access token while {context}: "
+                    f"{describe_response(response)}, and it cannot list spaces either. It may have "
+                    "been revoked or its user blocked."
+                )
+            raise DrupalWikiRefusedItemError(
+                f"Drupal Wiki refused {context}: {describe_response(response)}. The token still "
+                "reads the wiki, so only this was skipped"
             )
         if response.status >= HttpStatusCode.BAD_REQUEST.value:
             raise DrupalWikiSyncError(
                 f"Drupal Wiki refused {context}: {describe_response(response)}"
             )
         return self._safe_json_parse(response, context)
+
+    async def _token_reads_the_wiki(self) -> bool | None:
+        """Whether the token still lists spaces; None when the check got no answer. ``GET
+        /space`` lists the spaces its user may see and documents only 200 and 404 (spec), so
+        a valid token gets a page of them, an empty one included. Only a refusal of this call
+        too counts as a dead token."""
+        try:
+            probe = await self.data_source.list_spaces(page=0, size=1)
+        except Exception as e:
+            self.logger.warning("Drupal Wiki: could not check the token after a refusal: %s", describe_exception(e))
+            return None
+        if probe.status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value) or (
+            probe.status == HttpStatusCode.BAD_REQUEST.value and not self._is_json(probe)
+        ):
+            return False
+        return True if probe.status == HttpStatusCode.OK.value and self._is_json(probe) else None
 
     @staticmethod
     def _is_json(response: HTTPResponse) -> bool:
