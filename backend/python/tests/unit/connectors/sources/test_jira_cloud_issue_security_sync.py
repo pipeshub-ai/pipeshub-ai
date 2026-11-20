@@ -3838,10 +3838,15 @@ class TestAGroupPickerOnALeveledIssue:
         assert sorted(p.external_id for p in grants) == ["g-pick", "group-1"]
 
     @pytest.mark.asyncio
-    async def test_without_per_issue_browse_holders_the_issue_keeps_its_level_s_record_group(self) -> None:
-        """No one reads it alone, so nothing changes: the level's record group and a group grant on the issue (STRICT)."""
+    @pytest.mark.parametrize("untracked", ["browse", "members"])
+    async def test_without_per_issue_browse_holders_the_issue_keeps_its_level_s_record_group(self, untracked: str) -> None:
+        """No one reads it alone, so nothing changes: the level's record group and a group grant on the issue (STRICT).
+        Likewise for a caller that does not track group members (and so writes no record group of picked groups)."""
         ctx = _picker_context({"g-pick": [_users()[0]]})
-        ctx.browse_holders = []
+        if untracked == "browse":
+            ctx.browse_holders = []
+        else:
+            ctx.group_members = None
         c = _connector()
         record, perms, _ = await _build(c, _picked_issue(PICKED), ctx)
         assert (record.access_rule, record.access_group_external_id, [p.external_id for p in perms]) == (

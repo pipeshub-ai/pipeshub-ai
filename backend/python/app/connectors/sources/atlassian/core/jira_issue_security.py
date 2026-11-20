@@ -990,7 +990,9 @@ def apply_issue_access_settled(
     if grouped:
         record.access_group_external_id = level_group_external_id(project_id, level_id)
         picked, picked_unknown = field_group_ids(context.members_by_level.get(level_id, []), fields or {})
-        if context.browse_holders and picked and not picked_unknown and not getattr(record, "is_placeholder", False):
+        # Only where the caller tracks group members (``group_members``) and so writes that record group.
+        if context.browse_holders and context.group_members is not None and picked and not picked_unknown \
+                and not getattr(record, "is_placeholder", False):
             # The picked groups' members read the issue with the project, and someone Browse names on it may read it alone
             # through them: on the issue a group grant would need the project too (STRICT) or admit all its members alone
             # (OPEN). Held by a record group under the project, as the level's own holders are, both hold.
