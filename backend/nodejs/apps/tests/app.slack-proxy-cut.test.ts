@@ -14,7 +14,7 @@ interface ClientResult {
   body: string
 }
 
-type BotMode = 'complete' | 'fin' | 'rst'
+type BotMode = 'complete' | 'fin' | 'rst' | 'hold'
 
 function post(port: number, guardMs = 2000): Promise<ClientResult> {
   return new Promise((resolve) => {
@@ -62,6 +62,8 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
   let logger: { error: sinon.SinonStub; warn: sinon.SinonStub; info: sinon.SinonStub; debug: sinon.SinonStub }
   let originalPort: string | undefined
   let mode: BotMode
+  let botClosed: () => void
+  let botClosedP: Promise<void>
 
   // The real proxy, mounted on a bare app; it reads SLACK_BOT_PORT when it is set up.
   const startGateway = async (botPort: number): Promise<void> => {
@@ -75,11 +77,19 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
 
   beforeEach(async () => {
     mode = 'fin'
+    botClosedP = new Promise<void>((r) => (botClosed = r))
     originalPort = process.env.SLACK_BOT_PORT
     logger = { error: sinon.stub(), warn: sinon.stub(), info: sinon.stub(), debug: sinon.stub() }
     bot = http.createServer((req, res) => {
       req.resume()
       req.on('end', () => {
+        if (mode === 'hold') {
+          // The bot answers part of its body and keeps the rest open; record when the gateway lets go.
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.write('{"ok":')
+          res.on('close', () => botClosed())
+          return
+        }
         res.writeHead(200, { 'content-type': 'application/json' })
         if (mode === 'complete') return void res.end('{"ok":true}')
         res.write('{"ok":')
@@ -141,5 +151,55 @@ describe('Slack events proxy when the slack-bot answer fails', () => {
     expect(result).to.deep.include({ how: 'end', status: 502 })
     expect(JSON.parse(result.body)).to.deep.equal({ error: 'Slack bot service unavailable' })
     expect(logger.error.callCount).to.equal(1)
+  })
+
+  it('closes the slack-bot read when the client leaves mid-answer', async () => {
+    mode = 'hold'
+    const clientGone = new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port: gatewayPort, method: 'POST', path: '/slack/events', agent: false },
+        (res) => {
+          res.once('data', () => {
+            // The first bytes arrived: the client leaves while the bot's body is still open.
+            req.destroy()
+            resolve()
+          })
+        },
+      )
+      req.on('error', () => undefined)
+      req.end('{"type":"event_callback"}')
+      setTimeout(() => reject(new Error('no first bytes')), 3000).unref()
+    })
+    await clientGone
+
+    const outcome = await Promise.race([
+      botClosedP.then(() => 'closed'),
+      new Promise((r) => setTimeout(() => r('leaked'), 2000).unref()),
+    ])
+    expect(outcome).to.equal('closed')
+  })
+
+  it('closes the slack-bot request when the client leaves before the bot answers', async () => {
+    // The bot reads the request and never answers; its response closes only when the gateway drops the socket.
+    const silent = http.createServer((req, res) => {
+      req.resume()
+      res.on('close', () => botClosed())
+    })
+    const silentPort = await listen(silent)
+    await close(gateway)
+    await startGateway(silentPort)
+    const req = http.request({ host: '127.0.0.1', port: gatewayPort, method: 'POST', path: '/slack/events', agent: false })
+    req.on('error', () => undefined)
+    req.end('{"type":"event_callback"}')
+    await new Promise((r) => setTimeout(r, 200))
+    req.destroy()
+
+    const outcome = await Promise.race([
+      botClosedP.then(() => 'closed'),
+      new Promise((r) => setTimeout(() => r('leaked'), 2000).unref()),
+    ])
+    await close(silent)
+    expect(outcome).to.equal('closed')
+    expect(logger.error.called).to.equal(false)
   })
 })
