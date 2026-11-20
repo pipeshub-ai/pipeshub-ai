@@ -1,6 +1,7 @@
 """The pdfium-only page count taken ahead of any whole-file inspection."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +16,9 @@ from app.modules.parsers.pdf.page_count import (
 )
 from tests.support.pdf_samples import password_protected_pdf, text_pdf
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 def _no_pages() -> bytes:
     import io
@@ -26,13 +30,32 @@ def _no_pages() -> bytes:
     return buffer.getvalue()
 
 
+@pytest.fixture(autouse=True)
+def _worker_runs_inline(request: pytest.FixtureRequest) -> Iterator[None]:
+    """The count runs only in a worker process; these tests run the worker function in this one."""
+    if "no_worker" in request.node.name or "pool" in request.node.name or "submit" in request.node.name:
+        yield
+        return
+
+    async def inline(fn: object, *args: object, **_kw: object) -> object:
+        return fn(*args)
+
+    with patch.object(parse_pool, "submit", new=inline):
+        yield
+
+
 def test_the_worker_function_counts_the_pages() -> None:
     assert count_pages(text_pdf(3)) == 3
 
 
 @pytest.mark.asyncio
-async def test_a_real_pool_count_is_an_int() -> None:
-    assert await count_pdf_pages(text_pdf(4), "t.pdf") == 4
+async def test_a_count_through_a_pool_is_an_int() -> None:
+    async def through_pool(fn: object, *args: object, **kw: object) -> int:
+        assert kw["process_only"] is True
+        return fn(*args)
+
+    with patch.object(parse_pool, "submit", new=through_pool):
+        assert await count_pdf_pages(text_pdf(4), "t.pdf") == 4
 
 
 @pytest.mark.asyncio
@@ -102,3 +125,27 @@ async def test_an_unreadable_file_logs_one_info_line_without_a_traceback(caplog:
     assert len(info) == 1 and info[0].exc_info is None
     assert all(r.exc_info is None for r in caplog.records if r.levelno >= logging.INFO)
     assert any(r.levelno == logging.DEBUG and r.exc_info for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_with_no_worker_process_the_count_is_unavailable_and_never_runs_on_a_thread() -> None:
+    """A thread cannot be stopped by the count's timeout: a stalled open would hold the pdfium lock for every count."""
+    with patch.object(parse_pool, "parse_pool_workers", return_value=0), patch.object(parse_pool, "_pool", return_value=None):
+        with patch("app.modules.parsers.pdf.page_count.count_pages") as ran:
+            assert isinstance(await count_pdf_pages(text_pdf(2), "t.pdf"), Unavailable)
+        ran.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_that_closes_under_the_job_is_unavailable_not_a_thread_run() -> None:
+    class Closed:
+        async def submit(self, _job: object) -> None:
+            raise parse_pool._PoolClosed
+
+    with patch.object(parse_pool, "parse_pool_workers", return_value=1), patch.object(parse_pool, "_pool", return_value=Closed()):
+        assert isinstance(await count_pdf_pages(text_pdf(2), "t.pdf"), Unavailable)
+
+
+@pytest.mark.asyncio
+async def test_submit_without_process_only_still_falls_back_to_a_thread() -> None:
+    assert await parse_pool.submit(len, [1, 2, 3]) == 3

@@ -200,7 +200,7 @@ async def test_a_finished_audit_does_not_run_again() -> None:
 async def test_the_budget_stops_a_pass_and_the_cursor_resumes_it() -> None:
     graph = Graph([pdf(f"k{n}", pageCount=900) for n in range(5)], page=2)
     config = Config()
-    ticks = iter([0.0] + [100.0] * 50)
+    ticks = iter([0.0, 0.0] + [100.0] * 50)
     first, *_ = await run(graph, reader_of({}), config, clock=lambda: next(ticks), budget_seconds=10.0)
     assert not first.complete and audit.FLAG_KEY not in config.data
     assert config.data[audit.CURSOR_KEY]["after"]
@@ -243,3 +243,45 @@ async def test_the_reader_is_never_asked_for_more_than_eight_mib() -> None:
     reader = reader_of({"v-a": pages_json(10)})
     await run(graph, reader)
     assert [call.args[2] for call in reader.await_args_list] == [8 << 20]
+
+
+class _Clock:
+    """Reads 0 until ``after`` reads have been made, then past any deadline."""
+
+    def __init__(self, after: int) -> None:
+        self.reads, self.after = 0, after
+
+    def __call__(self) -> float:
+        self.reads += 1
+        return 0.0 if self.reads <= self.after else 10_000.0
+
+
+def _two_small_apps() -> Graph:
+    graph = Graph([pdf("a", pageCount=900), pdf("b", pageCount=900, connectorId="app-2")])
+    graph.apps = [{"_key": "app-1", "orgId": "org-1"}, {"_key": "app-2", "orgId": "org-1"}]
+    return graph
+
+
+@pytest.mark.asyncio
+async def test_the_budget_is_checked_before_each_app_even_when_every_app_is_a_short_page() -> None:
+    graph = _two_small_apps()
+    # One read sets the deadline, one passes the check before app-1; the check before app-2 is past the budget.
+    result, config, lock = await run(graph, reader_of({}), clock=_Clock(2), budget_seconds=5)
+    assert [w[0] for w in graph.writes] == ["a"]
+    assert not result.complete
+    assert audit.FLAG_KEY not in config.data
+    assert config.data[audit.CURSOR_KEY] == {"app": "app-1￿", "after": None}
+    assert lock.released
+
+
+@pytest.mark.asyncio
+async def test_the_lease_is_renewed_before_each_app_and_a_lost_one_stops_the_audit() -> None:
+    class Losing(Lock):
+        async def refresh(self) -> bool:
+            await super().refresh()
+            return self.refreshes < 2
+
+    graph = _two_small_apps()
+    result, config, _ = await run(graph, reader_of({}), lock=Losing())
+    assert [w[0] for w in graph.writes] == ["a"]
+    assert not result.complete and audit.FLAG_KEY not in config.data

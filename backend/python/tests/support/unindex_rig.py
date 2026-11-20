@@ -43,15 +43,9 @@ class Rig:
 
         graph.get_record_taxonomy_links = AsyncMock(side_effect=read_links)
         fields = note("fields", True)
-        saved = note("refs_saved", True)
-        cleared = note("refs_cleared", True)
 
         async def update_node(_key: str, _collection: str, values: dict) -> bool:
-            if "pendingTaxonomyRefs" in values:
-                refs = values["pendingTaxonomyRefs"]
-                done = await (cleared() if refs is None else saved())
-                self.saved["pendingTaxonomyRefs"] = refs
-                return done
+            assert "pendingTaxonomyRefs" not in values, "this release only accepts that field"
             return await fields()
 
         graph.update_node = AsyncMock(side_effect=update_node)
@@ -76,8 +70,6 @@ class Rig:
     async def run(self, record: dict | None = None) -> None:
         # Each attempt is a new event: it reads the record as the earlier attempt left it.
         record = dict(record or RECORD)
-        if self.saved.get("pendingTaxonomyRefs"):
-            record["pendingTaxonomyRefs"] = self.saved["pendingTaxonomyRefs"]
         with (
             patch("app.modules.indexing.unindex.GraphDBTransformer") as transformer,
             patch("app.modules.indexing.unindex.NamedEntityGraphWriter") as writer,

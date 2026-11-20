@@ -11,7 +11,11 @@ import pytest
 from app.config.constants.arangodb import ProgressStatus
 from app.modules.indexing import page_limit
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
-from app.utils.user_errors import PDF_PAGE_LIMIT_NOTE, pdf_over_page_limit
+from app.utils.user_errors import (
+    MAX_INDEXED_PDF_PAGES,
+    PDF_PAGE_LIMIT_NOTE,
+    pdf_over_page_limit,
+)
 from tests.unit.modules.indexing.test_page_limit import (
     BUFFER,
     COMPLETED,
@@ -288,46 +292,19 @@ async def test_early_refusal_retry_after_a_connector_sync_rewrote_the_md5_is_ref
     assert again.graph.record.get("hasIndexedCopy") is not True
 
 
-# --- the md5 of the indexed bytes is remembered for the completing write, and forgotten after the event --------------------
-
-
-@pytest.mark.asyncio
-async def test_a_proceeding_pdf_remembers_its_md5_for_the_write_that_completes_the_index() -> None:
-    from app.modules.indexing import indexed_bytes
-
-    seen: list[str | None] = []
-    world = World({"indexingStatus": "QUEUED"})
-    world.count(10)
-    for name in ("process_pdf_with_docling", "process_pdf_with_pdf_plumber", "process_pdf_document_with_ocr"):
-        getattr(world.processor, name).side_effect = lambda **_kw: (seen.append(indexed_bytes.current()), _empty())[1]
-    await world.run()
-    assert seen == [MD5]
-    assert indexed_bytes.current() is None, "the event must forget the md5 when it ends"
-
-
 async def _empty() -> AsyncIterator[None]:
     return
     yield
 
 
 @pytest.mark.asyncio
-async def test_a_refused_pdf_remembers_nothing() -> None:
-    from app.modules.indexing import indexed_bytes
-
+async def test_a_refusal_writes_no_indexed_md5() -> None:
+    """This release only accepts the field: a refusal does not write it, not even a null."""
     world = World({"indexingStatus": "QUEUED"})
-    world.count(600)
-    await world.run()
-    assert indexed_bytes.current() is None
-
-
-@pytest.mark.asyncio
-async def test_a_refusal_clears_the_indexed_md5() -> None:
-    world = World(searchable(indexedMd5=OLD_MD5, md5Checksum=MD5))
     world.count(700)
-    with patch("app.events.events.content_revision", return_value=REV):
-        await world.run()
+    await world.run()
     assert world.refused
-    assert "indexedMd5" not in world.graph.record
+    assert "indexedMd5" not in world.processor._mark_record.await_args.kwargs["extra_fields"]
 
 
 # --- rules on the keep path and the refusal order ----------------------------------------------------------------------------------------
@@ -393,7 +370,7 @@ async def test_a_refused_tombstone_is_never_keep_eligible_even_with_a_vrid_store
     [
         ({"indexingStatus": "QUEUED"}, Unavailable(), True),
         ({"indexingStatus": "QUEUED"}, Unreadable(), True),
-        (searchable(), Unreadable(), False),
+        (searchable(), Unreadable(), False),  # the inspection takes the count before dedup, so it is known by then
         ({"indexingStatus": "QUEUED"}, 12, False),
     ],
 )
@@ -448,15 +425,33 @@ async def test_dedup_does_not_reuse_a_noted_twin_when_the_count_is_unknown() -> 
 
 
 @pytest.mark.asyncio
-async def test_a_twin_with_another_note_is_still_a_candidate_when_the_count_is_unknown() -> None:
+@pytest.mark.parametrize(
+    ("twin_fields", "reusable"),
+    [
+        ({}, False),  # indexed before counts were recorded: its size is not known, so it is not proven within the limit
+        ({"indexingNote": "something else"}, False),
+        ({"pageCount": 600}, False),
+        ({"pageCount": MAX_INDEXED_PDF_PAGES + 1}, False),
+        ({"pageCount": MAX_INDEXED_PDF_PAGES, "indexingNote": PDF_PAGE_LIMIT_NOTE}, False),
+        ({"pageCount": MAX_INDEXED_PDF_PAGES}, True),
+        ({"pageCount": 12}, True),
+    ],
+)
+async def test_only_a_twin_proven_within_the_limit_is_a_candidate_when_the_count_is_unknown(
+    twin_fields: dict, reusable: bool
+) -> None:
+    """A twin with no recorded count (indexed before counts were kept) must not carry an unchecked file past the limit."""
     from tests.unit.events.test_events import _make_event_processor
 
     ep, *_ = _make_event_processor()
     ep.graph_provider.update_node = AsyncMock(return_value=True)
-    twin = {"_key": "twin", "recordType": "FILE", "indexingStatus": COMPLETED, "indexingNote": "something else"}
+    twin = {"_key": "twin", "recordType": "FILE", "indexingStatus": COMPLETED, **twin_fields}
     ep._find_duplicate_records = AsyncMock(return_value=[twin])
     with patch("app.events.events.select_duplicate", return_value=None) as select:
         await ep._check_duplicate_by_md5(
             BUFFER, {"_key": "rec-1", "recordType": "FILE", "orgId": "org-1"}, md5=MD5, skip_over_limit_twins=True
         )
-    assert select.call_args.args[0] == [twin]
+    if reusable:
+        assert select.call_args.args[0] == [twin]
+    else:
+        select.assert_not_called()

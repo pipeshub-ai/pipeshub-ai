@@ -584,7 +584,6 @@ class TestTheCountRuleOfEveryRevisionWriter:
             ("events/events.py", "EventProcessor.mark_record_status"): (1, "builds fields that update_record_fields writes"),
             ("events/events.py", "EventProcessor._dispatch_event"): (1, "the attempt start fields (write_attempt_start decides the count)"),
             ("events/events.py", "EventProcessor._attach_to_finished_twin"): (1, "a match condition"),
-            ("events/events.py", "EventProcessor._gate_page_limit.late_check"): (1, "puts back the revision the event found when the page limit keeps the index; no new revision"),
             ("events/events.py", "EventProcessor._skip_same_bytes"): (1, "the revision the skip is for, passed to the redrive; no record write"),
             ("events/events.py", "EventProcessor._restore_indexed_fields"): (1, "a match condition"),
             ("services/messaging/kafka/handlers/record.py", "RecordEventHandler._clear_membership_pending"): (2, "match conditions of a reason-only write"),

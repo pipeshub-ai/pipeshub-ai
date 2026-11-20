@@ -21,15 +21,15 @@ class Unreadable:
 
 @dataclass(frozen=True)
 class Unavailable:
-    """The count could not be taken now: a timeout, a dead worker or a closed pool."""
+    """The count could not be taken now: a timeout, a dead worker, a closed pool or no worker process."""
 
 
 PageCount = int | Unreadable | Unavailable
 
 COUNT_TIMEOUT_SECONDS = 120.0
 
-# pdfium is not thread-safe. A worker process runs one job at a time, but with no pool the count runs on the event
-# loop's executor threads, where concurrent opens of the same file fail with "Data format error".
+# pdfium is not thread-safe: concurrent opens of the same file in one process fail with "Data format error". A worker
+# process runs one job at a time; the lock covers a caller that runs ``count_pages`` in its own process (a test).
 _PDFIUM_OPEN = threading.Lock()
 
 
@@ -51,7 +51,9 @@ def count_pages(content: bytes) -> int:
 async def count_pdf_pages(content: bytes, label: str = "") -> PageCount:
     """Count the pages of *content*: an ``int``, ``Unreadable`` or ``Unavailable``.
 
-    It never raises for an infrastructure failure (a timeout, a dead worker, a closed pool): that is ``Unavailable``.
+    It never raises for an infrastructure failure (a timeout, a dead worker, a closed pool, no worker process): that is
+    ``Unavailable``. The count runs only in a worker process, where ``COUNT_TIMEOUT_SECONDS`` can stop it: a thread cannot be
+    stopped, so a stalled open there would hold the pdfium lock and every count behind it.
     A file pdfium cannot open, or opens with no pages, is ``Unreadable``. ``PasswordProtectedError`` is raised.
     """
     from app.exceptions.indexing_exceptions import PasswordProtectedError
@@ -61,7 +63,8 @@ async def count_pdf_pages(content: bytes, label: str = "") -> PageCount:
 
     try:
         pages = await parse_pool.submit(
-            count_pages, content, label=label, size=len(content), kind=ParseKind.INSPECT, timeout=COUNT_TIMEOUT_SECONDS
+            count_pages, content, label=label, size=len(content), kind=ParseKind.INSPECT, timeout=COUNT_TIMEOUT_SECONDS,
+            process_only=True,
         )
     except PasswordProtectedError:
         raise

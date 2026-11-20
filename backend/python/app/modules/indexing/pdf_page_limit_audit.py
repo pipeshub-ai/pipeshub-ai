@@ -241,6 +241,11 @@ async def run_pdf_page_limit_audit(
                 continue
             if connector_state(app) in (ConnectorState.DELETING, ConnectorState.REMOVED):
                 continue
+            if clock() >= deadline or not await lock.refresh():
+                # Out of time or lease before this app starts, whatever the size of the app before it: the cursor already
+                # names the last app that finished, and the audit is not marked complete.
+                complete = False
+                break
             after = resume_after if app_id == resume_app else None
             if not await _audit_app(
                 graph, app, after, read_prefix, result, lock, clock, deadline, save_cursor, concurrency

@@ -6,6 +6,10 @@ idempotent and raises on failure, so the caller's retry repeats the whole routin
 The record's status and revision tombstone are written by the caller **before** this runs, so a stage job still queued
 for the old content fails its revision check and writes nothing. The routine takes no lease of its own: the consumer's
 record lease for the event already excludes stage writers.
+
+The record's taxonomy links are read first, because the points of the entities they name can only be judged once the
+edges are gone. They are held for this run only: a run that fails between removing the edges and deleting those points
+leaves the points, and its retry finds no links to name them.
 """
 
 from __future__ import annotations
@@ -23,10 +27,6 @@ from app.services.graph_db.common.utils import taxonomy_refs_from_links
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from logging import Logger
-
-
-PENDING_TAXONOMY_REFS = "pendingTaxonomyRefs"
-"""Internal record field: the taxonomy entities the record linked to, kept while its un-index is unfinished."""
 
 
 async def unindex_record(
@@ -48,16 +48,8 @@ async def unindex_record(
     sink = getattr(processor, "sink_orchestrator", None)
 
     # Read before anything is cleared, and allowed to raise: the refs cannot be found again once the edges are gone.
-    # They are also saved on the record before the edges go, so a run that fails afterwards still finds them on retry.
     links = await graph.get_record_taxonomy_links([record_key], include_departments=True)
-    refs = list(record_doc.get(PENDING_TAXONOMY_REFS) or [])
-    for ref in taxonomy_refs_from_links(links).get(record_key, []):
-        if ref not in refs:
-            refs.append(ref)
-    if refs != list(record_doc.get(PENDING_TAXONOMY_REFS) or []) and not await graph.update_node(
-        record_key, CollectionNames.RECORDS.value, {PENDING_TAXONOMY_REFS: refs}
-    ):
-        raise DocumentProcessingError("Failed to save the taxonomy links of a record before un-indexing it", doc_id=record_key)
+    refs = taxonomy_refs_from_links(links).get(record_key, [])
 
     await GraphDBTransformer(graph, logger).clear_classification(record_key)
 
@@ -82,5 +74,3 @@ async def unindex_record(
     store = getattr(sink, "entity_vector_store", None)
     if store is not None and refs:
         await delete_unreached_taxonomy_points(store, graph, org_id, record_key, refs)
-    if refs and not await graph.update_node(record_key, CollectionNames.RECORDS.value, {PENDING_TAXONOMY_REFS: None}):
-        raise DocumentProcessingError("Failed to clear the saved taxonomy links of a record", doc_id=record_key)

@@ -4,9 +4,10 @@ The rule never deletes an index on uncertainty. A record that already has a sear
 proven changed keeps it, with a note; a new file, changed content, or a record with nothing searchable is refused and
 un-indexed.
 
-``check_page_limit`` decides at two sites in ``EventProcessor``: early (a page count taken before dedup, resume and the
-IN_PROGRESS write), and late (after the whole-file inspection, reached only when the early count could not decide).
-``apply_keep`` and ``apply_refuse`` perform the writes the decision calls for.
+``check_page_limit`` decides in ``EventProcessor`` from a page count taken before dedup, resume and the IN_PROGRESS write.
+When no count could be taken, a record with an index to keep is decided from the whole-file inspection before anything is
+written; any other is decided after the parse, where only a refusal is possible. ``apply_keep`` and ``apply_refuse``
+perform the writes the decision calls for.
 """
 
 from __future__ import annotations
@@ -161,11 +162,15 @@ async def _keep_eligible(doc: LongDocument) -> bool:
     vrid = snapshot.get("virtualRecordId")
     if not vrid:
         return False
+    # Neither COMPLETED nor flagged: a record indexed before the flag existed, or one never indexed (stored blocks alone
+    # are what a store-only run leaves). Only stored content together with vectors says an index exists.
     try:
-        return bool(await doc.host.vrid_has_stored_content(doc.org_id, vrid))
+        return bool(
+            await doc.host.vrid_has_stored_content(doc.org_id, vrid) and await doc.host.vrid_has_points(doc.org_id, vrid)
+        )
     except Exception:
         # Storage that cannot answer is uncertainty: the index is kept.
-        _logger.warning("could not tell whether %s has stored content; keeping its index", doc.record_id, exc_info=True)
+        _logger.warning("could not tell whether %s has an index; keeping it", doc.record_id, exc_info=True)
         return True
 
 
@@ -213,21 +218,22 @@ async def check_page_limit(doc: LongDocument) -> Proceed | Keep | Refuse:
         if counted <= MAX_INDEXED_PDF_PAGES:
             return Proceed(pages=counted, clear_note=clears_note)
         return await _over_limit(doc, counted, eligible=await _keep_eligible(doc))
-    eligible = await _keep_eligible(doc)
     if isinstance(counted, Unavailable):
         PAGE_COUNT_UNAVAILABLE.inc()
-        if eligible:
-            _logger.warning("the page count of %s is unavailable; its index is kept untouched", doc.record_id)
-            return Keep(note=None)
-        return Proceed(keep_eligible=False)
-    assert isinstance(counted, Unreadable)
-    return Proceed(keep_eligible=eligible)
+    else:
+        assert isinstance(counted, Unreadable)
+    # No count: the caller decides from the whole-file inspection (before it writes anything when ``keep_eligible``, so
+    # that an in-limit file is still indexed and an over-limit one leaves its index as it is).
+    return Proceed(keep_eligible=await _keep_eligible(doc))
 
 
 async def apply_keep(doc: LongDocument, keep: Keep) -> None:
-    """Perform an early ``Keep``: the existing index stays and the status is restored where the rules allow."""
-    host = doc.host
-    graph = host.graph_provider
+    """Perform a ``Keep``: the existing index stays, the status is restored where the rules allow, and the note is written.
+
+    Every write is one conditional write on the revision (``contentRev``) and virtual record id the decision read, so a
+    revision that was queued meanwhile is never marked COMPLETED or noted: it is left to its writer.
+    """
+    graph = doc.host.graph_provider
     snapshot = doc.snapshot
     record_id = doc.record_id
     status = snapshot.get("indexingStatus")
@@ -235,11 +241,6 @@ async def apply_keep(doc: LongDocument, keep: Keep) -> None:
     restores = status in _RESTORABLE or (
         status == ProgressStatus.AUTO_INDEX_OFF.value and forced and snapshot.get(HAS_INDEXED_COPY) is True
     )
-    restored = False
-    if restores and status != ProgressStatus.COMPLETED.value:
-        restored = await _restore_completed(graph, record_id, status)
-    elif restores:
-        restored = True
 
     fields: dict[str, Any] = {}
     if keep.note is not None:
@@ -253,32 +254,44 @@ async def apply_keep(doc: LongDocument, keep: Keep) -> None:
         reason = snapshot.get("reason")
         if reason:
             fields["reason"] = reason
-    if fields:
-        applied = await graph.update_node_fields_if_match(
-            record_id,
-            CollectionNames.RECORDS.value,
-            fields,
-            {"virtualRecordId": snapshot.get("virtualRecordId"), "contentRev": snapshot.get("contentRev")},
-        )
-        if not applied:
-            _logger.info("record %s changed while its page-limit note was being written; left to its writer", record_id)
+    revision = {"virtualRecordId": snapshot.get("virtualRecordId"), "contentRev": snapshot.get("contentRev")}
+    restored = restores and status == ProgressStatus.COMPLETED.value
+    written = False
+    if restores and not restored:
+        completed = {**fields, "indexingStatus": ProgressStatus.COMPLETED.value}
+        restored = written = await _write_if_same_revision(graph, record_id, completed, revision, status)
+        if not restored:
+            # Lost: re-read once. A reset that landed meanwhile (NOT_STARTED, QUEUED) is retried from where it now is,
+            # while the record is still on the revision that was read.
+            now = await graph.get_document(record_id, CollectionNames.RECORDS.value) or {}
+            current = now.get("indexingStatus")
+            if (
+                current in _RESET
+                and all(now.get(name) == value for name, value in revision.items())
+                and await _write_if_same_revision(graph, record_id, completed, revision, current)
+            ):
+                restored = written = True
+            else:
+                _logger.info(
+                    "record %s: the status moved from %s to %s while it was being kept; left to its writer",
+                    record_id, status, current,
+                )
+                # The status stays what it was, and so does the reason the event handler cleared on its way in.
+                if snapshot.get("reason"):
+                    fields["reason"] = snapshot["reason"]
+    if fields and not written and not await _write_if_same_revision(graph, record_id, fields, revision, None):
+        _logger.info("record %s changed while its page-limit note was being written; left to its writer", record_id)
     _logger.info("record %s kept its index (%s)", record_id, "status restored" if restored else f"status {status} unchanged")
 
 
-async def _restore_completed(graph: IGraphDBProvider, record_id: str, status: str) -> bool:
-    changed = await graph.compare_and_set_indexing_status([record_id], status, ProgressStatus.COMPLETED.value)
-    if changed:
-        return True
-    # Lost: re-read once. A reset that landed meanwhile (NOT_STARTED, QUEUED) is retried from where it now is.
-    now = await graph.get_document(record_id, CollectionNames.RECORDS.value)
-    current = (now or {}).get("indexingStatus")
-    if current in _RESET and await graph.compare_and_set_indexing_status(
-        [record_id], current, ProgressStatus.COMPLETED.value
-    ):
-        return True
-    _logger.info("record %s: the status moved from %s to %s while it was being kept; left to its writer",
-                 record_id, status, current)
-    return False
+async def _write_if_same_revision(
+    graph: IGraphDBProvider, record_id: str, fields: Mapping[str, Any], revision: Mapping[str, Any], status: str | None
+) -> bool:
+    """One write of ``fields`` that applies only while the record still has ``revision`` and, when given, ``status``."""
+    expected = dict(revision)
+    if status is not None:
+        expected["indexingStatus"] = status
+    return bool(await graph.update_node_fields_if_match(record_id, CollectionNames.RECORDS.value, dict(fields), expected))
 
 
 async def apply_refuse(doc: LongDocument, refuse: Refuse) -> None:
@@ -293,7 +306,6 @@ async def apply_refuse(doc: LongDocument, refuse: Refuse) -> None:
     extra: dict[str, Any] = {
         "contentRev": f"{REFUSED_REV_PREFIX}{doc.content_rev}",
         HAS_INDEXED_COPY: False,
-        "indexedMd5": None,
     }
     # The record's revision becomes a tombstone, so the count of the bytes it held goes with it (the reason names the pages).
     extra["pageCount"] = None

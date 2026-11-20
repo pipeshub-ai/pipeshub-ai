@@ -5,10 +5,7 @@ import pytest
 
 from tests.support.unindex_rig import Rig
 
-STEPS = [
-    "links", "refs_saved", "classification", "mentions", "fields", "holders", "stage_states", "release", "taxonomy_points",
-    "refs_cleared",
-]
+STEPS = ["links", "classification", "mentions", "fields", "holders", "stage_states", "release", "taxonomy_points"]
 
 
 @pytest.mark.asyncio
@@ -37,7 +34,7 @@ async def test_a_failed_taxonomy_read_deletes_nothing_and_the_retry_finds_the_re
     assert rig.calls == ["links"]
     rig.calls.clear()
     await rig.run()
-    assert rig.calls[:1] == ["links"] and rig.calls[-1] == "refs_cleared"
+    assert rig.calls[:1] == ["links"] and rig.calls[-1] == "taxonomy_points"
     assert rig.points.await_args.args[-1]
 
 
@@ -50,9 +47,18 @@ async def test_a_run_that_fails_at_any_step_is_completed_by_the_retry(step: str)
         await rig.run()
     rig.calls.clear()
     await rig.run()
-    assert rig.calls[-2:] == ["taxonomy_points", "refs_cleared"]
-    refs = rig.points.await_args.args[-1]
-    assert {r["id"] for r in refs} == {"cat-1", "top-1"}, "the retry must still know the links the first run cleared"
+    # The retry runs every step again. Once the edges went, it reads no links, so it names no points (see the module
+    # docstring of ``unindex``).
+    assert rig.calls[:4] == ["links", "classification", "mentions", "fields"] and rig.calls[-1] in ("release", "taxonomy_points")
+
+
+@pytest.mark.asyncio
+async def test_the_refs_are_not_saved_on_the_record() -> None:
+    """The retry of a run that failed before the edges went still names the points; none of it is stored on the record."""
+    rig = Rig()
+    await rig.run()
+    rig.graph.update_node.assert_awaited_once()
+    assert "pendingTaxonomyRefs" not in rig.graph.update_node.await_args.args[2]
 
 
 @pytest.mark.asyncio
@@ -67,11 +73,11 @@ async def test_a_twin_keeps_the_stage_states_but_the_vectors_and_content_release
 async def test_a_record_with_no_vrid_skips_the_content_steps_only() -> None:
     rig = Rig()
     await rig.run({"_key": "rec-1", "orgId": "org-1"})
-    assert rig.calls == ["links", "refs_saved", "classification", "mentions", "fields", "taxonomy_points", "refs_cleared"]
+    assert rig.calls == ["links", "classification", "mentions", "fields", "taxonomy_points"]
 
 
 @pytest.mark.asyncio
 async def test_a_record_with_no_taxonomy_links_has_no_point_cleanup() -> None:
     rig = Rig(links=[])
     await rig.run()
-    assert "taxonomy_points" not in rig.calls and "refs_saved" not in rig.calls
+    assert "taxonomy_points" not in rig.calls

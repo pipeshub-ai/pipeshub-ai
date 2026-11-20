@@ -18,6 +18,7 @@ from app.events.events import DedupDecision
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.indexing import page_limit
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
+from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf
 from app.utils.user_errors import (
     MAX_INDEXED_PDF_PAGES,
     PDF_PAGE_LIMIT_NOTE,
@@ -46,6 +47,7 @@ class FakeGraph:
         self.cas_calls: list[tuple] = []
         self.lose_next_cas = False
         self.cas_hook = None
+        self.hook_on_every_write = False
 
     async def get_document(self, key: str, collection: str, **_kw: object) -> dict[str, Any]:
         return dict(self.record)
@@ -64,6 +66,14 @@ class FakeGraph:
     async def update_node_fields_if_match(
         self, key: str, collection: str, updates: dict[str, Any], expected: dict[str, Any], *_a: object, **_kw: object
     ) -> bool:
+        status_write = "indexingStatus" in updates
+        if status_write:
+            self.cas_calls.append((expected.get("indexingStatus"), updates["indexingStatus"]))
+        if self.cas_hook is not None and (status_write or self.hook_on_every_write):
+            self.cas_hook(self)
+        if status_write and self.lose_next_cas:
+            self.lose_next_cas = False
+            return False
         if any(self.record.get(name) != value for name, value in expected.items()):
             return False
         self._merge(updates)
@@ -120,10 +130,10 @@ class World:
         self.inspect = self.stack.enter_context(_pdf_inspection(page_count=pages))
         return self.inspect
 
-    async def run(self) -> list:
+    async def run(self, event_type: str | None = None) -> list:
         if self.inspect is None:
             self.inspected(None)
-        event = _make_event_payload(extension="pdf", buffer=self.buffer)
+        event = _make_event_payload(extension="pdf", buffer=self.buffer, event_type=event_type)
         event["payload"].update(self.extra_payload)
         try:
             return await _drain(self.ep.on_event(event))
@@ -374,6 +384,7 @@ async def test_auto_index_off_without_a_forced_reindex_keeps_its_status_and_gets
 async def test_after_an_unavailable_keep_nothing_is_left_queued_for_the_stranded_sweep() -> None:
     world = World(searchable(indexingStatus="QUEUED"))
     world.count(Unavailable())
+    world.inspected(900)
     await world.run()
     assert world.graph.record["indexingStatus"] == COMPLETED
     queued = [r for r in [world.graph.record] if r["indexingStatus"] == "QUEUED"]
@@ -384,18 +395,37 @@ async def test_after_an_unavailable_keep_nothing_is_left_queued_for_the_stranded
 
 
 @pytest.mark.asyncio
-async def test_an_unavailable_count_on_a_searchable_file_keeps_it_untouched_and_counts_the_outage() -> None:
+async def test_an_unavailable_count_on_a_searchable_file_is_decided_by_the_inspection_before_any_write() -> None:
+    """The index is kept when the inspection finds the file over the limit, and nothing was written ahead of it."""
     world = World(searchable(indexingStatus="QUEUED"))
     world.count(Unavailable())
+    writes_before_inspection: list[dict] = []
     inspect = world.inspected(900)
+    inspect.side_effect = lambda content, **_kw: (
+        writes_before_inspection.append(dict(world.graph.record)),
+        InspectedPdf(content, needs_ocr=False, repaired=False, page_count=900),
+    )[1]
     with patch.object(page_limit.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
         await world.run()
     inc.assert_called_once()
-    inspect.assert_not_awaited()
+    inspect.assert_awaited_once()
+    assert writes_before_inspection[0]["indexingStatus"] == "QUEUED", "the record was written before the inspection"
     world.unindex.assert_not_awaited()
     assert world.graph.record["indexingStatus"] == COMPLETED
-    assert "indexingNote" not in world.graph.record
+    assert world.graph.record["indexingNote"] == PDF_PAGE_LIMIT_NOTE
     assert not world.indexed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [Unavailable(), Unreadable()])
+async def test_a_count_outage_never_completes_a_reindex_of_a_file_within_the_limit(count: object) -> None:
+    """A requested reindex of an unchanged 20-page file during a count outage is indexed, not acknowledged."""
+    world = World(searchable(indexingStatus="QUEUED"))
+    world.count(count)
+    world.inspected(20)
+    await world.run()
+    assert world.indexed and not world.refused
+    assert world.graph.record["pageCount"] == 20
 
 
 @pytest.mark.asyncio

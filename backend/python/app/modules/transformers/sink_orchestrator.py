@@ -21,7 +21,6 @@ from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
 from app.modules.indexing import keep_old_copy
-from app.modules.indexing import indexed_bytes
 from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.parse_now_marker import (
     ParseNowStatus,
@@ -941,8 +940,6 @@ class SinkOrchestrator(Transformer):
         }
         if current_attempt() is not None:
             status.update(cleared_fields())
-        if (indexed_md5 := indexed_bytes.current()) is not None:
-            status["indexedMd5"] = indexed_md5
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
             if await is_classify_on_first_use_enabled(self.config_service):
                 # Decided here, once, so the status and the dispatch agree.

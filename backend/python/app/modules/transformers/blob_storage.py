@@ -3321,8 +3321,11 @@ class BlobStorage(Transformer):
         never decoded, so a very large record costs ``max_bytes`` and not its size.
 
         None when there is no stored document, or the gateway answers inline instead of with a signed URL (there is no
-        range to read then). Raises on a storage failure."""
-        headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+        range to read then): local storage does, and its answer is the whole record, which is not downloaded here.
+        Raises on a storage failure."""
+        headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        if storage_type == "local":
+            return None
         lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
         document_id = (lookup or {}).get("record_doc_id")
         if not document_id:
