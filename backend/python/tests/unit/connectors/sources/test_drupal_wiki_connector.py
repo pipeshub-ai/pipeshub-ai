@@ -3492,6 +3492,28 @@ class TestAttachmentsOfUnwrittenPages:
 
         assert wiki.attachments() == {"attachment:88", "attachment:89"}
 
+    @pytest.mark.parametrize("token_lists_spaces", [True, False], ids=["token-valid", "token-dead"])
+    @pytest.mark.asyncio
+    async def test_a_403_on_the_lookup_removes_it_unless_the_token_is_dead(
+        self, connector: DrupalWikiConnector, processor: MagicMock, token_lists_spaces: bool
+    ) -> None:
+        # Unlisted and refused while the token still lists spaces: its user may not read it, so
+        # the stored copy goes. Refused with the token refused too: a dead token stops the run.
+        wiki = QuietWiki(connector, processor, {1: [88, 89]})
+        wiki.pages[1] = [88]
+        connector.data_source.get_attachment = AsyncMock(return_value=response(status=403))
+        connector.data_source.list_spaces = AsyncMock(
+            return_value=response(spring_page([])) if token_lists_spaces else response(status=403)
+        )
+
+        if token_lists_spaces:
+            await connector._sync_pages({12: {"id": 12}})
+            assert wiki.attachments() == {"attachment:88"}
+        else:
+            with pytest.raises(DrupalWikiAuthError):
+                await connector._sync_pages({12: {"id": 12}})
+            assert wiki.attachments() == {"attachment:88", "attachment:89"}
+
     @pytest.mark.parametrize("error", [
         httpx.ReadTimeout("timed out"),
         HostCheckError('"10.0.0.1" is a private address'),

@@ -1689,12 +1689,13 @@ class DrupalWikiConnector(BaseConnector):
 
     async def _remove_unlisted_attachments(self, stored: set[str], listing: PageListing) -> None:
         """Remove each of ``stored`` no attachment listing had this run, once the wiki answers 404
-        for it (not found, or not readable by the token).
+        for it (not found, or not readable by the token), or refuses it while the token still reads
+        the wiki (``DrupalWikiRefusedItemError``: its user may not read it, so the stored copy goes).
 
         Only that lookup removes one: the attachment listing is a bare array whose walk ends on a
         short page, and the spec does not say that a short page is the last one. The spec gives
         ``GET /attachment/{id}`` a 200 and a 404 only; any other answer keeps the attachment, and a
-        refused token stops the run.
+        rejected token stops the run.
         """
         for external_id in sorted(stored - listing.attachments_listed):
             attachment_id = source_id_from_external(external_id, ATTACHMENT_ID_PREFIX)
@@ -1702,8 +1703,11 @@ class DrupalWikiConnector(BaseConnector):
                 continue
             probe = await self.data_source.get_attachment(attachment_id)
             if probe.status != HttpStatusCode.NOT_FOUND.value:
-                await self._require_ok(probe, f"looking up attachment {attachment_id}")
-                continue
+                try:
+                    await self._require_ok(probe, f"looking up attachment {attachment_id}")
+                    continue
+                except DrupalWikiRefusedItemError as e:
+                    self.logger.info("Drupal Wiki: %s; the stored copy of attachment %s goes", e, attachment_id)
             await self.data_entities_processor.delete_record_by_external_id(self.connector_id, external_id)
 
     async def _recheck_attachments(self, listing: PageListing) -> None:
