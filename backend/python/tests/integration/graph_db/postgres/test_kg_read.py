@@ -552,7 +552,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(pg_r
     async def settings(tx) -> dict[str, Any]:
         return dict(await tx.fetchrow("/* pipeshub:test.read_settings */ SELECT pg_backend_pid() AS pid, current_setting('enable_sort') AS sort, "
                                       "current_setting('enable_bitmapscan') AS bitmap, current_setting('statement_timeout') AS statement, current_setting('lock_timeout') AS lock, "
-                                      "current_setting('jit') AS jit"))
+                                      "current_setting('jit') AS jit, current_setting('plan_cache_mode') AS plans"))
 
     async def walk(ids, vrids, acc) -> list:
         return []
@@ -571,6 +571,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(pg_r
         with _bound(org):
             before = await db.run(settings)
             assert (await db.run(profiled))["sort"] == "off" and (await db.run(profiled))["jit"] == "off"           # in force while the read runs
+            assert (await db.run(profiled))["plans"] == "force_custom_plan" and before["plans"] != "force_custom_plan"
             for broken in (False, True):
                 with monkeypatch.context() as m:
                     if broken:

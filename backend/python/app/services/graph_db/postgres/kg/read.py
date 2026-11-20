@@ -62,7 +62,8 @@ LITERALS = """/* pipeshub:kg.read_literals */ SELECT coalesce(array_agg(r.sk), '
     WHERE r.leaf IS FALSE AND (r.kind <> 3 OR coalesce((SELECT true FROM (SELECT c.parent_sk FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk >= r.sk ORDER BY c.parent_sk LIMIT 1) x WHERE x.parent_sk = r.sk),
         (SELECT true FROM (SELECT l.parent_sk, l.kind FROM kg.links l WHERE l.org_id = r.org_id AND (l.parent_sk, l.kind) >= (r.sk, 1) ORDER BY l.parent_sk, l.kind LIMIT 1) x
             WHERE x.parent_sk = r.sk AND x.kind = 1), false))"""
-# With no statistics a bitmap scan of the whole org can look cheaper than the index searches an array of ids needs (plan_cache_mode, set by the unit, is the other half of the profile).
+# With no statistics a bitmap scan of the whole org can look cheaper than the index searches an array of ids needs (custom plans, plan_cache_mode, are the other half of the
+# profile: set here, as the walk that shares the check's snapshot plans better without them).
 # With sorts off nothing but the key's index can answer a seek above; the read's other statements ask for no order (a join, GROUP BY or DISTINCT is hashed instead).
 # The short lock and statement limits hand a blocked or slow read to the walk at once, instead of holding a pooled connection for the service's own limits.
 # The knowledge-hub listing asks class_verdicts in a transaction of its own, without PROFILE (its pages are ordered): sorts are off for the literals' seeks only.
@@ -70,7 +71,7 @@ SORTS_OFF = """/* pipeshub:kg.read_sorts_off */ WITH s AS MATERIALIZED (SELECT c
 SORTS_BACK = "/* pipeshub:kg.read_sorts_back */ SELECT set_config('enable_sort', $1, true)"
 # JIT is off as well: the planner's estimate of a seek per asked id passes jit_above_cost at about 9,500 ids (a CHUNK), and compiling the statement then costs more than reading it.
 PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_sort', 'off', true), set_config('lock_timeout', '200ms', true),
-    set_config('statement_timeout', '2s', true), set_config('jit', 'off', true)"""
+    set_config('statement_timeout', '2s', true), set_config('jit', 'off', true), set_config('plan_cache_mode', 'force_custom_plan', true)"""
 
 
 def enabled() -> bool:

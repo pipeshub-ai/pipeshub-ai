@@ -220,7 +220,7 @@ class PermissionsMixin(PgBase):
         use_kg = (transaction is None or snapshot) and kg_read.enabled() and current_or_system().kind != "system"
 
         def unit(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
-            return self._db.run(fn, isolation="repeatable_read", custom_plan=True, jobs=current_or_system().kind == "system")
+            return self._db.run(fn, isolation="repeatable_read", jobs=current_or_system().kind == "system")
 
         async def check(tx: Tx) -> list[dict[str, Any]]:
             acc = access if access is not None else await self._check_gate(tx, org, user_key)
