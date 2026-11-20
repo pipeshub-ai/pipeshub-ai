@@ -59,12 +59,9 @@ class FullSyncRecordsDb(LinkingRecordsDb):
         self.written.add(record.id)
 
     async def on_updated_record_permissions(self, record: Record, permissions: list) -> None:
-        """An unchanged page's permissions update writes its link to the parent again."""
+        """An unchanged page's permissions update counts as a write, but does not link it to its parent."""
         await super().on_updated_record_permissions(record, permissions)
         self.written.add(record.id)
-        parent = self.records.get(record.parent_external_record_id or "")
-        if parent is not None:
-            self.parent_of[record.id] = parent.id
 
     def end_full_sync(self) -> None:
         self.parent_of = {c: p for c, p in self.parent_of.items() if c in self.written and p in self.written}
@@ -184,6 +181,27 @@ async def test_a_full_resync_keeps_pages_linked_under_folders_that_already_exist
     assert db.records[SETUP].is_internal and db.records[GUIDES].is_internal
 
     checkpoints.sync_points.clear()  # no sync point, so the next sync is a full one again
+    await connector.run_sync()
+    db.end_full_sync()
+
+    assert db.parent_of.get(db.records[INSTALL].id) == db.records[SETUP].id
+    assert db.parent_of.get(db.records[SETUP].id) == db.records[GUIDES].id
+
+
+async def test_a_full_sync_links_pages_again_under_folders_an_earlier_sync_unlinked(
+    site: FakeWeb, db: FullSyncRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """The state an earlier build left: the folders have no links, nor do the pages under them.
+    The page is unchanged, so only the connector can link it again."""
+    site.html(START_URL, "Home", "/guides/setup/install.html")
+    site.html(INSTALL, "Install", text="Install with pip")
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+    db.end_full_sync()
+    db.parent_of.clear()
+
+    checkpoints.sync_points.clear()
     await connector.run_sync()
     db.end_full_sync()
 

@@ -652,8 +652,9 @@ class WebConnector(BaseConnector):
         self._landed_urls: set[str] = set()
         # Pages this sync kept, directly or through a redirect; visited_urls also holds pages fetched and dropped.
         self._kept_urls: set[str] = set()
-        # External ids of the folder records this sync wrote: each is written once per sync.
-        self._folders_written: set[str] = set()
+        # External ids of the ancestors this sync has dealt with, each once: folders it wrote, and
+        # pages, which the crawl writes.
+        self._ancestors_done: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
         # Stored pages that answered 404/410: deleted when the next sync gets the same answer.
         self._gone_last_sync: set[str] = set()
@@ -1075,7 +1076,7 @@ class WebConnector(BaseConnector):
             self.visited_urls.clear()
             self._landed_urls.clear()
             self._kept_urls.clear()
-            self._folders_written.clear()
+            self._ancestors_done.clear()
             self._robots.clear()
             self._robots_sitemap_urls.clear()
             self._robots_skipped.clear()
@@ -3661,6 +3662,8 @@ class WebConnector(BaseConnector):
             return
         in_trash = await self.data_entities_processor.on_record_deleted(record.id)
         self._stored_page_ids.discard(record.id)
+        # A page under this URL now needs a folder here.
+        self._ancestors_done.discard(self._ensure_trailing_slash(record.external_record_id))
         # A page in the trash keeps its stored copy and its links; the purge removes both.
         if in_trash:
             return
@@ -3697,8 +3700,6 @@ class WebConnector(BaseConnector):
         becomes the page again (``write_as_new``), children and all.
         """
         try:
-            # The folder this sync may have written here was since replaced by the page, now deleted.
-            self._folders_written.discard(self._ensure_trailing_slash(removed_external_id))
             await self._ensure_parent_records_exist(removed_external_id)
             folder = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=removed_external_id,
@@ -4068,8 +4069,10 @@ class WebConnector(BaseConnector):
         A folder is written once per sync, whether or not it is already stored. A full sync
         ends by unlinking every record it did not write, so a stored folder left unwritten
         lost its links, and the pages under it lost the access they inherit through it.
-        Writing it again also restores links an earlier sync removed. An ancestor that is a
-        page of the site is left to the crawl, which writes it with its content.
+        Writing it again restores the folder's own links if an earlier sync removed them; on a
+        full sync the pages stored under it are linked to it again too, since an unchanged page
+        is not rewritten. An ancestor that is a page of the site is left to the crawl, which
+        writes it with its content.
 
         The folders go to ``on_new_records`` root first, so each finds its parent stored.
         """
@@ -4086,13 +4089,16 @@ class WebConnector(BaseConnector):
 
             # ── Step 2: walk segments, collect the folders not yet written this sync ─
             batch_parent_records: List[Tuple[FileRecord, List[Permission]]] = []
+            stored_folders: list[Record] = []
+            done: list[str] = []
             timestamp = get_epoch_timestamp_in_ms()
 
             for segment_url in segments:
                 external_id = self._ensure_trailing_slash(segment_url)
-                if external_id in self._folders_written:
-                    # Written with every folder above it, in one batch.
+                if external_id in self._ancestors_done:
+                    # Dealt with along with every ancestor above it.
                     break
+                done.append(external_id)
 
                 # Primary lookup
                 existing = await self.data_entities_processor.get_record_by_external_id(
@@ -4111,6 +4117,8 @@ class WebConnector(BaseConnector):
 
                 if existing and not existing.is_internal:
                     continue
+                if existing:
+                    stored_folders.append(existing)
 
                 parsed = urlparse(segment_url)
                 prefix_path = parsed.path if parsed.path.endswith("/") else parsed.path + "/"
@@ -4153,17 +4161,16 @@ class WebConnector(BaseConnector):
 
                 batch_parent_records.append((file_record, permissions))
 
-            if not batch_parent_records:
-                return
+            if batch_parent_records:
+                # ── Step 3: reverse so root-level ancestors are processed first ──
+                batch_parent_records.reverse()
 
-            # ── Step 3: reverse so root-level ancestors are processed first ──
-            batch_parent_records.reverse()
-
-            await self.data_entities_processor.on_new_records(batch_parent_records)
-            # Only once stored, so a failed write is tried again for the next page.
-            self._folders_written.update(
-                self._ensure_trailing_slash(record.external_record_id) for record, _ in batch_parent_records
-            )
+                await self.data_entities_processor.on_new_records(batch_parent_records)
+                if self.full_sync:
+                    for folder in stored_folders:
+                        await self._link_stored_pages_under(folder)
+            # Only once everything is stored, so a failed write is tried again for the next page.
+            self._ancestors_done.update(done)
 
         except Exception as e:
             self.logger.error(
@@ -4171,6 +4178,22 @@ class WebConnector(BaseConnector):
                 exc_info=True,
             )
 
+
+    async def _link_stored_pages_under(self, folder: Record) -> None:
+        """Link the pages stored under a folder to it again.
+
+        A full sync that did not write the folder removed its children's links to it along
+        with its own. An unchanged page is not rewritten, and its permissions update restores
+        only the inherit edge, so without this it stays out of the tree and out of reach.
+        """
+        children: dict[str, Record] = {}
+        for external_id in {folder.external_record_id, self._ensure_trailing_slash(folder.external_record_id)}:
+            stored = await self._children_of(external_id)
+            if stored is None:
+                raise RuntimeError(f"could not read the pages under {external_id}")
+            children.update({child.id: child for child in stored if not child.is_internal})
+        if children:
+            await self.data_entities_processor.on_records_attached_to_parent(folder.id, list(children))
 
     @classmethod
     async def create_connector(
