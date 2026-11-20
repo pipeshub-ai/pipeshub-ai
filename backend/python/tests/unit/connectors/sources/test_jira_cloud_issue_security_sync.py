@@ -34,6 +34,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     ANONYMOUS_READ_PAGES,
     ISSUE_PLACEMENT,
     ISSUE_SEARCH_FIELDS,
+    UNREAD_SYNCS_BEFORE_CLOSE,
     JiraConnector,
     _ParentLevel,
 )
@@ -3852,3 +3853,78 @@ class TestTheRetryReplay:
         c, asked = self._connector_with(point, ["1001", "1002"], cut_short=False)
         await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
         assert asked[0] == ["1001", "1002"] and json.loads(point["reindex_retry"]) == {}
+
+
+class TestALastingUnreadReadStopsKeepingStoredMembers:
+    """A group whose members, or a role whose group, cannot be read keeps its stored members for a transient failure. Read
+    so for ``UNREAD_SYNCS_BEFORE_CLOSE`` syncs in a row it is a lasting one, and the stored members may hold someone Jira
+    removed: the group is written with no members and the role with the members read. Its level readers stay unknown."""
+
+    @staticmethod
+    async def _role_sync(points: _KeptSyncPoints) -> JiraConnector:
+        c = _connector()
+        c.issues_sync_point, c.notify = points, AsyncMock()
+        c.data_source = MagicMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        c._call_with_retry = AsyncMock(side_effect=[
+            _resp(200, {"Developers": "https://x.atlassian.net/rest/api/3/project/PROJ/role/10002"}),
+            _resp(200, {"name": "Developers", "actors": [
+                {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-1"}},
+                {"type": "atlassian-group-role-actor", "actorGroup": {"groupId": "group-unread"}}]})])
+        await c._sync_project_roles(["PROJ"], _users(), {"group-unread": None})
+        return c
+
+    @staticmethod
+    def _written(c: JiraConnector) -> dict[str, list[str]]:
+        return {role.source_role_id: [u.source_user_id for u in members]
+                for call in c.data_entities_processor.on_new_app_roles.await_args_list for role, members in call.args[0]}
+
+    @pytest.mark.asyncio
+    async def test_a_role_whose_group_stays_unread_is_written_with_the_members_read_after_the_bound(self) -> None:
+        points = _KeptSyncPoints()
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            c = await self._role_sync(points)
+            assert self._written(c) == {}, "a transient failure keeps the stored members"
+        c = await self._role_sync(points)
+        assert self._written(c) == {"PROJ_10002": ["acc-1"]}  # the stored members are not kept: only those read now
+        assert "PROJ_10002" not in c._role_members  # its level readers stay unknown, so leveled issues wait
+
+    @pytest.mark.asyncio
+    async def test_a_sync_that_reads_the_role_in_full_starts_the_count_again(self) -> None:
+        points = _KeptSyncPoints()
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            await self._role_sync(points)
+        c = _connector()
+        c.issues_sync_point, c.notify = points, AsyncMock()
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+        assert await c._unread_streaks("role", set(), {"PROJ_10002"}) == set()
+        c = await self._role_sync(points)
+        assert self._written(c) == {}, "one failure after a full read is transient again"
+
+    @staticmethod
+    async def _group_sync(points: _KeptSyncPoints) -> JiraConnector:
+        c = _connector()
+        c.issues_sync_point = points
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        c._fetch_groups = AsyncMock(return_value=([{"groupId": "group-1", "name": "devs"}], False))
+        c._fetch_group_members = AsyncMock(return_value=([], False))
+        await c._sync_user_groups(_users())
+        return c
+
+    @pytest.mark.asyncio
+    async def test_a_group_whose_members_stay_unread_is_written_with_none_after_the_bound(self) -> None:
+        points = _KeptSyncPoints()
+        for _ in range(UNREAD_SYNCS_BEFORE_CLOSE - 1):
+            c = await self._group_sync(points)
+            assert c.data_entities_processor.on_new_user_groups.await_count == 0, "a transient failure keeps them"
+        c = await self._group_sync(points)
+        ((group, members),) = c.data_entities_processor.on_new_user_groups.await_args.args[0]
+        assert (group.source_user_group_id, members) == ("group-1", [])
+        assert "group-1" not in c._group_members  # unknown to level readers, not "no members"
+
+    @pytest.mark.asyncio
+    async def test_a_count_that_cannot_be_saved_closes_nothing_and_the_sync_goes_on(self) -> None:
+        c = _connector()
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("store down"))
+        assert await c._unread_streaks("role", {"PROJ_10002"}, set()) == set()
