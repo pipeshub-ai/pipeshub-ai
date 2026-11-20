@@ -490,3 +490,34 @@ async def test_an_empty_comment_list_is_a_complete_read(site, db, store, search,
     await connector.run_sync()
 
     assert to_retry(store) == [] and comment_records(db) == {}
+
+
+async def test_an_unread_comment_list_is_saved_for_retry_before_its_records_go(site, db, store, search) -> None:
+    """A re-read past the cursor (as the security and naming passes after the walk are) gets a comment page that is
+    not a list: the issue is on the saved retry list before its comment records are deleted, so a write that then
+    fails (the sync stops before the project's last save) does not lose it, and the next sync restores the grant."""
+    search.add("ENG", 0, [with_comments(ts(2), [comment("501", group="devs")])])
+    connector, _ = await make_connector(db, store)
+    await connector.run_sync()
+    assert to_retry(store) == [] and grants(db, "comment_501") == {(EntityType.GROUP, "devs")}
+
+    delete = db.on_records_deleted_cascade
+    saved_at_delete: list[list[str]] = []
+
+    async def deleting(record_ids: list[str], *args: object, **kwargs: object) -> dict:
+        saved_at_delete.append(to_retry(store))
+        return await delete(record_ids, *args, **kwargs)
+
+    db.on_records_deleted_cascade = deleting
+    bad = with_comments(ts(2), [])
+    bad["fields"]["comment"] = {"comments": "not a list", "total": 1}
+    built = await connector._build_issue_records([bad], "10000", list(db.app_users), is_new_project=True, stored_only=True)
+    assert built and "comment_501" not in db.records, "the comment records went: their audience is unknown"
+    assert saved_at_delete == [["1001"]], "saved before the delete"
+    db.on_records_deleted_cascade = delete
+    # The write of the batch fails here (the next issue's write raises): nothing of this pass is written.
+
+    assert to_retry(store) == ["1001"]
+    await connector.run_sync()  # nothing changed at the source since
+    assert grants(db, "comment_501") == {(EntityType.GROUP, "devs")}
+    assert to_retry(store) == []

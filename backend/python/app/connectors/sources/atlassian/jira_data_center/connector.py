@@ -610,6 +610,7 @@ class JiraDataCenterConnector(BaseConnector):
         # Issues whose restricted comments could not be written in full (the project checkpoint's ``comment_retry``),
         # and the read time each issue with comment records takes once they are written.
         self._comment_retry: set[str] = set()
+        self._comment_retry_written: set[str] = set()  # read in full this sync: leave the list once written
         self._settle_after_comments: dict[str, int] = {}
         self._stored_app_users: list[AppUser] = []  # read by _fetch_users
         self._newly_listed_user_keys: set[str] = set()
@@ -4049,7 +4050,7 @@ class JiraDataCenterConnector(BaseConnector):
                              if str(i).isdigit()})
         except (TypeError, ValueError):
             stored = []
-        self._comment_retry = set()
+        self._comment_retry, self._comment_retry_written = set(), set()
 
         async def reread(ids: list[str]) -> None:
             try:
@@ -4423,8 +4424,11 @@ class JiraDataCenterConnector(BaseConnector):
                 f"{files_count} attachments ({new_in_batch} new, {len(batch) - new_in_batch} updated)"
             )
 
-        # Every comment record of these issues is written: each takes the time of its read now.
+        # Every comment record of these issues is written: each takes the time of its read now, and leaves the retry list.
         for ext, issue in issues.items():
+            if ext in self._comment_retry_written:
+                self._comment_retry_written.discard(ext)
+                self._comment_retry.discard(ext)
             settled = self._settle_after_comments.pop(ext, None)
             if settled is not None:
                 issue.source_updated_at = settled
@@ -5914,6 +5918,17 @@ class JiraDataCenterConnector(BaseConnector):
             if not grants and failure is None:
                 failure = ValueError(f"comment {comment['id']} names a group or role that could not be resolved")
             out.append((record, grants))
+        if failure is not None:
+            # Not the failed-issue budget: an issue given up on is skipped until it changes, and its comment would stay
+            # closed after its role or comments can be read again. Saved before its comment records are deleted and the
+            # issue is written with this read's time: a pass past the cursor that stops later must not lose it.
+            self.logger.warning("Issue %s is read again by the next sync: %s", issue.get("key") or issue_id, failure)
+            self._comment_retry.add(issue_id)
+            self._comment_retry_written.discard(issue_id)
+            await self._update_project_sync_checkpoint(project_key, comment_retry=json.dumps(sorted(self._comment_retry)))
+        else:
+            # Read in full: it leaves the list once its comment records are written (``_process_new_records``).
+            self._comment_retry_written.add(issue_id)
         if stored_by_id:
             result = await self.data_entities_processor.on_records_deleted_cascade(
                 [r.id for r in stored_by_id.values()], self.connector_id, cascade_children=False,
@@ -5921,13 +5936,6 @@ class JiraDataCenterConnector(BaseConnector):
             if not isinstance(result, dict) or not result.get("success", False):
                 # Left behind, a comment made public or moved to another role or group keeps its old audience.
                 raise RuntimeError(f"could not delete the stale comment records of issue {issue_id}: {result}")
-        if failure is not None:
-            # Not the failed-issue budget: an issue given up on is skipped until it changes, and its comment would stay
-            # closed after its role or comments can be read again.
-            self.logger.warning("Issue %s is read again by the next sync: %s", issue.get("key") or issue_id, failure)
-            self._comment_retry.add(issue_id)
-        else:
-            self._comment_retry.discard(issue_id)
         if out:
             # Stored as changed until its comment records are written: a comment batch that fails leaves it to be read
             # again, not skipped as unchanged.
