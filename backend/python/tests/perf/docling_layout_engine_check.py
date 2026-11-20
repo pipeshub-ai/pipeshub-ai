@@ -146,9 +146,11 @@ def differences(a: list[dict], b: list[dict], min_iou: float) -> list[str]:
         if [c[0] for c in ca] != [c[0] for c in cb]:
             bad.append(f"{where}: labels {[c[0] for c in ca]} vs {[c[0] for c in cb]}")
             continue
-        for label in sorted({c[0] for c in ca}):
-            if not has_full_matching([c[1] for c in ca if c[0] == label], [c[1] for c in cb if c[0] == label], min_iou):
-                bad.append(f"{where}: the {label} boxes do not pair one-to-one at IoU >= {min_iou}")
+        bad += [
+            f"{where}: the {label} boxes do not pair one-to-one at IoU >= {min_iou}"
+            for label in sorted({c[0] for c in ca})
+            if not has_full_matching([c[1] for c in ca if c[0] == label], [c[1] for c in cb if c[0] == label], min_iou)
+        ]
     return bad
 
 
