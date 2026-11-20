@@ -23,6 +23,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.kafka.handlers import record as record_module
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
+from app.utils.user_errors import RETRY_SCHEDULED
 from tests.unit.attempt_start import attempt_start_via
 
 RECORDS = CollectionNames.RECORDS.value
@@ -283,7 +284,7 @@ class TestFailuresEndInTheMarker:
         harness = await self._fail(RuntimeError("parser busy"), final=False)
 
         assert harness.writes()[-1] == {
-            "parseNowStatus": "QUEUED", "parseNowRev": REV, "parseNowReason": record_module.RETRY_SCHEDULED, "parseNowAt": ANY,
+            "parseNowStatus": "QUEUED", "parseNowRev": REV, "parseNowReason": RETRY_SCHEDULED, "parseNowAt": ANY,
         }
         assert all("indexingStatus" not in write for write in harness.writes())
 

@@ -173,7 +173,6 @@ from app.utils.user_errors import (
     ENRICHMENT_STOPPED_CONNECTOR_REMOVED,
     FOLDER_NOTHING_TO_INDEX,
     RETRIES_EXHAUSTED,
-    RETRY_SCHEDULED,
     STORED_CONTENT_DAMAGED,
     STORED_CONTENT_MISSING,
     duplicate_failed,
@@ -182,6 +181,7 @@ from app.utils.user_errors import (
     is_password_protected,
     rate_limited_gave_up,
     rate_limited_will_retry,
+    retry_reason,
     to_user_reason,
     too_large_refusal,
     unsupported_file_type,
@@ -3209,7 +3209,7 @@ class RecordEventHandler(BaseEventService):
                         )
                         updates = requeue_updates(current, store_only=store_only)
                         if updates:
-                            updates["reason"] = RETRY_SCHEDULED
+                            updates["reason"] = retry_reason(last_exception)
                             updates["processingStartedAt"] = None
                             updated = await self.event_processor.graph_provider.update_node(
                                 record_id, CollectionNames.RECORDS.value, shape_status_write(updates)

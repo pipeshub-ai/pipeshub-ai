@@ -291,6 +291,7 @@ class MessageErrorClassifier:
         0. Walk exception chain to find root cause (handles wrapped exceptions)
         0b2. ServiceAuthRefusedError = TRANSIENT (an internal service refused
             our service token: a deployment fault, not a document fault)
+        0c2. A parse worker killed under memory pressure, first time for its record = TRANSIENT
         0c. ParsingClientError(PARSE_BACKPRESSURE) = TRANSIENT (saturated, not
             failed); every other ParsingClientError code = TERMINAL
         1. Extract HTTP status code if available and classify by status
@@ -390,6 +391,13 @@ class MessageErrorClassifier:
         # while it propagates carries it as __context__ and must stay retryable.
         if is_record_deleted(exc):
             return MessageErrorType.TERMINAL
+
+        # 0c2. A parse worker the kernel killed under memory pressure, the first time for this record: the file
+        # may not be what used the memory, so it is retried. It is wrapped by the processor's
+        # DocumentProcessingError, which rule 0d below would read as the file's fault. A second death of the
+        # record's worker carries no flag and is terminal as before.
+        if any(getattr(chain_exc, "retrying_worker_death", False) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
 
         # 0d. Scan full chain for terminal exception types before HTTP status rules.
         # Processing failures must win over incidental infrastructure errors deeper in the chain.

@@ -153,6 +153,21 @@ PARSE_WORKER_OUT_OF_MEMORY = (
     "into smaller files and sync or upload them again; if it keeps failing, ask your admin "
     "to give PipesHub more memory."
 )
+PARSE_WORKER_KILLED_RETRYING = (
+    "The process reading this file was stopped because the server was short of memory, "
+    "which is not a problem with the file. PipesHub will retry it automatically."
+)
+
+
+def retry_reason(exc: BaseException | None) -> str:
+    """The reason to store on a record that failed this time and is queued to run again.
+
+    A parse worker killed under memory pressure says so: the next delivery usually succeeds once the
+    other work has eased, and nobody needs to split the file yet. Any other failure is the generic text.
+    """
+    if exc is not None and any(getattr(e, "retrying_worker_death", False) for e in _chain(exc)):
+        return PARSE_WORKER_KILLED_RETRYING
+    return RETRY_SCHEDULED
 
 
 # Written for people by the code that raised them, and more specific than any
@@ -167,6 +182,7 @@ _STORED_AS_WRITTEN = frozenset({
     EXCEL_TOO_LARGE,
     UNREADABLE_FILE,
     PARSE_WORKER_OUT_OF_MEMORY,
+    PARSE_WORKER_KILLED_RETRYING,
     PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
 })
