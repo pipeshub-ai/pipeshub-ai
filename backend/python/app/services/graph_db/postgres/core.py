@@ -236,16 +236,28 @@ class CoreMixin(PgBase):
         hot = _hot(collection, filters)
         fields = [_field(k) for k in keys]
         try:
-            async def read(tx: Tx) -> list:
-                # a full page may be only the first: the plain statement then reads every match in the one statement (one snapshot)
-                rows = await _hot_rows(tx, hot, fields, vals, "", _HOT_PAGE, null_absent=True) if hot else []
-                if hot and len(rows) < _HOT_PAGE:
-                    return rows
+            async def read(tx: Tx, *, paged: bool) -> list:
+                # Every page of the vetted read after the last id, so more matches than a page are still read by the key's index (the plain
+                # statement reads every document of the collection in the org). Paged reads run in one repeatable-read unit: one snapshot, as
+                # the one statement had. In a caller's transaction, and after an id the function refuses, the plain statement reads them all.
+                rows: list = []
+                after = ""
+                while hot and len(after) <= 200:
+                    page = await _hot_rows(tx, hot, fields, vals, after, _HOT_PAGE, null_absent=True)
+                    rows += page
+                    if len(page) < _HOT_PAGE:
+                        return rows
+                    if not paged:
+                        break
+                    after = page[-1]["node_id"]
                 return await tx.fetch("""/* pipeshub:graph.get_nodes_by_filters */ SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2
                     AND NOT EXISTS (SELECT 1 FROM unnest($3::text[], $4::text[]) f(k, v)
                         WHERE CASE WHEN f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)""",
                                       org, collection, fields, vals)
-            rows = await self._q(read, transaction)
+            if hot and not transaction:
+                rows = await self._db.run(lambda tx: read(tx, paged=True), isolation="repeatable_read")
+            else:
+                rows = await self._q(lambda tx: read(tx, paged=False), transaction)
         except Exception:
             if raise_on_error:
                 raise
